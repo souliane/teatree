@@ -128,6 +128,19 @@ class TestAnUndeliverablePageIsParked:
         assert _FAIL_MESSAGE in dms, "the page raised while the channel was down must still arrive"
         assert _ledger(tmp_path) == "", "a delivered page must leave the ledger"
 
+    def test_a_fully_drained_ledger_logs_no_backlog(self, tmp_path: Path) -> None:
+        # `grep -c .` on an emptied ledger prints "0" AND exits 1 (no matching
+        # lines), so a naive `|| printf 0` fires too and appends a second "0" —
+        # `[ "0\n0" -eq 0 ]` then errors "integer expected" and its own `||`
+        # branch logs a false backlog right after a fully successful drain.
+        _run_pass(tmp_path, STUB_NOTIFY_RC="1")
+
+        _dms, log = _run_pass(tmp_path, STUB_DOCTOR_JSON=_GREEN)
+
+        assert _ledger(tmp_path) == "", "the recovered pass must have delivered and drained the ledger"
+        assert "STILL UNDELIVERED" not in log
+        assert "integer expression expected" not in log
+
     def test_the_ledger_is_bounded(self, tmp_path: Path) -> None:
         ledger = tmp_path / "undelivered.state"
         ledger.write_text("".join(f"1 old-key-{n} Ym9keQ==\n" for n in range(80)), encoding="utf-8")

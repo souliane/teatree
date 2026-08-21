@@ -4,9 +4,15 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
+import datetime as dt
+from typing import TYPE_CHECKING
+
 import typer
 
 from teatree.loop.preset_resolution import consistency_findings
+
+if TYPE_CHECKING:
+    from teatree.core.models import DreamRunMarker
 
 
 def _check_loop_presets() -> bool:
@@ -103,7 +109,7 @@ def _check_intake_budget_deadlock() -> bool:
             # it (#3992), and a doctor reading a different number than the gate is the
             # second opinion this whole surface exists to prevent.
             limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=overlay)
-            budget = read_intake_budget(overlay, limit)
+            budget = read_intake_budget(overlay, limit, static_limit=settings.issue_implementer_max_concurrent)
             if budget.deadlocked:
                 jammed.append(budget)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
@@ -115,6 +121,51 @@ def _check_intake_budget_deadlock() -> bool:
             "free the budget with `t3 loop reclaim-markers` (#3978)."
         )
     return not jammed
+
+
+def _check_box_occupancy() -> bool:
+    """Report the factory's own agent count BESIDE the whole box's load (#4407).
+
+    Every other intake/agent surface counts what the FACTORY is running, so a box
+    saturated by anything else — an orchestrating session's harness sub-agents claim no
+    ``Task`` and hold no intake marker — reads healthy on all of them at once. The
+    recorded shape is load 14 → 53 and 16 GB → 1 GB free with the factory correctly
+    holding intake at 3, every chip green, and zero merges for over an hour.
+
+    Always prints both numbers, because the actionable thing is the DIFFERENCE between
+    them, and a check that speaks only when it is unhappy cannot show one. Advisory: a
+    WARN at or over the same :data:`~teatree.core.admission_governor.BRAKE_LOAD_PER_CORE`
+    watermark the governor brakes on, never a FAIL — foreign load is a fact about the
+    machine, not a fault in the factory, and reddening the run on it would train the
+    operator to ignore a red run. Crash-proof: any error degrades to OK.
+    """
+    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        BRAKE_LOAD_PER_CORE,
+        read_machine_signal,
+    )
+    from teatree.core.models import Task  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        machine = read_machine_signal()
+        agents = Task.objects.claimed_agent_count()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Box-occupancy check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    cores = max(1, machine.cores)
+    watermark = BRAKE_LOAD_PER_CORE * cores
+    reading = (
+        f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
+        f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f})"
+    )
+    if machine.load1 < watermark:
+        typer.echo(f"OK    Box occupancy — {reading}")
+        return True
+    typer.echo(
+        f"WARN  Box saturated while the factory's own accounting reads healthy — {reading}. "
+        "The surplus is work the factory did not start and cannot retire; shed it before "
+        "expecting throughput (#4407)."
+    )
+    return True
 
 
 def _check_starved_intake_candidates() -> bool:
@@ -229,7 +280,8 @@ def _check_dream_consolidation_blocked() -> bool:
     from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
-        blocked = DreamRunMarker.objects.is_critically_stale(timezone.now())
+        now = timezone.now()
+        blocked = DreamRunMarker.objects.is_critically_stale(now)
         marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first() if blocked else None
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-blocked check crashed: {exc.__class__.__name__}: {exc}")
@@ -238,11 +290,29 @@ def _check_dream_consolidation_blocked() -> bool:
         return True
     succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
     typer.echo(
-        f"FAIL  Dream consolidation has not stamped success since {succeeded} — every pass is being "
-        "withheld, so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
+        f"FAIL  Dream consolidation has not stamped success since {succeeded} — {_dream_block_cause(marker, now)} "
+        "so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
         "gate verdict it now exits non-zero on (#3993).",
     )
     return False
+
+
+def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> str:
+    """Which of the two causes the marker's own attempt timestamp establishes (#4355).
+
+    Naming the wrong one is expensive in both directions: "every pass is withheld" sends
+    the reader hunting a gate that is refusing when no pass ran, and the reverse sends
+    them after a driver that is already firing every ten minutes.
+    """
+    from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+        STALE_THRESHOLD_HOURS,
+    )
+
+    attempted = marker.last_attempted_at if marker else None
+    if attempted is not None and (now - attempted) < dt.timedelta(hours=STALE_THRESHOLD_HOURS):
+        return "every pass is being withheld,"
+    since = f"since {attempted.isoformat()}" if attempted else "ever"
+    return f"and no pass has been attempted {since} — the loop is FROZEN, not withheld —"
 
 
 def _check_dream_transcript_visibility() -> bool:
@@ -362,30 +432,28 @@ def _check_shipped_seed_inertness() -> bool:
 
 
 def _check_aged_sweep_skips() -> bool:
-    """Warn on each PR the merge sweep has skipped for the same reason N ticks running.
+    """One standing finding for the PRs the merge sweep keeps skipping (#4523).
 
     A sweep skip is log-only, so a PR held by ``ci_red`` / ``no_clear_for_head`` /
-    a fork provenance hold sits indefinitely with nobody told. The DM fires once
-    when the streak ages; this is the standing view — every aged streak, announced
-    or not, with the PR, the reason and how long it has been stuck. Crash-proof:
-    any error degrades to OK.
+    a fork provenance hold sits indefinitely with nobody told. Reporting a line per
+    row made 41 rows read as 41 incidents; the count is the finding. A deliberate
+    park is counted, never a fault. Crash-proof: any error degrades to OK.
     """
     from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS  # noqa: PLC0415 — deferred: lazy CLI import
+    from teatree.loop.pr_sweep_skip_surface import (  # noqa: PLC0415 — deferred: lazy CLI import
+        SURFACE_AFTER_TICKS,
+        render_standing_skips,
+    )
 
     try:
-        aged = list(SweepSkipStreak.objects.aged(threshold=SURFACE_AFTER_TICKS))
+        summary = SweepSkipStreak.objects.standing(threshold=SURFACE_AFTER_TICKS)
+        lines = render_standing_skips(summary, threshold=SURFACE_AFTER_TICKS)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Aged-sweep-skip check crashed: {exc.__class__.__name__}: {exc}")
         return True
-    if not aged:
-        return True
-    for row in aged:
-        typer.echo(
-            f"WARN  PR {row.ref} skipped by the merge sweep {row.tick_count}x "
-            f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
-        )
-    return False
+    for line in lines:
+        typer.echo(line)
+    return summary.stalls == 0
 
 
 def _check_unconsumed_merge_clears() -> bool:

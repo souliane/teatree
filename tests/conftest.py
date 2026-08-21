@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
+from teatree.core.factory import external_outcomes
 from teatree.core.worktree.branch_classification import reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from tests._db_template import build_or_reuse_template, restore_from_template
@@ -212,13 +213,12 @@ def _restore_django_settings_module() -> Iterator[None]:
     #3160 leak sentinel catches. Restore-only (snapshot-and-put-back, never touching the
     value at setup) so a well-behaved test is unaffected and only the leak is reverted.
     """
-    absent = object()
-    before: object = os.environ.get("DJANGO_SETTINGS_MODULE", absent)
+    before = os.environ.get("DJANGO_SETTINGS_MODULE")
     yield
-    if before is absent:
+    if before is None:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
-        os.environ["DJANGO_SETTINGS_MODULE"] = before  # type: ignore[assignment]
+        os.environ["DJANGO_SETTINGS_MODULE"] = before
 
 
 @pytest.fixture(autouse=True)
@@ -569,6 +569,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
     # to isolate here (the env-inertness is pinned by
     # ``tests/teatree_loop/test_review_loop_db_only_control.py``).
+    # The external-outcome measure (#4506) reads the forge on any run with no fresh
+    # snapshot, so an unstubbed reconciliation ledger would make a live `gh` call from
+    # any test that runs it. Resolve to "no forge" here — the unmeasured state, which is
+    # never scored healthy — and let the tests that exercise the read patch this back.
+    monkeypatch.setattr(
+        "teatree.core.factory.external_outcomes.resolve_forge",
+        lambda overlay="": external_outcomes.Forge(host=None, repo_slugs=()),
+    )
 
 
 @pytest.fixture(scope="session")

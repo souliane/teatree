@@ -15,6 +15,18 @@ in rotation from a cursor persisted on ``DreamRunMarker``, and the count left ov
 reported as ``deferred_members``. Successive passes therefore drain the corpus instead
 of re-distilling the same head forever.
 
+A COUNT cap alone cannot bound the pass's wall clock, and that is what killed every
+pass: 24 batches against the distiller's own 300s per-call watchdog is up to two hours
+of metered work inside a 30-minute pass budget, so the pass never ended by choice —
+only by the driver's SIGKILL, always mid-distil, leaving the whole tail (compliance,
+the §4 acceptance gates, phases 4-6, Pass-2 promotion, the marker) unreachable. So
+:func:`distill_in_batches` also takes an optional
+:class:`~teatree.loops.dream.pass_config.PassBudget` and stops launching NEW batches
+once the remaining budget can no longer absorb one worst-case call AND still leave the
+tail its reserve. This changes only WHEN distil stops, never what happens to the
+remainder: the same rotation cursor that carries the batch cap's leftovers carries the
+clock's, so the next pass resumes exactly where this one stopped.
+
 A batch that RAISES and a batch whose reply is BROKEN (an unauthenticated ``claude``
 answering ``Not logged in · Please run /login``, a truncated array, entries that all
 fail to coerce) are both counted apart from a healthy "nothing to consolidate" and
@@ -28,7 +40,9 @@ import os
 from dataclasses import dataclass, field
 
 from teatree.loops.dream.engine import DistilledCluster, Distiller, DistillResult
+from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.sdk_distiller import DISTILL_WATCHDOG_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +80,11 @@ class BatchDistillOutcome:
     and only once — the clusters this pass produced are durably in the ledger. ``None``
     means the cursor must not move at all. It is deliberately not written here; see
     :func:`distill_in_batches`.
+
+    ``budget_stopped_batches`` counts the SELECTED batches the wall-clock budget turned
+    away, told apart from the ones the count cap never selected. A pass that stops on
+    the clock and says nothing about it reads identically to a pass that finished, which
+    is how a 30-minute overrun stayed invisible for weeks.
     """
 
     clusters: list[DistilledCluster]
@@ -76,6 +95,7 @@ class BatchDistillOutcome:
     snippets_distilled: int = 0
     deferred_members: int = 0
     next_cursor: int | None = None
+    budget_stopped_batches: int = 0
 
 
 @dataclass(slots=True)
@@ -133,8 +153,37 @@ def _batch_extracts(extract: ConsolidationExtract, *, max_members: int, max_char
     return batches
 
 
-def _select_batches(total: int, *, cap: int, cursor: int) -> tuple[list[int], int]:
-    """Which batch indices this pass distils, and the cursor the next pass resumes from.
+@dataclass(frozen=True, slots=True)
+class _BatchSelection:
+    """Which batch indices this pass distils, and where the next pass resumes.
+
+    ``indices`` is the optional head (batch 0 — the doctrine and the freshest drift)
+    followed by the rotation window. The cursor used to be a single number computed at
+    selection time, which was only correct while EVERY selected batch was guaranteed to
+    run. The wall-clock budget breaks that guarantee, so the resume point is a FUNCTION
+    of how many of ``indices`` were actually reached: :meth:`cursor_after`.
+    """
+
+    indices: tuple[int, ...]
+    head_len: int
+    rotation_len: int
+    start: int
+
+    def cursor_after(self, reached: int) -> int:
+        """Where the next pass resumes, given the first *reached* of ``indices`` ran.
+
+        Only rotation batches move the cursor — the head is re-distilled every pass by
+        design, so reaching it consumes nothing. ``reached == len(indices)`` reproduces
+        the value the old selection-time arithmetic returned.
+        """
+        if self.rotation_len <= 0:
+            return 0
+        taken = max(0, reached - self.head_len)
+        return (self.start + taken) % self.rotation_len
+
+
+def _select_batches(total: int, *, cap: int, cursor: int) -> _BatchSelection:
+    """Which batch indices this pass distils, and how to resume where it stops.
 
     Batch 0 carries the doctrine and the freshest drift, so a pass with room for more
     than one call always spends one on it and rotates the rest of the corpus through
@@ -143,15 +192,28 @@ def _select_batches(total: int, *, cap: int, cursor: int) -> tuple[list[int], in
     exists to remove — so at that cap everything rotates, batch 0 included. The cursor
     is an offset into whichever region rotates; the modulo keeps a cursor written under
     one cap valid under another.
+
+    An UNCAPPED pass selects every batch, and now walks them from the cursor too. With
+    the steady-state cursor of 0 — what a pass that reached every batch leaves behind —
+    that is exactly ``range(total)``, unchanged. It matters only when the wall-clock
+    budget cut the PREVIOUS pass short: without it the next pass would restart at the
+    head and re-spend metered calls on the region already consolidated, never reaching
+    the tail of the corpus.
     """
     if cap <= 0 or cap >= total:
-        return list(range(total)), 0
-    head = [0] if cap > 1 else []
+        start = cursor % total
+        return _BatchSelection(
+            indices=tuple((start + step) % total for step in range(total)),
+            head_len=0,
+            rotation_len=total,
+            start=start,
+        )
+    head = (0,) if cap > 1 else ()
     rotation = range(len(head), total)
     start = cursor % len(rotation)
     take = min(cap - len(head), len(rotation))
-    picked = [rotation[(start + step) % len(rotation)] for step in range(take)]
-    return head + picked, (start + take) % len(rotation)
+    picked = tuple(rotation[(start + step) % len(rotation)] for step in range(take))
+    return _BatchSelection(indices=head + picked, head_len=len(head), rotation_len=len(rotation), start=start)
 
 
 def _read_cursor() -> int:
@@ -175,7 +237,11 @@ def commit_distill_cursor(cursor: int) -> None:
 
 
 def distill_in_batches(
-    extract: ConsolidationExtract, *, distiller: Distiller, dry_run: bool = False
+    extract: ConsolidationExtract,
+    *,
+    distiller: Distiller,
+    dry_run: bool = False,
+    budget: PassBudget | None = None,
 ) -> BatchDistillOutcome:
     """Distil *extract* batch-by-batch, merging clusters by ``cluster_key``.
 
@@ -183,6 +249,14 @@ def distill_in_batches(
     case the unreached remainder is counted in ``deferred_members`` and the cursor is
     PROPOSED to advance so the NEXT pass continues from there. Under *dry_run* nothing
     is proposed, so a preview never consumes the corpus.
+
+    *budget* is the pass's wall clock. When given, a new batch is launched only while
+    the budget can still absorb one worst-case distiller call (its own
+    :data:`~teatree.loops.dream.sdk_distiller.DISTILL_WATCHDOG_SECONDS` watchdog) AND
+    leave the tail its reserve; the first batch that does not fit ends the walk. The
+    remainder is deferred through the same cursor the count cap uses, so "the clock
+    stopped us" and "the cap stopped us" leave the corpus in the same recoverable
+    state. Passing ``None`` restores the unbounded walk (the manual/test path).
 
     Clusters merge last-wins by ``cluster_key`` (the ledger's idempotency anchor), so a
     key surfaced in two batches collapses to one row. A batch that raises or returns a
@@ -215,14 +289,24 @@ def distill_in_batches(
 
     cap = _max_distill_batches()
     capped = 0 < cap < len(batches)
-    selected, next_cursor = _select_batches(len(batches), cap=cap, cursor=_read_cursor() if capped else 0)
+    selection = _select_batches(len(batches), cap=cap, cursor=_read_cursor())
 
     tally = _BatchTally()
-    for index in selected:
+    reached: list[int] = []
+    for index in selection.indices:
+        if budget is not None and not budget.allows_new_call(DISTILL_WATCHDOG_SECONDS):
+            _log_budget_stop(budget, stopped=len(selection.indices) - len(reached), of=len(selection.indices))
+            break
         _distil_one(batches[index], distiller=distiller, tally=tally)
+        reached.append(index)
 
+    stopped = len(selection.indices) - len(reached)
     consolidated = not tally.failed and not tally.broken
-    reached = set(selected)
+    distilled = set(reached)
+    # The cursor must advance whenever a region was left behind, whichever bound left
+    # it: a clock-truncated UNCAPPED pass that did not advance would re-distil the same
+    # head next pass and never reach the corpus's tail.
+    resumable = capped or stopped > 0
     return BatchDistillOutcome(
         clusters=list(tally.merged.values()),
         empty_batches=tally.empty,
@@ -230,8 +314,25 @@ def distill_in_batches(
         broken_batches=tally.broken,
         diagnostics=tuple(tally.diagnostics),
         snippets_distilled=tally.distilled_snippets,
-        deferred_members=sum(len(batch.snippets) for i, batch in enumerate(batches) if i not in reached),
-        next_cursor=next_cursor if capped and not dry_run and consolidated else None,
+        deferred_members=sum(len(batch.snippets) for i, batch in enumerate(batches) if i not in distilled),
+        next_cursor=selection.cursor_after(len(reached)) if resumable and not dry_run and consolidated else None,
+        budget_stopped_batches=stopped,
+    )
+
+
+def _log_budget_stop(budget: PassBudget, *, stopped: int, of: int) -> None:
+    """Say loudly that the CLOCK, not the corpus, ended the distil phase."""
+    logger.warning(
+        "dream pass STOPPED launching distiller batches with %.0fs of its %.0fs budget left — under the "
+        "%.0fs tail reserve plus the %.0fs per-call watchdog. %d of %d selected batch(es) are carried to "
+        "the next pass by the distill cursor, and the pass's tail (compliance, the acceptance gates, "
+        "phases 4-6, the marker) now runs instead of being SIGKILLed mid-distil.",
+        budget.remaining,
+        budget.total,
+        budget.tail_reserve,
+        DISTILL_WATCHDOG_SECONDS,
+        stopped,
+        of,
     )
 
 

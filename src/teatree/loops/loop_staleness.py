@@ -64,6 +64,12 @@ _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 _SECONDS_PER_DAY = 86400
 
+#: The floor under :func:`freeze_cutoff_seconds` — the reconciliation freeze alarm never
+#: fires sooner than this however short the cadence. It is the flat cutoff that alarm used
+#: to apply to EVERY loop, kept as a floor so scaling to cadence can only ever loosen a
+#: fast loop's alarm, never tighten it into a minute-scale hair trigger.
+FREEZE_ALARM_FLOOR_SECONDS = _SECONDS_PER_DAY
+
 
 def format_age(age_seconds: float) -> str:
     """Compact human age — ``45s`` / ``12m`` / ``6h`` / ``3d``."""
@@ -226,6 +232,23 @@ class LoopHealth:
         )
 
 
+def freeze_cutoff_seconds(cadence_seconds: int | None) -> float:
+    """How stale a loop's anchor may get before it is frozen — ``3x`` its OWN cadence.
+
+    The one home for the rule, so the reconciliation alarm and this module's status
+    reading can never hold different opinions of what "stale" means. A flat day applied
+    to every loop made the weekly ``memory_skim`` stale for ~86% of every week, so the
+    line naming a genuinely dead loop arrived beside a permanent false one (#4355).
+
+    ``>=`` this value is stale, matching :data:`STALE_CADENCE_MULTIPLIER`'s own reading —
+    three missed slots IS a stopped loop, not the last moment before one. A cadence-less
+    (every-tick) loop declares no interval to scale, so it keeps the floor.
+    """
+    if cadence_seconds is None:
+        return float(FREEZE_ALARM_FLOOR_SECONDS)
+    return float(max(FREEZE_ALARM_FLOOR_SECONDS, STALE_CADENCE_MULTIPLIER * cadence_seconds))
+
+
 def driverless_loops() -> tuple[str, ...]:
     """Registered loops NO driver reaches, sorted by name.
 
@@ -240,7 +263,7 @@ def driverless_loops() -> tuple[str, ...]:
     return tuple(sorted(loop.name for loop in iter_loops() if loop.off_live_tick and not loop.off_tick_command))
 
 
-def _measured_loops(now: dt.datetime) -> list["Loop"]:
+def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
     """Live-tick interval rows something should be driving, UNION the ones the operator left on.
 
     Each half alone loses an alarm the other keeps:
@@ -267,9 +290,9 @@ def _measured_loops(now: dt.datetime) -> list["Loop"]:
     members = timer_chain_loop_names(now)
     live_tick = live_tick_loop_names()
     return [
-        row
+        (row, cadence)
         for row in Loop.objects.all()
-        if row.delay_seconds and (row.name in members or (row.enabled and row.name in live_tick))
+        if (cadence := row.delay_seconds) and (row.name in members or (row.enabled and row.name in live_tick))
     ]
 
 
@@ -305,13 +328,13 @@ def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER)
     stale = [
         StaleLoop(
             name=row.name,
-            cadence_seconds=row.delay_seconds,
+            cadence_seconds=cadence,
             age_seconds=age,
             ever_ran=row.last_run_at is not None,
             suppressed=_is_suppressed(row, planes),
         )
-        for row in _measured_loops(now)
-        if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * row.delay_seconds
+        for row, cadence in _measured_loops(now)
+        if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * cadence
     ]
     return sorted(stale, key=lambda loop: loop.name)
 

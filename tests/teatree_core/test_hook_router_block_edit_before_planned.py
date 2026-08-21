@@ -21,6 +21,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import plan_edit_gate
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 
@@ -111,7 +112,7 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
             toplevel = _git_repo(Path(tmp))
             buf = StringIO()
             with (
-                patch.object(router, "_resolve_worktree_state", side_effect=TypeError("boom")),
+                patch.object(plan_edit_gate, "_resolve_worktree_state", side_effect=TypeError("boom")),
                 patch("sys.stderr", buf),
             ):
                 state = router._ticket_state_for_cwd(toplevel)

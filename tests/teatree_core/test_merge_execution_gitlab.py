@@ -33,6 +33,7 @@ from teatree.core.merge import (
     resolve_host_kind,
 )
 from teatree.core.merge.execution import assert_not_draft
+from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
@@ -248,8 +249,12 @@ class TestFetchLiveHeadShaGitLab(TestCase):
         )
 
     def test_returns_empty_on_failure(self) -> None:
+        # ``live_head_sha`` normalises the UNREADABLE sentinel back to ``""`` so every
+        # fail-closed gate keeps refusing on a falsy sha; ``live_head_read`` is the one
+        # surface that reveals which of the two happened.
         with _patch_gitlab(_FailingClient()):
             assert _gitlab_query().live_head_sha() == ""
+            assert _gitlab_query().live_head_read().unreadable
 
     def test_returns_empty_on_malformed_json(self) -> None:
         class _Bad(_GitLabApiStub):
@@ -280,9 +285,13 @@ class TestFetchRequiredChecksGitLab(TestCase):
             # closed): an empty pipeline list must never merge as "all checks passed".
             assert _gitlab_query().required_checks_status() == "pending"
 
-    def test_pipeline_query_failure_returns_failed(self) -> None:
+    def test_pipeline_query_failure_returns_unreadable(self) -> None:
+        # A pipeline query that could not be made observed no red — it observed
+        # nothing. Still refused (``REFUSING_CHECK_VERDICTS``), now under its own word.
         with _patch_gitlab(_FailingClient()):
-            assert _gitlab_query().required_checks_status() == "failed"
+            verdict = _gitlab_query().required_checks_status()
+        assert verdict == "unreadable"
+        assert verdict in REFUSING_CHECK_VERDICTS
 
     def test_required_status_check_contexts_is_empty_no_separate_gate(self) -> None:
         # GitLab gates on the pipeline-status verdict, not branch-protection

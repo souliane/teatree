@@ -27,6 +27,8 @@ from teatree.loop.scanners.phase_cadence import PhaseCadence
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from teatree.config.loader import TeaTreeConfig
+
 
 @dataclass(slots=True)
 class ProvisionSmokeScanner:
@@ -82,7 +84,7 @@ class ProvisionSmokeScanner:
 
 def build_provision_smoke_scanner(
     *,
-    load_config: "Callable[[], object]",
+    load_config: "Callable[[], TeaTreeConfig]",
     discover_active_overlay: "Callable[[], object]",
     canonical_fallback: str,
 ) -> "ProvisionSmokeScanner | None":
@@ -95,7 +97,7 @@ def build_provision_smoke_scanner(
     as the defensive default. The callables are injected so global_scanner_factories
     keeps wiring lean and tests can stub each layer independently.
     """
-    settings = load_config().user  # type: ignore[attr-defined]
+    settings = load_config().user
     if settings.dogfood_smoke_disabled:
         return None
     overlay_name = settings.dogfood_smoke_overlay

@@ -20,12 +20,19 @@ Both membership sets are explicit because the two tables disagree about what
 resolved lock is per-MR and freely re-acquirable — a later push dispatches a
 fresh review on the same MR. A resolved dispatch is per-HEAD and terminal — a
 verdict already covers that exact tree, so re-arming it would be review churn.
+
+:func:`retire_head_claim` is the write half of the same rule, shared by the same
+tables for the same reason: "when is a per-head claim spent?" also has one answer.
 """
 
 import datetime as dt
 from collections.abc import Iterable
+from typing import TypeVar
 
 from django.db import models
+from django.utils import timezone
+
+_ClaimT = TypeVar("_ClaimT", bound=models.Model)
 
 
 def acquirable_q(
@@ -48,3 +55,37 @@ def acquirable_q(
     """
     expired_active = models.Q(**{f"{state_field}__in": list(active), f"{deadline_field}__lt": now})
     return models.Q(**{f"{state_field}__in": list(always_acquirable)}) | expired_active
+
+
+def retire_head_claim(
+    in_flight: "models.QuerySet[_ClaimT]",
+    *,
+    slug: str,
+    pr_id: int,
+    head_sha: str,
+    to_state: str,
+) -> bool:
+    """Compare-and-set ONE in-flight per-head claim into a terminal state. ``True`` iff a row moved.
+
+    The write half of what :func:`acquirable_q` is the read half of, and shared for the
+    same reason. TWO tables claim the review path per ``(slug, pr_id, head_sha)`` — the
+    #68 dispatch ledger and the codex / self-PR marker — and both retire on the same two
+    events: a recorded verdict, and a verdict the recorder is structurally unable to
+    record. A second hand-written copy of this ``UPDATE`` is how the two ledgers would
+    come to disagree about what "spent" means, and about which key identifies a head,
+    which is the drift the one shared predicate exists to prevent.
+
+    *in_flight* is the caller's claims already restricted to its ACTIVE states, so a claim
+    that is already terminal is never re-transitioned: a RESOLVED head carries a verdict
+    and a REFUSED one carries a page, and overwriting either would replace a durable fact
+    with a weaker one. Retiring an unclaimed head is a legitimate no-op — most verdicts
+    conclude a review neither table armed — so this returns ``False`` rather than raising.
+
+    The key is normalised the way the claim tables store it (stripped slug, stripped and
+    lowercased head), because what reaches the callers is a reviewer's self-reported SHA.
+    """
+    return bool(
+        in_flight.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower()).update(
+            state=to_state, resolved_at=timezone.now()
+        )
+    )

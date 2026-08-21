@@ -12,10 +12,17 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
 
-__all__ = ["ReviewState"]
+# Re-exported for the backends: ``teatree.backends`` may reach ``teatree.core``
+# but NOT ``teatree.core.modelkit`` (tach), and the sentinel has to be defined
+# below ``core.models`` because ``ReviewVerdict`` needs it too. This is the same
+# door ``ReviewState`` comes through, and it puts ``HEAD_SHA_UNREADABLE`` beside
+# its siblings ``ROLLUP_QUERY_FAILED`` / ``CHANGED_PATHS_UNAVAILABLE``, which is
+# where a backend author looks for it anyway.
+__all__ = ["HEAD_SHA_UNREADABLE", "ReviewState"]
 
 
 class BackendResolutionError(Exception):
@@ -305,6 +312,8 @@ class CodeHostBackend(Protocol):
         state: str = "",
         author: str = "",
     ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 

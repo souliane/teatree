@@ -11,6 +11,7 @@ import io
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db.utils import OperationalError
 from django.test import TestCase
 
 import teatree
@@ -73,6 +74,34 @@ class TestCliHookDisagreementFails(TestCase):
             verdict, output = _run_check()
         assert verdict is True
         assert output.strip() == ""
+
+
+class TestUnreadableStoreMakesTheComparisonUnverified(TestCase):
+    """#4357: the CLI half of the comparison is a shipped default when the store won't open.
+
+    "The CLI resolves False, the hook resolves True" is then a fact about this venue's
+    database access, not a disagreement — and it was reported as a definite FAIL.
+    """
+
+    def test_unreadable_store_reports_unverified_instead_of_a_disagreement_fail(self) -> None:
+        with (
+            patch.object(ConfigSetting.objects, "exists", side_effect=OperationalError("unable to open database file")),
+            patch(_MODULE, return_value=HookResolution(status="ok", autoload=True)),
+        ):
+            verdict, output = _run_check()
+        assert verdict is True
+        assert "UNVERIFIED" in output
+        assert "disagree" not in output
+
+    def test_the_hooks_own_unreadable_store_is_still_a_hard_fail(self) -> None:
+        """Preserved: that FAIL is about the HOOK's read, which this venue's CLI cannot excuse."""
+        with (
+            patch.object(ConfigSetting.objects, "exists", side_effect=OperationalError("unable to open database file")),
+            patch(_MODULE, return_value=HookResolution(status="unreadable")),
+        ):
+            verdict, output = _run_check()
+        assert verdict is False
+        assert "FAIL" in output
 
 
 class TestUndiagnosableEnvironmentWarnsOnly(TestCase):

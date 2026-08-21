@@ -28,7 +28,7 @@ class TestDiscussionSummary:
     def test_frozen(self) -> None:
         ds = DiscussionSummary(status="addressed", detail="Fix this")
         with pytest.raises(AttributeError):
-            ds.status = "needs_reply"  # type: ignore[misc]
+            ds.status = "needs_reply"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestPREntry:

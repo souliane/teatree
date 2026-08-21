@@ -22,7 +22,7 @@ resolves an exemption by path, so those two rules are pinned out of
 rather than only under ``tmp_path``.
 """
 
-import re
+import json
 import shutil
 import subprocess
 import tomllib
@@ -31,8 +31,6 @@ from pathlib import Path
 import pytest
 
 from tests._color_env import no_color_env
-
-_CODE_RE = re.compile(r"\b([A-Z]+\d+)\b")
 
 #: The rule families that make a deferred marker in a comment a lint error.
 _MARKER_RULES = frozenset({"FIX", "FIX001", "FIX002", "FIX003", "FIX004", "TD", "TD001", "TD002", "TD003", "TD004"})
@@ -59,6 +57,23 @@ def _per_file_ignored_codes(lint: dict) -> dict[str, set[str]]:
     return {glob: set(codes) for glob, codes in lint.get("per-file-ignores", {}).items()}
 
 
+def _codes_from_ruff_json(stdout: str) -> set[str]:
+    r"""Extract rule CODES from ruff's structured JSON output.
+
+    Read the machine-readable ``code`` field rather than regex-scraping rendered
+    text: ruff 0.16 renders rule NAMES where 0.15 rendered CODES in the human
+    formats (``ERA001`` -> ``commented-out-code``), so a ``[A-Z]+\d+`` scrape
+    silently returned the EMPTY set against a gate that was still biting — a
+    fake-green that made every cap here vacuous. The JSON ``code`` is stable
+    across that rename. ``code`` is ``null`` for syntax errors, which carry no
+    rule, so those are dropped.
+    """
+    stdout = stdout.strip()
+    if not stdout:
+        return set()
+    return {entry["code"] for entry in json.loads(stdout) if entry.get("code")}
+
+
 def _ruff_codes_for_filename(source: str, filename: str) -> set[str]:
     # Ruff resolves `per-file-ignores` against the DECLARED path, so a probe on
     # disk under tmp_path can never show whether a rule still bites at
@@ -75,7 +90,7 @@ def _ruff_codes_for_filename(source: str, filename: str) -> set[str]:
             "--no-cache",
             "--no-fix",
             "--output-format",
-            "concise",
+            "json",
             "--color=never",
             "--stdin-filename",
             filename,
@@ -88,7 +103,7 @@ def _ruff_codes_for_filename(source: str, filename: str) -> set[str]:
         input=source,
         env=no_color_env(),
     )
-    return set(_CODE_RE.findall(result.stdout + result.stderr))
+    return _codes_from_ruff_json(result.stdout)
 
 
 def _ruff_codes(target: Path) -> set[str]:
@@ -98,8 +113,10 @@ def _ruff_codes(target: Path) -> set[str]:
     # (the shared-tree-mutation flake the relocation removes). ``--no-cache`` so a
     # stale ruff cache keyed on a prior probe path never masks the result.
     # --color=never plus a color-forcing-stripped env: belt and suspenders
-    # against an ambient FORCE_COLOR/CLICOLOR_FORCE ANSI-wrapping ruff's
-    # output, which breaks \b-bounded code extraction (souliane/teatree#2359).
+    # against an ambient FORCE_COLOR/CLICOLOR_FORCE ANSI-wrapping ruff's output
+    # (souliane/teatree#2359). The codes now come from the JSON `code` field
+    # rather than a \b-bounded scrape, but the `_force_color` fixture still
+    # exercises the forced path, so keep the env hermetic.
     result = subprocess.run(
         [
             _UV,
@@ -110,7 +127,7 @@ def _ruff_codes(target: Path) -> set[str]:
             str(_PYPROJECT),
             "--no-cache",
             "--output-format",
-            "concise",
+            "json",
             "--color=never",
             str(target),
         ],
@@ -120,7 +137,7 @@ def _ruff_codes(target: Path) -> set[str]:
         text=True,
         env=no_color_env(),
     )
-    return set(_CODE_RE.findall(result.stdout + result.stderr))
+    return _codes_from_ruff_json(result.stdout)
 
 
 class TestEnablementPins:

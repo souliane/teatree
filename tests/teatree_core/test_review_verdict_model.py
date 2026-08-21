@@ -10,6 +10,7 @@ round-trip, and the staleness / safe-to-approve logic the status command reads.
 import pytest
 from django.test import TestCase
 
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models import (
     Finding,
     MergeClear,
@@ -18,6 +19,7 @@ from teatree.core.models import (
     ReviewVerdictError,
     normalize_reviewer_identity,
 )
+from teatree.core.models.review_verdict import HeadVerdictState
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -323,6 +325,52 @@ class TestQueryHelpers(TestCase):
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 7).count() == 1
 
 
+class TestUnreconciledHoldsAt(TestCase):
+    """A HOLD nobody took back, found regardless of newest-wins supersession (#4380)."""
+
+    def _record(self, *, verdict: str, reviewer: str, sha: str = _SHA) -> ReviewVerdict:
+        return ReviewVerdict.record(
+            pr_id=4380,
+            slug="souliane/teatree",
+            reviewed_sha=sha,
+            verdict=verdict,
+            reviewer_identity=reviewer,
+        )
+
+    def _holds(self, *, slug: str = "souliane/teatree", head: str = _SHA) -> list[ReviewVerdict]:
+        return ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=4380, head_sha=head)
+
+    def test_hold_survives_a_later_merge_safe_from_another_reviewer(self) -> None:
+        # The #4380 shape: newest-wins says MERGE_SAFE, but nobody reconciled the hold.
+        held = self._record(verdict="hold", reviewer="cold-reviewer-a")
+        self._record(verdict="merge_safe", reviewer="cold-reviewer-b")
+
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=4380, head_sha=_SHA)
+            is HeadVerdictState.MERGE_SAFE
+        )
+        assert [row.pk for row in self._holds()] == [held.pk]
+
+    def test_same_reviewer_lifting_own_hold_leaves_none(self) -> None:
+        # F8 update_or_create: one identity re-recording at one head owns one row.
+        self._record(verdict="hold", reviewer="cold-reviewer-a")
+        self._record(verdict="merge_safe", reviewer="cold-reviewer-a")
+
+        assert self._holds() == []
+
+    def test_stale_hold_is_not_returned_for_the_moved_head(self) -> None:
+        self._record(verdict="hold", reviewer="cold-reviewer-a", sha=_OTHER_SHA)
+
+        assert self._holds(head=_SHA) == []
+
+    def test_slug_is_matched_case_insensitively(self) -> None:
+        # Via ``for_pr``'s ``__iexact`` — an exact-match filter is what once made a
+        # verdict invisible to the merge gate, which is this defect's own shape.
+        held = self._record(verdict="hold", reviewer="cold-reviewer-a")
+
+        assert [row.pk for row in self._holds(slug="Souliane/TeaTree")] == [held.pk]
+
+
 class TestStalenessAndSafety(TestCase):
     def test_stale_when_head_moved_off_reviewed_sha(self) -> None:
         verdict = ReviewVerdict.record(
@@ -334,6 +382,38 @@ class TestStalenessAndSafety(TestCase):
         )
         assert verdict.is_stale_at(_OTHER_SHA)
         assert not verdict.is_stale_at(_SHA.upper())
+
+    def test_an_unreadable_head_is_not_answerable_as_stale(self) -> None:
+        """The sentinel is a NON-ANSWER — refused, never quietly reported as drift.
+
+        ``reviewed_sha != <anything unreadable>`` is trivially true, so a silent
+        answer here is always "stale" no matter what the tree did.
+        """
+        verdict = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+        assert verdict.is_head_unreadable(HEAD_SHA_UNREADABLE)
+        assert verdict.is_head_unreadable("")
+        assert not verdict.is_head_unreadable(_SHA)
+        with pytest.raises(ReviewVerdictError, match="is_head_unreadable"):
+            verdict.is_stale_at(HEAD_SHA_UNREADABLE)
+
+    def test_an_empty_head_still_answers_stale_for_the_gates(self) -> None:
+        # Deliberately NOT a raise: the merge-gate queryset helpers
+        # (``effective_state_at`` and siblings) rest on an empty head reading as
+        # stale to fail closed, and a scanner tick must not learn to raise.
+        verdict = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+        assert verdict.is_stale_at("")
 
     def test_safe_to_approve_only_when_at_head_and_checks_green(self) -> None:
         verdict = ReviewVerdict.record(

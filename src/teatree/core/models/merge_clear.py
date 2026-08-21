@@ -183,6 +183,11 @@ class MergeClear(models.Model):
     TOCTOU/replay defence closed by ``expected_head_oid``).
     """
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow at class-prep time — invisible to a
+        # static checker. Annotation-only; never evaluated at runtime.
+        ticket_id: int | None
+
     class BlastClass(models.TextChoices):
         SUBSTRATE = "substrate", "Substrate (healing/gate substrate)"
         LOGIC = "logic", "Logic (non-substrate business logic)"

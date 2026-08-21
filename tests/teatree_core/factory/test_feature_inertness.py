@@ -8,6 +8,7 @@ gate even while its flag is off.
 """
 
 import datetime as dt
+from dataclasses import replace
 from io import StringIO
 
 from django.core.management import call_command
@@ -15,9 +16,11 @@ from django.test import TestCase
 
 from teatree.config.gate_evidence import GATE_EVIDENCE, ActivationIntent, GateEvidence, ObservableKind
 from teatree.core.factory.feature_inertness import (
+    DECISION_TRAILER,
     FAULT_BANNER,
     KIND_NEVER_FIRED,
     KIND_UNOBSERVABLE,
+    SATISFIER_MARKER,
     InertFeature,
     feature_inertness,
     render_inertness_report,
@@ -62,6 +65,7 @@ def _entry(
         shipped=shipped,
         intent=intent,
         rationale="fixture — souliane/teatree#4189",
+        satisfier="fixture satisfier",
     )
 
 
@@ -83,6 +87,12 @@ class TestItRediscoversTheTwelve(TestCase):
             assert finding.kind in {KIND_NEVER_FIRED, KIND_UNOBSERVABLE}
             assert finding.detail != finding.kind
             assert "off for" in finding.detail
+
+    def test_each_detail_names_the_next_action(self) -> None:
+        """#4375: naming what never fired without naming what would MAKE it fire is unactionable."""
+        for finding in feature_inertness(now=TODAY):
+            head, _, satisfier = finding.detail.partition(SATISFIER_MARKER)
+            assert satisfier.strip(), f"{finding.setting} names no way to satisfy it: {head}"
 
 
 class TestTheNoteVersusFaultSplit(TestCase):
@@ -130,6 +140,7 @@ class TestEvidenceClearsAGateEvenWhileOff(TestCase):
             shipped=dt.date(2026, 1, 1),
             intent=ActivationIntent.UNDECIDED,
             rationale="fixture — souliane/teatree#4189",
+            satisfier="fixture satisfier",
             filters={"variant": "never-set"},
         )
         TicketFactory()
@@ -179,6 +190,33 @@ class TestUnobservableGates(TestCase):
         }
 
 
+class TestTheReportNamesTheNextAction(TestCase):
+    """#4375: ten gates sat undecided for up to 67 days against a report naming no next action.
+
+    Both shapes carry it, and the never-fired one is the regression: its detail was assembled
+    from ``_intent_clause`` alone, so the producer the declaration already recorded in prose was
+    dropped on exactly the ten loudest lines.
+    """
+
+    def test_a_never_fired_line_carries_the_satisfier(self) -> None:
+        entry = replace(_entry("require_executed_repro"), satisfier="`t3 <overlay> repro waive`")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.kind == KIND_NEVER_FIRED
+        assert finding.detail.endswith(f"{SATISFIER_MARKER}`t3 <overlay> repro waive`")
+
+    def test_an_unobservable_line_carries_it_too(self) -> None:
+        base = _entry("require_debt_delta", kind=ObservableKind.NONE, target="")
+        entry = replace(base, satisfier="a diff with no new suppression")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.kind == KIND_UNOBSERVABLE
+        assert finding.detail.endswith(f"{SATISFIER_MARKER}a diff with no new suppression")
+
+    def test_a_blank_satisfier_leaves_no_dangling_clause(self) -> None:
+        entry = replace(_entry("require_executed_repro"), satisfier="   ")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert SATISFIER_MARKER not in finding.detail
+
+
 class TestTheRenderedReport(TestCase):
     """The operator-facing half — proven from a fixture, both severities present."""
 
@@ -199,3 +237,27 @@ class TestTheRenderedReport(TestCase):
         out = StringIO()
         call_command("config_setting", "inert", stdout=out)
         assert out.getvalue().strip()
+
+
+class TestTheReportNamesHowToRecordTheDecision(TestCase):
+    """#4375: the faults are the decisions nobody made, and nothing said how to make one.
+
+    The satisfier says what would make a gate PASS. This says how the gate leaves UNDECIDED —
+    the state ten of them held for up to 67 days. Both exits are named, because naming only
+    the arming one turns "record it as deliberately off" into an undocumented source edit,
+    which is the friction that let the state be durable in the first place.
+    """
+
+    def test_a_report_carrying_a_fault_names_both_exits(self) -> None:
+        rendered = render_inertness_report((InertFeature("undecided_gate", KIND_NEVER_FIRED, "off …", is_fault=True),))
+        assert rendered.endswith(DECISION_TRAILER)
+        assert "config_setting set" in DECISION_TRAILER
+        assert "STAGED" in DECISION_TRAILER
+
+    def test_a_report_of_notes_alone_stays_quiet(self) -> None:
+        """A staged gate is doing what staging asked for, so there is no decision to prompt for."""
+        rendered = render_inertness_report((InertFeature("staged_gate", KIND_NEVER_FIRED, "off …", is_fault=False),))
+        assert DECISION_TRAILER not in rendered
+
+    def test_an_empty_report_stays_a_single_line(self) -> None:
+        assert DECISION_TRAILER not in render_inertness_report(())

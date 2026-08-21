@@ -60,9 +60,10 @@ from teatree.agents.pydantic_ai_config import (
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarnessProvider, get_effective_settings
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, UsageWindowState
 from teatree.llm.credentials import CredentialError
 from teatree.llm.openai_compatible import OpenAICompatibleBackend
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
 
@@ -161,7 +162,7 @@ class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.parked = Task.objects.create(ticket=self.ticket, session=self.session)
         self.resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
@@ -211,7 +212,7 @@ class TestDriveThroughInjectedHarness(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         # A threaded ORM read under TestCase's wrapping SQLite transaction is a
@@ -268,7 +269,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
     """``run_agent`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -500,7 +501,7 @@ def test_pydantic_ai_session_maps_a_length_finish_to_error_max_tokens() -> None:
     # max_tokens ceiling (finish_reason='length') is surfaced as an is_error
     # ResultMessage(subtype="error_max_tokens"), never a success carrying the amputated
     # JSON envelope (RED: before the check the session yielded subtype="success").
-    from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local
+    from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
     agent: Agent[None, str] = Agent(_LengthFinishModel(stream_function=_truncated_text_stream))
     session = PydanticAiHarnessSession(agent, model_name="m")
@@ -514,16 +515,18 @@ def test_pydantic_ai_session_maps_a_length_finish_to_error_max_tokens() -> None:
     assert len(results) == 1
     assert results[0].is_error is True
     assert results[0].subtype == "error_max_tokens"
-    # A genuine FAILED, not a park — its text carries no rate/usage-limit phrase.
-    assert classify_limit(str(results[0].result)) is None
+    # A genuine FAILED, not a park — asserted on the decision point, not the matcher.
+    assert limit_match(results[0]) is None
 
 
 def test_pydantic_ai_session_maps_the_request_cap_to_error_max_turns() -> None:
     # A real per-run request cap (request_limit=1) against a model that wants a
     # 2nd request raises UsageLimitExceeded, which the session reports as an
-    # is_error ResultMessage(subtype="error_max_turns") — a genuine FAILED whose
-    # text does NOT phrase-match the limit classifier (so it never parks).
-    from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local
+    # is_error ResultMessage(subtype="error_max_turns") — a genuine FAILED the
+    # taxonomy must never claim as a provider window (so it never parks). Asserted
+    # on `limit_match` (the decision point) rather than `classify_limit` (a raw
+    # substring matcher), so a vendor editing its own prose cannot void the test.
+    from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
     agent: Agent[None, str] = Agent(FunctionModel(stream_function=_tool_then_text_stream), toolsets=[_ping_toolset()])
     session = PydanticAiHarnessSession(agent, model_name="m", request_limit=1)
@@ -535,7 +538,7 @@ def test_pydantic_ai_session_maps_the_request_cap_to_error_max_turns() -> None:
     result = next(m for m in asyncio.run(drive()) if isinstance(m, ResultMessage))
     assert result.is_error is True
     assert result.subtype == "error_max_turns"
-    assert classify_limit(str(result.result)) is None
+    assert limit_match(result) is None
 
 
 class TestRunHeadlessPydanticAiFailureReporting(TestCase):
@@ -549,7 +552,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -639,7 +642,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(
             ticket=self.ticket,

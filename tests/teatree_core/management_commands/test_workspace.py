@@ -1337,6 +1337,10 @@ class TestWorkspaceStartTeardownExitCodes(TestCase):
             failing = MagicMock()
             failing.run.return_value = RunnerResult(ok=False, detail="git worktree remove failed")
             with (
+                # This fixture's worktree dir is a plain mkdir, not a git checkout —
+                # the PR probe correctly reads that as unknown and refuses. Not this
+                # test's concern, which is the runner failure's exit code.
+                patch.object(workspace_mod, "check_no_open_prs"),
                 patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=failing),
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -1634,6 +1638,10 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
             with (
                 patch.dict(os.environ, env_without_overlay, clear=True),
+                # This fixture's worktree dir is a plain mkdir, not a git checkout —
+                # the PR probe correctly reads that as unknown and refuses. Not this
+                # test's concern, which is overlay resolution.
+                patch.object(workspace_mod, "check_no_open_prs"),
                 patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=ok),
             ):
                 call_command("workspace", "teardown", path=str(wt_dir))
@@ -2078,7 +2086,7 @@ class TestPruneBranches(TestCase):
             "HEAD def456\n"
             "branch refs/heads/feature-branch\n"
         )
-        with patch.object(git_mod, "run", return_value=porcelain):
+        with patch.object(git_mod, "run_strict", return_value=porcelain):
             result = ws_cleanup_mod.worktree_map("/repo")
         assert result == {"main": "/home/user/main", "feature-branch": "/home/user/wt-feature"}
 
@@ -2322,6 +2330,65 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
             ws_cleanup_mod.prune_branches("/repo")
 
         mock_del.assert_not_called()
+
+    def test_worktree_protection_is_sampled_before_the_prune(self) -> None:
+        # souliane/teatree#4287: a prune withdraws a registration on a filesystem
+        # reading taken in THIS venue, so sampling protection afterwards drops it
+        # for every checkout that merely lives elsewhere — and the --merged pass
+        # then deletes the branch that checkout has out.
+        order: list[str] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "* main abc123"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return "  main\n  wt-held"
+            if args == ["branch", "--no-color"]:
+                return "* main\n  wt-held"
+            return ""
+
+        def sample_branches(repo: str) -> set[str]:
+            order.append("sample")
+            return {"wt-held"}
+
+        def prune(repo: str) -> str:
+            order.append("prune")
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "fetch_all_prune", return_value=True),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(ws_cleanup_mod, "worktree_branches", side_effect=sample_branches),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+            patch.object(ws_cleanup_mod, "prune_worktrees", side_effect=prune),
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=False),
+        ):
+            ws_cleanup_mod.prune_branches("/repo")
+
+        assert order == ["sample", "prune"], "the prune withdrew protection before it was sampled"
+        mock_del.assert_not_called()
+
+    def test_a_refused_prune_is_reported_rather_than_passing_silently(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "fetch_all_prune", return_value=True),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+            patch.object(ws_cleanup_mod, "prune_worktrees", return_value="2 registration(s) are unreadable"),
+        ):
+            cleaned = ws_cleanup_mod.prune_branches("/repo")
+
+        assert any("SKIPPED `git worktree prune`" in line and "unreadable" in line for line in cleaned)
 
     def test_dry_run_previews_gone_branch_deletion_without_deleting(self) -> None:
         # #3489: the gone-branch pass reports the SAME deletion a live run would
@@ -2994,7 +3061,7 @@ class TestWorktreeBranches(TestCase):
             "HEAD def456\n"
             "branch refs/heads/feature-branch\n"
         )
-        with patch.object(git_mod, "run", return_value=porcelain):
+        with patch.object(git_mod, "run_strict", return_value=porcelain):
             result = ws_cleanup_mod.worktree_branches("/repo")
         assert result == {"main", "feature-branch"}
 

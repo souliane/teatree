@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from django.db import models, transaction
 from django_fsm import FSMField, transition
@@ -98,7 +98,7 @@ class Worktree(models.Model):
         """
         return postgres_pass_key(self.ticket_id)  # ty: ignore[unresolved-attribute]  # Django FK accessor
 
-    @transition(field=state, source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
+    @transition(field="state", source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
         """Schedule heavy provisioning side-effects.
 
@@ -121,7 +121,7 @@ class Worktree(models.Model):
         # stack was first brought up under.
         self.compose_project = self.compose_project or self._build_compose_project()
 
-    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
+    @transition(field="state", source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
         """Schedule docker compose up.
 
@@ -142,7 +142,7 @@ class Worktree(models.Model):
             self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.SERVICES_UP], target=State.PROVISIONED)
+    @transition(field="state", source=[State.SERVICES_UP], target=State.PROVISIONED)
     def start_failed(self) -> None:
         """Record that a start did not take — the row stops claiming a stack it has not got.
 
@@ -160,7 +160,7 @@ class Worktree(models.Model):
         side effect at all; it is bookkeeping, and only bookkeeping.
         """
 
-    @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.READY)
+    @transition(field="state", source=[State.SERVICES_UP, State.READY], target=State.READY)
     def verify(self, *, urls: dict[str, str] | None = None) -> None:
         """Schedule overlay health checks.
 
@@ -181,7 +181,7 @@ class Worktree(models.Model):
         self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
+    @transition(field="state", source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def db_refresh(self) -> None:
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
@@ -190,7 +190,7 @@ class Worktree(models.Model):
         self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.PROVISIONED)
+    @transition(field="state", source=[State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def stop_services(self) -> None:
         """Schedule a reversible docker-compose-down → demote to ``provisioned``.
 
@@ -212,7 +212,7 @@ class Worktree(models.Model):
         name (#2385).
         """
 
-    @transition(field=state, source="*", target=State.CREATED)
+    @transition(field="state", source="*", target=State.CREATED)
     def teardown(self) -> None:
         """Schedule docker down + DB drop + git worktree removal.
 
@@ -235,7 +235,7 @@ class Worktree(models.Model):
         """
 
     def _build_db_name(self) -> str:
-        ticket = cast("Ticket", self.ticket)
+        ticket = self.ticket
         variant_suffix = f"_{ticket.variant}" if ticket.variant else ""
         # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
         # ``ticket_number``): two tickets sharing a trailing issue number must
@@ -270,7 +270,7 @@ class Worktree(models.Model):
             raise WorktreeDbNameConflictError(msg)
 
     def _build_compose_project(self) -> str:
-        ticket = cast("Ticket", self.ticket)
+        ticket = self.ticket
         # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
         # ``ticket_number``): two tickets sharing a trailing issue number must
         # never collide on one docker stack. Per-repo (NOT ticket-scoped) — each

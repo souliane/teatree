@@ -100,8 +100,12 @@ class MergeNotifier(Protocol):
     a green solo-overlay PR with no recorded independent cold-review. The
     statusline always carries the flag; the Slack DM is the optional
     escalation rung, mirroring the ``forgotten_merge`` detector ladder.
+
+    ``detail`` is the optional per-flag specifics the reason alone cannot carry —
+    which verdicts stand behind a held head (#4380). Defaulted so a notifier that
+    has nothing extra to say passes nothing.
     """
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None: ...  # pragma: no branch
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None: ...  # pragma: no branch
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None: ...  # pragma: no branch

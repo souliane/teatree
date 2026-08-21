@@ -8,6 +8,7 @@ predicate is inverted here: an identity is admitted only when it positively iden
 a reviewer role (or is a configured human), and refused otherwise.
 """
 
+import re
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +21,12 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.models import MergeClear, ReproWaiver, ReviewVerdict, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, diff_paths_are_substrate
 from teatree.core.models.review_verdict import ReviewVerdictError
-from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, is_non_reviewer_role
+from teatree.core.models.reviewer_identity import (
+    REVIEWER_ROLE_COMPONENTS,
+    is_independent_reviewer_identity,
+    is_non_reviewer_role,
+    unrecognised_reviewer_message,
+)
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -41,6 +47,11 @@ RESPELT_PAIRS = (
 
 #: A cold reviewer that also names the phase it is IN — a reviewer role noun, not a maker.
 REVIEWER_NAMING_ITS_PHASE = "cold-reviewer-4152-reviewing"
+
+#: Every admitting token a refused identity could be decorated with (#4408).
+ADMITTING_TOKENS = tuple(sorted(REVIEWER_ROLE_COMPONENTS))
+
+_SUBJECT_VERB = {"subject": "a verdict", "verb": "recorded"}
 
 
 class TestReviewAuthoringIdentitiesRefused(TestCase):
@@ -161,6 +172,86 @@ class TestPhaseWordDoesNotRefuseARealReviewer(TestCase):
             reason="a scheduler race with no deterministic repro",
         )
         assert waiver.pk is not None
+
+
+class TestDecorationCannotAdmitAReviewAuthoringIdentity(TestCase):
+    """A named review-authoring maker stays refused however it is decorated (#4408)."""
+
+    def test_appending_any_admitting_token_still_refuses(self) -> None:
+        for identity in (*REVIEW_AUTHORING_IDENTITIES, "cold-architectural-review"):
+            for token in ADMITTING_TOKENS:
+                decorated = f"{identity}-{token}"
+                assert is_non_reviewer_role(decorated) is True, decorated
+                assert is_independent_reviewer_identity(decorated) is False, decorated
+
+    def test_a_decorated_respelling_is_refused_too(self) -> None:
+        assert is_independent_reviewer_identity("ac reviewing codebase reviewer") is False
+
+    def test_the_reviewer_naming_its_phase_still_admits(self) -> None:
+        # The control that bounds the widening: #4378's legitimate reviewer carries the
+        # SAME tokens as a decorated maker, so only naming the maker outright may refuse it.
+        assert is_independent_reviewer_identity(REVIEWER_NAMING_ITS_PHASE) is True
+
+    def test_an_undecorated_novel_identity_is_not_swept_in(self) -> None:
+        assert is_non_reviewer_role("codebase-reviewer") is False
+        assert is_independent_reviewer_identity("codebase-reviewer") is True
+
+    def test_verdict_record_refuses_the_decorated_identity(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="independent"):
+            ReviewVerdict.record(
+                pr_id=4408,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict=ReviewVerdict.Verdict.MERGE_SAFE.value,
+                reviewer_identity="ac-reviewing-codebase-reviewer",
+            )
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_clear_issuance_refuses_the_decorated_identity(self) -> None:
+        with pytest.raises(ClearIssuanceError, match="reviewer"):
+            MergeClear.issue(
+                ClearRequest(
+                    pr_id=4408,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="architectural-review-reviewer",
+                    executing_loop_identity="merge-loop",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                )
+            )
+        assert MergeClear.objects.count() == 0
+
+
+class TestRefusalMessagePublishesNoBypass(TestCase):
+    """A refusal that names the token defeating it is a self-service exemption (#4408)."""
+
+    def test_no_quoted_literal_is_an_admitted_identity(self) -> None:
+        for identity in ("merge-loop", "ac-reviewing-codebase", "quarterly-drift-sweeper"):
+            message = unrecognised_reviewer_message(identity, **_SUBJECT_VERB)
+            for literal in re.findall(r"'([^']*)'", message):
+                if literal == identity:
+                    continue
+                assert is_independent_reviewer_identity(literal) is False, (identity, literal)
+
+    def test_each_refusal_class_names_its_own_cause(self) -> None:
+        assert "maker/coding-agent/loop" in unrecognised_reviewer_message("merge-loop", **_SUBJECT_VERB)
+        assert "review-AUTHORING" in unrecognised_reviewer_message("ac-reviewing-codebase", **_SUBJECT_VERB)
+        assert "fail-closed" in unrecognised_reviewer_message("quarterly-drift-sweeper", **_SUBJECT_VERB)
+
+    def test_an_overriding_refusal_says_the_allowlist_cannot_admit_it(self) -> None:
+        for identity in ("merge-loop", "ac-reviewing-codebase"):
+            message = unrecognised_reviewer_message(identity, **_SUBJECT_VERB)
+            assert "overrides the `independent_reviewer_identities`" in message, identity
+            assert "config_setting set" not in message, identity
+
+    def test_the_fail_closed_refusal_still_names_the_config_escape(self) -> None:
+        message = unrecognised_reviewer_message("quarterly-drift-sweeper", **_SUBJECT_VERB)
+        assert "config_setting set independent_reviewer_identities" in message
+
+    def test_every_class_says_what_an_independent_reviewer_is(self) -> None:
+        for identity in ("merge-loop", "ac-reviewing-codebase", "quarterly-drift-sweeper"):
+            assert "authored the change" in unrecognised_reviewer_message(identity, **_SUBJECT_VERB), identity
 
 
 class TestUnrecognisedIdentityFailsClosed(TestCase):

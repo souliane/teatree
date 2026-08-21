@@ -276,7 +276,7 @@ class TestNoFailurePathRecordsNothing(TestCase):
         """The structural guarantee: a new failure path CANNOT record nothing."""
         task = _task(status=Task.Status.CLAIMED)
         with pytest.raises(TypeError):
-            task.fail()  # type: ignore[call-arg]
+            task.fail()  # ty: ignore[missing-argument] — the missing argument IS the assertion: `pytest.raises(TypeError)`.
 
     def test_lease_reaper_records_why_each_row_was_failed(self) -> None:
         """``reap_stale_claims`` bulk-UPDATEd rows to FAILED, recording no attempt and no reason."""

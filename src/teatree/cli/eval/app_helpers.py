@@ -8,7 +8,6 @@ domain value, or exits 2 (usage error) naming the valid choices.
 import dataclasses
 import os
 from pathlib import Path
-from typing import cast
 
 import typer
 from claude_agent_sdk.types import EffortLevel
@@ -121,7 +120,7 @@ def require_effort(effort: str) -> EffortLevel:
     if effort not in EFFORT_LEVELS:
         typer.echo(f"unknown --effort {effort!r}; known levels: {', '.join(EFFORT_LEVELS)}", err=True)
         raise typer.Exit(code=2)
-    return cast("EffortLevel", effort)
+    return effort
 
 
 def apply_credential_override(credential: str | None) -> None:

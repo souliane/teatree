@@ -41,7 +41,7 @@ import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import pytest
 
@@ -54,6 +54,10 @@ from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from teatree.hooks import verbatim_paste as _verbatim_paste
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
+
+if TYPE_CHECKING:
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import ProvisionStep
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -898,7 +902,7 @@ class _OptedInScopeOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return []
 
-    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
         _ = worktree
         return []
 
@@ -1446,6 +1450,10 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # + always returns ``False``); it has no deny path, so no must-deny
         # corpus payload.
         router.handle_enforce_orchestrator_investigation_boundary,
+        # Merged-branch-detection probe (#4070) — a WARN-only nudge (stderr +
+        # always returns ``False``); pinned structurally to have no deny path by
+        # ``tests/test_merged_detection_probe_gate.py``.
+        router.handle_warn_merged_detection_probe,
     }
 )
 

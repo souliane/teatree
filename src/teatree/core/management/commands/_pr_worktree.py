@@ -71,7 +71,7 @@ def _resolve_or_adopt_worktree(ticket: Ticket, *, adopt_worktree: bool) -> Workt
     ``invocation_cwd`` because only the absence tells a propagation failure from
     an operator genuinely standing outside a worktree.
     """
-    worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    worktree = ticket.worktrees.first()
     if worktree is not None:
         return worktree
     if not adopt_worktree:

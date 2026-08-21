@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+from django.db.utils import OperationalError
 from django.test import TestCase
 
 import teatree
@@ -31,6 +32,7 @@ from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _run_hook_probe,
 )
+from teatree.core.models import ConfigSetting
 
 _PROBE = "teatree.cli.doctor.checks_cold_hooks._run_hook_probe"
 _SETTINGS = "teatree.config.get_effective_settings"
@@ -79,6 +81,26 @@ class TestAutoloadOffIsSilent(TestCase):
 
         assert verdict is True
         assert output == ""
+        probe.assert_not_called()
+
+
+class TestUnreadableStoreIsUnverifiedNotASilentPass(TestCase):
+    """#4357: an unopenable store resolves `autoload` to its shipped ``False``.
+
+    The check's "nothing was claimed, so nothing to contradict" exit then fires on a value
+    it never read, and a stored ``autoload = true`` whose engagement chain is broken passes
+    in silence — a definite green from an unreadable database.
+    """
+
+    def test_unreadable_store_warns_unverified_and_never_probes(self) -> None:
+        with (
+            patch.object(ConfigSetting.objects, "exists", side_effect=OperationalError("unable to open database file")),
+            patch(_PROBE) as probe,
+        ):
+            verdict, output = _run_check()
+
+        assert verdict is True
+        assert "UNVERIFIED" in output
         probe.assert_not_called()
 
 

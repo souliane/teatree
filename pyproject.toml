@@ -61,6 +61,22 @@ dependencies = [
   # in production while every CI lane stayed green. Move this bound and the
   # imports together, never one alone.
   "mcp>=2,<3",
+  # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
+  # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
+  # module — and ``t3 doctor``'s MCP skew check reaches it on every run. It was
+  # never declared: it arrived transitively through ``gunicorn``'s own requirements,
+  # so ``uv.lock`` carried it and every CI and dev venue stayed green. gunicorn
+  # 26.1.0 SHED that dependency, and ``deploy/entrypoint.sh``'s
+  # ``uv tool install --editable --reinstall`` re-resolves WITHOUT the lockfile — so
+  # the container picked up the shedding release and the doctor plane died on import
+  # for 72 consecutive watchdog passes. Same class as the ``coverage`` / ``pyyaml``
+  # runtime-dep declarations above: a transitive arrival is not a declaration.
+  # Bounded to the major whose module layout ``dep_skew`` imports, same posture as the
+  # ``mcp>=2,<3`` pin above: ``uv tool install`` re-resolves this declaration with no
+  # lockfile, so an unbounded floor lets the container run a major the test suite never
+  # saw. ``<27`` admits the resolved 26.x line (uv.lock pins 26.2; the container has
+  # independently resolved 26.3) with one full major of headroom.
+  "packaging>=24,<27",
   # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only

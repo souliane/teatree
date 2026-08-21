@@ -441,6 +441,7 @@ class TeatreeSettingsSchema(BaseSettings):
     mcp_privacy_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     mcp_slack_write_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     memory_recall_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    merged_detection_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     no_self_reviewer_assign_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     orchestrator_boundary_agent_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     orchestrator_investigation_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]

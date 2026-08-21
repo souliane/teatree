@@ -14,6 +14,10 @@ from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.types import RawAPIDict
 
 
+class ProjectUnresolvedError(RuntimeError):
+    """A read that must not degrade to ``[]`` could not resolve its GitLab project."""
+
+
 def state_filter(state: str) -> str:
     """Map the cross-host ``open`` qualifier to GitLab's ``opened`` list filter.
 
@@ -33,6 +37,29 @@ def list_project_prs(client: GitLabAPI, project: ProjectInfo | None, *, state: s
     if author:
         params.append(f"author_username={quote_plus(author)}")
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests?{'&'.join(params)}")
+
+
+def list_project_merged_prs_since(
+    client: GitLabAPI,
+    project: ProjectInfo | None,
+    *,
+    repo: str,
+    since: str,
+) -> list[RawAPIDict]:
+    """MRs on *project* merged at or after ISO-8601 *since*, newest page size first.
+
+    Unlike its sibling reads this RAISES on an unresolvable project instead of
+    degrading to ``[]``: downstream an empty list means "the factory shipped
+    nothing", so a failed lookup returned as empty would manufacture that alarm.
+    ``updated_after`` is the only server-side time filter GitLab offers here, and an
+    MR can be touched after its merge, so ``merged_at`` is re-checked client-side.
+    """
+    if project is None:
+        msg = f"could not resolve GitLab project for {repo!r}; the merged-MR read is indeterminate, not empty"
+        raise ProjectUnresolvedError(msg)
+    params = f"state=merged&updated_after={quote_plus(since)}&per_page=100"
+    page = client.get_json_paginated(f"projects/{project.project_id}/merge_requests?{params}")
+    return [item for item in page if str(item.get("merged_at") or "") >= since]
 
 
 def project_pr_diff(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:

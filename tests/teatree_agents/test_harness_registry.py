@@ -35,8 +35,9 @@ from teatree.agents.harness_registry import (
 from teatree.agents.pydantic_ai_config import PYDANTIC_AI_ROUTER_CAPABILITIES
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarness, AgentHarnessProvider
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
 from teatree.types import SkillMetadata
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text, result_message, success_stream
 
 
@@ -170,7 +171,7 @@ class TestThirdHarnessViaEntryPoint(TestCase):
             assert harness.capabilities.cache_control is True
 
     def test_dispatch_drives_end_to_end_through_the_entry_point_harness(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None  # threaded ORM read is a TestCase artifact
@@ -327,7 +328,7 @@ def _watchdog() -> LoopWatchdog:
 
 class TestDriveThroughThirdHarness(TestCase):
     def test_driver_collects_through_a_third_party_harness(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None

@@ -35,6 +35,7 @@ from django.db import DatabaseError
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.dm_channel_policy import DmChannel, classify
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify_ledger import (
     already_sent_noop,
@@ -44,6 +45,7 @@ from teatree.core.notify_ledger import (
     maybe_stamp_answered,
     record_noop,
     record_outbound_claim,
+    record_pulled,
 )
 from teatree.core.notify_targets import resolve_user_channel, resolve_user_id
 from teatree.core.notify_types import (
@@ -178,6 +180,7 @@ def notify_user_outcome(
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
         blocks=options.blocks,
+        thread_ts=options.dm_thread,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -286,6 +289,9 @@ def _preflight_result(
         logger.info("notify_user INTERNAL (log-only, not DM'd) key=%s: %s", idempotency_key, text[:120])
         BotPing.record_logged(idempotency_key, kind=kind.value, text=text, audience=audience.value)
         return blocked(NotifyReason.INTERNAL_AUDIENCE)
+    if classify(audience=audience, idempotency_key=idempotency_key) is DmChannel.PULL:
+        record_pulled(idempotency_key=idempotency_key, kind=kind, text=text, audience=audience)
+        return blocked(NotifyReason.ROUTED_TO_PULL)
     if not _feature_enabled():
         logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
         return blocked(NotifyReason.FEATURE_DISABLED)
@@ -308,8 +314,15 @@ def _deliver_dm(
     user_id: str,
     text: str,
     blocks: list[RawAPIDict] | None = None,
+    thread_ts: str | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
+
+    ``thread_ts`` is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
+    ``""`` for the DM root (skipping the active-DM-thread lookup), or ``None`` to
+    nest under whatever DM thread the owner is currently in. A caller stores the
+    returned ``ts`` as a reply-binding identity only when it posted at root — see
+    :class:`NotifyOptions`.
 
     ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
     ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
@@ -347,14 +360,14 @@ def _deliver_dm(
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread_ts = _active_dm_thread(channel)
+        thread = _active_dm_thread(channel) if thread_ts is None else thread_ts
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.
         if blocks is None:
-            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread)
         else:
-            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 

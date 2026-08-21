@@ -20,6 +20,7 @@ from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
 from teatree.core.worktree.clone_paths import repair_stale_clone_path, resolve_clone_path
+from teatree.core.worktree.venue_safe_registry import prune_worktrees, worktree_branches, worktree_map
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -44,24 +45,6 @@ _REGENERABLE_WORKTREE_PATHS = (CACHE_FILENAME, f"{CACHE_DIRNAME}/")
 # ``git status --porcelain`` prefixes each path with a two-char ``XY`` status
 # code plus a space, e.g. ``?? path`` or `` M path``.
 _PORCELAIN_STATUS_PREFIX_WIDTH = 3
-
-
-def worktree_map(repo: str) -> dict[str, str]:
-    """Return ``{branch_name: worktree_path}`` for active git worktrees."""
-    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
-    result: dict[str, str] = {}
-    current_path = ""
-    for line in raw.splitlines():
-        if line.startswith("worktree "):
-            current_path = line.removeprefix("worktree ")
-        elif line.startswith("branch refs/heads/"):
-            result[line.removeprefix("branch refs/heads/")] = current_path
-    return result
-
-
-def worktree_branches(repo: str) -> set[str]:
-    """Return branch names linked to active git worktrees (safe to skip)."""
-    return set(worktree_map(repo))
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
@@ -137,7 +120,7 @@ def _prune_squash_merged(
         return preview_line(f"Prune squash-merged branch: {name}", dry_run=True)
     if wt_path:
         git.worktree_remove(repo, wt_path)
-        git.run(repo=repo, args=["worktree", "prune"])
+        prune_worktrees(repo)
     git.branch_delete(repo, name)
     return f"Pruned squash-merged branch: {name}"
 
@@ -255,7 +238,7 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
     if dry_run:
         return preview_line(f"Remove gone-remote worktree (branch kept): {name}", dry_run=True)
     if git.worktree_remove(repo, wt_path):
-        git.run(repo=repo, args=["worktree", "prune"])
+        prune_worktrees(repo)
         return f"Removed gone-remote worktree (branch kept): {name}"
     return f"SKIPPED '{name}': git worktree remove failed for {wt_path}"
 
@@ -322,14 +305,17 @@ def prune_branches(repo: str, *, dry_run: bool = False) -> list[str]:
     # never authorise a branch deletion, so do nothing at all.
     if not git.fetch_all_prune(repo):
         return [f"SKIPPED branch prune for {repo}: could not refresh remote refs — nothing deleted"]
-    git.run(repo=repo, args=["worktree", "prune"])
+    # A branch is protected BECAUSE a checkout has it out, so sample that protection
+    # BEFORE the prune — which withdraws a registration on a filesystem reading, and
+    # would silently unprotect a checkout this venue merely cannot see (#4287).
+    wt_branches = worktree_branches(repo)
+    wt_map = worktree_map(repo)
+    if refusal := prune_worktrees(repo):
+        cleaned.append(f"SKIPPED `git worktree prune` for {repo}: {refusal}")
 
     current = git.current_branch(repo)
     default = git.default_branch(repo)
     protected = {current, default, "main", "master"}
-    wt_branches = worktree_branches(repo)
-
-    wt_map = worktree_map(repo)
 
     all_local = {
         line.strip().removeprefix("* ").removeprefix("+ ")

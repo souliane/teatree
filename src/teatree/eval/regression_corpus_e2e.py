@@ -8,11 +8,16 @@ real backend code path still honors the invariant; both stay in the eval layer
 by exercising :mod:`teatree.backends.gitlab` only (never the management command).
 """
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
+
 
 __all__ = [
     "check_e2e_test_plan_embeds_claimable_relative_ref",
@@ -37,7 +42,7 @@ def check_e2e_test_plan_embeds_claimable_relative_ref() -> bool:
     Anti-vacuity: restore the absolute-embed form (embed ``full_path`` or an
     ``https://`` upload URL) in ``verify_upload`` and this check goes RED.
     """
-    upload = {
+    upload: RawAPIDict = {
         "url": "/uploads/deadbeefcafe/shot.png",
         "full_path": "/-/project/42/uploads/deadbeefcafe/shot.png",
         "markdown": "![shot](/uploads/deadbeefcafe/shot.png)",
@@ -93,7 +98,7 @@ def check_e2e_test_plan_uploads_to_note_project() -> bool:
     #    wrong upload project can never silently embed. The note's project is 42;
     #    the upload response says project 99 (a second/CI repo).
     note = ProjectInfo(project_id=42, path_with_namespace="group/client", short_name="client", default_branch="main")
-    cross = {"full_path": "/-/project/99/uploads/deadbeefcafe/shot.png"}
+    cross: RawAPIDict = {"full_path": "/-/project/99/uploads/deadbeefcafe/shot.png"}
     verification = _uploads.verify_upload(MagicMock(), project=note, upload=cross)
     guard_rejects_wrong_project = (not verification.ok) and "expected 42" in verification.detail
 

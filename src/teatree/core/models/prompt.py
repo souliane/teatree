@@ -31,7 +31,7 @@ write surfaces refuse an empty body on a prompt a loop references — empty mean
 the versioned content-change path and a form-only guard does not reach it.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -55,6 +55,12 @@ class PromptManager(models.Manager["Prompt"]):
 
 class Prompt(models.Model):
     """One row per named, reusable, triggerable prompt."""
+
+    if TYPE_CHECKING:
+        # Reverse accessor Django synthesises at class-prep time from the
+        # ``related_name`` on ``PromptVersion.prompt`` — invisible to a static checker.
+        # Annotation-only; never evaluated at runtime.
+        versions: "models.Manager[PromptVersion]"
 
     name = models.CharField(max_length=64, unique=True)
     body = models.TextField(blank=True)
@@ -93,7 +99,7 @@ class Prompt(models.Model):
     @property
     def current_version(self) -> int:
         """How many revisions this prompt has — the highest snapshotted version (0 = none)."""
-        latest = self.versions.aggregate(models.Max("version"))["version__max"]  # ty: ignore[unresolved-attribute]
+        latest = self.versions.aggregate(models.Max("version"))["version__max"]
         return latest or 0
 
     def render(self, **args: str) -> str:
@@ -138,7 +144,7 @@ class Prompt(models.Model):
         if body == self.body and new_params == list(self.params or []):
             return None
         with transaction.atomic():
-            version = self.versions.create(  # ty: ignore[unresolved-attribute]
+            version = self.versions.create(
                 version=self.current_version + 1,
                 body=self.body,
                 params=list(self.params or []),

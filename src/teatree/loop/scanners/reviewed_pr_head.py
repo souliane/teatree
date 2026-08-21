@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.utils.url_slug import pr_ref_from_url
@@ -150,10 +151,13 @@ class ReviewedPrHeadScanner:
         if ref is None:
             return None
         previous = _discharged_sha(ticket)
-        head = self.host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id).strip()
+        head = LiveHeadRead.of(self.host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id)).sha.strip()
         if not head or head.lower() == previous.lower():
             # Empty head = the forge call could not confirm anything. Never
-            # re-review on doubt; the next tick asks again.
+            # re-review on doubt; the next tick asks again. Normalised through
+            # LiveHeadRead because the UNREADABLE sentinel is a TRUTHY string:
+            # read raw it would sail past this guard and dispatch a re-review
+            # against a head the forge never named.
             return None
         if self._pr_is_closed(url):
             return None

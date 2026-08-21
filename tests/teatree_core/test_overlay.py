@@ -244,7 +244,7 @@ class TestRequiredThirdPartyServices(TestCase):
         config = OverlayConfig()
 
         with pytest.raises(ValidationError):
-            config.required_third_party_services = ["figma"]  # type: ignore[assignment]
+            config.required_third_party_services = ["figma"]  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
     def test_sentry_token_getter_always_defined(self) -> None:
         config = OverlayConfig()
@@ -370,15 +370,15 @@ class TestOverlayConfig(TestCase):
         # corrupt the config.
         config = OverlayConfig()
         with pytest.raises(ValidationError):
-            config.gitlab_url = lambda: "https://example.test"  # type: ignore[assignment]
+            config.gitlab_url = lambda: "https://example.test"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
-    def test_callable_assigned_to_non_field_shadows_class_method(self) -> None:
+    def test_callable_assigned_to_non_field_shadows_class_method(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The legitimate idiom must still work: a callable assigned to a NON-field
         # name (a method / helper, not a declared field) lands in the instance
         # ``__dict__`` and shadows the class attribute exactly as normal Python
         # attribute resolution does.
         config = OverlayConfig()
-        config.get_review_channel = lambda: ("chan", "C123")  # type: ignore[method-assign]
+        monkeypatch.setattr(config, "get_review_channel", lambda: ("chan", "C123"))
         assert config.get_review_channel() == ("chan", "C123")
 
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:

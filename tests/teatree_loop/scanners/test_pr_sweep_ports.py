@@ -45,7 +45,7 @@ class _Notifier:
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
         _ = (slug, pr_id, merged_sha, fallback)
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         _ = (slug, pr_id, reason, url)
 
 

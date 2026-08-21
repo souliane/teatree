@@ -85,7 +85,9 @@ class CommandOverlay(OverlayBase):
     """Minimal overlay for management command tests."""
 
     review = _CommandReview()
-    runtime = _CommandRuntime()
+    # Annotated with the BASE type (as OverlayBase does) so a subclass may supply
+    # its own runtime; a bare assignment pins the attribute to this one class.
+    runtime: OverlayRuntime = _CommandRuntime()
     e2e = _CommandE2E()
 
     def get_repos(self) -> list[str]:

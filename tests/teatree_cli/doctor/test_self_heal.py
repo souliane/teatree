@@ -6,6 +6,7 @@ present, and degrades to a pass when it cannot read the state — a self-heal
 detector must never itself abort the doctor run.
 """
 
+import ast
 import base64
 import datetime as dt
 import io
@@ -322,6 +323,24 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
+    def test_failed_task_with_a_successor_is_ok(self) -> None:
+        # souliane/teatree#4357: a ticket that was re-dispatched after the failure is being
+        # advanced, so naming it forever is what grew the line to 44 unactionable tickets.
+        ticket = TicketFactory(state=Ticket.State.CODED)
+        TaskFactory(ticket=ticket, status="failed")
+        TaskFactory(ticket=ticket, status="pending")
+        ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is True
+
+    def test_failure_after_a_successful_task_is_still_reported(self) -> None:
+        # The inverse ordering: the newest task IS the failure, so nothing succeeded it.
+        ticket = TicketFactory(state=Ticket.State.CODED)
+        TaskFactory(ticket=ticket, status="completed")
+        TaskFactory(ticket=ticket, status="failed")
+        ok, out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is False
+        assert f"#{ticket.ticket_number}" in out
+
     def test_failed_task_on_bare_number_row_is_ok(self) -> None:
         # souliane/teatree#3492: a bare-number `issue_url` is malformed debris from
         # a write path closed by #3289. `derive_issue_number` still renders it as a
@@ -449,6 +468,31 @@ class RunAllAndJsonTest(TestCase):
         assert "FAIL" in levels
         assert any(f["message"] == "the worker is down" for f in payload["findings"])
 
+    def test_a_crashing_check_still_emits_a_verdict_naming_the_cause(self) -> None:
+        # The doctor plane went dark for 72 watchdog passes because `packaging` was an
+        # undeclared runtime dep: the eager import raised, `run_checks()` never returned,
+        # and the JSON line — emitted only AFTER it returns — was never written at all.
+        # Zero bytes is the one verdict the watchdog cannot name a cause for, so a crash
+        # must degrade to a RED verdict that carries its own exception text.
+        boom = ModuleNotFoundError("No module named 'packaging'")
+
+        def crashing_check() -> bool:
+            print("OK    the checks that ran before the crash")  # noqa: T201 — the doctor echo the JSON surface parses
+            raise boom
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ok = check_as_json(crashing_check)
+
+        payload = _json.loads(buf.getvalue())
+        assert ok is False
+        assert payload["ok"] is False
+        crash = [f for f in payload["findings"] if f["level"] == "FAIL" and "packaging" in f["message"]]
+        assert crash, payload["findings"]
+        assert "ModuleNotFoundError" in crash[0]["message"]
+        # The echoes the run DID produce before dying survive alongside the crash line.
+        assert any(f["message"] == "the checks that ran before the crash" for f in payload["findings"])
+
 
 class DoctorJsonSurfaceTest(TestCase):
     """`--json` routes to the JSON surface; a subcommand-only call never does."""
@@ -560,3 +604,43 @@ class ParseFindingsTest(TestCase):
         after = self_heal._Probe.parse_findings("FAIL  clone is 18 commit(s) behind origin/main\n")
         assert before[0]["identity"] == after[0]["identity"]
         assert before[0]["message"] != after[0]["message"]
+
+
+def _detector_docstring_bullets() -> list[str]:
+    """The module docstring's detector list, each bullet folded onto one line."""
+    bullets: list[str] = []
+    for line in (self_heal.__doc__ or "").splitlines():
+        if line.startswith("- "):
+            bullets.append(line)
+        elif bullets and line.startswith("    "):
+            bullets[-1] += " " + line.strip()
+    return bullets
+
+
+def _wired_check_expressions() -> list[str]:
+    """The checks ``run_self_heal_checks`` actually runs, read off its own source."""
+    source = Path(str(self_heal.__file__)).read_text(encoding="utf-8")
+    wired = [
+        [ast.unparse(element) for element in node.value.elts]
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "checks"
+    ]
+
+    assert wired, "run_self_heal_checks no longer declares its `checks` tuple"
+    return wired[0]
+
+
+class DetectorRepairAnnotationTest(TestCase):
+    """The asymmetry between repairing and reporting detectors must be readable, not grepped."""
+
+    def test_every_detector_says_whether_it_repairs_or_only_reports(self) -> None:
+        unannotated = [
+            bullet for bullet in _detector_docstring_bullets() if "REPAIRS" not in bullet and "REPORTS" not in bullet
+        ]
+
+        assert not unannotated, f"annotate these detectors REPAIRS/REPORTS: {unannotated}"
+
+    def test_the_annotated_list_covers_every_wired_detector(self) -> None:
+        # A detector added to the sequence but not to the list would leave the asymmetry
+        # invisible again — which is the whole defect the annotation exists to end.
+        assert len(_detector_docstring_bullets()) == len(_wired_check_expressions())

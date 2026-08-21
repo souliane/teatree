@@ -189,7 +189,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
     """
     if ticket.role != Ticket.Role.REVIEWER:
         return _STATE_PHASE.get(ticket.state)
-    tasks = ticket.tasks.order_by("-pk")  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    tasks = ticket.tasks.order_by("-pk")  # Django reverse FK
     return tasks.values_list("phase", flat=True).first() or None
 
 
@@ -243,7 +243,7 @@ def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
 
 
 def _last_activity(ticket: Ticket) -> datetime | None:
-    last_attempt = ticket.tasks.aggregate(ts=Max("attempts__started_at"))["ts"]  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    last_attempt = ticket.tasks.aggregate(ts=Max("attempts__started_at"))["ts"]  # Django reverse FK
     if last_attempt is not None:
         return last_attempt
     return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]  # ty: ignore[unresolved-attribute]  # Django reverse FK

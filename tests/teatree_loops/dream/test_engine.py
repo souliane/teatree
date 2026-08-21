@@ -17,6 +17,7 @@ from teatree.loops.dream import distill, engine, replay, sdk_distiller
 from teatree.loops.dream.engine import (
     DistilledCluster,
     DistillEmptyReason,
+    DistillPolicy,
     DistillResult,
     DreamRunResult,
     WriteOutcome,
@@ -57,19 +58,19 @@ class RunConsolidationSeamTestCase(TestCase):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def test_returns_dream_run_result(self) -> None:
-        result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        result = run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_no_clusters))
         assert isinstance(result, DreamRunResult)
 
     def test_dry_run_writes_no_consolidated_memory_rows(self) -> None:
-        run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert ConsolidatedMemory.objects.count() == 0
 
     def test_dry_run_result_flags_dry_run(self) -> None:
-        result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.dry_run is True
 
     def test_no_clusters_distiller_writes_no_rows(self) -> None:
-        run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_no_clusters))
         assert ConsolidatedMemory.objects.count() == 0
 
     def _oversized_members(self, count: int) -> list[TranscriptMember]:
@@ -83,7 +84,7 @@ class RunConsolidationSeamTestCase(TestCase):
         # worth and the rest dropped for good. It is batched across calls instead.
         members = self._oversized_members(50)
         with patch.object(engine, "enumerate_members", return_value=members):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.snippets_distilled == len(members)
         assert result.deferred_members == 0
 
@@ -94,7 +95,7 @@ class RunConsolidationSeamTestCase(TestCase):
             patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "2"}),
             self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs,
         ):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.deferred_members > 0
         assert any("DEFERRED" in line for line in logs.output)
 
@@ -102,7 +103,7 @@ class RunConsolidationSeamTestCase(TestCase):
         members = [TranscriptMember(path=self.tmp / "feedback_a.md", kind="memory")]
         members[0].path.write_text("BINDING: short lesson")
         with patch.object(engine, "enumerate_members", return_value=members):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.deferred_members == 0
 
     def test_injected_distiller_receives_extract(self) -> None:
@@ -115,7 +116,7 @@ class RunConsolidationSeamTestCase(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             member = _write_member(Path(tmp))
             with patch.object(engine, "enumerate_members", return_value=[member]):
-                run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
+                run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_spy))
         assert len(seen) == 1
         assert isinstance(seen[0], ConsolidationExtract)
 
@@ -126,7 +127,7 @@ class RunConsolidationSeamTestCase(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             member = _write_member(Path(tmp))
             with patch.object(engine, "enumerate_members", return_value=[member]):
-                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+                result = run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_no_clusters))
         assert result.extract is not None
         assert result.snippets_distilled == len(result.extract.snippets)
         assert result.snippets_distilled >= 1
@@ -151,7 +152,7 @@ class RunConsolidationSeamTestCase(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             member = _write_member(Path(tmp))
             with patch.object(engine, "enumerate_members", return_value=[member]):
-                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_ungrounded)
+                result = run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_ungrounded))
         assert result.clusters_recorded == 0
         assert result.clusters_rejected == 1
 
@@ -597,7 +598,7 @@ class CorrectionProseProducesGroundedClusterTestCase(TestCase):
             ]
 
         with patch.object(engine, "enumerate_members", return_value=[member]):
-            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+            run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_distill))
 
         assert ConsolidatedMemory.objects.filter(cluster_key="correction").count() == 1
 
@@ -625,7 +626,7 @@ class CorrectionProseProducesGroundedClusterTestCase(TestCase):
             ]
 
         with patch.object(engine, "enumerate_members", return_value=[member]):
-            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+            run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_distill))
 
         assert ConsolidatedMemory.objects.filter(cluster_key="learning").count() == 1
 
@@ -700,7 +701,7 @@ class EscapedJsonlCitationGroundsTestCase(TestCase):
             ]
 
         with patch.object(engine, "enumerate_members", return_value=[member]):
-            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+            run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_distill))
 
         assert ConsolidatedMemory.objects.filter(cluster_key="grounded").count() == 1
 
@@ -723,7 +724,7 @@ class EscapedJsonlCitationGroundsTestCase(TestCase):
             ]
 
         with patch.object(engine, "enumerate_members", return_value=[member]):
-            result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+            result = run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_distill))
 
         assert result.clusters_recorded == 0
         assert result.clusters_rejected == 1
@@ -768,7 +769,7 @@ class WeightedSnippetTestCase(TestCase):
     def test_is_frozen(self) -> None:
         snip = WeightedSnippet(path=Path("/x.md"), kind="memory", weight=5, text="t")
         with pytest.raises(AttributeError):
-            snip.weight = 9  # type: ignore[misc]
+            snip.weight = 9  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class DistilledClusterTestCase(TestCase):
@@ -782,7 +783,7 @@ class DistilledClusterTestCase(TestCase):
             durable_destination="",
         )
         with pytest.raises(AttributeError):
-            cluster.rule = "other"  # type: ignore[misc]
+            cluster.rule = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestEnumerateMembersMainTranscripts:
@@ -1033,7 +1034,7 @@ class TestTranscriptMember:
     def test_is_frozen(self, tmp_path: Path) -> None:
         member = TranscriptMember(path=tmp_path / "x.jsonl", kind="main")
         with pytest.raises(AttributeError):
-            member.kind = "other"  # type: ignore[misc]
+            member.kind = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 def _many_members(tmp_path: Path, count: int) -> list[TranscriptMember]:
@@ -1092,7 +1093,7 @@ class ChunkedDistillTestCase(TestCase):
             patch.object(engine, "enumerate_members", return_value=members),
             patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "3"}),
         ):
-            run_consolidation(overlay="", since=None, dry_run=True, distiller=_spy)
+            run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_spy))
 
         assert batch_count["n"] > 1
 
@@ -1128,7 +1129,7 @@ class SilentEmptyBatchTestCase(TestCase):
     def test_empty_from_nonempty_batch_is_counted(self) -> None:
         members = _many_members(self.tmp, 4)
         with patch.object(engine, "enumerate_members", return_value=members):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.empty_batches >= 1
 
     def test_empty_from_nonempty_batch_logs_warning(self) -> None:
@@ -1137,7 +1138,7 @@ class SilentEmptyBatchTestCase(TestCase):
             patch.object(engine, "enumerate_members", return_value=members),
             self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured,
         ):
-            run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert any("0 cluster" in line for line in captured.output)
 
     def test_productive_batch_does_not_flag_empty(self) -> None:
@@ -1147,12 +1148,12 @@ class SilentEmptyBatchTestCase(TestCase):
             return [_cluster_for(TranscriptMember(path=batch.snippets[0].path, kind="memory"))]
 
         with patch.object(engine, "enumerate_members", return_value=members):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_one)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_one))
         assert result.empty_batches == 0
 
     def test_empty_extract_does_not_flag_empty_batch(self) -> None:
         with patch.object(engine, "enumerate_members", return_value=[]):
-            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+            result = run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(_no_clusters))
         assert result.empty_batches == 0
 
     def test_empty_batch_warning_surfaces_a_broken_reason(self) -> None:
@@ -1194,7 +1195,7 @@ class BrokenDistillationReachesTheResultTestCase(TestCase):
 
     def _run(self, distiller: object) -> DreamRunResult:
         with patch.object(engine, "enumerate_members", return_value=self.members):
-            return run_consolidation(overlay="", since=None, dry_run=True, distiller=distiller)
+            return run_consolidation(overlay="", since=None, dry_run=True, distill=DistillPolicy(distiller))
 
     def test_unparsable_reply_marks_the_distillation_broken(self) -> None:
         def _unparsable(_batch: ConsolidationExtract) -> DistillResult:
@@ -1268,7 +1269,7 @@ class RunConsolidationEvalProposalTestCase(TestCase):
 
     def test_off_by_default_proposes_nothing_and_writes_no_queue(self) -> None:
         out = self.tmp / "queue.jsonl"
-        result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        result = run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_no_clusters))
         assert result.evals_proposed == 0
         assert not out.exists()
 
@@ -1279,7 +1280,7 @@ class RunConsolidationEvalProposalTestCase(TestCase):
             overlay="",
             since=None,
             dry_run=False,
-            distiller=_no_clusters,
+            distill=DistillPolicy(_no_clusters),
             eval_proposals=EvalProposalRequest(proposer=lambda _c, _e: [sentinel], out_path=out),
         )
         assert result.evals_proposed == 1
@@ -1313,7 +1314,7 @@ class DistillCursorAtomicityTestCase(TransactionTestCase):
             patch.object(engine, "write_clusters", side_effect=RuntimeError("ledger write failed")),
             pytest.raises(RuntimeError, match="ledger write failed"),
         ):
-            run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+            run_consolidation(overlay="", since=None, dry_run=False, distill=DistillPolicy(_no_clusters))
 
     def test_a_raising_write_leaves_the_distill_cursor_unadvanced(self) -> None:
         DreamRunMarker.objects.update_or_create(name=DreamRunMarker.NAME, defaults={"distill_cursor": _SEEDED_CURSOR})

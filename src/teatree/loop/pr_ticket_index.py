@@ -18,13 +18,14 @@ Three sources, cheapest first:
 """
 
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from teatree.loop.dispatch_tables import DispatchAction
 from teatree.utils.close_keywords import parse_closes_ticket
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
+    from teatree.core.models.pull_request import PullRequest
 
 type Payload = Mapping[str, Any]
 
@@ -66,7 +67,7 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-        pr_model = apps.get_model("core", "PullRequest")
+        pr_model = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
     except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping, never breaks the tick
         return {}
     result: dict[str, str] = {}
@@ -104,7 +105,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-        ticket_model = apps.get_model("core", "Ticket")
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     result: dict[str, str] = {}
@@ -137,7 +138,7 @@ def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | No
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-        pr_model = apps.get_model("core", "PullRequest")
+        pr_model = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
         return pr_model.objects.owning_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     except Exception:  # noqa: BLE001 — a lookup failure degrades to no ticket
         return None

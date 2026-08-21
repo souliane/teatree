@@ -24,7 +24,8 @@ from django.test import TestCase
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task
+from tests.factories import planned_ticket
 
 
 class _FakeSdkClient:
@@ -81,7 +82,7 @@ def _fake_sdk(agent_text: str) -> Iterator[None]:
 class TestEvidenceRequiredOnPhaseCompletion(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_coding_phase_refuses_success_with_no_files_modified(self) -> None:
         # Pre-fix: agent returns a one-line summary, task completes, phase

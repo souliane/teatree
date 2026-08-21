@@ -27,7 +27,6 @@ removing ``_seed_default_loops`` from the squash during development).
 """
 
 import pytest
-from django.apps import apps
 from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
@@ -53,11 +52,24 @@ _SEEDED_KEYS = {
 _VOLATILE_FIELDS = frozenset({"id", "created_at", "updated_at"})
 
 
+def _historical_model(model_name: str) -> type:
+    """The seeded model AS OF the squash, never as of ``models.py`` (#4355).
+
+    Both snapshots are taken against a DB deliberately held at 0030, so a column any
+    LATER migration adds to a seeded model does not exist in either. Reading the live
+    model selects it anyway and the whole gate dies on ``no such column`` — for the next
+    such field too, whichever ticket adds it. The historical state is what the two
+    migration paths actually built, so it is also what the equivalence claim is about.
+    """
+    loader = MigrationLoader(connection)
+    return loader.project_state([("core", _SQUASH)]).apps.get_model("core", model_name)
+
+
 def _snapshot() -> dict[str, dict]:
     """Every seeded model's rows as {natural_key: {field: value}}, FK rendered by name."""
     out: dict[str, dict] = {}
     for model_name, key_of in _SEEDED_KEYS.items():
-        model = apps.get_model("core", model_name)
+        model = _historical_model(model_name)
         rows: dict = {}
         for obj in model.objects.all():
             record = {}

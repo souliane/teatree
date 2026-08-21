@@ -18,12 +18,17 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.unknown_repo_push_gate as scope_gate
 from teatree.core.overlay import OverlayBase, OverlayConfig
+
+if TYPE_CHECKING:
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import ProvisionStep
 
 
 class _OptedInOverlay(OverlayBase):
@@ -35,7 +40,7 @@ class _OptedInOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return []
 
-    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
         _ = worktree
         return []
 

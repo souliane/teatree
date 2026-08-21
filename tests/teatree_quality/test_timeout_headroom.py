@@ -1,17 +1,27 @@
 """How much room recorded tests have left against their own ceilings (#4048)."""
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from teatree.quality.durations_file import DurationsUnreadableError
+from teatree.quality.durations_file import DURATIONS_PATH, DurationsUnreadableError, read_durations
 from teatree.quality.timeout_headroom import TIGHT_FRACTION, measure_timeout_headroom
 
 _PYPROJECT = """
 [tool.pytest.ini_options]
 timeout = 60
 """
+
+# The tests #4369 measured at 90-95% of the lane ceiling, each now stating its own.
+_CEILING_STATED_IN_SOURCE = (
+    "tests/test_cli_tools.py::TestValidateMrCommand::test_runs_to_completion_in_a_fresh_shell_without_django_preset",
+    (
+        "tests/teatree_cli/review/test_review_inline_post.py"
+        "::TestInlinePostVerifiesNewPath::test_position_null_refuses_success"
+    ),
+)
 
 
 def _repo(tmp_path: Path, *, sources: dict[str, str], durations: dict[str, float], pyproject: str = _PYPROJECT) -> Path:
@@ -448,3 +458,33 @@ class TestAgainstThisRepo:
         report = measure_timeout_headroom(Path(__file__).resolve().parents[2])
         assert report is not None
         assert report.judged > 0
+
+    @pytest.mark.parametrize("node_id", _CEILING_STATED_IN_SOURCE)
+    def test_a_test_recorded_past_the_tight_band_states_its_own_ceiling(self, node_id: str) -> None:
+        """#4369: each of these is recorded past the lane's tight band and stays off the report only via its marker.
+
+        Deliberately per-node rather than a blanket ``pressured == ()``: the recorded
+        seconds move only when a durations refresh lands, so a suite-wide assertion
+        would red every PR the first time an unrelated test drifted — the failure
+        :mod:`teatree.quality.timeout_headroom` exists to remove, which is why the
+        doctor check itself warns rather than fails. A refresh that retires one of
+        these keys leaves nothing here to guard, and the assertion says so.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        seconds = read_durations(repo / DURATIONS_PATH).get(node_id)
+        if seconds is None:
+            pytest.skip(f"{node_id} is no longer recorded, so no ceiling of its own is under test")
+
+        lane = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"][
+            "timeout"
+        ]
+        assert seconds >= TIGHT_FRACTION * lane, (
+            f"{node_id} no longer runs past {TIGHT_FRACTION:.0%} of the {lane:g}s lane ceiling, so this "
+            "assertion proves nothing about its marker — drop it rather than leave it passing vacuously."
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert node_id not in {pressure.node_id for pressure in report.pressured}, (
+            f"{node_id} is judged against the {lane:g}s lane ceiling again — its own `@pytest.mark.timeout` "
+            "is what keeps a contended shard from reddening a PR that never touched it (#4369)."
+        )

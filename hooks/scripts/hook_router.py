@@ -138,6 +138,7 @@ from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branc
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
+from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detection_probe
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
     extract_api_mr_fields,
@@ -151,7 +152,12 @@ from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
-from hooks.scripts.plan_edit_gate import handle_block_edit_before_planned, skip_plan_gate_token  # noqa: F401 re-export
+from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
+    _resolve_worktree_state,
+    _ticket_state_for_cwd,
+    handle_block_edit_before_planned,
+    skip_plan_gate_token,
+)
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
@@ -164,7 +170,7 @@ from hooks.scripts.question_gates import (
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
-from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_scanner_high_block_message
+from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
 from hooks.scripts.raw_review_post_guard import (
@@ -1240,74 +1246,6 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     return _fail_open_or_deny(data, reason)
 
 
-def _resolve_worktree_state(toplevel: str) -> str | None:
-    """Return the ticket FSM state for the worktree at on-disk *toplevel*.
-
-    Delegates the path → ``Worktree`` row resolution to the canonical
-    :func:`teatree.core.intake.resolve.match_worktree_by_path` (the single source of
-    truth for matching an on-disk path against ``extra['worktree_path']``,
-    incl. the macOS ``/var`` ↔ ``/private/var`` symlink variants and the
-    subdirectory walk) rather than a hand-rolled query — a hand-rolled
-    ``Worktree.objects.filter(path=…)`` is exactly the #1957 dead-gate bug:
-    ``Worktree`` has no ``path`` field (the on-disk path lives in
-    ``extra['worktree_path']``), so every call raised ``FieldError``. Raises on
-    a programming error so the caller can log it loudly rather than swallow it
-    into a silent fail-open.
-    """
-    from teatree.core.intake.resolve import match_worktree_by_path  # noqa: PLC0415 — deferred: cold-hook import
-
-    worktree = match_worktree_by_path(toplevel)
-    if worktree is None or worktree.ticket is None:
-        return None
-    return str(worktree.ticket.state)
-
-
-def _ticket_state_for_cwd(cwd: str) -> str | None:
-    """Return the ticket's FSM state for the worktree at *cwd*, or ``None``.
-
-    Resolves the cwd → git toplevel → Worktree DB row → Ticket.state. Fails
-    open (returns ``None``) on an OPERATIONAL failure — teatree unavailable,
-    cwd not a managed worktree, git/subprocess error — so the hook never wedges
-    an agent. A PROGRAMMING error (wrong field name, bad import — the #1957
-    class) is NOT swallowed silently: it emits a loud stderr NOTE before the
-    fail-open so a dead gate is diagnosable instead of invisible.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        import django  # noqa: PLC0415 — deferred: Django import at call time
-        from django.core.exceptions import FieldError  # noqa: PLC0415 — deferred: Django import at call time
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
-
-        try:
-            toplevel = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-                ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607 — trusted internal git invocation with a fixed argv
-                text=True,
-                timeout=3,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-        except (subprocess.SubprocessError, OSError):
-            return None
-        try:
-            return _resolve_worktree_state(toplevel)
-        except (FieldError, TypeError, AttributeError, ImportError) as exc:
-            # Programming-error class (the #1957 dead-gate root cause): stay
-            # crash-proof (return None) but make it LOUD, never a silent ALLOW.
-            sys.stderr.write(f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n")
-            return None
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
 def _plan_edit_gate_enabled() -> bool:
     """Whether the plan-edit gate is enabled (default True).
 
@@ -1835,7 +1773,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1862,11 +1800,11 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     if result.has_high:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
-        block_message = _quote_scanner_high_block_message(quote_scanner, tool_name, result, verdict)
+        block_message = _quote_high_block_message(quote_scanner, quote_gate_messages, tool_name, result, verdict)
         return emit_pretooluse_deny(block_message) if block_message is not None else False
 
     if result.has_medium:
-        sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
+        sys.stderr.write(quote_gate_messages.format_warn_message(result) + "\n")
         quote_scanner.log_decision(
             tool_name=tool_name,
             decision="warn",
@@ -2048,7 +1986,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2078,7 +2016,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
             result=result,
             override=False,
         )
-        return emit_pretooluse_deny(quote_scanner.format_dispatch_block_message(result))
+        return emit_pretooluse_deny(quote_gate_messages.format_dispatch_block_message(result))
 
     # MEDIUM-only or clean: allow silently (no stderr warning on dispatch —
     # the fleet dispatches constantly; only HIGH is actionable here).
@@ -2170,7 +2108,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
     (mirrors the #1213/#1401 split). A HIGH match emits the ``TaskCreated``
     teammate-stop deny envelope (NOT the PreToolUse ``hookSpecificOutput`` deny).
     """
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     subject = data.get("task_subject", "") or ""
     description = data.get("task_description", "") or ""
@@ -2193,7 +2131,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
             result=result,
             override=False,
         )
-        return emit_task_create_deny(quote_scanner.format_dispatch_block_message(result))
+        return emit_task_create_deny(quote_gate_messages.format_task_entry_block_message(result))
 
     quote_scanner.log_decision(
         tool_name="TaskCreated:quote",
@@ -4625,29 +4563,16 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 # router carried. The leaf is a pure ``teatree.hooks`` (platform-layer) leaf:
 # it must not import ``teatree.backends.slack`` / ``teatree.core`` (a backwards
 # layer edge tach forbids), so the router — which lives outside ``src`` and may
-# touch the domain — builds the Slack ``post`` and the active-DM-thread resolver
-# here and INJECTS them into the leaf. The router keeps the ROUTING decision
+# touch the domain — builds the Slack ``post`` and the audio enricher here and
+# INJECTS them into the leaf. The router keeps the ROUTING decision
 # (which present-/away-mode arm fires, the DeferredQuestion capture); these thin
 # wrappers preserve the ``patch.object(router, "_perform_slack_post" /
 # "_slack_config_from_toml" / "_read_dm_channel_cache")`` seam the handler tests
 # intercept.
-
-
-def _active_dm_thread_for_channel(channel: str) -> str:
-    """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
-
-    Threads the mirrored question under the conversation the user is already in
-    instead of opening a new top-level message. Fail-open: any bootstrap or DB
-    error yields ``""`` (post at root) so the hook stays crash-proof.
-    """
-    if not channel or not bootstrap_teatree_django():
-        return ""
-    try:
-        from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        return IncomingEvent.objects.active_dm_thread(channel=channel)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return ""
+#
+# No active-DM-thread resolver is injected: the mirror posts AT ROOT so
+# its ``ts`` is a thread root, which is the only ts a later Slack reply carries
+# in ``thread_ts`` — the identity ``teatree.loop.question_binding`` binds on.
 
 
 def _slack_config_from_toml() -> tuple[str, str] | None:
@@ -4663,7 +4588,6 @@ def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> st
         slack_cfg,
         questions,
         poster=_slack_http_poster(),
-        resolve_thread=_active_dm_thread_for_channel,
         enrich_audio=build_dm_audio_enricher(slack_enabled=_speak_settings()[1]),
     )
 
@@ -5380,6 +5304,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
         handle_enforce_orchestrator_investigation_boundary,
+        handle_warn_merged_detection_probe,
         handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,

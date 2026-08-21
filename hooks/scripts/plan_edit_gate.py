@@ -16,13 +16,19 @@ legitimate shell work. The classification runs BEFORE the ticket-state lookup,
 so an ordinary read-only ``Bash`` call never pays for a Django bootstrap.
 
 The handler lives here rather than in ``hook_router`` because that dispatcher is
-a shrink-only god-module; the router re-exports it into ``_HANDLERS``. The deny
-still routes through the router's ``_fail_open_or_deny`` chokepoint (lazy
+a shrink-only god-module; the router re-exports it into ``_HANDLERS``. Its cwd →
+git toplevel → ``Worktree`` row → ``Ticket.state`` resolver
+(:func:`_ticket_state_for_cwd` over :func:`_resolve_worktree_state`) sits here for
+the same reason, and the router re-exports it too — the gate is its only caller.
+The deny still routes through the router's ``_fail_open_or_deny`` chokepoint (lazy
 back-import), so the self-rescue allowlist and the master
 ``danger_gate_fail_open`` switch apply unchanged.
 """
 
+import contextlib
+import os
 import re
+import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `git rev-parse` call
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,3 +250,71 @@ def _canonical(path: Path) -> Path | None:
 def _is_inside(root: Path, path: Path) -> bool:
     candidate = _canonical(path)
     return candidate is not None and root in candidate.parents
+
+
+def _resolve_worktree_state(toplevel: str) -> str | None:
+    """Return the ticket FSM state for the worktree at on-disk *toplevel*.
+
+    Delegates the path → ``Worktree`` row resolution to the canonical
+    :func:`teatree.core.intake.resolve.match_worktree_by_path` (the single source of
+    truth for matching an on-disk path against ``extra['worktree_path']``,
+    incl. the macOS ``/var`` ↔ ``/private/var`` symlink variants and the
+    subdirectory walk) rather than a hand-rolled query — a hand-rolled
+    ``Worktree.objects.filter(path=…)`` is exactly the #1957 dead-gate bug:
+    ``Worktree`` has no ``path`` field (the on-disk path lives in
+    ``extra['worktree_path']``), so every call raised ``FieldError``. Raises on
+    a programming error so the caller can log it loudly rather than swallow it
+    into a silent fail-open.
+    """
+    from teatree.core.intake.resolve import match_worktree_by_path  # noqa: PLC0415 — deferred: cold-hook import
+
+    worktree = match_worktree_by_path(toplevel)
+    if worktree is None or worktree.ticket is None:
+        return None
+    return str(worktree.ticket.state)
+
+
+def _ticket_state_for_cwd(cwd: str) -> str | None:
+    """Return the ticket's FSM state for the worktree at *cwd*, or ``None``.
+
+    Resolves the cwd → git toplevel → Worktree DB row → Ticket.state. Fails
+    open (returns ``None``) on an OPERATIONAL failure — teatree unavailable,
+    cwd not a managed worktree, git/subprocess error — so the hook never wedges
+    an agent. A PROGRAMMING error (wrong field name, bad import — the #1957
+    class) is NOT swallowed silently: it emits a loud stderr NOTE before the
+    fail-open so a dead gate is diagnosable instead of invisible.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        import django  # noqa: PLC0415 — deferred: Django import at call time
+        from django.core.exceptions import FieldError  # noqa: PLC0415 — deferred: Django import at call time
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        django.setup()
+
+        try:
+            toplevel = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                ["git", "-C", cwd, "--no-optional-locks", "rev-parse", "--show-toplevel"],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                text=True,
+                timeout=3,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.SubprocessError, OSError):
+            return None
+        try:
+            return _resolve_worktree_state(toplevel)
+        except (FieldError, TypeError, AttributeError, ImportError) as exc:
+            # Programming-error class (the #1957 dead-gate root cause): stay
+            # crash-proof (return None) but make it LOUD, never a silent ALLOW.
+            sys.stderr.write(f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n")
+            return None
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))

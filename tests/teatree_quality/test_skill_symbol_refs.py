@@ -34,12 +34,16 @@ tail, a glob, and the third-party / attribute-access tokens the module-local
 widening must never sweep in).
 """
 
+import importlib
+import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
+import teatree
 from teatree.quality.python_prose_refs import prose_lines, scan_python_source, scan_python_tree
 from teatree.quality.skill_symbol_refs import (
     RepoIndex,
@@ -73,6 +77,31 @@ def _ambiguous_index() -> RepoIndex:
         build_repo_index(_REPO_ROOT),
         modules={"probe": ("teatree.core.modelkit.phases", "teatree.quality.skill_symbol_refs")},
     )
+
+
+#: The retired ``teams`` pane, whose leftover directory made BLUEPRINT's citation of it resolve.
+_PHANTOM_REF = "teatree.teams"
+
+
+@pytest.fixture
+def phantom_subpackage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Plant the observed shape: a retired module's leftover ``__pycache__``-only directory.
+
+    Python reads any bare directory on a package's ``__path__`` as an implicit
+    namespace package, so this is enough for ``import teatree.teams`` to succeed
+    with no source behind it.
+    """
+    leaf = _PHANTOM_REF.rpartition(".")[2]
+    (tmp_path / leaf / "__pycache__").mkdir(parents=True)
+    monkeypatch.setattr(teatree, "__path__", [*teatree.__path__, str(tmp_path)])
+    monkeypatch.delitem(sys.modules, _PHANTOM_REF, raising=False)
+    importlib.invalidate_caches()
+    yield
+    sys.modules.pop(_PHANTOM_REF, None)
+    # import binds the child onto the parent package too; popping sys.modules alone
+    # leaves that attribute, which later resolves the phantom for every other test.
+    if hasattr(teatree, leaf):
+        delattr(teatree, leaf)
 
 
 class TestLiveTree:
@@ -300,6 +329,12 @@ class TestPythonProse:
         (finding,) = _unresolved(scan_python_source(source, Path("probe.py"), _REPO_ROOT))
         assert (finding.lineno, finding.ref) == (1, "skill_symbol_refs._NO_SUCH_HELPER")
 
+    @pytest.mark.usefixtures("phantom_subpackage")
+    def test_a_stray_directory_cannot_hide_a_stale_docstring_citation(self) -> None:
+        source = f'"""The retired teams pane lived in ``{_PHANTOM_REF}``."""\n'
+        (finding,) = _unresolved(scan_python_source(source, Path("probe.py"), _REPO_ROOT))
+        assert finding.ref == _PHANTOM_REF
+
     def test_a_plain_comment_and_a_non_docstring_literal_are_not_walked(self) -> None:
         source = (
             "# Keyed off skill_symbol_refs._NO_SUCH_HELPER.\n"
@@ -399,6 +434,28 @@ class TestResolver:
         (tmp_path / "skill_ref_probe_boom.py").write_text('raise RuntimeError("boom")\n', encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path))
         assert resolve_dotted("skill_ref_probe_boom") == "RuntimeError: boom"
+
+    @pytest.mark.usefixtures("phantom_subpackage")
+    def test_a_source_less_namespace_package_is_not_evidence(self) -> None:
+        assert resolve_dotted(_PHANTOM_REF) is not None
+
+    @pytest.mark.usefixtures("phantom_subpackage")
+    def test_a_stray_directory_cannot_hide_a_stale_charter_citation(self) -> None:
+        source = f"The retired teams pane lived in ``{_PHANTOM_REF}``.\n"
+        findings = scan_source(source, Path("BLUEPRINT.md"), _REPO_ROOT)
+        assert [finding.ref for finding in _unresolved(findings)] == [_PHANTOM_REF]
+
+    def test_a_package_carrying_source_still_resolves(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        package = tmp_path / "skill_ref_probe_live"
+        package.mkdir()
+        (package / "__init__.py").write_text("MARKER = 1\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        importlib.invalidate_caches()
+        assert resolve_dotted("skill_ref_probe_live.MARKER") is None
 
 
 class TestGoldenCorpus:

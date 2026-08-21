@@ -234,7 +234,7 @@ def _governing_and_next(
 def _candidate_starts(
     schedule: "ModeSchedule", now_local: dt.datetime, tz: dt.tzinfo
 ) -> "list[tuple[dt.datetime, ModeScheduleSlot]]":
-    slots = list(schedule.slots.all())  # ty: ignore[unresolved-attribute]  # Django reverse FK (related_name="slots")
+    slots = list(schedule.slots.all())  # Django reverse FK (related_name="slots")
     days = [(now_local + dt.timedelta(days=offset)).date() for offset in range(-_LOOKBACK_DAYS, _LOOKBACK_DAYS + 1)]
     return [
         (dt.datetime.combine(day, slot.start_time, tzinfo=tz), slot)

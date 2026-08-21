@@ -107,8 +107,14 @@ class CriticVerdict(models.Model):
         ordering: ClassVar = ["-recorded_at"]
         indexes: ClassVar = [models.Index(fields=["ticket", "transition", "head_sha"])]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
+
     def __str__(self) -> str:
-        return f"critic-verdict<ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"critic-verdict<ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"
 
     def item_verdicts(self) -> list[CriticItemVerdict]:
         return [CriticItemVerdict.coerce(item) for item in self.items if isinstance(item, dict)]

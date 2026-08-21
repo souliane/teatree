@@ -537,7 +537,7 @@ class TestProvisionReportSerialization(TestCase):
         assert restored.success == report.success
 
     def test_from_dict_tolerates_missing_keys(self) -> None:
-        restored = ProvisionReport.from_dict({"steps": [{"name": "a"}]})  # type: ignore[typeddict-item]
+        restored = ProvisionReport.from_dict({"steps": [{"name": "a"}]})  # ty: ignore[missing-typed-dict-key] — the WRONG shape IS the test input; the assertion is that the callee rejects it.
         assert len(restored.steps) == 1
         assert restored.steps[0].success is False
         assert restored.steps[0].required is True

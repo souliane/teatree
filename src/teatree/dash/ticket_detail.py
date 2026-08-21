@@ -214,7 +214,7 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
         .filter(rank__lte=ATTEMPT_ROWS)
         .order_by("-pk")
     )
-    owned = ticket.tasks  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    owned = ticket.tasks  # Django reverse FK
     tasks = (
         owned.annotate(attempts_total=Count("attempts"))
         .order_by("-pk")
@@ -275,7 +275,7 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
             started_at=session.started_at,
             ended_at=session.ended_at,
         )
-        for session in ticket.sessions.order_by("-started_at")  # ty: ignore[unresolved-attribute]  # Django reverse FK
+        for session in ticket.sessions.order_by("-started_at")  # Django reverse FK
     )
 
 

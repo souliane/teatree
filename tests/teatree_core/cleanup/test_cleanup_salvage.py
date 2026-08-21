@@ -9,6 +9,7 @@ failure.
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from teatree.core.cleanup.cleanup_salvage import SalvageHooks, SalvageRequest, default_salvage_hooks, salvage_item
@@ -206,10 +207,10 @@ def test_default_push_hook_supplies_the_forge_credential(tmp_path: Path) -> None
     push_envs: list[dict[str, str]] = []
     real_run = subprocess.run
 
-    def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if "push" in cmd:
             push_envs.append(dict(env or {}))
-        return real_run(cmd, env=env, **kwargs)  # type: ignore[arg-type,call-overload,no-any-return]
+        return real_run(cmd, env=env, **kwargs)
 
     hooks = default_salvage_hooks(source_branch="feature", delete=lambda: True)
     with (

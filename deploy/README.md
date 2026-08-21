@@ -261,13 +261,20 @@ and caps (uid 1001, no added caps, its own PID namespace, reading the host's
 raises. Scoring that listing as an answer is what let the guard report an
 unreadable world as an empty one — `_held_paths()` returned a 300-entry
 frozenset, `probe_gap` was empty, and `apply()` deleted a stale entry outright.
-A source is now ANSWERED only when it resolves at least one entry (or is
-genuinely empty and readable — every kernel thread presents that), SKIP when
-the listing itself fails (the ordinary another-uid case), and BLIND when
-entries exist and none resolve. One BLIND source anywhere blinds the whole
-probe: an unknowable pid may hold ANY candidate path, so a sibling that answers
-buys no partial knowledge. The same measurement after the change reports
-`probe_gap` and reclaims 0 bytes.
+A source is now ANSWERED only when EVERY entry it lists resolves (or it is
+genuinely empty and readable — every kernel thread presents that), UNREADABLE
+when the listing itself fails, and BLIND when entries exist and any of them
+fails to resolve for a reason other than having vanished — only `ENOENT` is an
+absence, at both levels. Unreadable and blind are one knowledge state and both
+are counted, never skipped, since an unreadable pid may hold a candidate just as
+a blind one may. Either anywhere blinds the whole probe: an unknowable pid may
+hold ANY candidate path, so a sibling that answers buys no partial knowledge.
+The same measurement after the change reports `probe_gap` and reclaims 0 bytes.
+
+The sweep ROOT's own listing is held to that same standard: a root this process
+cannot read INTO refuses the sweep, because `0.00 GB of 0.00 GB` from a
+directory nothing looked into is the line an already-clean box prints. A root
+that is merely ABSENT does not refuse — that report is true.
 
 `--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
 `kernel.yama.ptrace_scope = 1` alone bounds them, and no compose knob lifts it.

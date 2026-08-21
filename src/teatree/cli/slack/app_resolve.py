@@ -18,9 +18,14 @@ runs at most once per overlay. Registry reads/writes go through
 row (the same DB-home shape :mod:`teatree.cli.slack.dm_provisioning` uses).
 """
 
+from typing import TYPE_CHECKING, cast
+
 import httpx
 
 from teatree.utils.secrets import read_pass
+
+if TYPE_CHECKING:
+    from teatree.core.models.config_setting import ConfigValue
 
 _OVERLAYS_REGISTRY_KEY = "overlays"
 
@@ -30,7 +35,7 @@ def read_overlay_registry() -> dict[str, dict]:
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stored = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
-    return stored if isinstance(stored, dict) else {}
+    return cast("dict[str, dict]", stored) if isinstance(stored, dict) else {}
 
 
 def write_overlay_fields(overlay: str, fields: dict[str, str]) -> None:
@@ -47,7 +52,7 @@ def write_overlay_fields(overlay: str, fields: dict[str, str]) -> None:
         block = {}
         registry[overlay] = block
     block.update(fields)
-    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, registry)
+    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, cast("ConfigValue", registry))
 
 
 def read_overlay_field(overlay: str, field: str) -> str:

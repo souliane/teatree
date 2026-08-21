@@ -636,6 +636,9 @@ class TestValidateMrCommand:
             )
         ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here", require_sections=True)
 
+    # The cold interpreter below imports the whole CLI + Django: 2.9s alone, 56.9s recorded
+    # under the 12-shard matrix. 180 is that lane's own `-o timeout=`, so CI is unchanged (#4369).
+    @pytest.mark.timeout(180)
     def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
         # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
         # a session shell with no ``DJANGO_SETTINGS_MODULE``. ``get_overlay()``

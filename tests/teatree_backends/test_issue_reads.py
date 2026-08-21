@@ -15,10 +15,16 @@ from teatree.core.backend_protocols import IssueReopenState
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
-def _build_overlay() -> OverlayBase:
+def _build_overlay() -> MagicMock:
+    """The mock itself, NOT cast to ``OverlayBase``.
+
+    Claiming the protocol type here is what made stubbing a method on the mock a
+    type error: the object genuinely is a ``MagicMock``. Callers cast at the
+    boundary where it is handed to production code.
+    """
     overlay = MagicMock(spec=OverlayBase)
     overlay.config = OverlayConfig()
-    return cast("OverlayBase", overlay)
+    return overlay
 
 
 class _IssueHost:
@@ -38,8 +44,8 @@ class _IssueHost:
 
 def _done_overlay(*, verdict: bool) -> OverlayBase:
     overlay = _build_overlay()
-    overlay.is_issue_done = lambda _data: verdict  # type: ignore[method-assign]
-    return overlay
+    overlay.is_issue_done = lambda _data: verdict
+    return cast("OverlayBase", overlay)
 
 
 class TestIssueIsDone:
@@ -81,16 +87,16 @@ class TestIssueReopenState:
 
     def test_reopened_when_the_payload_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_host(monkeypatch, _IssueHost({"state": "open", "state_reason": "reopened"}))
-        assert issue_reopen_state(_build_overlay(), "https://x/1") is IssueReopenState.REOPENED
+        assert issue_reopen_state(cast("OverlayBase", _build_overlay()), "https://x/1") is IssueReopenState.REOPENED
 
     def test_an_issue_that_never_closed_is_not_reopened(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_host(monkeypatch, _IssueHost({"state": "open", "state_reason": None}))
-        assert issue_reopen_state(_build_overlay(), "https://x/1") is IssueReopenState.NOT_REOPENED
+        assert issue_reopen_state(cast("OverlayBase", _build_overlay()), "https://x/1") is IssueReopenState.NOT_REOPENED
 
     def test_unknown_when_no_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_host(monkeypatch, None)
-        assert issue_reopen_state(_build_overlay(), "https://x/1") is IssueReopenState.UNKNOWN
+        assert issue_reopen_state(cast("OverlayBase", _build_overlay()), "https://x/1") is IssueReopenState.UNKNOWN
 
     def test_unknown_on_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_host(monkeypatch, _IssueHost(None, raises=True))
-        assert issue_reopen_state(_build_overlay(), "https://x/1") is IssueReopenState.UNKNOWN
+        assert issue_reopen_state(cast("OverlayBase", _build_overlay()), "https://x/1") is IssueReopenState.UNKNOWN

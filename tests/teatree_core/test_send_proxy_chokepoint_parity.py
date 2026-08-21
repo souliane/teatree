@@ -65,7 +65,7 @@ class TestNotifyUserRoutesThroughProxy(TestCase):
             "tests are green",
             kind=NotifyKind.INFO,
             idempotency_key="parity=1",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )

@@ -54,8 +54,9 @@ def check_unshipped_work() -> bool:
     typer.echo(
         f"WARN  {len(records)} checkout(s) hold captured unshipped work, oldest "
         f"{_age(now - records[0].first_captured_at)} old — recorded before any reaper could act on them, and still "
-        "unshipped. Nothing reaps them, so they stay until someone decides. Recover one with "
-        "t3 <overlay> workspace salvage."
+        "unshipped. Nothing reaps them, so they stay until someone decides. Apply one back with "
+        "t3 <overlay> workspace restore <checkout> --into <checkout>, or capture the branch to a PR "
+        "with t3 <overlay> workspace salvage."
     )
     for record in records[:_LISTED]:
         typer.echo(f"      {_describe(record, age=_age(now - record.first_captured_at))}")

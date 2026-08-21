@@ -15,7 +15,7 @@ import pytest
 
 from teatree.backends import forge_merge_rpc as rpc
 from teatree.backends.forge_merge_rpc import _FORGE_MERGE_TIMEOUT_SECONDS, GhMergeRpc, _gh_conflict_state, gh_runner
-from teatree.core.backend_protocols import MergeConflictState
+from teatree.core.backend_protocols import HEAD_SHA_UNREADABLE, MergeConflictState
 
 
 def _completed() -> subprocess.CompletedProcess[str]:
@@ -83,3 +83,29 @@ class TestGhConflictState:
     def test_an_unreadable_pr_stays_unknown(self) -> None:
         state = GhMergeRpc(lambda _argv: (1, "", "boom")).fetch_pr_merge_state(slug="o/r", pr_id=7)
         assert state.conflict is MergeConflictState.UNKNOWN
+
+
+class TestFetchLiveHeadSha:
+    """A failed read and a PR with no head are DIFFERENT facts (the twin of the GitLab case).
+
+    Collapsing both to ``""`` made ``review status`` report an untouched
+    ``merge_safe`` PR as ``stale — re-review needed`` for the length of a GitHub
+    503: an empty head compares unequal to every reviewed SHA, so the staleness
+    test confidently answered a question nobody could answer.
+    """
+
+    @staticmethod
+    def _rpc(result: tuple[int, str, str]) -> GhMergeRpc:
+        return GhMergeRpc(lambda _argv: result)
+
+    def test_a_readable_head_is_returned_verbatim(self) -> None:
+        assert self._rpc((0, "  " + "a" * 40 + "\n", "")).fetch_live_head_sha(slug="o/r", pr_id=1) == "a" * 40
+
+    def test_a_non_zero_rc_is_the_unreadable_sentinel(self) -> None:
+        failed = (1, "", "HTTP 503: Service Unavailable")
+        assert self._rpc(failed).fetch_live_head_sha(slug="o/r", pr_id=1) == HEAD_SHA_UNREADABLE
+
+    def test_a_successful_call_with_an_empty_body_is_still_empty(self) -> None:
+        # The forge DID answer, just degradedly — not the same as an unreadable read,
+        # and every caller already fails closed on a falsy sha.
+        assert self._rpc((0, "", "")).fetch_live_head_sha(slug="o/r", pr_id=1) == ""

@@ -50,7 +50,16 @@
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
 "src/teatree/core/gates/local_stack_gate.py" = 3
+# 2: the owner-ratification citation check needs `PlanArtifact` (an ORM read) and
+# `reviewer_identity.is_non_reviewer_role` (imports the model module), both of which
+# must resolve after the app registry is ready, so `_citations_the_owner_did_not_make`
+# keeps both deferred rather than moving one to module scope and leaving the other.
+"src/teatree/core/gates/open_questions_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
+# 2: mirrors plan_gate.py's own pair — `PlanArtifact` (an ORM read) and
+# `is_trivial_plan_skip` (imports the model module) both must resolve after the
+# app registry is ready, so `unplanned_dispatch_refusal` keeps both deferred.
+"src/teatree/core/gates/plan_dispatch_gate.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 6
@@ -162,7 +171,10 @@
 # imports that moved out of notify.py when the durable-audit helpers were split off to hold
 # notify.py under the 500-LOC module-health cap. Same pre-`django.setup()` import-safety
 # deferral as notify.py above — the app registry must be ready before these ORM imports resolve.
-"src/teatree/core/notify_ledger.py" = 7
+# 8: #4524's `record_pulled` is the exact peer of `record_outbound_claim` below it — the same
+# `BotPing` edge, deferred for the same reason, on the audit path of a signal the classifier
+# routed to the pulled surface.
+"src/teatree/core/notify_ledger.py" = 8
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1

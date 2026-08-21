@@ -104,10 +104,7 @@ class _PhantomAPI:
 
 
 def _service(stub: _PhantomAPI) -> ReviewService:
-    s = ReviewService(token="t")
-    s._get_api = lambda: stub  # type: ignore[method-assign]
-    s._resolve_base_url = lambda: "https://gitlab.example.com/api/v4"  # type: ignore[method-assign]
-    return s
+    return ReviewService(token="t", api=stub, base_url="https://gitlab.example.com/api/v4")
 
 
 @pytest.fixture(autouse=True)

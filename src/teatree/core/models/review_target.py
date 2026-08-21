@@ -18,7 +18,8 @@ write time rather than presenting as a review that never happened.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
+from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, AutoReviewDispatch
+from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -44,6 +45,13 @@ class ReviewTarget:
     #: path that took none and cannot know whose identity did (``MRReviewLock.resolve``
     #: releases on the unnamed one, never on a named non-holder).
     lock_holder: str = ""
+    #: The per-head claim table that ARMED this run — the #68 dispatch ledger when the task
+    #: carries its FK, else the codex / self-PR marker. Read by the refusal terminal, which
+    #: is RUN-scoped and may touch only the claim that armed the run; the RESOLVE terminal
+    #: ignores it, because a recorded verdict is a fact about the TREE and retires every
+    #: claim on it (#4530). Defaults to the marker so a path with no claim at all resolves
+    #: to a no-op lookup rather than to the ledger that holds the review lock.
+    armed_by: "type[AutoReviewDispatch | CodexReviewMarker]" = CodexReviewMarker
 
 
 def review_target_for_task(task: "Task") -> ReviewTarget | None:
@@ -61,6 +69,7 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
             pr_id=dispatch.pr_id,
             head_sha=dispatch.head_sha.strip(),
             lock_holder=LOOP_SCANNER_HOLDER,
+            armed_by=AutoReviewDispatch,
         )
     reviewed_pr = pr_ref_from_url(task.ticket.issue_url)
     if reviewed_pr is None:

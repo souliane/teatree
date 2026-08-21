@@ -56,8 +56,10 @@ class LocalAdminAutoLoginMiddleware:
         ):
             superuser = get_user_model().objects.filter(is_superuser=True).first()
             if superuser is not None:
-                superuser.backend = _MODEL_BACKEND
-                login(request, superuser)
+                # `backend=` is Django's documented way to name the auth backend for a
+                # user fetched outside `authenticate()`; assigning `user.backend` is the
+                # same thing done through an attribute Django synthesises and no stub declares.
+                login(request, superuser, backend=_MODEL_BACKEND)
         return self.get_response(request)
 
 

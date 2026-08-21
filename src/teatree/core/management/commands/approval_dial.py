@@ -14,7 +14,7 @@ A never-fades class (``public_issue_create`` / ``gate_or_policy_change``) is ref
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's ``call_command``.
 """
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -24,6 +24,9 @@ from teatree.core.models.approval_dial import DIAL_CONFIG_KEY, NEVER_FADES, conf
 from teatree.core.models.approval_metrics import compute_metrics
 from teatree.core.models.approval_policy import ACTION_CLASSES
 from teatree.core.models.trust_level import TrustLevel
+
+if TYPE_CHECKING:
+    from teatree.core.models.config_setting import ConfigValue
 
 _OverlayOption = Annotated[
     str,
@@ -69,7 +72,7 @@ class Command(TyperCommand):
             raise SystemExit(2)
         table = _load_table(overlay)
         table[action_class] = level.value
-        ConfigSetting.objects.set_value(DIAL_CONFIG_KEY, table, scope=overlay)
+        ConfigSetting.objects.set_value(DIAL_CONFIG_KEY, cast("ConfigValue", table), scope=overlay)
         self.stdout.write(f"  set {action_class} = {level.value}  [{_scope_label(overlay)}]")
 
     @command()
@@ -89,7 +92,7 @@ class Command(TyperCommand):
             raise SystemExit(1)
         del table[action_class]
         if table:
-            ConfigSetting.objects.set_value(DIAL_CONFIG_KEY, table, scope=overlay)
+            ConfigSetting.objects.set_value(DIAL_CONFIG_KEY, cast("ConfigValue", table), scope=overlay)
         else:
             ConfigSetting.objects.clear(DIAL_CONFIG_KEY, scope=overlay)
         self.stdout.write(f"  cleared {action_class}  [{_scope_label(overlay)}]")

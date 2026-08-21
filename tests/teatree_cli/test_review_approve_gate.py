@@ -73,9 +73,8 @@ class _ApproveStubAPI:
 
 
 def _service_with_stub() -> tuple[ReviewService, _ApproveStubAPI]:
-    service = ReviewService(token="t")
     stub = _ApproveStubAPI()
-    service._get_api = lambda: stub  # type: ignore[method-assign]
+    service = ReviewService(token="t", api=stub)
     return service, stub
 
 

@@ -12,6 +12,7 @@ vars must be removed outright, not merely countermanded.
 """
 
 import os
+import re
 
 _COLOR_FORCING_VARS = ("FORCE_COLOR", "CLICOLOR_FORCE", "CLICOLORS")
 
@@ -25,3 +26,20 @@ def no_color_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _COLOR_FORCING_VARS}
     env["NO_COLOR"] = "1"
     return env
+
+
+#: Matches an ANSI SGR / CSI escape sequence.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    r"""Return *text* with every ANSI escape sequence removed.
+
+    The in-process counterpart of :func:`no_color_env`. A ``typer.testing``
+    ``CliRunner`` renders help through rich, which styles an option name as
+    SEPARATE spans (``--report`` becomes ``\x1b[1;36m-\x1b[0m\x1b[1;36m-report\x1b[0m``),
+    so a substring match for ``"--report"`` fails on output that visibly
+    contains it. ``NO_COLOR`` does not suppress this; stripping the codes does,
+    and it stays correct however rich chooses to style.
+    """
+    return _ANSI_RE.sub("", text)

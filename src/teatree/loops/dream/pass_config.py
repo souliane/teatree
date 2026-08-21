@@ -1,10 +1,14 @@
 """The ``[loops.dream]`` table and the per-pass promotion policy read from it (#4176).
 
 `loop.py` owns the ten phase kill-switches — booleans answering "does phase P run at
-all?". The two settings here answer a different question: given that a phase DOES run,
-how may it promote? ``promotion_cap`` bounds how many gaps ONE pass schedules;
+all?". The settings here answer a different question: given that a phase DOES run, how
+much may it spend? ``promotion_cap`` bounds how many gaps ONE pass schedules;
 ``validate_live`` decides whether that pass's eval promotion runs the METERED live
 validator. Neither turns a phase on or off, so neither belongs with the kill-switches.
+
+The two budget objects are the same idea on two axes and so live together:
+:class:`PromotionBudget` bounds how MANY gaps a pass promotes, :class:`PassBudget`
+bounds how LONG the pass spends before it must stop starting new metered work.
 
 Every promoting phase — core-gap memory promotion (Pass 2), the automatable-ask promoter
 (3d), and compliance escalation (3c) — drives its gaps through the single
@@ -22,7 +26,9 @@ them up.
 """
 
 import os
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 #: Recognised explicit env values; anything else defers to the DB key.
 TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -114,4 +120,68 @@ class PromotionBudget:
         return f"; deferred {self.deferred} promotion(s) over the per-pass cap — the next pass drains them"
 
 
-__all__ = ["FALSY", "TRUTHY", "PromotionBudget", "dream_table", "promotion_cap", "validate_live_enabled"]
+@dataclass(frozen=True, slots=True)
+class PassBudget:
+    """One dream pass's WALL-CLOCK allowance, and the reserve its TAIL is owed.
+
+    ``PromotionBudget`` above bounds how MANY gaps a pass promotes; this bounds how
+    LONG a pass spends before it must stop starting new work. They are the same idea on
+    two axes, which is why they live together.
+
+    The pass had a budget constant from the start (``DREAM_PASS_BUDGET_SECONDS``) and it
+    was dead: it sized the lease TTL and nothing else, because nothing inside the pass
+    ever read a clock. The only thing that ever ended a pass was the driver's SIGKILL at
+    an EQUAL deadline — so the pass always died mid-distil and every phase after the
+    distiller (compliance, the §4 acceptance gates, phases 4-6, Pass-2 promotion, the
+    marker) was unreachable. This makes the constant load-bearing.
+
+    ``tail_reserve`` is what the pass keeps back for everything after the distiller.
+    ``allows_new_call(cost)`` is the whole enforcement: a new metered call is launched
+    only when the budget can absorb its worst case AND still leave the reserve intact.
+    Stopping the walk early does not DROP the un-reached corpus — the distiller's
+    rotation cursor carries it to the next pass, exactly as the per-pass batch cap
+    already did.
+
+    *clock* is injected so a test can drive a pass to its ceiling without sleeping.
+    """
+
+    started_at: float
+    total: float
+    tail_reserve: float
+    clock: Callable[[], float] = field(default=time.monotonic)
+
+    @classmethod
+    def start(cls, *, total: float, tail_reserve: float, clock: Callable[[], float] = time.monotonic) -> "PassBudget":
+        """Open a budget anchored at *clock* now."""
+        return cls(started_at=clock(), total=total, tail_reserve=tail_reserve, clock=clock)
+
+    @property
+    def elapsed(self) -> float:
+        """Seconds spent since the pass opened its budget."""
+        return self.clock() - self.started_at
+
+    @property
+    def remaining(self) -> float:
+        """Seconds of budget left — negative once the pass is over its allowance."""
+        return self.total - self.elapsed
+
+    def allows_new_call(self, cost: float) -> bool:
+        """Whether a call whose worst case is *cost* fits AND still leaves the tail its reserve.
+
+        *cost* is the callee's own watchdog, not an estimate: a distiller call is bounded
+        by :data:`teatree.loops.dream.sdk_distiller.DISTILL_WATCHDOG_SECONDS`, so a call
+        launched with less than ``tail_reserve + cost`` left can, in its worst case, eat
+        the reserve — which is exactly the state that made the tail unreachable.
+        """
+        return self.remaining >= self.tail_reserve + cost
+
+
+__all__ = [
+    "FALSY",
+    "TRUTHY",
+    "PassBudget",
+    "PromotionBudget",
+    "dream_table",
+    "promotion_cap",
+    "validate_live_enabled",
+]

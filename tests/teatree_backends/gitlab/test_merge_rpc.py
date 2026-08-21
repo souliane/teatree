@@ -18,6 +18,7 @@ from teatree.backends.gitlab import merge_rpc
 from teatree.backends.gitlab.merge_rpc import GitLabApiMergeRpc
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
+    HEAD_SHA_UNREADABLE,
     BackendResolutionError,
     MergeConflictState,
     changed_paths_unavailable,
@@ -111,11 +112,18 @@ class TestFetchLiveHeadSha:
         assert client.get_calls == [f"projects/{_ENCODED}/merge_requests/{_IID}"]
 
     @pytest.mark.parametrize("failure", _READ_FAILURES)
-    def test_empty_on_any_forge_failure(self, failure: Exception) -> None:
-        assert _rpc(raises=failure).fetch_live_head_sha(slug=_SLUG, pr_id=_IID) == ""
+    def test_unreadable_sentinel_on_any_forge_failure(self, failure: Exception) -> None:
+        # NOT ``""``: a read that failed and an MR carrying no sha are different
+        # facts, and a caller handed the same value for both reports a head that
+        # moved when in truth nobody could look. Parity with the ``gh`` twin.
+        assert _rpc(raises=failure).fetch_live_head_sha(slug=_SLUG, pr_id=_IID) == HEAD_SHA_UNREADABLE
 
-    def test_empty_on_non_object_payload(self) -> None:
-        assert _rpc(get=[1, 2]).fetch_live_head_sha(slug=_SLUG, pr_id=_IID) == ""
+    def test_unreadable_sentinel_on_non_object_payload(self) -> None:
+        assert _rpc(get=[1, 2]).fetch_live_head_sha(slug=_SLUG, pr_id=_IID) == HEAD_SHA_UNREADABLE
+
+    def test_a_readable_mr_carrying_no_sha_is_still_empty(self) -> None:
+        # The forge DID answer here, just degradedly — that is not an unreadable read.
+        assert _rpc(get={"iid": _IID}).fetch_live_head_sha(slug=_SLUG, pr_id=_IID) == ""
 
 
 class TestFetchPrMergeState:

@@ -389,10 +389,10 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `eval_local_disabled` | Escape hatch for the periodic local-eval scanner (`eval_local`). The loop fires a weekly `eval_local` task so the SCOPED eval suite runs locally via the no-API-key subscription runner (the local half of "evals run locally + in CI weekly"; CI half is the standalone `.github/workflows/eval.yml` weekly schedule). |
 | `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
 | `eval_local_cadence_hours` | Cadence floor for the local-eval scanner (default 168 = weekly) |
-| `backlog_sweep_disabled` | Kill switch for the periodic backlog-sweep scanner (`backlog_sweep`, #2419) — **defaults `true` (default-OFF)** because the sweep is destructive-capable (it can propose closing issues). The loop fires a weekly `backlog_sweep` task only after the user opts in with `config_setting set backlog_sweep_disabled false`. Mirrors `t3:scanning-news`'s cadence/ask-gate wiring; the queued task carries an `ASK-GATE` directive so the dispatched skill never mass-closes or mass-folds unattended. |
+| `backlog_sweep_disabled` | Kill switch for the periodic backlog-sweep scanner (`backlog_sweep`, #2419, #4344) — **ships open**, leaving the `backlog_sweep` `Loop` row (seeded `enabled = false`) as the single switch an operator flips. Set it to stop scheduling sweeps without touching the row. Mirrors `t3:scanning-news`'s cadence/ask-gate wiring; the queued task always carries the group-first, close-nothing-for-real directive. |
 | `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `sweeping-tickets`) |
-| `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 168 = weekly) |
-| `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep issue closes (default `true`). When on, the dispatched skill records each close/fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing — only the high-confidence shipped-by-merged-PR class auto-closes. Per-overlay overridable. |
+| `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 24 = daily) |
+| `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep row retirements (default `true`). When on, the dispatched skill records each fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing, and routes every retirement through the gated `ticket bulk-close`. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (default `1`, the headless-safe single in-flight stack; `0` = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay can relax to `0`; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `task_attempt_retention_days` | #3693: retention window (days) for `TaskAttempt` rows (default `30`, `0` disables). `t3 <overlay> retention prune` deletes attempts OLDER than this window whose owning task AND ticket are TERMINAL — never a live/in-flight row. Dry-run by default (`--apply` deletes). Per-overlay overridable; enforced by `teatree.core.retention`. |
 | `incoming_event_retention_days` | #3693: retention window (days) for `IncomingEvent` rows (default `30`, `0` disables). `retention prune` deletes only FINISHED events (drained/dead-lettered) received before this window; an un-processed, non-dead-lettered event is never pruned. Per-overlay overridable. |
@@ -464,20 +464,12 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 double-play to suppress. The config lives in the DB store (read cold via
 `cold_reader` on the Stop path); there is no other per-run state.
 
-**Away-gate.** When availability resolves to `away` (§5.6.3), local playback is
-silenced while the configured `slack` value is preserved — so no audio plays
-through the local speakers while the user is unreachable, but a Slack-attached
-rendition still reaches their phone. The gate lives at the PLAYBACK call site
-(`speak._speak_local` consults `_is_away()`), not in `resolve_speak()`, so the
-user's stored `speak` config is never mutated and every local consumer (`speak()`
-and the local leg of `deliver_user_dm`) is gated by the one check. The away
-check is exception-safe — a resolution failure is treated as **not** away (local
-plays), so it can never spuriously mute audio or turn `slack` off.
-
-**Meeting-mute (#2171).** Beside the away-gate, `_speak_local` also silences
-local playback while a configured presence backend reports the user IN A
-MEETING — same call-site gate, same Slack-arm exemption (a Slack-attached
-rendition still reaches the phone). It is opt-in via `[teatree.speak]
+**Meeting-mute (#2171).** `_speak_local` silences local playback while a
+configured presence backend reports the user IN A MEETING — the gate lives at
+the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
+config is never mutated and every local consumer (`speak()` and the local leg of
+`deliver_user_dm`) is gated by the one check. The `slack` arm is exempt (a
+Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
 presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
 token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
 resolves it: it probes the backend (`current_presence()`), caches the result

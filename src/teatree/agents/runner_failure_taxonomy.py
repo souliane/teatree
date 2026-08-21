@@ -23,6 +23,16 @@ from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_ra
 #: deliberate ceiling, so a ceiling breach carries its own named reason instead.
 RESULT_ERROR_PREFIX = "result_error: "
 
+#: The terminal ``ResultMessage`` subtype a run carries when it ended because it
+#: reached its own per-run turn ceiling — emitted by the ``claude`` CLI for the
+#: ``ClaudeAgentOptions.max_turns`` cap (``agent_max_turns``) and stamped by
+#: :mod:`teatree.agents.pydantic_ai_session` for that lane's ``UsageLimits`` request
+#: cap (``pydantic_ai_request_limit``). ONE subtype for one meaning, so both lanes
+#: land in the same branch. It distinguishes "the run was cut off at its ceiling"
+#: from every other failed result, so a cap is never mistaken for an ordinary error
+#: — nor an ordinary error laundered into a cap.
+TURN_CEILING_SUBTYPE = "error_max_turns"
+
 
 def error_result_reason(message: ResultMessage | None) -> str | None:
     """Return a failure reason when the run did NOT complete cleanly, else ``None``.
@@ -55,7 +65,16 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
     """Return the classified :class:`LimitMatch`, or ``None`` when not a limit error.
 
     Keyed on ``is_error`` so a healthy result whose text merely discusses limits
-    is never flagged. When the run IS an error and the stream carried a rejected
+    is never flagged. A run that ended at its OWN ceiling
+    (:data:`TURN_CEILING_SUBTYPE`) is never a provider window on either lane, by
+    that subtype's contract, so it short-circuits to ``None`` BEFORE any
+    text matching: the vendor's ``UsageLimitExceeded`` message names its own docs
+    ("see the docs on usage limits ..."), and phrase-matching that prose would
+    sort a self-imposed request cap into ``SUBSCRIPTION_SESSION`` and PARK a run
+    that must be recorded FAILED. Structured cause first, prose only as a
+    fallback — the same order the typed ``rate_limit_type`` branch below uses.
+
+    When the run IS an error and the stream carried a rejected
     :class:`~claude_agent_sdk.types.RateLimitInfo`, classify from its TYPED
     ``rate_limit_type`` window (unambiguous structured data — a ``seven_day_opus``
     is the WEEKLY cause, never a 5-hour one); otherwise fall back to phrase-matching
@@ -66,6 +85,8 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
     """
     if message is None or not message.is_error:
         return None
+    if message.subtype == TURN_CEILING_SUBTYPE:
+        return None
     if rate_limit_info is not None and rate_limit_info.status == "rejected":
         typed = classify_rate_limit_type(rate_limit_info.rate_limit_type)
         if typed is not None:
@@ -73,4 +94,4 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
     return classify_limit(str(message.result or ""))
 
 
-__all__ = ["RESULT_ERROR_PREFIX", "error_result_reason", "limit_match"]
+__all__ = ["RESULT_ERROR_PREFIX", "TURN_CEILING_SUBTYPE", "error_result_reason", "limit_match"]

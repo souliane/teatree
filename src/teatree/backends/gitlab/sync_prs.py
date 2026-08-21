@@ -95,7 +95,7 @@ def build_pr_entry(ctx: "_PRContext", *, username: str) -> PREntry:
     reviewers = raw.get("reviewers", [])
     if isinstance(reviewers, list):
         pr_entry.review_requested = bool(reviewers)
-        pr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]  # ty: ignore[no-matching-overload]
+        pr_entry.reviewer_names = [str(r.get("username", "")) for r in reviewers if isinstance(r, dict)]
 
     return pr_entry
 
@@ -150,15 +150,15 @@ def classify_discussions(
         if not isinstance(notes, list) or not notes:
             continue
 
-        first_body = str(notes[0].get("body", "")) if isinstance(notes[0], dict) else ""  # ty: ignore[no-matching-overload]
-        resolvable_notes = [n for n in notes if isinstance(n, dict) and n.get("resolvable")]  # ty: ignore[invalid-argument-type]
-        all_resolved = bool(resolvable_notes) and all(n.get("resolved") for n in resolvable_notes)  # ty: ignore[invalid-argument-type]
+        first_body = str(notes[0].get("body", "")) if isinstance(notes[0], dict) else ""
+        resolvable_notes = [n for n in notes if isinstance(n, dict) and n.get("resolvable")]
+        all_resolved = bool(resolvable_notes) and all(n.get("resolved") for n in resolvable_notes)
 
         if all_resolved:
             status = "addressed"
         else:
             last_note = notes[-1]
-            author_info = last_note.get("author", {}) if isinstance(last_note, dict) else {}  # ty: ignore[no-matching-overload]
+            author_info = last_note.get("author", {}) if isinstance(last_note, dict) else {}
             last_author = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""
             status = "waiting_reviewer" if last_author == author_username else "needs_reply"
 
@@ -176,11 +176,11 @@ def detect_e2e_test_plan(discussions: list[RawAPIDict], pr_url: str) -> str:
         for note in notes:
             if not isinstance(note, dict):
                 continue
-            body = str(note.get("body", ""))  # ty: ignore[no-matching-overload]
+            body = str(note.get("body", ""))
             has_image = "![" in body or "/uploads/" in body
             has_keyword = bool(_E2E_TEST_PLAN_RE.search(body))
             if has_keyword and has_image:
-                note_id = note.get("id")  # ty: ignore[invalid-argument-type]
+                note_id = note.get("id")
                 return f"{pr_url}#note_{note_id}" if note_id else pr_url
     return ""
 
@@ -261,7 +261,7 @@ def infer_state_from_prs(prs_data: dict[str, PREntryDict]) -> str:
             candidate = Ticket.State.STARTED
         else:
             approvals = pr.get("approvals")
-            has_approvals = isinstance(approvals, dict) and int(approvals.get("count", 0)) > 0  # ty: ignore[no-matching-overload]
+            has_approvals = isinstance(approvals, dict) and int(approvals.get("count", 0)) > 0
             review_requested = bool(pr.get("review_requested"))
             candidate = Ticket.State.IN_REVIEW if (has_approvals or review_requested) else Ticket.State.SHIPPED
         if Ticket.state_advances(best, candidate):

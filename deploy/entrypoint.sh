@@ -788,6 +788,42 @@ require_install_headroom() {
     fi
 }
 
+# The clone's own lockfile, rendered as a constraints file for `uv tool install`.
+#
+# `uv tool install --reinstall` RE-RESOLVES from the index and reads no lockfile — the
+# working directory makes no difference — so the deployed container has always run a
+# dependency graph that no CI lane ever resolved. That is not theoretical: gunicorn
+# 26.1.0 dropped its `packaging` dependency, `packaging` was reaching the tool env only
+# through that edge, and `teatree.utils.dep_skew` imports it on the `t3 doctor` path. The
+# doctor plane was down for 72 consecutive watchdog passes. `uv.lock` still pinned
+# gunicorn 26.0.0 the whole time, so every CI and dev venue stayed green.
+#
+# `--no-default-groups` is BOOT-SAFETY, not tidiness: an export carrying the dev group
+# pins `prek`, and the `uv tool install prek==<pin>` below then dies "your requirements
+# are unsatisfiable" under the image's ambient UV_CONSTRAINT — a bricked boot, strictly
+# worse than the bug. `--all-extras` keeps `[slack]` (the extra this role installs) in
+# scope. `--frozen` reads the committed lock and never re-resolves it, so this is
+# network-free and runs on the offline path too.
+#
+# A failed export writes a COMMENT-ONLY file rather than none: `uv tool install` errors
+# outright on a missing `--constraints` path, so the fallback has to be a file that
+# constrains nothing. The install then degrades to today's unconstrained resolve — the
+# bug — instead of taking the boot down with it.
+CONSTRAINTS_FILE="${CLONE_DIR}/uv-constraints.txt"
+
+ensure_uv_constraints() {
+    local tmp="${CONSTRAINTS_FILE}.tmp"
+    if uv export --no-hashes --no-emit-project --frozen --no-default-groups --all-extras \
+        --directory "$CLONE_DIR" -o "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$CONSTRAINTS_FILE"
+        echo "entrypoint: lockfile constraints regenerated at $CONSTRAINTS_FILE ($(grep -cE '^[a-zA-Z0-9]' "$CONSTRAINTS_FILE") pins)" >&2
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "entrypoint: WARNING could not export $CLONE_DIR/uv.lock as constraints - the install will RE-RESOLVE from the index (see #4049 class: an undeclared transitive dep can vanish under you)" >&2
+    printf '# uv export failed at boot - no constraints applied.\n' >"$CONSTRAINTS_FILE"
+}
+
 ensure_clone() {
     # VENDORED SUBTREE: core lives inside a downstream fork (`detect_host_root`
     # non-empty). The source is already on disk and is NOT a git clone —
@@ -858,15 +894,21 @@ ensure_clone() {
 # `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
 # could not boot Django looked identical to a healthy one and nobody ever saw it.
 #
-# `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
-# queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
-# is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
-# STDOUT (a Django boot traceback, a DB error). STDERR is captured SEPARATELY:
-# every t3 invocation emits a benign WARNING there (an overlay's skills-root
-# notice), so folding it into the emptiness test (2>&1) would misread every
-# empty-queue poll as a failure. Real failures increment a consecutive-failure
+# `t3 slack check` exits 0 when it drained messages and 2 with NO output when the
+# queue was empty (the common, healthy case on a quiet box) — so healthy is
+# EXACTLY rc==0 or rc==2. Everything else (including rc=1, regardless of
+# stdout) is a failure: rc=1 used to double as "empty queue" too, but a
+# crashing drain (Django boot failure, a DB error after a migration) ALSO
+# exits 1 with EMPTY stdout and a traceback on stderr — byte-identical to the
+# old "empty queue" signal — so that collision is now the crash signature,
+# not a healthy read. The Socket Mode singleton stand-down (another drain
+# already holds the lock) still exits 0 and stays healthy under this rule —
+# "0 = drained messages" is about to be false, it also covers "stood down".
+# STDERR is captured SEPARATELY: every t3 invocation emits a benign WARNING
+# there (an overlay's skills-root notice), which must not by itself flip a
+# healthy rc into a failure. Real failures increment a consecutive-failure
 # counter and log BOTH streams to stderr (visible in `docker compose logs
-# teatree-slack-listener`); an empty-queue exit never does.
+# teatree-slack-listener`); a healthy exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
 # container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
@@ -882,7 +924,7 @@ slack_drain_loop() {
     while true; do
         now="$(date +%s)"
         out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
-        if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+        if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
             consecutive=0
             last_ok="$now"
         else
@@ -902,6 +944,10 @@ case "$ROLE" in
 init)
     init_preflight
     ensure_clone
+    # Before ANY uv install: the image exports UV_CONSTRAINT at this path, and uv errors
+    # outright when a constraints file is missing, so it must exist for every role that
+    # later runs `t3 update` off this shared volume.
+    ensure_uv_constraints
     # Resolve the interpreter + editable install + prek. The self-contained image
     # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
     # box), so this is a fast no-op refresh when online and is skipped entirely when
@@ -915,6 +961,9 @@ init)
         # `uv tool install` never reads the package's own `[tool.uv] override-dependencies`,
         # so without it the SDK's `mcp` cap makes this reinstall unresolvable and the box
         # cannot boot. See uv-overrides.txt.
+        # `--constraints` is the LOCKFILE bound (see ensure_uv_constraints): without it
+        # this `--reinstall` re-resolves the whole graph from the index and can install
+        # versions no CI lane has ever run.
         # --with-editable registers the HOST project's `teatree.overlays` entry point
         # alongside core. Without it a vendored fork installs core only, every overlay
         # resolves to "not found", and each headless task on an overlay ticket dies at
@@ -923,7 +972,8 @@ init)
         set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
         require_install_headroom
         uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
-            --overrides "${CLONE_DIR}/uv-overrides.txt"
+            --overrides "${CLONE_DIR}/uv-overrides.txt" \
+            --constraints "${CONSTRAINTS_FILE}"
         # An install that produced a venv whose CLI cannot start is an install FAILURE, not
         # a later mystery (#4338). The console script is `t3_bootstrap:main` -> `from
         # teatree.cli import main`, so `--help` exercises the whole import chain - the exact

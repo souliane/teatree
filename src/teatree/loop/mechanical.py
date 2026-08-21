@@ -6,7 +6,7 @@ Called by ``tick._execute_mechanical`` after dispatch, before statusline render.
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django_fsm import can_proceed
 
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.task import Task
+    from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def payload_author_untrusted_public(payload: ActionPayload) -> bool:
 def ignore_disposed_ticket(payload: ActionPayload) -> None:
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    ticket_model = apps.get_model("core", "Ticket")
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
         return
@@ -81,7 +82,7 @@ def complete_ticket(payload: ActionPayload) -> None:
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    ticket_model = apps.get_model("core", "Ticket")
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
         return
@@ -102,7 +103,7 @@ def complete_ticket(payload: ActionPayload) -> None:
 def reopen_ticket(payload: ActionPayload) -> None:
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    ticket_model = apps.get_model("core", "Ticket")
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
         return
@@ -139,7 +140,7 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    ticket_model = apps.get_model("core", "Ticket")
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
         return
@@ -185,7 +186,7 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    ticket_model = apps.get_model("core", "Ticket")
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
         return

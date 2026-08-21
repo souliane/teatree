@@ -194,7 +194,7 @@ If the loop scanner is not yet wired on an older install, the fallback path is d
 
 - `t3:checking` — daily-routine pattern; its cron fallback is the same shape as this skill's.
 - `t3:contribute` — pushes improvements upstream; may pick up issues filed from this skill's approved candidates.
-- `t3:sweeping-tickets` — consolidation/triage flow; new issues get folded into a tracking epic or kept standalone on the next sweep.
+- `t3:sweeping-tickets` — the daily grouping sweep; new issues get folded into an existing host or kept standalone on the next pass.
 
 ---
 

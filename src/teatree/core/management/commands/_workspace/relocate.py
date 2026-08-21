@@ -7,15 +7,13 @@ on-disk path is NOT already under the resolved per-overlay ``target_root`` with
 the moved worktree stays linked to its clone), then rewrites the row's stored
 ``extra['worktree_path']``.
 
-Safety doctrine — a worktree is SKIPPED (never moved) and reported when it is:
-
-* **git-locked** (``git worktree lock``) — moving a locked worktree is refused;
-* **dirty** (uncommitted changes) — a live mid-task worktree's edits must not ride a move;
-* **active** — a live mid-task worktree: its ticket has a live session/active task, or the CWD is inside it.
+Which worktrees it refuses, and why, is :mod:`teatree.core.worktree.relocation` —
+shared with the ``t3 doctor`` canonical-root check so the doctor never prescribes
+this command for a worktree it would refuse.
 
 It is **idempotent** (a worktree already under ``target_root`` is a no-op),
 supports ``--dry-run`` (plan the moves, touch nothing), and **continues past a
-single failed move** (reports it, never aborts the run).
+single failed move** (reports it with git's own stderr, never aborts the run).
 """
 
 from collections.abc import Callable
@@ -27,9 +25,14 @@ from django.db import DatabaseError
 
 from teatree.config import OverlayEntry
 from teatree.core.models import Worktree
-from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.core.worktree.relocation import (
+    RelocationCandidate,
+    active_cwd,
+    half_move_target,
+    relocation_refusal,
+    relocation_target,
+)
 from teatree.utils import git
-from teatree.utils.git_worktree_query import canonical_repo_root
 from teatree.utils.run import CommandFailedError
 
 
@@ -60,103 +63,6 @@ class RelocateResult:
         return lines
 
 
-def _ticket_is_busy(worktree: Worktree) -> bool:
-    """True iff the worktree's ticket has a live session or an active/claimed task."""
-    return worktree.ticket.has_active_work()
-
-
-def _is_active_cwd(old_resolved: Path, active_path: Path | None) -> bool:
-    """True iff *active_path* is the worktree's own dir or a child of it."""
-    if active_path is None:
-        return False
-    return active_path == old_resolved or old_resolved in active_path.parents
-
-
-def _active_cwd() -> Path | None:
-    # Residual gap (acknowledged): this only sees THIS process's cwd, so a
-    # concurrent agent process whose cwd is inside the worktree is not caught
-    # here — the session/task liveness checks (``_ticket_is_busy``) cover that
-    # real agent case, so a live mid-task worktree is still skipped.
-    try:
-        return Path.cwd().resolve()
-    except OSError:
-        return None
-
-
-@dataclass(frozen=True)
-class _Candidate:
-    """One worktree row resolved for relocation: the row, its on-disk paths, its clone."""
-
-    worktree: Worktree
-    old: Path
-    old_resolved: Path
-    clone: str | None
-
-
-def _resolve_clone(worktree: Worktree, old: Path) -> str | None:
-    """The source clone ``git worktree move`` runs from (NOT *old* itself).
-
-    Three tiers, most authoritative first:
-
-    1.  the provision-time ``extra['clone_path']``;
-    2.  ``git rev-parse --git-common-dir`` read from the checkout itself
-        (:func:`canonical_repo_root`) — git's own answer, true for ANY layout;
-    3.  a scan of the OLD workspace root, kept as the last resort for a row whose
-        directory is gone from disk (git cannot be asked about a dir that is not
-        there).
-
-    Tier 2 is what makes relocate work on the worktrees that most need relocating.
-    Tier 3 assumes the canonical ``<old_ws>/<branch>/<repo>`` layout — it derives
-    the workspace root as ``old.parent.parent`` and looks for a clone named
-    ``repo_path`` under it — so on a NON-canonical path (exactly the case relocate
-    exists to repair) it scanned the wrong directory for the wrong name and
-    reported "source clone not found", skipping the worktree forever. Measured on
-    an ``<root>/<repo>/<branch>`` pair: both were refused, while
-    ``git rev-parse --git-common-dir`` named the clone correctly from inside each.
-    """
-    stored = (worktree.extra or {}).get("clone_path")
-    if stored:
-        return str(stored)
-    from_git = canonical_repo_root(old)
-    if from_git is not None:
-        return str(from_git)
-    found = find_clone_path(old.parent.parent, worktree.repo_path)
-    return str(found) if found is not None else None
-
-
-def _dirty_reason(old: Path) -> str | None:
-    """The skip reason for a dirty / undeterminable worktree, or ``None`` when clean.
-
-    Fail-closed: a ``git status`` error keeps the worktree (treated as "might be
-    dirty") so a flaky probe can't strand a live edit.
-    """
-    try:
-        dirty = bool(git.status_porcelain_strict(str(old)).strip())
-    except CommandFailedError:
-        return "could not determine git status (kept)"
-    return "uncommitted changes" if dirty else None
-
-
-def _skip_reason(candidate: _Candidate, target_root_resolved: Path, *, active_path: Path | None) -> str | None:
-    """The reason this worktree must NOT be moved, or ``None`` when it is movable.
-
-    Ordered cheapest-and-most-decisive first: idempotent-skip, missing source
-    clone, active CWD, busy ticket, git-lock, then the dirty probe.
-    """
-    old_resolved = candidate.old_resolved
-    if target_root_resolved == old_resolved or target_root_resolved in old_resolved.parents:
-        return f"already under {target_root_resolved}"
-    if candidate.clone is None:
-        return "source clone not found"
-    if _is_active_cwd(old_resolved, active_path):
-        return "active worktree (current working directory)"
-    if _ticket_is_busy(candidate.worktree):
-        return "ticket has a live session or active/claimed task"
-    if old_resolved in {Path(p) for p in git.locked_worktree_paths(candidate.clone)}:
-        return "git-locked"
-    return _dirty_reason(candidate.old)
-
-
 def _matches_overlay(worktree_overlay: str, overlay_name: str) -> bool:
     """Canonical-alias-tolerant overlay match (``teatree`` ≡ ``t3-teatree``)."""
     return OverlayEntry.canonical_overlay_name(worktree_overlay) == OverlayEntry.canonical_overlay_name(overlay_name)
@@ -179,15 +85,16 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
     *target_root* is the resolved per-overlay WORKTREE root
     (``config.worktree_root()``). Each movable worktree is moved with
     ``git worktree move`` and its row's ``extra['worktree_path']`` rewritten;
-    locked/dirty/active worktrees are skipped (reported), the run is idempotent,
-    ``dry_run`` plans without touching anything, and one failed move never aborts
-    the rest. A row whose recorded path is gone but whose worktree already sits
-    under *target_root* (a prior run's git move succeeded then the DB save threw)
-    is self-healed — see :func:`_reconcile_half_move`.
+    every worktree :func:`~teatree.core.worktree.relocation.relocation_refusal`
+    rejects is skipped with that reason, the run is idempotent, ``dry_run`` plans
+    without touching anything, and one failed move never aborts the rest. A row
+    whose recorded path is gone but whose worktree already sits under
+    *target_root* (a prior run's git move succeeded then the DB save threw) is
+    self-healed — see :func:`_reconcile_half_move`.
     """
     result = RelocateResult(dry_run=dry_run)
     target_root_resolved = target_root.resolve()
-    active_path = _active_cwd()
+    active_path = active_cwd()
 
     worktrees = (
         wt
@@ -205,21 +112,19 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
             # worktree already sits under target_root, a prior run's git move
             # succeeded then its DB save failed (the #regroup half-move). Heal the
             # row instead of skipping it forever.
-            target = _half_move_target(old, target_root_resolved)
+            target = half_move_target(old, target_root_resolved)
             if target is None:
                 _record_skip(result, io, f"{old}: worktree path missing on disk (stale row)")
             else:
                 _reconcile_half_move(result, io, worktree, target, dry_run=dry_run)
             continue
-        candidate = _Candidate(
-            worktree=worktree, old=old, old_resolved=old.resolve(), clone=_resolve_clone(worktree, old)
-        )
-        reason = _skip_reason(candidate, target_root_resolved, active_path=active_path)
+        candidate = RelocationCandidate.of(worktree, old)
+        reason = relocation_refusal(candidate, target_root_resolved, active_path=active_path)
         if reason is not None:
             _record_skip(result, io, f"{old}: {reason}")
             continue
 
-        target = target_root_resolved / candidate.old_resolved.parent.name / candidate.old_resolved.name
+        target = relocation_target(candidate.old_resolved, target_root_resolved)
         line = f"{old} -> {target}"
         if dry_run:
             result.moved.append(line)
@@ -230,12 +135,16 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
     return result
 
 
-def _move_one(result: RelocateResult, io: RelocateIO, candidate: _Candidate, target: Path, line: str) -> None:
-    """Execute one ``git worktree move`` + DB-row rewrite, reporting success/failure."""
+def _move_one(result: RelocateResult, io: RelocateIO, candidate: RelocationCandidate, target: Path, line: str) -> None:
+    """Execute one ``git worktree move`` + DB-row rewrite, reporting success/failure.
+
+    A failed move carries ``CommandFailedError``'s own text — git's stderr is what
+    makes an unforeseen refusal diagnosable at all, so it is never swallowed.
+    """
     with suppress(OSError):
         target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        # candidate.clone is non-None here: _skip_reason returned "source clone not found" otherwise.
+        # candidate.clone is non-None here: the refusal was "source clone not found" otherwise.
         git.worktree_move(str(candidate.clone), str(candidate.old), str(target))
     except CommandFailedError as exc:
         result.failed.append(f"{line}: {exc}")
@@ -255,19 +164,6 @@ def _move_one(result: RelocateResult, io: RelocateIO, candidate: _Candidate, tar
         return
     result.moved.append(line)
     io.write_out(f"  moved {line}")
-
-
-def _half_move_target(old: Path, target_root_resolved: Path) -> Path | None:
-    """The moved location of a half-moved worktree, or ``None`` when there is none.
-
-    A worktree row records ``<old_ws>/<branch>/<repo>``; its post-move home is
-    ``<target_root>/<branch>/<repo>``. When ``old`` is gone from disk but that
-    target exists AS a git worktree (a ``.git`` entry), a prior run moved it on
-    disk + git but failed to save the row — return the target so the caller heals
-    the row. Pure check: no DB write, no filesystem mutation.
-    """
-    target = target_root_resolved / old.parent.name / old.name
-    return target if (target / ".git").exists() else None
 
 
 def _reconcile_half_move(

@@ -20,6 +20,7 @@ from collections.abc import Callable
 
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
+    HEAD_SHA_UNREADABLE,
     ROLLUP_QUERY_FAILED,
     DraftState,
     ForgeMergeResult,
@@ -156,10 +157,21 @@ class GhMergeRpc:
         self._run = run
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        """The PR's head oid, or :data:`HEAD_SHA_UNREADABLE` when ``gh`` did not answer.
+
+        A non-zero rc is the forge DECLINING to answer, not a PR without a head.
+        Collapsing the two to ``""`` is what let ``review status`` report an
+        untouched ``merge_safe`` PR as ``stale — re-review needed`` for the length
+        of a GitHub 503: an empty head compares unequal to every reviewed SHA, so
+        the staleness test answered a question nobody could answer.
+
+        An rc-0 call with an empty body stays ``""`` — the forge DID answer, just
+        degradedly, and every caller already fails closed on a falsy sha.
+        """
         rc, out, _ = self._run(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "headRefOid", "--jq", ".headRefOid"],
         )
-        return out.strip() if rc == 0 else ""
+        return out.strip() if rc == 0 else HEAD_SHA_UNREADABLE
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         rc, out, _ = self._run(["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit,mergeable"])

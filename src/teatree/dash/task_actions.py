@@ -101,7 +101,7 @@ def _oldest_pending_task_per_phase(ticket: Ticket) -> dict[str, int]:
     disabled button and the POST refusal can never name two different tasks.
     """
     rows = (
-        ticket.tasks.filter(phase__in=ENQUEUEABLE_PHASES, status=Task.Status.PENDING)  # ty: ignore[unresolved-attribute]
+        ticket.tasks.filter(phase__in=ENQUEUEABLE_PHASES, status=Task.Status.PENDING)
         .order_by("-pk")
         .values_list("phase", "pk")
     )

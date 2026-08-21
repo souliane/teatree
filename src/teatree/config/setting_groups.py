@@ -29,7 +29,7 @@ Deliberately pydantic-free — it composes the same cold-safe registries
 
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import tomlkit
 from tomlkit import items as tomlkit_items
@@ -43,6 +43,9 @@ from teatree.config.registries import (
 )
 from teatree.config.setting_help import setting_help
 from teatree.config.settings import UserSettings
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 #: The bucket a key no declaration owns lands in — rendered last, under a visible banner.
 UNGROUPED_PATH: tuple[str, ...] = ("Ungrouped",)
@@ -80,9 +83,15 @@ class SettingGroupNode[RowT]:
         return self.path == UNGROUPED_PATH
 
 
-def _declaration_bases() -> tuple[type, ...]:
-    """Every ``UserSettings`` declaration base, in the order the bases tuple declares."""
-    return tuple(base for base in UserSettings.__mro__ if base not in {UserSettings, object})
+def _declaration_bases() -> "tuple[type[DataclassInstance], ...]":
+    """Every ``UserSettings`` declaration base, in the order the bases tuple declares.
+
+    ``__mro__`` is typed as plain ``type``; every entry here is a dataclass declaration
+    base by construction (``UserSettings`` is a dataclass and ``object`` is excluded),
+    which is what ``dataclasses.fields`` requires of its argument.
+    """
+    bases = (base for base in UserSettings.__mro__ if base not in {UserSettings, object})
+    return cast("tuple[type[DataclassInstance], ...]", tuple(bases))
 
 
 def _declared_path(base: type) -> tuple[str, ...]:

@@ -12,7 +12,7 @@ tests inject their own opted-in overlay set via ``get_all_overlays`` rather than
 relying on the shipped flag.
 """
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +21,10 @@ from django.test import TestCase
 
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig
+
+if TYPE_CHECKING:
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import ProvisionStep
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -39,7 +43,7 @@ class _Overlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return []
 
-    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
         _ = worktree
         return []
 

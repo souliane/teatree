@@ -337,6 +337,7 @@ Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each na
 | Subcommand | Description |
 | --- | --- |
 | `send` | Send a bot→user Slack DM (exit 0 on delivery, 1 otherwise) |
+| `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 | `react` | React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 
@@ -577,6 +578,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | --- | --- |
 | `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
+| `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
@@ -590,6 +592,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
@@ -650,9 +653,11 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `relocate` | Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup) |
 | `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
 | `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
+| `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
+| `branch-verdict` | Is this branch's work already on the default branch? The canonical answer (#4070) |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
 | `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |

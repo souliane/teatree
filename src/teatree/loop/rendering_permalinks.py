@@ -16,9 +16,14 @@ already produces via :mod:`teatree.backends.slack`.
 
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering_classification import _ClassifiedActions
+
+if TYPE_CHECKING:
+    from teatree.core.models.pull_request import PullRequest
+    from teatree.core.models.review_request_post import ReviewRequestPost
 
 
 def _slack_permalink(channel_id: str, thread_ts: str) -> str:
@@ -68,8 +73,8 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-        model = apps.get_model("core", "ReviewRequestPost")
-        pr_model = apps.get_model("core", "PullRequest")
+        model = cast("type[ReviewRequestPost]", apps.get_model("core", "ReviewRequestPost"))
+        pr_model = cast("type[PullRequest]", apps.get_model("core", "PullRequest"))
     except Exception:  # noqa: BLE001 — a permalink-build failure degrades to no mapping
         return {}
     result: dict[str, str] = {}

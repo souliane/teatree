@@ -82,9 +82,7 @@ class _GenuineAuthFailureAPI:
 
 
 def _service_with(stub: Any) -> ReviewService:
-    service = ReviewService(token="t")
-    service._get_api = lambda: stub  # type: ignore[method-assign]
-    return service
+    return ReviewService(token="t", api=stub)
 
 
 class TestApproveAlreadyApprovedIsIdempotent:

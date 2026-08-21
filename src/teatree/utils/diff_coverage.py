@@ -26,6 +26,10 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from coverage import Coverage
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _DIFF_FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
@@ -468,7 +472,7 @@ def measure_diff_coverage(
     return DiffCoverageReport(uncovered=uncovered, unreferenced_symbols=unreferenced)
 
 
-def _uncovered_via_fresh_analysis(cov: object, abs_path: str, added: set[int]) -> list[int]:
+def _uncovered_via_fresh_analysis(cov: "Coverage", abs_path: str, added: set[int]) -> list[int]:
     """Executable added lines for a file coverage never imported.
 
     ``coverage.analysis2`` still parses an *un-measured* source file and
@@ -477,7 +481,7 @@ def _uncovered_via_fresh_analysis(cov: object, abs_path: str, added: set[int]) -
     exactly the uncovered new lines.
     """
     try:
-        _, executable, _, missing, _ = cov.analysis2(abs_path)  # type: ignore[attr-defined]
+        _, executable, _, missing, _ = cov.analysis2(abs_path)
     except Exception:  # noqa: BLE001 — coverage raises various NoSource/CoverageException types
         return sorted(added)
     return sorted(added & set(executable) & set(missing))

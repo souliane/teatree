@@ -61,10 +61,29 @@ def _build_overlay(**config_kwargs: object) -> OverlayBase:
     return cast("OverlayBase", overlay)
 
 
+class _StubTokenConfig(OverlayConfig):
+    """An ``OverlayConfig`` whose token reads are fixed.
+
+    A real subclass, not a rebound bound method, so the double is type-checked
+    like production code.
+    """
+
+    def __init__(self, *, github: str = "", gitlab: str = "", slack: str = "") -> None:
+        super().__init__()
+        self._github, self._gitlab, self._slack = github, gitlab, slack
+
+    def get_github_token(self) -> str:
+        return self._github
+
+    def get_gitlab_token(self) -> str:
+        return self._gitlab
+
+    def get_slack_token(self) -> str:
+        return self._slack
+
+
 def _stub_token(overlay: OverlayBase, *, github: str = "", gitlab: str = "", slack: str = "") -> None:
-    overlay.config.get_github_token = lambda: github  # type: ignore[method-assign]
-    overlay.config.get_gitlab_token = lambda: gitlab  # type: ignore[method-assign]
-    overlay.config.get_slack_token = lambda: slack  # type: ignore[method-assign]
+    overlay.config = _StubTokenConfig(github=github, gitlab=gitlab, slack=slack)
 
 
 def test_get_code_host_returns_none_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:

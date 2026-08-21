@@ -76,7 +76,7 @@ class TestSweep(TestCase):
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
-    def test_returns_open_prs_for_authenticated_user(self) -> None:
+    def test_returns_open_prs_for_authenticated_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
 
         host = MagicMock()
@@ -100,7 +100,7 @@ class TestSweep(TestCase):
         overlay = CommandOverlay()
         # Per-instance config so we don't mutate the class-level default shared by other tests.
         overlay.config = OverlayConfig()
-        overlay.config.get_gitlab_username = lambda: "adrien"  # type: ignore[method-assign]
+        monkeypatch.setattr(overlay.config, "get_gitlab_username", lambda: "adrien")
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}):
             result = cast("dict[str, object]", call_command("pr", "sweep"))

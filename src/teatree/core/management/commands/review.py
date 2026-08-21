@@ -14,7 +14,12 @@ head SHA, and reports against the *latest* recorded verdict — ``safe-to-approv
 required-checks rollup is green), ``stale`` (a verdict exists but the head moved
 off the reviewed tree, so a re-review is needed), or ``no recorded verdict``.
 
-Forge calls (``CodeHostQuery.live_head_sha`` / ``CodeHostQuery.required_checks_status``)
+A forge that could not be READ gets its own two words — ``head unreadable`` and
+``checks unreadable`` — rather than borrowing ``stale``. The recorded verdict STANDS:
+nothing about the PR changed, only our ability to look at it, so the answer is to
+retry the read, never to spend a cold re-review on an untouched tree.
+
+Forge calls (``CodeHostQuery.live_head_read`` / ``CodeHostQuery.required_checks_status``)
 are the only external boundary; the rest is a DB read.
 """
 
@@ -28,6 +33,7 @@ from teatree.core.gates.schema_guard import SelfDbMigrationError, require_curren
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.core.models import (
     Finding,
     MergeClear,
@@ -361,9 +367,10 @@ class Command(RefusalExitTyperCommand):
 
         Parses the PR/MR URL, fetches the live head SHA, looks up the latest
         recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
-        (head moved — re-review needed), or ``no recorded verdict``. The point
-        is to avoid re-deriving a full cold review when a fresh verdict already
-        vouches for the current tree.
+        (head moved — re-review needed), ``head unreadable`` / ``checks
+        unreadable`` (the forge did not answer; the recorded verdict stands,
+        so retry the READ), or ``no recorded verdict``. The point is to avoid
+        re-deriving a cold review when a fresh verdict already vouches for it.
         """
         ref = pr_ref_from_url(mr_url)
         if ref is None:
@@ -376,7 +383,12 @@ class Command(RefusalExitTyperCommand):
             return {"state": "no_verdict", "slug": ref.slug, "pr_id": ref.pr_id}
 
         query = CodeHostQuery.for_ref(ref)
-        current_head = query.live_head_sha()
+        head = query.live_head_read()
+        stands = f"the recorded {recorded.verdict} at {recorded.reviewed_sha[:8]} STANDS — retry, do NOT re-review"
+        if head.unreadable:
+            self.stdout.write(f"  head unreadable: the forge named no head for {ref.slug}#{ref.pr_id} — {stands}")
+            return {"state": "head_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}
+        current_head = head.sha
         if recorded.is_stale_at(current_head):
             self.stdout.write(
                 f"  stale: verdict reviewed {recorded.reviewed_sha[:8]} but head moved to "
@@ -392,6 +404,9 @@ class Command(RefusalExitTyperCommand):
             }
 
         live_checks = query.required_checks_status()
+        if live_checks == CHECKS_UNREADABLE:
+            self.stdout.write(f"  checks unreadable: the forge named no verdict for {ref.slug}#{ref.pr_id} — {stands}")
+            return {"state": "checks_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}
         if recorded.is_safe_to_approve_at(current_head, live_checks_status=live_checks):
             self.stdout.write(
                 f"  safe-to-approve: {recorded.verdict} at {recorded.reviewed_sha[:8]}, checks green "

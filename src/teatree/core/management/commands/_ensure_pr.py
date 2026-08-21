@@ -30,7 +30,7 @@ from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
-from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
@@ -71,6 +71,8 @@ class DischargeResult(TypedDict, total=False):
     error: str
 
 
+#: Not a deferral: nothing is owed, so it discharges rather than renewing the obligation.
+EMPTY_DELTA_SKIP = "branch carries no changes over the default branch — its pull request would be empty"
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
 PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
@@ -142,11 +144,13 @@ def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResul
 def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
     """The answer a classification already carries, or ``None`` when a PR must be created.
 
-    A pure mapping over the classification — four of the five branch states are
+    A pure mapping over the classification — five of the six branch states are
     a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
     """
     if report.status is BranchStatus.SYNCED:
         return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
+    if report.status is BranchStatus.EMPTY_DELTA:
+        return EnsurePrResult(skipped=EMPTY_DELTA_SKIP, branch=branch_name)
     if report.status is BranchStatus.OPEN_PR:
         return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
     if report.status is BranchStatus.UNPUSHED_ORPHAN:
@@ -266,12 +270,18 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
     overlay = get_overlay()
+    owning_ticket = _ticket_for_branch(branch_name)
     close_ticket = should_close_ticket(
         _ticket_extra_for_branch(branch_name),
         setting_enabled=overlay.config.mr_close_ticket,
     )
     description = sanitize_close_keywords(
-        auto_created_description(title, commit_body),
+        auto_created_description(
+            title,
+            commit_body,
+            branch=branch_name,
+            issue_url=(owning_ticket.issue_url or "") if owning_ticket is not None else "",
+        ),
         close_ticket=close_ticket,
     )
     description = ensure_standard_body(
@@ -280,6 +290,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         section_defaults=overlay.metadata.get_description_section_defaults(),
     )
     warn_if_open_questions_missing(description)
+    warn_if_owner_ratification_unbacked(description)
     warn_if_precheck_incomplete(description)
 
     remote = git.remote_url(repo=repo_path)
@@ -290,7 +301,6 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     # per-repo open-PR budget, or when the branch introduces unwaived net-new tech
     # debt. Both inert at their DARK/neutral defaults; a genuinely orphan branch (no
     # owning ticket) has no budget/plan scope, so the checks are skipped.
-    owning_ticket = _ticket_for_branch(branch_name)
     gate_error = _owning_ticket_pre_create_gate(owning_ticket, repo_slug, repo_path, branch_name, host)
     if gate_error is not None:
         return gate_error

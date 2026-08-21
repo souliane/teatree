@@ -92,6 +92,15 @@ whatever the commit probe concluded.
 `emit` is **read-only** — it removes nothing. `clean-all` already removed the
 provably-redundant; this surfaces the rest for you to route.
 
+**A branch `emit` does not mention is landed — never re-derive that by hand.** To ask
+about one specific branch (or re-check a routing decision), run
+`t3 <overlay> workspace branch-verdict <branch> …` — the same three-layer verdict as a
+per-branch query, described in [`../workspace/SKILL.md`](../workspace/SKILL.md) § "Is this
+branch landed? One canonical answer". A hand-rolled `git cherry origin/main HEAD` /
+`git branch --merged` / `git merge-base --is-ancestor` answers by SHA or ancestry, both of
+which a squash-merge defeats — that is how three already-merged branches were once
+escalated as unshipped work.
+
 ### 2. Route each record, in this order
 
 ```dot

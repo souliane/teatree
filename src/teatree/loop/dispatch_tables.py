@@ -172,8 +172,14 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # a completed action, not a request, so it stays in the diagnostic family.
     "pr_sweep.flag_conflict": "action_needed",
     "pr_sweep.flag_no_review": "action_needed",
+    "pr_sweep.flag_held": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
+    # A persistent refusal — every reason that rides ``decision="blocked"``,
+    # ``keystone_refused`` among them — is the same shape: the sweep declined and
+    # will decline again next pass, so it needs an operator decision rather than
+    # another silent log line.
+    "pr_sweep.blocked": "action_needed",
     # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
     # duplicate-scope drift the factory was blind to until a human asked. Each
     # finding needs an operator decision (salvage/push/dedup), and an errored
@@ -228,14 +234,17 @@ SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending",
 # conflict, a missing independent cold-review on a solo overlay, a PR whose
 # required red judged a stale base the sweep declined to merge-update (#4063),
 # or a colleague-facing own PR that is mergeable but uncleared and
-# awaits the operator's review-request decision. They share the ``pr_sweep.``
+# awaits the operator's review-request decision, or a merge the keystone REFUSED
+# (every ``decision="blocked"`` reason). They share the ``pr_sweep.``
 # prefix for log grouping but must escape the diagnostic drop so the operator
 # sees them — the same exemption shape as the CI-green-gate self_update skip
 # above.
 PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset(
     {
+        "pr_sweep.blocked",
         "pr_sweep.flag_conflict",
         "pr_sweep.flag_no_review",
+        "pr_sweep.flag_held",
         "pr_sweep.needs_branch_update",
         "pr_sweep.flag_mergeable",
     }

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.core.models import OutboundClaim as OutboundClaimModel
     from teatree.loop.scanners.outbound_audit import Verifier
     from teatree.types import RawAPIDict
@@ -81,7 +82,7 @@ def slack_dm_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     return _verify
 
 
-def gitlab_api_for_overlay(overlay_name: str) -> object | None:
+def gitlab_api_for_overlay(overlay_name: str) -> "GitLabAPI | None":
     """Build a ``GitLabAPI`` instance using the named overlay's credentials.
 
     Returns ``None`` when the overlay can't be resolved, its GitLab token
@@ -187,7 +188,7 @@ def gitlab_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
         if not artifact_id.isdigit():
             return VerifyResult.ok()
         try:
-            api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{artifact_id}")  # type: ignore[attr-defined]
+            api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{artifact_id}")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == HTTPStatus.NOT_FOUND:
                 return VerifyResult.drift(f"GitLab note {artifact_id} not found on !{mr}")
@@ -209,7 +210,7 @@ def gitlab_approve_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     if api is None:
         return None
     try:
-        my_username = api.current_username()  # type: ignore[attr-defined]
+        my_username = api.current_username()
     except Exception:  # noqa: BLE001 — an unreachable API degrades to no verifier
         return None
     if not my_username:
@@ -223,7 +224,7 @@ def gitlab_approve_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
             return VerifyResult.ok()
         encoded = repo.replace("/", "%2F")
         try:
-            approvals = api.get_json(f"projects/{encoded}/merge_requests/{mr}/approvals")  # type: ignore[attr-defined]
+            approvals = api.get_json(f"projects/{encoded}/merge_requests/{mr}/approvals")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == HTTPStatus.NOT_FOUND:
                 return VerifyResult.drift(f"GitLab MR !{mr} approvals endpoint 404")

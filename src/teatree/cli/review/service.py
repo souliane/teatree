@@ -50,6 +50,7 @@ from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
 
 if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.cli.review.guarded_read import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -79,9 +80,16 @@ class ReviewService:
     :mod:`teatree.cli.review.forge_target`.
     """
 
-    def __init__(self, token: str, *, repo: str = "") -> None:
+    def __init__(self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "") -> None:
         self.token = token
         self.repo = repo
+        # Injected forge handle. ``None`` (every production caller) keeps the lazy
+        # build in :meth:`_get_api`; a test passes its own double here instead of
+        # rebinding the private method on a live instance.
+        self._api = api
+        # Injected forge base URL. Empty (every production caller) resolves from
+        # ``repo`` as before; a test supplies one instead of rebinding the method.
+        self._base_url = base_url
 
     @staticmethod
     def read_gitlab_token(repo: str = "") -> "ReadOutcome[str]":
@@ -93,14 +101,16 @@ class ReviewService:
         """The API token for the forge that owns *repo*, or ``""`` when it cannot be read."""
         return read_token(repo).value
 
-    def _get_api(self):  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
+    def _get_api(self) -> "GitLabAPI":
+        if self._api is not None:
+            return self._api
         from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
 
     def _resolve_base_url(self) -> str:
         """The GitLab API base URL this service's posts are addressed to."""
-        return resolve_base_url(self.repo)
+        return self._base_url or resolve_base_url(self.repo)
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""

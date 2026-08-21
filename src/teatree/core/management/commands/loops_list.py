@@ -128,12 +128,26 @@ def _preset_note(verdict: LoopVerdict | None) -> str:
     return f"  {tag} ({verdict.detail})"
 
 
+def _withholding_note(loop: Loop, now: dt.datetime) -> str:
+    """``attempted <age> ago`` when a tick ran more recently than the anchor it advanced.
+
+    The whole visible difference between a loop nothing drives and one whose every pass
+    declines to stamp. Without it, ``last 257h`` on a loop being driven every ten minutes
+    reads as "nothing drives this" — which is what #4355 was filed as.
+    """
+    attempted = loop.last_attempt_at
+    if attempted is None or (loop.last_run_at is not None and attempted <= loop.last_run_at):
+        return ""
+    return f"  (attempted {_human_duration((now - attempted).total_seconds())} ago)"
+
+
 def _line(row: "_LoopRow", now: dt.datetime) -> str:
     loop = row.loop
     state = _effective_state(row.verdict, loop, row.status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(row.verdict, loop, row.status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
+    line += _withholding_note(loop, now)
     if row.mini_loop is not None and row.mini_loop.tags:
         line += f"  [{' '.join(row.mini_loop.tags)}]"
     if loop.colleague_facing:
@@ -166,6 +180,7 @@ def _payload(row: "_LoopRow", now: dt.datetime) -> dict[str, Any]:
         "daily_at": loop.daily_at.strftime("%H:%M") if loop.daily_at else "",
         "cadence": loop.cadence_label,
         "last_run_at": loop.last_run_at.isoformat() if loop.last_run_at else "",
+        "last_attempt_at": loop.last_attempt_at.isoformat() if loop.last_attempt_at else "",
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
         "colleague_facing": loop.colleague_facing,

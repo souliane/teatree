@@ -857,6 +857,9 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            # The venue's owned root decides whether a missing registration may be
+            # pruned at all (#4287), so it must name the same workspace as above.
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
             # The clones have no remote: pin the two network-adjacent seams so the
             # test exercises the worktree lifecycle, not git's remote plumbing.
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
@@ -1373,3 +1376,73 @@ class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
         assert (wt_path / ".git").exists(), "the worktree was not created over the partial directory"
         assert git.current_branch(str(wt_path)) == branch
         assert not (wt_path / "half-written.txt").exists()
+
+
+class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
+    """souliane/teatree#4287: a checkout mounted elsewhere is not deregistered from here.
+
+    Reconcile answered two questions with a filesystem probe taken in the READING
+    venue. ``git worktree prune`` dropped every registration whose directory it
+    could not stat, and the #706 work guard reported "no work" for the same
+    paths — so a container-side provision deregistered host checkouts (86 of
+    them, once) and deleted the branch refs that were their last reference.
+
+    Real git under ``tmp_path``: the assertions read the clone's own admin dir
+    and branch list, never a decision object.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, at: Path) -> Path:
+        at.mkdir(parents=True)
+        git.run_strict(repo=str(at), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(at), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(at), args=["config", "user.name", "t"])
+        (at / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(at), args=["add", "-A"])
+        git.run_strict(repo=str(at), args=["commit", "-q", "-m", "init"])
+        return at
+
+    def _provision(self, branch: str) -> Any:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/4287",
+            repos=["repo-a"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def _admin_entries(self, clone: Path) -> set[str]:
+        admin = clone / ".git" / "worktrees"
+        return {entry.name for entry in admin.iterdir()} if admin.is_dir() else set()
+
+    def test_a_registration_this_venue_cannot_stat_keeps_its_admin_dir_and_its_branch(self) -> None:
+        # The incident's shape: the branch this ticket wants is held by a checkout
+        # that lives in a subtree this process never had mounted. Unstattable is not
+        # deleted, so neither the registration nor the branch ref may be dropped.
+        clone = self._clone(self.workspace / "repo-a")
+        branch = "4287-mounted-elsewhere"
+        elsewhere = self.tmp / "never-mounted-here" / "repo-a"
+        elsewhere.parent.mkdir()
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(elsewhere)])
+        shutil.rmtree(elsewhere.parent)
+
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            result = self._provision(branch)
+
+        assert result.ok is False, "provisioning over an unreadable checkout must fail loudly"
+        assert self._admin_entries(clone) == {"repo-a"}, "the registration was pruned on a venue-local reading"
+        assert branch in git.run_strict(repo=str(clone), args=["branch", "--list", branch])
+        assert "unreadable in this execution context" in "\n".join(logs.output)

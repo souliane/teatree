@@ -389,6 +389,16 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert action.kind == "statusline"
         assert action.zone == "action_needed"
 
+    def test_held_flag_surfaces_in_action_needed(self) -> None:
+        # #4380: a contested head — a HOLD standing at the live head that a later
+        # merge_safe superseded under newest-wins — is refused by the autonomous
+        # merge and needs a human to reconcile. Without the PR_SWEEP_FLAG_KINDS
+        # entry the "pr_sweep." drop prefix swallows it and the refusal is silent.
+        action = self._action("pr_sweep.flag_held", "contested_hold_at_head")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
     def test_no_review_flag_with_review_dispatched_routes_to_in_flight(self) -> None:
         # #68: a flag whose review was auto-armed is in-flight work, not an
         # operator-triage item — the loop is handling it.
@@ -400,6 +410,16 @@ class PrSweepFlagStatuslineTests(TestCase):
         actions = dispatch([signal])
         assert actions[0].kind == "statusline"
         assert actions[0].zone == "in_flight"
+
+    def test_a_blocked_signal_reaches_the_statusline(self) -> None:
+        # A persistent refusal (``keystone_refused`` and every other reason that
+        # rides ``decision="blocked"``) is a flag-level outcome the scanner
+        # deliberately did NOT act on. Without the PR_SWEEP_FLAG_KINDS entry the
+        # "pr_sweep." drop prefix swallows it and the refusal is invisible.
+        action = self._action("pr_sweep.blocked", "keystone_refused")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
 
     def test_diagnostic_pr_sweep_outcomes_still_dropped(self) -> None:
         # Anti-vacuous: the exemption is flag-only — a normal merged/skip

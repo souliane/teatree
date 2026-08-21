@@ -22,8 +22,8 @@ class _SourceRead(Enum):
     """What one per-pid liveness source actually yielded, judged on RESOLUTION.
 
     ``UNREADABLE`` (the listing itself refused) and ``BLIND`` (entries are there
-    and NOT ONE resolves) are ONE knowledge state — this process cannot see what
-    that pid holds — so they share a consequence and differ only in the reason
+    and NOT ALL of them resolve) are ONE knowledge state — this process cannot see
+    what that pid holds — so they share a consequence and differ only in the reason
     reported. ``GONE`` is the benign absence: an ``ENOENT`` means the pid exited
     mid-walk, which is a table that moved rather than one this uid may not read.
     """
@@ -39,7 +39,7 @@ class _SourceRead(Enum):
 _GATED_SOURCES = ("fd", "map_files")
 
 _UNKNOWABLE_CAUSE: dict[_SourceRead, str] = {
-    _SourceRead.BLIND: "listable but nothing resolves",
+    _SourceRead.BLIND: "listable but not fully resolvable",
     _SourceRead.UNREADABLE: "not readable by this uid",
 }
 _REASON_PID_SAMPLE = 5
@@ -194,6 +194,13 @@ def _resolved_links(path: Path) -> tuple[frozenset[str], _SourceRead]:
     An empty-but-readable directory IS an answer contributing nothing — every
     kernel thread presents one, so scoring it a non-answer would blind the probe
     on any real ``/proc`` and leave the sweep permanently inert.
+
+    Per link, ONLY ``ENOENT`` is an absence — an fd closed between the listing and
+    the ``readlink`` is genuinely gone. Every other errno is a link this walk could
+    not read, so the source has not answered for its pid even when the siblings did:
+    the same absence/blindness split ``_lstat_all`` draws one level up in the sweep.
+    Whatever DID resolve is returned either way, because a partial read still names
+    real holders and dropping them can only shrink the guarded set.
     """
     try:
         entries = list(path.iterdir())
@@ -202,13 +209,16 @@ def _resolved_links(path: Path) -> tuple[frozenset[str], _SourceRead]:
     except OSError:
         return frozenset(), _SourceRead.UNREADABLE
     resolved: set[str] = set()
+    unresolved = False
     for link in entries:
         try:
             resolved.add(str(link.readlink()))
-        except OSError:
+        except FileNotFoundError:
             continue
-    if entries and not resolved:
-        return frozenset(), _SourceRead.BLIND
+        except OSError:
+            unresolved = True
+    if entries and (unresolved or not resolved):
+        return frozenset(resolved), _SourceRead.BLIND
     return frozenset(resolved), _SourceRead.ANSWERED
 
 

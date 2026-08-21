@@ -34,7 +34,8 @@ from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from tests.factories import planned_ticket
 
 _MODEL = "claude-opus-4-8"
 
@@ -182,10 +183,13 @@ class TestTerminalResultReportsProviderFailure:
         assert _DROPPED_TRANSPORT in (terminal.result or "")
 
     def test_a_usage_limit_is_a_max_turns_failure_the_classifier_cannot_claim(self) -> None:
-        # The run hit its OWN step cap — a genuine FAILED, never a limit park. Its
-        # message must therefore name no limit phrase, or a real failure would be
-        # laundered into an infinitely re-parked task.
-        from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local assertion
+        # The run hit its OWN step cap — a genuine FAILED, never a limit park. The
+        # taxonomy must refuse to claim it as a provider window, or a real failure
+        # would be laundered into an infinitely re-parked task. Asserted on
+        # `limit_match` (the decision point) rather than `classify_limit` (a raw
+        # substring matcher): the vendor's message now names its own docs on "usage
+        # limits", so the matcher alone can no longer carry this property.
+        from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
         session = PydanticAiHarnessSession(Agent(_two_request_model()), model_name=_MODEL, request_limit=1)
 
@@ -193,7 +197,7 @@ class TestTerminalResultReportsProviderFailure:
 
         assert terminal.is_error is True
         assert terminal.subtype == "error_max_turns"
-        assert classify_limit(terminal.result or "") is None
+        assert limit_match(terminal) is None
 
     def test_a_programming_error_still_propagates_to_the_durable_failure_path(self) -> None:
         # The handler is NARROW on purpose: a defect in teatree's own code must keep
@@ -246,7 +250,13 @@ class TestATextPreambleDoesNotEndTheRun:
             return "the issue body"
 
         session = PydanticAiHarnessSession(
-            Agent(_preamble_then_tool_model("read_issue"), tools=[read_issue]), model_name=_MODEL, phase="coding"
+            # Suppressed below: pydantic-ai 2.33 types `tools` as
+            # `Sequence[Tool[AgentDepsT] | ToolFuncEither[AgentDepsT, ...]]` and NO overload
+            # accepts a plain function, whatever its arity (reproduced on a 2-line probe
+            # outside this repo); the call is correct and is exercised at runtime below.
+            Agent(_preamble_then_tool_model("read_issue"), tools=[read_issue]),  # ty: ignore[no-matching-overload]
+            model_name=_MODEL,
+            phase="coding",
         )
         messages = _drive(session, "implement the ticket")
         terminal = _terminal(messages)
@@ -319,7 +329,7 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")

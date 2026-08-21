@@ -8,6 +8,7 @@ resolver is tested hermetically, independent of the ambient environment.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -246,7 +247,7 @@ class TestTempToDiskManagedConfig:
 
     _TEMP_ENV_PATHS: tuple[tuple[str, ...], ...] = (("env", "TMPDIR"), ("env", "PYTEST_DEBUG_TEMPROOT"))
 
-    def _committed(self) -> dict[str, object]:
+    def _committed(self) -> dict[str, Any]:
         return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
 
     def test_temp_env_routes_off_the_tmpfs_to_disk(self) -> None:
@@ -267,7 +268,7 @@ class TestTempToDiskManagedConfig:
     def test_temp_env_drift_is_detected(self, tmp_path: Path) -> None:
         template = _COMMITTED_TEMPLATE
         target = self._committed()
-        target["env"]["TMPDIR"] = "/tmp"  # type: ignore[index]  # host diverged back onto the tmpfs
+        target["env"]["TMPDIR"] = "/tmp"  # host diverged back onto the tmpfs
         target_path = _write(tmp_path / "t.json", target)
         assert "env.TMPDIR" in managed_key_drift(template, target_path, env={})
 
@@ -283,14 +284,14 @@ class TestTempToDiskManagedConfig:
     def test_drift_flags_a_dropped_temp_cleanup_rule(self, tmp_path: Path) -> None:
         template = _COMMITTED_TEMPLATE
         target = self._committed()
-        target["permissions"]["allow"] = ["Bash(git:*)"]  # type: ignore[index]  # operator dropped the temp grants
+        target["permissions"]["allow"] = ["Bash(git:*)"]  # operator dropped the temp grants
         target_path = _write(tmp_path / "t.json", target)
         assert "permissions.allow" in managed_key_drift(template, target_path, env={})
 
     def test_operator_extra_grant_beside_temp_rules_is_not_drift(self, tmp_path: Path) -> None:
         template = _COMMITTED_TEMPLATE
         target = self._committed()
-        allow = target["permissions"]["allow"]  # type: ignore[index]
+        allow = target["permissions"]["allow"]
         assert isinstance(allow, list)
         allow.append("Bash(operator-tool:*)")  # operator addition beside every managed grant
         target_path = _write(tmp_path / "t.json", target)
@@ -308,7 +309,7 @@ class TestEnabledPluginsManagedConfig:
 
     _PLUGIN_PATH: tuple[str, ...] = ("enabledPlugins", "t3@souliane")
 
-    def _committed(self) -> dict[str, object]:
+    def _committed(self) -> dict[str, Any]:
         return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
 
     def test_template_enables_the_t3_plugin(self) -> None:
@@ -319,7 +320,7 @@ class TestEnabledPluginsManagedConfig:
 
     def test_drift_detected_when_plugin_disabled_on_host(self, tmp_path: Path) -> None:
         target = self._committed()
-        target["enabledPlugins"]["t3@souliane"] = False  # type: ignore[index]  # host disabled the plugin
+        target["enabledPlugins"]["t3@souliane"] = False  # host disabled the plugin
         target_path = _write(tmp_path / "t.json", target)
         assert "enabledPlugins.t3@souliane" in managed_key_drift(_COMMITTED_TEMPLATE, target_path, env={})
 
@@ -340,7 +341,7 @@ class TestPyrightLspPluginManagedConfig:
 
     _PLUGIN_PATH: tuple[str, ...] = ("enabledPlugins", "pyright-lsp@claude-plugins-official")
 
-    def _committed(self) -> dict[str, object]:
+    def _committed(self) -> dict[str, Any]:
         return json.loads(_COMMITTED_TEMPLATE.read_text(encoding="utf-8"))
 
     def test_template_enables_the_pyright_plugin(self) -> None:
@@ -351,7 +352,7 @@ class TestPyrightLspPluginManagedConfig:
 
     def test_drift_detected_when_plugin_disabled_on_host(self, tmp_path: Path) -> None:
         target = self._committed()
-        target["enabledPlugins"]["pyright-lsp@claude-plugins-official"] = False  # type: ignore[index]
+        target["enabledPlugins"]["pyright-lsp@claude-plugins-official"] = False
         target_path = _write(tmp_path / "t.json", target)
         assert "enabledPlugins.pyright-lsp@claude-plugins-official" in managed_key_drift(
             _COMMITTED_TEMPLATE, target_path, env={}

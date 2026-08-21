@@ -3,7 +3,8 @@
 The seven model-free deterministic lanes (catalog-discovery, skill-coverage,
 pinned-regressions, negative-control, transcript-replay, corpus-grade,
 skill-command-validity) always run; catalog-discovery FAILs when an overlay surface
-RAISED and contributed no scenarios (a shrunken catalog is invisible to every other
+contributed no scenarios because it RAISED or named a directory that is not there, and
+when the core count falls below its floor (a shrunken catalog is invisible to every other
 guard — the run still executes, still meters, still reports green),
 skill-coverage FAILs on an uncovered skill (Phase-B enforcement, matching the
 ``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate), transcript-replay
@@ -40,7 +41,7 @@ from teatree.cli.eval.transcript_replay import replay_transcript_for_all
 from teatree.cli.eval.verdict import LaneResult, print_verdict
 from teatree.eval.backends import TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import CoverageReport, skill_eval_coverage
-from teatree.eval.discovery import ScenarioCatalog, discover_catalog
+from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog, discover_catalog
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
@@ -122,22 +123,24 @@ def coverage_lane(report: CoverageReport) -> LaneResult:
 
 
 def catalog_discovery_lane(catalog: ScenarioCatalog) -> LaneResult:
-    """FAIL when an overlay surface contributed nothing because it RAISED.
+    """FAIL when an overlay surface contributed nothing, or the core catalog shrank.
 
     A shrunken catalog passes every other guard in the suite: the run still
     executes scenarios, still meters spend, and still reports green — it simply
-    never evaluates the overlay half. This is the only lane that can see it.
+    never evaluates the part that vanished. This is the only lane that can see it,
+    so it reads both routes: an overlay that raised or named a missing directory,
+    and a core count that fell below :data:`~teatree.eval.discovery.CORE_CATALOG_FLOOR`.
     """
-    detail = (
-        f"{len(catalog.specs)} scenarios discovered"
-        if catalog.is_complete
-        else f"{len(catalog.specs)} scenarios discovered; "
-        + "; ".join(f"{name}: {reason}" for name, reason in sorted(catalog.degraded.items()))
-    )
+    above_floor = catalog.core_count >= CORE_CATALOG_FLOOR
+    detail = f"{len(catalog.specs)} scenarios discovered ({catalog.core_count} core, floor {CORE_CATALOG_FLOOR})"
+    if not above_floor:
+        detail += "; the CORE catalog SHRANK — scenarios were removed, or SCENARIOS_DIR no longer resolves"
+    if not catalog.is_complete:
+        detail += "; " + "; ".join(f"{name}: {reason}" for name, reason in sorted(catalog.degraded.items()))
     return LaneResult(
         name="catalog-discovery",
         cost="model-free",
-        passed=catalog.is_complete,
+        passed=catalog.is_complete and above_floor,
         skipped=False,
         detail=detail,
     )
@@ -347,8 +350,9 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     The bare ``t3 eval`` default calls this. The seven model-free deterministic lanes
     (catalog-discovery, skill-coverage, pinned-regressions, negative-control,
     transcript-replay, corpus-grade, skill-command-validity) always run;
-    catalog-discovery FAILs when an overlay surface raised and contributed no
-    scenarios (the one degradation no other lane can see),
+    catalog-discovery FAILs when an overlay surface raised or named a missing
+    directory, and when the core count falls below its floor (the one degradation
+    no other lane can see),
     transcript-replay SKIPs when no real session
     transcript is in scope (a missing run is not a violation), corpus-grade grades
     the ground-truth corpus deterministically (judge entries skip), and

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from teatree.loop.loop_cadences import (
     drain_cadence_seconds,
@@ -23,6 +23,7 @@ from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 if TYPE_CHECKING:
     from teatree.core.managers import OwnershipStatus
+    from teatree.core.models.loop_lease import LoopLease
 
 
 def _configured_overlay_names() -> list[str]:
@@ -113,7 +114,7 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-    lease_model = apps.get_model("core", "LoopLease")
+    lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
     rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
     return [(row.name, row.acquired_at) for row in rows]
 
@@ -132,7 +133,7 @@ def _live_lease_drivers() -> dict[str, tuple[str, str]]:
     from django.utils import timezone  # noqa: PLC0415 — deferred: keep this module Django-free at import
 
     try:
-        lease_model = apps.get_model("core", "LoopLease")
+        lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
         rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id", "driver")
         return {row.name: (row.session_id, row.driver) for row in rows}
     except Exception:  # noqa: BLE001 — fail-open: a broken driver read never blanks the loop line

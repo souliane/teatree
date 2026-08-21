@@ -226,6 +226,22 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
 # ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
 # owns "what did this interpreter load".
+# 110: -fast_push.py (C1 leak-gate fix follow-up) — fast_push.py (the leak-gated fast
+# delivery lane hub, #67 above) gained a second module, push_range.py (the range the leak
+# gates now scan — the whole push range, not just the staged delta), and the pair collapsed
+# into the subpackage core/push/ instead of landing push_range.py flat at the root beside
+# it. Mirrors retention/'s own history (#102 above): a flat hub becomes a subpackage once it
+# grows a second module, rather than each one separately arguing for a root slot. One root
+# leaf leaves (fast_push.py) and the new helper never lands at the root, netting -1 against
+# the pre-existing baseline of 111.
+# 111: +overlay_repos.py (#4515) — the one derivation of "which forge repos does this
+# overlay work in?". Both the intake scanner (which issues to claim, via
+# loop/scanner_factories) and the external-outcome measure (which repos' merges count as
+# output) read the same slug set, and a second derivation would let the two disagree about
+# what the factory's own repos are. That shared readership is what keeps it at the root:
+# intake/ cannot own it without factory/ reaching across, and factory/ cannot own it
+# without intake/ doing the same. Same shape as claim_liveness.py (#4164) above — a small
+# ORM-free derivation two subpackages consult, so it belongs to neither.
 PINNED_FLAT_CORE_MODULES = 111
 
 

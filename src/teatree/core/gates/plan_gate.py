@@ -7,6 +7,10 @@ rather than scattered ad-hoc checks.
 
 Mirrors dod_gate.py: a standalone module with a single check function so the
 gate has one non-bypassable chokepoint and is independently testable.
+
+It governs one FSM EDGE, which a synthetic corrective re-entry never takes — the
+DISPATCH-seam sibling that refuses an implementing agent on a ticket carrying
+neither satisfying signal is ``plan_dispatch_gate`` (#4409).
 """
 
 from typing import TYPE_CHECKING

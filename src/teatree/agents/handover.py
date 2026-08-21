@@ -5,7 +5,7 @@ from pathlib import Path
 from django.conf import settings
 
 _DEFAULT_STATUSLINE_STATE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
-_DEFAULT_AGENT_HANDOVER = [
+_DEFAULT_AGENT_HANDOVER: list[dict[str, object]] = [
     {
         "runtime": "claude-code",
         "telemetry": {

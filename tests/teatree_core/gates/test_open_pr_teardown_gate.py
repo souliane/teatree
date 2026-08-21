@@ -21,8 +21,11 @@ API behind ``get_pr_open_state``.
     "unknown" as "not open".
 * ``TestOverride`` — ``--allow-open-prs`` is the escape, and it is NOT
     ``--force`` (which only waives the unpushed-commit guard).
-* ``TestNoForgeRemote`` — a repo with no forge origin is CLEAR, not
-    inconclusive: no forge, therefore no MR to protect.
+* ``TestNoForgeRemote`` — a repo with a READABLE origin on a non-forge host is
+    CLEAR, not inconclusive: no forge, therefore no MR to protect.
+* ``TestUnreadableRepo`` — a repo whose remote cannot be read at all (a
+    corrupted ``.git``, no ``origin`` configured) is UNKNOWN and refuses,
+    never collapsed onto the same CLEAR outcome as a genuine non-forge host.
 """
 
 import json
@@ -233,8 +236,30 @@ class TestOverride(_TeardownHarness):
         self.assert_nothing_reclaimed()
 
 
+class TestUnreadableRepo(_TeardownHarness):
+    """M4: an unreadable repo must refuse teardown, not read as "no forge, nothing to protect".
+
+    Distinct from ``TestFailsClosed``'s forge-CLI failures: here the *git remote
+    read itself* cannot run (a corrupted ``.git``), which used to collapse onto
+    :attr:`~teatree.core.forge_pr_probe.PrProbeOutcome.NONE` — the same outcome
+    as a genuinely non-forge remote — and let destructive teardown proceed.
+    """
+
+    def test_an_unreadable_repo_blocks_teardown(self) -> None:
+        (self.open_dir / ".git").unlink()
+        with self._forge_cli(open_branches=set()), pytest.raises(OpenPullRequestTeardownError) as exc:
+            self._teardown()
+        assert "unknown" in str(exc.value)
+        self.assert_nothing_reclaimed()
+
+
 class TestNoForgeRemote(_TeardownHarness):
-    remote = ""
+    # A READABLE origin pointing at a host that is not GitHub/GitLab — distinct
+    # from TestUnreadableRepo below, where the remote cannot be read AT ALL. An
+    # origin-less repo is no longer exercised here: `git remote get-url origin`
+    # fails non-zero with no `origin` configured too, so (per M4) it is now
+    # correctly UNKNOWN, not CLEAR — it is indistinguishable from "could not read".
+    remote = "git@git.example.org:acme-org/backend.git"  # privacy-scan:allow
 
     def test_a_repo_with_no_forge_origin_is_clear(self) -> None:
         with patch.object(probe_mod, "run_allowed_to_fail", side_effect=AssertionError("must not probe")):
@@ -297,8 +322,11 @@ class TestGateHelpersDirect(_TeardownHarness):
         assert gate_mod._open_pr_url_for_branch(self.clone, "") is None
 
     def test_open_pr_url_for_branch_uses_the_github_probe_on_a_github_remote(self) -> None:
+        remote = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="https://github.com/acme/backend", stderr=""
+        )
         with (
-            patch.object(probe_mod.git, "remote_url", return_value="https://github.com/acme/backend"),
+            patch.object(probe_mod, "run_with_status", return_value=remote),
             patch.object(probe_mod, "_probe_open_pr", return_value=probe_mod.PrProbe.none()) as probe,
         ):
             assert gate_mod._open_pr_url_for_branch(self.clone, "feature") == ""

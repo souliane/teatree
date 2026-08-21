@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.core.fast_push import FastPusher, FastPushOutcome
+from teatree.core.push.fast_push import FastPusher, FastPushOutcome
 
 
 def fast_push(

@@ -20,7 +20,7 @@ command renders — stored verbatim so the planner reads structured data, not pr
 """
 
 from collections.abc import Mapping
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -51,8 +51,14 @@ class LandscapeArtifact(models.Model):
         db_table = "teatree_landscape_artifact"
         ordering: ClassVar = ["-recorded_at"]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
+
     def __str__(self) -> str:
-        return f"landscape-artifact<ticket:{self.ticket_id}@{self.recorded_at.isoformat()[:19]}>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"landscape-artifact<ticket:{self.ticket_id}@{self.recorded_at.isoformat()[:19]}>"
 
     @classmethod
     def latest_for(cls, ticket: "models.Model") -> "LandscapeArtifact | None":
