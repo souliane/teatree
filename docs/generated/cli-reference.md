@@ -8100,18 +8100,23 @@ Usage: t3 teatree worktree [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ provision   Run DB import + env cache + direnv + prek + overlay setup steps  │
-│             for one worktree.                                                │
-│ start       Boot ``docker compose up`` for one worktree.                     │
-│ verify      Run overlay health checks for one worktree.                      │
-│ ready       Run runtime readiness probes for one worktree.                   │
-│ teardown    Stop docker, drop DB, remove git worktree, delete row.           │
-│ status      Report FSM state, branch, and allocated host ports for one       │
-│             worktree.                                                        │
-│ diagnose    Print a structured health checklist for one worktree.            │
-│ smoke-test  Quick health check: overlay loads, CLI responds, imports OK.     │
-│ diagram     Print a state diagram as Mermaid. Models: worktree, ticket,      │
-│             task.                                                            │
+│ provision          Run DB import + env cache + direnv + prek + overlay setup │
+│                    steps for one worktree.                                   │
+│ start              Boot ``docker compose up`` for one worktree.              │
+│ verify             Run overlay health checks for one worktree.               │
+│ ready              Run runtime readiness probes for one worktree.            │
+│ teardown           Stop docker, drop DB, remove git worktree, delete row.    │
+│ status             Report FSM state, branch, and allocated host ports for    │
+│                    one worktree.                                             │
+│ diagnose           Print a structured health checklist for one worktree.     │
+│ smoke-test         Quick health check: overlay loads, CLI responds, imports  │
+│                    OK.                                                       │
+│ diagram            Print a state diagram as Mermaid. Models: worktree,       │
+│                    ticket, task.                                             │
+│ occupancy          Show every checkout a live agent currently holds.         │
+│ claim-occupancy    Claim a checkout for a hand-driven lane, refusing if an   │
+│                    agent already holds it.                                   │
+│ release-occupancy  Hand a checkout back, naming whose claim was freed.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8292,6 +8297,59 @@ Usage: t3 teatree worktree diagram [OPTIONS]
 │ --model         TEXT     [default: worktree]                                 │
 │ --ticket        INTEGER                                                      │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree occupancy`
+
+```
+Usage: t3 teatree worktree occupancy [OPTIONS]
+
+ Show every checkout a live agent currently holds (#3952).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree claim-occupancy`
+
+```
+Usage: t3 teatree worktree claim-occupancy [OPTIONS] PATH
+
+ Claim a checkout for a hand-driven lane, or refuse naming who already holds
+ it.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --holder                TEXT     Identity recorded as the occupant.          │
+│ --holder-session        TEXT     Session qualifier, so two runs of one       │
+│                                  holder differ.                              │
+│ --lease-seconds         INTEGER  Override the configured claim TTL.          │
+│                                  [default: 0]                                │
+│ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree worktree release-occupancy`
+
+```
+Usage: t3 teatree worktree release-occupancy [OPTIONS] PATH
+
+ Hand a checkout back, naming whose claim was freed.
+
+ Frees whoever currently holds it rather than only the caller's own claim:
+ this is the operator's escape for a holder that died without releasing,
+ and it is the command every refusal points at. It touches the four claim
+ columns and nothing else — no directory, branch, container or process.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

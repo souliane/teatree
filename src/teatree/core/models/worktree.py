@@ -66,6 +66,18 @@ class Worktree(models.Model):
     # in-flight evidence work, so reaping it would force a slow re-provision to
     # re-capture. Null = no E2E run has touched it.
     last_e2e_run = models.DateTimeField(null=True, blank=True)
+    # #3952 Advisory occupancy claim — WHICH agent currently holds this checkout.
+    # The ``Task`` seam's dedupe (#3903) stops two Tasks for one ticket+phase; it
+    # does not stop two agents that already hold checkouts, and the autonomous
+    # posture routinely puts a loop-minted agent and an operator-dispatched one on
+    # the same path. Taken and released by ``core.worktree.occupancy``, which owns
+    # every read and write of these four columns. Blank/null = unheld. The lease is
+    # advisory: it refuses a SECOND requester, it never evicts the first, and no
+    # code path deletes a checkout on the strength of it.
+    occupied_by = models.CharField(max_length=255, blank=True, default="")
+    occupied_by_session = models.CharField(max_length=255, blank=True, default="")
+    occupied_at = models.DateTimeField(null=True, blank=True)
+    occupancy_expires_at = models.DateTimeField(null=True, blank=True)
 
     objects = WorktreeManager()
 

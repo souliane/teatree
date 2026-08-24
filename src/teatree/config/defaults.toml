@@ -312,6 +312,8 @@ task_result_retention_days = 1 # int — days a task result row is kept
 task_sweep_disabled = false # bool — stop sweeping abandoned tasks back into the queue
 task_sweep_recheck_interval_hours = 1 # int — hours between rechecks of a swept task
 ticket_transition_prune_disabled = false # bool — stop pruning old ticket transition rows
+worktree_occupancy_gate_enabled = true # bool — refuse a second agent the checkout another agent already holds
+worktree_occupancy_lease_seconds = 1800 # int — how long an agent's claim on a checkout stands without a heartbeat
 
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated

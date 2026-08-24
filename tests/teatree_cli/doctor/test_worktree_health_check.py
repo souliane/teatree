@@ -15,11 +15,13 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_worktree_health import (
+    _check_occupied_checkouts,
     _check_one_worktree_root,
     _check_registered_worktrees_are_checkouts,
     check_worktree_health,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree.occupancy import acquire
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -236,6 +238,30 @@ class OneWorktreeRootCheckTest(_TmpTestCase):
 
         assert ok is True
         assert out == ""
+
+
+class OccupiedCheckoutCheckTest(_TmpTestCase):
+    """#3952: who holds a checkout is reported, and holding one is never a failure."""
+
+    def test_an_unheld_registry_is_silent(self) -> None:
+        self._register(self.tmp / "roots" / "free", branch="free")
+
+        ok, out = _echoes(_check_occupied_checkouts)
+
+        assert ok is True
+        assert out == ""
+
+    def test_a_held_checkout_is_reported_as_info_with_its_holder(self) -> None:
+        held = self._register(self.tmp / "roots" / "busy", branch="busy")
+        acquire(held, holder="task:7", holder_session="session-A")
+
+        ok, out = _echoes(_check_occupied_checkouts)
+
+        assert ok is True
+        assert "INFO" in out
+        assert "task:7" in out
+        assert "session-A" in out
+        assert "release-occupancy" in out
 
 
 class WorktreeHealthAggregateTest(_TmpTestCase):

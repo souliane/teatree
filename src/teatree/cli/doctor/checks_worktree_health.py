@@ -122,15 +122,38 @@ def _check_one_worktree_root() -> bool:
     return True
 
 
+def _check_occupied_checkouts() -> bool:
+    """Report every checkout a live agent holds (#3952) — informational, never a failure.
+
+    An occupied checkout is the system working as designed, so this is INFO: it
+    exists so a second actor wondering why its request was refused can see WHO
+    holds the tree without reading the DB, and so a claim outliving its holder is
+    visible rather than only discoverable at the next refusal.
+    """
+    from teatree.core.worktree.occupancy import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        held_worktrees,
+    )
+
+    for worktree, holder in held_worktrees():
+        typer.echo(
+            f"INFO  Checkout {worktree.worktree_path or '<unprovisioned>'} is held by {holder.describe()}. "
+            "A second agent is refused it rather than sharing it. Release with "
+            f"t3 <overlay> worktree release-occupancy {worktree.worktree_path} once the holder is gone."
+        )
+    return True
+
+
 def check_worktree_health() -> bool:
-    """Both worktree-health checks, each evaluated so neither masks the other.
+    """Every worktree-health check, each evaluated so none masks the others.
 
     An unreadable worktree registry (no DB, a migration mid-flight) WARNs rather
     than failing the doctor run: this check reports on state it reads, so being
     unable to read it is "unverified", never "broken".
     """
     try:
-        return all((_check_registered_worktrees_are_checkouts(), _check_one_worktree_root()))
+        return all(
+            (_check_registered_worktrees_are_checkouts(), _check_one_worktree_root(), _check_occupied_checkouts())
+        )
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Worktree health UNVERIFIED: the worktree registry could not be read ({exc}).")
         return True

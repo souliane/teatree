@@ -174,6 +174,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "task_sweep_recheck_interval_hours": _parse_strict_int,
     "target_branch": _parse_strict_str,
     "max_concurrent_local_stacks": _parse_strict_int,
+    "worktree_occupancy_gate_enabled": _parse_strict_bool,
+    "worktree_occupancy_lease_seconds": _parse_strict_int,
     "task_attempt_retention_days": _parse_strict_int,
     "deferred_question_age_ceiling_days": _parse_strict_int,
     "incoming_event_retention_days": _parse_strict_int,

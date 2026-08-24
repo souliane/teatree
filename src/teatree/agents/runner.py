@@ -74,6 +74,13 @@ from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.task_claim import describe_lease_loss, drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.occupancy import (
+    WorktreeOccupancyLostError,
+    WorktreeOccupiedError,
+    occupy_ticket_checkout,
+    renew_ticket_checkout,
+    task_holder_id,
+)
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -141,18 +148,37 @@ def run_agent(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Drive an agent for *task* in-process via the ``agent_harness`` backend.
+    """Drive an agent for *task* in-process, holding its checkout for the whole run (#3952).
 
-    The drive runs inside :func:`~teatree.core.models.task_claim.drive_claim` (#4164), so
-    a sweep can tell a memory-thrashed event loop that stalled past its 900s lease from a
-    dead worker — in-process (the ``loops``-queue sweeps, sibling threads of this one) AND
-    cross-process (``reclaim_orphaned_claims`` / ``reap_stale_claims``, which run inside the
-    separate ``loops_tick`` subprocess every tick spawns). Without it a sweep reads the
-    lapsed lease as death, fails the row (which does not kill this process) and enqueues a
-    SECOND agent onto the same worktree.
+    The #3903 Task-seam dedupe cannot see an agent that ALREADY holds a checkout,
+    so the loop's own agent and an operator-dispatched one land in one working
+    tree and interleave commits. The claim is taken here — the outermost point of
+    a dispatch, before the harness resolves — and released on every exit path.
+    A refusal is a recorded FAILED attempt naming the incumbent: the run must not
+    proceed into a tree someone else is editing, and it must not vanish silently.
+
+    Nested INSIDE that claim, the drive runs inside
+    :func:`~teatree.core.models.task_claim.drive_claim` (#4164), so a sweep can tell a
+    memory-thrashed event loop that stalled past its 900s lease from a dead worker —
+    in-process (the ``loops``-queue sweeps, sibling threads of this one) AND cross-process
+    (``reclaim_orphaned_claims`` / ``reap_stale_claims``, which run inside the separate
+    ``loops_tick`` subprocess every tick spawns). Without it a sweep reads the lapsed lease
+    as death, fails the row (which does not kill this process) and enqueues a SECOND agent
+    onto the same worktree.
+
+    The order is load-bearing: occupancy refuses a tree another holder is already editing
+    before any lease work happens, and ``drive_claim`` then keeps the lease alive for the
+    run occupancy admitted. Collapsing either one re-opens the bug the other closes.
     """
-    with drive_claim(task):
-        return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    try:
+        with (
+            occupy_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session),
+            drive_claim(task),
+        ):
+            return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    except WorktreeOccupiedError as exc:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        return _record_failure(task, error=str(exc))  # no-usage: refused before the harness opened — no turn billed
 
 
 def _run_agent(
@@ -415,8 +441,25 @@ def _renew_lease_closing_connection(task: Task) -> None:
     """
     try:
         task.renew_lease(lease_seconds=_LEASE_SECONDS)
+        # The checkout claim rides the SAME heartbeat as the task lease (#3952): a
+        # long coding run must not let its occupancy TTL lapse under it and hand a
+        # live working tree to the next requester. A claim this run does not hold
+        # (the ticket was unprovisioned at dispatch, or the gate is off) renews
+        # nothing — the heartbeat must never manufacture one mid-run.
+        #
+        # Guarded on ``ticket_id`` rather than ``task.ticket``: an unsaved/ticketless
+        # Task raises on the descriptor, and the LEASE renewal above is the
+        # load-bearing half — the occupancy add-on must never be what breaks it.
+        if task.ticket_id is not None:  # ty: ignore[unresolved-attribute]  # Django FK accessor
+            renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
     except LeaseLostError as exc:
         raise LeaseLostError(describe_lease_loss(task)) from exc
+    except WorktreeOccupancyLostError as exc:
+        # Re-raised as a lost LEASE so the heartbeat's existing abort path fires: a run
+        # whose checkout claim moved on has lost its right to drive just as surely as one
+        # whose task claim did, and continuing would put two agents in one working tree.
+        msg = f"lease lost for task {task.pk}: {exc}"
+        raise LeaseLostError(msg) from exc
     finally:
         close_thread_db_connections()
 
