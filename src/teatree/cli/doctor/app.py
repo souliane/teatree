@@ -14,6 +14,12 @@ from importlib.metadata import PackageNotFoundError
 
 import typer
 
+from teatree.cli.doctor.checks_admission_pressure import (
+    _check_box_occupancy,
+    _check_drain_lane_starved,
+    _check_intake_budget_deadlock,
+    _check_starved_intake_candidates,
+)
 from teatree.cli.doctor.checks_bootstrap import (
     _check_claude_settings_drift,
     _check_gh_token_permissions,
@@ -39,20 +45,16 @@ from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
-    _check_box_occupancy,
     _check_compose_output_root_pinned,
-    _check_drain_lane_starved,
     _check_dream_consolidation_blocked,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
-    _check_intake_budget_deadlock,
     _check_intake_pass_incomplete,
     _check_loop_classification_drift,
     _check_loop_presets,
     _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
-    _check_starved_intake_candidates,
     _check_t3_master_unheld_while_loops_tick,
     _check_unconsumed_merge_clears,
 )

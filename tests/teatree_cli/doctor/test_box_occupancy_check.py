@@ -14,7 +14,7 @@ from unittest.mock import patch
 import django.test
 
 import teatree.cli.doctor.run_checks as doctor_runner
-from teatree.cli.doctor.checks_loop import _check_box_occupancy
+from teatree.cli.doctor.checks_admission_pressure import _check_box_occupancy
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.models import Task
 

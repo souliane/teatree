@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.cli.doctor.checks_loop import _check_drain_lane_starved
+from teatree.cli.doctor.checks_admission_pressure import _check_drain_lane_starved
 from teatree.core.factory.drain_starvation import DRAIN_STARVED_AFTER
 from teatree.core.models import Session, Task, Ticket
 

@@ -14,7 +14,7 @@ from unittest.mock import patch
 import django.test
 from django.utils import timezone
 
-from teatree.cli.doctor.checks_loop import _check_intake_budget_deadlock
+from teatree.cli.doctor.checks_admission_pressure import _check_intake_budget_deadlock
 from teatree.config import UserSettings
 from teatree.core.models import ImplementedIssueMarker, PullRequest, Task, Ticket
 from tests.factories import ImplementedIssueMarkerFactory, PullRequestFactory, TaskFactory, TicketFactory
