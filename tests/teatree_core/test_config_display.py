@@ -26,17 +26,32 @@ class TestIsSecret:
 
 
 class TestRenderValue:
-    """Booleans as on/off, every empty as a single dash, else the value's text."""
+    """Booleans as on/off, each empty as ITS OWN word, else the value's text."""
 
     def test_booleans_render_on_off(self) -> None:
         assert render_value(value=True) == "on"
         assert render_value(value=False) == "off"
 
-    def test_every_empty_renders_a_dash(self) -> None:
+    def test_each_empty_reads_as_a_different_thing(self) -> None:
+        # #4078: one em-dash for all four made an empty list indistinguishable from an unset
+        # value, which is precisely the distinction someone choosing a default needs. The four
+        # renderings must be pairwise different — asserted as a set so the test states the
+        # PROPERTY rather than freezing four particular strings.
+        rendered = [render_value(None), render_value(""), render_value([]), render_value({})]
+        assert len(set(rendered)) == 4, rendered
+
+    def test_an_unset_value_still_reads_as_the_dash(self) -> None:
+        # `None` keeps the em-dash: it is the one that genuinely means "no value here".
         assert render_value(None) == "—"
-        assert render_value("") == "—"
-        assert render_value([]) == "—"
-        assert render_value({}) == "—"
+
+    def test_an_empty_collection_says_it_is_empty_rather_than_absent(self) -> None:
+        # The owner's report: a `[]` must not read as "unset". Both name their own shape.
+        assert "empty" in render_value([])
+        assert "list" in render_value([])
+        assert "empty" in render_value({})
+
+    def test_an_empty_string_says_it_is_empty_text(self) -> None:
+        assert "empty" in render_value("")
 
     def test_a_present_value_renders_its_text(self) -> None:
         assert render_value("auto") == "auto"

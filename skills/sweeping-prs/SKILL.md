@@ -9,7 +9,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # PR Sweep — Batch Maintenance for Open PRs
@@ -138,7 +137,11 @@ Subject to mode (canonical rule: [`../rules/SKILL.md`](../rules/SKILL.md) § "Pu
 
 ### Step 7 — CI watch
 
-After push, watch the pipeline. On red, delegate to the existing fix-push-monitor loop (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Monitor Pipeline" and [`../debug/SKILL.md`](../debug/SKILL.md)). When it goes green:
+**Date the red before you fix it.** A branch behind the default carries the default's *old* defects, so its red may belong to a bug already fixed upstream — the check-run's `started_at`, not its failure text, is what distinguishes that from a defect the PR introduced. Two cheap reads settle it: how far behind the branch is, and whether the default branch is green on that same check now. If the red predates the fix, Step 4's merge IS the whole remedy; queueing a fix agent against it burns an agent on a defect that no longer exists.
+
+Read the counts honestly too: a zero-failure tally means nothing while checks are `queued` or `in_progress`, and a paginated read is required wherever the check count can exceed one page.
+
+On red that is genuinely the PR's own, delegate to the existing fix-push-monitor loop (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Monitor Pipeline" and [`../debug/SKILL.md`](../debug/SKILL.md)). When it goes green:
 
 - **`bulk-update`** policy: mark the PR done and move to the next.
 - **`serial-merge`** policy: continue to Step 7.5, then Step 8.

@@ -78,10 +78,8 @@ class _StubAPI:
 
 
 def _service(*, approvers: list[str] | None = None) -> tuple[ReviewService, _StubAPI]:
-    s = ReviewService(token="t")
     stub = _StubAPI(approvers=approvers)
-    s._get_api = lambda: stub  # type: ignore[method-assign]
-    s._resolve_base_url = lambda: "https://gitlab.example.com/api/v4"  # type: ignore[method-assign]
+    s = ReviewService(token="t", api=stub, base_url="https://gitlab.example.com/api/v4")
     return s, stub
 
 
@@ -165,18 +163,20 @@ class TestFailurePathsDoNotRecordClaims:
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _gate_off(tmp_path, monkeypatch)
 
-    def test_approve_failure_does_not_record(self) -> None:
+    def test_approve_failure_does_not_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A genuine 500 with the identity NOT in approved_by — the idempotent
         # "already approved" probe (#1029) must not mask the real failure.
         service, stub = _service(approvers=[])
-        stub.post_status = lambda _endpoint: 500  # type: ignore[method-assign]
+        monkeypatch.setattr(stub, "post_status", lambda _endpoint: 500)
         _msg, code = service.approve("org/repo", 7)
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
-    def test_review_first_precondition_blocks_approve_and_records_no_claim(self) -> None:
+    def test_review_first_precondition_blocks_approve_and_records_no_claim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         service, stub = _service()
-        stub.get_json_paginated = lambda _endpoint: []  # type: ignore[method-assign]
+        monkeypatch.setattr(stub, "get_json_paginated", lambda _endpoint: [])
         _msg, code = service.approve("org/repo", 8)
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()

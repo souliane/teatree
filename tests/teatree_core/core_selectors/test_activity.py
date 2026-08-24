@@ -3,7 +3,6 @@
 Split verbatim from the former monolithic ``tests/teatree_core/test_selectors.py`` (souliane/teatree#443).
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,7 +11,6 @@ from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.selectors import _last_result_for_tasks, build_active_sessions, build_recent_activity
-from tests._agent_runtime_env import interactive_runtime
 
 
 class TestRecentActivityTokens(TestCase):
@@ -22,11 +20,9 @@ class TestRecentActivityTokens(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             ended_at=timezone.now(),
             input_tokens=1500,
@@ -48,11 +44,9 @@ class TestRecentActivityTokens(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             ended_at=timezone.now(),
         )
@@ -66,13 +60,6 @@ class TestRecentActivityTokens(TestCase):
 
 
 class TestBuildActiveSessions(TestCase):
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     @pytest.fixture(autouse=True)
     def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self.monkeypatch = monkeypatch
@@ -108,11 +95,9 @@ class TestBuildActiveSessions(TestCase):
             status=Task.Status.CLAIMED,
             claimed_by="worker",
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             agent_session_id="test-session-abc",
         )
         # Claimed task without agent_session_id — exercises the falsy branch at selectors.py:521
@@ -124,7 +109,6 @@ class TestBuildActiveSessions(TestCase):
             status=Task.Status.CLAIMED,
             claimed_by="worker2",
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
         result = build_active_sessions()
@@ -137,9 +121,6 @@ class TestBuildActiveSessions(TestCase):
         assert result[0].name == "my-session"
         assert result[0].task_id == task.pk
         assert result[0].ticket_id == ticket.pk
-        # ``coding`` is loop-dispatched, so the Task.save() invariant routes it
-        # to INTERACTIVE — the selector renders that as its kind.
-        assert result[0].kind == "interactive"
         assert result[0].phase == "coding"
 
     def test_handles_invalid_json(self) -> None:
@@ -190,7 +171,6 @@ class TestBuildActiveSessions(TestCase):
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             agent_session_id="done-session",
         )
 
@@ -222,11 +202,9 @@ class TestBuildActiveSessionsCorrectness(TestCase):
             status=Task.Status.CLAIMED,
             claimed_by="worker",
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             agent_session_id=agent_session_id,
         )
         return task
@@ -275,7 +253,6 @@ class TestBuildActiveSessionsCorrectness(TestCase):
         )
         TaskAttempt.objects.create(
             task=finished_task,
-            execution_target=finished_task.execution_target,
             agent_session_id="shared",
         )
         # Task B is active and its latest attempt is driven by the SAME session.
@@ -308,12 +285,10 @@ class TestBuildRecentActivity(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             phase="testing",
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             ended_at=timezone.now(),
             result={"summary": "All pass"},
@@ -321,7 +296,6 @@ class TestBuildRecentActivity(TestCase):
         # Attempt without ended_at should not appear
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=None,
         )
 
@@ -337,11 +311,9 @@ class TestBuildRecentActivity(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=1,
             ended_at=timezone.now(),
             result="not-a-dict",
@@ -366,11 +338,9 @@ class TestLastResultForTasks(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             result={"summary": "Done"},
         )
 
@@ -385,11 +355,9 @@ class TestLastResultForTasks(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             result={"other_key": "value"},  # No "summary" key -> empty summary
         )
 

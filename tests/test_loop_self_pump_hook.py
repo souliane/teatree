@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/hook_router.py; no single src/teatree/ mirror.
 """Tests for the loop self-pump Stop hook (#758 / board #50 / #786 WS4).
 
 The self-pump replaces the manual coordinator pump: when an agent
@@ -38,6 +39,7 @@ from hooks.scripts.hook_router import (
     handle_loop_self_pump,
     handle_session_end_self_pump,
 )
+from teatree.utils.singleton import current_context
 
 
 @pytest.fixture(autouse=True)
@@ -585,17 +587,15 @@ class TestSelfPumpHonorsPause:
 
     The self-pump is teatree's own re-firing Stop directive: it re-emits
     ``{"decision": "block", ...}`` to resume the loop every turn while
-    consolidated work remains. When the user has explicitly paused
-    (availability resolves to ``away``), that nag must SUPPRESS — the same
-    away/present precedence the AskUserQuestion deferral already honours.
-    Failing safe means an indeterminate pause signal also suppresses the
-    pump (allow the stop) rather than nagging through a pause.
+    consolidated work remains. A durable ``LoopState`` pause on the loop must
+    SUPPRESS that nag. Failing safe means an indeterminate pause signal also
+    suppresses the pump (allow the stop) rather than nagging through a pause.
     """
 
     def _set_pause(self, monkeypatch: pytest.MonkeyPatch, *, suppressed: bool) -> None:
-        monkeypatch.setattr(router, "_pause_suppresses_self_pump", lambda: suppressed)
+        monkeypatch.setattr(router, "db_loop_state_suppresses_self_pump", lambda: suppressed)
 
-    def test_away_suppresses_the_pump_even_with_pending_work(
+    def test_a_paused_loop_suppresses_the_pump_even_with_pending_work(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _own_loop("owner-1")
@@ -621,11 +621,11 @@ class TestSelfPumpHonorsPause:
         assert _decision(capsys).get("decision") == "block"
         assert result is True
 
-    def test_away_pump_does_not_probe_pending_work(
+    def test_a_paused_loop_does_not_probe_pending_work(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The pause check short-circuits before any ``pending-spawn``
-        # subprocess — a paused owner does not even shell out to ``t3``.
+        # subprocess — a paused loop does not even shell out to ``t3``.
         _own_loop("owner-1")
         probed = {"called": False}
 
@@ -653,10 +653,10 @@ class TestSelfPumpHonorsPause:
         _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
         def _boom() -> bool:
-            msg = "availability backend unreachable"
+            msg = "loop-state backend unreachable"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(router, "_pause_suppresses_self_pump", _boom)
+        monkeypatch.setattr(router, "db_loop_state_suppresses_self_pump", _boom)
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
@@ -664,31 +664,80 @@ class TestSelfPumpHonorsPause:
         assert result is None
 
 
-class TestPauseSuppressionPredicate:
-    """``_pause_suppresses_self_pump`` maps availability → suppress decision.
+class TestOwnerRecordNamespaceAttribution:
+    """A registry pid resolves only in the namespace it was recorded in (#4270).
 
-    True (suppress) when the user is away OR the signal is indeterminate;
-    False (pump) only when availability resolves cleanly to ``present``.
+    The hook writes ``pid``; the driver-detection self-pump probe then treats that
+    integer as a fact about the owner. It is one only inside the owner's own pid
+    namespace, so the record carries that namespace for the probe to attribute it by.
     """
 
-    def test_away_resolves_to_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(router, "_resolved_pauses_self_pump", lambda: True)
-        assert router._pause_suppresses_self_pump() is True
+    #: Above the kernel's maximum pid, so no process can ever hold it here.
+    DEAD_PID = 2**22 + 7
 
-    def test_present_resolves_to_pump(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(router, "_resolved_pauses_self_pump", lambda: False)
-        assert router._pause_suppresses_self_pump() is False
+    def test_the_owner_record_carries_the_namespace_its_pid_resolves_in(self) -> None:
+        record = router._tick_owner_record("sess-a", "agent-a")[_OWNER_LOOP]
 
-    def test_availability_read_raising_resolves_to_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Guards the predicate's OWN internal try/except: a raising
-        # availability read (not a return) must resolve to suppress —
-        # indeterminate ⇒ allow stop, never nag through a possible pause.
-        # Patching the inner `_resolved_pauses_self_pump` (not the whole predicate)
-        # is what exercises the internal except rather than the outer
-        # handle_loop_self_pump crash-guard.
-        def _boom() -> bool:
-            msg = "availability backend unreachable"
-            raise RuntimeError(msg)
+        assert record["pid_namespace"] == current_context().pid_namespace
 
-        monkeypatch.setattr(router, "_resolved_pauses_self_pump", _boom)
-        assert router._pause_suppresses_self_pump() is True
+    def test_a_dead_entry_is_pruned_whatever_namespace_it_names(self) -> None:
+        entry = {"session_id": "s", "pid": self.DEAD_PID, "pid_namespace": "pid:[4026532000]"}
+
+        assert router._prune_dead_owner({_OWNER_LOOP: entry}) == {}
+
+    def test_a_legacy_entry_without_a_namespace_is_still_pruned_when_dead(self) -> None:
+        assert router._prune_dead_owner({_OWNER_LOOP: {"session_id": "s", "pid": self.DEAD_PID}}) == {}
+
+
+class TestForeignNamespaceOwnerIsStillReclaimable:
+    """A record this reader cannot attribute must not wedge the registry (#4270).
+
+    Nothing behind this file expires a record: ``heartbeat_ts`` is written and read
+    nowhere, there is no TTL and no reaper, and only the owning session's own
+    SessionEnd deletes it. So a keep an owner can never contradict is permanent, and
+    a restarted container never returns to its old pid namespace — the two Stop-gate
+    readers below then see a foreign owner forever and every session on the box stops
+    driving the loop. An unknown-owner keep is conservative only where something else
+    can eventually say NO; here nothing can, so the pid stays the only evidence.
+    """
+
+    #: Above the kernel's maximum pid, so no process can ever hold it here.
+    DEAD_PID = 2**22 + 7
+    SIBLING_CONTAINER = "pid:[4026532000]"
+
+    @pytest.fixture(autouse=True)
+    def _foreign_reader(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: "pid:[4026531000]")
+
+    def _own_from_sibling_container(self, pid: int) -> None:
+        _write_loop_registry(
+            {
+                _OWNER_LOOP: {
+                    "session_id": "gone-with-its-container",
+                    "agent_id": "a",
+                    "pid": pid,
+                    "pid_namespace": self.SIBLING_CONTAINER,
+                    "heartbeat_ts": int(time.time()),
+                }
+            }
+        )
+
+    def test_a_dead_foreign_owner_stops_owning_the_loop(self) -> None:
+        self._own_from_sibling_container(self.DEAD_PID)
+
+        assert router._session_owns_loop("gone-with-its-container") is False
+
+    def test_a_dead_foreign_owner_does_not_stop_a_fresh_session_driving(self) -> None:
+        # The Stop gates (completion-claim, standing-goal) and the AskUserQuestion
+        # deferral all key on this; a wedged record silently retires every one of them.
+        self._own_from_sibling_container(self.DEAD_PID)
+
+        assert router._session_drives_loop("fresh-session") is True
+
+    def test_a_live_foreign_owner_still_owns_and_drives(self) -> None:
+        # The control: both gates DO read this fixture's record, so the two assertions
+        # above fail on the prune's verdict rather than on a record that never landed.
+        self._own_from_sibling_container(os.getpid())
+
+        assert router._session_owns_loop("gone-with-its-container") is True
+        assert router._session_drives_loop("fresh-session") is False

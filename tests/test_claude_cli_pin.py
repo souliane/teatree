@@ -43,14 +43,14 @@ _RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.128"
+_PINNED_SDK_VERSION = "0.2.139"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.220 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.220"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.233 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.233"
 
 #: The deployed runtime's pin: the version the factory host runs today.
-_RUNTIME_CLI_VERSION = "2.1.220"
+_RUNTIME_CLI_VERSION = "2.1.233"
 
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
@@ -89,12 +89,24 @@ _INSTALL_PATTERN = re.compile(r"npm install -g [^\n]*?@anthropic-ai/claude-code(
 _PYRIGHT_PATTERN = re.compile(r"npm install -g [^\n]*?\bpyright(?:@(?P<version>[0-9][^\s\\'\"]*))?")
 
 
+def _is_skipped_dir(name: str) -> bool:
+    """Whether the walk descends into *name*.
+
+    Virtualenvs are matched by PREFIX, not by an exact name. A venv holds installed
+    third-party code, so a pinned CLI found inside one is the SDK's own vendored copy
+    rather than a site this repo controls — and the repo creates more than one venv, so
+    enumerating each exact name means the scan breaks again the next time one is added
+    under a new name.
+    """
+    return name.startswith(".venv") or name in _SKIP_DIRS
+
+
 def _repo_text_files() -> Iterator[Path]:
     stack = [_REPO_ROOT]
     while stack:
         for entry in sorted(stack.pop().iterdir()):
             if entry.is_dir():
-                if entry.name not in _SKIP_DIRS:
+                if not _is_skipped_dir(entry.name):
                     stack.append(entry)
             elif entry.is_file() and entry.resolve() != _SELF:
                 yield entry

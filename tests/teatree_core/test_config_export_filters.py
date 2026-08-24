@@ -23,9 +23,10 @@ from django.test import TestCase
 from teatree.config import defaults_snapshot
 from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.defaults_snapshot import default_category_keys
+from teatree.config.setting_groups import setting_comment
 from teatree.config.setting_help import setting_help
-from teatree.core import config_migration
-from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange import migration as config_migration
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 
 _SHIPPED_TEXT = DEFAULTS_TOML.read_text(encoding="utf-8")
@@ -64,18 +65,27 @@ class TestBothFiltersOffChangesNothing(TestCase):
         assert tomllib.loads(dump)["overlays"] == {"demo": {"issue_implementer_label": "scoped"}}
 
     def test_the_unfiltered_dump_renders_the_deltas_in_the_nested_shape(self) -> None:
-        # Each `[teatree]` key carries its authored help text as a trailing comment; the
-        # sentences are read from the one table that authors them, never re-typed here.
+        # Each `[teatree]` key carries what it ACCEPTS and then what it means, as a trailing
+        # comment. Both halves are read from `setting_comment` — the one renderer the file is
+        # written by — never re-typed here: spelling the sentence out a second time is what let
+        # this assertion keep asserting the help half alone after the type/choices half shipped.
         assert export_db_to_toml(scan_terms=()).toml == (
             '[teatree.Agents."Mode & harness"]\n'
-            f'mode = "auto" # {setting_help("mode")}\n'
+            f'mode = "auto" # {setting_comment("mode")}\n'
             "\n"
             '[teatree.Loops."Cadence & throughput"]\n'
-            f"merge_wip = 4 # {setting_help('merge_wip')}\n"
+            f"merge_wip = 4 # {setting_comment('merge_wip')}\n"
             "\n"
             "[overlays.demo]\n"
             'issue_implementer_label = "scoped"\n'
         )
+
+    def test_the_comment_names_what_the_key_accepts_before_what_it_means(self) -> None:
+        # The regression guard for the line above: it would still pass if `setting_comment`
+        # collapsed back to the bare help sentence on both sides. `mode` is constrained, so its
+        # comment must lead with the type and every admissible value, and only then the help.
+        line = next(line for line in export_db_to_toml(scan_terms=()).toml.splitlines() if line.startswith("mode = "))
+        assert line == f'mode = "auto" # str, one of: interactive | auto — {setting_help("mode")}'
 
 
 class TestFilterOneRestrictsTheEligibleKeys(TestCase):
@@ -191,7 +201,7 @@ class TestTheByteIdenticalRoundTrip(TestCase):
             for line, shipped in zip(exported.splitlines(), _SHIPPED_TEXT.splitlines(), strict=True)
             if line != shipped
         ]
-        assert differing == [f"merge_wip = 4 # {setting_help('merge_wip')}"]
+        assert differing == [f"merge_wip = 4 # {setting_comment('merge_wip')}"]
 
 
 class TestOneEmitterForBothWriters(TestCase):

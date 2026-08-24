@@ -30,7 +30,7 @@ class TestMiniLoopContract:
     def test_is_frozen(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=_build_jobs)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            loop.name = "other"  # type: ignore[misc]
+            loop.name = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
     def test_build_jobs_is_callable(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=_build_jobs)

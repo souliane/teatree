@@ -43,6 +43,8 @@ The **eval definitions** (data) live here, in the top-level `evals/`:
   (data), siblings to the scenarios they pin.
 - `evals/cost_bounds.yaml` — the checked-in per-scenario metered-cost ceilings
   (data: read by the declarative `--gate-cost-bounds` gate).
+- `evals/quarantine.yaml` — the known-red quarantine (data: read by the
+  selective-PR selector and `t3 eval quarantine`). See "Known-red quarantine".
 - `evals/README.md` — this file, the architecture SOT.
 
 The **tests over those definitions** live under `tests/`:
@@ -190,8 +192,7 @@ t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend transcript              # explicit transcript (the default; host-default, $0 extra)
 t3 eval prepare-transcript                    # emit prompts/paths for a transcript run
 t3 eval transcript-replay                     # replay a real session against invariants
-t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
-t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
+t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); a gap exits 1, no claude run
 t3 eval pinned-regressions                    # deterministic real-code-path regression corpus (no claude run)
 t3 eval pinned-regressions --format json      # JSON: per-class ok/skipped/origin/detail
 t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
@@ -247,7 +248,7 @@ The deterministic regression lane is wired into prek under its explicit name:
 `eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —
 token-free, no model, no spec discovery. It fails the push on a real
 deterministic violation. The full model-free-lane summary (`t3 eval --model-free`) —
-which also folds in the warn-first skill-coverage lane, negative-control, and the
+which also folds in the skill-coverage lane, catalog-discovery, negative-control, and the
 SKIP-when-out-of-scope transcript-replay lane — stays runnable on demand. Run the
 prek lane on demand with:
 
@@ -485,10 +486,11 @@ accepts `--model-free`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
 `--parallel`. The process exits non-zero if ANY lane fails (fail-loud); a SKIP
 never counts as a green pass.
 
-It runs every lane in one summary table: the six model-free deterministic lanes
-(`skill-coverage`, `pinned-regressions`, `negative-control`,
+It runs every lane in one summary table: the seven model-free deterministic lanes
+(`catalog-discovery`, `skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
-`skill-coverage` is warn-first (reports a gap, exit 0). The AI lane never runs a
+`skill-coverage` FAILs on a gap, the same verdict `t3 eval coverage` and the
+`test_no_shipped_skill_is_an_uncovered_gap` pytest gate return. The AI lane never runs a
 model silently — `--backend api` opts into a fresh run. The ADVISORY
 `skill-prose-judge` lane fires the LIVE judge, so it runs ONLY under the fresh-run
 opt-in (`--backend api`) — never on the default `transcript` path. A missing real
@@ -996,6 +998,48 @@ path drives it for real.
   (the guard is bypassed). The metered invocation always carries
   `--require-executed`, so once invoked it fails loud if it cannot execute.
 
+### Known-red quarantine (`evals/quarantine.yaml`, #4173)
+
+Selective-PR selection is section-scoped, so while a scenario is red **every PR
+touching the doctrine section it grades reds its eval lane** — on a failure it did
+not cause and cannot reasonably fix. The quarantine bounds that.
+
+```yaml
+scenarios:
+  some_scenario_name:
+    issue: https://github.com/souliane/teatree/issues/1234   # what will fix it
+    until: 2026-09-04                                        # ISO date
+    reason: one line on why it is red
+```
+
+- **Selection scope, never a verdict.** An entry drops the scenario from the bounded
+  selective-PR lane only. It is still run, still graded, and still reds the weekly /
+  heal lane and the green proof — there is no tolerated-red list anywhere, and the
+  no-known-red-allowance rule is untouched.
+- **Every band is suppressed.** Dropping happens after banding, so the `_BROAD`
+  fail-safe (a preamble-only or unreadable diff) cannot smuggle a tracked red back in.
+  The suppressed names are printed on the selector's stderr, so a shrunken lane is as
+  visible in the CI log as a truncated one.
+- **Expiry is self-enforcing.** Past `until` the entry stops suppressing: the scenario
+  re-arms and blocks again exactly as it did before quarantine. A permanent skip list —
+  how a suite rots into decoration — is unreachable by construction.
+- **An entry that becomes a lie is caught.** `t3 eval quarantine audit` reds on an
+  ESCAPED scenario (quarantined but PASSING — delete the entry) and on an expired one;
+  `check` additionally reds on an entry naming a scenario the catalog no longer defines.
+
+```bash
+t3 eval quarantine list                              # entries, with issue + expiry
+t3 eval quarantine check                             # static validator (expired / unknown / malformed)
+t3 eval quarantine audit <merged-eval-heal.json>     # outcome per entry in a run; reds on an escapee
+```
+
+`eval-ci-heal.yml` runs `audit` beside `green-proof` (`if: always()`), which is where a
+quarantined red stays unmissable. The registry sits beside its scenarios dir
+(`evals/scenarios` → `evals/quarantine.yaml`), so a consumer passing its own
+`--scenarios-dir` reaches its own registry with no extra flag. A missing registry is an
+EMPTY quarantine, so an overlay with none of its own selects exactly as before; a
+present but malformed one fails loud.
+
 ### Canonical lane / tier table
 
 This table is the single source of truth for which lanes exist, how they run, and when. Other docs point here rather than repeating it.
@@ -1005,7 +1049,8 @@ This table is the single source of truth for which lanes exist, how they run, an
 | Lane | Kind | Cost | Host / Docker | Local invocation | CI | Cadence |
 |---|---|---|---|---|---|---|
 | pinned-regressions | **test** | model-free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
-| skill-coverage | **test** | model-free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
+| skill-coverage | **test** | model-free | host | `t3 eval coverage` | pytest (`test_no_shipped_skill_is_an_uncovered_gap`) | every bare-`t3 eval` run + on demand |
+| catalog-discovery | **test** | model-free | host | bare `t3 eval` | — (folded into the bare-suite table) | every bare-`t3 eval` run |
 | negative-control | **test** | model-free | host | `t3 eval negative-control` | — | on demand |
 | transcript-replay | **test** | model-free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
 | corpus-grade | **test** | model-free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
@@ -1099,11 +1144,11 @@ one-line frontmatter key. The dedicated pytest gate
 (`tests/eval_replay/test_skill_eval_coverage.py`) is now **Phase-B
 ENFORCING** — it asserts `report.gaps == ()`, so a skill landing with neither an
 eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-free
-today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
-all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
-unrelated bare-`t3 eval` run; `t3 eval coverage --fail-on-gap` is its explicit
-enforcing form. The shipped corpus is gap-free today (the per-skill scenario
-files under `evals/scenarios/` plus the pure-doc exemptions).
+today, so the flip is safe). The `skill-coverage` lane inside bare `t3 eval` and the
+`t3 eval coverage` subcommand return that same verdict — a gap exits non-zero on all
+three surfaces, so no surface can report a green the others would refuse. The shipped
+corpus is gap-free today (the per-skill scenario files under `evals/scenarios/` plus
+the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
@@ -1360,15 +1405,26 @@ Fields:
   end-to-end wiring is REPORTED empirically by the `harness_canary_stop_gate_fires`
   canary (a prose-only decision that can pass ONLY via the #807 bounce) — but the
   canary is `surface: interactive` (it can pass only via a captured
-  `AskUserQuestion` call), so its verdict is ADVISORY, not gating. Six of the seven
+  `AskUserQuestion` call), so its VERDICT is ADVISORY, not gating. Six of the seven
   `production_hooks` scenarios are advisory; `done_only_on_deployed_dev_evidence`
-  (the #2665 completion-claim gate) is the one on the blocking headless surface, and
-  it is what still reds a lane on a hook regression or on `hooks_not_registered`
-  (which is a graded FAIL result, not a raised exception, so the surface exemption
-  covers it too on the other six). That scenario is `lane: under_load`, so any leg
-  that does not run it — the nightly's `--lane clean_room` shards, the
-  changed-scenarios PR lane, `--surface interactive`, a `--name` run — reports the
-  degradation without gating on it. See
+  (the #2665 completion-claim gate) is the one on the blocking headless surface.
+  `hooks_not_registered` itself is NOT a verdict and is never advisory: it is the
+  HARNESS axis (`src/teatree/eval/harness_failure.py`), read by the unconditional
+  `RunGuards.hooks_registered` guard every runner-driving lane calls BESIDE its
+  verdict, so it gates whatever the scenario's surface (#3922). The lanes that must
+  call it are NAMED in `HARNESS_FAILURE_GUARD_POINTS` — `single_trial.run_single_trial`,
+  `multi_trial.run_pass_at_k_lane`, `multi_trial.run_model_matrix_lane`,
+  `all.run_full_suite`, `ladder.ladder`, `benchmark.benchmark` — and the two producers
+  of the serialized `advisory` flag (`summary_json._ScenarioRow.as_json`,
+  `escalate.escalate_failures`) never set it for a row that measured nothing, so the
+  combine job's merged-artifact gate cannot bless a shard the lane guard failed. Every
+  `PassAtKResult` → `MatrixRow` fold is NAMED too (`HARNESS_FAILURE_FOLD_POINTS`) and
+  must carry `harness_failed`: the guard reads the ROW's flag, so a fold that drops it
+  makes that lane's guard call vacuous.
+  `tests/conformance/test_advisory_verdict_points.py` resolves every name and asserts
+  each lane actually calls the guard and each fold carries the flag. Before that, the reason rode a terminal `EvalRun`
+  — a failing verdict — so on the nightly `--lane clean_room` shards, which carry only
+  advisory hooked scenarios, the fail-loud could never gate. See
   `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
 - `surface` — optional `headless` (default) or `interactive`. The question/answer
@@ -1445,6 +1501,91 @@ Supported matcher operators:
 A scalar arg value that is not a string (a boolean / number such as Bash's
 `run_in_background: true`) is compared against the operator as its `str()`
 form, so `args.run_in_background: ~ "(?i)true"` matches.
+
+### `Bash.command_span` — grade the act, not a report of it
+
+`command_span` is a **derived view** of `Bash.command`: the command with its literal
+quoted payloads elided, so a matcher scopes to what the shell would actually run.
+It is selected per matcher by naming it where the arg goes
+(`no_tool_call_matching: { Bash.command_span: ~ "…" }`); the registry is
+`_ARG_VIEWS` in `teatree.eval.matchers` and the scanner is
+`teatree.eval.command_span.executed_span`, over the quote-aware scan and reachability
+window in `teatree.eval.command_window`. A name in `DERIVED_VIEW_NAMES` with no
+`_ARG_VIEWS` transform raises `UnknownArgViewError` — a view whose code is dropped
+can never degrade to a missing arg, which reads as a silent green.
+
+A quoted region is elided only where the scanner can NAME it a payload; anything it
+cannot decide is kept, because eliding an act costs the matcher its teeth silently
+while keeping a payload only ever reds loudly:
+
+| construct | in the span |
+|---|---|
+| a quoted region attached to an unquoted word fragment (`-m'…'`, `--body='…'`) | elided — an option's own value |
+| a standalone quoted operand of 4+ words | elided as prose (`'I have not marked the task complete'`) |
+| a shorter standalone quoted operand | kept, quotes removed as the shell removes them — `t3 widget 'ticket clear' 42` is an act, not a report |
+| `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
+| the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
+| `<<EOF` heredoc body (unquoted delimiter) | kept |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for…done` or `case…esac` all stop hiding a later `\| bash`. The bound is **fail-closed**: it is returned only where every token from the segment start to it was positively recognised, so a construct the scanner does not model — `((…))`, `[[…]]`, `select`, `\|&`, a closer matching no open compound — leaves the window running to end of text and the redirected text KEPT. A process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
+| an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
+
+The redirection rule is stated as a READER proof, not an interpreter list, because the
+complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l; do eval
+"$l"; done` all execute the redirected text while naming no interpreter. Widen
+`_STDIN_READERS` only by name, with the case that forced it. It still leaves a residue
+`origin/main` also drops, so merging costs no teeth: a payload reaching an interpreter
+through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
+class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
+
+The reachability window's default is the same asymmetry one level down, and it is the
+module's load-bearing invariant. `teatree.eval.command_window.Recogniser` walks the text
+against an explicit accept table; `segment_end` returns a bound only where nothing on the
+way to it was unrecognised. So an unmodelled construct costs an over-keep — loud — and can
+never cost an elision. `RECOGNISED_COMPOUNDS` is the tunable and the default is the
+invariant: retire an over-keep by ADDING a production, never by loosening the default. The
+generative sweep in `tests/eval_replay/test_command_span.py` derives its wrapper axis from
+that same set, so teaching one side a construct without the other reds.
+
+Five measured residues, all in the OVER-keeping direction — they cost a loud red, never
+a silent one, and none is a regression against `origin/main`:
+
+- `_STDIN_READERS` is narrow (12 names) and `_stage_command_word` resolves a PREFIXED
+  spelling to the prefix rather than to what it execs, so `md5sum <<<'…'`, `base64 <<<'…'`
+  and `env cat <<<'…'` keep text nothing executes. Measured over 204 provably data-only
+  cases, `origin/main` keeps the same ones. Reader-set completeness is its own defect
+  class needing its own generator and its own negative controls —
+  [#4433](https://github.com/souliane/teatree/issues/4433).
+- A continuation INSIDE a here-string payload an interpreter runs: bash keeps the pair
+  literal and the interpreter splices it only when it runs the text, so the act reaches
+  the span in bash's own pre-splice spelling and a matcher regexing the raw span misses
+  it. `origin/main` elides the whole class.
+- A quoted-delimiter heredoc BODY is literal to bash, and the view splices it anyway — a
+  body line ending in a backslash loses its terminator, so the remainder is kept raw.
+- A redirection inside a FUNCTION body is never proved data-only, even where the call
+  turns out to be a reader. Its stdout flows to the CALL site, textually elsewhere
+  (`f() { cat <<<'…'; }; f \| bash`), so no window over the definition can see the pipe;
+  tracking the call interprocedurally does not terminate (`x=f; $x \| bash`, recursion,
+  a definition in a sourced file), which is why this one is fail-closed rather than
+  windowed.
+- A construct outside the accept table — an arithmetic or double-bracket compound,
+  `select`, `\|&`, an unmatched closer — leaves the window unbounded, so every redirected
+  text inside one is kept. That is the fail-closed default working, not a defect; the
+  fix for any given spelling is to teach `Recogniser` the production.
+
+**Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
+`ticket clear` are things that must not HAPPEN, and a model that escalates
+correctly while stating what it declined to do writes those same bytes inside its
+own DM body — the matcher then fails the model for its honesty (#4201).
+
+**Do NOT use it when the negative names CONTENT.** For a large class the quoted
+payload IS the graded artifact — `git commit -m 'Co-Authored-By: …'`,
+`gh issue create --body '…'`, `echo 'all done' >> report.md`. Eliding the payload
+there deletes exactly the evidence: switching every command-negative onto the span
+was measured to stop 22 of 149 live command-negatives firing and to flip 4
+scenarios RED → GREEN. That is why the view is opt-in and plain `Bash.command`
+is unchanged. `tests/eval_replay/test_command_span.py`
+(`test_exactly_one_negative_grades_the_executed_span`) pins the adopter set, so a
+silent mass-conversion shows up as a diff.
 
 ### The shipped catalog never opts into the `frontier` tier
 
@@ -1577,6 +1718,13 @@ their `eval/scenarios/` directory. `discover_specs()` walks every
 installed overlay's directory after the core catalog. Discovery is
 isolated: a broken overlay (missing dir, malformed YAML, raising hook)
 is logged and skipped rather than failing the catalog.
+
+Isolated, but never silent. Each of those skips records a reason on
+`ScenarioCatalog.degraded`, which the `catalog-discovery` lane and
+`t3 eval green-proof` both refuse — otherwise the suite would prove a green
+over a denominator it quietly shortened. Returning `None` is the one way to
+contribute nothing without degrading the catalog, so an overlay must never
+collapse a moved directory into `None`: only one of those is legitimate.
 
 ## Layered enforcement
 

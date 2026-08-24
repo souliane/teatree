@@ -97,6 +97,16 @@ class LoopLease(models.Model):
     owner = models.CharField(max_length=255, blank=True)
     session_id = models.CharField(max_length=255, blank=True, default="")
     owner_pid = models.IntegerField(null=True, blank=True, default=None)
+    # The pid namespace ``owner_pid`` was recorded in (#4253). A pid is namespace-local,
+    # so a reader in another namespace probes whatever occupies that integer there — the
+    # measured failure was a live worker's own lease reading as provably dead from a
+    # sibling container, unclaiming t3-master while the worker drove every tick. Blank
+    # means unattributed (a row written before this column, or an unreadable procfs),
+    # which leaves the pid as the only evidence there is until the next heartbeat.
+    # ``db_default`` for the same reason as ``Task.owner_pid_namespace`` (#4379): identical
+    # shape, same NOT NULL-with-no-DB-default column, written by the same process-identity
+    # path a stale process omits.
+    owner_pid_namespace = models.CharField(max_length=128, blank=True, default="", db_default="")
     acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     # The tick driver for this owned slot (PR-26 / M9). Blank = DRIVERLESS: an

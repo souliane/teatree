@@ -23,18 +23,13 @@ set (both ``None``) the loop is due every tick.
 A never-run loop is due immediately (interval / every-tick) or at its first
 scheduled time (daily), so a fresh install fires without waiting a whole window.
 
-``colleague_facing`` (#2904) is the operator-editable AWAY-GATE policy: which
-loops sit out while the owner is unreachable to weigh in. It is narrower than the
-``colleague`` reach tag each ``MiniLoop`` declares in code (#3959) and stays a
-strict subset of it — ``review`` reaches colleagues yet deliberately keeps
-running when away, so self-review does not stall. The unified
-admission verdict in ``teatree.loops.loop_table`` gates a ``colleague_facing``
-row off whenever the resolved :class:`~teatree.core.models.Mode` reports
-``defers_questions`` (an away-class mode, the same
-BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
-mode): colleague-facing work should not fire while the user is unreachable to
-weigh in, even in ``autonomous_away`` where every other loop keeps
-self-pumping.
+``colleague_facing`` (#2904) marks the loops that reach a colleague on the owner's
+behalf. It is narrower than the ``colleague`` reach tag each ``MiniLoop`` declares in
+code (#3959) and stays a strict subset of it — ``review`` reaches colleagues yet
+deliberately keeps running when the owner is away, so self-review does not stall. The
+flag is a REPORTING axis (``t3 doctor``'s stale-override finding names the
+colleague-facing loops a held mode masks off); which loops actually run is decided
+solely by the active :class:`~teatree.core.models.Mode`'s own ``entries`` table.
 """
 
 import datetime as dt
@@ -45,6 +40,8 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.loop_state import LoopState
+
+_SECONDS_PER_DAY = 24 * 3600
 
 
 class LoopManager(models.Manager["Loop"]):
@@ -58,9 +55,23 @@ class LoopManager(models.Manager["Loop"]):
         """Stamp ``last_run_at = ts`` for *name* — the cadence bump after a run.
 
         A direct ``update`` so the cadence anchor moves without touching
-        ``updated_at`` (which tracks config edits, not runs).
+        ``updated_at`` (which tracks config edits, not runs). ``last_attempt_at``
+        moves with it: a run IS an attempt, so no caller can advance the cadence
+        anchor while leaving the liveness one behind.
         """
-        self.filter(name=name).update(last_run_at=ts)
+        self.filter(name=name).update(last_run_at=ts, last_attempt_at=ts)
+
+    def mark_attempted(self, name: str, ts: dt.datetime) -> None:
+        """Stamp ``last_attempt_at = ts`` — a tick EXECUTED, whatever it produced.
+
+        The half of the anchor a pass may never withhold. ``dream`` withholds
+        ``last_run_at`` on a pass that did not stamp success (retry-until-success,
+        #2285), which is correct as a cadence decision and a lie to every liveness
+        reader: a loop driven every 10 minutes rendered as frozen for 6.6 days
+        (#4355). Attempts are stamped BEFORE the pass runs, so a pass killed at its
+        deadline still records that it ran.
+        """
+        self.filter(name=name).update(last_attempt_at=ts)
 
     def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
         """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
@@ -76,7 +87,7 @@ class LoopManager(models.Manager["Loop"]):
         handled by the same predicate (``IS NOT DISTINCT FROM``). Returns ``True``
         iff this caller won (updated 1 row).
         """
-        won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now)
+        won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now, last_attempt_at=now)
         return won == 1
 
     def set_enabled(self, name: str, *, enabled: bool) -> int:
@@ -148,6 +159,8 @@ class Loop(models.Model):
     enabled = models.BooleanField(default=True)
     colleague_facing = models.BooleanField(default=False)
     last_run_at = models.DateTimeField(null=True, blank=True)
+    #: When a tick last EXECUTED, whatever it produced — the anchor no pass may withhold.
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -189,6 +202,20 @@ class Loop(models.Model):
             return "every tick"
         return f"every {self.delay_seconds}s"
 
+    @property
+    def cadence_seconds(self) -> int | None:
+        """The declared cadence in seconds — ``None`` for an every-tick loop.
+
+        The same precedence :attr:`cadence_label` renders, because it is the same
+        question: every shipped daily row carries a ``delay_seconds`` too (the
+        ``loop_script_requires_delay`` constraint), and the slot is what decides when
+        it fires. Scaling anything to the stored interval instead would read a daily
+        loop's cadence off a column its schedule overrides.
+        """
+        if self.daily_at is not None:
+            return _SECONDS_PER_DAY
+        return self.delay_seconds
+
     def seconds_since_run(self, now: dt.datetime) -> float | None:
         """Seconds since the last run, or ``None`` when the loop never ran."""
         if self.last_run_at is None:
@@ -198,7 +225,7 @@ class Loop(models.Model):
     def is_due(self, now: dt.datetime) -> bool:
         """True when the loop should run under its cadence (interval, daily, or every tick)."""
         if self.daily_at is not None:
-            return self._daily_due(now)
+            return self._daily_due(now, self.daily_at)
         if self.delay_seconds is None:
             return True
         elapsed = self.seconds_since_run(now)
@@ -211,21 +238,26 @@ class Loop(models.Model):
         a cadence-less loop (no interval, due every tick).
         """
         if self.daily_at is not None:
-            return self._next_daily(timezone.now())
+            return self._next_daily(timezone.now(), self.daily_at)
         if self.last_run_at is None or self.delay_seconds is None:
             return None
         return self.last_run_at + dt.timedelta(seconds=self.delay_seconds)
 
-    def _daily_due(self, now: dt.datetime) -> bool:
-        """Daily-scheduled due gate: due once per day on/after ``daily_at`` local."""
+    def _daily_due(self, now: dt.datetime, daily_at: dt.time) -> bool:
+        """Daily-scheduled due gate: due once per day on/after *daily_at* local.
+
+        *daily_at* is passed in rather than re-read off ``self``: the caller has already
+        proved the nullable column non-null, and threading the value keeps that
+        guarantee visible in the signature instead of re-deriving it here.
+        """
         now_local = self._as_local(now)
-        if now_local.time() < self.daily_at:
+        if now_local.time() < daily_at:
             return False
         if self.last_run_at is None:
             return True
         return self._as_local(self.last_run_at).date() < now_local.date()
 
-    def _next_daily(self, now: dt.datetime) -> dt.datetime:
+    def _next_daily(self, now: dt.datetime, daily_at: dt.time) -> dt.datetime:
         """The next wall-clock occurrence of ``daily_at`` (today if still ahead).
 
         Each candidate slot is built as ``date + daily_at`` via
@@ -239,8 +271,8 @@ class Loop(models.Model):
         project default, there is no transition and the result is unchanged).
         """
         now_local = self._as_local(now)
-        day = now_local.date() if now_local.time() < self.daily_at else now_local.date() + dt.timedelta(days=1)
-        naive_slot = dt.datetime.combine(day, self.daily_at)
+        day = now_local.date() if now_local.time() < daily_at else now_local.date() + dt.timedelta(days=1)
+        naive_slot = dt.datetime.combine(day, daily_at)
         if timezone.is_aware(now_local):
             return timezone.make_aware(naive_slot, timezone.get_current_timezone())
         return naive_slot

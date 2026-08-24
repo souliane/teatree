@@ -120,6 +120,12 @@ class TestRealReaders(TestCase):
         ConfigSetting.objects.set_value(_KEY, 2, scope=_SCOPE)
         assert verify._activation_live(directive) is True
 
+    def test_activation_reader_is_live_for_a_setting_less_default_behaviour_sketch(self) -> None:
+        # #4181: a default_behaviour mechanism has no setting to read back — the merged
+        # code IS the behaviour, so evidence 1 cannot be what fails it.
+        directive = _verifying(kind="default_behaviour", setting_key="", activation_scope="", activation_value=None)
+        assert verify._activation_live(directive) is True
+
     def test_acceptance_reader_empty_nodes_is_green_without_running(self) -> None:
         directive = _verifying(kind="activation_only", acceptance_tests=[])
         assert verify._acceptance_green(directive) is True

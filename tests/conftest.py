@@ -14,9 +14,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
+from teatree.core.factory import external_outcomes
 from teatree.core.worktree.branch_classification import reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from tests._db_template import build_or_reuse_template, restore_from_template
+from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
 # Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
@@ -175,6 +177,23 @@ def _reset_declaration_caches() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _inert_ambient_process_table() -> Iterator[None]:
+    """Point the scratch sweep's VENUE process table at nothing, so an UNPINNED test is inert.
+
+    ``resolve_scratch_sweep`` otherwise hands the sweep the machine's live
+    ``/proc``, which makes a sweep test's verdict a property of whatever else is
+    running: green in a container with no ``systemd --user``, red on a systemd
+    host. A non-existent root fails the probe closed everywhere, so a test that
+    forgot to pin fails deterministically instead of drifting by venue. Tests that
+    MEAN to sweep pin their own table with ``tests._procfs.pinned_venue_proc``.
+    """
+    from teatree.core.retention import scratch  # noqa: PLC0415 — deferred: ORM import at fixture time
+
+    with patch.object(scratch, "_VENUE_PROC", Path("/nonexistent-process-table-pin-your-own")):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_webhook_rate_limiter() -> Iterator[None]:
     """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
     from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415
@@ -194,13 +213,12 @@ def _restore_django_settings_module() -> Iterator[None]:
     #3160 leak sentinel catches. Restore-only (snapshot-and-put-back, never touching the
     value at setup) so a well-behaved test is unaffected and only the leak is reverted.
     """
-    absent = object()
-    before: object = os.environ.get("DJANGO_SETTINGS_MODULE", absent)
+    before = os.environ.get("DJANGO_SETTINGS_MODULE")
     yield
-    if before is absent:
+    if before is None:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
-        os.environ["DJANGO_SETTINGS_MODULE"] = before  # type: ignore[assignment]
+        os.environ["DJANGO_SETTINGS_MODULE"] = before
 
 
 @pytest.fixture(autouse=True)
@@ -219,6 +237,21 @@ def _reset_forge_pr_budget_memo() -> Iterator[None]:
     reset_forge_pr_budget_cache()
     yield
     reset_forge_pr_budget_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_claim_driving_registry() -> Iterator[None]:
+    """Reset the pk-keyed claim-liveness registry around every test (#4164).
+
+    ``claim_liveness._driving`` holds the task pks this process is executing. Under sqlite
+    ``TestCase`` rollback rowids recycle, so a leaked entry makes a later test's fresh task
+    read as still-executing and the sweep withholds the reap that test asserts it takes.
+    """
+    from teatree.core.claim_liveness import reset_driving_registry  # noqa: PLC0415 deferred, see #4164
+
+    reset_driving_registry()
+    yield
+    reset_driving_registry()
 
 
 @pytest.fixture(autouse=True)
@@ -331,6 +364,23 @@ def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iter
     invalidate_schema_readiness()
 
 
+@pytest.fixture(autouse=True)
+def _process_freshness_memo_isolated() -> Iterator[None]:
+    """Drop the #4387 process-freshness memo around every test.
+
+    The verdict is memoised per alias for 60 s and is read on the claim hot path, so a
+    case that records an applied migration would otherwise leak its BEHIND verdict into
+    the next test in the same xdist worker.
+    """
+    from teatree.core.process_freshness import (  # noqa: PLC0415 — deferred: importing it at collection pulls Django in
+        invalidate_process_freshness,
+    )
+
+    invalidate_process_freshness()
+    yield
+    invalidate_process_freshness()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""
@@ -365,6 +415,25 @@ def ticket_dir(workspace: Path) -> Path:
     (wt / ".git").write_text("gitdir: /some/path/.git/worktrees/my-project")
 
     return td
+
+
+@pytest.fixture(autouse=True)
+def _no_checkout_scan_outside_the_test(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """No pytest run may walk the real home looking for checkouts to reclaim (#4244).
+
+    :func:`teatree.core.cleanup.checkout_registry.checkout_scan_roots` includes
+    ``Path.home()`` unconditionally — correct in production, where the ad-hoc
+    checkouts holding most of the reclaimable cache live there. Reached from a
+    test it is two separate hazards: the walk is the runner's whole home, and the
+    reapers downstream of it DELETE what they find, so a CI runner's own
+    virtualenv is a candidate. Pinned to an empty directory; a test that needs
+    real roots re-patches it inside its own scope, naming a tmp tree.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    empty = tmp_path_factory.mktemp("no-checkouts")
+    with patch("teatree.core.cleanup.checkout_registry.checkout_scan_roots", return_value=(empty,)):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -407,14 +476,16 @@ def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Arm the worker-thread DB-handle sentinel for the whole suite.
+    """Arm the two cross-test thread sentinels for the whole suite.
 
-    Always on: a stranded handle reds a random bystander test in a random shard,
-    so the sentinel that names the culprit has to already be running when it
-    happens — an opt-in flag would only ever be switched on after the fact. See
-    ``tests/_thread_db_sentinel.py``.
+    Always on, both for the same reason: each catches a failure that lands on a
+    random bystander in a random shard, so a sentinel that has to be switched on
+    could only ever be switched on after the fact. See ``tests/_thread_db_sentinel.py``
+    (a worker thread that STRANDS a DB handle) and ``tests/_speak_thread_sentinel.py``
+    (a test that LEAKS a local-playback thread into the next test, #4277).
     """
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
+    config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -498,6 +569,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
     # to isolate here (the env-inertness is pinned by
     # ``tests/teatree_loop/test_review_loop_db_only_control.py``).
+    # The external-outcome measure (#4506) reads the forge on any run with no fresh
+    # snapshot, so an unstubbed reconciliation ledger would make a live `gh` call from
+    # any test that runs it. Resolve to "no forge" here — the unmeasured state, which is
+    # never scored healthy — and let the tests that exercise the read patch this back.
+    monkeypatch.setattr(
+        "teatree.core.factory.external_outcomes.resolve_forge",
+        lambda overlay="": external_outcomes.Forge(host=None, repo_slugs=()),
+    )
 
 
 @pytest.fixture(scope="session")

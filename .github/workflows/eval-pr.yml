@@ -21,6 +21,15 @@
 #   list is empty the `eval` job is skipped entirely — a PR that touches nothing a
 #   scenario is built from spends zero API budget here.
 #
+# KNOWN-RED QUARANTINE (#4173)
+#   Section-scoping is precise, which means that while a scenario is red every PR
+#   touching the doctrine section it grades reds this lane. A scenario listed in
+#   `evals/quarantine.yaml` — with the issue that will fix it and an expiry date — is
+#   dropped from the selection and NAMED on the resolver's stderr. It is a SELECTION
+#   scope only: the scenario is still run, still graded and still reds the weekly /
+#   heal lane (`t3 eval quarantine audit`), so there is no verdict allowance. Past its
+#   expiry an entry stops suppressing and the scenario blocks again on its own.
+#
 # AUTH — `agent_harness_provider` selects the eval credential
 #   The eval step wires `T3_AGENT_HARNESS_PROVIDER` (`subscription_oauth`) and both
 #   repo secrets; every eval chokepoint resolves the selected credential through
@@ -178,11 +187,11 @@ jobs:
       # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
       # runner actually execs (`_find_cli` returns the bundle first; this global install
       # is only the presence-gate). Matching it stops the two CLIs in one image from
-      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
-      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+      # disagreeing. The DEPLOYED runtime is pinned independently, may LEAD this
+      # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.220
+          npm install -g @anthropic-ai/claude-code@2.1.233
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without

@@ -3,9 +3,12 @@
 Coordinate only: parse the POST, write through ``ConfigSetting.set_value`` (the same seam
 ``config_setting set`` uses, so the #258 coercion + #3688 cross-key checks fire), audit,
 answer. Restore-to-default deletes the row; a safety-posture key needs the extra confirm
-phrase; import takes an uploaded file and previews with a dry-run before an explicit apply.
-A secret's value never enters the page — the editor surface masks it before the context is
-built.
+phrase. A secret's value never enters the page — the editor surface masks it before the
+context is built.
+
+Transferring the whole store is :mod:`teatree.dash.views.interchange`'s page, not this one:
+a dump reaches past the settings store into the loop, preset and schedule rows, so hosting
+that control here under-stated what it does (#4340).
 
 **One section per request.** The page is a left nav of sections and a right pane; selecting
 a section ``hx-get``s :func:`settings_group` for that section alone. Rendering every key at
@@ -24,8 +27,7 @@ and a redirect otherwise. Both paths run the identical write and audit first.
 """
 
 import json
-import tomllib
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -36,7 +38,6 @@ from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_display import is_secret
-from teatree.core.config_migration import ConfigImport, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.settings_editor import (
@@ -45,22 +46,13 @@ from teatree.dash.settings_editor import (
     build_setting_row,
     build_settings_editor,
     build_settings_group,
-    export_text,
-    import_preview,
 )
 from teatree.dash.settings_readouts import ReadoutsView, build_readouts_view
 from teatree.dash.views.access import require_loopback_or_staff
-from teatree.dash.views.base import NavContext, actor, nav_context
+from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE, NavContext, actor, nav_context
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
-
-#: The phrase an operator must type to change a safety-posture key (write-is-authorization).
-SAFETY_CONFIRM_PHRASE = "change-safety-posture"
-
-#: The largest import file the page accepts. A shipped ``defaults.toml`` is ~20KB, so this
-#: is generous for any real config while refusing a mis-picked archive outright.
-MAX_IMPORT_BYTES = 1_000_000
 
 
 class ReadoutsContext(TypedDict):
@@ -70,10 +62,6 @@ class ReadoutsContext(TypedDict):
 class SettingsPageContext(NavContext, ReadoutsContext):
     editor: SettingsEditorView
     confirm_phrase: str
-    # Present only on the answer to an import POST, which re-renders the whole page.
-    import_result: NotRequired[ConfigImport]
-    import_applied: NotRequired[bool]
-    import_error: NotRequired[str]
 
 
 class SettingsGroupContext(TypedDict):
@@ -222,79 +210,6 @@ def settings_restore(request: "HttpRequest", key: str) -> "HttpResponse":
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return HttpResponseBadRequest(f"unknown setting {key!r}")
     return _cleared(request, key, scope)
-
-
-@require_loopback_or_staff
-@require_GET
-def settings_export(request: "HttpRequest") -> "HttpResponse":
-    """Download the export — secrets withheld, and the two filters the page offers.
-
-    ``default_keys_only`` + ``include_defaults`` are the page's checkboxes, both unticked by
-    default. Ticking both downloads the ``defaults.toml`` shape, so the file the operator
-    gets is a drop-in replacement for the shipped one rather than a fragment of it.
-    """
-    default_keys_only = request.GET.get("default_keys_only") == "1"
-    include_defaults = request.GET.get("include_defaults") == "1"
-    text = export_text(default_keys_only=default_keys_only, include_defaults=include_defaults)
-    filename = "defaults.toml" if default_keys_only and include_defaults else "teatree-config.toml"
-    response = HttpResponse(text, content_type="text/plain; charset=utf-8")
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return response
-
-
-def _uploaded_toml(request: "HttpRequest") -> tuple[str, str]:
-    """The uploaded file's text, or ``("", reason)`` when there is nothing usable to import.
-
-    An upload beats a paste: the operator picks the file they exported rather than shuttling
-    two hundred keys through a textarea. A non-UTF-8 or oversized file is refused HERE, with
-    a reason, rather than reaching the parser as mojibake.
-    """
-    upload = request.FILES.get("toml_file")
-    if upload is None:
-        return "", "choose a .toml file to import"
-    if upload.size > MAX_IMPORT_BYTES:
-        return "", f"that file is {upload.size} bytes — the import limit is {MAX_IMPORT_BYTES}"
-    try:
-        return upload.read().decode("utf-8"), ""
-    except UnicodeDecodeError:
-        return "", "that file is not UTF-8 text — export a TOML dump and upload that"
-
-
-@require_loopback_or_staff
-@require_POST
-def settings_import(request: "HttpRequest") -> "HttpResponse":
-    """POST an uploaded TOML file — a dry-run preview by default, a write only with ``apply``.
-
-    A rejected row refuses the whole import (Phase-4 atomicity); the result rides back onto
-    the page so the operator sees exactly what changed (or would change) and what was refused.
-
-    A safety-posture key needs the SAME typed confirm phrase ``settings_set`` demands — an
-    uploaded dump is not a per-key intent. The preview always classifies as if authorized, so
-    the operator SEES which rows are safety-posture (each flagged) before deciding; the apply
-    passes the authorization only when the phrase is present, and without it the import is
-    refused wholesale with the offending key named.
-    """
-    text, upload_error = _uploaded_toml(request)
-    if upload_error:
-        context = _page_context()
-        context["import_error"] = upload_error
-        return render(request, "dash/settings.html", context, status=400)
-    confirmed = request.POST.get("confirm", "").strip() == SAFETY_CONFIRM_PHRASE
-    try:
-        preview = import_preview(text)
-    except tomllib.TOMLDecodeError as exc:
-        context = _page_context()
-        context["import_error"] = f"invalid TOML: {exc}"
-        return render(request, "dash/settings.html", context, status=400)
-    apply_now = request.POST.get("apply", "").strip() == "1" and not preview.rejected
-    result = import_toml_to_db(text, allow_safety_posture=confirmed) if apply_now else preview
-    written = apply_now and not result.rejected
-    if written:
-        audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")
-    context = _page_context()
-    context["import_result"] = result
-    context["import_applied"] = written
-    return render(request, "dash/settings.html", context)
 
 
 def _back() -> "HttpResponse":

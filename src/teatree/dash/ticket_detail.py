@@ -22,6 +22,7 @@ from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.selectors import PrChip, group_slug, pr_chip
 from teatree.dash.skills import skill_bundle
+from teatree.dash.task_actions import EnqueueButton, enqueue_buttons
 
 # How many of each history the drawer renders. A ticket the factory worked for weeks
 # accumulates thousands of transitions and attempts, and rendering all of them
@@ -60,7 +61,7 @@ class AttemptRow:
     model: str
     reasoning_effort: str
     skills_loaded: tuple[str, ...]
-    #: An EMPTY ``skills_loaded`` on a headless dispatch is a fault, not an absence
+    #: An EMPTY ``skills_loaded`` on a agent dispatch is a fault, not an absence
     #: of information (#3886) — the drawer must say so rather than render nothing.
     skills_fault: bool
     duration: str
@@ -72,7 +73,6 @@ class AttemptRow:
     cache_write_tokens: int | None
     num_turns: int | None
     lane: str
-    execution_target: str
     outcome: str
     exit_code: int | None
     error: str
@@ -88,7 +88,6 @@ class TaskRow:
     phase: str
     status: str
     claimed_by: str
-    execution_target: str
     attempts: tuple[AttemptRow, ...] = ()
     attempts_total: int = 0
 
@@ -121,6 +120,7 @@ class TicketDetail:
     transitions_total: int
     mermaid: str
     available_transitions: tuple[str, ...]
+    enqueue_buttons: tuple[EnqueueButton, ...]
     tasks: tuple[TaskRow, ...]
     tasks_total: int
     sessions: tuple[SessionRow, ...]
@@ -175,6 +175,7 @@ def build_ticket_detail(ticket_id: int) -> TicketDetail:
         transitions_total=transitions_total,
         mermaid=build_ticket_lifecycle_mermaid(ticket_id),
         available_transitions=legal_transition_names(ticket),
+        enqueue_buttons=enqueue_buttons(ticket),
         tasks=tasks,
         tasks_total=tasks_total,
         sessions=_sessions(ticket),
@@ -213,7 +214,7 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
         .filter(rank__lte=ATTEMPT_ROWS)
         .order_by("-pk")
     )
-    owned = ticket.tasks  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    owned = ticket.tasks  # Django reverse FK
     tasks = (
         owned.annotate(attempts_total=Count("attempts"))
         .order_by("-pk")
@@ -225,7 +226,6 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
             phase=task.phase,
             status=task.get_status_display(),
             claimed_by=task.claimed_by,
-            execution_target=task.execution_target,
             attempts=tuple(_attempt_row(attempt) for attempt in task.attempts.all()),
             attempts_total=task.attempts_total,
         )
@@ -251,7 +251,6 @@ def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
         cache_write_tokens=attempt.cache_write_tokens,
         num_turns=attempt.num_turns,
         lane=attempt.lane,
-        execution_target=attempt.execution_target,
         outcome=attempt.get_outcome_display() if attempt.outcome else "",  # ty: ignore[unresolved-attribute]
         exit_code=attempt.exit_code,
         error=attempt.error,
@@ -276,7 +275,7 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
             started_at=session.started_at,
             ended_at=session.ended_at,
         )
-        for session in ticket.sessions.order_by("-started_at")  # ty: ignore[unresolved-attribute]  # Django reverse FK
+        for session in ticket.sessions.order_by("-started_at")  # Django reverse FK
     )
 
 

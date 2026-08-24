@@ -31,6 +31,7 @@ import typer
 
 from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
+from teatree.cli.loop.directives import directives_app
 from teatree.cli.loop.drain_queue import drain_queue_app
 from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
@@ -251,11 +252,11 @@ def _session_pin_flags() -> list[str]:
     ``start_command`` refuses a non-terminal stdin, and the operator is there to
     see the child's own auth behaviour, which is why the base-URL guard
     deliberately skips this exec. But it long outlives that moment: it drives the
-    autonomous loop and keeps ticking unattended under ``autonomous_away``, with
+    autonomous loop and keeps ticking unattended while the owner is away, with
     nobody present to override a classifier denial. So it must not inherit the
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
     there, and pinning here is what makes that advice safe to follow. It is the
-    same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
+    same :data:`~teatree.agents.permission_modes.UNATTENDED` the agent dispatch
     options pin, so the unattended lanes cannot drift apart unless the operator
     deliberately narrows this one.
 
@@ -401,6 +402,11 @@ loop_app.command("claim-next")(claim_next_command)
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
+
+# #4166 — the standing-directive surface: ``t3 loop directives show|disable|enable``.
+# ``show --json`` is the contract another harness reads to build its own delivery
+# adapter; ``disable`` is the reachable off switch, ``--all`` the whole-feature kill.
+loop_app.add_typer(directives_app, name="directives")
 
 # #3632 — the DB-free owner-intake loop names the deploy fleet policy must never
 # force off; a flat ``t3 loop intake-loops`` the entrypoint reseed reads.

@@ -26,12 +26,11 @@ from teatree.core.models import Loop, LoopState, Mode, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import build_loop_table_jobs, dispatch_loop_table
 
-_MODE_SEAM = "teatree.loops.loop_table.resolve_active_mode"
+_MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 
-def _resolved(*, defers: bool = False, name: str = "engaged") -> ResolvedMode:
-    """A ResolvedMode carrying only the availability posture (no loop-mask opinion)."""
-    return ResolvedMode(mode=Mode(name=name, entries={}, defers_questions=defers), source="override", until=None)
+def _resolved(*, entries: dict[str, bool] | None = None, name: str = "present") -> ResolvedMode:
+    return ResolvedMode(mode=Mode(name=name, entries=entries or {}), source="override", until=None)
 
 
 def _mini(name: str) -> MiniLoop:
@@ -88,13 +87,13 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
 
         assert "disabled" in _reason("br-off", now=now).lower()
 
-    def test_a_colleague_facing_loop_under_an_away_mode_says_so(self) -> None:
+    def test_a_loop_the_active_mode_masks_off_names_the_mode(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="br-colleague", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
 
-        reason = _reason("br-colleague", now=now, resolved=_resolved(defers=True, name="autonomous_away"))
+        reason = _reason("br-colleague", now=now, resolved=_resolved(entries={"br-colleague": False}, name="away"))
 
-        assert "colleague" in reason.lower(), reason
+        assert "away" in reason.lower(), reason
 
     def test_a_loop_with_no_row_says_its_config_was_never_seeded(self) -> None:
         assert "no Loop row" in _reason("br-orphan", now=timezone.now())

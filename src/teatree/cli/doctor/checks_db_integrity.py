@@ -34,8 +34,8 @@ from django.db import DatabaseError, connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
-from teatree.db.write_domain import ControlDbWriteDomain
-from teatree.paths import TRUE_CANONICAL_DB
+from teatree.db.write_domain import ControlDbWriteDomain, FdHolder, read_write_holders_across
+from teatree.paths import DATA_DIR, TRUE_CANONICAL_DB, find_control_db_artifacts
 
 # quick_check returns exactly this single row when the database is sound.
 _SQLITE_OK = "ok"
@@ -132,31 +132,54 @@ def _check_db_is_off_the_host_filesystem() -> bool:
     return False
 
 
+def _control_db_writers() -> list[tuple[Path, FdHolder]]:
+    """Every (database, writer) pair that must not exist — across BOTH reachable databases.
+
+    Two databases, two questions, because they are reachable differently.
+
+    The CANONICAL one lives in a volume with no host path, so only a writer from
+    OUTSIDE the owning domain is a fault: inside the container a read-write
+    descriptor is the stack doing its job. On the host that file does not exist at
+    all, which is precisely why asking about it alone leaves the probe INERT exactly
+    where the damage happens.
+
+    A COPY left under the host data dir has no legitimate writer on either side.
+    Nothing should be holding a superseded control database open, so this half asks
+    for every holder rather than only foreign ones — `foreign_writers` would answer
+    nothing whenever the doctor runs where `t3` is mandated to run, since a
+    container cannot see the host's process table.
+    """
+    canonical = (
+        [(TRUE_CANONICAL_DB, writer) for writer in ControlDbWriteDomain(TRUE_CANONICAL_DB).foreign_writers()]
+        if TRUE_CANONICAL_DB.exists()
+        else []
+    )
+    return canonical + read_write_holders_across(list(find_control_db_artifacts(DATA_DIR, canonical=TRUE_CANONICAL_DB)))
+
+
 def _check_no_host_process_holds_the_db_writable() -> bool:
-    """FAIL naming any process outside the owning domain that holds the DB read-write.
+    """FAIL naming every process holding the control DB — or a host copy of it — read-write.
 
     This is the condition that did the damage, observed directly rather than inferred
     from a marker file: the claim-file check this replaces reported green throughout
     every corruption, because a claim says a container once wrote a marker and says
     nothing about the descriptors already open when it did.
     """
-    domain = ControlDbWriteDomain(TRUE_CANONICAL_DB)
-    if not TRUE_CANONICAL_DB.exists():
-        return True
-
-    writers = domain.foreign_writers()
-    if not writers:
+    offenders = _control_db_writers()
+    if not offenders:
         typer.secho(
-            f"OK    Control DB writers: no host process holds {TRUE_CANONICAL_DB.name} read-write",
+            "OK    Control DB writers: no process holds the control DB or a host copy of it read-write",
             fg=typer.colors.GREEN,
         )
         return True
 
+    held = "; ".join(f"{database} — {writer}" for database, writer in offenders)
     typer.secho(
-        f"FAIL  Control DB writers: {len(writers)} host process(es) hold {TRUE_CANONICAL_DB} "
-        f"read-write — {', '.join(str(writer) for writer in writers)}. Write access is granted "
-        "once at connection setup and never revoked, so each of these keeps writing for its "
-        "whole life. Stop them and route the work through the container (deploy/t3 <args>).",
+        f"FAIL  Control DB writers: {len(offenders)} descriptor(s) hold the control DB read-write — {held}. "
+        "Write access is granted once at connection setup and never revoked, so each of these keeps "
+        "writing for its whole life, and RENAMING the file retires the name rather than the descriptor. "
+        "Stop the processes, remove the host copies so no descriptor can be re-acquired, and route the "
+        "work through the container (deploy/t3 <args>).",
         fg=typer.colors.RED,
     )
     return False
@@ -173,6 +196,12 @@ def _check_host_projection_is_current() -> bool:
     The source generation is read from the database FILE rather than through the ORM,
     because the file is what the publisher projects from: comparing against whichever
     connection happens to be open would answer about a different database.
+
+    A source that cannot be read FAILs. The faults that make it unreadable — a long
+    writer holding the lock, a WAL recovery in progress — are the same ones that stop
+    the publisher, so returning quietly reported the projection as current on exactly
+    the failure this check exists to catch, and emitted no line for the JSON finding
+    parser to see either. An unreadable source is not evidence of a current projection.
     """
     path = _sqlite_path()
     if path is None or not path.exists():
@@ -181,8 +210,14 @@ def _check_host_projection_is_current() -> bool:
     published = ProjectionReader(projection_dir_for(path)).read().projection
     try:
         expected = ProjectionPublisher(path, projection_dir_for(path)).build().generation
-    except sqlite3.Error:
-        return True
+    except sqlite3.Error as exc:
+        typer.secho(
+            f"FAIL  Host projection: could not read the source generation from {path} ({exc}). "
+            "Whether the projection is current is unknown, so every Claude Code hook reading a "
+            "DB-home setting without Django may be serving values this generation did not produce.",
+            fg=typer.colors.RED,
+        )
+        return False
     if published is not None and published.generation == expected:
         typer.secho(
             f"OK    Host projection: current at generation {expected}",

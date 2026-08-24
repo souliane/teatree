@@ -45,7 +45,7 @@ class Command(TyperCommand):
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         total = DBTaskResult.objects.count()
-        by_status = {value: DBTaskResult.objects.filter(status=value).count() for value in TaskResultStatus.values}
+        by_status = {str(value): DBTaskResult.objects.filter(status=value).count() for value in TaskResultStatus.values}
         ready = DBTaskResult.objects.filter(status=TaskResultStatus.READY)
         ready_by_task = dict(Counter(job.task_name for job in ready.iterator()).most_common())
         payload: QueueStatus = {"total": total, "by_status": by_status, "ready_by_task": ready_by_task}

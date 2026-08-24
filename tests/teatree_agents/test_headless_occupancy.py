@@ -6,7 +6,7 @@ one working tree. These pin the two halves at the dispatch seam: an occupied
 checkout is REFUSED with the incumbent named, and a free one is held for the whole
 run so a rival cannot take it mid-flight.
 
-``_run_headless_agent`` is patched out throughout — the assertion is about which
+``_run_agent`` is patched out throughout — the assertion is about which
 runs are ALLOWED to start, and driving a real harness would prove nothing about
 that while costing a model call.
 """
@@ -18,7 +18,7 @@ from unittest import mock
 import pytest
 from django.test import TestCase
 
-from teatree.agents import headless
+from teatree.agents import runner
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
@@ -43,8 +43,8 @@ class _DispatchCase(TestCase):
 
     def dispatch(self, *, driver: object | None = None) -> TaskAttempt:
         run = driver or mock.Mock(return_value=mock.Mock(spec=TaskAttempt))
-        with mock.patch.object(headless, "_run_headless_agent", run):
-            return headless.run_headless(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
+        with mock.patch.object(runner, "_run_agent", run):
+            return runner.run_agent(self.task, phase="coding", overlay_skill_metadata=mock.Mock())
 
     def fresh(self) -> Worktree:
         return Worktree.objects.get(pk=self.worktree.pk)
@@ -118,7 +118,7 @@ class HeartbeatRenewalTests(_DispatchCase):
         )
         before = self.fresh().occupancy_expires_at
 
-        headless._renew_lease_closing_connection(self.task)
+        runner._renew_lease_closing_connection(self.task)
 
         after = self.fresh().occupancy_expires_at
         assert before is not None
@@ -128,13 +128,13 @@ class HeartbeatRenewalTests(_DispatchCase):
     def test_a_checkout_taken_by_a_rival_aborts_the_run(self) -> None:
         acquire(self.worktree, holder="task:999", holder_session="operator-lane")
 
-        with pytest.raises(headless.LeaseLostError, match="already occupied by task:999"):
-            headless._renew_lease_closing_connection(self.task)
+        with pytest.raises(runner.LeaseLostError, match="already occupied by task:999"):
+            runner._renew_lease_closing_connection(self.task)
 
     def test_an_unprovisioned_ticket_renews_no_claim(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).delete()
 
-        headless._renew_lease_closing_connection(self.task)
+        runner._renew_lease_closing_connection(self.task)
 
         assert not Worktree.objects.filter(pk=self.worktree.pk).exists()
 
@@ -143,6 +143,6 @@ class HeartbeatRenewalTests(_DispatchCase):
         # be what breaks it. A ticketless Task raises on the ``ticket`` descriptor.
         renew_lease = mock.Mock()
         with mock.patch.object(Task, "renew_lease", renew_lease):
-            headless._renew_lease_closing_connection(Task())
+            runner._renew_lease_closing_connection(Task())
 
         renew_lease.assert_called_once()

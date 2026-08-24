@@ -15,7 +15,10 @@ here or anywhere. The stamp is what replaces it: :class:`teatree.paths.IsolatedE
 records the owning checkout INSIDE the dir at birth, and that name is venue-independent
 — it says the same thing read from the host or the container. What remains
 venue-dependent is only whether this venue can check it, and
-:func:`venue_can_observe` is that question asked explicitly rather than assumed.
+:func:`teatree.core.worktree.venue.venue_can_observe` is that question asked explicitly
+rather than assumed — the same seam ``worktree start`` consults before it touches a
+recorded path, so a reaper and a runner can never disagree about what this process is
+entitled to conclude from an unresolvable path.
 
 Two conclusions follow, and the reaper draws exactly these:
 
@@ -31,24 +34,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree import paths
-from teatree.core.management.commands._workspace import checkout_registry
-
-
-def venue_can_observe(path: Path, scanned_roots: tuple[Path, ...]) -> bool:
-    """Whether this venue could have SEEN *path* had it existed.
-
-    A venue earns the right to call a checkout dead by reading the directory that
-    would hold it and finding it absent. Both halves are load-bearing: the path must
-    lie under a root this venue walked at all, and that path's parent must be a
-    directory this venue can list. The container case fails the second half — the
-    stamp names ``<clone>/.claude/worktrees/<name>`` whose parent chain is simply not
-    mounted, so what the venue observes is "an unmounted subtree", not "a deleted
-    checkout". A parent that cannot be read at all reads as unobservable, so an
-    unreadable neighbourhood is never mistaken for an empty one.
-    """
-    if not any(path.is_relative_to(root) for root in scanned_roots):
-        return False
-    return path.parent.is_dir()
+from teatree.core.cleanup import checkout_registry
+from teatree.core.worktree.venue import venue_can_observe
 
 
 @dataclass(frozen=True, slots=True)

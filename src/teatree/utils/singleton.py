@@ -2,13 +2,16 @@
 
 One teatree instance shares one SQLite DB and one queue of background
 tasks. Two concurrent ``t3 <overlay> worker`` invocations would compete
-for the same rows and double-execute side effects; two concurrent
-``t3 slack listen`` processes would double-ack every Slack event; and N
-concurrent ``t3 loop tick`` processes (one per open Claude Code session,
-each registered by the session-start hook's ``CronCreate``) would race
-on scanner state, the statusline file, and per-row dispatch dedup. Each
-of these wraps its main loop with :func:`singleton` so a second
-invocation refuses to start while the first is alive.
+for the same rows and double-execute side effects, and two concurrent
+``t3 slack listen`` processes would double-ack every Slack event. Those
+are the entry points that wrap their main loop with :func:`singleton`,
+so a second invocation refuses to start while the first is alive.
+
+``t3 loop tick`` is NOT one of them. N concurrent ticks (one per open
+Claude Code session, each registered by the session-start hook's
+``CronCreate``) are held apart by the DB ``loop-tick`` ``LoopLease``
+compare-and-swap; no flock wraps the tick, so an audit of tick
+concurrency reads that lease and never a lock file.
 
 The guard is a non-blocking ``fcntl.flock``. It is kernel-enforced:
 crash-safe (the lock releases when the holder's process dies, with no

@@ -3,8 +3,8 @@
 :class:`~teatree.agents.pydantic_ai_session.PydanticAiHarnessSession` is the single
 point translating pydantic_ai reality into the ``claude_agent_sdk`` message vocabulary
 the driver consumes, and the driver's whole failure taxonomy
-(:func:`~teatree.agents.headless_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
-:func:`~teatree.agents.headless_failure_taxonomy.error_result_reason` -> FAILED) keys on
+(:func:`~teatree.agents.runner_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
+:func:`~teatree.agents.runner_failure_taxonomy.error_result_reason` -> FAILED) keys on
 ``ResultMessage.is_error``. A terminal message that is unconditionally ``success``
 therefore makes a bad run indistinguishable from a good one on this lane: a 429
 escapes as a raw exception and lands as a ``sdk_error`` traceback instead of a park,
@@ -18,23 +18,24 @@ network, no credential, zero tokens.
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
 from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
-from teatree.agents.headless import TaskUsage, run_headless
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from tests.factories import planned_ticket
 
 _MODEL = "claude-opus-4-8"
 
@@ -106,6 +107,33 @@ def _two_request_model(final_text: str = _RESULT_JSON) -> FunctionModel:
     return FunctionModel(stream_function=stream_fn)
 
 
+#: The exact opening sentence the metered coding dispatch returned as its whole
+#: result — a preamble, not an answer. Kept verbatim so the regression names the
+#: shape it guards rather than a paraphrase of it.
+_PREAMBLE = "I'll start by reading the issue and understanding the current state."
+
+
+def _preamble_then_tool_model(tool_name: str, final_text: str = _RESULT_JSON) -> FunctionModel:
+    """A model double emitting text THEN a tool call in one response — Anthropic's real shape.
+
+    Every Anthropic model narrates before it acts, so this is what a coding dispatch
+    actually receives back. It is the shape that must NOT end the run: the agent has to
+    execute the call, feed the result back, and let the model finish on a later turn.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield _PREAMBLE
+            yield {0: DeltaToolCall(name=tool_name, json_args="{}")}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_fn)
+
+
 def _drive(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
     async def turn() -> list[object]:
         await session.query(prompt)
@@ -155,10 +183,13 @@ class TestTerminalResultReportsProviderFailure:
         assert _DROPPED_TRANSPORT in (terminal.result or "")
 
     def test_a_usage_limit_is_a_max_turns_failure_the_classifier_cannot_claim(self) -> None:
-        # The run hit its OWN step cap — a genuine FAILED, never a limit park. Its
-        # message must therefore name no limit phrase, or a real failure would be
-        # laundered into an infinitely re-parked task.
-        from teatree.llm.anthropic_limits import classify_limit  # noqa: PLC0415 — test-local assertion
+        # The run hit its OWN step cap — a genuine FAILED, never a limit park. The
+        # taxonomy must refuse to claim it as a provider window, or a real failure
+        # would be laundered into an infinitely re-parked task. Asserted on
+        # `limit_match` (the decision point) rather than `classify_limit` (a raw
+        # substring matcher): the vendor's message now names its own docs on "usage
+        # limits", so the matcher alone can no longer carry this property.
+        from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
         session = PydanticAiHarnessSession(Agent(_two_request_model()), model_name=_MODEL, request_limit=1)
 
@@ -166,7 +197,7 @@ class TestTerminalResultReportsProviderFailure:
 
         assert terminal.is_error is True
         assert terminal.subtype == "error_max_turns"
-        assert classify_limit(terminal.result or "") is None
+        assert limit_match(terminal) is None
 
     def test_a_programming_error_still_propagates_to_the_durable_failure_path(self) -> None:
         # The handler is NARROW on purpose: a defect in teatree's own code must keep
@@ -190,6 +221,64 @@ class TestTerminalResultReportsProviderFailure:
         assert terminal.is_error is False
         assert terminal.subtype == "success"
         assert terminal.result == "all good"
+
+
+class TestATextPreambleDoesNotEndTheRun:
+    """A model that narrates before it acts must still get its tool loop.
+
+    The metered coding lane produced exactly one billed attempt and it did nothing:
+    ``num_turns=1``, a clean worktree, and the model's opening sentence recorded as
+    the result. The cause was the driving API, not the model — ``Agent.run_stream``
+    "will consider the first output matching the ``output_type`` to be the final
+    output, [...] stop running the agent graph and [...] not execute any tool calls
+    made by the model after this 'final' output", and with ``output_type=str``
+    pydantic_ai raises that final-result event on the FIRST ``TextPart``. So the run
+    ended on the preamble, and the tool results were never fed back.
+
+    The preamble test is RED on ``run_stream`` (``num_turns == 1``, the result is the
+    preamble) and GREEN on ``run``. The tool-call-first case below it is deliberately
+    the CONTROL: it iterated even on the broken code (no text part, so no early final
+    result), which is exactly why every existing tool double — scripted call-first —
+    passed while production could not act.
+    """
+
+    def test_the_model_keeps_going_after_a_preamble_and_finishes_on_its_envelope(self) -> None:
+        seen: list[str] = []
+
+        def read_issue() -> str:
+            seen.append("read_issue")
+            return "the issue body"
+
+        session = PydanticAiHarnessSession(
+            # Suppressed below: pydantic-ai 2.33 types `tools` as
+            # `Sequence[Tool[AgentDepsT] | ToolFuncEither[AgentDepsT, ...]]` and NO overload
+            # accepts a plain function, whatever its arity (reproduced on a 2-line probe
+            # outside this repo); the call is correct and is exercised at runtime below.
+            Agent(_preamble_then_tool_model("read_issue"), tools=[read_issue]),  # ty: ignore[no-matching-overload]
+            model_name=_MODEL,
+            phase="coding",
+        )
+        messages = _drive(session, "implement the ticket")
+        terminal = _terminal(messages)
+
+        assert seen == ["read_issue"], "the tool the model asked for must actually run"
+        assert terminal.num_turns == 2, "the tool result must go back to the model for a second turn"
+        assert terminal.result == _RESULT_JSON, f"the run ended on its preamble instead of an answer: {terminal.result}"
+        tool_uses = [
+            block
+            for message in messages
+            if isinstance(message, AssistantMessage)
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        ]
+        assert [block.name for block in tool_uses] == ["read_issue"], "the driver must still see the tool stream"
+
+    def test_control_a_tool_call_with_no_preamble_iterates_either_way(self) -> None:
+        # The vacuity proof for the two rows above: this shape ALREADY passed on the
+        # broken code, so a suite built only from it could never have caught the bug.
+        session = PydanticAiHarnessSession(Agent(_two_request_model("done")), model_name=_MODEL)
+
+        assert _terminal(_drive(session)).num_turns == 2
 
 
 class TestTerminalResultCarriesTheRealRunIdentity:
@@ -240,17 +329,17 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
 
     def _dispatch(self, harness: PydanticAiHarness) -> TaskAttempt:
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            return run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            return run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
     def _dispatch_api_error(self, *, status_code: int, error_type: str, message: str) -> TaskAttempt:
         return self._dispatch(
@@ -333,10 +422,8 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
 
 
 def test_turns_made_counts_requests_and_never_returns_zero() -> None:
-    # a stream that made 3 requests reports 3
-    stream = SimpleNamespace(usage=SimpleNamespace(requests=3))
-    assert _turns_made(stream) == 3
-    # a stream that recorded 0 requests still counts as one attempted turn
-    assert _turns_made(SimpleNamespace(usage=SimpleNamespace(requests=0))) == 1
-    # no stream at all (provider refused the first request) is still one attempted turn
-    assert _turns_made(None) == 1
+    # a run that made 3 requests reports 3
+    assert _turns_made(RunUsage(requests=3)) == 3
+    # a run that recorded 0 requests (the provider refused the first one) still
+    # counts as the one turn it attempted
+    assert _turns_made(RunUsage(requests=0)) == 1

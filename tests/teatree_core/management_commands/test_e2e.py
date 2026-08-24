@@ -193,17 +193,25 @@ class TestE2eProject(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_headed_mode_skips_ci_env(self) -> None:
-        """--headed does not set CI=1 in the environment."""
+    def test_ci_env_is_set_and_headed_cannot_be_requested(self) -> None:
+        """Every run is headless, and there is no flag left to ask otherwise.
+
+        ``--headed`` used to be requestable AND deleted ``CI=1`` when it was, so a
+        run that opened a window on the owner's desktop also stopped matching what
+        CI executes. Both halves are gone: the flag is refused by the CLI, so the
+        one env every run gets is the CI one.
+        """
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
-            call_command("e2e", "project", headed=True, docker=False)
+            call_command("e2e", "project", docker=False)
 
-        env = mock_run.call_args[1].get("env", {})
-        assert env.get("CI") != "1"
+        assert mock_run.call_args[1].get("env", {}).get("CI") == "1"
+
+        with pytest.raises(TypeError):
+            call_command("e2e", "project", headed=True, docker=False)
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -472,22 +480,39 @@ class TestE2eRunWorkItem(TestCase):
         assert "manifest_entry" not in recipe.last_run
 
 
-class TestE2eExternal(TestCase):
+class _ResolvedSpecsDir(TestCase):
+    """Hand ``e2e external`` a resolved specs directory instead of cloning one.
+
+    Specs resolution itself is covered by
+    :class:`TestResolveExternalSpecsPathOverlayRepo`; the cases below are about
+    what the runner does once a working directory exists.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.specs_dir = Path(tmp) / "specs"
+        self.specs_dir.mkdir()
+        self.enterContext(
+            patch.object(e2e_runners_mod, "resolve_external_specs_path", return_value=self.specs_dir),
+        )
+
+
+class TestE2eExternalUnresolvable(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_private_tests_configured_raises_system_exit_1(self) -> None:
-        """Unconfigured private_tests is a misconfig that must stop the caller.
+    def test_no_specs_source_configured_raises_system_exit_1(self) -> None:
+        """An overlay declaring no e2e repo, with no --repo, must stop the caller.
 
         Regression for #932: returning the message exited 0, so an
         unconfigured E2E external run looked green.
         """
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_PRIVATE_TESTS", None)
-            os.environ.pop("T3_CONFIG_DB", None)  # no DB private_tests row → unconfigured
-            with pytest.raises(SystemExit) as exc_info:
-                call_command("e2e", "external")
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("e2e", "external")
         assert exc_info.value.code == 1
 
+
+class TestE2eExternal(_ResolvedSpecsDir):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_target_dev_without_base_url_raises_system_exit_1(self) -> None:
@@ -496,59 +521,10 @@ class TestE2eExternal(TestCase):
         Regression for #932: the message was written to stderr but the
         command still returned (exit 0).
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-            with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir)}, clear=False),
-                patch.object(e2e_mod.Command, "_resolve_target", return_value="dev"),
-            ):
-                os.environ.pop("BASE_URL", None)
-                with pytest.raises(SystemExit) as exc_info:
-                    call_command("e2e", "external", target="dev")
-            assert exc_info.value.code == 1
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_db_config_fallback(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "worktree"
-            wt_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
-            db = tmp_path / "db.sqlite3"
-            _seed_config(db, "private_tests", str(private_dir))
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/cfg")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-                state=Worktree.State.SERVICES_UP,
-            )
-
-            mock_result = MagicMock(returncode=0)
-            with (
-                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir), "T3_CONFIG_DB": str(db)}, clear=False),
-                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
-            ):
-                os.environ.pop("T3_PRIVATE_TESTS", None)
-                result = cast("str", call_command("e2e", "external"))
-            assert "passed" in result
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_private_tests_dir_missing_raises_system_exit_1(self) -> None:
-        """A missing private_tests directory is a misconfig — exit 1."""
-        with (
-            patch.dict("os.environ", {"T3_PRIVATE_TESTS": "/nonexistent/path"}),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            call_command("e2e", "external")
+        with patch.object(e2e_mod.Command, "_resolve_target", return_value="dev"):
+            os.environ.pop("BASE_URL", None)
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("e2e", "external", target="dev")
         assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
@@ -564,8 +540,6 @@ class TestE2eExternal(TestCase):
             cache_dir = wt_dir.parent / ".t3-cache" / wt_dir.name
             cache_dir.mkdir(parents=True, exist_ok=True)
             (cache_dir / ".t3-env.cache").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
 
             ticket = Ticket.objects.create(
                 overlay="test",
@@ -582,7 +556,7 @@ class TestE2eExternal(TestCase):
             )
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -651,8 +625,6 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/pwargs")
             Worktree.objects.create(
                 overlay="test",
@@ -664,7 +636,7 @@ class TestE2eExternal(TestCase):
             )
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -690,8 +662,6 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
 
             ticket = Ticket.objects.create(
                 overlay="test",
@@ -707,7 +677,7 @@ class TestE2eExternal(TestCase):
             )
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -757,8 +727,6 @@ class TestE2eExternal(TestCase):
             )
             e2e_cache_dir = tmp_path / "e2e-cache"
             e2e_cache_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
 
             # Backend ticket: the stack the user wants to test against.
             backend_ticket = Ticket.objects.create(
@@ -793,7 +761,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict(
                     "os.environ",
-                    {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(e2e_cache_dir)},
+                    {"T3_ORIG_CWD": str(e2e_cache_dir)},
                     clear=False,
                 ),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
@@ -858,8 +826,6 @@ class TestE2eExternal(TestCase):
             )
             standalone_e2e_dir = tmp_path / "standalone-e2e"
             standalone_e2e_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
 
             backend_ticket = Ticket.objects.create(
                 overlay="test",
@@ -880,7 +846,6 @@ class TestE2eExternal(TestCase):
                 patch.dict(
                     "os.environ",
                     {
-                        "T3_PRIVATE_TESTS": str(private_dir),
                         "T3_ORIG_CWD": str(standalone_e2e_dir),
                     },
                     clear=False,
@@ -908,17 +873,12 @@ class TestE2eExternal(TestCase):
         Misconfigured link IDs must not silently fall through to the
         resolved-worktree path; that would mask the user's intent.
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
+        with (
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external", target="local", linked_to=9_999_999)
 
-            with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir)}, clear=False),
-                pytest.raises(SystemExit) as exc_info,
-            ):
-                call_command("e2e", "external", target="local", linked_to=9_999_999)
-
-            assert exc_info.value.code == 2
+        assert exc_info.value.code == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -933,15 +893,12 @@ class TestE2eExternal(TestCase):
             ("dev", "https://dev.example.com"),
             ("qa", "https://qa.example.com"),
         ]:
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
-                private_dir = Path(tmp) / "private"
-                private_dir.mkdir()
-
+            with self.subTest(target=target):
                 mock_result = MagicMock(returncode=0)
                 with (
                     patch.dict(
                         "os.environ",
-                        {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": base_url},
+                        {"BASE_URL": base_url},
                         clear=False,
                     ),
                     patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
@@ -957,13 +914,11 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_headed_mode(self) -> None:
+    def test_external_run_is_headless_with_no_headed_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/headed")
             Worktree.objects.create(
@@ -976,25 +931,24 @@ class TestE2eExternal(TestCase):
             )
             mock_result = MagicMock(returncode=1)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
                 pytest.raises(SystemExit) as exc_info,
             ):
-                call_command("e2e", "external", headed=True)
+                call_command("e2e", "external")
             assert exc_info.value.code == 1
-            cmd = mock_run.call_args[0][0]
-            assert "--headed" in cmd
-            env = mock_run.call_args[1]["env"]
-            assert "CI" not in env
+            assert "--headed" not in mock_run.call_args[0][0]
+            assert mock_run.call_args[1]["env"]["CI"] == "1"
+
+            with pytest.raises(TypeError):
+                call_command("e2e", "external", headed=True)
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_custom_test_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
 
@@ -1009,7 +963,7 @@ class TestE2eExternal(TestCase):
             )
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -1023,8 +977,6 @@ class TestE2eExternal(TestCase):
         """A missing local frontend is an unmet precondition — exit 1 (#932)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            private_dir = tmp_path / "private"
-            private_dir.mkdir()
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
 
@@ -1038,7 +990,7 @@ class TestE2eExternal(TestCase):
                 state=Worktree.State.SERVICES_UP,
             )
             with (
-                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=None),
                 patch.object(e2e_mod, "_detect_local_port", return_value=None),
                 pytest.raises(SystemExit) as exc_info,
@@ -1050,21 +1002,17 @@ class TestE2eExternal(TestCase):
     @override_settings(**SETTINGS)
     def test_base_url_env_skips_port_discovery(self) -> None:
         """When BASE_URL is set, port discovery is skipped and BASE_URL is preserved."""
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-
-            mock_result = MagicMock(returncode=0)
-            with (
-                patch.dict(
-                    "os.environ",
-                    {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": "https://dev.example.com"},
-                    clear=False,
-                ),
-                patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
-                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
-            ):
-                result = cast("str", call_command("e2e", "external"))
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict(
+                "os.environ",
+                {"BASE_URL": "https://dev.example.com"},
+                clear=False,
+            ),
+            patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+        ):
+            result = cast("str", call_command("e2e", "external"))
 
         assert "passed" in result
         mock_discover.assert_not_called()
@@ -1096,7 +1044,7 @@ class TestE2eExternal(TestCase):
         assert env["BASE_URL"] == "https://dev.example.com"
 
 
-class TestE2eExternalPreflight(TestCase):
+class TestE2eExternalPreflight(_ResolvedSpecsDir):
     """``e2e external`` invokes ``overlay.e2e.preflight()`` before launching Playwright."""
 
     @_patch_overlays(FULL_OVERLAY)
@@ -1109,25 +1057,21 @@ class TestE2eExternalPreflight(TestCase):
             recorded.append({"customer": customer, "base_url": base_url})
             return [lambda: None]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-            mock_result = MagicMock(returncode=0)
-            with (
-                patch.dict(
-                    "os.environ",
-                    {
-                        "T3_PRIVATE_TESTS": str(private_dir),
-                        "BASE_URL": "https://dev.example.com",
-                        "CUSTOMER": "acme",
-                    },
-                    clear=False,
-                ),
-                patch.object(FullE2E, "preflight", new=_record),
-                patch.object(e2e_mod, "_discover_frontend_port"),
-                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
-            ):
-                result = cast("str", call_command("e2e", "external"))
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "BASE_URL": "https://dev.example.com",
+                    "CUSTOMER": "acme",
+                },
+                clear=False,
+            ),
+            patch.object(FullE2E, "preflight", new=_record),
+            patch.object(e2e_mod, "_discover_frontend_port"),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
+        ):
+            result = cast("str", call_command("e2e", "external"))
 
         assert "passed" in result
         assert recorded == [{"customer": "acme", "base_url": "https://dev.example.com"}]
@@ -1144,31 +1088,27 @@ class TestE2eExternalPreflight(TestCase):
 
             return [_fail]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-            mock_result = MagicMock(returncode=0)
-            with (
-                patch.dict(
-                    "os.environ",
-                    {
-                        "T3_PRIVATE_TESTS": str(private_dir),
-                        "BASE_URL": "https://dev.example.com",
-                    },
-                    clear=False,
-                ),
-                patch.object(FullE2E, "preflight", new=_failing),
-                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
-                patch.object(e2e_mod, "_discover_frontend_port"),
-                pytest.raises(SystemExit) as exc_info,
-            ):
-                call_command("e2e", "external")
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "BASE_URL": "https://dev.example.com",
+                },
+                clear=False,
+            ),
+            patch.object(FullE2E, "preflight", new=_failing),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+            patch.object(e2e_mod, "_discover_frontend_port"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external")
 
         assert exc_info.value.code != 0
         mock_run.assert_not_called()
 
 
-class TestE2eRun(TestCase):
+class TestE2eRun(_ResolvedSpecsDir):
     """`t3 <overlay> e2e run` dispatches to project/external based on overlay config."""
 
     @_patch_overlays(_PROJECT_RUNNER_OVERLAY)
@@ -1189,8 +1129,7 @@ class TestE2eRun(TestCase):
     @override_settings(**SETTINGS)
     def test_runner_external_invokes_playwright(self) -> None:
         with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
+            patch.dict("os.environ", {"BASE_URL": "https://dev.example"}, clear=False),
         ):
             mock_result = MagicMock(returncode=0)
             with patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run:
@@ -1215,8 +1154,7 @@ class TestE2eRun(TestCase):
     @override_settings(**SETTINGS)
     def test_runner_inferred_from_project_path(self) -> None:
         with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
+            patch.dict("os.environ", {"BASE_URL": "https://dev.example"}, clear=False),
         ):
             mock_result = MagicMock(returncode=0)
             with patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run:
@@ -1661,42 +1599,32 @@ class TestResolveExternalSpecsPathOverlayRepo(TestCase):
 
             assert root.parent.name == "named-svc"
 
-    def test_no_overlay_repo_keeps_private_tests_fallback(self) -> None:
-        """``overlay_repo=None`` is the legacy path: the ``T3_PRIVATE_TESTS`` fallback is unchanged.
+    def test_no_overlay_repo_and_no_named_repo_is_unresolvable(self) -> None:
+        """Neither source declared leaves nothing to run — exit 1, not a silent empty run."""
+        with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
+            e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=None)
+        assert exc_info.value.exit_code == 1
 
-        Regression guard — overlays that supply no ``url`` must behave exactly as before.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-            with patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=private_dir):
-                root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=None)
-            assert root == private_dir
-
-    def test_no_overlay_repo_branch_without_repo_still_rejected(self) -> None:
-        """``--branch`` with no ``--repo`` and no overlay_repo is still a misuse (exit 2)."""
+    def test_no_overlay_repo_branch_without_repo_is_unresolvable(self) -> None:
+        """``--branch`` cannot conjure a source: with neither repo declared it is exit 1."""
         with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
             e2e_runners_mod.resolve_external_specs_path("", "some-branch", overlay_repo=None)
-        assert exc_info.value.exit_code == 2
+        assert exc_info.value.exit_code == 1
 
 
-class TestExportedPrivateTestsOutranksOverlayRepo(TestCase):
-    """An exported ``T3_PRIVATE_TESTS`` beats an overlay's DECLARED repo.
+class TestOverlayRepoIsTheTopRankedDefaultSource(TestCase):
+    """Only ``--repo`` outranks the overlay's declared repo; nothing else is consulted.
 
-    An overlay that declares a ``url`` supplies a default source for the specs; an
-    export names the checkout to run for THIS invocation. Ranked the other way
-    round, the export was unreachable for every such overlay, so the runner could
-    only ever execute specs already pushed to a remote — a deterministic,
-    stack-free lane (no browser, no BASE_URL, no credentials) could not be run
-    against the working tree at all, which is exactly what CI runs. Explicit beats
-    default here for the same reason ``--repo`` already beats the overlay repo.
+    Specs live in the repo that owns them, reached by a declared ``url`` + ``ref``.
+    A stray ``T3_PRIVATE_TESTS`` in the environment is not a source of specs and
+    must not divert the run to some unrelated checkout.
     """
 
     def setUp(self) -> None:
         self.enterContext(patch.dict(os.environ))
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
-        self.exported = Path(self.tmp) / "worktree-e2e"
-        self.exported.mkdir()
+        self.stray = Path(self.tmp) / "stray-checkout"
+        self.stray.mkdir()
         self.overlay_repo = config_mod.E2ERepo(
             name="client-workspace",
             url="git@example.invalid:org/client-workspace.git",
@@ -1704,15 +1632,19 @@ class TestExportedPrivateTestsOutranksOverlayRepo(TestCase):
             e2e_dir="e2e",
         )
 
-    def test_exported_path_wins_over_overlay_repo(self) -> None:
-        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
-        with patch.object(e2e_runners_mod, "clone_or_update_e2e_repo") as mock_clone:
+    def test_overlay_repo_wins_over_a_stray_exported_directory(self) -> None:
+        os.environ["T3_PRIVATE_TESTS"] = str(self.stray)
+        cloned = Path(self.tmp) / "cloned"
+        with (
+            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
+            patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+        ):
             root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
-        assert root == self.exported
-        mock_clone.assert_not_called()
+        assert root == cloned
+        assert root != self.stray
+        mock_clone.assert_called_once()
 
-    def test_named_repo_still_beats_the_exported_path(self) -> None:
-        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
+    def test_named_repo_still_beats_the_overlay_repo(self) -> None:
         named = config_mod.E2ERepo(name="named-svc", url="git@example.invalid:org/named.git", branch="main")
         cloned = Path(self.tmp) / "cloned"
         with (
@@ -1722,41 +1654,18 @@ class TestExportedPrivateTestsOutranksOverlayRepo(TestCase):
         ):
             root = e2e_runners_mod.resolve_external_specs_path("named-svc", "", overlay_repo=self.overlay_repo)
         assert root == cloned
-        mock_clone.assert_called_once()
+        assert mock_clone.call_args[0][0].name == "named-svc"
 
-    def test_branch_with_the_exported_path_is_still_a_misuse(self) -> None:
-        # The export is a checkout the user manages; a ref only means something to a clone.
-        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
-        with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
-            e2e_runners_mod.resolve_external_specs_path("", "some-branch", overlay_repo=self.overlay_repo)
-        assert exc_info.value.exit_code == 2
-
-    def test_a_nonexistent_exported_path_is_ignored_not_obeyed(self) -> None:
-        # A typo'd export must not silently become "run nothing" — fall through to
-        # the overlay's repo exactly as if it had never been set.
-        os.environ["T3_PRIVATE_TESTS"] = str(Path(self.tmp) / "does-not-exist")
+    def test_branch_override_reaches_the_overlay_clone(self) -> None:
+        os.environ["T3_PRIVATE_TESTS"] = str(self.stray)
         cloned = Path(self.tmp) / "cloned"
         with (
             patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
             patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
         ):
-            root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
+            root = e2e_runners_mod.resolve_external_specs_path("", "open-mr-branch", overlay_repo=self.overlay_repo)
         assert root == cloned
-        mock_clone.assert_called_once()
-
-    def test_db_configured_private_tests_does_not_outrank_the_overlay_repo(self) -> None:
-        # Only the EXPORT is an instruction about this run; the DB row is a standing
-        # preference and keeps its original lowest precedence.
-        os.environ.pop("T3_PRIVATE_TESTS", None)
-        cloned = Path(self.tmp) / "cloned"
-        with (
-            patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=self.exported),
-            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
-            patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
-        ):
-            root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
-        assert root == cloned
-        mock_clone.assert_called_once()
+        assert mock_clone.call_args[0][1] == "open-mr-branch"
 
 
 # ── e2e external --repo ───────────────────────────────────────────────
@@ -1814,35 +1723,6 @@ class TestE2eExternalRepo(TestCase):
         mock_install.assert_called_once_with(playwright_root)
         run_cwd = mock_run.call_args[1]["cwd"]
         assert str(run_cwd) == str(playwright_root)
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_private_tests_path_does_not_auto_install_dependencies(self) -> None:
-        """User-managed ``T3_PRIVATE_TESTS`` checkouts remain outside TeaTree's install policy."""
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
-            wt_dir = Path(tmp) / "worktree"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/private-e2e")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-                state=Worktree.State.SERVICES_UP,
-            )
-
-            with (
-                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir), "T3_PRIVATE_TESTS": str(private_dir)}),
-                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies") as mock_install,
-                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod, "Popen", _popen_for(MagicMock(returncode=0))),
-            ):
-                call_command("e2e", "external")
-
-        mock_install.assert_not_called()
 
     def _run_external_capturing_ref(self, captured: dict[str, str], **call_kwargs: object) -> None:
         """Drive ``e2e external --repo`` with a stubbed clone that records the ref override."""
@@ -1911,14 +1791,11 @@ class TestE2eExternalRepo(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_branch_without_repo_is_rejected(self) -> None:
-        """``--branch`` against the T3_PRIVATE_TESTS path is a misuse — exit 2."""
-        with (
-            patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=Path("/tmp/specs")),
-            pytest.raises(SystemExit) as exc_info,
-        ):
+    def test_branch_without_any_specs_source_is_rejected(self) -> None:
+        """``--branch`` cannot name a source: an overlay with no e2e repo is exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
             call_command("e2e", "external", branch="mr/working-branch")
-        assert exc_info.value.code == 2
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1940,7 +1817,7 @@ class TestE2eExternalRepo(TestCase):
 
         End-to-end through ``e2e external`` → ``get_e2e_config`` → ``overlay_e2e_repo``
         → ``resolve_external_specs_path``: the runner sources the suite from the
-        overlay-declared repo+ref, never from ``T3_PRIVATE_TESTS``.
+        overlay-declared repo+ref.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2016,7 +1893,7 @@ class TestE2EResolveTarget(TestCase):
             patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
             get_overlay.return_value.e2e.env_extras.return_value = {}
-            env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", headed=False, target="qa")
+            env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", target="qa")
         assert env["T3_E2E_TARGET"] == "qa"
         assert env["BASE_URL"] == "https://tenant-qa.example.com"
         assert env["CI"] == "1"

@@ -95,7 +95,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
 # A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
 # mirroring managers_overlay.py beside managers.py.
-# 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
+# 93: +agent_admission.py — the F9 headless-lane admission chokepoint (governor consult)
 # 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
 # 96: +notify_types.py / notify_ledger.py — carved out of notify.py to hold it under the 500-LOC
 # module-health cap. notify_types (the NotifyKind/NotifyReason/NotifyOutcome/NotifyOptions value
@@ -182,7 +182,67 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # the root beside the managers_* leaves it belongs with (managers_overlay, managers_inbound,
 # managers_issue_match, managers_phase_cadence, managers_task_claim); filing it under a
 # subpackage would separate it from its siblings to satisfy a counter.
-PINNED_FLAT_CORE_MODULES = 108
+# 109: +dispatch_admission.py (#4107) — the governor's third admission lane: the harness
+# Agent/Task dispatch, which asked nothing while both factory lanes did. It lands at the
+# root beside the two flat admission leaves it belongs with (admission_governor.py, the
+# pure decision; agent_admission.py, the headless consult); filing it under a
+# subpackage would separate it from its siblings to satisfy a counter. Its callers are
+# the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
+# teatree.hooks node from reaching, so it cannot live there either.
+# 107: -config_migration.py / -config_seed_tables.py (#4147) — the config-store <-> TOML
+# interchange became the subpackage core/config_interchange/ once the withheld-key data-loss fix
+# needed two more modules beside the hub: secret_guard (what must never be shared) and
+# registry_rows (the merge rule that keeps a redacted export from deleting what it redacted).
+# The hub and the rules its two directions must agree on move together — they are one concern,
+# and letting a shared rule drift from the pair that shares it is how export and import came to
+# disagree at all. Two root leaves collapse to one package entry and the two new modules never
+# land at the root, mirroring retention/.
+# 108: +forge_push_refs.py (#4117) — the branch-ref normalization (BranchRef + local_tip)
+# carved out of forge_push.py, which crossed the 500-LOC module-health ceiling once every ref
+# read and write went through one form. It answers "which string names this branch to git", a
+# different question from the credential/classification/verification seam the hub keeps. It
+# lands at the root beside forge_push.py, mirroring speak_cleaning.py beside speak.py and
+# notify_targets.py beside notify.py; no existing subpackage owns it (merge/ is the keystone
+# transition, not a push seam).
+# 109: +handover_wrapup.py (#4194) — the sub-agent barrier's returns: the stored per-agent
+# union, its merge, its renderer and the one-block upsert onto the row. Carved out of
+# handover.py, which crossed the module-health public-function ceiling once the resolve/write
+# split landed. It answers "what does each agent still owe", a different question from the
+# payload/target resolution and XDG mirror the hub keeps. It lands at the root beside
+# handover.py and handover_orchestration.py, the two flat leaves this concern already occupies
+# by the #75 decision above, mirroring forge_push_refs.py beside forge_push.py and
+# speak_cleaning.py beside speak.py; no existing subpackage owns the hand-off (merge/ is the
+# keystone transition, not the hand-off seam).
+# 110: +claim_liveness.py (#4164) — "is this process still executing that task claim?", the
+# registry the three lease sweeps consult before reaping. A flat sibling of
+# loop_lease_liveness.py, whose pid-attribution seam it reuses and whose shape it mirrors
+# exactly: an ORM-free predicate layer that must be importable by core/models/ (task_claim),
+# core/managers*, core/tasks AND teatree.loops with no cycle, so it can live under none of
+# them; modelkit/ is a zero-dependency tach node and cannot take the loop_lease_liveness edge.
+# 111: +process_freshness.py (#4387) — "is the code THIS process loaded as new as the schema
+# the DB has applied?", the mirror of schema_readiness.py's deploy-order gate and its flat
+# sibling by construction: the same shape (a frozen snapshot plus a memoised verdict), read
+# by the same claim chokepoint through managers_task_claim, and importable by core/managers*,
+# core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
+# ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
+# owns "what did this interpreter load".
+# 110: -fast_push.py (C1 leak-gate fix follow-up) — fast_push.py (the leak-gated fast
+# delivery lane hub, #67 above) gained a second module, push_range.py (the range the leak
+# gates now scan — the whole push range, not just the staged delta), and the pair collapsed
+# into the subpackage core/push/ instead of landing push_range.py flat at the root beside
+# it. Mirrors retention/'s own history (#102 above): a flat hub becomes a subpackage once it
+# grows a second module, rather than each one separately arguing for a root slot. One root
+# leaf leaves (fast_push.py) and the new helper never lands at the root, netting -1 against
+# the pre-existing baseline of 111.
+# 111: +overlay_repos.py (#4515) — the one derivation of "which forge repos does this
+# overlay work in?". Both the intake scanner (which issues to claim, via
+# loop/scanner_factories) and the external-outcome measure (which repos' merges count as
+# output) read the same slug set, and a second derivation would let the two disagree about
+# what the factory's own repos are. That shared readership is what keeps it at the root:
+# intake/ cannot own it without factory/ reaching across, and factory/ cannot own it
+# without intake/ doing the same. Same shape as claim_liveness.py (#4164) above — a small
+# ORM-free derivation two subpackages consult, so it belongs to neither.
+PINNED_FLAT_CORE_MODULES = 111
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

@@ -12,7 +12,8 @@ configured/opt-in plane) AND not ``LoopState``-held (the durable runtime control
 tier: ``t3 loop pause`` / ``disable``, #1913) — there is no env kill-switch and no
 ``[loops]`` toml disabled-state tier. The tick applies that ONE predicate over its
 already-bulk-loaded ``Loop`` rows plus a SINGLE bulk ``LoopState`` read (no
-per-loop hold query), and the standalone :func:`loop_enabled` single-lookup used
+per-loop hold query), and the standalone :func:`teatree.loops.enable_verdict.loop_admits`
+single-lookup used
 by the off-live-tick daily loop gates applies the same predicate — so no
 enable-decision site drifts into a tier-subset. (The review-claim chokepoint
 reads the ``LoopState`` arm only, by documented design — see
@@ -41,18 +42,10 @@ silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_
 BEFORE building its jobs, so two ticks that read the same anchor cannot both
 drive the loop — exactly one wins the claim and dispatches.
 
-**Colleague-facing loops defer while the mode is unreachable (#2904, #61).** A row
-with ``Loop.colleague_facing`` set is additionally gated on the single active
-:class:`~teatree.core.mode_resolution.ResolvedMode`: whenever the resolved mode
-``defers_questions`` (an away-class mode — the same axis that defers user-directed
-questions), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
-work should not fire while the user is unreachable to weigh in, even in an
-autonomous-away mode where every other loop keeps self-pumping (the
-``pauses_self_pump``/``defers_questions`` split). The loop mask AND the
-availability posture now come from the SAME resolved mode (the #61 merge), so the
-two can never drift. Auto-merge under away is preserved as loop membership, not an
-availability read: ``pr_sweep`` is a non-``colleague_facing`` ship-domain scanner,
-so it keeps running while the review loop (``colleague_facing``) is deferred.
+**Colleague-facing loops are held off by the mode's own table (#2904, #61).** A mode
+that means "the owner cannot weigh in" says so by turning ``followup`` — the sole
+``Loop.colleague_facing`` row — OFF in its ``entries``, so the mask the tick already
+applies is the whole mechanism; there is no second posture axis to drift from it.
 
 This is the ``jobs_builder`` the per-loop tick (``t3 loops tick --loop <name>``)
 injects into the shared :func:`teatree.loop.tick.run_tick` pipeline, so reap +
@@ -75,10 +68,9 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loops.base import BuildJobsContext, MiniLoop
+from teatree.loops.enable_verdict import EnablePlanes
 from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
@@ -92,25 +84,24 @@ logger = logging.getLogger(__name__)
 class _TickAdmission:
     """The per-tick inputs the unified verdict shares across every loop this pass.
 
-    Resolved ONCE per tick (the single active :class:`ResolvedMode` — its loop
-    mask AND its availability booleans — plus the bulk ``LoopState`` hold set) so a
-    fan-out of N loops issues those reads once, not per loop (#2584 / #3159 / #61).
+    The enable planes are :class:`~teatree.loops.enable_verdict.EnablePlanes` — the SAME
+    object :func:`teatree.loops.chain_membership.timer_chain_loop_names` asks — so the
+    tick's per-fire admission and the chain membership it is driven by cannot disagree
+    (#4185). Resolved ONCE per tick so a fan-out of N loops issues those reads once, not
+    per loop (#2584 / #3159 / #61); the cadence and reach arms this module adds on top
+    are what make admission NARROWER than membership, never differently-sourced.
     """
 
     now: dt.datetime
-    resolved: "ResolvedMode"
-    held: set[str]
-    forced: dict[str, bool]
+    planes: EnablePlanes
 
     @classmethod
     def resolve(cls, now: dt.datetime) -> "_TickAdmission":
-        held, forced = control_planes_in_db()
-        return cls(
-            now=now,
-            resolved=resolve_active_mode(now),
-            held=held,
-            forced=forced,
-        )
+        return cls(now=now, planes=EnablePlanes.resolve(now))
+
+    @property
+    def resolved(self) -> "ResolvedMode":
+        return self.planes.resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,35 +193,19 @@ def _admission_block(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) ->
         return "no Loop row — this loop's config was never seeded"
     if not row.is_due(ctx.now):
         return "not due yet on its own cadence"
-    if row.colleague_facing and ctx.resolved.defers_questions:
-        return f"colleague-facing while mode {ctx.resolved.name!r} defers questions"
     return _control_plane_block(row, loop, ctx)
 
 
 def _control_plane_block(row: "Loop", loop: MiniLoop, ctx: _TickAdmission) -> str:
     """Which enable plane refused *loop* — the empty string when none did.
 
-    :func:`loop_state_admits` stays the SOLE owner of the enable verdict: this
-    calls it, and only on a refusal walks the three planes to NAME the arm that
-    said no, so the explanation can never disagree with the decision. PURE over
+    Delegated whole to :meth:`~teatree.loops.enable_verdict.EnablePlanes.refusal`, the
+    one owner of both the enable boolean and its explanation, so the tick's gate and
+    the chain membership built from the same seam can never drift apart. PURE over
     *ctx*'s already-bulk-loaded planes — it issues NO query of its own, so the
     single-``teatree_loop_state``-read invariant (#2584) holds unchanged.
     """
-    held = loop.name in ctx.held
-    forced = ctx.forced.get(loop.name)
-    preset_state = ctx.resolved.state_for(loop.name)
-    if loop_state_admits(configured_enabled=row.enabled, held=held, preset_state=preset_state, forced=forced):
-        return ""
-    if held:
-        return f"held by a durable LoopState pause/disable (`t3 loop resume {loop.name} --emergency` lifts it)"
-    if forced is False:
-        return (
-            f"forced OFF by a LoopState override — `t3 loop loop-state {loop.name}` shows the "
-            f"recorded reason, `t3 loop override {loop.name} clear` lifts it"
-        )
-    if preset_state is False:
-        return f"masked off by the active preset/schedule ({ctx.resolved.name!r})"
-    return f"disabled — Loop.enabled is false (`t3 loop enable {loop.name} --emergency` re-enables it)"
+    return ctx.planes.refusal(loop.name, configured_enabled=row.enabled)
 
 
 def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> bool:
@@ -238,15 +213,12 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
 
     A loop is admitted iff it is NOT ``off_live_tick`` (those loops are driven by
     :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), it HAS a ``Loop``
-    row that is
-    ``is_due(now)``, it is NOT ``colleague_facing`` while *ctx.resolution*
-    ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND the
-    combined enable verdict :func:`teatree.loop.loop_state_db.loop_state_admits`
-    admits it — not held (the bulk ``LoopState`` read, #2584), then the read-time
-    preset mask (L3/L2, resolved ONCE per tick as *ctx.active_preset*, #3159) over
-    ``Loop.enabled``. The single verdict both :func:`build_loop_table_jobs` and the
-    loop-timer chains (:func:`admitted_loop_names`, via
-    :func:`teatree.loops.timer_chains._loop_admitted`) gate on, so it can never drift.
+    row that is ``is_due(now)``, AND
+    :class:`~teatree.loops.enable_verdict.EnablePlanes` admits it — not held (the bulk
+    ``LoopState`` read, #2584), then the forced plane, then the active mode's mask over
+    ``Loop.enabled``. Those planes are the SAME object chain membership reads (#4185),
+    so :func:`build_loop_table_jobs`, :func:`admitted_loop_names` and
+    :func:`teatree.loops.chain_membership.timer_chain_loop_names` cannot drift.
 
     Derived from :func:`_admission_block` (admitted ⇔ no block), so the boolean
     the timer chain gates on and the reason the console prints are one decision.
@@ -297,11 +269,9 @@ def dispatch_loop_table(
     first, before any DB work — the live tick must never invoke its ``build_jobs``
     or bump its ``last_run_at``. A registry mini-loop with no ``Loop`` row is
     skipped (its config was never seeded). A loop whose row is disabled or
-    not-due is skipped; a ``colleague_facing`` row is skipped while availability
-    defers questions (#2904); and a loop the combined verdict holds — a
-    ``LoopState`` PAUSED/DISABLED row in the single bulk read (#1913, #2584) — is
-    skipped too, ALL BEFORE ``mark_run``, so a held loop's cadence anchor is
-    preserved.
+    not-due is skipped; and a loop the combined verdict holds — a ``LoopState``
+    PAUSED/DISABLED row in the single bulk read (#1913, #2584) — is skipped too, ALL
+    BEFORE ``mark_run``, so a held loop's cadence anchor is preserved.
 
     ``only`` (#2650) scopes the build to a SINGLE named loop — the per-loop
     ``/loop`` fires ``t3 loops tick --loop <name>``, so exactly that one row is

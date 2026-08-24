@@ -8,7 +8,6 @@ requires:
 eval_exempt: interactive per-row approval/action flow over `gh` + a Django ORM ask-gate; the assessor agent's judgment is graded elsewhere and the mechanical persistence/dedup is covered by tests/teatree_core/test_pending_triage_recommendation.py and tests/teatree_agents/test_attempt_recorder.py
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # t3:triaging-issues — Approve & Act on Triage Recommendations
@@ -25,7 +24,10 @@ row and, only on your approval, act via `gh`.
 1. **Nothing acts without your per-row approval.** The assessor never closes,
    comments on, or relabels an issue. Only an approval here runs `gh`.
 2. **`close` is conservative.** If a recommendation to close looks wrong,
-   reject it — the `needs-triage` label stays and a human keeps it.
+   reject it — the `needs-triage` label stays and a human keeps it. A
+   close-as-fixed needs the evidence bar in `t3:sweeping-tickets`
+   § Non-Negotiables rule 6: the check the issue describes was executed,
+   never a code read alone.
 3. **No AI signature** on issue comments or edits (per `t3:rules`).
 4. **Stamp every decision.** After acting (or rejecting), record the outcome
    on the row so a re-assessment never re-queues the issue (dedup is by issue
@@ -97,8 +99,8 @@ prevents the next assessor tick from re-queuing the same issue.
 
 ## Related skills
 
-- `t3:sweeping-tickets` — the broader evidence-gated consolidation/triage
-  flow; this skill is the per-issue approval surface for the automated
+- `t3:sweeping-tickets` — the broader evidence-gated grouping sweep;
+  this skill is the per-issue approval surface for the automated
   assessor's recommendations.
 - `t3:mode` — the `DeferredQuestion` this skill answers is queued by
   the away-mode question surface.

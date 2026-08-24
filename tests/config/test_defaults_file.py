@@ -7,6 +7,11 @@ at canonical values, the taxonomy must classify every credential/secret key corr
 and — the key risk — the model-derived per-field validator must behave IDENTICALLY to
 the pre-change registry coercer (the parity matrix). A drift in any of these turns the
 suite red before the 237-key mapping can silently rot.
+
+The one sanctioned divergence is a key whose schema declares a CLOSED value set over a
+tolerant ``str`` coercer: the two tiers then differ on an off-set string, by design and in
+one direction only. That class is derived rather than listed, and both directions of the
+divergence are asserted — see :class:`TestClosedValueSetsNarrowTheSchemaOnly`.
 """
 
 import tomllib
@@ -24,6 +29,7 @@ from teatree.config.schema import (
     TeatreeSettingsSchema,
     _parse_strict_str,
     _provider_or_none,
+    setting_choices,
     setting_meta,
     shipped_defaults,
 )
@@ -165,6 +171,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
     }
 
@@ -176,7 +183,7 @@ class TestSafetyAndDarkFlagsPinned:
     }
 
     _PINNED: ClassVar[dict[str, Any]] = {
-        # SAFETY_POSTURE_KEYS — the ten write-is-an-authorization keys.
+        # SAFETY_POSTURE_KEYS — the eleven write-is-an-authorization keys.
         "autonomy": "full",
         "enforce_regulated_path": False,
         "regulated_path_model_allowlist": [],
@@ -186,6 +193,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         # DARK feature-flags — each pinned to its off value.
         "outer_loop_enabled": False,
@@ -260,12 +268,30 @@ _KIND_BY_QUALNAME = {
 }
 
 
+def _choice_narrowed_str_keys() -> tuple[str, ...]:
+    """The ``str``-coerced keys whose SCHEMA declares a closed set the coercer does not enforce.
+
+    Derived, so a future closed set joins this class by declaring its members and nothing
+    else. The divergence is deliberate and one-directional — see
+    :class:`TestClosedValueSetsNarrowTheSchemaOnly` for what pins the direction.
+    """
+    return tuple(
+        key
+        for key in _KEYS
+        if getattr(ALL_KNOWN_CONFIG_SETTINGS[key], "__qualname__", "") == "_parse_strict_str" and setting_choices(key)
+    )
+
+
 def _fixture_and_valid(key: str) -> tuple[str, list[Any], list[Any]]:
     """The (kind, accepted, rejected) fixture triple for *key*'s storage coercer."""
     if key == "handover_mirror_path":
         return ("str", *_FIXTURES["str"])
     if key == "agent_harness_provider":
         return ("provider", *_FIXTURES["provider"])
+    if key in _choice_narrowed_str_keys():
+        # Both tiers accept every declared member and reject every non-string; they differ
+        # only on an off-set STRING, which is the narrowing the paired class asserts.
+        return ("closed_str", [str(value) for value in setting_choices(key)], _FIXTURES["str"][1])
     coercer = ALL_KNOWN_CONFIG_SETTINGS[key]
     qual = getattr(coercer, "__qualname__", "")
     if qual.endswith("_parse_overridable_positive_int.<locals>.parse"):
@@ -287,6 +313,31 @@ def _outcome(fn: Any, value: Any) -> tuple[bool, Any]:
         return (False, fn(value))
     except Exception:  # noqa: BLE001 — parity compares raise-vs-accept, not the exception class
         return (True, None)
+
+
+class TestClosedValueSetsNarrowTheSchemaOnly:
+    """A closed set declared on the schema constrains the UI, never what already loads.
+
+    The schema declares a key's admissible values so ``setting_choices`` can derive a
+    select; the storage coercer stays the tolerant ``str`` one so a value stored before the
+    set was declared still resolves rather than bricking ``get_effective_settings``. Both
+    halves are asserted, because either one alone is a different design: widen the schema
+    back to bare ``str`` and the select disappears, tighten the coercer and a box carrying
+    an off-set value stops loading its config at all.
+    """
+
+    @pytest.mark.parametrize("key", _choice_narrowed_str_keys())
+    def test_the_schema_refuses_an_off_set_value(self, key: str) -> None:
+        raised, _ = _outcome(_field_adapter(key).validate_python, "__not_a_declared_member__")
+        assert raised
+
+    @pytest.mark.parametrize("key", _choice_narrowed_str_keys())
+    def test_the_storage_coercer_still_accepts_it(self, key: str) -> None:
+        assert _STORAGE_COERCER[key]("__not_a_declared_member__") == "__not_a_declared_member__"
+
+    def test_the_class_is_not_empty(self) -> None:
+        # The control: an empty derivation would make both assertions above vacuous.
+        assert set(_choice_narrowed_str_keys()) == {"repo_mode"}
 
 
 class TestParityMatrix:

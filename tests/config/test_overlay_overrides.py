@@ -55,12 +55,12 @@ class TestOverlayRegistryParsing:
         assert get_effective_settings().orchestrator_bash_gate_enabled is True
 
     @pytest.mark.usefixtures("no_installed_overlays")
-    def test_privacy_registry_entry_value_is_dropped_on_read(
+    def test_str_registry_entry_value_is_dropped_on_read(
         self, config_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        _seed_config_db(config_db, overlays={"client": {"class": "x.y:Z", "privacy": "strict"}})
-        assert get_effective_settings().privacy == ""
+        _seed_config_db(config_db, overlays={"client": {"class": "x.y:Z", "dashboard_instance_label": "from-toml"}})
+        assert get_effective_settings().dashboard_instance_label == ""
 
 
 class TestOverlayDbHomeOverrides(TestCase):
@@ -167,10 +167,10 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().orchestrator_bash_gate_enabled is False
 
-    def test_overlay_can_override_privacy(self) -> None:
-        ConfigSetting.objects.set_value("privacy", "strict", scope="my-overlay")
+    def test_overlay_can_override_a_str_setting(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_instance_label", "per-overlay", scope="my-overlay")
         self._activate()
-        assert get_effective_settings().privacy == "strict"
+        assert get_effective_settings().dashboard_instance_label == "per-overlay"
 
     def test_overlay_can_override_issue_implementer_settings(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")

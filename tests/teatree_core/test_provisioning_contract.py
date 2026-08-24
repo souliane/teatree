@@ -367,7 +367,10 @@ class WorktreeStartRunnerContractTests(TestCase):
         overlay = FullStackOverlay(self.order_file)
         with patch("teatree.core.runners.worktree_start.docker_compose_down") as down:
             result = WorktreeStartRunner(self.worktree, overlay=overlay).run()
-        down.assert_called_once()
+        # An overlay with no compose file declares no stack, so there is nothing to
+        # replace and the down never runs. It used to fire here because it ran FIRST,
+        # unconditionally, before the runner knew whether it had any work to do.
+        down.assert_not_called()
         ran = sorted(self.order_file.read_text().splitlines())
         assert ran == ["prereq-backend", "prereq-frontend", "prereq-microservice"]
         assert result.ok
@@ -435,7 +438,7 @@ class E2eEnvMergeContractTests(TestCase):
             patch("teatree.core.management.commands._e2e_runners.get_overlay", return_value=_FixedExtrasOverlay()),
             patch("teatree.core.management.commands._e2e_runners._find_env_cache", return_value=None),
         ):
-            return _build_e2e_env(None, headed=False, target="local")
+            return _build_e2e_env(None, target="local")
 
     def test_explicit_env_wins_over_overlay_extra(self) -> None:
         with patch.dict(os.environ, {"E2E_CONTRACT_KEY": "from-env"}, clear=False):

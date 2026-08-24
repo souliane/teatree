@@ -13,6 +13,11 @@ Three entry points, one transaction each:
 *   :func:`persist_matrix` — a model-matrix run (one row per ``(scenario,
     model)`` cell).
 
+All three record an ungradeable result as the ``error`` verdict rather than a
+behavioral ``fail``: ``EvalScenarioResultQuerySet.graded()`` keys on the verdict,
+so an API 529 persisted as a fail scores 0.0, survives into the pass-rate math,
+and the next ``--gate-regressions`` run reports a regression for a network blip.
+
 This module owns only the orchestration (create the run row, fan out the
 scenario rows in one transaction); the aggregation and diff logic lives on the
 models. Persisting wraps in ``atomic()`` so a partially-written run never
@@ -28,10 +33,11 @@ function-local runtime imports, never at module import time.
 """
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from django.db import transaction
 
+from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import AnyOf, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
@@ -43,7 +49,20 @@ if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 
 
-def _token_columns(usage: TokenUsage) -> dict[str, int]:
+class _TokenColumns(TypedDict):
+    """The four ``record_scenario`` token kwargs, named so ``**`` maps key-by-key.
+
+    A plain ``dict[str, int]`` makes the spread offer ``int`` to EVERY parameter of
+    the callee, not just these four, so the checker rejects the unrelated ones.
+    """
+
+    input_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    output_tokens: int
+
+
+def _token_columns(usage: TokenUsage) -> _TokenColumns:
     """Map a :class:`TokenUsage` onto the ``record_scenario`` token kwargs."""
     return {
         "input_tokens": usage.input,
@@ -153,7 +172,7 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
         for result in results:
             run.record_scenario(
                 scenario_name=result.spec.name,
-                verdict=result.verdict,
+                verdict=_single_trial_verdict(result),
                 trial=trial,
                 model=result.spec.model,
                 terminal_reason=result.run.terminal_reason,
@@ -185,12 +204,15 @@ def persist_pass_at_k(
             git_sha=current_git_sha() if git_sha is None else git_sha,
         )
         for result in results:
+            errored = _pass_at_k_errored(result)
             run.record_scenario(
                 scenario_name=result.spec_name,
                 verdict=_pass_at_k_verdict(result),
                 model=model,
-                score=0.0 if result.skipped else result.pass_rate,
+                score=0.0 if (result.skipped or errored) else result.pass_rate,
                 trials=result.trials,
+                is_error=errored,
+                terminal_reason=_pass_at_k_terminal_reason(result),
                 cost_usd=result.cost_usd,
                 main_cost_usd=result.main_cost_usd,
                 aux_cost_usd=result.aux_cost_usd,
@@ -229,7 +251,47 @@ def persist_matrix(
     return run
 
 
+def _single_trial_verdict(result: ScenarioResult) -> str:
+    # A trial the runner could not grade is `error`, not `fail`: `ScenarioResult.verdict`
+    # collapses the two, and `graded()` keys on the verdict, so a transport blip
+    # persisted as a behavioral fail scores 0.0 and reads as a regression next run.
+    if result.run.is_error and not result.skipped:
+        return "error"
+    return result.verdict
+
+
+def _executed_trials(result: PassAtKResult) -> list[ScenarioResult]:
+    return [trial for trial in result.trial_results if not trial.skipped]
+
+
+def _pass_at_k_errored(result: PassAtKResult) -> bool:
+    """Whether EVERY executed trial errored — transport, not behaviour.
+
+    One clean trial with a real matcher diff is behavioral signal, so a mixed
+    aggregate is a genuine fail. Mirrors the same derivation the publish-safe
+    ``--summary-json`` row makes for its triage class.
+    """
+    executed = _executed_trials(result)
+    return bool(executed) and all(trial.run.is_error for trial in executed)
+
+
+def _pass_at_k_terminal_reason(result: PassAtKResult) -> str:
+    """The aggregate terminal reason: a cap outranks a throttle common to every trial."""
+    if result.terminal_reason:
+        return result.terminal_reason
+    executed = _executed_trials(result)
+    if executed and all(trial.run.terminal_reason.startswith(THROTTLE_TERMINAL_PREFIX) for trial in executed):
+        return executed[0].run.terminal_reason
+    return ""
+
+
 def _pass_at_k_verdict(result: PassAtKResult) -> str:
+    # An all-errored aggregate is recorded as `error`, exactly as the matrix path
+    # records an errored cell: VISIBLE in the ledger and the baseline diff, yet
+    # excluded from pass-rate math by `graded()`, so an API 529 across every trial
+    # of the weekly lane can never read as a behavioral regression.
+    if _pass_at_k_errored(result):
+        return "error"
     if result.skipped:
         return "skip"
     return "pass" if result.ok else "fail"

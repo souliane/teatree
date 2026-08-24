@@ -1,7 +1,7 @@
 """GitLab transport for the §17.4 keystone merge (sibling of test_merge_execution.py).
 
 The §17.4.3 live-forge reads (:meth:`CodeHostQuery.live_head_sha`,
-:meth:`CodeHostQuery.pr_is_draft`, :meth:`CodeHostQuery.required_checks_status`)
+:meth:`CodeHostQuery.pr_draft_state`, :meth:`CodeHostQuery.required_checks_status`)
 and ``execute_bound_merge`` originally hardcoded ``gh pr view`` / ``gh api``,
 which left GitLab MRs unreachable through the sanctioned path. These
 tests assert that each read dispatches by code-host kind (carried on the
@@ -33,9 +33,31 @@ from teatree.core.merge import (
     resolve_host_kind,
 )
 from teatree.core.merge.execution import assert_not_draft
+from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
+
+_DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
+
+
+@contextmanager
+def _http_draft_state(state: DraftState) -> Iterator[None]:
+    """Script the HTTP-transport draft probe (the one read that is not ``glab``)."""
+    with patch(_DRAFT_PROBE, return_value=state):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _draft_probe_answers_non_draft() -> Iterator[None]:
+    """Default the HTTP draft probe to a CONFIRMED non-draft MR.
+
+    The step-4 gate now holds on an unreadable draft flag, and these cases stub
+    only ``glab`` — without a scripted HTTP answer every keystone flow here would
+    refuse on the draft probe rather than on the behaviour under test.
+    """
+    with _http_draft_state(DraftState.NOT_DRAFT):
+        yield
 
 
 def _gitlab_query() -> CodeHostQuery:
@@ -130,7 +152,9 @@ class _GitLabApiStub:
 
     def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
         self.calls.append(endpoint)
-        return []
+        # A real open MR always changes >=1 file, so an empty diff is a failed read
+        # the substrate gate holds on.
+        return [{"new_path": "README.md"}] if "/diffs" in endpoint else []
 
     def put_response(
         self,
@@ -225,8 +249,12 @@ class TestFetchLiveHeadShaGitLab(TestCase):
         )
 
     def test_returns_empty_on_failure(self) -> None:
+        # ``live_head_sha`` normalises the UNREADABLE sentinel back to ``""`` so every
+        # fail-closed gate keeps refusing on a falsy sha; ``live_head_read`` is the one
+        # surface that reveals which of the two happened.
         with _patch_gitlab(_FailingClient()):
             assert _gitlab_query().live_head_sha() == ""
+            assert _gitlab_query().live_head_read().unreadable
 
     def test_returns_empty_on_malformed_json(self) -> None:
         class _Bad(_GitLabApiStub):
@@ -257,9 +285,13 @@ class TestFetchRequiredChecksGitLab(TestCase):
             # closed): an empty pipeline list must never merge as "all checks passed".
             assert _gitlab_query().required_checks_status() == "pending"
 
-    def test_pipeline_query_failure_returns_failed(self) -> None:
+    def test_pipeline_query_failure_returns_unreadable(self) -> None:
+        # A pipeline query that could not be made observed no red — it observed
+        # nothing. Still refused (``REFUSING_CHECK_VERDICTS``), now under its own word.
         with _patch_gitlab(_FailingClient()):
-            assert _gitlab_query().required_checks_status() == "failed"
+            verdict = _gitlab_query().required_checks_status()
+        assert verdict == "unreadable"
+        assert verdict in REFUSING_CHECK_VERDICTS
 
     def test_required_status_check_contexts_is_empty_no_separate_gate(self) -> None:
         # GitLab gates on the pipeline-status verdict, not branch-protection
@@ -375,13 +407,6 @@ class TestGitLabEndToEndMerge(TestCase):
 
 
 _DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
-
-
-@contextmanager
-def _http_draft_state(state: DraftState) -> Iterator[None]:
-    """Script the HTTP-transport draft probe (the one read that is not ``glab``)."""
-    with patch(_DRAFT_PROBE, return_value=state):
-        yield
 
 
 class TestHostKindDetection(TestCase):

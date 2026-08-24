@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -65,7 +65,6 @@ class _WorkspaceCoreSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
-    privacy: str = ""
     check_updates: bool = True
     # #256 Default-OFF teatree engagement. When false (the default) a fresh
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
@@ -79,7 +78,6 @@ class _WorkspaceCoreSettings:
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False
-    timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
 
@@ -89,10 +87,22 @@ class _WorkspaceCoreSettings:
 #: only bills for tokens actually generated, and the real spend guards on this lane are the
 #: watchdog cost ceiling and ``pydantic_ai_request_limit``, not this cap. Should a run STILL
 #: hit it, the truncation is recorded FAILED AND escalated to the owner
-#: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
+#: (:func:`teatree.agents.runner_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
 #: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
 #: defaults to 4096, which truncates a long result envelope mid-JSON.
-PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 16384
+#:
+#: The value is bounded ABOVE by the smallest per-model output limit in
+#: :data:`teatree.agents.model_tiering.TIER_MODELS`, NOT by the frontier model's: this is ONE
+#: global ceiling merged into every request (:func:`teatree.agents.pydantic_ai_config.build_model_settings`)
+#: whatever tier the dispatched phase resolved to, and the Anthropic Messages API rejects a
+#: ``max_tokens`` above the addressed model's own limit with a 400 rather than clamping. The
+#: ``cheap`` tier (Haiku 4.5) caps at 64K output while ``frontier``/``balanced`` (Opus 5 /
+#: Sonnet 5) allow 128K, so 64K is the largest ceiling every tier accepts. Raising past it
+#: requires making the ceiling per-tier first. Safe at this size because the lane STREAMS its
+#: provider request (``event_stream_handler`` in
+#: :meth:`teatree.agents.pydantic_ai_session.PydanticAiHarnessSession.receive_response`), so a
+#: long generation cannot trip the non-streaming request timeout.
+PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 64000
 
 
 @dataclass
@@ -103,17 +113,8 @@ class _ModeHarnessSettings:
 
     mode: Mode = Mode.AUTO
     autonomy: Autonomy = Autonomy.FULL
-    # The single LANE selector for loop-dispatched phase agents (those whose
-    # (role, phase) has a registered phase sub-agent). ``interactive`` dispatches
-    # them in-session via the ``/loop`` slot's ``Agent`` tool; ``headless`` (the
-    # default) runs them via ``agents/headless.py`` behind the two-layer
-    # ``agent_harness`` (transport) / ``agent_harness_provider`` (credential) pair
-    # (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
-    agent_runtime: AgentRuntime = AgentRuntime.HEADLESS
     # Layer 1 of the two-layer harness config model (#2887): which in-process
-    # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
-    # interactive vs headless — a task dispatches into): once a run IS headless,
-    # this picks the transport that opens the agent session behind the
+    # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
     # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
     # generic OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
@@ -124,12 +125,11 @@ class _ModeHarnessSettings:
     # overridable; ``T3_AGENT_HARNESS`` env wins.
     agent_harness: str = AgentHarness.CLAUDE_SDK
     # Layer 2 of the two-layer harness config model (#2887): the provider/
-    # credential a headless run authenticates with, CONSTRAINED by Layer 1
+    # credential an agent run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum
     # docstring for the full constraint table). Default ``None`` — NO explicit
     # pin: a ``ClaudeSdkHarness`` dispatch inherits the ambient environment
-    # unchanged (today's behaviour, and the legacy default the pre-#2887
-    # ``agent_runtime=interactive``/``api`` fallthrough exercised), so an
+    # unchanged, so an
     # operator who never touches this setting is never forced through an eager
     # credential lookup they haven't configured. An explicit ``subscription_oauth``
     # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``
@@ -178,11 +178,14 @@ class _ModeHarnessSettings:
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
     # truncates a long result envelope mid-JSON and destroys it. The default is the owner-chosen
-    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (16384) — deliberately generous because a ceiling
+    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (64000) — deliberately generous because a ceiling
     # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
     # recorded FAILED AND escalated to the owner
-    # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
-    # deliberately rather than failing silently. Keep it ≤ the model's own output limit. Applies
+    # (``teatree.agents.runner_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
+    # deliberately rather than failing silently. Keep it ≤ the SMALLEST output limit among the
+    # models a dispatch can resolve to (this one value is merged into every request whatever
+    # tier ran, and the Anthropic API 400s on a ``max_tokens`` above the addressed model's own
+    # limit rather than clamping) — see :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT`. Applies
     # ONLY to the ``pydantic_ai`` harness, so it is inert until an overlay opts into
     # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
     pydantic_ai_max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
@@ -227,7 +230,7 @@ class _ModeHarnessSettings:
     watchdog_max_runtime_seconds: int = 3 * 60 * 60
     watchdog_max_turns: int = 0
     watchdog_max_cost_usd: float = 0.0
-    # Per-TICKET cumulative cost cap for the headless lane (#885 / #398-4, F9.5), folded
+    # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5), folded
     # off the former Django-settings ``TEATREE_TICKET_BUDGET`` dict into the DB-home
     # config tier for the same #1775 provenance reason. ``TicketBudget.from_settings``
     # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
@@ -244,7 +247,7 @@ class _ModeHarnessSettings:
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = 2
     # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
-    # (``ClaudeAgentOptions.max_turns`` via ``agents/_headless_options``). Cache-read
+    # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read
     # cost is ``turns x context_size`` and each turn re-reads the run's whole context,
     # so the turn count is the multiplier on a dispatch's bill — a dimension the
     # wall-clock ``watchdog_max_runtime_seconds`` cannot see and the
@@ -252,11 +255,11 @@ class _ModeHarnessSettings:
     # in-flight one. The default clears a long healthy phase run with headroom while
     # bounding a run that has stopped converging. Reaching it is NOT silent: the CLI
     # ends the run with ``ResultMessage(subtype="error_max_turns")``, which
-    # ``agents/headless`` records FAILED naming this setting AND escalates to the owner
-    # (``agents/headless_truncation``), so the ceiling is raised deliberately rather
+    # ``agents/runner`` records FAILED naming this setting AND escalates to the owner
+    # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
-    headless_max_turns: int = 250
+    agent_max_turns: int = 250
 
 
 @dataclass
@@ -545,6 +548,16 @@ class _ReviewGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Review")
 
+    # Identities this deployment additionally trusts as INDEPENDENT checkers (#4241),
+    # on top of the harness's recognised reviewer-role tokens. maker≠checker is a
+    # fail-CLOSED allowlist, so a reviewer whose handle carries no role word — every
+    # human, an external review service, a novel agent role — is refused until it is
+    # named here (the owner's own `user_identity_aliases` are unioned in for free, so
+    # the common case needs no configuration). Widening a fail-closed trust boundary is
+    # itself an authorization, so the key is a `SAFETY_POSTURE_KEYS` member the MCP
+    # write surface refuses. DB-home (#1775), per-overlay overridable.
+    independent_reviewer_identities: list[str] = field(default_factory=list)
+
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
     # a NO-OP, so projects that do not configure a review skill keep
@@ -791,26 +804,25 @@ class _ScannerSettings:
     eval_local_disabled: bool = False
     eval_local_skill: str = "eval"
     eval_local_cadence_hours: int = 168
-    # #2419 Periodic backlog-sweep scanner — DEFAULT-OFF (kill switch ships
-    # ON) with a weekly cadence (168h). Companion to the `sweeping-tickets`
-    # skill: once the sweep's verdicts prove trustworthy the loop fires a
-    # low-frequency `backlog_sweep` task that groups the issue tracker
-    # (shipped / group-into-epic / regressive / still-standalone
-    # against current `main`). The sweep is destructive-capable — it can
-    # propose closing issues — so unlike the always-on news/eval scanners
-    # the kill switch defaults ON: the scanner stays inert until the user
-    # sets ``backlog_sweep_disabled = false`` in ``[teatree]`` (or
-    # per-overlay).
-    backlog_sweep_disabled: bool = True
+    # #2419/#4344 Periodic backlog-sweep scanner — a DAILY cadence (24h), the
+    # rate at which the backlog actually grows. Companion to the
+    # `sweeping-tickets` skill: the loop fires a `backlog_sweep` task that
+    # GROUPS the issue tracker, bundling related rows into an existing host so
+    # the fixed per-ticket delivery cost is paid once for the bundle. The kill
+    # switch ships OPEN, leaving the `backlog_sweep` Loop row as the single
+    # switch (the `issue_implementer` / `triage_assessor` / `directive_loop`
+    # shape) — set ``backlog_sweep_disabled = true`` in ``[teatree]`` (or
+    # per-overlay) to stop scheduling sweeps without touching the row.
+    backlog_sweep_disabled: bool = False
     backlog_sweep_skill: str = "sweeping-tickets"
-    backlog_sweep_cadence_hours: int = 168
-    # #2419 Ask-gate for backlog-sweep issue closes. When true (default),
+    backlog_sweep_cadence_hours: int = 24
+    # #2419 Ask-gate for backlog-sweep row retirements. When true (default),
     # the sweeping-tickets skill must NOT mass-close or mass-fold issues
-    # unattended — it records each close proposal with its citation and
-    # surfaces the batch to the user, closing only on explicit approval.
-    # Only the high-confidence shipped-by-merged-PR class auto-closes.
-    # Default ON: an unattended wrong close destroys tracker signal, the
-    # failure mode this gate forecloses. Per-overlay overridable.
+    # unattended — it records each fold proposal with its citation and
+    # surfaces the batch to the user, retiring a row only on explicit approval
+    # and only once its fold is verified. Default ON: an unattended wrong
+    # close destroys tracker signal, the failure mode this gate forecloses.
+    # Per-overlay overridable.
     ask_before_backlog_sweep_closes: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
@@ -898,6 +910,12 @@ class _ResourcePressureSettings:
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+    # #4244 The retention policy for the checkout pool: a ``.venv`` untouched for
+    # this long is evicted as the pure cache it is (``uv sync`` rebuilds it), so
+    # the pool's steady state is roughly one venv per checkout worked inside the
+    # window rather than one per checkout ever created. Not a destructive lever —
+    # a venv holds no work — but a live process inside a checkout always wins.
+    venv_idle_days: float = 2.0
 
 
 @dataclass
@@ -981,6 +999,12 @@ class _RetentionSettings:
     # ``0`` disables that table's pruning entirely. Per-overlay overridable.
     task_attempt_retention_days: int = 30
     incoming_event_retention_days: int = 30
+    # #4178 age backstop over the pending DeferredQuestion backlog. A row past this
+    # many days with no resolution is ESCALATED — stamped and audited, never dismissed
+    # (directive #45), and at most once per window. 3 days because that is where the
+    # measured backlog turned from a queue into a graveyard (46 of 70 rows). ``0``
+    # disables the backstop. Per-overlay overridable.
+    deferred_question_age_ceiling_days: int = 3
     # The PARK lane's own window — separate from the terminal-owned rule above, and
     # deliberately shorter. A limit-park is a scheduling event on a task the park
     # itself RETURNS to the queue PENDING, so a park row's owning task is by
@@ -1008,6 +1032,18 @@ class _RetentionSettings:
     # matches the cadence the maintenance chain already ran at. ``0`` disables the
     # lane (the library's own floor is 1 day; sub-day retention is not expressible).
     task_result_retention_days: int = 1
+    # #4165 agent-scratch retention under the temp root. On this box ``/tmp`` is a
+    # RAM-backed tmpfs, so week-old sqlite/venv scratch is not idle disk — it is
+    # 28% of the working memory pool, permanently. Ships OFF (``0``) because the
+    # lane is a recursive delete and every destructive lever defaults OFF; 3 days
+    # is the window the manual reclaim used, and arming it needs a venue whose
+    # liveness probe can actually resolve host fds. The root is blank by default
+    # and auto-resolves to the host view (``/host-tmp``, paired with
+    # ``/host-proc``) when the deployment mounts it, else this venue's own
+    # ``/tmp`` — a containerised sweep of the container's own temp root reclaims
+    # nothing of what actually fills the box. Per-overlay overridable.
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
     # consults (``Ticket.has_active_work``). An agent that crashed without closing
     # its Session would otherwise pin its ticket — and so its worktree, its
@@ -1057,6 +1093,36 @@ class _ProvisioningSettings:
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
     admission_governor_enabled: bool = True
+    # #4098 How many CHEAP headless phase agents (reviews, review requests, ship/merge,
+    # short assessors — ``teatree.core.modelkit.phases.CHEAP_PHASES``) may occupy the
+    # lane while the governor brakes the EXPENSIVE class. Those phases are what RETIRE
+    # work, so refusing them on the load their coding siblings created removed the only
+    # relief available and held the brake on for hours. They are cheap by comparison,
+    # not free — one still gets a shell and can still run a suite — so this number is
+    # small on purpose: it is the bound, not the exemption, that makes the class safe.
+    # The exemption is from the MACHINE brake only; a spent token budget still refuses
+    # every class. ``0`` disables the exemption entirely (cheap is braked exactly like
+    # expensive): the rollback lever. Per-overlay overridable.
+    cheap_phase_admission_ceiling: int = 2
+    # #4374 How many of the governor's slots only the DRAINING class may occupy. The
+    # ceiling above bounds how much of the box the cheap class may take and says nothing
+    # about how much is kept FOR it, so expensive work filled every slot and zero reviews
+    # ran — the #4098 outcome by a different route. Reviewing and shipping RETIRE pull
+    # requests where coding CREATES them, so with capacity allocated purely first-come the
+    # producing side can occupy the whole factory. Clamped to at most ``ceiling - 2``, so
+    # the expensive class always keeps two slots and a fat-fingered value can never stop the
+    # factory writing code — two rather than one because a 4-core box's ceiling is 2, where a
+    # ``ceiling - 1`` clamp leaves a SINGLE expensive slot (#4407). ``0`` restores the
+    # pre-#4374 first-come allocation: the rollback lever. Per-overlay overridable.
+    drain_slot_reservation: int = 1
+    # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
+    # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
+    # 2026-07-21..08-04: p50 0.65 GB, p90 1.24 GB, max 23.1 GB. The p90 is the sizing
+    # point — the max is one pathological run, not a budget, and sizing at the p50 is
+    # what put 16 workers x 1.24 GB = 19.8 GB against 19.7 GB usable. A non-positive
+    # value drops the memory term, leaving the cores-derived bound: the rollback lever,
+    # and the same bounded fail-safe an unreadable probe takes. Per-overlay overridable.
+    test_worker_ram_gb: float = 1.25
     # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
     # While a repo is listed, provisioning a worktree on any OTHER branch is
     # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch

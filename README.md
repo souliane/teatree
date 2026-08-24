@@ -62,6 +62,38 @@ Each section below names a piece of friction the author kept hitting and what
 teatree does about it. None of these are framed as comparisons — other tools
 solve some of the same shapes well, and teatree borrows from them where it can.
 
+### Why it is shaped this way
+
+The question a reader arrives with is usually "why not just use a coding agent,
+or a CI bot?". The honest answer is about the shape of the problem, not about
+anyone else's tool.
+
+A chat-driven coding agent holds the working picture in its context — what is in
+flight, which PR waits on what, which review is half-done. Teatree keeps that
+picture in a database instead, which is what lets a run be interrupted and
+resumed without re-deriving it. A CI bot reacts to events on someone else's
+schedule; teatree runs a tick of its own, so deciding what to start next is
+something it does rather than something it waits for.
+
+Both choices cost something. There is a database to migrate, a worker to keep
+alive, and a good deal of machinery standing between a ticket and a diff. On a
+single repo, for a task that fits in one sitting, a plain agent does the same job
+in one prompt and nothing here earns its keep — that reader is right to stop
+here.
+
+**Three layers do the work**, and two of them are meant to disappear:
+
+- **factory** — runs the lifecycle autonomously: ticket, plan, implement, test, review, merge.
+- **interactive** — a Claude Code session that reviews, merges, diagnoses, and files what the factory cannot yet do for itself.
+- **human** — the owner.
+
+The intent is to remove the human from the loop first, then the interactive
+session. A workaround performed by the interactive layer is a defect in the
+factory layer that has not been fixed yet, so each one should produce a fix
+rather than become a habit ([#4478](https://github.com/souliane/teatree/issues/4478)).
+Neither layer has disappeared; this is the direction of travel, not a description
+of where it currently stands.
+
 ### A merge step that is neither a manual click nor a blind auto-merge
 
 The author kept ending up at one of two extremes: either babysitting every
@@ -142,13 +174,27 @@ The author kept noticing the agent only works while someone is actively
 prompting it. PRs sit waiting for review nudges, CI failures go unreviewed,
 ticket changes pile up in the inbox until someone glances at them.
 
-A long-running `/loop` slot inside the interactive session ticks every ~12
-minutes. Each tick fans out to scanners that watch assigned issues, open PRs,
+A singleton `t3 worker` owns the tick cadence — every ~12 minutes by default,
+with no Claude session needed. Each tick fans out to scanners that watch assigned issues, open PRs,
 PRs assigned for review, Slack mentions, the Notion bridge, and the local
 task queue. Findings render to a statusline file the Claude Code statusline
 hook reads in under 10ms, so live status sits at the top of every session
 without polling. Lease-gated dispatch turns scanner findings into agent
 actions when there is something to do, and keeps quiet when there is not.
+
+### What the machinery actually does
+
+Each line names a mechanism and what it buys, with the code that implements it:
+
+- Tracks the provider's own 5-hour and 7-day quota windows and picks an account with headroom, so an exhausted subscription window does not halt a run (`llm/anthropic_limits.py`, `core/models/usage_window_state.py`, `core/models/anthropic_active_pick.py`).
+- Separates exhaustion causes that look alike — API credit, 5-hour session limit, weekly limit, transient rate limit — because each needs a different remedy (`llm/anthropic_limits.py`).
+- Hands one session's durable state to the next as a database row the next session claims on start, so a handover needs no copy-paste (`core/models/session_handover.py`).
+- Binds a merge verdict to a specific commit SHA and re-checks it against the live head at merge time, so a later push voids the approval rather than inheriting it (`core/models/merge_clear.py`).
+- Reads real machine load and available memory, with hysteresis on both watermarks, before admitting new work, so throughput degrades instead of thrashing (`core/admission_governor.py`).
+- Repairs its own red CI behind an anti-cheat gate that refuses to touch the scenarios or the grader, so a "fix" cannot be a test weakened until it passes (`core/gates/eval_heal_anticheat_gate.py`).
+- Records work left uncommitted in a checkout as a durable row, so an interrupted session strands nothing silently (`core/models/unshipped_work_record.py`).
+- Requires the owner to ratify a typed mechanism sketch before a plain-English directive changes behaviour (`core/models/mechanism_sketch.py`, `core/models/ratification.py`).
+- Gives each ticket its own worktree, ports, and database, so two tickets in flight share no infrastructure.
 
 ## What teatree is NOT
 
@@ -257,6 +303,7 @@ stateDiagram-v2
     retrospected --> retrospected : retrospect
     retrospected --> delivered : mark_delivered
     retrospected --> ignored : ignore
+    delivered --> started : reopen
     delivered --> reviewed : reopen_for_followup
     review_posted --> review_posted : mark_review_no_action
     review_posted --> review_posted : mark_reviewed_externally
@@ -279,6 +326,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify
@@ -352,7 +400,7 @@ choosing how to test); the CLI owns the *mechanical* work (branching, ports,
 DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 
 - **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Loop & Statusline** — a long-running `/loop` slot scans signals,
+- **Loop & Statusline** — the singleton `t3 worker` scans signals,
   dispatches actions, renders a statusline file the Claude Code hook reads
   on every prompt.
 - **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
@@ -567,7 +615,7 @@ fails with an unsatisfiable-requirements error. See
 
 Installing the plugin does **not** force teatree on. By default a fresh Claude
 session does not auto-engage teatree — no skill auto-suggest, no load-block, no
-loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+loop scheduling — and just shows a one-line how-to. Run `/t3:interactive` (or load any
 `t3:` skill) to engage teatree for that session, or set `autoload` in the teatree
 DB (`t3 <overlay> config_setting set autoload true`; env `T3_AUTOLOAD=1`) to
 auto-engage every session.
@@ -628,7 +676,7 @@ graph LR
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
-| `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
+| `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
 | `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written. |
 | `checking` | The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders) |
@@ -644,7 +692,7 @@ graph LR
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
 | `interactive` | ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill — or any skill declaring `requires: interactive` — writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`. |
 | `internals` | How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`. |
-| `mode` | The operating mode — one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run |
+| `mode` | The operating mode — one of five named presets (present / away / maintenance / low-token / off) deciding which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms. |
 | `prompts` | Trigger and manage reusable prompts — list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history |
@@ -658,7 +706,7 @@ graph LR
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
 | `slack-formatting` | Rendering tables and formatting messages for Slack — the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack. |
 | `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
-| `sweeping-tickets` | Evidence-gated ticket/issue consolidation and triage — classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging — never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "shipped by merged PR #X" class), posting a one-line reason on every close |
+| `sweeping-tickets` | Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism: a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first |
 | `sweeping-worktrees` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
@@ -839,7 +887,7 @@ pytest-playwright runner or an external playwright repo based on the overlay's
 
 ```bash
 t3 <overlay> e2e run                          # CI default
-t3 <overlay> e2e run --headed                 # interactive debug
+t3 <overlay> e2e run --no-docker              # run against the local stack
 t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 

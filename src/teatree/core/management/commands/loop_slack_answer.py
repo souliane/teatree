@@ -2,9 +2,10 @@
 
 Structural clone of ``loop_self_improve``: acquires a dedicated
 ``LoopLease`` (``loop-slack-answer``) so a long answer cycle never blocks
-a fast regular tick or a self-improve cycle, refuses to run when this
-session is not the loop owner, runs :func:`run_slack_answer_cycle`, and
-prints a one-line summary (or the JSON report when ``--json`` is passed).
+a fast regular tick or a self-improve cycle, defers when it does not hold
+the t3-master gate (:mod:`teatree.core.gates.t3_master_gate`), runs
+:func:`run_slack_answer_cycle`, and prints a one-line summary (or the JSON
+report when ``--json`` is passed).
 
 This is a reactive ``/loop`` slot complementing the slower per-loop ticks —
 a quick ack / status question gets a reply in seconds at near-zero token cost.
@@ -20,39 +21,8 @@ from typing import IO, Annotated, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
-from teatree.core.session_identity import session_id_from_env
-from teatree.utils.hook_registry import loop_registry_dir
-
-
-def _non_owner_session_id() -> str | None:
-    """Read the current Claude session id from the env, ``None`` when absent."""
-    return session_id_from_env()
-
-
-def _session_owns_loop(session_id: str | None) -> bool:
-    """t3-master gate; ``None`` session ⇒ assume owner (CLI/manual use).
-
-    Reads the same ``loop-registry.json`` ``_OWNER_LOOP`` record the
-    hook_router writes at SessionStart — identical shape to
-    ``loop_self_improve._session_owns_loop`` (the third slot must obey the
-    same single-owner gate as the other two).
-    """
-    if not session_id:
-        return True
-    import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-    registry_path = loop_registry_dir() / "loop-registry.json"
-    if not registry_path.is_file():
-        return True
-    try:
-        data = _json.loads(registry_path.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
-        return True
-    owner = data.get("t3-loop-tick-owner") if isinstance(data, dict) else None
-    if not isinstance(owner, dict):
-        return True
-    return owner.get("session_id") == session_id
 
 
 class Command(TyperCommand):
@@ -71,15 +41,20 @@ class Command(TyperCommand):
 
         out = cast("IO[str]", self.stdout)
         err = cast("IO[str]", self.stderr)
-        session_id = _non_owner_session_id()
-        if not _session_owns_loop(session_id):
+        verdict = t3_master_verdict()
+        if not verdict.may_run:
             now = dt.datetime.now(tz=dt.UTC)
             emit(
-                {"skipped": True, "skipped_reason": "non-owner session", "started_at": now.isoformat()},
+                {
+                    "skipped": True,
+                    "skipped_reason": verdict.outcome.value,
+                    "owner_session": verdict.owner_session,
+                    "started_at": now.isoformat(),
+                },
                 json_output=json_output,
                 out=out,
                 err=err,
-                human="SKIP  this session is not the loop owner — skipping Slack-answer cycle.",
+                human=verdict.skip_message("Slack-answer"),
             )
             return
 
@@ -110,7 +85,7 @@ class Command(TyperCommand):
             err=err,
             human=(
                 f"OK    processed={report.processed} acked={report.acked} "
-                f"simple={report.answered_simple} dispatched={report.dispatched} "
-                f"covered={report.covered} errors={report.errors}"
+                f"simple={report.answered_simple} questions={report.answered_question} "
+                f"dispatched={report.dispatched} covered={report.covered} errors={report.errors}"
             ),
         )

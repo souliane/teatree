@@ -7,7 +7,7 @@ fail the dispatch — it silently drops every operator override for that read, a
 to values nobody set. The two reads that did it were the per-dispatch watchdog ceiling and the
 regulated-path allowlist gate, both reachable on every headless run.
 
-Each case here drives the REAL async frame (``run_headless`` → ``asyncio.run``, and
+Each case here drives the REAL async frame (``run_agent`` → ``asyncio.run``, and
 ``PydanticAiHarness._resolve_model`` under a live loop) rather than asserting where a call sits,
 because "the read happens synchronously" is only interesting as the observable it buys: the
 override tier stays readable, and a stored policy still applies.
@@ -22,12 +22,13 @@ import pytest
 from django.test import TestCase
 from pydantic_ai.models.test import TestModel
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, resolve_harness
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.headless import TaskUsage, run_headless
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.config.override_read_health import degraded_read_report
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task
+from tests.factories import planned_ticket
 
 _RESULT_ENVELOPE = '{"summary": "test summary", "files_modified": ["a.py"]}'
 
@@ -44,7 +45,7 @@ async def _resolve_under_a_live_loop(harness: PydanticAiHarness, model: str) -> 
 
 class TestADispatchLeavesTheOverrideTierReadable(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         self.marker = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
@@ -54,10 +55,10 @@ class TestADispatchLeavesTheOverrideTierReadable(TestCase):
         harness = PydanticAiHarness(model=TestModel(custom_output_text=_RESULT_ENVELOPE))
         with (
             patch("teatree.config.override_read_health.marker_path", return_value=self.marker),
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
             report = degraded_read_report()
 
         assert attempt.exit_code == 0

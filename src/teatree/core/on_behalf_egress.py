@@ -78,7 +78,10 @@ class OnBehalfSlackEgress:
         if getattr(self._messaging, "route_token", None) is None:
             logger.warning("unclassifiable surface (no route_token): %s — treating as colleague surface", channel)
             return False
-        return bool(self._messaging._is_self_dm(channel))  # type: ignore[attr-defined]  # noqa: SLF001
+        # Resolved by name, like the ``route_token`` probe above: ``_is_self_dm`` is a
+        # backend-private helper the MessagingBackend protocol does not declare.
+        is_self_dm = getattr(self._messaging, "_is_self_dm", None)
+        return bool(is_self_dm(channel)) if callable(is_self_dm) else False
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def react(  # noqa: PLR0913 — colleague-egress chokepoint; each kwarg is a documented gate/route/audit input, kwargs-only.

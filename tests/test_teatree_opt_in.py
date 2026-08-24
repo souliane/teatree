@@ -57,6 +57,11 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
+    # A headless factory agent runs this suite with the Agent-SDK lane exported,
+    # which suppresses the standing directives (#4166) — an unpinned env would
+    # decide the delivery assertions below rather than the gating under test.
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     # Hermetic HOME: ``autoload_enabled`` is DB-home (the legacy file tier is
     # removed) — it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting
     # sqlite. A clean home with no DB keeps the default-OFF (#256) path deterministic
@@ -163,10 +168,30 @@ class TestSessionStartBootstrapGating:
 
 
 class TestEnforceLoopOnPromptGating:
-    def test_fresh_session_without_marker_emits_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_unengaged_session_emits_nothing(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #256 default-OFF: no marker AND autoload off => not engaged, so neither
+        # the reactive-slot nag NOR the standing directives (#4166) reach it.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
         handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
         out = capsys.readouterr().out
         assert out == ""
+
+    def test_autoload_engaged_session_gets_directives_but_no_reactive_slot(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``autoload`` is the owner's standing "teatree is on for every session"
+        # opt-in, so an unmarked session under it IS engaged and receives the
+        # standing directives (#4166) — but arming the loops still needs the
+        # marker, so it registers no reactive slot.
+        handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
+        out = capsys.readouterr().out
+        assert "[standing-golden-rule]" in out
+        assert "reactive infra loops" not in out
+        # And nothing that would make the session wake itself: autoload alone
+        # engages, it does not arm (#256).
+        assert "/loop " not in out
 
     def test_marked_session_emits_reactive_slot_registrations(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -521,7 +546,14 @@ class TestLoopAutoLoadOptInGate:
     ) -> None:
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        # The session engaged teatree (the marker) but never armed its loops, so
+        # it registers no reactive slot and claims no ownership. The zero-turn
+        # standing rule (#4166) is keyed on ENGAGEMENT rather than loop-arming, so
+        # it is deliberately still delivered — and the self-waking slots are not.
+        assert "reactive infra loops" not in out
+        assert "[standing-golden-rule]" in out
+        assert "/loop " not in out
         assert _read_loop_registry() == {}
 
     def test_prompt_nag_fires_with_opt_in(
@@ -718,15 +750,23 @@ class TestStatuslineGating:
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
         assert "statusline off" in out
 
-    def test_engaged_render_broken_db_fails_closed_to_hint(self, tmp_path: Path) -> None:
-        # A corrupt/unreadable DB fails CLOSED (opt-in OFF) -> the hint, never blank.
+    def test_engaged_render_broken_db_fails_closed_to_an_honest_hint(self, tmp_path: Path) -> None:
+        # A corrupt/unreadable DB still fails CLOSED (opt-in OFF) and still never blanks
+        # the bar — both invariants below. What it must NOT do is name a cause it did not
+        # establish: this used to assert the "off (autoload disabled)" hint, and that
+        # wording was the #4041 defect, not the contract. The DB the read failed on may
+        # hold `autoload = True`, so the honest hint is UNKNOWN (see the shell-parity lane
+        # for the full unknown/off matrix).
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
         garbage = tmp_path / "corrupt.sqlite3"
         garbage.write_bytes(b"this is not a sqlite database at all")
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(garbage)})
-        assert "statusline off" in out
+        assert out.strip() != "", "the bar must never be blank (#3233)"
+        assert "model=" not in out, "the opt-in must stay closed on a read it could not make"
+        assert "UNKNOWN" in out
+        assert "autoload disabled" not in out
 
 
 # ── #256: default-off teatree autoload + engagement seam ──────────────────

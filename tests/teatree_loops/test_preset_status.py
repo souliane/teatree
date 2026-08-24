@@ -1,9 +1,9 @@
-"""teatree.loops.preset_status — the shared effective-verdict surface (#3159).
+"""teatree.loops.preset_status — the preset/mode observability rendering (#3159).
 
-One source of truth for ``preset show``, ``loops list``, and the statusline: the
-active-preset summary, the per-loop effective verdict + deciding layer, and the
-statusline chunk. Deciding layer mirrors the resolution order (hold > override/
-schedule > base).
+The active-preset summary and the ``schedule:`` / ``mode:`` / ``forced ON/OFF:``
+statusline handles. The per-loop effective verdict they render lives in
+``teatree.loops.enable_verdict`` (see ``test_enable_verdict.py``) — the one seam the
+tick's own admission also reads.
 """
 
 import datetime as dt
@@ -15,7 +15,6 @@ from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverri
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_status import (
     active_summary,
-    effective_verdicts,
     manual_override_chunk,
     manual_override_entries,
     preset_line_chunk,
@@ -30,36 +29,13 @@ def _loop(name: str, *, enabled: bool = True) -> Loop:
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestEffectiveVerdicts(django.test.TestCase):
-    def test_base_layer_when_no_preset(self) -> None:
-        _loop("ps-inbox")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-inbox"].layer == "base"
-        assert verdicts["ps-inbox"].admitted is True
-
-    def test_hold_layer_wins_over_preset(self) -> None:
-        _loop("ps-review")
-        LoopState.objects.pause("ps-review")
-        Mode.objects.create(name="engaged", entries={"ps-review": True})
-        ModeOverride.objects.set_override("engaged")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-review"].layer == "hold"
-        assert verdicts["ps-review"].admitted is False
-
-    def test_override_masks_a_loop_off(self) -> None:
-        _loop("ps-review2")
-        Mode.objects.create(name="heads-down", entries={"ps-review2": False})
-        ModeOverride.objects.set_override("heads-down")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-review2"].layer == "override"
-        assert verdicts["ps-review2"].admitted is False
-
+class TestActiveSummary(django.test.TestCase):
     def test_summary_reports_active_preset(self) -> None:
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={})
+        ModeOverride.objects.set_override("maintenance")
         summary = active_summary()
         assert summary is not None
-        assert summary.name == "heads-down"
+        assert summary.name == "maintenance"
         assert summary.layer == "override"
 
     def test_summary_none_when_no_preset(self) -> None:
@@ -70,20 +46,20 @@ class TestEffectiveVerdicts(django.test.TestCase):
 class TestStatuslineChunk(django.test.TestCase):
     def test_default_mode_when_nothing_governs(self) -> None:
         # Post-merge there is ALWAYS a resolved mode; a quiet machine reads the
-        # configured default (``engaged``) rather than an empty handle.
-        assert statusline_chunk() == "mode: engaged"
+        # configured default (``present``) rather than an empty handle.
+        assert statusline_chunk() == "mode: present"
 
     def test_manual_override_reads_mode_manual(self) -> None:
         # A manual override (#3494, #61) reads ``mode: manual`` — the layer, not
         # the mode name — so the operator sees the schedule is not governing.
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={})
+        ModeOverride.objects.set_override("maintenance")
         assert statusline_chunk() == "mode: manual"
 
     def test_manual_override_includes_the_boundary_when_bounded(self) -> None:
-        Mode.objects.create(name="heads-down", entries={})
+        Mode.objects.create(name="maintenance", entries={})
         until = timezone.now() + dt.timedelta(hours=3)
-        ModeOverride.objects.create(preset_name="heads-down", until=until)
+        ModeOverride.objects.create(preset_name="maintenance", until=until)
         chunk = statusline_chunk()
         assert chunk.startswith("mode: manual →")
 
@@ -103,8 +79,8 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
 
         _loop("ov-review", enabled=True)
         _loop("ov-news", enabled=True)
-        Mode.objects.create(name="engaged", entries={"ov-news": False})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"ov-news": False})
+        ModeOverride.objects.set_override("present")
         # review forced OFF (diverges from base ON); news forced ON (diverges
         # from the preset's OFF).
         LoopState.objects.override("ov-review", on=False)
@@ -141,13 +117,13 @@ class TestPresetLineChunk(django.test.TestCase):
     def test_shows_schedule_and_default_mode_when_nothing_governs(self) -> None:
         # The schedule handle is always spelled out and the mode handle is always
         # present (the configured default), so a quiet machine reads both.
-        assert preset_line_chunk() == "schedule: none active · mode: engaged"
+        assert preset_line_chunk() == "schedule: none active · mode: present"
 
     def test_preset_line_handles_resolves_the_three_handles(self) -> None:
         _loop("plh-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={})
+        ModeOverride.objects.set_override("maintenance")
         LoopState.objects.override("plh-review", on=False)
         handles = preset_line_handles()
         assert handles.schedule == "schedule: standard"
@@ -157,27 +133,27 @@ class TestPresetLineChunk(django.test.TestCase):
     def test_preset_line_handles_quiet_machine_shows_schedule_and_default_mode(self) -> None:
         handles = preset_line_handles()
         assert handles.schedule == "schedule: none active"
-        assert handles.mode == "mode: engaged"
+        assert handles.mode == "mode: present"
         assert handles.override == ""
 
     def test_composes_schedule_mode_and_overrides(self) -> None:
         _loop("pl-review", enabled=True)
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={})
+        ModeOverride.objects.set_override("maintenance")
         LoopState.objects.override("pl-review", on=False)
         chunk = preset_line_chunk()
         assert chunk == "schedule: standard · mode: manual · forced OFF: pl-review"
 
     def test_schedule_governed_names_the_mode_not_manual(self) -> None:
-        Mode.objects.create(name="engaged", entries={})
+        Mode.objects.create(name="present", entries={})
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         ModeScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="engaged"
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="present"
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         chunk = preset_line_chunk()
         # Schedule-governed → the mode is named (not "manual"); no ⚠ marker.
-        assert chunk.startswith("schedule: standard · mode: engaged")
+        assert chunk.startswith("schedule: standard · mode: present")
         assert "⚠" not in chunk
         assert "manual" not in chunk

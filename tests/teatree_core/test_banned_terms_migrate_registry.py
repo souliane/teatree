@@ -14,7 +14,10 @@ All terms are SYNTHETIC — no real customer value, so this public test leaks no
 """
 
 import json
+import os
+import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,6 +29,26 @@ from teatree.hooks import banned_term_registry
 from teatree.hooks.banned_term_registry import build_registry_from_legacy, verify_migration
 
 _runner = CliRunner()
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A real one-file git checkout — the enumeration axis must not decide these tests."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+    for args in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "seed"]):
+        if args[0] == "add":
+            (repo / "app.py").write_text("clean = True\n", encoding="utf-8")
+        subprocess.run([shutil.which("git") or "git", *args], cwd=repo, check=True, capture_output=True, env=env)
+    return repo
 
 
 @pytest.fixture(autouse=True)
@@ -138,7 +161,7 @@ class TestScanTreeAllowUnset:
 
     def test_unset_brands_with_allow_unset_is_inert(self, tmp_path: Path) -> None:
         db = _seed(tmp_path, banned_terms=["acme"])  # no banned_brands row
-        result = scan_committed_tree(tmp_path, config_path=db, allow_unset=True)
+        result = scan_committed_tree(_repo(tmp_path), config_path=db, allow_unset=True)
         assert result.brands_configured is False  # INERT, not a raise
 
     def test_cli_scan_tree_allow_unset_exits_zero_on_unset_brands(
@@ -146,7 +169,8 @@ class TestScanTreeAllowUnset:
     ) -> None:
         db = _seed(tmp_path, banned_terms=["acme"])  # no banned_brands row
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        result = _runner.invoke(banned_terms_app, ["scan-tree", "--repo-root", str(tmp_path), "--allow-unset"])
+        repo = _repo(tmp_path)
+        result = _runner.invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--allow-unset"])
         assert result.exit_code == 0
 
     def test_cli_scan_tree_without_allow_unset_exits_two_on_unset_brands(

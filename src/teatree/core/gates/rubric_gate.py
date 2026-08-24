@@ -9,7 +9,8 @@ rubric is not fully PASS by an independent verifier.
 This is the structural gate. It extends the §17.4.3 keystone-merge precondition
 family (sibling of the #1829 anti-vacuity gate) with one dimension: the ticket's
 :class:`teatree.core.models.rubric.Rubric` must be fully PASS — every criterion
-graded PASS by a grader that is NOT the maker (``is_non_reviewer_role``), bound to
+graded PASS by a positively-identified independent grader
+(``is_independent_reviewer_identity``), bound to
 the merge-time live head SHA. It is **fail-closed**: an empty, ungraded, failed,
 maker-graded, or stale-SHA rubric is treated as not-passed and the merge is
 refused. It never skip-as-passes (the standing "gate must fail loud" rule).
@@ -78,7 +79,7 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
     from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
-        session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
+        session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()
         if session is not None and session.agent_id:
             HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=session.agent_id)
     except Exception:  # noqa: BLE001 — the honesty backstop must never block the already-refusing gate

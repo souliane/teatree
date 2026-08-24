@@ -19,12 +19,19 @@ but not one-at-a-time, so this closes that gap. WARN, not block (the user's
 choice): a multi-question call still proceeds — stderr (the router's documented
 warn channel) carries the nudge so the NEXT decision is split. Fires on EVERY
 session. The AI eval ``asks_decisions_one_at_a_time`` pins the behaviour.
+
+``denied_question_dedupe_key`` / ``denied_question_row_marker`` restore the
+away-mode-only guard #4202's postureless merge dropped for every loop-driven
+deny (#1174): a denied call is the one a harness retry can replay verbatim.
 """
 
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
+
+DENIED_QUESTION_MARKER_PREFIX = "denied-q-"
 
 # A '?' is necessary but not sufficient: a second-person/decision cue must also
 # be present, which keeps rhetorical asides and explanatory sentences out of the
@@ -374,22 +381,38 @@ def _entry_message_blocks(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
+def is_tool_result_only(content: list) -> bool:
+    """True for a ``user`` entry that is a tool RESULT rather than the user typing."""
+    return bool(content) and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+
+
 def last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
     """Return ``(final_assistant_text, used_question_tool)`` for the last turn.
 
-    The "last turn" is every assistant message after the most recent user
+    The "last turn" is every assistant message after the most recent GENUINE user
     message in the transcript JSONL. ``final_assistant_text`` is the concatenated
     text blocks of those messages; ``used_question_tool`` is ``True`` if any
     ``AskUserQuestion`` ``tool_use`` block appears in the turn. Returns ``None``
     when the transcript is missing, unreadable, empty, or has no trailing
     assistant turn (fail-safe to "do nothing"). Owned here (the transcript-parsing
     home) and imported back into ``hook_router`` to keep that god-module shrinking.
+
+    A tool RESULT is recorded as a ``user`` entry whose blocks are all
+    ``tool_result``, so stopping at the first ``user`` entry cuts the turn at the
+    first tool call and drops everything the assistant said BEFORE dispatching —
+    which is where an answer lands whenever the turn both answers and delegates.
+    Those entries are walked past; only a real user message ends the turn. This is
+    the mirror of the same walk in ``answer_first_gate._last_user_text``, and both
+    read the ONE predicate above so the two halves can never disagree about what
+    counts as the user speaking.
     """
     texts: list[str] = []
     used_tool = False
     for entry in reversed(read_transcript_entries(transcript_path)):
         role = _entry_message_role(entry)
         if role == "user":
+            if is_tool_result_only(_entry_message_blocks(entry)):
+                continue
             break
         if role != "assistant":
             continue
@@ -521,3 +544,19 @@ def handle_resolve_answered_question(data: dict) -> None:
             row.apply_answer(_answer_text_from_tool_response(data), resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
+
+
+def denied_question_dedupe_key(question: dict) -> str:
+    """Stable hash of *question* — the denied-retry idempotency key."""
+    blob = json.dumps(question, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def denied_question_row_marker(session_id: str, key: str) -> str:
+    """The ``DeferredQuestion.dedupe_marker`` a denied (session, question) collapses onto.
+
+    Session-scoped so two sessions asking a byte-identical question never share one
+    row, and truncated to the indexed column's 64 chars.
+    """
+    digest = hashlib.sha256(f"{session_id}\x00{key}".encode()).hexdigest()
+    return f"{DENIED_QUESTION_MARKER_PREFIX}{digest}"[:64]

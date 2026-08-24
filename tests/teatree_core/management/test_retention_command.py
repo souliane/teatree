@@ -13,11 +13,15 @@ either way) is what is under test.
 
 import datetime as dt
 import json
+import os
 from dataclasses import replace
 from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -25,6 +29,7 @@ from django.utils import timezone
 from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.utils.django_db.vacuum import VacuumOutcome
+from tests._procfs import pinned_venue_proc
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _COMMAND = "teatree.core.management.commands.retention"
@@ -180,3 +185,162 @@ class RetentionPruneVacuumTestCase(TestCase):
         assert "not applicable" in payload["vacuum"]["reason"]
         assert payload["vacuum"]["bytes_reclaimed"] == 0
         assert payload["vacuum"]["summary"] == payload["vacuum"]["reason"]
+
+
+class ScratchSweepCommandTests(TestCase):
+    """``t3 <overlay> retention scratch`` — dry-run default, size-ranked report, real reclaim."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        # Without this the sweep reads the machine's live /proc, so the verdict is a
+        # property of whatever else runs: green in a container, red on a systemd host.
+        self.enterContext(pinned_venue_proc())
+        stale = self.root / "t3db.sqlite3"
+        stale.write_bytes(b"x" * 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(stale, (old, old))
+        self.stale = stale
+
+    def _scratch_json(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_dry_run_reports_the_reclaimable_bytes_without_touching_anything(self) -> None:
+        payload = self._scratch_json()
+
+        assert payload["applied"] is False
+        assert payload["candidate_bytes"] == 2048
+        assert payload["reclaimed_bytes"] == 0
+        assert [entry["path"] for entry in payload["entries"]] == [str(self.stale)]
+        assert self.stale.exists()
+
+    def test_apply_reclaims_the_stale_scratch_and_reports_what_it_freed(self) -> None:
+        payload = self._scratch_json("--apply")
+
+        assert payload["applied"] is True
+        assert payload["reclaimed_bytes"] == 2048
+        assert not self.stale.exists()
+
+    def test_the_configured_retention_window_is_the_default(self) -> None:
+        with patch(f"{_COMMAND}.get_effective_settings") as settings:
+            settings.return_value.scratch_sweep_root = str(self.root)
+            settings.return_value.scratch_retention_days = 90
+            out = StringIO()
+            call_command("retention", "scratch", "--json", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert payload["retention_days"] == 90
+        assert payload["candidate_bytes"] == 0
+
+    def test_the_human_view_names_every_kept_entry_and_its_reason(self) -> None:
+        fresh = self.root / "claude-statusline"
+        fresh.mkdir()
+        err = StringIO()
+
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", stderr=err)
+
+        rendered = err.getvalue()
+        assert "dry run" in rendered
+        assert "protected path" in rendered
+        assert "2.0KiB" in rendered
+
+    def test_a_dry_run_on_a_sighted_probe_reports_no_refusal(self) -> None:
+        payload = self._scratch_json()
+
+        assert payload["refused"] is False
+
+
+class ScratchSweepRefusalCommandTests(TestCase):
+    """An unsighted probe exits NON-ZERO on --apply rather than reporting a clean no-op."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        stale = self.root / "t3db.sqlite3"
+        stale.write_bytes(b"x" * 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(stale, (old, old))
+        self.stale = stale
+        # No pinned table: the autouse conftest fixture points the venue probe at a
+        # path that is not a process table, which is exactly the unsighted case.
+
+    def _run(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_a_dry_run_reports_the_refusal_without_failing(self) -> None:
+        payload = self._run()
+
+        assert payload["refused"] is True
+        assert payload["candidate_bytes"] == 0
+        assert "unsighted" in payload["probe_gap"]
+
+    def test_apply_exits_non_zero_and_still_writes_the_payload(self) -> None:
+        out = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command(
+                "retention", "scratch", "--root", str(self.root), "--days", "3", "--apply", "--json", stdout=out
+            )
+
+        assert exit_info.value.code == 1
+        assert json.loads(out.getvalue())["refused"] is True
+        assert self.stale.exists()
+
+    def test_the_human_view_names_the_refusal_and_the_arming_precondition(self) -> None:
+        err = StringIO()
+
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", stderr=err)
+
+        rendered = err.getvalue()
+        assert "REFUSED" in rendered
+        assert "ptrace" in rendered
+
+
+class UnlistableScratchRootCommandTests(TestCase):
+    """A root the sweep could not read into exits NON-ZERO on --apply, like an unsighted probe.
+
+    The venue probe is PINNED to an answering table throughout: the autouse fixture
+    leaves it unsighted, whose gap also says "not listable" — about the process table
+    rather than the root — so an unpinned arm would pass on the wrong refusal.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory())) / "not-a-directory"
+        self.root.write_bytes(b"")
+        self.enterContext(pinned_venue_proc())
+
+    def _run(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_apply_exits_non_zero_and_still_writes_the_payload(self) -> None:
+        out = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command(
+                "retention", "scratch", "--root", str(self.root), "--days", "3", "--apply", "--json", stdout=out
+            )
+
+        assert exit_info.value.code == 1
+        payload = json.loads(out.getvalue())
+        assert payload["refused"] is True
+        assert str(self.root) in payload["probe_gap"]
+
+    def test_a_dry_run_reports_the_refusal_without_failing(self) -> None:
+        payload = self._run()
+
+        assert payload["refused"] is True
+        assert payload["resident_bytes"] == 0
+        assert str(self.root) in payload["probe_gap"]
+
+    def test_a_listable_root_is_the_sighted_positive_control(self) -> None:
+        listable = self.root.parent / "listable"
+        listable.mkdir()
+
+        payload = self._run("--root", str(listable))
+
+        assert payload["refused"] is False
+        assert payload["probe_gap"] == ""

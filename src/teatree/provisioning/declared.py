@@ -33,10 +33,6 @@ _PYPROJECT = "pyproject.toml"
 _CLAUDE_SETTINGS = (".claude", "settings.json")
 _MIN_SKILL_SPEC_SEGMENTS = 3
 
-_SKILL_REMEDIATION = (
-    "run `t3 setup` in this environment (it provisions every declared skill dependency "
-    "idempotently), or install it directly with `apm install -g --target claude`"
-)
 _BINARY_REMEDIATION = "install it and put it on PATH, then re-run `t3 doctor check`"
 _INTEGRATION_REMEDIATION = "run `t3 setup` to re-register the plugin, or disable it in ~/.claude/settings.json"
 
@@ -72,6 +68,31 @@ class DeclaredDependency:
     source: str = ""
 
 
+def skill_remediation(spec: str) -> str:
+    """The runnable fix for an absent mandated skill, naming its declared source.
+
+    The command is spelled out with the manifest's own pinned spec rather than a
+    generic ``apm install`` shape: an operator reading a FAIL can paste the line,
+    and pinning it to the declaration keeps the fix and the mandate the same fact.
+    """
+    return (
+        f"`apm install {spec}` — or run `t3 setup` in this environment, "
+        "which provisions every declared skill dependency idempotently"
+    )
+
+
+def skill_bump_remediation(spec: str) -> str:
+    """The runnable fix for a pin its source has moved past, at the NEW spec.
+
+    Same pasteable shape as :func:`skill_remediation`, and deliberately a
+    different sentence: an absent skill is installed from the pin the manifest
+    already carries, while a trailing pin is two facts — the declaration moves
+    first, then the install follows it — and a reader handed only the install
+    would fix this box and leave the mandate behind.
+    """
+    return f"set the `dependencies.apm` entry to `{spec}`, then `apm install {spec}`"
+
+
 def _read_text(path: Path, surface: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -85,7 +106,50 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
 
     An entry of shape ``<owner>/<repo>/<subpath>[#<ref>]`` names ONE skill (its
     last path segment). A two-segment entry is a whole-repo bundle that names no
-    single skill, so it declares nothing enumerable here.
+    single skill, so it declares nothing enumerable here — and therefore nothing
+    the pin surface can measure either, which is why
+    :func:`pinned_specs_in_apm_manifest` exists alongside this.
+    """
+    declared: list[DeclaredDependency] = []
+    for spec in _apm_entries(manifest):
+        segments = spec.split("#", 1)[0].strip("/").split("/")
+        if len(segments) < _MIN_SKILL_SPEC_SEGMENTS:
+            continue
+        declared.append(
+            DeclaredDependency(
+                kind="skill",
+                name=segments[-1],
+                declared_in=f"{_APM_MANIFEST} → dependencies.apm",
+                remediation=skill_remediation(spec),
+                source=spec,
+            )
+        )
+    return declared
+
+
+def pinned_specs_in_apm_manifest(manifest: Path) -> list[str]:
+    """EVERY ``dependencies.apm`` entry carrying a ``#<ref>``, whatever its shape.
+
+    The pin surface's counterpart to :func:`skills_declared_in_apm_manifest`, and
+    deliberately a different question. That one enumerates entries naming ONE
+    installable skill, so it drops a two-segment whole-repo bundle — right for "is this
+    skill present", wrong for "is this pin current": a bundle pin
+    (``obra/superpowers#<sha>``) mandates a commit like any other, and dropping it left
+    the manifest's only third-party pin unmeasured while doctor's silence read as "every
+    pin is current".
+
+    Returns raw specs rather than :class:`DeclaredDependency` rows precisely so this
+    cannot be mistaken for an install mandate and handed to the provisioner, which would
+    try to install a skill named after the repo and fail the very gate it feeds.
+    """
+    return [spec for spec in _apm_entries(manifest) if spec.partition("#")[2].strip()]
+
+
+def _apm_entries(manifest: Path) -> list[str]:
+    """The ``dependencies.apm`` list as trimmed non-empty strings.
+
+    Raises :class:`DeclarationUnreadableError` when the surface cannot be read: "I could
+    not read the mandate" and "nothing is mandated" must never collapse into each other.
     """
     try:
         data = yaml.safe_load(_read_text(manifest, _APM_MANIFEST))
@@ -100,24 +164,7 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
     if not isinstance(entries, list):
         msg = f"{_APM_MANIFEST} at {manifest} declares no dependencies.apm list"
         raise DeclarationUnreadableError(msg)
-
-    declared: list[DeclaredDependency] = []
-    for entry in entries:
-        if not isinstance(entry, str):
-            continue
-        segments = entry.split("#", 1)[0].strip("/").split("/")
-        if len(segments) < _MIN_SKILL_SPEC_SEGMENTS:
-            continue
-        declared.append(
-            DeclaredDependency(
-                kind="skill",
-                name=segments[-1],
-                declared_in=f"{_APM_MANIFEST} → dependencies.apm",
-                remediation=_SKILL_REMEDIATION,
-                source=entry.strip(),
-            )
-        )
-    return declared
+    return [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
 
 
 def binaries_declared_in_pyproject(pyproject: Path) -> list[DeclaredDependency]:

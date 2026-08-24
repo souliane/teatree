@@ -240,7 +240,7 @@ class TestAgentDispatchCaptureAndSnapshot:
     — live only in the conversation and are lost on auto-compaction,
     orphaning the running agents. Mirror the #970 ``TodoWrite`` capture:
     a PostToolUse on ``Agent`` appends the dispatched agentId + its role
-    to ``<session>.agents`` so the snapshot can quote the roster back.
+    to ``<session>.agents`` so the snapshot can quote the ledger back.
     """
 
     def test_agent_dispatch_captured_to_session_agents_file(self) -> None:
@@ -288,7 +288,7 @@ class TestAgentDispatchCaptureAndSnapshot:
         assert "first agent" in text
         assert "second agent" in text
 
-    def test_snapshot_renders_dispatched_agents_roster(self) -> None:
+    def test_snapshot_renders_dispatched_agents_ledger(self) -> None:
         session_id = "sess-agent-render"
         handle_track_agents(
             {

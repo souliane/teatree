@@ -78,6 +78,7 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     gh_verify_result: str
     blast_class: str
     findings: list[ReviewFinding]
+    merge_result_retake: bool
 
 
 class CriticItemVerdictDict(TypedDict, total=False):
@@ -234,7 +235,13 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
             "properties": {
                 "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
-                "reviewed_sha": {"type": "string", "description": "Full 40-char hex SHA the review bound to."},
+                "reviewed_sha": {
+                    "type": "string",
+                    "description": (
+                        "Full 40-char hex SHA the review bound to. REQUIRED: an undisclosed head is "
+                        "refused, never read as agreement with the dispatch head (#4168)."
+                    ),
+                },
                 "reviewer_identity": {"type": "string"},
                 "gh_verify_result": {"type": "string", "enum": ["green", "pending", "failed"]},
                 "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
@@ -251,8 +258,17 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                         },
                     },
                 },
+                "merge_result_retake": {
+                    "type": "boolean",
+                    "description": (
+                        "Attests that every finding citing a file outside the PR's changed-file set was "
+                        "re-measured on the materialised MERGE RESULT (`t3 review merge-tree`), not the "
+                        "branch checkout alone. Without it such a finding cannot carry blocking severity "
+                        "and the whole verdict is refused (#4251)."
+                    ),
+                },
             },
-            "required": ["verdict"],
+            "required": ["verdict", "reviewed_sha"],
         },
         "critic_verdict": {
             "type": "object",

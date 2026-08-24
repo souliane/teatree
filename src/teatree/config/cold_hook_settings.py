@@ -51,6 +51,8 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "unknown_repo_push_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "no_self_reviewer_assign_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "glab_stale_base_remote_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "git_add_all_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "merged_detection_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "config_overwrite_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
@@ -71,6 +73,13 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_goal_stop_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "stop_snapshotter_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "answer_first_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "unbacked_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "brief_anchor_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    # Not a kill-switch: the brief-anchor lint's POSTURE. False (the default) warns and
+    # allows; True refuses an unanchored dispatch brief outright (#4341).
+    "brief_anchor_gate_refuse": ColdHookSetting(_parse_strict_bool, default=False),
+    "verbatim_paste_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "deny_circuit_breaker_threshold": ColdHookSetting(_parse_strict_int, default=3),
     "orchestrator_turn_budget": ColdHookSetting(_parse_strict_int, default=25),

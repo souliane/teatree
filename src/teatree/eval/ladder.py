@@ -184,6 +184,7 @@ def _row_from(result: PassAtKResult, *, model: str) -> MatrixRow:
         cost_usd=result.cost_usd,
         usage=result.usage,
         terminal_reason=result.terminal_reason,
+        harness_failed=result.harness_failed,
         main_cost_usd=result.main_cost_usd,
         aux_cost_usd=result.aux_cost_usd,
         main_usage=result.main_usage,

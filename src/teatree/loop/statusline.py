@@ -22,6 +22,7 @@ home (``teatree.loop.statusline``); identity is preserved so
 """
 
 from teatree.loop.statusline_loops import (
+    MiniLoopSchedule,
     PresetLineHandles,
     dashboard_head_anchor,
     health_chip,
@@ -45,6 +46,7 @@ from teatree.loop.statusline_render import (
 )
 
 __all__ = [
+    "MiniLoopSchedule",
     "PresetLineHandles",
     "StatuslineEntry",
     "StatuslineZones",

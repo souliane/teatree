@@ -1,4 +1,4 @@
-"""Shared nav context + request helpers for the dashboard views (#3162)."""
+"""Shared nav context, request helpers and cross-page write policy for the dash views (#3162)."""
 
 import socket
 from typing import TYPE_CHECKING, TypedDict
@@ -14,12 +14,18 @@ if TYPE_CHECKING:
 NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:board", "Board"),
     ("dash:live", "Live"),
+    ("dash:cycle_time", "Cycle time"),
     ("dash:health", "Health"),
     ("dash:loops", "Loops"),
     ("dash:sessions", "Sessions"),
     ("dash:presets", "Schedule"),
     ("dash:settings", "Settings"),
+    ("dash:interchange", "Import / export"),
 )
+
+#: The phrase an operator must type to write a safety-posture key — one gesture whether the
+#: key is edited on the settings page or arrives inside an uploaded dump.
+SAFETY_CONFIRM_PHRASE = "change-safety-posture"
 
 
 class NavContext(TypedDict):

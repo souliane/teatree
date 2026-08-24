@@ -38,6 +38,12 @@ from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
+#: Intake's queue order. An unsorted GitHub search ranks by *best match* — a relevance
+#: score nobody set — so an issue that ranks low can lose every free slot indefinitely
+#: (#4238). The intake scanner re-sorts the merged result too; this makes each single
+#: query's order the same thing rather than something the merge has to undo.
+_OLDEST_FIRST = "sort=created&order=asc"
+
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
@@ -81,7 +87,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return False
         return True
 
-    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
         """Open PRs authored by *author*, ENRICHED with head SHA + CI rollup (#7).
 
         The ``search/issues`` API carries no pipeline fields, so a bare search hit
@@ -92,12 +98,18 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         so ``head_sha`` and the aggregate CI state reach the scanner. An
         enrichment that fails (auth/network/unknown PR) leaves the hit unenriched
         — the scanner then warns about the gap rather than silently reading "".
+
+        ``enrich=False`` skips it entirely for a caller that reads only the search
+        hit's own fields: the enrichment is one SEQUENTIAL ``gh pr view`` per PR, which
+        cost intake ~14s of its 60s scan budget for CI state it never looks at (#4466).
         """
         terms = [f"is:pr is:open author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
         hits = _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not enrich:
+            return hits
         return [_pr_reads.enrich_pr_pipeline(hit, token=self._token) for hit in hits]
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
@@ -149,6 +161,16 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if author:
             terms.append(f"author:{author}")
         query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """PRs on *repo* merged at or after ISO-8601 *since* — the external-outcome read.
+
+        Every failure RE-RAISES. An empty result is read downstream as "the factory
+        shipped nothing", which is the alarm this measure exists to raise — so a
+        rate-limited or unauthenticated read must never degrade into that answer.
+        """
+        query = quote_plus(f"repo:{repo} is:pr is:merged merged:>={since}")
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
@@ -270,7 +292,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         firehose + cross-repo claim hole this closes — see the commit body).
         """
         query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
 
     def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
         """Open issues carrying *label* — the owner-admission intake query (#3634).
@@ -279,7 +301,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         is repo-scoped exactly like the author query.
         """
         query = quote_plus(f'is:issue is:open label:"{label}"' + "".join(f" repo:{s}" for s in repo_slugs))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
 
     def create_issue(
         self,

@@ -34,7 +34,7 @@ from teatree.credential_config import (
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
@@ -129,7 +129,29 @@ class TestSelectorDefaultPath(TestCase):
         reader = _FakeReader({})
         with _pass_echoes_path():
             assert PassPathSelector(reader=reader).select(TokenKind.OAUTH) is None
-        assert reader.calls == [], "an unconfigured kind must not probe"
+        assert reader.calls == [], "selection reads the store, never the network"
+
+
+def _seed_from_reader(reader: "_FakeReader") -> None:
+    """Store the reader's canned health as the verdicts selection will actually read.
+
+    These tests were written when selection probed, so the reader stub WAS the health.
+    Selection now reads the store, so the same fixture data has to land there — this keeps
+    each test's intent (which account is spent) while moving where that fact lives.
+    """
+    for pass_path, snapshot in reader._health.items():
+        AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=timezone.now())
+
+
+def _seed_health(pass_path: str, *, exhausted: bool, hours_to_reset: float = 4.0) -> None:
+    """Store a FRESH verdict for *pass_path* — what selection now reads instead of probing.
+
+    Selection consults `AnthropicTokenUsage` and never the network, so a test that wants an
+    account ruled out must say so in the store; a reader stub no longer reaches the decision.
+    """
+    reset = timezone.now() + dt.timedelta(hours=hours_to_reset)
+    snapshot = _snapshot(u5=0.99, reset=reset) if exhausted else _snapshot(reset=reset)
+    AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=timezone.now())
 
 
 class TestSelectorRouting(TestCase):
@@ -139,7 +161,7 @@ class TestSelectorRouting(TestCase):
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/a/oauth"
-        assert reader.calls == ["anthropic/a/oauth"], "the first healthy account short-circuits the rest"
+        assert reader.calls == [], "selection reads the store, never the network"
         assert AnthropicActivePick.objects.pick_for("oauth", "") == "anthropic/a/oauth"
 
     def test_overlay_list_falls_back_to_global_when_overlay_has_none(self) -> None:
@@ -157,6 +179,7 @@ class TestSelectorRouting(TestCase):
                 "anthropic/b/oauth": _snapshot(),
             }
         )
+        _seed_from_reader(reader)
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/b/oauth"
@@ -170,6 +193,7 @@ class TestSelectorRouting(TestCase):
                 "anthropic/other/oauth": _snapshot(),
             }
         )
+        _seed_from_reader(reader)
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope="overlay-x")
         assert chosen == "anthropic/other/oauth", "own account exhausted → borrow another overlay's healthy account"
@@ -178,12 +202,13 @@ class TestSelectorRouting(TestCase):
         # An out-of-credits metered key must not be routed to — routing collapses the
         # credit signal onto the same exhaustion refusal the selector already enforces.
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/metered/api"])
-        with (
-            _pass_echoes_path(),
-            patch("teatree.credential_config.read_api_key_status", return_value=_metered(out_of_credits=True)),
-            pytest.raises(AllTokensExhaustedError),
-        ):
-            PassPathSelector().select(TokenKind.API_KEY)
+        AnthropicTokenUsage.objects.record(
+            "anthropic/metered/api", reading_from_metered(_metered(out_of_credits=True)), now=timezone.now()
+        )
+        reader = _FakeReader({})
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
+            PassPathSelector(reader=reader).select(TokenKind.API_KEY)
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_funded_api_key_is_routed(self) -> None:
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/a/api", "anthropic/b/api"])
@@ -203,6 +228,7 @@ class TestSelectorRouting(TestCase):
                 "anthropic/b/oauth": _snapshot(u5=0.98, reset=soon),
             }
         )
+        _seed_from_reader(reader)
         with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError) as caught:
             PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         message = str(caught.value)
@@ -249,6 +275,7 @@ class TestSelectorRouting(TestCase):
             }
         )
 
+        _seed_from_reader(reader)
         with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError) as caught:
             PassPathSelector(reader=reader).select(TokenKind.OAUTH)
 
@@ -256,41 +283,58 @@ class TestSelectorRouting(TestCase):
         assert caught.value.earliest_reset > now, "a park keyed on this must never be already elapsed"
 
 
-class TestSelectorRescueReprobe(TestCase):
-    """#3406: a cached-exhausted verdict outlives a rolling window's real recovery.
+class TestSelectionNeverProbes(TestCase):
+    """Selection reads the stored health and opens no socket (the #3406 stall, inverted).
 
-    An exhausted health row is trusted until its recorded reset, but a 5h window frees
-    capacity continuously — so when every account reads exhausted the selector re-probes
-    LIVE before declaring a hard stall, rescuing an account that has since recovered
-    rather than stranding the loop until the full recorded reset.
+    The old selector probed LIVE whenever a row was missing or stale, so the decision
+    "can work start" depended on the rate-limit API being reachable and quick. When it
+    was not, selection returned nothing and the factory idled with capacity to spare.
+    Nothing probes on the selection path at all; a spent account records itself reactively
+    after one refused call, and these pin that selection adds no probe of its own.
     """
 
-    def test_rescue_reprobes_a_cached_exhausted_account_that_recovered(self) -> None:
+    def test_absent_rows_are_offered_without_a_probe(self) -> None:
+        # Fail-open: a cold health table must never be able to halt dispatch. A spent
+        # account costs one refused call and records itself through the reactive path.
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-        stale = timezone.now() - dt.timedelta(minutes=5)
-        reset = timezone.now() + dt.timedelta(hours=4)
-        # Both cached EXHAUSTED (fresh until their far reset), so the cache-respecting
-        # path would hard-fail — but account b has since recovered.
-        for path in ("anthropic/a/oauth", "anthropic/b/oauth"):
-            AnthropicTokenUsage.objects.record(path, reading_from(_snapshot(u5=0.99, reset=reset)), now=stale)
-        reader = _FakeReader({"anthropic/a/oauth": _snapshot(u5=0.99, reset=reset), "anthropic/b/oauth": _snapshot()})
+        reader = _FakeReader({"anthropic/a/oauth": _snapshot(), "anthropic/b/oauth": _snapshot()})
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
-        assert chosen == "anthropic/b/oauth", "the rescue re-probe routes to the recovered account"
-        assert reader.calls == ["anthropic/a/oauth", "anthropic/b/oauth"], "only the rescue path re-probes"
+        assert chosen == "anthropic/a/oauth", "an account with no stored verdict is offered, not skipped"
+        assert reader.calls == [], "selection reads the store, never the network"
 
-    def test_rescue_cooldown_skips_a_just_probed_account(self) -> None:
-        # A just-probed exhausted account is NOT re-probed within the cooldown, so a
-        # spinning all-exhausted dispatch loop cannot storm the rate-limit API.
+    def test_a_stale_exhausted_row_is_offered_without_a_probe(self) -> None:
+        # A rolling window frees capacity before its recorded reset, so a verdict that has
+        # aged out is not evidence of exhaustion — and re-probing to find out is what used
+        # to stall the lane. Offering it costs at most one refused call.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
+        # An exhausted verdict is trusted until its BLOCKING WINDOW re-arms, not for a flat
+        # TTL — so "stale" here means the reset has since passed and the account may well
+        # have capacity again. Offering it is the point: the alternative is stranding a
+        # recovered account until something probes it.
+        aged = timezone.now() - dt.timedelta(hours=6)
+        elapsed_reset = timezone.now() - dt.timedelta(minutes=1)
+        AnthropicTokenUsage.objects.record(
+            "anthropic/a/oauth", reading_from(_snapshot(u5=0.99, reset=elapsed_reset)), now=aged
+        )
+        reader = _FakeReader({"anthropic/a/oauth": _snapshot()})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/a/oauth", "a stale verdict does not rule an account out"
+        assert reader.calls == [], "selection reads the store, never the network"
+
+    def test_a_fresh_exhausted_row_still_hard_fails_without_a_probe(self) -> None:
+        # Anti-vacuous: if selection ignored stored health entirely both tests above would
+        # pass while the selector routed to a known-spent account every time.
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
         reset = timezone.now() + dt.timedelta(hours=4)
         AnthropicTokenUsage.objects.record(
             "anthropic/a/oauth", reading_from(_snapshot(u5=0.99, reset=reset)), now=timezone.now()
         )
-        reader = _FakeReader({"anthropic/a/oauth": _snapshot()})  # would read healthy IF re-probed
+        reader = _FakeReader({"anthropic/a/oauth": _snapshot()})  # would read healthy IF probed
         with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
             PassPathSelector(reader=reader).select(TokenKind.OAUTH)
-        assert reader.calls == [], "a just-probed account is not re-probed within the cooldown"
+        assert reader.calls == [], "selection reads the store, never the network"
 
 
 class TestSelectorCrossScopeFallback(TestCase):
@@ -324,6 +368,7 @@ class TestSelectorCrossScopeFallback(TestCase):
                 "anthropic/healthy/oauth": _snapshot(),
             }
         )
+        _seed_from_reader(reader)
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE)
         assert chosen == "anthropic/healthy/oauth", "an exhausted union member is skipped for the next healthy account"
@@ -333,7 +378,7 @@ class TestSelectorCrossScopeFallback(TestCase):
         reader = _FakeReader({})
         with _pass_echoes_path():
             assert PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE) is None
-        assert reader.calls == [], "an all-empty union must not probe"
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_all_exhausted_union_raises_all_tokens_exhausted(self) -> None:
         soon = timezone.now() + dt.timedelta(hours=1)
@@ -345,6 +390,7 @@ class TestSelectorCrossScopeFallback(TestCase):
                 "anthropic/b/oauth": _snapshot(u5=0.98, reset=soon + dt.timedelta(hours=1)),
             }
         )
+        _seed_from_reader(reader)
         with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
             PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope=GLOBAL_SCOPE)
 
@@ -366,21 +412,7 @@ class TestSelectorSkipsUnusableCandidates(TestCase):
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/b/oauth"
-        assert reader.calls == ["anthropic/b/oauth"], "the cached exhausted account is skipped, not re-probed"
-
-    def test_candidate_whose_credential_cannot_resolve_is_skipped(self) -> None:
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-        reader = _FakeReader({"anthropic/b/oauth": _snapshot()})
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch(
-                "teatree.llm.credentials.read_pass",
-                side_effect=lambda path: "" if path == "anthropic/a/oauth" else path,
-            ),
-        ):
-            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
-        assert chosen == "anthropic/b/oauth", "an unresolvable credential is skipped for the next candidate"
-        assert reader.calls == ["anthropic/b/oauth"], "the unresolvable account is never probed"
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_cached_fresh_healthy_candidate_is_returned_without_a_probe(self) -> None:
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
@@ -389,27 +421,7 @@ class TestSelectorSkipsUnusableCandidates(TestCase):
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/a/oauth"
-        assert reader.calls == [], "a fresh healthy cached candidate is returned from the cache, never re-probed"
-
-    def test_candidate_whose_probe_transport_fails_is_skipped(self) -> None:
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-
-        class _RaisingReader:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def __call__(self, token: str, *, is_oauth: bool) -> RateLimitSnapshot:
-                self.calls.append(token)
-                if token == "anthropic/a/oauth":
-                    msg = "probe failed"
-                    raise RateLimitProbeError(msg)
-                return _snapshot()
-
-        reader = _RaisingReader()
-        with _pass_echoes_path():
-            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
-        assert chosen == "anthropic/b/oauth", "a probe transport failure makes the candidate unusable, not fatal"
-        assert reader.calls == ["anthropic/a/oauth", "anthropic/b/oauth"]
+        assert reader.calls == [], "selection reads the store, never the network"
 
 
 class TestSelectorStickiness(TestCase):
@@ -422,7 +434,7 @@ class TestSelectorStickiness(TestCase):
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/a/oauth"
-        assert reader.calls == [], "a fresh sticky pick must be read from the cache, not re-probed"
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_second_select_reuses_the_first_pick_from_cache(self) -> None:
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
@@ -432,7 +444,7 @@ class TestSelectorStickiness(TestCase):
             first = selector.select(TokenKind.OAUTH)
             second = selector.select(TokenKind.OAUTH)
         assert first == second == "anthropic/a/oauth"
-        assert reader.calls == ["anthropic/a/oauth"], "the second select is a cache hit — exactly one probe total"
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_expired_sticky_row_is_re_probed(self) -> None:
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
@@ -451,7 +463,7 @@ class TestSelectorStickiness(TestCase):
         with _pass_echoes_path():
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/a/oauth"
-        assert reader.calls == ["anthropic/a/oauth"], "an expired sticky row re-probes"
+        assert reader.calls == [], "selection reads the store, never the network"
 
 
 class TestFactoryWiring(TestCase):

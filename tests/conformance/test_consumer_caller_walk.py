@@ -37,6 +37,11 @@ from tests.conformance._src_tree import SRC_DIR, src_modules
 _SRC_DIR = SRC_DIR
 _DOCTOR_DIR = _SRC_DIR / "cli" / "doctor"
 _SCANNERS_DIR = _SRC_DIR / "loop" / "scanners"
+#: First-party callers also live OUTSIDE ``src/``: a registered hook handler is a live
+#: caller, and ``teatree.hooks`` is a platform-layer node tach forbids from importing
+#: ``teatree.core``, so a core seam driven by a gate can only be called from here. The
+#: CALLER search spans both trees; every other lane stays scoped to ``src/``.
+_HOOK_SCRIPTS_DIR = _SRC_DIR.parents[1] / "hooks" / "scripts"
 
 #: The base scanner ``Protocol`` — a structural contract, never instantiated, so it is
 #: not a "registered scanner" the wiring walk should demand a job for.
@@ -64,6 +69,20 @@ def _src_trees() -> Iterator[tuple[str, ast.Module]]:
     """Every ``src/teatree`` module as (repo-relative path, parsed AST)."""
     for path, tree in src_modules():
         yield str(path.relative_to(_SRC_DIR)), tree
+
+
+def _caller_trees() -> Iterator[tuple[str, ast.Module]]:
+    """Every first-party module a live caller may live in — ``src/`` plus ``hooks/scripts``.
+
+    Scoped to the CALLER search only. A ``PreToolUse``/``TaskCreated`` handler
+    registered in ``hook_router._HANDLERS`` is as live a caller as any ``src/``
+    one, and for a core seam a gate drives it is the ONLY possible one — tach's
+    platform-layer ``teatree.hooks`` node may not import ``teatree.core``. Reading
+    ``src/`` alone reported such a seam as wired to nothing while it was wired.
+    """
+    yield from _src_trees()
+    for path in sorted(_HOOK_SCRIPTS_DIR.glob("*.py")):
+        yield f"hooks/scripts/{path.name}", ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -194,8 +213,8 @@ def module_references(rel_file: str, targets: frozenset[str]) -> bool:
 
 @cache
 def called_from_another_module(name: str, own_file: str) -> str | None:
-    """The first module OTHER than *own_file* that calls ``name(...)``, else ``None``."""
-    for rel, tree in _src_trees():
+    """The first first-party module OTHER than *own_file* that calls ``name(...)``, else ``None``."""
+    for rel, tree in _caller_trees():
         if rel == own_file:
             continue
         if any(isinstance(node, ast.Call) and _call_name(node) == name for node in ast.walk(tree)):
@@ -262,46 +281,90 @@ class TestEveryGovernorConsumerHasALiveCaller:
         )
 
     def test_the_known_consumers_are_all_discovered(self) -> None:
-        # The derivation must actually find the interactive verdict, the headless deny
-        # reason, AND the headless test-worker cap — the three live consumer seams.
+        # The derivation must actually find the interactive-loop verdict, the headless
+        # verdict, the headless test-worker cap, AND the dispatch-gate deny reason —
+        # the four live consumer seams.
         found = set(governor_consumers())
-        assert {"governor_verdict", "headless_admission_denied_reason", "with_test_worker_cap"} <= found, sorted(found)
+        expected = {
+            "governor_verdict",
+            "agent_admission_verdict",
+            "with_test_worker_cap",
+            "dispatch_admission_denied_reason",
+        }
+        assert expected <= found, sorted(found)
 
 
 class TestHeadlessLaneWiresGovernor:
     """The #3678 case: the HEADLESS admission path references the governor, not only the interactive one."""
 
-    _HEADLESS_ADMISSION_MODULE = "core/headless_admission.py"
-    _HEADLESS_ENV_MODULE = "agents/_headless_env.py"
+    _HEADLESS_ADMISSION_MODULE = "core/agent_admission.py"
+    _HEADLESS_ENV_MODULE = "agents/_runner_env.py"
     _INTERACTIVE_CONSUMER = "governor_verdict"
-    _HEADLESS_CONSUMER = "headless_admission_denied_reason"
+    #: The module's governor-admission seams. A chokepoint gates on the governor by
+    #: calling EITHER: the single-shot ``…_denied_reason`` (one unit of work, one probe)
+    #: or the ``…_verdict`` a queue walker holds across N rows so the classification
+    #: costs one probe rather than N (#4098). Both resolve the same pure decision.
+    _HEADLESS_CONSUMERS = ("agent_admission_denied_reason", "agent_admission_verdict")
     #: The three headless chokepoints that must gate on the governor: the post_save
     #: auto-enqueue, the drain safety net, and issue intake (#3644 / F9).
     _HEADLESS_CHOKEPOINTS = ("core/signals.py", "core/tasks.py", "loop/scanners/issue_intake.py")
 
-    def test_headless_admission_module_consults_the_pure_governor_decision(self) -> None:
+    def test_agent_admission_module_consults_the_pure_governor_decision(self) -> None:
         assert module_references(self._HEADLESS_ADMISSION_MODULE, frozenset({"decide_admission"})), (
             "the headless admission module no longer references decide_admission — "
-            "the headless lane has been un-wired from the governor"
+            "the agent lane has been un-wired from the governor"
         )
 
-    def test_headless_env_cap_references_the_governor(self) -> None:
+    def test_runner_env_cap_references_the_governor(self) -> None:
         targets = frozenset(_GOVERNOR_DECISION_API | {"admission_governor"})
         assert module_references(self._HEADLESS_ENV_MODULE, targets), (
             "the headless env test-worker cap no longer references the admission governor"
         )
 
     def test_every_headless_chokepoint_gates_on_the_governor(self) -> None:
-        ungated = sorted(rel for rel in self._HEADLESS_CHOKEPOINTS if not module_calls(rel, self._HEADLESS_CONSUMER))
+        ungated = sorted(
+            rel
+            for rel in self._HEADLESS_CHOKEPOINTS
+            if not any(module_calls(rel, consumer) for consumer in self._HEADLESS_CONSUMERS)
+        )
         assert not ungated, (
-            "headless chokepoint(s) that no longer call headless_admission_denied_reason "
+            f"headless chokepoint(s) that no longer call any of {self._HEADLESS_CONSUMERS} "
             "(the governor stops gating that lane): " + str(ungated)
         )
+
+    def test_the_drain_resolves_one_probe_per_row_rather_than_re_probing(self) -> None:
+        # #4098: nothing changes between iterations of the drain loop, so a per-row
+        # re-ask would return the same verdict N times at N times the cost. The drain
+        # must hold the VERDICT, never call the single-shot wrapper inside its loop.
+        assert module_calls("core/tasks.py", "agent_admission_verdict")
+        assert not module_calls("core/tasks.py", "agent_admission_denied_reason")
 
     def test_the_interactive_lane_also_still_gates_on_the_governor(self) -> None:
         # The contract is "BOTH lanes", so the interactive verdict must stay wired too —
         # this lane exists precisely because the governor was once interactive-only.
         assert called_from_another_module(self._INTERACTIVE_CONSUMER, "loop/admission.py") is not None
+
+
+class TestDispatchGateWiresGovernor:
+    """#4107: the harness ``Agent``/``Task`` dispatch is the THIRD lane the governor gates.
+
+    Both factory lanes asked and the interactive dispatch did not, so every guard
+    governed the headless population while the box carries the sum of both.
+    """
+
+    _DISPATCH_MODULE = "core/dispatch_admission.py"
+    _DISPATCH_CONSUMER = "dispatch_admission_denied_reason"
+    #: The ``Agent``/``Task`` ``PreToolUse`` matcher — the ONE interception point a dispatch has.
+    _DISPATCH_GATE = "hooks/scripts/dispatch_admission_gate.py"
+
+    def test_the_dispatch_module_consults_the_pure_governor_decision(self) -> None:
+        assert module_references(self._DISPATCH_MODULE, frozenset({"decide_admission"})), (
+            "the dispatch admission module no longer references decide_admission — "
+            "the interactive dispatch lane has been un-wired from the governor"
+        )
+
+    def test_the_dispatch_gate_calls_the_consumer(self) -> None:
+        assert called_from_another_module(self._DISPATCH_CONSUMER, self._DISPATCH_MODULE) == self._DISPATCH_GATE
 
 
 class TestConsumerCallerWalkCardinalityFloors:
@@ -314,7 +377,13 @@ class TestConsumerCallerWalkCardinalityFloors:
         assert len(scanner_classes()) >= 40, sorted(scanner_classes())
 
     def test_governor_consumer_floor(self) -> None:
-        assert len(governor_consumers()) >= 3, sorted(governor_consumers())
+        assert len(governor_consumers()) >= 4, sorted(governor_consumers())
+
+    def test_caller_tree_floor(self) -> None:
+        # The widened caller search must actually reach the hook tree, else a
+        # hook-driven consumer would pass for the wrong reason.
+        hook_modules = [rel for rel, _tree in _caller_trees() if rel.startswith("hooks/scripts/")]
+        assert len(hook_modules) >= 20, hook_modules
 
     def test_reference_index_floor(self) -> None:
         # The whole-tree reference index must be densely populated, else the walk broke.

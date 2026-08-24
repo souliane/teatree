@@ -1,6 +1,6 @@
 """The provider-agnostic harness seam for the headless agent runtime.
 
-The headless runner (:mod:`teatree.agents.headless`) drives an in-process agent
+The agent runner (:mod:`teatree.agents.runner`) drives an in-process agent
 session behind a narrow protocol pair — :class:`Harness` opens a session for a
 built set of options, :class:`HarnessSession` is the in-flight session surface the
 driver talks to. :func:`resolve_harness` reads the DB-home ``agent_harness``
@@ -14,7 +14,7 @@ provider-agnostic backend, :class:`PydanticAiHarness`: a Pydantic AI
 :class:`~pydantic_ai.Agent` targeting the configured OpenAI-compatible,
 metered endpoint. Both backends yield the SAME ``claude_agent_sdk`` message
 vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession.receive_response`
-so the driver (:func:`teatree.agents.headless._collect`) never special-cases the
+so the driver (:func:`teatree.agents.runner._collect`) never special-cases the
 transport — that vocabulary IS the seam's provider-agnostic contract, proved by
 the ``FakeHarnessSession`` test double yielding the identical shape.
 
@@ -30,7 +30,7 @@ lives in the sibling module, never inside the harness classes themselves.
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -38,6 +38,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
+from teatree.agents.claude_cli_spawn import assert_spawnable, prepared_spawn, spawn_error
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -64,6 +65,7 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
+from teatree.llm.credentials import Credential
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,17 @@ class Harness(Protocol):
     neutral fields afterward, so ``ClaudeAgentOptions`` never leaks past the boundary.
     """
 
-    capabilities: HarnessCapabilities
+    @property
+    def capabilities(self) -> HarnessCapabilities:
+        """The typed flag set the driver routes on — READ-ONLY.
+
+        Declared as a read-only property, not a mutable attribute: every consumer
+        only reads it, and a bare attribute here silently excludes any backend that
+        exposes it as a ``@property`` (``PydanticAiHarness`` does), because a
+        read-only property cannot satisfy a settable protocol member. A plain class
+        attribute — the ``claude_sdk`` backend's form — still satisfies this.
+        """
+        ...
 
     def open(self, options: ClaudeAgentOptions) -> AbstractAsyncContextManager[HarnessSession]: ...
 
@@ -140,8 +152,24 @@ class ClaudeSdkHarness:
     @staticmethod
     @asynccontextmanager
     async def open(options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
-        async with ClaudeSDKClient(options=options) as client:
-            yield client
+        """Spawn the CLI child with the system prompt on a FILE, and name an E2BIG death (#4301).
+
+        Only the CONNECT is wrapped: an exception from the driver's own body must never be
+        re-labelled "the agent could not start" when the agent plainly did.
+        """
+        with prepared_spawn(options) as spawn_options:
+            payload = assert_spawnable(spawn_options)
+            stack = AsyncExitStack()
+            try:
+                client = await stack.enter_async_context(ClaudeSDKClient(options=spawn_options))
+            except Exception as exc:
+                if (named := spawn_error(exc, payload)) is not None:
+                    raise named from exc
+                raise
+            try:
+                yield client
+            finally:
+                await stack.aclose()
 
     def restore_unconsumed_resume_thread(self) -> None:
         """No client-side resume thread to restore — server-side ``--resume`` owns it."""
@@ -154,7 +182,7 @@ def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
     the vendor ``ClaudeAgentOptions`` — the effort axis is provider-agnostic, so the vendor type
     does not reach here. Public seam: the eval ``pydantic_ai`` runner
     (:mod:`teatree.eval.pydantic_ai_runner`) reuses this single effort-vocabulary guard so a
-    headless dispatch and an eval run drop the same out-of-vocabulary rungs.
+    agent dispatch and an eval run drop the same out-of-vocabulary rungs.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
     :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while the SDK options were
@@ -236,6 +264,7 @@ class PydanticAiHarness:
         self._binding = cfg.binding
         self._max_tokens = cfg.max_tokens
         self._regulated_path = cfg.regulated_path
+        self._anthropic_credential = cfg.anthropic_credential
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -269,7 +298,7 @@ class PydanticAiHarness:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
-            return resolve_native_anthropic_model(options, self._regulated_path)
+            return resolve_native_anthropic_model(options, self._regulated_path, self._anthropic_credential)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
         # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
@@ -317,7 +346,7 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
-        # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
+        # lane's own ``request_limit``; ``0`` (a agent dispatch, an SDK-``None`` coercion)
         # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
         request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
         async with agent:
@@ -335,16 +364,42 @@ def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa:
     return ClaudeSdkHarness()
 
 
+def _routed_anthropic_credential(binding: PydanticAiBinding, task: "Task | None") -> Credential | None:
+    """The per-account metered credential the NATIVE Anthropic binding authenticates with.
+
+    ``None`` for the ROUTER binding, which authenticates through the OpenAI-compatible
+    credential entry instead and must never pay for an Anthropic account probe. For the
+    native binding this is the SAME ``anthropic_api_key_pass_paths`` selector the
+    ``claude_sdk`` lane routes through (:func:`~teatree.credential_config.resolve_api_key_credential`),
+    at the task's overlay scope — one routing seam for both transports, never a second,
+    weaker lookup. Returns a credential carrying only the selected store PATH.
+    """
+    if binding is not PydanticAiBinding.NATIVE_ANTHROPIC:
+        return None
+    from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415 — deferred: ORM-backed selector
+
+    return resolve_api_key_credential(scope=_task_overlay(task) or "")
+
+
 def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
     """The built-in ``pydantic_ai`` factory ([#2885](https://github.com/souliane/teatree/issues/2885)).
 
     Resolves the OpenAI-compatible backend knobs SYNCHRONOUSLY (the ``x-lane`` value, the
     endpoint, the model id, the per-run step cap, the credential-store entry) rather than
     inside the async ``open`` where a DB read fails safe to defaults, rehydrates any
-    resumable ancestor's parked thread (a DB read only, never a network call — so selecting
-    this backend never itself requires a live credential), and selects the model binding from
+    resumable ancestor's parked thread, and selects the model binding from
     ``agent_harness_provider``: ``anthropic_api`` → the native Anthropic Messages-API binding
     (#3157 E1b, real ``cache_control``), else the generic OpenAI-compatible binding.
+
+    The NATIVE binding's metered credential is routed here for that same reason, and it is
+    the ONLY reason it cannot be left to ``open``: the per-account selector reads
+    ``ConfigSetting`` / ``AnthropicTokenUsage`` rows, and a Django ORM read inside
+    ``asyncio.run`` raises ``SynchronousOnlyOperation``. It yields a credential carrying the
+    selected ``pass`` PATH — no secret and no network read here; the key itself is resolved
+    lazily by :func:`~teatree.agents.pydantic_ai_config.resolve_native_anthropic_model`
+    inside ``open``, where the existing ``CredentialError`` seam records the failure. Routing
+    is resolved at the TASK's OVERLAY scope, the same scope the settings above come from, so
+    the transport and its credential can never be read from two different scopes.
 
     The rehydration POPS the ancestor's entry (single-use), so the built harness's
     ``resume_source`` records which ancestor it came from — a caller that refuses the
@@ -366,6 +421,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
             binding=binding,
             max_tokens=settings.pydantic_ai_max_tokens,
             regulated_path=RegulatedPathPolicy.from_settings(settings),
+            anthropic_credential=_routed_anthropic_credential(binding, context.task),
             backend=OpenAICompatibleLaneConfig(
                 lane=settings.openai_compatible_lane,
                 request_limit=settings.pydantic_ai_request_limit,
@@ -426,7 +482,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     Settings are resolved at the TASK's OVERLAY scope (``task.ticket.overlay``), not
     global/active-only: whether an overlay runs Lane B (``agent_harness=pydantic_ai``)
     and its endpoint / credential / request cap are all per-overlay overridable, and a
-    headless dispatch runs per-task, so a per-overlay override for a NON-active overlay
+    agent dispatch runs per-task, so a per-overlay override for a NON-active overlay
     must apply. A task-less ``resolve_harness()`` (the interactive/default path) keeps
     the active-overlay resolution (env layer included).
 
@@ -459,13 +515,13 @@ def resolve_dispatch_provider(task: "Task | None" = None, *, phase: str | None =
     the pin was never made for the pinned harness. Reading the configured provider straight
     off the settings would hand the dispatch a credential selector invalid under the harness
     it is actually running, which the claude_sdk child-env resolver
-    (:func:`~teatree.agents._headless_env._provider_child_env`) then refuses, failing every
+    (:func:`~teatree.agents._runner_env._provider_child_env`) then refuses, failing every
     verification dispatch of an otherwise-VALID deployment.
 
     So a pin the phase flip invalidated is DROPPED (to the ambient-credential default,
     ``None``) with a WARNING — never silently, and never by inventing a substitute
     credential the operator did not choose. This mirrors
-    :func:`~teatree.agents._headless_env.system_child_env`, which already warns-and-falls-back
+    :func:`~teatree.agents._runner_env.system_child_env`, which already warns-and-falls-back
     for the same shape.
 
     Nothing else is weakened. A pair no phase pin explains is untouched here and still fails

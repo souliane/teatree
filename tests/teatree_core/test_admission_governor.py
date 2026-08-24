@@ -8,26 +8,41 @@ merge loop for weeks.
 """
 
 import datetime as dt
+import math
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import _headless_env
-from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
+from teatree.agents import _runner_env
+from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
+    BRAKE_LOAD_PER_CORE,
+    RAM_BRAKE_FLOOR_GB,
+    RAM_RESUME_FLOOR_GB,
+    MachineBrake,
     MachineSignal,
+    MergeSignal,
     QuotaSignal,
     YieldSignal,
+    box_load_headroom,
     decide_admission,
     per_agent_test_workers,
     read_machine_signal,
+    resume_agent_ceiling,
+    resume_shed_directive,
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
+from teatree.utils import ram_scope
+from teatree.utils.ram_scope import RamHeadroom
 
 _WEEK = 7 * 24 * 3600
+
+#: The measured p90 pytest-xdist worker RSS the ``test_worker_ram_gb`` default ships at.
+_P90_WORKER_GB = 1.25
 
 
 def _quota(**kwargs: object) -> QuotaSignal:
@@ -39,6 +54,22 @@ def _quota(**kwargs: object) -> QuotaSignal:
         "seconds_to_weekly_reset": _WEEK * 0.5,
     }
     return QuotaSignal(**{**base, **kwargs})
+
+
+def _stub_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    available_mib: int | None,
+    cgroup_limit_mib: int | None = None,
+    host_available_mib: int | None = None,
+) -> None:
+    """Stand the governor's probe in a named scope — uncapped, and on a roomy box, by default."""
+    headroom = RamHeadroom(
+        available_mib=available_mib,
+        cgroup_limit_mib=cgroup_limit_mib,
+        host_available_mib=available_mib if host_available_mib is None else host_available_mib,
+    )
+    monkeypatch.setattr(ram_scope, "read_ram_headroom", lambda: headroom)
 
 
 def _machine(**kwargs: object) -> MachineSignal:
@@ -85,11 +116,52 @@ class TestMachinePressureIsSecondary:
 
     def test_load_between_the_watermarks_holds_a_braked_governor_braked(self) -> None:
         mid = _machine(load1=8 * 4.0)
-        assert not _decide(machine=mid, braked=True).admit
-        assert _decide(machine=mid, braked=False).admit
+        assert not _decide(machine=mid, load_brake=MachineBrake(braked=True)).admit
+        assert _decide(machine=mid, load_brake=MachineBrake(braked=False)).admit
 
     def test_falling_below_the_low_watermark_re_admits_a_braked_governor(self) -> None:
-        assert _decide(machine=_machine(load1=8 * 1.0), braked=True).admit
+        assert _decide(machine=_machine(load1=8 * 1.0), load_brake=MachineBrake(braked=True)).admit
+
+
+class TestMachineBrakeExemption:
+    """``load_brake=MachineBrake(applies=False)`` — the cheap class's bounded exemption (#4098).
+
+    The cheap read-only phases are what DRAIN the box, so the load brake that the
+    expensive class caused must not also refuse them. The exemption is from the LOAD
+    brake ONLY: a spent token budget still refuses everything, cheap included.
+    """
+
+    _MELTED = 8 * 5.0 + 1
+
+    def test_the_default_is_todays_behaviour(self) -> None:
+        assert not _decide(machine=_machine(load1=self._MELTED)).admit
+
+    def test_the_exemption_admits_through_a_load_brake(self) -> None:
+        decision = _decide(machine=_machine(load1=self._MELTED), load_brake=MachineBrake(applies=False))
+        assert decision.admit
+        assert not decision.braked
+
+    def test_the_exemption_does_not_survive_a_spent_quota(self) -> None:
+        decision = _decide(
+            quota=_quota(weekly_utilization=0.999),
+            machine=_machine(load1=0.0),
+            load_brake=MachineBrake(applies=False),
+        )
+        assert not decision.admit
+        assert "weekly" in decision.reason
+
+    def test_the_exemption_does_not_survive_exhausted_accounts(self) -> None:
+        decision = _decide(
+            quota=_quota(all_accounts_exhausted=True),
+            machine=_machine(load1=self._MELTED),
+            load_brake=MachineBrake(applies=False),
+        )
+        assert not decision.admit
+        assert "exhausted" in decision.reason
+
+    def test_the_exemption_leaves_the_ceiling_untouched(self) -> None:
+        quiet = _machine(load1=0.0)
+        assert _decide(machine=quiet, load_brake=MachineBrake(applies=False)).ceiling == _decide(machine=quiet).ceiling
 
 
 class TestYieldPerToken:
@@ -106,12 +178,12 @@ class TestYieldPerToken:
 
 
 class TestFailSafeAndFloor:
-    def test_an_unreadable_quota_probe_admits_without_tightening(self) -> None:
-        # CORRECTED contract (see TestUnreadableProbeNeverManufacturesAClamp): the
-        # first cut asserted a clamp-down to 1 here, which was the defect itself.
+    def test_an_unreadable_quota_probe_still_admits(self) -> None:
+        # An unreadable probe bounds the lane (see TestAnUnknownQuotaIsBoundedNotUnlimited)
+        # but never DENIES: the governor has no evidence of a spent budget.
         decision = _decide(quota=_quota(fresh=False), static_ceiling=6)
         assert decision.admit
-        assert decision.ceiling == 6
+        assert decision.ceiling == 4
 
     def test_the_ceiling_never_deadlocks_the_factory_to_zero(self) -> None:
         decision = _decide(
@@ -168,26 +240,207 @@ class TestTestWorkerCapWiring:
 
     def test_kill_switch_removes_the_cap_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
-        assert _headless_env.with_test_worker_cap(None, active_agents=4) is None
-        assert _headless_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+        assert _runner_env.with_test_worker_cap(None, active_agents=4) is None
+        assert _runner_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+
+
+class TestTheExportedCapRespondsToMemory:
+    """#4163: the seam that reaches the child agent — the cap MOVES with the reading.
+
+    The governor bounded workers on cores alone, so 16 xdist workers at the measured p90
+    RSS of 1.24 GB each is 19.8 GB against 19.7 GB usable — the whole story of 1374 OOM
+    kills in a fortnight. This is the behavioural end of the fix: the same call on a
+    40 GB box and on a 6 GB one must not hand the child the same number.
+    """
+
+    def _exported_workers(self, monkeypatch: pytest.MonkeyPatch, *, available_gb: float) -> int:
+        _stub_headroom(monkeypatch, available_mib=round(available_gb * 1024))
+        capped = with_test_worker_cap(None, active_agents=1)
+        assert capped is not None
+        return int(capped[XDIST_WORKERS_VAR])
+
+    def test_a_memory_tight_box_exports_fewer_workers_than_a_roomy_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        roomy = self._exported_workers(monkeypatch, available_gb=40.0)
+        tight = self._exported_workers(monkeypatch, available_gb=6.0)
+        assert tight < roomy
+
+
+class TestTheWorkerBoundReadsMemory:
+    """#4163: the pure bound, with the reading and the per-worker size passed IN.
+
+    The pure function never reads config — the consumer resolves ``test_worker_ram_gb``
+    and hands it over, so the arithmetic stays testable without a settings store.
+    """
+
+    def test_the_bound_falls_with_the_reading(self) -> None:
+        roomy = per_agent_test_workers(cores=8, active_agents=1, ram_available_gb=40.0, per_worker_gb=_P90_WORKER_GB)
+        tight = per_agent_test_workers(cores=8, active_agents=1, ram_available_gb=6.0, per_worker_gb=_P90_WORKER_GB)
+        assert tight < roomy
+
+    def test_an_unread_reading_returns_exactly_the_cpu_bound(self) -> None:
+        # #4101 restated: an unreadable probe falls back to the bound derived from the
+        # signal that WAS read — never a manufactured clamp to 1, and never 0.
+        assert per_agent_test_workers(
+            cores=8, active_agents=4, ram_available_gb=None, per_worker_gb=_P90_WORKER_GB
+        ) == per_agent_test_workers(cores=8, active_agents=4)
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 4
+
+    def test_an_unsized_worker_returns_exactly_the_cpu_bound(self) -> None:
+        # No per-worker size is the same missing evidence as no reading.
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 4
+
+    def test_the_total_stays_within_what_memory_pays_for_across_the_agent_range(self) -> None:
+        budget = math.floor((20.0 - RAM_BRAKE_FLOOR_GB) / _P90_WORKER_GB)
+        for agents in range(1, budget + 1):
+            workers = per_agent_test_workers(
+                cores=8, active_agents=agents, ram_available_gb=20.0, per_worker_gb=_P90_WORKER_GB
+            )
+            assert workers * agents <= budget
+
+    def test_a_starved_box_still_gets_one_worker(self) -> None:
+        # The floor wins over the memory bound for the same reason it wins over the
+        # total bound: an agent with zero test workers cannot run its suite at all.
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=1.0, per_worker_gb=_P90_WORKER_GB) == 1
+
+
+class TestTheMemoryBrake:
+    """A RAM watermark beside the load one — same hysteresis, same cheap-lane exemption."""
+
+    def test_a_reading_under_the_floor_denies_and_names_the_reading(self) -> None:
+        decision = _decide(machine=_machine(ram_available_gb=3.0))
+        assert not decision.admit
+        assert "3.0 GB" in decision.reason
+
+    def test_an_unread_reading_admits(self) -> None:
+        # Fail-safe is BOUNDED, not closed: denying on an unreadable /proc file is a
+        # kill switch operated by a missing file (#4097).
+        assert _decide(machine=_machine(ram_available_gb=None)).admit
+
+    def test_a_braked_governor_is_held_to_the_higher_floor(self) -> None:
+        between = _machine(ram_available_gb=(RAM_BRAKE_FLOOR_GB + RAM_RESUME_FLOOR_GB) / 2)
+        assert _decide(machine=between).admit
+        assert not _decide(machine=between, load_brake=MachineBrake(braked=True)).admit
+
+    def test_the_cheap_lane_skips_the_memory_brake_as_it_skips_load(self) -> None:
+        starved = _machine(ram_available_gb=1.0)
+        assert not _decide(machine=starved).admit
+        assert _decide(machine=starved, load_brake=MachineBrake(applies=False)).admit
+
+
+class TestResumeCeilingReadsMemory:
+    """#4108's restore bound, now ``min(load headroom, memory headroom)``."""
+
+    def test_a_memory_tight_box_carries_fewer_agents(self) -> None:
+        idle = _machine(cores=8, load1=0.0)
+        roomy = resume_agent_ceiling(idle)
+        tight = resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=5.0))
+        assert 1 <= tight < roomy
+
+    def test_an_unread_reading_leaves_the_ceiling_load_derived(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=None)) == 8
+
+    def test_the_recorded_meltdown_reading_leaves_room_for_one(self) -> None:
+        # Load 58 on 8 cores with 1 GB free — the reading taken during the restore.
+        assert resume_agent_ceiling(_machine(cores=8, load1=58.0, ram_available_gb=1.0)) == 1
+
+    def test_memory_alone_never_takes_the_ceiling_to_zero(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=0.0)) == 1
+
+
+class TestReadMachineSignalPopulatesMemory:
+    """The field was declared and populated by nothing — every live caller passed no argument."""
+
+    def test_the_default_path_reads_the_cgroup_aware_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_headroom(monkeypatch, available_mib=8 * 1024)
+        assert read_machine_signal().ram_available_gb == pytest.approx(8.0)
+
+    def test_an_unreadable_probe_reports_none_rather_than_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # "Unreadable" and "no headroom left" are different answers and must not collapse.
+        _stub_headroom(monkeypatch, available_mib=None)
+        assert read_machine_signal().ram_available_gb is None
+
+    def test_an_explicit_reading_is_never_overwritten(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_headroom(monkeypatch, available_mib=8 * 1024)
+        assert read_machine_signal(ram_available_gb=12.5).ram_available_gb == pytest.approx(12.5)
+
+
+class TestTwoContainersOneBox:
+    """#4217 — the same code, the same instant, two cgroups, one verdict.
+
+    The admin sidecar read 1.65 GB while the worker read 15.88 GB with 22 GB free on the
+    box, so every dispatch made from the container interactive work runs in was denied
+    against an absolute floor its fixed 2 GiB cap could never rise above. The deny text
+    told the operator to wait for hysteresis that can never arrive.
+    """
+
+    _ADMIN_CAP_MIB = 2 * 1024
+    _WORKER_CAP_MIB = 22155
+    _HOST_FREE_MIB = 22557
+
+    def _refusal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        available_mib: int,
+        cgroup_limit_mib: int,
+        host_available_mib: int = _HOST_FREE_MIB,
+    ) -> str:
+        """The reason a dispatch is refused in that cgroup — empty when it is admitted.
+
+        Load is pinned rather than read live so the assertion is about memory scope alone.
+        """
+        _stub_headroom(
+            monkeypatch,
+            available_mib=available_mib,
+            cgroup_limit_mib=cgroup_limit_mib,
+            host_available_mib=host_available_mib,
+        )
+        ram_available_gb = read_machine_signal().ram_available_gb
+        decision = _decide(machine=_machine(load1=1.0, ram_available_gb=ram_available_gb))
+        return "" if decision.admit else decision.reason
+
+    def test_the_sidecars_reading_never_brakes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._refusal(monkeypatch, available_mib=1691, cgroup_limit_mib=self._ADMIN_CAP_MIB) == ""
+
+    def test_the_workers_reading_still_brakes_when_genuinely_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        low = round(RAM_BRAKE_FLOOR_GB * 1024) - 1
+        assert "watermark" in self._refusal(
+            monkeypatch, available_mib=low, cgroup_limit_mib=self._WORKER_CAP_MIB, host_available_mib=low
+        )
+
+    def test_the_two_containers_no_longer_disagree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        admin = self._refusal(monkeypatch, available_mib=1691, cgroup_limit_mib=self._ADMIN_CAP_MIB)
+        worker = self._refusal(monkeypatch, available_mib=16261, cgroup_limit_mib=self._WORKER_CAP_MIB)
+        assert admin == worker == ""
+
+    def test_a_starved_box_brakes_from_the_sidecar_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #4252: the arm the abstention left open. Same 2 GiB sidecar, but the BOX is out
+        # of memory — the reading it holds is box-scoped and must reach the watermark.
+        starved = round(RAM_BRAKE_FLOOR_GB * 1024) - 1
+        assert "watermark" in self._refusal(
+            monkeypatch, available_mib=starved, cgroup_limit_mib=self._ADMIN_CAP_MIB, host_available_mib=starved
+        )
 
 
 class TestUnreadableProbeNeverManufacturesAClamp:
-    """#3644 regression: a probe that cannot read must not TIGHTEN admission.
+    """#3644 regression: a probe that cannot read must not INVENT a tighter ceiling.
 
     The first cut treated "quota unreadable" as a reason to clamp the ceiling to 1.
     That is the silent-starvation failure the governor exists to prevent: the quota
     cache is cold on every fresh install and permanently cold for an operator who
     pins no subscription account, so the governor pinned concurrency to 1 forever on
-    evidence it never had — and, worse, manufactured a clamp where the operator's own
-    state said UNCLAMPED. Conservative means "do not RAISE", never "clamp down".
+    evidence it never had. The bound an unknown quota falls back to is the one derived
+    from the machine signal it DID read (#4097) — never a constant, and never below
+    what the same box would get on a healthy quota.
     """
 
-    def test_an_unreadable_probe_leaves_an_absent_static_ceiling_unclamped(self) -> None:
-        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling is None
+    def test_an_unreadable_probe_never_tightens_below_the_healthy_ceiling(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling == _decide().ceiling
 
     def test_an_unreadable_probe_preserves_the_operators_static_ceiling(self) -> None:
-        assert _decide(quota=_quota(fresh=False), static_ceiling=4).ceiling == 4
+        # 32 cores so the machine ceiling is 16: a static 4 that merely COINCIDED with
+        # the machine answer would pass whether or not it was honoured.
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=32), static_ceiling=4).ceiling == 4
 
     def test_an_unreadable_probe_still_admits(self) -> None:
         assert _decide(quota=_quota(fresh=False), static_ceiling=None).admit
@@ -199,7 +452,6 @@ class TestUnreadableProbeNeverManufacturesAClamp:
             machine=_machine(cores=8),
             static_ceiling=8,
         )
-        assert tightened.ceiling is not None
         assert tightened.ceiling < 8
 
     def test_a_machine_brake_still_denies_even_when_the_quota_probe_is_unreadable(self) -> None:
@@ -207,6 +459,36 @@ class TestUnreadableProbeNeverManufacturesAClamp:
         # the load brake, which reads its own signal successfully.
         denied = _decide(quota=_quota(fresh=False), machine=_machine(load1=8 * 5.0 + 1))
         assert not denied.admit
+
+
+class TestAnUnknownQuotaIsBoundedNotUnlimited:
+    """#4097: not knowing the budget must never buy MORE concurrency than knowing it.
+
+    An unknown quota used to leave ``static_ceiling`` verbatim, so the agent lane —
+    which passes ``static_ceiling=None`` — got no ceiling at all, while a known-healthy
+    quota got ``floor(cores * WRITE_CONCURRENCY_PER_CORE)``. The machine-derived base
+    needs no quota information whatsoever, so it is available in both cases; only the
+    weekly-pace scaling on top of it genuinely requires a fresh quota.
+    """
+
+    def test_an_unknown_quota_still_yields_a_bounded_ceiling(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling == 4
+
+    def test_an_unknown_quota_never_admits_wider_than_a_known_healthy_one(self) -> None:
+        unknown = _decide(quota=_quota(fresh=False), static_ceiling=None)
+        known_healthy = _decide(quota=_quota(), static_ceiling=None)
+        assert unknown.ceiling <= known_healthy.ceiling
+
+    def test_an_operator_ceiling_below_the_machine_one_still_wins(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=2).ceiling == 2
+
+    def test_the_unknown_quota_ceiling_never_deadlocks_the_factory_to_zero(self) -> None:
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=1), static_ceiling=None).ceiling == 1
+
+    def test_an_unknown_quota_scales_with_the_box_instead_of_pinning_to_one(self) -> None:
+        # The #3644 defect this must not re-introduce was a hard clamp to 1 regardless
+        # of the box; the machine-derived bound grows with the cores it is derived from.
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=32), static_ceiling=None).ceiling == 16
 
 
 class TestWeeklyPace:
@@ -359,7 +641,9 @@ class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
         )
 
         assert decision.admit is True
-        assert decision.ceiling == 2
+        # floor(8 cores * WRITE_CONCURRENCY_PER_CORE) at a healthy pace; the subject here is
+        # that a LAPSED peer does not blank the ceiling, not the constant's value.
+        assert decision.ceiling == 4
 
     def test_the_pacing_brake_survives_a_lapsed_peer(self) -> None:
         _usage_row("paced", utilization_7d=0.97, status_7d="allowed", valid_for=dt.timedelta(minutes=5))
@@ -371,3 +655,131 @@ class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
 
         assert decision.admit is False
         assert "pace" in decision.reason
+
+
+class TestMergeThroughputGatesNewIntake:
+    """New coding work is paced by whether anything is actually LANDING (#4044).
+
+    :class:`YieldSignal` asks "did tasks finish?" — and a task that finished by opening
+    a PR nothing can merge answers yes. This asks what that cannot: is any of it
+    landing? A factory whose tasks all complete while its PRs pile up is producing
+    inventory, and each further claimed issue deepens the pile without making any of it
+    likelier to land.
+    """
+
+    def test_every_open_pr_refused_by_the_sweep_is_a_stall(self) -> None:
+        assert MergeSignal(fresh=True, open_prs=7, stuck_prs=7).stalled
+
+    def test_unreadable_rows_never_brake(self) -> None:
+        """Unknown never brakes — a probe that cannot answer must not halt the factory."""
+        assert not MergeSignal(fresh=False, open_prs=9, stuck_prs=9).stalled
+
+    def test_a_quiet_day_with_few_open_prs_is_not_a_stall(self) -> None:
+        assert not MergeSignal(fresh=True, open_prs=1, stuck_prs=1).stalled
+
+    def test_one_pr_still_moving_is_not_a_stall(self) -> None:
+        """Self-releasing: the brake lifts on evidence, never on an operator re-enabling it."""
+        assert not MergeSignal(fresh=True, open_prs=5, stuck_prs=4).stalled
+
+    def test_the_generic_governor_is_deliberately_untouched(self) -> None:
+        """Ship and review dispatch CLEAR the pile; braking them would deadlock it."""
+        assert _decide().admit
+
+
+class TestWriteConcurrencyRaise:
+    """8 cores admit 4, and every brake that makes that safe still holds (#4069)."""
+
+    def test_an_eight_core_box_admits_four(self) -> None:
+        decision = _decide(machine=_machine(cores=8, load1=1.0))
+        assert decision.admit
+        assert decision.ceiling == 4
+
+    def test_the_load_brake_still_denies_at_the_watermark(self) -> None:
+        """The brake is what makes a higher ceiling safe to attempt — it must not have moved."""
+        decision = _decide(machine=_machine(cores=8, load1=40.0))
+        assert not decision.admit
+        assert "load" in decision.reason
+
+    def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
+        """The melt driver the old 0.25 was calibrated against, now bounded independently."""
+        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+
+
+class TestBoxLoadHeadroom:
+    """The ONE whole-box occupancy reading, shared by the resume bound and intake (#4407).
+
+    Load is the signal that sees what the factory's own counts cannot: a harness
+    sub-agent claims no task and holds no intake marker, yet runs a test suite on the
+    same cores. Two consumers read this, so it has to be one function — two
+    unsynchronised readers of one quantity drift (#4125).
+    """
+
+    def test_an_idle_box_has_its_whole_budget(self) -> None:
+        assert box_load_headroom(load1=0.0, cores=8) == pytest.approx(1.0)
+
+    def test_the_budget_runs_out_exactly_at_the_brake_watermark(self) -> None:
+        assert box_load_headroom(load1=BRAKE_LOAD_PER_CORE * 8, cores=8) == pytest.approx(0.0)
+
+    def test_load_past_the_watermark_never_goes_negative(self) -> None:
+        assert box_load_headroom(load1=999.0, cores=8) == pytest.approx(0.0)
+
+    def test_the_budget_shrinks_monotonically_as_load_rises(self) -> None:
+        readings = [box_load_headroom(load1=load, cores=8) for load in (0.0, 10.0, 20.0, 30.0)]
+        assert readings == sorted(readings, reverse=True)
+        assert len(set(readings)) == len(readings)
+
+    def test_the_same_load_leaves_more_budget_on_a_bigger_box(self) -> None:
+        assert box_load_headroom(load1=16.0, cores=16) > box_load_headroom(load1=16.0, cores=8)
+
+    def test_an_unreadable_load_never_lowers_a_ceiling(self) -> None:
+        assert box_load_headroom(load1=None, cores=8) == pytest.approx(1.0)
+
+    def test_a_platform_with_no_load_average_reads_idle_rather_than_saturated(self) -> None:
+        with patch.object(admission_governor.os, "getloadavg", side_effect=OSError):
+            assert read_machine_signal(ram_available_gb=20.0).load1 == pytest.approx(0.0)
+
+
+class TestResumeAgentPopulation:
+    """A session resume restores the whole previously-running fleet in one step (#4108).
+
+    The restore is not a dispatch, so the dispatch-side ceiling never sees it. The
+    population it re-creates is a HOST fact, so the bound is derived from the live
+    machine reading — never from a per-lane concurrency setting, which bounds one lane
+    and says nothing about how many agents the box is carrying in total.
+    """
+
+    def test_an_idle_box_carries_one_agent_per_core(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0)) == 8
+
+    def test_the_ceiling_falls_as_live_load_eats_the_box(self) -> None:
+        idle = resume_agent_ceiling(_machine(cores=8, load1=0.0))
+        busy = resume_agent_ceiling(_machine(cores=8, load1=20.0))
+        assert 1 <= busy < idle
+
+    def test_the_recorded_meltdown_leaves_room_for_nothing_beyond_one(self) -> None:
+        """Load 58 on 8 cores — the reading taken during the simultaneous restore."""
+        assert resume_agent_ceiling(_machine(cores=8, load1=58.0)) == 1
+
+    def test_the_ceiling_never_reaches_zero(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=1, load1=999.0)) == 1
+
+    def test_a_fleet_within_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=3, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_a_fleet_at_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=8, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_an_over_ceiling_restore_names_the_count_and_the_ceiling(self) -> None:
+        directive = resume_shed_directive(restored=12, machine=_machine(cores=8, load1=20.0))
+        assert "12" in directive  # the restored count
+        assert "4" in directive  # the ceiling the live reading leaves
+        assert "shed" in directive.lower()
+
+    def test_the_recorded_meltdown_restore_is_never_silent(self) -> None:
+        assert resume_shed_directive(restored=12, machine=_machine(cores=8, load1=58.0)) != ""
+
+    def test_the_bound_is_the_live_reading_not_a_per_lane_setting(self) -> None:
+        """Same fleet, same cores — only the live load differs, and only one warns."""
+        fleet = 6
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=0.0)) == ""
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=30.0)) != ""

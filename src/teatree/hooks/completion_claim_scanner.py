@@ -421,6 +421,8 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     bodies = _deliverable_bodies(text)
     if len(bodies) < _MIN_DELIVERABLES or _is_not_a_delivery_claim(text, bodies):
         return None
+    if _is_progress_report(text, bodies):
+        return None
     missing: list[str] = []
     lines_without_evidence = [
         body for body in bodies if not _line_has_on_target_evidence(body) or _ARTIFACT_EXISTS_RE.search(body)

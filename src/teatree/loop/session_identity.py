@@ -42,4 +42,15 @@ def runner_identity_env(pid: int) -> dict[str, str]:
     return session_identity.runner_identity_env(pid)
 
 
-__all__ = ["current_session_id", "current_session_pid", "loop_principal", "runner_identity_env"]
+def is_loop_runner_session(session_id: str) -> bool:
+    """Whether *session_id* is the ``t3 worker``'s own durable principal (#3968)."""
+    return session_identity.is_loop_runner_session(session_id)
+
+
+__all__ = [
+    "current_session_id",
+    "current_session_pid",
+    "is_loop_runner_session",
+    "loop_principal",
+    "runner_identity_env",
+]

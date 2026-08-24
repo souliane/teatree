@@ -60,7 +60,7 @@ from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 from tests.test_hook_router_classifier_relax_wire import run_hook_router
 
-pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # the zero-token test guard.
 
 # Lane-A Bash-shaped deny matchers, imported from the cold PreToolUse guards — the
 # implementations the Lane-B leaves must agree with. raw-merge, raw-pid-kill AND
@@ -99,16 +99,25 @@ def _lane_a_pid_kill_denies(command: str) -> bool:
 
 
 def _streaming_model(*, tool_command: str) -> FunctionModel:
-    """A streaming FunctionModel: call ``Bash`` with *tool_command*, then text."""
+    """A streaming FunctionModel: narrate, call ``Bash`` with *tool_command*, then text.
+
+    The preamble is load-bearing, not decoration. Every Anthropic model emits a
+    sentence of prose before its first tool call, and a double that opened straight
+    on the call made this whole parity claim vacuous: ``Agent.run_stream`` ends the
+    graph at the first text part, so the call-first shape iterated while the real
+    shape ended the run at one model request with the tool results never fed back.
+    Scripting the preamble is what makes the assertions below discriminate.
+    """
     state = {"n": 0}
 
-    def stream_fn(messages: object, info: object) -> object:
+    def stream_fn(messages: list[ModelMessage], info: object) -> object:
         state["n"] += 1
         turn = state["n"]
 
         async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
             if turn == 1:
                 args = json.dumps({"command": tool_command})
+                yield "I'll start by running that."
                 yield {0: DeltaToolCall(name="Bash", json_args=args, tool_call_id="c1")}
             else:
                 yield "done"
@@ -193,9 +202,9 @@ def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
     stand-in for that wire-level check.
     """
 
-    def stream_fn(messages: object, info: object) -> object:
+    def stream_fn(messages: list[ModelMessage], info: object) -> object:
         call_ids: set[str] = set()
-        for message in messages:  # type: ignore[attr-defined]
+        for message in messages:
             if isinstance(message, ModelResponse):
                 call_ids.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
             elif isinstance(message, ModelRequest):

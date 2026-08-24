@@ -243,7 +243,7 @@ _DEFAULT_LOOPS = (
         86400,
         None,
         None,
-        "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
+        "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row is the switch (backlog_sweep_disabled ships open), gated by ask_before_backlog_sweep_closes.",
         False,
         False,
     ),
@@ -584,7 +584,7 @@ def backward(apps, schema_editor) -> None:
 
 # --- ported verbatim from 0030_review_verdict_reviewer_identity_normalized — _normalize + _backfill_and_dedup ---
 def _normalize(identity: str) -> str:
-    # Frozen snapshot of teatree.core.models.review_verdict.normalize_reviewer_identity:
+    # Frozen snapshot of teatree.core.models.merge_clear.normalize_reviewer_identity:
     # strip + collapse internal whitespace runs + casefold. Duplicated here on
     # purpose — a migration is a point-in-time transform and must not drift with
     # the live function.

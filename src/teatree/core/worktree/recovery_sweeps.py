@@ -6,7 +6,7 @@ transition a mid-transition crash dropped; ``reclaim_orphaned_claims`` (#652)
 returns an expired-lease CLAIMED task to PENDING so another open session resumes
 it; ``reap_stale_claims`` fails any residual stale CLAIMED row; and
 ``reclaim_dead_owner_leases`` (#3571) orphans a ``loop:<name>``/``t3-master`` lease
-whose owning session is provably dead so the live worker stops SKIPping the loop.
+whose owner stopped holding it so the live worker stops SKIPping the loop.
 
 Lives in ``teatree.core`` (not ``teatree.loop``) so ``t3 recover`` (#1764) can
 compose it without ``core`` depending on ``loop`` — the dependency direction the

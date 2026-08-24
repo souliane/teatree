@@ -111,17 +111,22 @@ def _resolve_kill_switch() -> tuple[bool, str]:
 
 
 def _timer_counts() -> dict[str, dict[str, int]]:
-    """Per-loop ``{ready, running}`` ``loop_timer`` chain counts across the enabled set."""
-    from teatree.core.models import Loop  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+    """Per-loop ``{ready, running}`` ``loop_timer`` counts across the set that SHOULD be chained.
+
+    Keyed on the chain membership (the effective verdict), so a preset-admitted loop with
+    zero timers shows up as the ``0/0`` it is. Keyed on ``Loop.enabled`` the diagnostic
+    silently omitted exactly the starved loops it existed to surface (#4185).
+    """
+    from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 (deferred: no DB at CLI import)
     from teatree.loops.timer_chains import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
         pending_loop_timers,
         running_loop_timers,
     )
 
-    counts: dict[str, dict[str, int]] = {}
-    for name in Loop.objects.enabled().values_list("name", flat=True):
-        counts[name] = {"ready": len(pending_loop_timers(name)), "running": len(running_loop_timers(name))}
-    return counts
+    return {
+        name: {"ready": len(pending_loop_timers(name)), "running": len(running_loop_timers(name))}
+        for name in sorted(timer_chain_loop_names())
+    }
 
 
 def _holder_lines(record: "HolderRecord | None") -> list[str]:
@@ -351,9 +356,14 @@ def drain_command(
     task re-queues via its lease lapse. The wait heartbeats to stderr while it runs, so
     the deploy's SSH session never idles out mid-drain and takes the deploy with it.
 
-    THE WORKER IS LEFT QUIESCED: this command stops nothing, and the gate it sets is
-    cleared only by a fresh container boot (``deploy/entrypoint.sh``). On a bare host
-    nothing clears it, so the box keeps running while admitting no work until you run
+    THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container boot
+    (``deploy/entrypoint.sh``) clears the gate; so does the doctor's stranded-quiescing
+    self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only once the
+    gate has stood for longer than a real deploy could still explain (currently ~40
+    minutes with liveness proving the convergence dead, ~80 minutes on age alone) — a
+    drain held deliberately past that window is auto-cleared, not respected. Before
+    then, or on a bare host with the doctor not run, nothing clears it, so the box keeps
+    running while admitting no work until you run
     `t3 <overlay> config_setting set worker_quiescing false` or `t3 worker restart`.
     To end the worker rather than merely quiesce it, use `t3 worker stop`.
     """

@@ -19,6 +19,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands.lifecycle import ReviewerAttestationError
 from teatree.core.models import MergeClear, Session, Ticket
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -106,7 +107,7 @@ class TestTicketMergeKeystoneCli(TestCase):
             return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "landed00"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
     def test_ticket_merge_advances_in_review_to_merged(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)

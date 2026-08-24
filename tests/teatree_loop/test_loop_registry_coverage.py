@@ -183,10 +183,27 @@ class TestSingleOverlayMessagingParity:
         )
 
 
-class TestRevivedLoopsDefaultOff:
-    """Both revived loops fan out nothing unless their opt-in flag is set (#22).
+class TestBacklogSweepLoopSwitch:
+    """The ``Loop`` row is the sweep's single switch; the kill switch still bites (#4344).
 
-    Anti-vacuity twin: each also produces its job once its gate opens, so the
+    ``backlog_sweep_disabled`` ships open, so the mini-loop fans its job out under
+    real default config — the row's own ``enabled`` flag is what an operator flips.
+    Setting the kill switch still empties the fan-out, which is the anti-vacuity twin.
+    """
+
+    def test_default_config_fans_the_sweep_job_out(self) -> None:
+        jobs = BACKLOG_SWEEP_LOOP.build_jobs()
+        assert [job.overlay for job in jobs] == [""]
+
+    def test_the_kill_switch_empties_the_fan_out(self) -> None:
+        with patch("teatree.loop.global_scanner_factories._backlog_sweep_scanner", return_value=None):
+            assert BACKLOG_SWEEP_LOOP.build_jobs() == []
+
+
+class TestRevivedLoopsDefaultOff:
+    """The issue-disposition loop fans out nothing unless its opt-in flag is set (#22).
+
+    Anti-vacuity twin: it also produces its job once its gate opens, so the
     default-OFF assertion is not vacuously always-empty.
     """
 
@@ -196,19 +213,6 @@ class TestRevivedLoopsDefaultOff:
         backend.name = "stub-overlay"
         backend.overlay = None
         return backend
-
-    def test_backlog_sweep_default_off_produces_no_jobs(self) -> None:
-        # Real default config: backlog_sweep_disabled=True → the builder returns
-        # None → no job.
-        assert BACKLOG_SWEEP_LOOP.build_jobs() == []
-
-    def test_backlog_sweep_runs_when_enabled(self) -> None:
-        fake = MagicMock()
-        fake.name = "backlog_sweep"
-        with patch("teatree.loop.global_scanner_factories._backlog_sweep_scanner", return_value=fake):
-            jobs = BACKLOG_SWEEP_LOOP.build_jobs()
-        assert [job.scanner for job in jobs] == [fake]
-        assert jobs[0].overlay == ""
 
     def test_issue_disposition_default_off_produces_no_jobs(self) -> None:
         # Real default config: auto_disposition_enabled=False → the gate returns

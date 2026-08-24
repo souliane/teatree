@@ -88,8 +88,9 @@ def _resolve_run(client: GhCiEvalClient, *, ref: str, run_id: str | None) -> tup
     if not runs:
         return None, None
     database_id = runs[0].get("databaseId")
-    resolved = int(database_id) if isinstance(database_id, int) else None
-    return resolved, client.view_run(database_id)  # type: ignore[arg-type]
+    if not isinstance(database_id, int):
+        return None, None
+    return database_id, client.view_run(database_id)
 
 
 def _reds_from_payload(payload: RawAPIDict) -> tuple[RedScenario, ...]:

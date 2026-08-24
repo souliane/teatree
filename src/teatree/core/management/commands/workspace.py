@@ -9,6 +9,7 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
+from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
@@ -45,6 +46,8 @@ from teatree.core.management.commands._workspace.ticket_intake import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
+from teatree.core.worktree.branch_upstream import repair_clones
+from teatree.core.worktree.branch_verdict import branch_verdict_report, render_verdict
 from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, refuse_if_ticket_checkout_occupied
 from teatree.core.worktree.worktree_done import reap_done_worktrees
@@ -343,6 +346,31 @@ class Command(TyperCommand):
         """Survey what is already in flight or settled before planning (#2541)."""
         return run_landscape(_worktree_root())
 
+    @command(name="branch-verdict")
+    def branch_verdict(
+        self,
+        branches: Annotated[list[str], typer.Argument(help="Branch name(s) to judge — the sweep is one call.")],
+        repo: Annotated[str, typer.Option(help="Repo/worktree path holding the branches.")] = ".",
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the verdicts as JSON on stdout.")] = False,
+    ) -> None:
+        """Is this branch's work already on the default branch? The canonical answer (#4070).
+
+        Read-only. Serializes the three-layer content classifier, INCLUDING the forge
+        signal beside the post-merge delta — a branch the forge calls merged whose tip
+        still carries unique commits is reported NOT redundant, with those shas named, so
+        "merged" is never readable on its own as "safe to delete".
+        """
+        verdicts = [branch_verdict_report(repo, branch) for branch in branches]
+        self.print_result = False
+        emit(
+            verdicts,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(render_verdict(verdict) for verdict in verdicts),
+        )
+
     @command(name="reap-stale")
     def reap_stale(
         self,
@@ -426,6 +454,24 @@ class Command(TyperCommand):
             human=lambda stream: write_dead_row_lines(outcome, stream),
         )
 
+    @command(name="repair-branch-upstreams")
+    def repair_branch_upstreams(
+        self,
+        *,
+        dry_run: bool = typer.Option(default=False, help="List the repairs without writing any git config."),
+        json_output: Annotated[bool, typer.Option("--json", help="Per-branch outcomes as JSON.")] = False,
+    ) -> None:
+        """Point every branch tracking someone else's ref back at its own, or untrack it (#4225)."""
+        outcomes = repair_clones(dry_run=dry_run) or ["No mistracked branch upstreams."]
+        self.print_result = False
+        emit(
+            outcomes,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(outcomes) + "\n",
+        )
+
     @command()
     def relocate(
         self,
@@ -462,3 +508,21 @@ class Command(TyperCommand):
         self.print_result = False
         self.stdout.write(line)
         return line
+
+    @command(name="restore")
+    def restore(
+        self,
+        reference: str,
+        *,
+        into: str = typer.Option("", help="Checkout to apply the bundle into (required — never inferred)."),
+        dry_run: bool = typer.Option(default=False, help="Report whether each part applies; write nothing."),
+    ) -> str:
+        """Apply a captured salvage bundle back into a checkout (#4435)."""
+        if not into.strip():
+            _die(self.stderr.write, "workspace restore needs --into <checkout>: nothing is restored unnamed.\n")
+        outcome = restore_bundle(reference, Path(into).expanduser(), dry_run=dry_run)
+        self.print_result = False
+        self.stdout.write(outcome.render())
+        if not outcome.ok:
+            raise SystemExit(1)
+        return outcome.render()

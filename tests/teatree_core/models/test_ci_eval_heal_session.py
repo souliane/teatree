@@ -8,7 +8,7 @@ model level:
 * ``mark_green`` is refused while any red scenario remains — a red is never
     silently suppressed into a green session.
 * the ``record_fix`` transition runs the anti-cheat gate, so a fix diff touching
-    the scenario tree or the red matcher rolls the transition back.
+    the scenario tree or the eval harness rolls the transition back.
 """
 
 import pytest

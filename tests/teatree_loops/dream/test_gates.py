@@ -416,28 +416,54 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert result.passed
 
-    def test_many_short_lines_under_byte_budget_passes(self) -> None:
-        # #2755 core behavioral win: an index of MANY short lines (300, FAR over the
-        # retired 150-line cap) that totals WELL under 24 KB now PASSES. The old line cap
-        # FAILED this needlessly; bytes are the only constraint. Anti-vacuous —
-        # reintroduce a 150-line cap and this goes RED.
-        big_index = "\n".join(f"- m{i}.md — s" for i in range(300))
+    def test_short_lines_between_the_retired_cap_and_the_line_budget_pass(self) -> None:
+        # #2755's behavioural win, preserved: an index of short lines FAR over the retired
+        # 150-line proxy cap must not be archived while it fits BOTH real loader limits.
+        # Anti-vacuous — reintroduce a 150-line cap and this goes RED.
+        big_index = "\n".join(f"- m{i}.md — s" for i in range(180))
         after = _snapshot({}, index=big_index)
-        assert after.index_line_count == 300  # well over the retired 150-line cap
-        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... yet under the byte budget
+        assert after.index_line_count == 180  # well over the retired 150-line cap
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... under the byte budget
+        assert after.index_line_count <= gates.INDEX_LINE_BUDGET  # ... and under the line budget
         result = Gate.index_budget(after)
         assert result.passed
+
+    def test_fails_over_line_budget_though_far_under_byte_budget(self) -> None:
+        # #4057, the exact measured shape: 306 lines / 11.7 KB — 69% of the byte budget, so
+        # the byte-only gate PASSED, while every entry past line 200 was truncated at load
+        # (~106 memories invisible to recall). The gate must fail on the LINE dimension.
+        big_index = "\n".join(f"- m{i}.md — s" for i in range(306))
+        after = _snapshot({}, index=big_index)
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET // 2  # comfortable byte headroom
+        result = Gate.index_budget(after)
+        assert not result.passed
+        assert "line" in result.detail
 
     def test_fails_over_byte_budget(self) -> None:
         after = _snapshot({}, index="- " + "x" * (gates.INDEX_BYTE_BUDGET + 10))
         result = Gate.index_budget(after)
         assert not result.passed
 
-    def test_budget_tracks_the_real_session_load_byte_limit(self) -> None:
-        # #2723/#2755: the budget tracks the ~24 KB session-load BYTE truncation point,
-        # not a line cap or a 10x regression alarm. Pin the byte load limit explicitly so
-        # a future widening past loadability fails here.
+    def test_line_count_is_loader_faithful_including_blanks(self) -> None:
+        # The loader truncates by lines READ, so a blank line consumes budget exactly like
+        # a pointer does. Counting only non-blank lines under-reports the truncation point.
+        after = _snapshot({}, index="# Header\n\n> note\n\n- a.md\n- b.md\n")
+        assert after.index_line_count == 6
+
+    def test_budget_tracks_the_real_session_load_limits(self) -> None:
+        # #2723/#2755/#4057: the budget tracks the REAL session-load truncation points on
+        # both axes — ~24 KB of bytes and 200 lines — not a proxy cap or a regression alarm.
+        # Pin both so a future widening past loadability fails here.
         assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
+        assert gates.INDEX_LINE_BUDGET <= 200
+
+    def test_drain_targets_sit_strictly_below_the_budgets(self) -> None:
+        # #4385 AV-5: the BUDGET is what this gate grades; the TARGET is where decay stops.
+        # Draining to the ceiling leaves zero headroom, so the first memory written after
+        # the pass truncates the tail — the defect. Setting the target equal to the budget
+        # is that bug re-introduced as a constant, so make it impossible to land.
+        assert gates.INDEX_LINE_DRAIN_TARGET < gates.INDEX_LINE_BUDGET
+        assert gates.INDEX_BYTE_DRAIN_TARGET < gates.INDEX_BYTE_BUDGET
 
 
 class TestGateDLoadability(SimpleTestCase):
@@ -468,6 +494,17 @@ class TestGateDLoadability(SimpleTestCase):
         after = _snapshot({}, index=rendered)
         result = Gate.index_budget(after)
         assert not result.passed, "a 1000-pointer index exceeds the session-load budget and must FAIL gate (d)"
+
+    def test_real_corpus_over_the_line_budget_fails_while_bytes_are_comfortable(self) -> None:
+        # #4057: bare pointers are so compact that a corpus goes over the LINE limit long
+        # before the byte one — the divergence that let a truncated index read as healthy.
+        # The more successfully decay compresses each entry, the wider the two measures drift.
+        self._write_corpus(300)
+        rendered = reindex.render_index(self.dir)
+        after = _snapshot({}, index=rendered)
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET, "the byte budget is not what bites here"
+        result = Gate.index_budget(after)
+        assert not result.passed, "a 300-pointer index truncates at load and must FAIL gate (d)"
 
     def test_small_corpus_index_passes_the_budget(self) -> None:
         self._write_corpus(20)

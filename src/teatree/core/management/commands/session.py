@@ -139,5 +139,5 @@ class Command(TyperCommand):
             msg = f"Unknown status {status!r} — one of {', '.join(SessionTodo.Status.values)}."
             raise CommandError(msg)
         todo = SessionTodo.objects.get(pk=todo_pk)
-        todo.set_status(status)
+        todo.set_status(SessionTodo.Status(status))
         self.stdout.write(f"OK    TODO {todo.pk} -> {todo.status}")

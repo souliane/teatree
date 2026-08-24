@@ -24,8 +24,8 @@ of that, so a page of N scopes costs N settings reads rather than one per render
 **A secret value never reaches the response.** :func:`~teatree.core.config_display.is_secret`
 (the shared value-masking taxonomy) drives masking here AND on the read-only config surface,
 so the two pages apply ONE policy. A secret row's value AND its shipped default are replaced
-with ``***`` HERE, before the row enters the view context. Export withholds secrets and keeps
-personal; import previews via ``import_toml_to_db(dry_run=True)``.
+with ``***`` HERE, before the row enters the view context. Transferring the whole store is a
+page of its own (:mod:`teatree.dash.interchange`) — its scope is wider than this grid's.
 
 Help text and the constrained-value options are both DERIVED, never re-typed:
 :func:`~teatree.config.setting_help.setting_help` is the same sentence ``defaults.toml``
@@ -47,8 +47,7 @@ from teatree.config.schema import TeatreeSettingsSchema, setting_choices
 from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_slug, group_tree
 from teatree.config.setting_help import setting_help
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.core.config_display import MASKED, is_secret, render_value
-from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
+from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, is_secret, render_value
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
 from teatree.core.overlay_loader import get_all_overlays
@@ -83,13 +82,30 @@ class ScopeCell:
     key: str
     scope: str  # "" is global
     value: str  # ``***`` for a secret, else the effective value as display text
-    selected: str  # the JSON literal of the effective value — what a control holds and posts
+    selected: str  # the JSON literal of the effective value — what a SELECT matches its options on
     source: str  # which tier of the resolution chain supplied it — the cell's tooltip
     matches_default: bool  # green when true, brown when the operator has changed it
 
     @property
     def label(self) -> str:
         return self.scope or GLOBAL_LABEL
+
+    @property
+    def editable(self) -> str:
+        """What a FREE-TEXT control shows — the JSON literal, except that unset renders empty.
+
+        A control holds what it would POST, which is the right contract for a value the
+        operator edits as JSON (a list, a table, a quoted string). It is the wrong thing to
+        show for ``None``: the page put the four letters ``null`` in front of a human, who
+        then had to know the wire encoding to read that the setting is simply not set (#4078).
+
+        An empty box is the honest rendering of an unset value, and it is already the page's
+        own vocabulary — emptying a cell IS the restore-to-default gesture, so an untouched
+        empty box that is never submitted changes nothing, and one that IS submitted clears a
+        row that was already resolving its default. :attr:`selected` keeps the literal, so a
+        ``<select>`` still matches its ``null`` option against the real value.
+        """
+        return "" if self.selected == _wire(None) else self.selected
 
     @property
     def post_url(self) -> str:
@@ -104,7 +120,7 @@ class EditableSetting:
 
     name: str
     help_text: str
-    shipped_default: str  # ``***`` for a secret, "" when the shipped file carries none
+    shipped_default: str  # ``***`` for a secret, NO_SHIPPED_DEFAULT when the file carries none
     has_shipped_default: bool
     is_secret: bool
     is_safety_posture: bool
@@ -214,14 +230,20 @@ def _display_value(key: str, resolved: ResolvedSetting) -> str:
 
 
 def _display_default(key: str, shipped: Mapping[str, ConfigValue]) -> str:
-    """The shipped default as display text — ``***`` for a secret, "" when there is none.
+    """The shipped default as display text — ``***`` for a secret, a sentence when there is none.
 
     Read from the shipped TABLE, in the same stored form the cells render, so "same as
     default" compares like with like rather than a stored scalar against a coerced value.
+
+    A key the shipped file carries no entry for reads as :data:`NO_SHIPPED_DEFAULT` rather
+    than an empty string the template then spelled as the bare word ``none`` (#4078). ``none``
+    reads as a VALUE, and it was the same word whether the file had no entry or the entry was
+    empty — two different facts, one rendering. The wording lives here rather than in the
+    template so every surface sharing this module says it identically.
     """
     if is_secret(key):
         return MASKED
-    return render_value(shipped[key]) if key in shipped else ""
+    return render_value(shipped[key]) if key in shipped else NO_SHIPPED_DEFAULT
 
 
 def _build_grid(keys: Sequence[str]) -> _Grid:
@@ -331,30 +353,6 @@ def build_setting_row(key: str) -> EditableSetting:
     return _build_grid([key]).row(key)
 
 
-def export_text(*, default_keys_only: bool = False, include_defaults: bool = False) -> str:
-    """The shareable export dump — secrets withheld, personal kept (Phase-4 semantics).
-
-    The two filters are the page's two checkboxes, both unticked by default so the plain
-    download is the delta dump it has always been. Ticking both yields the ``defaults.toml``
-    shape: a complete, drop-in replacement for the shipped file.
-    """
-    return export_db_to_toml(
-        include_private=False,
-        default_keys_only=default_keys_only,
-        include_defaults=include_defaults,
-    ).toml
-
-
-def import_preview(text: str) -> ConfigImport:
-    """Classify an import WITHOUT writing — the dry-run preview of what would change.
-
-    Classifies as if the safety-posture keys were authorized so the preview can SHOW and flag
-    them; nothing is written, and the apply path re-runs the classification with the operator's
-    actual authorization.
-    """
-    return import_toml_to_db(text, dry_run=True, allow_safety_posture=True)
-
-
 __all__ = [
     "GLOBAL_LABEL",
     "MASKED",
@@ -370,6 +368,4 @@ __all__ = [
     "build_settings_editor",
     "build_settings_group",
     "build_settings_sections",
-    "export_text",
-    "import_preview",
 ]

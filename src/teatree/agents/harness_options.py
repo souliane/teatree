@@ -52,7 +52,7 @@ class HarnessOptions:
     *   ``env`` — the pinned child-env overrides (merged over the ambient env by the tool layer).
     *   ``max_turns`` — the caller's hard turn cap; a POSITIVE value wins over the lane's own
         ``request_limit`` in :meth:`~teatree.agents.harness.PydanticAiHarness.open`. ``0``
-        (headless dispatch's value, and the SDK-``None`` coercion) leaves the run uncapped, so
+        (agent dispatch's value, and the SDK-``None`` coercion) leaves the run uncapped, so
         every uncapped dispatch stays byte-identical.
     """
 

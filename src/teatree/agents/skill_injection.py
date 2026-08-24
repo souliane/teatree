@@ -3,7 +3,7 @@
 A headless or sub-agent dispatch inherits none of the orchestrator's loaded
 skills, so the dispatched prompt must carry the ``SKILL.md`` bodies inline. This
 module resolves skill names to their ``SKILL.md`` files and concatenates the
-bodies — the shared building block for both the headless system context
+bodies — the shared building block for both the agent system context
 (``prompt.build_system_context``) and the raw Agent-tool sub-agent preamble
 (``build_subagent_skill_preamble``). It depends only on the filesystem, never
 the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can

@@ -6,18 +6,28 @@ deletes a disabled/unknown loop's timers — all without dispatching anything.
 """
 
 import datetime as dt
+import os
+import types
+from unittest import mock
 
 import django.test
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, get_date_max
 
-from teatree.core.models import Loop, Session, Task, Ticket
-from teatree.core.tasks import execute_headless_task
+from teatree.core import mode_resolution
+from teatree.core.claim_liveness import driving
+from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
+from teatree.core.tasks import execute_task
+from teatree.live_presence import PRESENCE_FRESHNESS
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
-from teatree.loops.timer_reconciler import reap_stuck_headless_runs
+from teatree.loops.timer_reconciler import reap_stuck_runs
+from tests.teatree_core.test_claim_liveness import _READER_NS, pinned_reader_namespace
+from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+#: A preset of the test's own, so nothing here depends on the seeded production modes.
+_PRESET = "forced-on-4185"
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
@@ -97,6 +107,150 @@ class TestEnsureLoopTimers(django.test.TestCase):
         assert timer_chains.pending_loop_timers("dream") == []
 
 
+def _claim_and_fire(name: str) -> dict:
+    """Claim the loop's queued timer the way a worker does, then run its body.
+
+    A worker flips the READY row to RUNNING before invoking the task, so the body's
+    step-1 self-dedup sees only its own RUNNING row; firing against the untouched
+    READY row instead would dedup and never reach the tick.
+    """
+    [timer] = timer_chains.pending_loop_timers(name)
+    DBTaskResult.objects.filter(id=timer.id).update(status=TaskResultStatus.RUNNING, started_at=timezone.now())
+    context = types.SimpleNamespace(task_result=types.SimpleNamespace(id=timer.id))
+    return timer_chains.loop_timer.func(context, name)
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
+    """The chain is built from the admission verdict, not the raw ``Loop.enabled`` column (#4185).
+
+    ``Loop.enabled`` is the LOWEST-precedence input to that verdict (hold > forced >
+    preset > column), so an active preset holding an opinion decides the loop and the
+    column is never reached. Building the chain from the column alone left eight
+    preset-admitted loops with no timer row of any status, ever — and because
+    ``ensure_loop_timers`` PRUNES every timer outside the set it builds, a chain that
+    did exist was actively removed rather than merely never created.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        DBTaskResult.objects.all().delete()
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
+        Loop.objects.create(
+            name="inbox",
+            script="src/teatree/loops/inbox/loop.py",
+            delay_seconds=60,
+            enabled=False,
+            last_run_at=None,
+        )
+        Mode.objects.create(name=_PRESET, entries={"inbox": True})
+        ModeOverride.objects.set_override(_PRESET)
+
+    def test_preset_forced_on_disabled_loop_gets_a_head_and_ticks(self) -> None:
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        # A row in the results table, not a name the reconciler returned: a stub that
+        # merely reported the loop as chained would be undone by the prune pass below it.
+        [head] = timer_chains.pending_loop_timers("inbox")
+        assert head.status == TaskResultStatus.READY
+
+        ticked: list[str] = []
+
+        def _tick(name: str, *, deadline: float) -> dict[str, object]:
+            ticked.append(name)
+            Loop.objects.mark_run(name, timezone.now())
+            return {"timed_out": False, "returncode": 0}
+
+        with mock.patch.object(timer_chains, "run_deadlined_tick", _tick):
+            result = _claim_and_fire("inbox")
+
+        assert result["action"] == "ticked"
+        assert ticked == ["inbox"]
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1  # the successor carries the chain
+
+    def test_does_not_prune_a_preset_admitted_loops_timer(self) -> None:
+        timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
+        counts = timer_reconciler.ensure_loop_timers()
+        assert counts["pruned"] == 0
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1
+
+    def test_prunes_a_preset_masked_off_loops_timer(self) -> None:
+        # The deliberate inverse: a base-ENABLED loop the preset masks off loses its
+        # chain rather than idle-polling at the cadence floor for every skipped fire.
+        Loop.objects.filter(name="inbox").update(enabled=True)
+        Mode.objects.filter(name=_PRESET).update(entries={"inbox": False})
+        timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
+        assert timer_reconciler.ensure_loop_timers()["pruned"] == 1
+        assert timer_chains.pending_loop_timers("inbox") == []
+
+    def test_prunes_a_held_loops_timer_and_re_heads_on_resume(self) -> None:
+        Loop.objects.filter(name="inbox").update(enabled=True)
+        LoopState.objects.pause("inbox")
+        timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
+        assert timer_reconciler.ensure_loop_timers()["pruned"] == 1
+        assert timer_chains.pending_loop_timers("inbox") == []
+
+        LoopState.objects.resume("inbox")
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC", TASKS=_DB_TASKS)
+class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
+    """#4185 AC1 in the configuration a source-``override`` test cannot reach (#4196).
+
+    The away-class schedule slot the owner is typing through: the tick's live admission
+    step admits the loop, so the chain the reconciler builds must contain it — and it did
+    not, because membership resolved the mask through the preset layer the presence
+    upgrade never reaches. The timer row alone is not the acceptance criterion: the fire
+    that row carries has to reach the tick.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.activate_away_schedule_slot()
+        self.record_fresh_keystroke()
+
+    def test_the_head_exists_and_its_fire_ticks_the_loop(self) -> None:
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        [head] = timer_chains.pending_loop_timers(LOOP)
+        assert head.status == TaskResultStatus.READY
+
+        ticked: list[str] = []
+
+        def _tick(name: str, *, deadline: float) -> dict[str, object]:
+            ticked.append(name)
+            Loop.objects.mark_run(name, timezone.now())
+            return {"timed_out": False, "returncode": 0}
+
+        with mock.patch.object(timer_chains, "run_deadlined_tick", _tick):
+            result = _claim_and_fire(LOOP)
+
+        assert result["action"] == "ticked"
+        assert ticked == [LOOP]
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1  # the successor carries the chain
+
+    def test_a_presence_lapse_does_not_prune_the_chain(self) -> None:
+        # The regression on two WORKING loops, in the shape it actually occurs: the chain
+        # exists, the owner stops typing for fifteen minutes, and the next reconcile pass
+        # deletes the READY timer because the away slot's mask no longer admits the loop.
+        # `pruned == 0` is the whole claim — an idle timer is a no-op, a deleted one is a
+        # loop that never runs again until something re-heads it (#4196).
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        mode_resolution.PRESENCE.record(session_id="s", now=timezone.now() - PRESENCE_FRESHNESS * 2)
+        counts = timer_reconciler.ensure_loop_timers()
+        assert counts["pruned"] == 0
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1
+
+    def test_an_existing_head_is_not_pruned(self) -> None:
+        # The regression direction that stops two working loops: ``ensure_loop_timers``
+        # DELETES the timers of a non-member, so a membership set narrower than the tick's
+        # takes away chains that already existed.
+        DBTaskResult.objects.all().delete()
+        timer_chains.enqueue_loop_timer(LOOP, run_after=timezone.now())
+        assert timer_reconciler.ensure_loop_timers()["pruned"] == 0
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1
+
+
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestMaintenanceChains(django.test.TestCase):
     def setUp(self) -> None:
@@ -108,7 +262,7 @@ class TestMaintenanceChains(django.test.TestCase):
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.prune_task_results.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
         # #10: the headless-queue drain chain is seeded too (it had no other home).
-        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_chain.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_slack_answer.module_path).count() == 1
         # The off-live-tick driver: without it directive_loop / dream / outer_loop have
         # NO driver at all — the live fan-out excludes them and no cron exists.
@@ -120,24 +274,24 @@ class TestMaintenanceChains(django.test.TestCase):
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
-        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_chain.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_slack_answer.module_path).count() == 1
         assert (
             DBTaskResult.objects.filter(task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path).count()
             == 1
         )
 
-    def test_drain_headless_chain_reschedules_itself(self) -> None:
-        result = timer_reconciler.drain_headless_chain.func()
+    def test_drain_chain_reschedules_itself(self) -> None:
+        result = timer_reconciler.drain_chain.func()
         assert "deduped" not in result
         pending = DBTaskResult.objects.filter(
-            task_path=timer_reconciler.drain_headless_chain.module_path, status=TaskResultStatus.READY
+            task_path=timer_reconciler.drain_chain.module_path, status=TaskResultStatus.READY
         )
         assert pending.count() == 1  # a successor drain chain is queued
 
-    def test_drain_headless_chain_self_dedups(self) -> None:
-        timer_reconciler.drain_headless_chain.using(run_after=timezone.now()).enqueue()
-        result = timer_reconciler.drain_headless_chain.func()
+    def test_drain_chain_self_dedups(self) -> None:
+        timer_reconciler.drain_chain.using(run_after=timezone.now()).enqueue()
+        result = timer_reconciler.drain_chain.func()
         assert result == {"deduped": 1}
 
     def test_expire_stale_jobs_reschedules_itself(self) -> None:
@@ -303,12 +457,18 @@ class TestMaintenanceChains(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestReapStuckHeadlessRuns(django.test.TestCase):
-    """#10: a ``execute_headless_task`` left RUNNING by a dead worker is reaped + re-enqueued."""
+    """#10: a ``execute_task`` left RUNNING by a dead worker is reaped + re-enqueued."""
 
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
 
-    def _claimed_task(self, *, lease_delta_seconds: int, status: str = Task.Status.CLAIMED) -> Task:
+    def _claimed_task(
+        self,
+        *,
+        lease_delta_seconds: int,
+        status: str = Task.Status.CLAIMED,
+        owner_pid: int | None = None,
+    ) -> Task:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, overlay="test")
         return Task.objects.create(
@@ -316,12 +476,15 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
             session=session,
             phase="architectural_review",
             status=status,
-            claimed_by="headless-worker",
+            claimed_by="task-worker",
+            heartbeat_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(seconds=lease_delta_seconds),
+            owner_pid=owner_pid,
+            owner_pid_namespace=_READER_NS if owner_pid is not None else "",
         )
 
     def _running_headless_row(self, task: Task, *, age_seconds: int) -> DBTaskResult:
-        result = execute_headless_task.enqueue(task.pk, task.phase)
+        result = execute_task.enqueue(task.pk, task.phase)
         DBTaskResult.objects.filter(id=result.id).update(
             status=TaskResultStatus.RUNNING,
             started_at=timezone.now() - dt.timedelta(seconds=age_seconds),
@@ -335,12 +498,12 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-120)  # heartbeat stopped: lease lapsed
         row = self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 1}
         row.refresh_from_db()
         assert row.status == TaskResultStatus.FAILED
-        ready = DBTaskResult.objects.filter(task_path=execute_headless_task.module_path, status=TaskResultStatus.READY)
+        ready = DBTaskResult.objects.filter(task_path=execute_task.module_path, status=TaskResultStatus.READY)
         assert ready.count() == 1, "the non-terminal task must be re-enqueued for a fresh run"
 
     def test_live_run_with_fresh_lease_is_not_reaped(self) -> None:
@@ -348,7 +511,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=+200)
         row = self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
         row.refresh_from_db()
@@ -359,7 +522,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-10)
         row = self._running_headless_row(task, age_seconds=30)
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
         row.refresh_from_db()
@@ -369,20 +532,20 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-120, status=Task.Status.COMPLETED)
         self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 0}
         assert not DBTaskResult.objects.filter(
-            task_path=execute_headless_task.module_path, status=TaskResultStatus.READY
+            task_path=execute_task.module_path, status=TaskResultStatus.READY
         ).exists()
 
     def test_running_row_with_no_started_at_is_not_reaped(self) -> None:
         # A row claimed-but-not-yet-started has no started_at → never a dead run.
         task = self._claimed_task(lease_delta_seconds=-120)
-        result = execute_headless_task.enqueue(task.pk, task.phase)
+        result = execute_task.enqueue(task.pk, task.phase)
         DBTaskResult.objects.filter(id=result.id).update(status=TaskResultStatus.RUNNING, started_at=None)
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
 
@@ -393,16 +556,45 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         row = self._running_headless_row(task, age_seconds=self._dead_age())
         task.delete()
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 0}
         row.refresh_from_db()
         assert row.status == TaskResultStatus.FAILED
 
+    def test_a_stalled_but_still_driving_run_is_neither_failed_nor_duplicated(self) -> None:
+        """#4164: ``set_failed`` marks the row only — it does not kill the process.
+
+        So re-enqueuing here puts a SECOND agent on the same worktree while the first is
+        still executing, and the duplicate wins the claim because the CAS reads an expired
+        lease as claimable.
+        """
+        task = self._claimed_task(lease_delta_seconds=-120, owner_pid=os.getpid())
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+
+        with pinned_reader_namespace(), driving(task.pk):
+            counts = reap_stuck_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.RUNNING
+        assert not DBTaskResult.objects.filter(
+            task_path=execute_task.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_a_run_nothing_is_driving_is_still_reaped(self) -> None:
+        """A crashed job leaves this worker alive; the stranded row must still recover."""
+        task = self._claimed_task(lease_delta_seconds=-120, owner_pid=os.getpid())
+        self._running_headless_row(task, age_seconds=self._dead_age())
+
+        counts = reap_stuck_runs()
+
+        assert counts == {"failed": 1, "reenqueued": 1}
+
     def test_headless_run_with_no_args_is_skipped(self) -> None:
         # A malformed row carrying no args resolves to no task id and is left alone.
         DBTaskResult.objects.create(
-            task_path=execute_headless_task.module_path,
+            task_path=execute_task.module_path,
             args_kwargs={"args": [], "kwargs": {}},
             backend_name="default",
             status=TaskResultStatus.RUNNING,
@@ -410,6 +602,6 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
             run_after=get_date_max(),
         )
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}

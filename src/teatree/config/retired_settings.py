@@ -144,12 +144,42 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         subsystem="team",
     ),
     RetiredSetting(
+        key="availability_schedule",
+        replacement=None,
+        reason="the availability surface was cut in favour of presets; nothing has resolved this key since (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="issue_implementer_cadence_hours",
+        replacement=None,
+        reason="the issue-implementer cadence is its `Loop` row's `delay_seconds`, which no setting fed (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="privacy",
+        replacement=None,
+        reason="scan strictness resolves from the `T3_PRIVACY` env var; this key never had a production reader (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="timezone",
+        replacement=None,
+        reason="each schedule carries its own zone, set with `t3 loop schedule set-timezone` (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
         key="issue_implementer_require_label",
         replacement=None,
         reason=(
             "admission is decided by the `decide_intake` table, which admits a trusted author "
             "with no label at all; the untrusted-author case uses `issue_implementer_label` (#3634)"
         ),
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="headless_max_turns",
+        replacement="agent_max_turns",
+        reason="there is one execution lane, so the ceiling qualifies nothing; the value set is identical (#4212)",
         subsystem=None,
     ),
 )
@@ -174,6 +204,30 @@ def removed_setting(key: str) -> RetiredSetting | None:
     """The removal record for *key*, or ``None`` when it is live or merely renamed."""
     entry = _BY_KEY.get(key)
     return entry if entry is not None and entry.replacement is None else None
+
+
+def retirement_notice(key: str) -> str | None:
+    """What became of *key*, or ``None`` when no retirement is recorded for it.
+
+    souliane/teatree#4094: ``config_setting get``/``set`` answered a retired key with
+    the unknown-key refusal, which reads exactly like the answer for a typo — so a
+    reader who knows the setting used to exist concludes the mechanism was lost
+    rather than superseded. The two outcomes must not read alike either: a rename
+    still has an answer to give (the replacement), while a removal has none, and
+    saying so is the whole point of recording the reason.
+    """
+    entry = _BY_KEY.get(key)
+    if entry is None:
+        return None
+    if entry.replacement is not None:
+        return (
+            f"{key!r} was renamed to {entry.replacement!r} — {entry.reason}. "
+            f"Read and write {entry.replacement!r} instead."
+        )
+    return (
+        f"{key!r} was removed — {entry.reason}. It has no replacement. "
+        f"Clear any stale row with `{CLEAR_REMEDY.format(key=key)}`."
+    )
 
 
 def warn_removed_setting(entry: RetiredSetting) -> None:

@@ -8,6 +8,12 @@ a tick-dispatch directive: the loop is the ``t3 loop tick`` cron + WS1
 atomic ``claim-next`` + WS2 ``LoopLease``, never a fixed set of
 long-lived sub-agents. The ``/rename`` reminder + OSC title stay
 owner-only / interactive-TTY-gated.
+
+Module note — why every ``teatree.*`` import here sits inside its test body: this
+module lives at the ``tests/`` ROOT because it exercises a hook, not one ``src``
+package, so a top-level ``teatree.<pkg>`` import makes it mis-pathed under the
+test-path-mirror gate (``tests/teatree_quality/test_test_path_mirror.py``). The
+``# noqa: PLC0415`` on each one points back here.
 """
 
 import json
@@ -782,7 +788,7 @@ class TestNewSessionHijackFix(TestCase):
         alive ``owner_pid`` as a live owner (not TTL-only) and the new
         session must stay idle, leaving the DB row owned by the incumbent.
         """
-        from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415
+        from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415 — see the module note
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # Incumbent: alive process pid, but its TTL has lapsed (busy > TTL).
@@ -895,3 +901,68 @@ class TestEvictOnCompactReanchorsLoopOwner(TestCase):
 
         row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "other-live-lead", "a LIVE foreign lease must be preserved on a compact resume"
+
+
+# ── Issue #3968: the worker owning t3-master must not lock sessions out of the election ──
+
+
+class TestLoopRunnerOwnerIsNotAForeignSession(TestCase):
+    """The ``t3 worker`` holding ``t3-master`` is the DRIVER, not a competing session (#3968).
+
+    Once the worker claims the slot, every interactive session reads a live foreign
+    owner and backs off — so no session becomes the file-registry tick owner, and the
+    sticky election in ``handle_enforce_loop_on_prompt`` registers NONE of the three
+    reactive ``/loop`` slots. That would re-break the very loops #3968 fixes, one layer
+    up: the cycles would be permitted to run and never be invoked.
+
+    Cross-session mutual exclusion is untouched — a genuinely foreign SESSION still
+    blocks (``TestNewSessionHijackFix`` pins that arc).
+    """
+
+    def test_runner_owned_slot_is_not_reported_as_a_foreign_owner(self) -> None:
+        from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415 — see the module note
+        from teatree.loops.worker import _claim_t3_master  # noqa: PLC0415 — see the module note
+
+        _claim_t3_master()
+
+        assert _db_live_foreign_owner("a-session", current_pid=os.getpid() + 1) == ""
+
+    def test_session_still_claims_the_tick_owner_record_under_a_running_worker(self) -> None:
+        from hooks.scripts.hook_router import _claim_loop_ownership  # noqa: PLC0415 — see the module note
+        from teatree.loops.worker import _claim_t3_master  # noqa: PLC0415 — see the module note
+
+        _claim_t3_master()
+
+        _claim_loop_ownership("a-session")
+
+        owner = _read_loop_registry().get(_OWNER_LOOP) or {}
+        assert owner.get("session_id") == "a-session", (
+            "the worker driving loops must not stop a session becoming the tick owner (#3968)"
+        )
+
+    def test_a_foreign_session_still_blocks_the_claim(self) -> None:
+        from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415 — see the module note
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — see the module note
+
+        LoopLease.objects.claim_ownership("t3-master", session_id="live-peer", owner_pid=os.getpid())
+
+        assert _db_live_foreign_owner("a-session", current_pid=os.getpid() + 1) == "live-peer"
+
+    def test_session_start_does_not_evict_the_running_worker(self) -> None:
+        """The tick-owner election now reaches the eviction with the worker holding the slot.
+
+        Treating the runner as unowned lets the session take the ``became_owner``
+        branch, which fires ``_evict_stale_db_lease_owner``. Its safety table must
+        keep a live foreign lease — otherwise every session start would knock the
+        worker off ``t3-master`` and the reactive loops would flap.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — see the module note
+        from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID  # noqa: PLC0415 — see the module note
+        from teatree.loops.worker import _claim_t3_master  # noqa: PLC0415 — see the module note
+
+        _claim_t3_master()
+
+        handle_session_start_bootstrap({"session_id": "a-session", "agent_id": "a"})
+
+        row = LoopLease.objects.get(name="t3-master")
+        assert row.session_id == LOOP_RUNNER_SESSION_ID, "SessionStart must not knock the worker off t3-master"

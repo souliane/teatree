@@ -19,6 +19,7 @@ pre-conditions. These tests pin every branch of the decision ladder:
     --squash`` iff the keystone refuses on that same path
 """
 
+import datetime as dt
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -26,10 +27,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, Task
+from teatree.core.models import AutoReviewDispatch, BotPing, BranchUpdateAttempt, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
+from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
@@ -37,6 +39,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     SlackMergeNotifier,
     _decode_pr,
 )
+from teatree.loop.scanners.pr_sweep_branch_update import MAX_BRANCH_UPDATES_PER_TICK
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.types import RawAPIDict
 
@@ -91,6 +94,10 @@ SELF_LOGIN = "souliane"
 COLLEAGUE_LOGIN = "a-teammate"
 _T0 = "2026-06-19T10:00:00Z"
 _T1 = "2026-06-19T10:05:00Z"
+# The #4380 shape: a hold, then a STRICTLY later merge_safe from another identity.
+# Pinned so newest-wins resolves the same way on every run.
+_HOLD_AT = dt.datetime(2026, 6, 19, 1, 34, 32, tzinfo=dt.UTC)
+_LATER_MERGE_SAFE_AT = dt.datetime(2026, 6, 19, 2, 5, 36, tzinfo=dt.UTC)
 
 
 def _check(name: str, *, conclusion: str = "SUCCESS", status: str = "COMPLETED") -> RawAPIDict:
@@ -191,14 +198,39 @@ def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[RawAPIDict, ...] = ()) ->
     return replace(base, is_conflicted=True)
 
 
-def _record_cold_review(*, pr_id: int = 6230, sha: str = HEAD, reviewer: str = "cold-reviewer") -> ReviewVerdict:
-    return ReviewVerdict.record(
+def _record_cold_review(
+    *,
+    pr_id: int = 6230,
+    sha: str = HEAD,
+    reviewer: str = "cold-reviewer",
+    at: dt.datetime | None = None,
+) -> ReviewVerdict:
+    return _record_verdict(pr_id=pr_id, sha=sha, verdict="merge_safe", reviewer=reviewer, at=at)
+
+
+def _record_hold(
+    *,
+    pr_id: int = 6230,
+    sha: str = HEAD,
+    reviewer: str = "cold-reviewer",
+    at: dt.datetime | None = None,
+) -> ReviewVerdict:
+    return _record_verdict(pr_id=pr_id, sha=sha, verdict="hold", reviewer=reviewer, at=at)
+
+
+def _record_verdict(*, pr_id: int, sha: str, verdict: str, reviewer: str, at: dt.datetime | None) -> ReviewVerdict:
+    """Record one verdict, optionally pinning ``recorded_at`` so newest-wins is deterministic."""
+    row = ReviewVerdict.record(
         pr_id=pr_id,
         slug=SLUG,
         reviewed_sha=sha,
-        verdict="merge_safe",
+        verdict=verdict,
         reviewer_identity=reviewer,
     )
+    if at is not None:
+        ReviewVerdict.objects.filter(pk=row.pk).update(recorded_at=at)
+        row.refresh_from_db()
+    return row
 
 
 @dataclass(slots=True)
@@ -210,6 +242,8 @@ class FakePrApiClient:
     fallback_succeeds: bool = True
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
+    update_branch_calls: list[tuple[str, int, str]] = field(default_factory=list)
+    update_branch_succeeds: bool = True
     #: F5.8: slugs whose ``list_open_prs`` raises a recoverable ScannerError
     #: (auth / rate-limit), used to prove the sweep records-and-continues.
     scanner_error_slugs: frozenset[str] = frozenset()
@@ -226,6 +260,10 @@ class FakePrApiClient:
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         return self.fallback_succeeds, MAIN_SHA if self.fallback_succeeds else ""
+
+    def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
+        self.update_branch_calls.append((slug, pr_id, expected_head_oid))
+        return self.update_branch_succeeds
 
 
 @dataclass(slots=True)
@@ -453,6 +491,49 @@ class TestForkAlwaysHolds:
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
 
+class TestEverySkipCarriesThePrUrl:
+    """A skip signal without the url makes the aged-skip DM unactionable (#4518).
+
+    ``with_ci_context`` stamped the url on the CI-verdict skips only, so a PR held on
+    ``draft`` / ``changes_requested`` / fork provenance / ``no_clear_for_head`` reached
+    the owner as ``no URL recorded`` — a page the reader has to resolve by hand.
+    """
+
+    def _skip_signal(self, pr: PrSummary) -> ScanSignal:
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        signal = scanner.scan()[0]
+        assert signal.kind == "pr_sweep.skip"
+        return signal
+
+    def test_a_draft_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(is_draft=True))
+
+        assert signal.payload["reason"] == "draft"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_changes_requested_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(changes_requested=True))
+
+        assert signal.payload["reason"] == "changes_requested"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_fork_provenance_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(same_repo=False))
+
+        assert signal.payload["reason"] == "fork_requires_human_approval"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_no_clear_for_head_skip_carries_the_url(self) -> None:
+        signal = self._skip_signal(_open_pr(author=COLLEAGUE_LOGIN))
+
+        assert signal.payload["reason"] == "no_clear_for_head"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+
 class TestSkipPaths:
     def test_draft_pr_is_skipped_without_keystone_call(self) -> None:
         _issue_clear()
@@ -638,19 +719,19 @@ class TestUvAuditFallback:
         assert "head moved" in signals[0].payload["reason"]
 
 
-class TestNeedsBranchUpdate:
-    """Repo-state-check red on a behind-main branch → needs_branch_update (#2045).
+class TestStaleBaseMergeUpdate:
+    """A required red at a STALE base is an UNKNOWN verdict, so the sweep updates (#4063).
 
-    ``gh run rerun --failed`` re-tests against the run's pinned merge commit
-    (the OLD base), so a repo-state check (uv-audit, blueprint-cross-pr, …)
-    whose fix already merged to ``main`` can never go green by a rerun. The
-    only remedy is a fresh merge-update minting a new merge ref. The sweep
-    surfaces that remedy as ``needs_branch_update`` instead of a bare
-    ``skip/ci_red`` so it is actionable — and ONLY when the branch is behind
-    main (a repo-state red on an up-to-date branch is a genuine failure).
+    ``gh run rerun --failed`` re-tests the run's pinned merge commit (the OLD
+    base), so a check that went red before a fix landed on ``main`` can never go
+    green by a rerun — whether it is a repo-state check that diffs against the
+    base or a real test. Generalises #2045's repo-state-only rule: what makes the
+    verdict unreliable is the moved base, not which check failed. The sweep
+    applies the merge-update; a branch that is already UP-TO-DATE keeps its own
+    red verdict, which is what stops a broken PR from being update-looped.
     """
 
-    def test_repo_state_red_on_behind_branch_classifies_needs_branch_update(self) -> None:
+    def test_repo_state_red_on_behind_branch_is_merge_updated(self) -> None:
         _issue_clear()
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_blueprint_cross_pr()), behind_main=True)]},
@@ -662,12 +743,13 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
-        assert signals[0].kind == "pr_sweep.needs_branch_update"
-        assert signals[0].payload["decision"] == "needs_branch_update"
-        assert signals[0].payload["reason"] == "needs_branch_update"
-        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)]
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.branch_updated"
+        assert signals[0].payload["decision"] == "branch_updated"
+        assert signals[0].payload["reason"] == "stale_base_merge_updated"
+        assert notifier.flag_calls == []
 
-    def test_uv_audit_red_on_behind_branch_also_classifies_needs_branch_update(self) -> None:
+    def test_uv_audit_red_on_behind_branch_is_also_merge_updated(self) -> None:
         _issue_clear()
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()), behind_main=True)]},
@@ -680,21 +762,51 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
-        assert signals[0].payload["decision"] == "needs_branch_update"
+        assert signals[0].payload["decision"] == "branch_updated"
 
-    def test_genuine_test_failure_still_classifies_ci_red_not_branch_update(self) -> None:
+    def test_genuine_test_failure_on_behind_branch_is_merge_updated(self) -> None:
+        """The #4063 defect: this red judged a base the fix may already be on."""
         _issue_clear()
         red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(red_required, _red_blueprint_cross_pr()), behind_main=True)]},
         )
         keystone = FakeKeystone()
-        scanner, notifier = _scanner(api=api, keystone=keystone)
+        scanner, _ = _scanner(api=api, keystone=keystone)
 
         with _required("test (3.13)", "blueprint-cross-pr"):
             signals = scanner.scan()
 
         assert keystone.calls == []
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.branch_updated"
+
+    def test_non_repo_state_red_on_behind_branch_is_merge_updated(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_genuine_test_failure_on_current_base_stays_ci_red(self) -> None:
+        """The anti-update-loop bound: an UP-TO-DATE branch's red is its own verdict."""
+        _issue_clear()
+        red_required = _check("test (3.13)", conclusion="FAILURE")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,), behind_main=False)]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.update_branch_calls == []
         assert signals[0].payload["reason"] == "ci_red"
         assert notifier.flag_calls == []
 
@@ -710,22 +822,126 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
+        assert api.update_branch_calls == []
         assert signals[0].payload["reason"] == "ci_red"
         assert notifier.flag_calls == []
 
-    def test_non_repo_state_red_on_behind_branch_stays_ci_red(self) -> None:
+    def test_pending_ci_on_behind_branch_is_never_merge_updated(self) -> None:
+        """``ci_pending`` is not a stale-base reason — a running check has no verdict yet."""
         _issue_clear()
-        api = FakePrApiClient(
-            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
-        )
-        keystone = FakeKeystone()
-        scanner, _ = _scanner(api=api, keystone=keystone)
+        pending = _check("test (3.13)", conclusion="", status="IN_PROGRESS")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(pending,), behind_main=True)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
 
-        with _required("test (3.13)", "lint"):
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["reason"] == "ci_pending"
+        assert notifier.flag_calls == []
+
+
+class TestStaleBaseMergeUpdateBounds:
+    """The three bounds that keep a broken PR from being update-looped (#4063).
+
+    Every refusal degrades to the pre-#4063 ``needs_branch_update`` flag, so a
+    remedy the sweep declines to apply is surfaced for a human rather than
+    dropped.
+    """
+
+    @staticmethod
+    def _behind_red_pr(*, pr_id: int = 6230, head: str = HEAD, author: str = SELF_LOGIN) -> PrSummary:
+        return _open_pr(
+            pr_id=pr_id,
+            head=head,
+            checks=(_check("test (3.13)", conclusion="FAILURE"),),
+            behind_main=True,
+            author=author,
+        )
+
+    def test_colleague_pr_is_flagged_never_pushed_to(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr(author=COLLEAGUE_LOGIN)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].kind == "pr_sweep.needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)]
+
+    def test_same_head_is_attempted_once_across_ticks(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        first = scanner.scan()
+        second = scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert first[0].payload["decision"] == "branch_updated"
+        assert second[0].payload["decision"] == "needs_branch_update"
+
+    def test_new_head_re_arms_the_update(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        scanner.scan()
+
+        api.prs_by_slug[SLUG] = [self._behind_red_pr(head=STALE)]
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD), (SLUG, 6230, STALE)]
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_per_tick_cap_flags_the_overflow(self) -> None:
+        over_cap = MAX_BRANCH_UPDATES_PER_TICK + 1
+        prs = [self._behind_red_pr(pr_id=6230 + i, head=f"{i:040d}") for i in range(over_cap)]
+        api = FakePrApiClient(prs_by_slug={SLUG: prs})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        decisions = [s.payload["decision"] for s in signals]
+        assert decisions == ["branch_updated"] * MAX_BRANCH_UPDATES_PER_TICK + ["needs_branch_update"]
+        assert len(api.update_branch_calls) == MAX_BRANCH_UPDATES_PER_TICK
+
+    def test_budget_resets_between_ticks(self) -> None:
+        prs = [self._behind_red_pr(pr_id=6230 + i, head=f"{i:040d}") for i in range(MAX_BRANCH_UPDATES_PER_TICK)]
+        api = FakePrApiClient(prs_by_slug={SLUG: prs})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        scanner.scan()
+
+        api.prs_by_slug[SLUG] = [self._behind_red_pr(pr_id=9001, head=f"{9001:040d}")]
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_refused_update_is_flagged_and_not_retried(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]}, update_branch_succeeds=False)
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        first = scanner.scan()
+        scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert first[0].payload["decision"] == "needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)] * 2
+
+    def test_api_error_degrades_to_the_flag(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with patch.object(FakePrApiClient, "update_pr_branch", side_effect=RuntimeError("boom")):
             signals = scanner.scan()
 
-        assert keystone.calls == []
-        assert signals[0].payload["reason"] == "ci_red"
+        assert signals[0].payload["decision"] == "needs_branch_update"
+
+    def test_ledger_error_degrades_to_the_flag(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with patch.object(BranchUpdateAttempt, "claim", side_effect=RuntimeError("db down")):
+            signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["decision"] == "needs_branch_update"
 
 
 class TestMultiRepo:
@@ -931,24 +1147,102 @@ class TestSoloOverlayRequiresIndependentColdReview:
         assert api.merge_pr_calls == []
         assert signals[0].kind == "pr_sweep.flag_no_review"
 
-    def test_hold_verdict_does_not_authorize_merge(self) -> None:
+    def test_lone_hold_is_flagged_as_held_not_unreviewed(self) -> None:
         # A recorded HOLD is not a merge-safe verdict — it must not unlock the bypass.
-        ReviewVerdict.record(
-            pr_id=6230,
-            slug=SLUG,
-            reviewed_sha=HEAD,
-            verdict="hold",
-            reviewer_identity="cold-reviewer",
-            gh_verify_result="green",
+        # And it is not "no independent review" either: a reviewer looked and said no,
+        # so the flag names the hold and no further reviewer is armed over it (#4380).
+        # It is not a DISAGREEMENT either: one verdict, nobody contesting it — this is
+        # the ordinary outcome of every cold review that holds, so it carries its own
+        # reason rather than the owner DM claiming two reviewers who do not exist.
+        dispatcher = FakeReviewDispatcher()
+        hold = _record_hold(reviewer="cold-reviewer")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(
+            api=api, keystone=keystone, solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
         )
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_held"
+        assert signals[0].payload["reason"] == "hold_at_head"
+        assert signals[0].payload["held_verdicts"] == [[hold.pk, "cold-reviewer"]]
+        assert signals[0].payload["authorizing_verdict"] is None
+        assert signals[0].payload["review_dispatched"] is False
+        assert notifier.flag_details == [f"holding: #{hold.pk} cold-reviewer"]
+        assert dispatcher.calls == []  # a held head never arms another reviewer
+
+    def test_contested_hold_at_head_is_not_auto_merged(self) -> None:
+        # souliane/teatree#4380: two reviewers ran concurrently on ONE unchanged tree
+        # and disagreed. The later ``merge_safe`` won under newest-wins and the
+        # autonomous no-CLEAR bypass merged over a hold nobody ever reconciled.
+        # An unreconciled hold at the live head blocks the robot, whatever its
+        # timestamp says.
+        hold = _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
+        allow = _record_cold_review(reviewer="cold-reviewer-b", at=_LATER_MERGE_SAFE_AT)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the contested head was NOT merged
+        assert notifier.calls == []  # and no merge was announced
+        assert signals[0].kind == "pr_sweep.flag_held"
+        assert signals[0].payload["merged"] is False
+        assert signals[0].payload["authorizing_verdict"] == [allow.pk, "cold-reviewer-b"]
+        assert notifier.flag_calls == [(SLUG, 6230, "contested_hold_at_head", f"https://github.com/{SLUG}/pull/6230")]
+        # The DM names WHICH two disagreed rather than asserting a disagreement.
+        assert notifier.flag_details == [
+            f"holding: #{hold.pk} cold-reviewer-a; merge_safe: #{allow.pk} cold-reviewer-b"
+        ]
+
+    def test_stale_hold_does_not_block_the_fixed_head(self) -> None:
+        # Anti-vacuity: the guard is head-scoped, not "any hold this PR ever had".
+        # A hold against a tree the PR has moved off is exactly what pushing a fix
+        # is supposed to clear — that head merges.
+        _record_hold(sha=STALE, reviewer="cold-reviewer-a")
+        _record_cold_review(sha=HEAD, reviewer="cold-reviewer-b")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(head=HEAD)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.merged"
+
+    def test_merged_signal_names_the_verdict_that_authorised_it(self) -> None:
+        # #4380 acceptance 3: ``reason=solo_overlay_no_clear`` records that no CLEAR
+        # existed but not what was relied on instead, so an audit of a no-CLEAR merge
+        # could not answer WHICH review authorised it from the record.
+        allow = _record_cold_review(reviewer="cold-reviewer-b")
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
 
         signals = scanner.scan()
 
-        assert api.merge_pr_calls == []
-        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+        assert signals[0].payload["authorizing_verdict"] == [allow.pk, "cold-reviewer-b"]
+
+    def test_same_reviewer_lifting_own_hold_merges(self) -> None:
+        # Anti-vacuity + the escape hatch: the F8 idempotency key is
+        # (slug, pr_id, reviewed_sha, normalized identity), so one reviewer
+        # re-recording at the same head UPDATES their own row and leaves no hold.
+        # Self-correction is not a contested head, and needs no new machinery.
+        _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
+        _record_cold_review(reviewer="cold-reviewer-a", at=_LATER_MERGE_SAFE_AT)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.merged"
 
     def test_collaborative_overlay_unaffected_by_cold_review_gate(self) -> None:
         # Anti-vacuous: the cold-review gate is solo-overlay-only. A non-solo
@@ -1512,23 +1806,25 @@ class TestSlackMergeNotifier:
         b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
         return b
 
-    def test_announce_dms_the_owner_once_per_merge(self) -> None:
+    def test_announce_records_the_merge_once_without_dming(self) -> None:
+        """A landed merge is status, not a decision — pulled since #4524, still once per SHA."""
         backend = self._backend()
         notifier = SlackMergeNotifier(backend=backend, user_id="U1")
         notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
-        # A second announce of the SAME merge is an idempotent no-op (once per SHA).
         notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
 
-        backend.post_message.assert_called_once()
-        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in backend.post_message.call_args.kwargs["text"]
-        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
-        assert row.status == BotPing.Status.SENT
-        assert row.audience == "owner_delivery"
+        backend.post_message.assert_not_called()
+        rows = BotPing.objects.filter(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
+        assert rows.count() == 1
+        assert rows.first().status == BotPing.Status.PULLED
+        assert rows.first().audience == "owner_delivery"
+        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in rows.first().text
 
     def test_announce_marks_uv_audit_fallback(self) -> None:
         backend = self._backend()
         SlackMergeNotifier(backend=backend, user_id="U1").announce(slug=SLUG, pr_id=42, merged_sha="", fallback=True)
-        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in backend.post_message.call_args.kwargs["text"]
+        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:")
+        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in row.text
 
     def test_two_flag_calls_send_zero_owner_dms(self) -> None:
         backend = self._backend()
@@ -1652,7 +1948,7 @@ class TestErrorIsolation:
             def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:  # pragma: no cover
                 return
 
-            def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+            def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
                 msg = "slack down"
                 raise RuntimeError(msg)
 
@@ -1726,6 +2022,25 @@ class TestEvaluateOne:
         assert attempt is not None
         assert attempt.merged is False
         assert attempt.decision == "flag_no_review"
+        assert api.merge_pr_calls == []
+
+    def test_evaluate_one_does_not_merge_a_contested_head(self) -> None:
+        # #4380: this is the path #4332 actually took — the second reviewer's
+        # merge_safe fires ``_trigger_sweep`` and the on-demand evaluation merges
+        # immediately, without waiting a tick. The guard has to hold HERE, not
+        # only on the periodic sweep, or the fix misses the live case.
+        _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
+        _record_cold_review(reviewer="cold-reviewer-b", at=_LATER_MERGE_SAFE_AT)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        attempt = scanner.evaluate_one(slug=SLUG, pr_id=6230)
+
+        assert attempt is not None
+        assert attempt.merged is False
+        assert attempt.decision == "flag_held"
+        assert attempt.reason == "contested_hold_at_head"
         assert api.merge_pr_calls == []
 
 
@@ -2032,3 +2347,101 @@ class TestSubstrateStandingDelegation:
 
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         assert pinger.calls == []
+
+
+class TestRedSetSignalContext:
+    """The sweep stamps what a CROSS-PR comparison needs onto its own signal (#4090).
+
+    The failing REQUIRED set and the base freshness are already computed for the
+    merge decision; without them on the payload the set-level report would have to
+    re-list every PR and re-classify it — a second forge read and a second
+    classifier, the #12 divergence this repo forbids.
+    """
+
+    def test_a_ci_red_skip_carries_its_failing_required_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "ci_red"
+        assert signals[0].payload["failing_required"] == ["lint"]
+        assert signals[0].payload["base_current"] is True
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_red_judged_against_a_moved_base_is_marked_stale(self) -> None:
+        # A behind-main branch's red judged a base it has fallen behind (#4063), so
+        # the report must not read it as a live verdict.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["base_current"] is False
+        assert signals[0].payload["failing_required"] == ["lint"]
+
+    def test_a_green_pr_carries_no_failing_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(merged=True))
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["failing_required"] == []
+
+
+class TestSoloOverlayNoClearIsNeverSilent:
+    """#4250: the uncleared-PR notifier must be REACHABLE on a solo-overlay deployment.
+
+    ``record_mergeable_notified`` has exactly one call site, inside
+    ``_evaluate_no_clear_collaborative`` — a branch ``solo_overlay=True`` never enters.
+    That is correct by design (a solo overlay has no colleague to route the PR to) but
+    it read as live coverage, and the most recent ``MergeableNotified`` row being two
+    weeks old was taken as "nothing has been stuck" rather than "the recorder cannot
+    run at all". These pin the SOLO equivalents so neither can become dead code again.
+    """
+
+    def test_solo_no_clear_without_a_cold_review_still_notifies(self) -> None:
+        # The solo counterpart of the mergeable DM: no CLEAR and no independent cold
+        # review is flagged to the operator AND arms a reviewer — never a silent skip.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, notifier = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+        )
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == [(SLUG, 6230, "no_independent_review", f"https://github.com/{SLUG}/pull/6230")]
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        assert len(dispatcher.calls) == 1
+        assert MergeableNotified.objects.count() == 0  # collaborative-only ledger, never touched here
+
+    def test_a_solo_skip_reaches_the_aged_skip_surfacer(self) -> None:
+        # The other solo surface: a genuine skip (CI red) emits ``pr_sweep.skip``, which
+        # the tick's ``record_sweep_outcomes`` folds into the streak ledger and announces
+        # once it ages. Read end to end from the SOLO branch, not from a hand-made signal.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_red_lint(),))]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(), solo_overlay=True)
+        announced: list[str] = []
+
+        def _notify(*, text: str, idempotency_key: str) -> None:
+            _ = text, idempotency_key
+            announced.append(idempotency_key)
+
+        with _required("lint"):
+            for _ in range(SURFACE_AFTER_TICKS):
+                record_sweep_outcomes(scanner.scan(), notify=_notify)
+
+        assert announced, "a solo-overlay skip must age into an announcement"

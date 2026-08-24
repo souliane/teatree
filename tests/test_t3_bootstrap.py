@@ -186,8 +186,12 @@ class TestWheelShipsBootstrap:
     alone would not catch a backend swap; only an actual build does.
     """
 
+    # pytest 9.1 deprecates a class-scoped fixture defined as an INSTANCE method;
+    # this one returns a value rather than setting instance state, so @classmethod
+    # is a faithful conversion.
     @pytest.fixture(scope="class")
-    def built_wheel(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    @classmethod
+    def built_wheel(cls, tmp_path_factory: pytest.TempPathFactory) -> Path:
         uv = shutil.which("uv")
         if uv is None:
             pytest.skip("uv not available — cannot build wheel")

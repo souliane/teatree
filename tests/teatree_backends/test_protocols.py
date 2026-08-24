@@ -71,6 +71,10 @@ class _FakeCodeHost:
         _ = (repo, state, author)
         return []
 
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[dict[str, object]]:
+        _ = (repo, since)
+        return []
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
         _ = (repo, pr_iid)
         return []

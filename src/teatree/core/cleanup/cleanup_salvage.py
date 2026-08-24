@@ -31,12 +31,13 @@ deterministically. The git capture itself (creating ``salvage_branch`` at
 ``source_ref``, scanning for banned terms) runs for real inside.
 """
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from teatree.core.cleanup.cleanup_emit import banned_terms_status
+from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr
+from teatree.core.forge_push import push_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -175,35 +176,40 @@ def salvage_item(request: SalvageRequest, hooks: SalvageHooks) -> SalvageResult:
 
 
 def _gh_push(repo: str, branch: str) -> bool:
-    return run_allowed_to_fail(["git", "-C", repo, "push", "-u", "origin", branch], expected_codes=None).returncode == 0
+    """Publish the salvage branch over the one credential-supplying push path.
+
+    Salvage deletes the source only once the branch is on the forge, so a push that
+    silently lacked a credential is the shape that loses the work it was salvaging.
+    """
+    return push_branch(repo=repo, branch=branch).ok
 
 
 def _gh_open_pr(repo: str, branch: str, target: str) -> str:
     base = target.removeprefix("origin/")
     result = run_allowed_to_fail(
-        ["gh", "pr", "create", "--head", branch, "--base", base, "--fill"], cwd=repo, expected_codes=None
+        ["gh", "pr", "create", "--head", branch, "--base", base, "--fill"],
+        cwd=repo,
+        expected_codes=None,
+        env=forge_cli_env(),
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _gh_verify_open(repo: str, branch: str) -> bool:
-    result = run_allowed_to_fail(
-        ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--limit", "1"],
-        cwd=repo,
-        expected_codes=None,
-    )
-    if result.returncode != 0:
-        return False
-    try:
-        return bool(json.loads(result.stdout or "[]"))
-    except json.JSONDecodeError:
-        return False
+    """Whether the salvage PR this run just opened is really there.
+
+    The fourth hand-rolled copy of the open-PR probe; routed through the shared
+    one so it inherits the credential every forge read needs (#4116). Same
+    posture as before — only a positive FOUND confirms, so an unreadable forge
+    still reports the salvage unverified rather than claiming success.
+    """
+    return probe_github_open_pr(repo, branch).is_found
 
 
 def default_salvage_hooks(*, source_branch: str, delete: DeleteFn) -> SalvageHooks:
     """Wire the real ``git`` + ``gh`` side effects for the ``workspace salvage`` CLI.
 
-    ``push`` is ``git push -u origin``; ``open_pr`` is ``gh pr create --fill``;
+    ``push`` is :func:`~teatree.core.forge_push.push_branch`; ``open_pr`` is ``gh pr create --fill``;
     ``verify_landed`` is ``gh pr list --state open`` (the PR is on the forge);
     ``delete_source`` is supplied by the caller (branch delete, or full worktree
     teardown) since only it knows what kind of item the source is. ``gh`` absent /

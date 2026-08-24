@@ -1,7 +1,7 @@
 """Idempotent seed of the default loop modes + schedules (#3159).
 
-The 7 curated modes and the two shipped schedules (``standard`` /
-``always-unattended``) as owner-editable data. The shipped VALUES live in the
+The 5 curated modes and the two shipped schedules (``standard`` /
+``always-away``) as owner-editable data. The shipped VALUES live in the
 ``[modes.<name>]`` / ``[schedules.<name>]`` tables of
 ``src/teatree/config/defaults.toml`` — the same packaged file every other shipped
 default an operator tunes lives in — and this module seeds them into owner-editable
@@ -16,16 +16,18 @@ who re-arranged a schedule's slots keeps that arrangement.
 **``standard`` ships active:** the seed pins ``active_loop_schedule`` to
 ``standard`` through the provenance-aware :meth:`ConfigSetting.objects.seed`, so a
 fresh install runs the owner's working-hours calendar out of the box — Mon-Fri
-09:00-16:00 ``Europe/Vienna`` → ``engaged`` (attended), every other hour →
-``unattended`` (autonomous-away). The provenance seed CREATES the pin on a fresh
+09:00-16:00 ``Europe/Vienna`` → ``present`` (attended), every other hour → ``away``
+(autonomous, colleague-facing loop off). The provenance seed CREATES the pin on a fresh
 box and PRESERVES an operator who switched to another calendar (or cleared it),
 so a re-seed never overrides the owner's choice.
 
 A loop ABSENT from a mode's ``entries`` table INHERITS its own enabled flag, which is
 how the dark/destructive-opt-in loops (``issue_implementer`` / ``issue_disposition`` /
 ``backlog_sweep`` / ``outer_loop`` / ``directive_loop``) stay untouched by every mode
-except ``low-power`` / ``off`` / ``offline`` — a mode switch never silently re-enables
-the owner's explicit opt-in on a destructive-capable loop.
+except ``low-token`` / ``off`` — a mode switch never silently re-enables the owner's
+explicit opt-in on a destructive-capable loop. ``maintenance`` names
+``issue_implementer`` explicitly because draining in-flight work means taking no new
+intake.
 """
 
 import datetime as dt
@@ -43,12 +45,6 @@ class PresetSpec:
     name: str
     description: str
     entries: dict[str, bool]
-    availability_mode: str = ""
-    # The intrinsic availability posture (#61 merge, design §7-A). ``present_sensitive``
-    # defaults True so any scheduled away honours a live keystroke (today's behaviour).
-    defers_questions: bool = False
-    pauses_self_pump: bool = False
-    presence_sensitive: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +71,6 @@ def default_preset_specs(path: Path | None = None) -> tuple[PresetSpec, ...]:
             name=name,
             description=entry["description"],
             entries={loop: bool(value) for loop, value in entry.get("entries", {}).items()},
-            availability_mode=entry.get("availability_mode", ""),
-            defers_questions=entry.get("defers_questions", False),
-            pauses_self_pump=entry.get("pauses_self_pump", False),
-            presence_sensitive=entry.get("presence_sensitive", True),
         )
         for name, entry in shipped_seed_table(_MODES_TABLE, path).items()
     )
@@ -134,14 +126,7 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
     for spec in default_preset_specs():
         _, made = Mode.objects.get_or_create(
             name=spec.name,
-            defaults={
-                "entries": spec.entries,
-                "description": spec.description,
-                "availability_mode": spec.availability_mode,
-                "defers_questions": spec.defers_questions,
-                "pauses_self_pump": spec.pauses_self_pump,
-                "presence_sensitive": spec.presence_sensitive,
-            },
+            defaults={"entries": spec.entries, "description": spec.description},
         )
         presets_created += int(made)
 

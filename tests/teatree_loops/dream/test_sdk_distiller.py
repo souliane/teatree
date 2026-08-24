@@ -18,7 +18,8 @@ from teatree.agents.model_tiering import resolve_tier
 from teatree.core.models import ConfigSetting
 from teatree.llm.credentials import CredentialError
 from teatree.loops.dream import sdk_distiller
-from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
+from teatree.loops.dream.engine import DistillEmptyReason
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key, sdk_distill
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 
@@ -46,7 +47,6 @@ def _seed_config_setting(db_path: Path, key: str, raw_value: str) -> None:
 def _extract_with_one_snippet() -> ConsolidationExtract:
     return ConsolidationExtract(
         snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
-        truncated=False,
     )
 
 
@@ -285,7 +285,7 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             sdk_distiller.sdk_distiller(_extract_with_one_snippet())
 
     def test_empty_extract_short_circuits_without_sdk_call(self) -> None:
-        empty = ConsolidationExtract(snippets=(), truncated=False)
+        empty = ConsolidationExtract(snippets=())
         with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
             clusters = sdk_distiller.sdk_distiller(empty)
         turn.assert_not_called()
@@ -369,7 +369,7 @@ class SdkDistillerCredentialEnvTestCase(TestCase):
 
         with (
             patch(
-                "teatree.agents._headless_env.resolve_subscription_credential",
+                "teatree.agents._runner_env.resolve_subscription_credential",
                 side_effect=CredentialError("no subscription token resolvable"),
             ),
             patch("shutil.which", return_value="/usr/bin/claude"),
@@ -443,7 +443,7 @@ class SdkDistillReasonTestCase(SimpleTestCase):
         assert result.clusters[0].cluster_key != "llm-slug"
 
     def test_empty_extract_is_nothing_to_consolidate_without_sdk_call(self) -> None:
-        empty = ConsolidationExtract(snippets=(), truncated=False)
+        empty = ConsolidationExtract(snippets=())
         with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
             result = sdk_distiller.sdk_distill(empty)
         turn.assert_not_called()
@@ -498,7 +498,7 @@ class SdkDistillerWatchdogTestCase(SimpleTestCase):
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch.object(sdk_distiller, "_DISTILL_WATCHDOG_SECONDS", 0.5),
+            patch.object(sdk_distiller, "DISTILL_WATCHDOG_SECONDS", 0.5),
             patch.object(claude_agent_sdk, "ClaudeSDKClient", _HangOnConnectClient),
         ):
             thread = threading.Thread(target=_run, daemon=True)

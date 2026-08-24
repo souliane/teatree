@@ -26,9 +26,14 @@ same content (the base deleted or rewrote something the branch also touched) —
 exactly the "this branch predates a refactor" shape the remedy needs to name,
 and git's own merge simulation is what tells the difference.
 
-Both probes fail CLOSED: any git error reports "still owes" / "no risk measured",
-because a false discharge destroys the only record of unshipped work (the same
-data-loss doctrine the worktree reapers hold).
+:func:`pr_from_branch_would_be_empty` answers the cheapest form of the same
+question — would the pull request carry anything at all? A branch whose content
+squash-merged and that then merged the base back is ahead of it by SHA and by
+nothing else, so the forge opens a zero-file PR rather than refusing (#4429).
+
+Every probe here fails CLOSED: any git error reports "still owes" / "no risk
+measured" / "not empty", because a false discharge destroys the only record of
+unshipped work (the same data-loss doctrine the worktree reapers hold).
 """
 
 import re
@@ -110,6 +115,10 @@ def branch_content_landed_on_base(repo: str, branch: str, target: str) -> bool:
         landed when that exact content is no longer at that exact path. Blob-only
         matching would read a branch whose entire work is a deletion as landed —
         it introduces nothing — and discharge an obligation that is still real.
+        Landed means the path is ABSENT from the base tree, not merely holding
+        different content: a base that independently REWROTE the path still has
+        it, so the branch's deletion has not actually landed there and would
+        still conflict — fail closed rather than silently discharge it.
 
     A branch with NO tree delta at all is never landed. "Introduced nothing
     anywhere" is not evidence the work reached the base; it is evidence there was
@@ -133,7 +142,27 @@ def branch_content_landed_on_base(repo: str, branch: str, target: str) -> bool:
         return False
     if any(base_introduced[blob] < count for blob, count in tip_introduced.items()):
         return False
-    return all(base.get(path) != blob for path, blob in withdrawn)
+    return all(path not in base for path, _blob in withdrawn)
+
+
+def pr_from_branch_would_be_empty(repo: str, branch: str, target: str) -> bool:
+    """Whether a pull request from ``branch`` into ``target`` would carry no changes at all.
+
+    A forge computes a pull request's diff from the merge base, so this asks git the
+    same three-dot question instead of a graph one. A branch that squash-merged and
+    then merged ``target`` back in still holds commits the target knows under no SHA
+    of its own — every graph-level probe answers "ahead" while the pull request it
+    would open shows zero files, which is how a merged branch re-opens a PR that costs
+    a review cycle and can deliver nothing (#4429).
+
+    Fails CLOSED: any git error reads as NOT empty, so an unreadable ref can never
+    suppress a pull request the branch really owes.
+    """
+    try:
+        changed = git.run_strict(repo=repo, args=["diff", "--name-only", f"{target}...{branch}"])
+    except CommandFailedError:
+        return False
+    return not changed
 
 
 def assess_revert_risk(repo: str, branch: str, target: str) -> RevertRisk:
@@ -168,4 +197,9 @@ def assess_revert_risk(repo: str, branch: str, target: str) -> RevertRisk:
     return RevertRisk(conflicted_paths=paths, measured=True)
 
 
-__all__ = ["RevertRisk", "assess_revert_risk", "branch_content_landed_on_base"]
+__all__ = [
+    "RevertRisk",
+    "assess_revert_risk",
+    "branch_content_landed_on_base",
+    "pr_from_branch_would_be_empty",
+]

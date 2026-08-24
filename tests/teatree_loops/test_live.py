@@ -14,18 +14,25 @@ the deleted cadence-marker ledger).
 
 import datetime as dt
 import os
+from unittest.mock import patch
 
 import django.test
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+import teatree.core.loop_lease_liveness as liveness
 from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
 _LIVE_PID = os.getpid()
 _DEAD_PID = 2_000_000_000
+
+#: Two pid namespaces the deployment actually produces: the worker's container and a
+#: sibling's. The same integer names a different process — or none — in each.
+_SIBLING_NS = "pid:[4026532790]"
+_READER_NS = "pid:[4026532619]"
 
 
 def _prompt() -> Prompt:
@@ -157,6 +164,73 @@ class TestOwnerLiveness(django.test.TestCase):
         report = build_report()
         assert report.owner.is_claimed is False
         assert report.owner.is_live is False
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestOwnerPidNamespace(django.test.TestCase):
+    """The health read surface must not probe a pid another namespace owns (#4253).
+
+    ``t3 loop list`` and the statusline render this report, so the same bare-integer probe
+    that took the gate dark misreads here too — and this is the surface an operator reads
+    while diagnosing it. Both directions are pinned: a colliding number must not prove
+    life, and the reader's own namespace must still decide as before.
+    """
+
+    def test_a_pid_from_another_namespace_is_no_evidence_of_life(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="gone",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is False
+
+    def test_an_unattributable_pid_still_falls_through_to_the_ttl(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="worker",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is True
+
+    def test_a_pid_recorded_in_the_readers_own_namespace_still_decides(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="busy",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_READER_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is True
+        assert report.owner.is_live is True
+
+    def test_a_per_loop_owner_is_read_the_same_way(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="gone",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.per_loop_owners[0].pid_is_alive is False
+        assert report.per_loop_owners[0].is_live is False
 
 
 @django.test.override_settings(USE_TZ=True)
@@ -387,14 +461,14 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
 
     def test_preset_masked_off_loop_is_not_admitted(self) -> None:
         self._loop("demo-admit-masked")
-        self._activate("heads-down", {"demo-admit-masked": False})
+        self._activate("maintenance", {"demo-admit-masked": False})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-masked")
         assert entry.admitted is False
         assert entry.enabled is True
 
     def test_preset_forced_on_base_disabled_loop_is_admitted(self) -> None:
         self._loop("demo-admit-forced", enabled=False)
-        self._activate("engaged", {"demo-admit-forced": True})
+        self._activate("present", {"demo-admit-forced": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-forced")
         assert entry.admitted is True
         assert entry.enabled is False
@@ -402,7 +476,7 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
     def test_hold_wins_over_a_force_on_preset(self) -> None:
         self._loop("demo-admit-held", enabled=False)
         LoopState.objects.disable("demo-admit-held")
-        self._activate("engaged", {"demo-admit-held": True})
+        self._activate("present", {"demo-admit-held": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-held")
         assert entry.admitted is False
         assert entry.held is True

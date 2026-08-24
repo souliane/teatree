@@ -88,20 +88,11 @@ _RESOLUTION_MARKERS = frozenset(
 # configuration: "the typed field is the shared source of truth for the doc value
 # and any future programmatic consumer"); the ``/t3:e2e`` verify↔review loop is
 # agent prose, not a deterministic gate, so it reads the value from the skill.
-# ``issue_implementer_cadence_hours`` is the documented cadence default the
-# issue-implementer loop mirrors as a literal (``default_cadence_seconds=3600``).
-# ``privacy`` (settings.py: "no live production reader") and ``timezone``
-# (settings.py: "no live reader", DB-home for partition consistency) are declared
-# reader-less at the source. A NEW dead field is NOT on this list and fails until
-# it gains a real reader or a conscious allowlist entry.
-FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset(
-    {
-        "e2e_confidence_threshold",
-        "issue_implementer_cadence_hours",
-        "privacy",
-        "timezone",
-    }
-)
+# The other three entries this list carried — ``issue_implementer_cadence_hours``,
+# ``privacy``, ``timezone`` — were reader-less rather than prose-consumed, so #4203
+# retired them instead of excusing them. A NEW dead field is NOT on this list and
+# fails until it gains a real reader or a conscious allowlist entry.
+FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset({"e2e_confidence_threshold"})
 
 # Fields DECLARED ahead of the change that reads them, every one INERT by default
 # (empty list / false / a bound nothing evaluates yet), so no behaviour depends on
@@ -187,8 +178,7 @@ def _bespoke_dict_get_keys(tree: ast.Module, settings_vars: set[str]) -> set[str
     """String keys read via ``<bare-var>.get("<key>")`` off a plain dict.
 
     A field name that appears ONLY as a sub-key of a bespoke structured table
-    (e.g. the ``availability_schedule`` dict's ``"timezone"``) collides with a
-    UserSettings field name but is NOT a settings-key read. The receiver is a
+    collides with a UserSettings field name but is NOT a settings-key read. The receiver is a
     bare local (a table var like ``raw``), never a settings-store accessor
     call (``_db_overlay_overrides(...).get("workspace_dir")`` keeps its Call
     receiver and stays counted), so the resolution-module string rule must not

@@ -10,6 +10,7 @@ red set.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -29,7 +30,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.repo = "souliane/teatree"
         self.token = ""
-        self.triggered: dict[str, object] = {}
+        self.triggered: dict[str, Any] = {}
         self.runs: list[dict[str, object]] = []
         self.run_view: dict[str, object] = {}
         self.artifact_payload: dict[str, object] | None = None
@@ -76,7 +77,7 @@ class TestCiTriggerCommand:
         payload = json.loads(result.output)
         assert payload["ref"] == "fix-branch"
         assert payload["head_sha"] == _SHA
-        assert client.triggered["inputs"]["credential"] == "subscription_oauth"  # type: ignore[index]
+        assert client.triggered["inputs"]["credential"] == "subscription_oauth"
 
     def test_rejects_an_unknown_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The credential is validated BEFORE any client is built — a bad value

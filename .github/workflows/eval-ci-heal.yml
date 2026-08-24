@@ -154,11 +154,11 @@ jobs:
       # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
       # runner actually execs (`_find_cli` returns the bundle first; this global install
       # is only the presence-gate). Matching it stops the two CLIs in one image from
-      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
-      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+      # disagreeing. The DEPLOYED runtime is pinned independently, may LEAD this
+      # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.220
+          npm install -g @anthropic-ai/claude-code@2.1.233
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -318,6 +318,19 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
           OUT_DIR: ${{ runner.temp }}/combined
         run: uv run t3 eval green-proof "$OUT_DIR/eval-heal-$SHA.json"
+      # KNOWN-RED QUARANTINE AUDIT (souliane/teatree#4173). A quarantined scenario is
+      # suppressed from the bounded selective-PR lane only — it is still run, still
+      # graded, and still reds the proof above. This step is where that stays visible:
+      # it NAMES each quarantined scenario's outcome in the merged run. `if: always()`
+      # because the interesting case is exactly the one where the proof just reddened.
+      # It reds on its own only when an entry has become a lie — the scenario PASSED
+      # (delete the entry) or the entry is past its expiry (fix it or re-date it).
+      - name: Audit the known-red quarantine against the merged run
+        if: always() && inputs.scenarios == ''
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          OUT_DIR: ${{ runner.temp }}/combined
+        run: uv run t3 eval quarantine audit "$OUT_DIR/eval-heal-$SHA.json"
       # Upload the ONE merged JSON under the `eval-heal-<sha>` name the
       # `t3 eval ci-status` download path resolves — the combine seam that keeps the
       # sharded run indistinguishable from a single-invocation run to every consumer.

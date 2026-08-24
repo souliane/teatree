@@ -87,6 +87,12 @@ def build_executor_queues() -> tuple[str, ...]:
 #: The supervisor re-reads the kill-switch on this cadence — a flip-off stops
 #: further dispatch within ~this many seconds.
 SUPERVISOR_POLL_SECONDS = 5.0
+#: How often the supervisor re-claims ``t3-master`` (#3968). Well inside the 1800 s
+#: lease TTL, and far rarer than the 5 s kill-switch poll so the heartbeat adds no
+#: meaningful write pressure to the control DB. The re-claim also self-heals the slot
+#: once a ``t3 loop claim --take-over`` by a since-dead session goes stale — which is
+#: the "a transient session's claim rots" shape the ticket warns against.
+T3_MASTER_REFRESH_SECONDS = 300.0
 #: Each executor's empty-poll interval — small so a requested stop flips fast.
 EXECUTOR_INTERVAL_SECONDS = 1.0
 #: How many times a single executor slot may be respawned within one worker
@@ -165,6 +171,60 @@ def _reclaim_dead_owner_leases() -> None:
     LoopLease.objects.reclaim_dead_owner_leases()
 
 
+def _reap_expired_leases() -> None:
+    """Delete long-expired work-lease rows nothing will consult again (#4253).
+
+    ``acquire`` mints a ``work:<kind>:<hash>`` row per unit of work and nothing retires
+    it, so the table grows without bound and an operator reading it cannot tell a live
+    holder from hours of debris. Owner slots are never in range — their ``generation`` is
+    the fencing token — so this is disjoint from the reclaim above.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    LoopLease.objects.reap_expired_leases()
+
+
+def _claim_t3_master() -> None:
+    """Claim/refresh the machine-wide ``t3-master`` slot for this worker (#3968).
+
+    Nothing claimed it before, so ``t3 loop owner`` reported "unclaimed" while this
+    process drove every registry loop — and the two owner-gated reactive loops
+    (``loop_slack_answer`` / ``loop_self_improve``) deferred forever to an owner that
+    never existed. The principal is the durable :data:`LOOP_RUNNER_SESSION_ID`
+    constant rather than a per-process id so a worker restart is never locked out of
+    its own lease for a full TTL (#3810); liveness rides on ``owner_pid`` instead.
+
+    The claim is a CAS that never evicts a live owner: an interactive session holding
+    the slot keeps it, and this worker takes it over on a later refresh once that
+    lease lapses.
+    """
+    from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: pulls in django.db
+    from teatree.core.models import LoopDriver, LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID  # noqa: PLC0415 — deferred: cheap, kept local
+
+    won, owner = LoopLease.objects.claim_ownership(
+        T3_MASTER_SLOT,
+        session_id=LOOP_RUNNER_SESSION_ID,
+        owner_pid=os.getpid(),
+        driver=LoopDriver.LOOP_RUNNER,
+    )
+    if not won:
+        logger.warning(
+            "t3-master is held by live session %r; this worker drives loop ticks without owning the slot, so the "
+            "owner-gated reactive loops defer to that session until its lease lapses (#3968).",
+            owner,
+        )
+
+
+def _release_t3_master() -> None:
+    """Hand ``t3-master`` back at shutdown — CAS'd, so a session take-over is untouched."""
+    from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: pulls in django.db
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID  # noqa: PLC0415 — deferred: cheap, kept local
+
+    LoopLease.objects.release_ownership(T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID)
+
+
 def _spawn_executor_thread(executor: _Executor) -> _Handle:
     """Run *executor* in a daemon thread that closes its DB connection on exit.
 
@@ -200,8 +260,12 @@ class WorkerSeams:
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
     reclaim_leases: Callable[[], object] = _reclaim_dead_owner_leases
+    reap_leases: Callable[[], object] = _reap_expired_leases
+    claim_master: Callable[[], object] = _claim_t3_master
+    release_master: Callable[[], object] = _release_t3_master
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
+    master_refresh_seconds: float = T3_MASTER_REFRESH_SECONDS
     max_respawns: int = MAX_EXECUTOR_RESPAWNS
     max_unreadable_polls: int = MAX_UNREADABLE_POLLS
     executor_queues: tuple[str, ...] = field(default_factory=build_executor_queues)
@@ -225,6 +289,7 @@ class LoopWorker:
         self._seams = seams or WorkerSeams()
         self._stop = threading.Event()
         self._slots: list[_Slot] = []
+        self._polls_since_master_refresh = 0
 
     def request_stop(self) -> None:
         """Signal the supervisor to shut down (the SIGTERM/SIGINT handler target)."""
@@ -271,9 +336,60 @@ class LoopWorker:
         except Exception:
             logger.warning("Dead-owner loop-lease reclaim failed this poll; will retry next tick.", exc_info=True)
 
+    def _reap_expired_leases(self) -> None:
+        """Reap expired work-lease debris; a reap error must never crash the supervisor (#4253)."""
+        try:
+            self._seams.reap_leases()
+        except Exception:
+            logger.warning("Expired loop-lease reap failed this beat; will retry next beat.", exc_info=True)
+
+    def _claim_t3_master(self) -> None:
+        """Claim/refresh t3-master; a claim error must never crash the supervisor (#3968)."""
+        try:
+            self._seams.claim_master()
+        except Exception:
+            logger.warning("t3-master claim failed; will retry on the next refresh.", exc_info=True)
+
+    def _release_t3_master(self) -> None:
+        """Hand t3-master back; a release error must never mask the shutdown reason (#3968)."""
+        try:
+            self._seams.release_master()
+        except Exception:
+            logger.warning("t3-master release failed; the lease will lapse on its TTL.", exc_info=True)
+
+    def _polls_per_master_refresh(self) -> int:
+        """Supervisor polls between two t3-master re-claims, floored at one.
+
+        A zero/negative poll interval (the test seam, and a degenerate config) would
+        divide by zero, so it degrades to re-claiming every poll — the conservative
+        end, never a skipped heartbeat.
+        """
+        seams = self._seams
+        if seams.poll_seconds <= 0:
+            return 1
+        return max(1, round(seams.master_refresh_seconds / seams.poll_seconds))
+
+    def _per_poll_maintenance(self) -> None:
+        """The supervisor's per-poll upkeep: the throttled lease beat, then the dead-owner sweep.
+
+        The throttled beat carries both lease writes — the t3-master heartbeat and the
+        expired-debris reap — because both are cadence work on one table that would add
+        needless control-DB write pressure at the 5 s kill-switch poll.
+        """
+        self._polls_since_master_refresh += 1
+        if self._polls_since_master_refresh >= self._polls_per_master_refresh():
+            self._polls_since_master_refresh = 0
+            self._claim_t3_master()
+            self._reap_expired_leases()
+        self._reclaim_dead_owner_leases()
+
     def run(self) -> None:
         """Reconcile, expire stale jobs, start the executors, supervise (kill-switch + liveness), then join and exit."""
         seams = self._seams
+        # Ownership and driving are ONE startup (#3968): the slot is claimed before the
+        # chains that fire ticks exist, so `t3 loop owner` can never report "unclaimed"
+        # while this process drives loops.
+        self._claim_t3_master()
         seams.reconcile()
         seams.seed_chains()
         # Expire the stale `default`-queue backlog BEFORE any executor spawns, so a box
@@ -309,7 +425,7 @@ class LoopWorker:
                 if self._respawn_dead_executors():
                     crashed = True
                     break
-                self._reclaim_dead_owner_leases()
+                self._per_poll_maintenance()
         finally:
             self.request_stop()
             for slot in self._slots:
@@ -320,6 +436,9 @@ class LoopWorker:
             # or SIGTERM mid-tick orphans it with no deadline owner. Kill any in-flight
             # tick process group so no zombie/orphan outlives the worker's shutdown.
             seams.kill_ticks()
+            # Hand t3-master back so a restarting worker (or an operator's session)
+            # finds an unowned slot instead of waiting out this process's TTL.
+            self._release_t3_master()
         if crashed:
             raise LoopWorkerExecutorCrashError(_CRASH_MESSAGE)
         if unreadable:

@@ -5,7 +5,6 @@ import os
 import sqlite3
 import tempfile
 import time
-from collections.abc import Iterator
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
@@ -22,7 +21,6 @@ from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
-from tests._agent_runtime_env import interactive_runtime
 from tests._loop_principal_env import pinned_loop_principal
 
 
@@ -44,18 +42,7 @@ def _seed_cold_config(db: Path, key: str, value: object) -> None:
 
 
 class _LoopDispatchTest(TestCase):
-    """``loop_dispatch`` is the IN-SESSION claimer, so every case here pins that lane.
-
-    The shipped ``agent_runtime`` is ``headless`` (#3895), under which
-    ``_dispatchable_q()`` deliberately matches nothing — the headless factory owns
-    every loop-dispatched phase. These tests are about the interactive claim itself,
-    so they name the runtime they exercise instead of inheriting the shipped one.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        with interactive_runtime():
-            yield
+    """``loop_dispatch`` is the loop slot's claim surface over ``Task.dispatchable_q()``."""
 
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1", head_sha: str = "x") -> Task:
         ticket = Ticket.objects.create(
@@ -372,7 +359,6 @@ class TestClaimNextAdmissionPriority(_LoopDispatchTest):
             session=session,
             phase="planning",
             status=Task.Status.PENDING,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
     def test_claim_next_admits_todo_before_lower_pk_new_ticket(self) -> None:
@@ -397,9 +383,11 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     refuses once the standing in-flight CLAIMED WIP hits the ceiling, so
     claimed ≡ spawned and the orphan window is closed.
 
-    Absence of a budget (medium / toggle-off) is UNCLAMPED — today's
-    throughput, byte-identical. A stale budget (> TTL) is ignored, also
-    unclamped, so a dead loop never wrongly throttles live dispatch.
+    Absence of a budget (medium / toggle-off) removes the SIDECAR clamp —
+    today's throughput, byte-identical. A stale budget (> TTL) is ignored the
+    same way, so a dead loop never wrongly throttles live dispatch. That is not
+    the same as unclamped: the governor supplies a ceiling of its own (#4097),
+    which these cases hold at "no opinion" to isolate the sidecar.
     """
 
     def _claim_in_flight(self, n: int) -> list[Task]:
@@ -412,8 +400,16 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         return claimed
 
     def _run_claim_next(self, sl: Path) -> list[dict]:
+        # The governor is pinned to "no opinion" so these cases measure the SIDECAR
+        # ceiling alone. Left live, its machine ceiling is floor(cores * 0.5), so a
+        # budgeted wave claims a different number on a 4-core runner than on an 8-core
+        # one and the assertion would encode the host, not the gate (#4097). The
+        # governor's own clamp is TestGovernorGate's subject.
         stdout = StringIO()
-        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+        with (
+            patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
+            patch("teatree.core.management.commands.loop_dispatch.governor_verdict", return_value=None),
+        ):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         return json.loads(stdout.getvalue())
 
@@ -545,12 +541,41 @@ class TestGovernorGate(_LoopDispatchTest):
         from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
         from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
 
-        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=None, braked=True)
+        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=1, braked=True)
         with (
             patch.object(loop_dispatch, "read_admit_budget", return_value=None),
             patch.object(loop_dispatch, "governor_verdict", return_value=deny),
         ):
             assert loop_dispatch._admit_budget_exhausted() is True
+
+    def test_an_absent_sidecar_budget_still_takes_the_governors_ceiling(self) -> None:
+        # This lane passes ``static_ceiling=budget``, so an absent budget is the same
+        # ``None`` the agent lane passes (#4097): the governor's own ceiling has to
+        # apply, or "no operator cap" would read as "no cap".
+        from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+        from teatree.core.models import Task  # noqa: PLC0415 - deferred: local import
+
+        admit = AdmissionDecision(admit=True, reason="admitting up to 4", ceiling=4, braked=False)
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=admit),
+            patch.object(Task.objects, "in_flight_claimed_count", return_value=4),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is True
+
+    def test_no_governor_verdict_leaves_an_absent_budget_unclamped(self) -> None:
+        # The kill-switch / failed-probe path is the ONLY one where absence still
+        # means unclamped — the pre-governor behaviour, byte-for-byte.
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+        from teatree.core.models import Task  # noqa: PLC0415 - deferred: local import
+
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=None),
+            patch.object(Task.objects, "in_flight_claimed_count", return_value=999),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is False
 
 
 class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
@@ -711,26 +736,20 @@ class TestExternalDeliveryExclusion(_LoopDispatchTest):
         assert [e["task_id"] for e in payload] == [task.pk]
 
 
-class TestBudgetCountsHeadlessInFlight(_LoopDispatchTest):
-    """#6: the admit-budget gate counts HEADLESS in-flight claims, not just INTERACTIVE.
+class TestBudgetCountsWorkerInFlight(_LoopDispatchTest):
+    """#6: the admit-budget gate counts every in-flight claim.
 
-    ``orchestrate`` computes the target and its ``in_flight`` subtraction over
-    the dispatchable filter WITHOUT any execution_target narrowing, so a
-    headless worker in flight consumes budget. The live claimer must count with
-    the SAME set; the pre-fix gate counted only INTERACTIVE in-flight, so with N
-    headless workers already running it saw zero and overshot the boost budget.
+    ``orchestrate`` computes the target and its ``in_flight`` subtraction over the
+    dispatchable filter, so a worker in flight consumes budget. The live claimer
+    must count with the SAME set or it overshoots the boost budget.
     """
 
     def _headless_in_flight(self, n: int) -> list[Task]:
-        """Seed *n* dispatchable HEADLESS CLAIMED tasks with a live lease."""
+        """Seed *n* dispatchable CLAIMED tasks with a live lease."""
         claimed: list[Task] = []
         for i in range(n):
-            task = self._author_task(url=f"https://example.com/issues/headless/{i}")
-            # A raw UPDATE forces HEADLESS without the save() re-route back to
-            # INTERACTIVE (a loop-dispatched phase under the default runtime).
-            Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS)
-            task.refresh_from_db()
-            task.claim(claimed_by="headless-worker")
+            task = self._author_task(url=f"https://example.com/issues/worker/{i}")
+            task.claim(claimed_by="task-worker")
             claimed.append(task)
         return claimed
 

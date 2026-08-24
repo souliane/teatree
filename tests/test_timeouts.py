@@ -81,7 +81,7 @@ class TestTimeoutConfig:
     def test_frozen(self) -> None:
         cfg = TimeoutConfig()
         with pytest.raises(AttributeError):
-            cfg.values = {}  # type: ignore[misc]
+            cfg.values = {}  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestLoadTimeouts(TestCase):

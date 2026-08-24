@@ -10,8 +10,11 @@ silently stale.
 
 This gate denies a working-tree mutation of any REGISTERED (teatree-managed)
 main clone — an ``Edit``/``Write`` to a path under a clone on the DEFAULT branch
-(or a detached HEAD), or a ``git checkout``/``switch`` to a non-default branch /
-``reset --hard`` / ``restore`` / ``stash pop`` in a main-clone cwd — while
+(or a detached HEAD), a ``Bash`` command whose WRITE TARGETS resolve to such a
+path (``sed -i``, ``cat > path <<EOF``, ``tee``, ``cp``/``mv``, a ``python3``
+heredoc — #4092; an unresolvable target ALLOWS, matching this module's stance on
+an unpinnable git target), or a ``git checkout``/``switch`` to a non-default
+branch / ``reset --hard`` / ``restore`` / ``stash pop`` in a main-clone cwd — while
 ALLOWING ``git fetch``, ``git pull --ff-only``, ``git checkout <default>``, ``git
 worktree add/remove/prune/list``, and all read-only git, so ``t3 update`` and
 worktree creation keep working. An ``Edit``/``Write`` to a clone checked out on a
@@ -184,24 +187,29 @@ def _on_non_default_branch(repo_root: str, branch: str) -> bool:
     return name not in safe
 
 
-def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
-    """Resolve an Edit/Write landing on a path under a managed main clone, else None.
+def _lands_in_pristine_main_clone(file_path: str) -> bool:
+    """True iff writing *file_path* would dirty a managed main clone's default checkout.
 
     A managed main clone checked out on a non-default FEATURE branch is a
-    sanctioned edit target (#3256); only an edit to the pristine default checkout
-    (or a detached HEAD) blocks. The switch that lands the clone on a feature
-    branch is still governed by :func:`_git_finding`.
+    sanctioned write target (#3256); only a write to the pristine default
+    checkout (or a detached HEAD) qualifies. The switch that lands the clone on
+    a feature branch is still governed by :func:`_git_finding`.
     """
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not isinstance(file_path, str) or not file_path or is_agent_state_path(file_path):
-        return None
+    if not file_path or is_agent_state_path(file_path):
+        return False
     resolved = resolve_branch_and_root(str(Path(file_path).expanduser().parent))
     if resolved is None:
-        return None
+        return False
     branch, repo_root = resolved
     if not _is_managed_main_clone(repo_root) or not file_is_inside_worktree(repo_root, file_path):
-        return None
-    if _on_non_default_branch(repo_root, branch):
+        return False
+    return not _on_non_default_branch(repo_root, branch)
+
+
+def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
+    """Resolve an Edit/Write landing on a path under a managed main clone, else None."""
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    if not isinstance(file_path, str) or not _lands_in_pristine_main_clone(file_path):
         return None
     return core.edit_finding(file_path)
 
@@ -275,6 +283,45 @@ def _git_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001
     )
 
 
+def _bash_write_paths(command: str, base: "Path | None") -> tuple[Path, ...]:
+    """The paths *command* would WRITE, anchored to *base*; empty on any failure.
+
+    Delegates to the shared resolver :mod:`teatree.hooks.write_targets`, whose
+    unresolvable targets (a ``$VAR`` path, a ``>(...)`` process substitution, an
+    interpreter body writing through a variable) are deliberately DROPPED here:
+    this module's posture on anything it cannot pin statically is ALLOW, the same
+    stance it takes on an unpinnable git target. A cold hook env without
+    ``teatree`` yields no paths — fail OPEN.
+    """
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks.write_targets import bash_write_targets  # noqa: PLC0415 — deferred: cold-hook import
+
+            return bash_write_targets(command).resolved_paths(base)
+    except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN (no write targets).
+        return ()
+
+
+def _bash_write_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
+    """Resolve a Bash command WRITING a file under a managed main clone, else None (#4092).
+
+    Relative targets are anchored to the command's EFFECTIVE dir (honouring a
+    leading ``cd`` / ``-C`` / ``--git-dir``, :func:`_effective_command_dir`), not
+    the ambient cwd — the recorded incident was exactly a drifted cwd writing
+    bare relative paths into the deployed clone.
+    """
+    from hooks.scripts.hook_router import _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
+
+    command = data.get("tool_input", {}).get("command", "")
+    if not isinstance(command, str) or not command:
+        return None
+    base = _effective_command_dir(command, _resolve_cwd_repo(data))
+    for path in _bash_write_paths(command, base):
+        if _lands_in_pristine_main_clone(str(path)):
+            return core.bash_write_finding(str(path))
+    return None
+
+
 def _gate_should_skip(data: dict) -> bool:
     """True iff a pre-check says this call is out of scope or escaped."""
     if data.get("tool_name", "") not in {"Write", "Edit", "Bash"}:
@@ -290,8 +337,9 @@ def _gate_should_skip(data: dict) -> bool:
 def handle_block_main_clone_mutation(data: dict) -> bool:
     """Deny a working-tree mutation of a registered (teatree-managed) main clone.
 
-    Returns ``True`` (deny emitted) for an Edit/Write under a managed main clone
-    or a forbidden git command (checkout/switch off-default, reset --hard,
+    Returns ``True`` (deny emitted) for an Edit/Write under a managed main clone,
+    a Bash command writing a file under one (#4092), or a forbidden git command
+    (checkout/switch off-default, reset --hard,
     restore, stash pop) in a main-clone cwd; ``False`` (allow) for everything
     else — worktree edits, read-only git, fetch, pull --ff-only, checkout
     <default>, worktree add/remove/prune/list. Fail-open on every resolution
@@ -304,8 +352,10 @@ def handle_block_main_clone_mutation(data: dict) -> bool:
     core = _load_core()
     if core is None:
         return False
-    tool_name = data.get("tool_name", "")
-    finding = _edit_finding(core, data) if tool_name in _FILE_TOOLS else _git_finding(core, data)
+    if data.get("tool_name", "") in _FILE_TOOLS:
+        finding = _edit_finding(core, data)
+    else:
+        finding = _git_finding(core, data) or _bash_write_finding(core, data)
     if finding is None:
         return False
     return _fail_open_or_deny(data, core.deny_reason(finding))

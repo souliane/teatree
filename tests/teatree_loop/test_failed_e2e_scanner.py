@@ -76,7 +76,7 @@ class FailedE2EScannerTests(TestCase):
     def test_single_bullet_post_emits_one_signal(self) -> None:
         watcher = self._watcher()
         text = "E2E failures:\n* tests/foo/bar.spec.ts (timeout)"
-        messages = {CHANNEL: [{"text": text, "ts": "1779.001"}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": "1779.001"}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -100,7 +100,7 @@ class FailedE2EScannerTests(TestCase):
             "* tests/b/two.spec.ts (assertion)\n"
             "* tests/c/three.spec.ts (network)\n"
         )
-        messages = {CHANNEL: [{"text": text, "ts": "1779.002"}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": "1779.002"}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -118,7 +118,7 @@ class FailedE2EScannerTests(TestCase):
     def test_re_tick_is_idempotent(self) -> None:
         watcher = self._watcher()
         text = "E2E failures:\n* tests/foo.spec.ts (timeout)"
-        messages = {CHANNEL: [{"text": text, "ts": "1779.003"}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": "1779.003"}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -140,7 +140,7 @@ class FailedE2EScannerTests(TestCase):
 
     def test_message_without_post_pattern_match_is_ignored(self) -> None:
         watcher = self._watcher()
-        messages = {CHANNEL: [{"text": "regular chat message", "ts": "1779.010"}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": "regular chat message", "ts": "1779.010"}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -155,7 +155,7 @@ class FailedE2EScannerTests(TestCase):
 
     def test_message_with_missing_text_or_ts_is_ignored(self) -> None:
         watcher = self._watcher()
-        messages = {
+        messages: dict[str, list[RawAPIDict]] = {
             CHANNEL: [
                 {"ts": "1779.011"},  # no text
                 {"text": "E2E failures:\n* tests/x.spec.ts"},  # no ts
@@ -179,7 +179,7 @@ class FailedE2EScannerTests(TestCase):
     def test_lines_without_spec_match_are_skipped(self) -> None:
         watcher = self._watcher()
         text = "E2E failures:\nSome context line with no spec ref\n* tests/real/spec.spec.ts (timeout)\nTrailing prose."
-        messages = {CHANNEL: [{"text": text, "ts": "1779.020"}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": "1779.020"}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))

@@ -3,29 +3,30 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
-from django.apps import apps
-
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
+from teatree.core.forge_push import push_branch
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
-from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
+from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
 from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
-    from teatree.core.models.types import JSONObject, TicketExtra
+    from teatree.core.models.types import TicketExtra
     from teatree.core.models.worktree import Worktree
 
 logger = logging.getLogger(__name__)
@@ -147,10 +148,10 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     """
     invoking = str(extra.get("ship_invoking_branch") or "")
     if invoking:
-        matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        matched = ticket.worktrees.filter(branch=invoking).first()
         if matched is not None:
             return matched
-    return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    return ticket.worktrees.first()
 
 
 def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
@@ -250,9 +251,16 @@ class ShipExecutor(RunnerBase):
             return RunnerResult(ok=True, detail=recorded_url)
 
         # #776: a ticket can span multiple PRs (one branch per workstream).
-        # Refuse to re-open a PR for a branch already merged into base —
-        # that is the stale-row symptom (a junk duplicate of merged work).
-        if git.branch_merged(repo=repo_path, branch=branch):
+        # Refuse to re-open a PR for a branch already landed on base — that is
+        # the stale-row symptom (a junk duplicate of merged work). #4070: judged
+        # by the three-layer CONTENT classifier, not the ancestor test alone; a
+        # squash-merge rewrites the branch's shas, so the branch is no ancestor
+        # of base and the ancestor test let the duplicate through. Inconclusive
+        # stays NOT-landed and ship proceeds — a wrongly-refused PR strands
+        # work, while a wrongly-opened one is a visible duplicate. Same reason
+        # the content must still be PRESENT on base: a revert, or a re-edit of
+        # the same region, ships rather than refuses.
+        if branch_is_landed(repo_path, branch):
             self._clear_invoking_branch(ticket, extra)
             return RunnerResult(
                 ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"
@@ -268,7 +276,7 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> RunnerResult:
-        """Branch-currency re-check, then the two fenced outward writes (push, PR-open).
+        """Every refusal first, then the two fenced outward writes (push, PR-open).
 
         Split out of ``run`` so each half stays within the return-count gate. The
         fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
@@ -283,18 +291,56 @@ class ShipExecutor(RunnerBase):
         if currency_error is not None:
             return RunnerResult(ok=False, detail=currency_error)
 
+        refusal = self._refusal_before_outward_write(ticket, host, repo_path)
+        if refusal is not None:
+            return refusal
+
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
 
-        git.push(repo=repo_path, remote="origin", branch=branch)
+        pushed = push_branch(repo=repo_path, remote="origin", branch=branch)
+        if not pushed.ok:
+            return RunnerResult(ok=False, detail=f"push refused ({pushed.failure}): {pushed.detail}")
         # Re-fence immediately after the push, before ANY PR-open work — the push and
         # the create are two distinct outward writes and the claim can be lost between.
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        return self._open_pr_and_record(ticket, host, spec, repo_path)
+        return self._open_pr_and_record(ticket, host, spec)
+
+    @staticmethod
+    def _refusal_before_outward_write(
+        ticket: "Ticket",
+        host: "CodeHostBackend",
+        repo_path: str,
+    ) -> "RunnerResult | None":
+        """The PR-budget / debt-delta refusals, reached BEFORE any outward write (#4151).
+
+        THE chokepoint both the interactive ``pr create`` async worker and the
+        autonomous loop's task-driven ship converge on — the loop route reaches
+        ``execute_ship`` without ``_run_ship_gates``, so without this the branch would
+        ship un-gated. Both are inert at their neutral/DARK defaults.
+
+        The ORDERING is the contract, not an optimisation. Run after the push, these
+        refusals answered "refused" for a ship whose PR already existed: the push fires
+        the pre-push ``ensure-pr`` hook, which opens a PR for the branch, so the caller
+        both retried into an "already exists" collision and stopped tracking a live PR.
+
+        Stage 3: ``host`` is the repo's resolved code host, so the budget check sees a
+        sibling fleet instance's live forge PR too.
+        """
+        expected_slug = git.remote_slug(repo=repo_path)
+        if expected_slug:
+            try:
+                check_pr_budget(ticket, expected_slug, host=host)
+            except PrBudgetExceededError as exc:
+                return RunnerResult(ok=False, detail=str(exc))
+        debt_error = evaluate_debt_delta(ticket, repo_path)
+        if debt_error is not None:
+            return RunnerResult(ok=False, detail=debt_error)
+        return None
 
     def _fleet_claim_lost(self, repo_path: str) -> "RunnerResult | None":
         """Refuse the outward write when this instance no longer holds the fleet claim.
@@ -341,9 +387,12 @@ class ShipExecutor(RunnerBase):
         ticket: "Ticket",
         host: "CodeHostBackend",
         spec: PullRequestSpec,
-        repo_path: str,
     ) -> RunnerResult:
         """Open the PR, verify the URL is present, and record it on the ticket.
+
+        Reached only once every refusal has concluded
+        (:meth:`_refusal_before_outward_write`), so nothing here can turn into a
+        "refused" verdict for a PR that exists.
 
         #1222 / #1226 verify-by-re-read: a backend that returns a payload
         without a URL (or with the wrong field name) MUST surface as
@@ -352,25 +401,7 @@ class ShipExecutor(RunnerBase):
         ``web_url`` is the cross-host canonical key; ``html_url`` is kept
         for raw GitHub API payloads piped through other producers.
         """
-        # North-star PR-2/PR-3: THE chokepoint both the interactive `pr create`
-        # async worker and the autonomous loop's task-driven ship converge on
-        # (routes that reach here without `_run_ship_gates`). Refuse before
-        # opening when the ticket is at its per-repo open-PR budget, or when the
-        # branch introduces unwaived net-new tech debt; both inert at their
-        # neutral/DARK defaults. `_run_ship_gates` additionally fail-fasts these
-        # before the push for the interactive path.
         expected_slug = git.remote_slug(repo=spec.repo)
-        if expected_slug:
-            try:
-                # Stage 3: pass the resolved `host` so THE chokepoint the
-                # autonomous loop's task-driven ship converges on also sees a
-                # sibling fleet instance's live forge PR (fails open on error).
-                check_pr_budget(ticket, expected_slug, host=host)
-            except PrBudgetExceededError as exc:
-                return RunnerResult(ok=False, detail=str(exc))
-        debt_error = evaluate_debt_delta(ticket, repo_path)
-        if debt_error is not None:
-            return RunnerResult(ok=False, detail=debt_error)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):
@@ -485,7 +516,7 @@ class ShipExecutor(RunnerBase):
         branch: str,
         extra: "TicketExtra",
     ) -> PullRequestSpec:
-        subject, body = git.last_commit_message(repo=repo_path)
+        subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
         overlay = get_overlay()
         # PRODUCE the title via the shared resolver so the ship and the
         # ``ship_preview`` preflight agree on what will ship: a pinned
@@ -519,6 +550,7 @@ class ShipExecutor(RunnerBase):
             patterns=get_overlay_publish_gates(),
         )
         warn_if_open_questions_missing(description)
+        warn_if_owner_ratification_unbacked(description)
         warn_if_precheck_incomplete(description)
         assignee = resolve_pr_assignee(host, repo=repo_path)
         return PullRequestSpec(
@@ -533,23 +565,6 @@ class ShipExecutor(RunnerBase):
 
     @staticmethod
     def _record_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
-        # #800 N3 + list-append: derive ``pr_urls`` / ``pr_url_by_branch`` INSIDE
-        # the locked merge_extra from the re-read row, not from the run-start
-        # ``extra`` snapshot. Replacing the whole list from the stale snapshot
-        # dropped a concurrent ship's freshly-appended URL; appending only the
-        # new entry lets the other writer's URL survive. #1263: the per-branch
-        # index lets a later workstream tell whether its own PR exists.
-        append_lists: dict[str, list[object]] = {"pr_urls": [url]} if url else {}
-        merge_dicts: dict[str, JSONObject] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
-        ticket.merge_extra(
-            append_to_lists=append_lists,
-            merge_into_dicts=merge_dicts,
-            pop_keys=["pr_title_override", "ship_invoking_branch"],
-        )
-        # #3840: the JSON index above is the ticket's own cache; the arbiter row is
-        # what the merge keystone, the board reconcile and the merge-evidence gate
-        # resolve the PR's owning ticket through. Write it here, where the ticket is
-        # in hand and the PR has just been verify-by-re-read confirmed, so a PR that
-        # merges before the next tick is still attributable to its ticket.
-        if url:
-            apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
+        # The ship's single-run hints are ship-owned, so they are cleared here
+        # rather than in the shared writer the pre-push hook also calls (#4305).
+        record_pr_url(ticket, url, branch, pop_keys=("pr_title_override", "ship_invoking_branch"))

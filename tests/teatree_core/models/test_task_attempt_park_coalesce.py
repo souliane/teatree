@@ -26,7 +26,6 @@ class ParkCoalescingTest(TestCase):
     def _park(self, task: Task, reason: str) -> TaskAttempt:
         return TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=1,
             error=reason,
@@ -68,7 +67,7 @@ class ParkCoalescingTest(TestCase):
     def test_a_park_after_real_work_opens_a_new_row(self) -> None:
         """A park that follows an actual dispatch is a fresh episode, not a repeat."""
         self._park(self.task, _ADMISSION)
-        TaskAttempt.objects.create(task=self.task, execution_target=self.task.execution_target, exit_code=0)
+        TaskAttempt.objects.create(task=self.task, exit_code=0)
         self._park(self.task, _ADMISSION)
 
         assert self.task.attempts.filter(error=_ADMISSION).count() == 2
@@ -85,7 +84,6 @@ class ParkCoalescingTest(TestCase):
         for _ in range(3):
             TaskAttempt.objects.create(
                 task=self.task,
-                execution_target=self.task.execution_target,
                 exit_code=1,
                 error="Traceback (most recent call last): boom",
             )

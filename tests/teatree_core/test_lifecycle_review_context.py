@@ -51,7 +51,7 @@ class TestReviewingRequiresReviewContext(TestCase):
     def _record_context(self, ticket: Ticket) -> None:
         ticket.record_review_context(
             work_item="https://gitlab.example.com/group/repo/-/issues/51",
-            documents=["uploads/abc/Tilgungsplan.pdf"],
+            documents=["uploads/abc/Widgetplan.pdf"],
             analysis="amortization schedule matches the serializer rounding rules",
         )
 
@@ -142,7 +142,6 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
         with _gate(required=True), pytest.raises(TransitionNotAllowed):
@@ -157,7 +156,6 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
         ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")

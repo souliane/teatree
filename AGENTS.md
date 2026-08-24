@@ -49,6 +49,8 @@ Amplifies CLAUDE.md "No stale references". When a change retires or renames a fu
 ## Issue Creation (Non-Negotiable)
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
+- **Search the open backlog first, and reuse a host issue where one fits.** `gh issue list` returns 30 rows by default, so a first-page read reports "nothing open matches this" while the host sits at position 40 — pass `--limit 200`. Extending beats filing a near-duplicate: append the new evidence and acceptance criteria to the existing issue's body or as a comment, so the host carries the whole ask. A cross-link from a second issue is not reuse.
+- **One issue per root cause, not per finding.** Findings that a single PR would close belong in one issue. The exception is scope, not similarity: a genuinely unrelated defect in another subsystem still gets its own issue — this rule bounds duplication, never the backlog's coverage.
 - **Teatree is a public repository.** Only generic, project-agnostic issues belong here. Never mention downstream project names, tenant names, customer names, internal architecture, feature flags, or any proprietary information.
 - **Overlay-specific issues go on the overlay repository.** If an issue involves both core teatree and an overlay, create it on the overlay repo and reference the core component — not the other way around.
 - **When in doubt, ask.** If you're unsure whether an issue is generic or overlay-specific, ask the user before creating it anywhere.
@@ -72,33 +74,34 @@ It provides:
 ```
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
-  config.py            settings resolution (DB ConfigSetting store), overlay discovery
+  config/              Settings resolution (DB ConfigSetting store), setting-home registry,
+                       overlay discovery, and `defaults.toml` — the shipped-defaults authority
   skill_support/       Skill selection policy (`loading.py` — phase → skills, cwd detection),
                        transitive `requires` / soft `companions` resolution (`deps.py`),
                        and the `agents/*.md` frontmatter reader (`agent_declarations.py`)
   core/                Django app: models, managers, views, selectors, management commands
     models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)
+    backend_protocols.py  Protocol classes (CodeHostBackend, CIService, MessagingBackend)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Discovers the active overlay class from `teatree.overlays` entry points
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
     views/             Admin views
     templates/         Django admin templates
-  backends/            Pluggable service integrations
-    protocols.py       Protocol classes (CodeHostBackend, CIService, MessagingBackend)
+    <leaf packages>    cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/ merge/ gates/ …
+  backends/            Pluggable service integrations, one package per forge
     loader.py          Overlay-config-driven backend resolution (cached via lru_cache)
-    github.py          GitHub code-host client
-    github_sync.py     GitHubSyncBackend — implements SyncBackend ABC from teatree.types
-    gitlab.py          GitLab code-host client
-    gitlab_ci.py       GitLab CI pipeline operations
-    gitlab_sync*.py    GitLabSyncBackend + per-concern sync modules (issues, prs, approvals, terminal)
-    slack*.py, notion.py, sentry.py, sharepoint.py  Other integrations
+    github/            GitHub code-host client + `sync.py` (GitHubSyncBackend, the SyncBackend ABC from teatree.types)
+    gitlab/            GitLab code-host client, CI pipeline operations, per-concern sync modules
+    slack/, notion/, msteams/, sentry.py, sharepoint.py, figma.py   Other integrations
   agents/              Agent runtime
-    headless.py        Headless tasks via `claude -p` (capture structured JSON output)
+    runner.py          Headless in-process runs behind the `Harness` seam (structured JSON envelope)
+    harness.py         The `Harness` / `HarnessSession` protocols the runtimes implement
     handover.py        Headless ↔ interactive session handover (resume by session id)
     model_tiering.py   Per-phase model override resolution
     skill_bundle.py    Skill dependency resolver for agent launch
     prompt.py          System context and task prompt builders (headless + interactive)
+    attempt_recorder.py  Shared schema + evidence gate applied to every recorded attempt
     result_schema.py   JSON schema for structured agent output
   utils/               Git helpers, port allocation, subprocess wrappers
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
@@ -128,10 +131,10 @@ records.
 
 ### Task — Agent work unit (FSM, FK → Ticket, Session)
 
-- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_target (headless/interactive), execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
+- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
 - `execution_reason` is why the task was SCHEDULED; `failure_reason` is why it FAILED, named by `core/task_failure_taxonomy.py`. `Task.fail()` requires a reason, so no failure path can land a task in FAILED with no cause attached.
 - **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at, result_artifact_path
-- **Key methods:** claim(), route_to_headless(), route_to_interactive(), complete(), fail()
+- **Key methods:** claim(), complete(), fail(), reopen(), park()
 
 ### PullRequest — PR/MR lifecycle (FSM)
 
@@ -147,7 +150,7 @@ records.
 
 ### TaskAttempt — Execution history (FK → Task)
 
-- **Fields:** task (FK), started_at, ended_at, execution_target, error, exit_code, artifact_path, result (JSONField), input_tokens, output_tokens, cost_usd, num_turns, launch_url, agent_session_id
+- **Fields:** task (FK), started_at, ended_at, error, exit_code, artifact_path, result (JSONField), input_tokens, output_tokens, cost_usd, num_turns, launch_url, agent_session_id
 - Enables cross-task failure querying and audit trail
 
 Other supporting models include `TicketTransition` (phase-change log),
@@ -171,7 +174,7 @@ outage still surfaces via `_run_job`. Canonical exemplars:
 
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
-| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-headless`, `followup refresh`, `loop_tick` | Yes |
+| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next`, `followup refresh`, `loop_tick` | Yes |
 | Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info`, `t3 loop start/stop/status` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 
@@ -238,7 +241,7 @@ Concretely:
 - **Overlay** answers "which GitLab project is this overlay's CI?" (returns a string) — that's overlay-shaped.
 - **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol method like `CodeHostBackend.get_issue` or `CodeHostBackend.list_my_prs` already exists.
 
-When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The reviewer skill `ac-reviewing-codebase` § Phase 3.5b enforces this rule during audits.
+When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The periodic holistic review (`ac-reviewing-codebase` § 1) enforces this rule during audits, via the catalog entry `plugin-wraps-platform-api`.
 
 ### Sync ABC (`teatree.types`)
 
@@ -258,27 +261,21 @@ Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLa
 
 ## Agent Runtime
 
-Both task kinds shell out to the local `claude` CLI (no Anthropic API key
-needed). The binary is resolved via `shutil.which("claude")`; per-phase
-model overrides come from `agents/model_tiering.py`.
+Two lanes, one per task kind. Per-phase model overrides come from
+`src/teatree/agents/model_tiering.py` in both.
 
-### Headless Sessions (`agents/headless.py`)
+### Headless Sessions (`src/teatree/agents/runner.py`)
 
-Headless tasks run `claude -p <prompt> --append-system-prompt <context> --output-format json`.
+Headless tasks drive an in-process agent session behind the `Harness` seam
+(`src/teatree/agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`
+(a `claude-agent-sdk` `ClaudeSDKClient`) or `pydantic_ai` (an OpenAI-compatible
+endpoint). Both yield the same `AssistantMessage` / `ResultMessage` vocabulary,
+so the driver never special-cases the transport.
 
-- Parses the JSON result from stdout, validates against `result_schema.py`
-- If the result contains `needs_user_input: true`, reroutes the task to the user-input queue
+- Collects the typed messages the session yields and validates the result envelope against `result_schema.py`
+- If the result carries `needs_user_input: true`, reroutes the task to the user-input queue
 - Stores the parsed result in `TaskAttempt.result`
-- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, headless prepends `--resume <session_id>` to continue with full context (`headless.py`).
-
-### Interactive Sessions (`core/management/commands/tasks.py`)
-
-Interactive tasks (`tasks start`) launch `claude` inline in
-the invoking terminal — no ttyd, no terminal-mode strategies. The argv is
-built by `_build_claude_command`:
-
-- Fresh session: `claude --append-system-prompt <interactive context>` (context from `agents/prompt.py:build_interactive_context`).
-- Resume: when `Session.agent_id` holds a Claude session UUID, `claude --resume <uuid>` — preserving context from the prior headless run.
+- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `src/teatree/agents/pydantic_ai_resume.py`).
 
 ### Skill Loading
 
@@ -388,6 +385,6 @@ teatree resolves ALL required state from its own stores; an assistant's memory i
 - Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.
 - Coverage omits only migrations. Everything else must be covered.
-- `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
+- The headless lane is an in-process session behind the `Harness` seam; whether a `claude` CLI child is spawned underneath is the backend's own `HarnessCapabilities.spawns_cli_child`. Interactive tasks exec the `claude` CLI directly in the operator's terminal.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.

@@ -5,10 +5,11 @@ was provisioning — every declared skill went out to a network clone, so on a b
 with no reachable source the mandate stayed unmet and `t3 doctor check` FAILED on
 skills whose content the plugin was already carrying.
 
-The plugin's own ``skills/`` tree is now the first source consulted, which makes
-the recommended set — the software-architecture skill above all — install offline
-and deterministically. The remote clone stays as the fallback for a declared skill
-the plugin does not carry.
+The plugin's own ``skills/`` tree is the first source consulted, which makes a
+plugin-carried skill — ``architecture-design`` — install offline and
+deterministically. The remote clone is the path for a declared skill the plugin
+does not carry: the ``ac-*`` companions, which are owned in ``souliane/skills``
+and mandated from there rather than copied in-tree.
 """
 
 from pathlib import Path
@@ -74,14 +75,35 @@ class TestPluginIsTheFirstSource:
         assert installer.ensure(_dependency("architecture-design"), link_dir=link_dir) is InstallOutcome.UNAVAILABLE
 
 
-class TestRecommendedSetShipsInThePlugin:
-    """The declared set includes the architecture skill, and the plugin carries it."""
+class TestTheDeclaredSetSplitsPluginCarriedFromApmInstalled:
+    """`architecture-design` is teatree's own; the `ac-*` companions are not."""
 
     def test_the_architecture_skill_is_declared(self) -> None:
         declared = {dep.name for dep in skills_declared_in_apm_manifest(_REPO_ROOT / "apm.yml")}
         assert "architecture-design" in declared
 
-    def test_every_declared_skill_the_plugin_carries_resolves_locally(self) -> None:
+    def test_the_plugin_carries_the_two_skills_its_own_code_dispatches(self) -> None:
+        # `architecture-design` is teatree's own. `ac-reviewing-codebase` is OWNED
+        # elsewhere but must ALSO ship in-tree: it is the default skill of
+        # `ArchitecturalReviewScanner`, which resolves against `default_search_dirs()`
+        # — the plugin `skills/` dir plus two agent dirs that do not exist in CI or on
+        # a fresh box. Without the in-tree copy the scanner's default resolves to
+        # nothing and every periodic review runs with zero guidance, which is #3353.
         declared = skills_declared_in_apm_manifest(_REPO_ROOT / "apm.yml")
         plugin_carried = [dep for dep in declared if (_REPO_ROOT / "skills" / dep.name / "SKILL.md").is_file()]
-        assert {dep.name for dep in plugin_carried} >= {"architecture-design", "ac-reviewing-codebase"}
+        assert {dep.name for dep in plugin_carried} == {"architecture-design", "ac-reviewing-codebase"}
+
+    @pytest.mark.parametrize("name", ["ac-reviewing-codebase", "ac-python", "ac-django"])
+    def test_each_companion_skill_is_mandated_from_its_own_repo(self, name: str) -> None:
+        declared = {dep.name: dep for dep in skills_declared_in_apm_manifest(_REPO_ROOT / "apm.yml")}
+        assert name in declared, f"{name} is not mandated in apm.yml"
+        assert declared[name].source.startswith("souliane/skills/"), declared[name].source
+
+    @pytest.mark.parametrize("name", ["ac-python", "ac-django"])
+    def test_a_companion_no_code_dispatches_is_not_also_vendored(self, name: str) -> None:
+        # The plugin-first install path means a copy under `skills/` would satisfy the
+        # mandate locally and hide a broken remote. These two are only ever loaded by
+        # an agent reading them, so the declaration must be the only way they arrive.
+        # `ac-reviewing-codebase` is deliberately excluded: teatree's own scanner names
+        # it as a default and must be able to resolve it offline (#3353).
+        assert not (_REPO_ROOT / "skills" / name).exists(), f"{name} is vendored in-tree and would mask the mandate"

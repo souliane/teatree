@@ -1,7 +1,7 @@
 """Loop-control read model: each loop's effective verdict + the layer that decided it (#3162).
 
 The dashboard reads the SAME effective verdict the tick gates on — from the one
-shared source ``teatree.loops.preset_status.effective_verdicts`` that ``t3 loops
+shared source ``teatree.loops.enable_verdict.effective_verdicts`` that ``t3 loops
 list``, ``t3 loop preset show`` and the statusline also read — so it can never
 recompute a verdict that drifts from the fleet. That verdict folds all four layers:
 the durable ``LoopState`` hold (L4), the active preset's L3 override / L2 schedule
@@ -15,13 +15,14 @@ import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
-from teatree.core.mode_resolution import POSTURE_TOKENS, posture_label, resolve_active_mode
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.loop import Loop
+from teatree.core.models.loop_preset import Mode
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
+from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
 from teatree.loops.live import LoopStatusEntry, build_report
-from teatree.loops.loop_cadence_editing import CadenceBounds, cadence_bounds_for
-from teatree.loops.preset_status import LoopVerdict, effective_verdicts
+from teatree.loops.loop_cadence_editing import CADENCE_STEP_SECONDS, CadenceBounds, cadence_bounds_for, is_off_grid
 from teatree.loops.registry import iter_loops
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,9 @@ logger = logging.getLogger(__name__)
 LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
 
 
-# Posture switches the header offers. Each is resolved to the merged Mode
-# carrying that intrinsic posture BY ROW (#3559) — never by a hard-coded mode name,
-# so an operator renaming a seeded mode cannot break the switch. ``auto`` clears the
-# override so the schedule / default decides again.
-POSTURE_ACTIONS: frozenset[str] = frozenset({*POSTURE_TOKENS, "auto"})
+#: Clears the override so the schedule / default decides again — the one switch
+#: value that is not a ``Mode`` row name.
+MODE_SWITCH_AUTO = "auto"
 
 # The exact phrase the operator must type to flip the master fail-open switch —
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
@@ -80,22 +79,37 @@ class LoopControlView:
     infra_slots: tuple[LoopStatusEntry, ...]
     mode_name: str
     mode_source: str
-    mode_posture: str
+    #: Every defined mode, so the header offers the live set rather than a frozen list.
+    mode_names: tuple[str, ...]
     gate_fail_open: bool
     runner_enabled: bool
+    #: The global cadence grid, stated ONCE as the table's legend (#4079). It is the same for
+    #: every ordinary loop, so repeating it per row said nothing about any particular row.
+    cadence_step_seconds: int = CADENCE_STEP_SECONDS
+    #: Stored intervals that predate the grid — reported so the operator decides, never
+    #: rewritten. Empty on a box whose rows are all on the grid, which is the normal case.
+    off_grid: tuple[tuple[str, int], ...] = ()
 
 
 def build_loop_control() -> LoopControlView:
     """The whole loop-control page read model: loop rows + infra slots + header state."""
     resolved = resolve_active_mode()
+    loops = build_loop_rows()
     return LoopControlView(
-        loops=build_loop_rows(),
+        loops=loops,
         infra_slots=_infra_slots(),
         mode_name=resolved.name,
         mode_source=resolved.source,
-        mode_posture=posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump),
+        mode_names=tuple(Mode.objects.values_list("name", flat=True)),
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
+        # Derived from the rows already loaded above rather than re-queried: the page's query
+        # count is a pinned budget, and this listing is a property of rows it already holds.
+        off_grid=tuple(
+            (row.name, row.delay_seconds)
+            for row in loops
+            if row.delay_seconds is not None and is_off_grid(row.delay_seconds)
+        ),
     )
 
 
@@ -117,7 +131,7 @@ def build_loop_rows() -> tuple[LoopRow, ...]:
     """Every ``Loop`` row with its effective verdict and deciding layer.
 
     The verdict + deciding layer come from the shared canonical source
-    :func:`teatree.loops.preset_status.effective_verdicts`, so the dashboard never
+    :func:`teatree.loops.enable_verdict.effective_verdicts`, so the dashboard never
     recomputes an admission verdict that could drift from the tick. Display fields
     (description, cadence, the paused-vs-disabled hold status) are joined by name
     from one ``Loop`` and one ``LoopState`` read; a verdict whose ``Loop`` row
@@ -160,19 +174,30 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict, tags: tuple[str, ..
     )
 
 
+#: How each layer that can supply the active mode's mask is named in the table. Keyed on
+#: :attr:`~teatree.core.mode_resolution.ResolvedMode.source`, so the L0 default row and
+#: the live-presence upgrade are nameable too rather than falling through to L1 (#4185).
+_MODE_LAYER_LABELS = {
+    "override": "L3 override",
+    "schedule": "L2 schedule",
+    "live": "L2 presence upgrade",
+    "default": "L0 default mode",
+}
+
+
 def _deciding_layer(verdict: LoopVerdict, *, enabled: bool, status: str) -> str:
     """Which control layer decides the loop's verdict — answers "why isn't it running".
 
     Reads the shared verdict's ``layer`` so the precedence mirrors the resolver
-    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then the active
-    preset's L3 override / L2 schedule mask (#3159), else the base L1 ``Loop.enabled``.
+    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then whichever
+    layer supplied the active mode's mask (#3159, #4185), else the base L1
+    ``Loop.enabled``.
     """
     if verdict.layer == "hold":
         return "L4 hold — paused" if status == LoopStatus.PAUSED.value else "L4 hold — disabled"
-    if verdict.layer == "override":
-        return f"L3 override — {_preset_effect(verdict)}"
-    if verdict.layer == "schedule":
-        return f"L2 schedule — {_preset_effect(verdict)}"
+    label = _MODE_LAYER_LABELS.get(verdict.layer)
+    if label is not None:
+        return f"{label} — {_preset_effect(verdict)}"
     if not enabled:
         return "L1 — Loop.enabled off"
     return "L1 — enabled"

@@ -93,7 +93,7 @@ class WhiteCheckMarkSweepTests(TestCase):
 
         # Now scan channel A — its broadcast is the freshly-merged one.
         messaging = FakeMessaging()
-        messages = {CHANNELS[0]: [{"text": f"Merge complete {MR}", "ts": ts}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNELS[0]: [{"text": f"Merge complete {MR}", "ts": ts}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))

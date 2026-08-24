@@ -291,6 +291,37 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
+# Point clone discovery at a checkout every venue can reach.
+#
+# `git worktree add` bakes an ABSOLUTE `gitdir:` pointer into its SOURCE CLONE,
+# so the clone's path — not the worktree's — decides who can use the result. The
+# image links `~/workspace/souliane/teatree` at the `teatree_src` volume, a path
+# that exists nowhere but this container, so a worktree cut here answered
+# `fatal: not a git repository` from the host even though its files were readable
+# through the `t3-workspaces` bind (#4120). The deploy checkout is bind-mounted at
+# path identity, so pointing the link there makes the recorded pointer portable.
+#
+# Degrades to the image's link rather than failing: with nothing exported dockerd
+# creates an empty dir at the default path, and a container that provisions
+# container-only worktrees is still better than one that cannot provision at all.
+retarget_clone_discovery() {
+    local link="${1:-/home/teatree/workspace/souliane/teatree}"  # privacy-scan:allow — the box's public, documented deploy home
+    local checkout="${TEATREE_DEPLOY_CHECKOUT:-}"
+    if [ -z "$checkout" ] || ! git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "entrypoint: no git checkout at TEATREE_DEPLOY_CHECKOUT='${checkout}' - leaving clone discovery on the image link; worktrees cut here resolve only inside this container (#4120)" >&2
+        return 0
+    fi
+    # A real directory is someone's clone, not the image's link — never clobber it.
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "entrypoint: $link is a real directory, not the image's discovery link - leaving it untouched (#4120)" >&2
+        return 0
+    fi
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$checkout" "$link"
+}
+
+retarget_clone_discovery
+
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
 pass_store_has_anthropic() {
@@ -565,7 +596,7 @@ seed_setting() {
 #
 # OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
 # the owner's captured directives and `dispatch` posts deferred owner questions.
-# `autonomous_away` means the human is unreachable *now* — captured intent must
+# an away mode means the human is unreachable *now* — captured intent must
 # QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
 # off on every deploy, so captured owner directives sat uninterpreted for days; the
 # owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
@@ -656,7 +687,7 @@ apply_fleet_loop_policy() {
             echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         elif grep -qxF "$loop" <<<"$intake"; then
             dropped+=("$loop")
-            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even while the owner is away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi
@@ -723,6 +754,74 @@ network_up() {
         1 | true | yes) return 1 ;;
     esac
     git ls-remote --quiet --exit-code "$REPO_URL" HEAD >/dev/null 2>&1
+}
+
+# `uv tool install --reinstall` DELETES the working tool venv before rebuilding it, so a
+# filesystem that fills mid-build leaves neither install: #4338 measured 391 MB free, 124
+# packages written, `click` absent, and every CLI invocation dead at `import typer` with
+# the worker crash-looping for 13 hours. Refusing the boot leaves the PREVIOUS venv intact,
+# which is recoverable; proceeding is not.
+#
+# Measure the filesystem holding the UV TOOL DIR, not `/`: /opt/teatree/uv is a named
+# volume and may be a different device, which would make a `df /` gate vacuous or
+# spuriously firing. An unmeasurable filesystem PROCEEDS - an absent reading is not
+# evidence of no room. The floor mirrors `teatree.utils.install_headroom`'s Python default;
+# `tests/test_deploy_entrypoint_install_headroom.py` pins the two to the same number.
+require_install_headroom() {
+    local floor target free
+    floor="${TEATREE_INSTALL_MIN_FREE_MB:-2048}"
+    target="$(uv tool dir 2>/dev/null || true)"
+    [ -n "$target" ] || target="${UV_TOOL_DIR:-$HOME/.local/share/uv/tools}"
+    while [ ! -d "$target" ] && [ "$target" != "/" ] && [ "$target" != "." ]; do
+        target="$(dirname "$target")"
+    done
+    free="$(df -Pm "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ -z "$free" ]; then
+        echo "entrypoint: WARNING could not measure free space on '$target' - proceeding with the reinstall" >&2
+        return 0
+    fi
+    if [ "$free" -lt "$floor" ]; then
+        echo "entrypoint: FATAL refusing the destructive editable reinstall: ${free} MB free on '${target}', floor ${floor} MB (TEATREE_INSTALL_MIN_FREE_MB)." >&2
+        echo "entrypoint: the previous tool venv is left INTACT - reclaim space, then restart this container:" >&2
+        echo "entrypoint:   docker system prune -f              # reclaim image and build cache" >&2
+        exit 1
+    fi
+}
+
+# The clone's own lockfile, rendered as a constraints file for `uv tool install`.
+#
+# `uv tool install --reinstall` RE-RESOLVES from the index and reads no lockfile — the
+# working directory makes no difference — so the deployed container has always run a
+# dependency graph that no CI lane ever resolved. That is not theoretical: gunicorn
+# 26.1.0 dropped its `packaging` dependency, `packaging` was reaching the tool env only
+# through that edge, and `teatree.utils.dep_skew` imports it on the `t3 doctor` path. The
+# doctor plane was down for 72 consecutive watchdog passes. `uv.lock` still pinned
+# gunicorn 26.0.0 the whole time, so every CI and dev venue stayed green.
+#
+# `--no-default-groups` is BOOT-SAFETY, not tidiness: an export carrying the dev group
+# pins `prek`, and the `uv tool install prek==<pin>` below then dies "your requirements
+# are unsatisfiable" under the image's ambient UV_CONSTRAINT — a bricked boot, strictly
+# worse than the bug. `--all-extras` keeps `[slack]` (the extra this role installs) in
+# scope. `--frozen` reads the committed lock and never re-resolves it, so this is
+# network-free and runs on the offline path too.
+#
+# A failed export writes a COMMENT-ONLY file rather than none: `uv tool install` errors
+# outright on a missing `--constraints` path, so the fallback has to be a file that
+# constrains nothing. The install then degrades to today's unconstrained resolve — the
+# bug — instead of taking the boot down with it.
+CONSTRAINTS_FILE="${CLONE_DIR}/uv-constraints.txt"
+
+ensure_uv_constraints() {
+    local tmp="${CONSTRAINTS_FILE}.tmp"
+    if uv export --no-hashes --no-emit-project --frozen --no-default-groups --all-extras \
+        --directory "$CLONE_DIR" -o "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$CONSTRAINTS_FILE"
+        echo "entrypoint: lockfile constraints regenerated at $CONSTRAINTS_FILE ($(grep -cE '^[a-zA-Z0-9]' "$CONSTRAINTS_FILE") pins)" >&2
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "entrypoint: WARNING could not export $CLONE_DIR/uv.lock as constraints - the install will RE-RESOLVE from the index (see #4049 class: an undeclared transitive dep can vanish under you)" >&2
+    printf '# uv export failed at boot - no constraints applied.\n' >"$CONSTRAINTS_FILE"
 }
 
 ensure_clone() {
@@ -795,15 +894,21 @@ ensure_clone() {
 # `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
 # could not boot Django looked identical to a healthy one and nobody ever saw it.
 #
-# `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
-# queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
-# is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
-# STDOUT (a Django boot traceback, a DB error). STDERR is captured SEPARATELY:
-# every t3 invocation emits a benign WARNING there (an overlay's skills-root
-# notice), so folding it into the emptiness test (2>&1) would misread every
-# empty-queue poll as a failure. Real failures increment a consecutive-failure
+# `t3 slack check` exits 0 when it drained messages and 2 with NO output when the
+# queue was empty (the common, healthy case on a quiet box) — so healthy is
+# EXACTLY rc==0 or rc==2. Everything else (including rc=1, regardless of
+# stdout) is a failure: rc=1 used to double as "empty queue" too, but a
+# crashing drain (Django boot failure, a DB error after a migration) ALSO
+# exits 1 with EMPTY stdout and a traceback on stderr — byte-identical to the
+# old "empty queue" signal — so that collision is now the crash signature,
+# not a healthy read. The Socket Mode singleton stand-down (another drain
+# already holds the lock) still exits 0 and stays healthy under this rule —
+# "0 = drained messages" is about to be false, it also covers "stood down".
+# STDERR is captured SEPARATELY: every t3 invocation emits a benign WARNING
+# there (an overlay's skills-root notice), which must not by itself flip a
+# healthy rc into a failure. Real failures increment a consecutive-failure
 # counter and log BOTH streams to stderr (visible in `docker compose logs
-# teatree-slack-listener`); an empty-queue exit never does.
+# teatree-slack-listener`); a healthy exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
 # container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
@@ -819,7 +924,7 @@ slack_drain_loop() {
     while true; do
         now="$(date +%s)"
         out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
-        if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+        if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
             consecutive=0
             last_ok="$now"
         else
@@ -839,6 +944,10 @@ case "$ROLE" in
 init)
     init_preflight
     ensure_clone
+    # Before ANY uv install: the image exports UV_CONSTRAINT at this path, and uv errors
+    # outright when a constraints file is missing, so it must exist for every role that
+    # later runs `t3 update` off this shared volume.
+    ensure_uv_constraints
     # Resolve the interpreter + editable install + prek. The self-contained image
     # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
     # box), so this is a fast no-op refresh when online and is skipped entirely when
@@ -852,14 +961,29 @@ init)
         # `uv tool install` never reads the package's own `[tool.uv] override-dependencies`,
         # so without it the SDK's `mcp` cap makes this reinstall unresolvable and the box
         # cannot boot. See uv-overrides.txt.
+        # `--constraints` is the LOCKFILE bound (see ensure_uv_constraints): without it
+        # this `--reinstall` re-resolves the whole graph from the index and can install
+        # versions no CI lane has ever run.
         # --with-editable registers the HOST project's `teatree.overlays` entry point
         # alongside core. Without it a vendored fork installs core only, every overlay
         # resolves to "not found", and each headless task on an overlay ticket dies at
         # dispatch. Empty for a standalone core clone, where `set --` expands to nothing
         # and this is the original single-package install.
         set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
+        require_install_headroom
         uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
-            --overrides "${CLONE_DIR}/uv-overrides.txt"
+            --overrides "${CLONE_DIR}/uv-overrides.txt" \
+            --constraints "${CONSTRAINTS_FILE}"
+        # An install that produced a venv whose CLI cannot start is an install FAILURE, not
+        # a later mystery (#4338). The console script is `t3_bootstrap:main` -> `from
+        # teatree.cli import main`, so `--help` exercises the whole import chain - the exact
+        # `import typer` death - while touching no DB, config or network. Adjacent to the
+        # install so the error names its origin instead of surfacing downstream as a
+        # confusing traceback in an unrelated step.
+        if ! t3 --help >/dev/null 2>&1; then
+            echo "entrypoint: FATAL the editable install completed but the CLI does not run (\`t3 --help\` fails) - the tool venv is incomplete: a truncated install leaves declared dependencies missing, e.g. typer without click. Reclaim disk and restart this container." >&2
+            exit 1
+        fi
         # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
         # editable tool install above does NOT provide it. Worktree provisioning
         # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
@@ -911,7 +1035,6 @@ init)
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
-    seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
     # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
     # provenance-aware seeder intentionally SKIPS it — the runtime already

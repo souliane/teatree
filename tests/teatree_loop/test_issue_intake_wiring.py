@@ -15,10 +15,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
+from teatree.core.admission_governor import read_merge_signal
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
-from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, PullRequest, SweepSkipStreak, Task, Ticket
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
@@ -27,17 +28,18 @@ from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanner_factories import _issue_intake_scanner_for
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
-from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
+from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
 
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
-def _backend(name: str = "acme", overlay: object = None) -> OverlayBackends:
+def _backend(name: str = "acme", overlay: object = None, exclude_labels: tuple[str, ...] = ()) -> OverlayBackends:
     return OverlayBackends(
         name=name,
         hosts=(MagicMock(spec=CodeHostBackend),),
         messaging=None,
         ready_labels=(),
+        exclude_labels=exclude_labels,
         identities=("alice",),
         overlay=overlay,
     )
@@ -123,6 +125,20 @@ class IssueIntakeGateTests(TestCase):
         assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
 
+    def test_overlay_exclude_labels_reach_the_scanner(self) -> None:
+        """#4134: the field was plumbed onto the backend and read by nobody on this path."""
+        backend = _backend(exclude_labels=("interactive-implementation", "on-hold"))
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(backend)
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ("interactive-implementation", "on-hold")
+
+    def test_an_overlay_with_no_exclude_labels_leaves_the_policy_empty(self) -> None:
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ()
+
     def test_no_overlay_leaves_repo_slugs_empty(self) -> None:
         """A backend with no overlay keeps intake unscoped (back-compat, no crash)."""
         with patch(_PATCH_TARGET, return_value=_enabled()):
@@ -130,10 +146,14 @@ class IssueIntakeGateTests(TestCase):
         assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.repo_slugs == ()
 
-    def test_concurrency_at_max_emits_no_scanner(self) -> None:
+    def test_concurrency_at_max_emits_an_observe_only_scanner(self) -> None:
+        # #4238: returning None here is what made starvation invisible — the forge was
+        # never asked, so an issue that never got a slot was never even seen.
         ImplementedIssueMarkerFactory(overlay="acme")
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            assert _issue_intake_scanner_for(_backend()) is None
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is False
 
     def test_full_budget_reports_the_reason_it_claimed_nothing(self) -> None:
         # #3978: a tick that claims nothing because the budget is full used to return
@@ -146,7 +166,7 @@ class IssueIntakeGateTests(TestCase):
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
             self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
         ):
-            assert _issue_intake_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()).can_claim is False
         reported = "\n".join(logs.output)
         assert "at budget" in reported
         assert "1/1" in reported
@@ -161,8 +181,8 @@ class IssueIntakeGateTests(TestCase):
         log.warning.assert_not_called()
 
     def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
-        # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
-        # kill-switch is on (so the per-tick heartbeat runs), but claims nothing new.
+        # Fleet-safety Stage 2: the per-tick heartbeat must run at a full budget too,
+        # or an in-flight claim expires and is stolen mid-dispatch.
         ImplementedIssueMarkerFactory(overlay="acme")  # budget full
         with (
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
@@ -265,6 +285,48 @@ class IssueIntakeGateTests(TestCase):
             jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend())
         assert [job.scanner.name for job in jobs] == ["issue_intake"]
         assert jobs[0].overlay == "acme"
+
+
+class IntakeDeadlockIsBrokenTests(TestCase):
+    """The tick ACTS on a deadlocked budget instead of waiting out every grace (#4389).
+
+    Observed: 3/3 slots held, ``deadlocked=True``, 64 candidates waiting, 2 claims in
+    24 hours. The verdict existed and only a doctor check read it, so the condition was
+    detected, reported, and waited out.
+    """
+
+    def _stuck(self, number: int, *, hours: float) -> ImplementedIssueMarker:
+        """A holder past the settle window but still inside its own release grace."""
+        url = f"https://github.com/o/r/issues/{number}"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_the_tick_frees_a_slot_and_claims_again(self) -> None:
+        marker = self._stuck(950, hours=0.75)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_progressing_budget_keeps_every_slot(self) -> None:
+        marker = self._stuck(951, hours=0.75)
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is False
 
 
 class IssueIntakeMiniLoopTests(TestCase):
@@ -409,4 +471,149 @@ class IssueIntakeAdaptiveConcurrencyTests(TestCase):
         self._record(1)
 
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
-            assert _issue_intake_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()).can_claim is False
+
+
+class TestMergeStallGatesNewIntake(TestCase):
+    """Intake claims nothing new while nothing is landing (#4044).
+
+    The constraint that matters is downstream: when every open PR is one the merge
+    sweep keeps refusing, another claimed issue cannot help and only deepens the pile.
+    The gate reads the sweep's OWN streak rows, so it costs two counts and no forge
+    call, and it releases itself the moment one PR starts moving again.
+    """
+
+    def _pile_up(self, *, count: int, stuck: int) -> None:
+        for i in range(count):
+            ticket = TicketFactory(overlay="acme", issue_url=f"https://github.com/o/r/issues/{800 + i}")
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay="acme",
+                url=f"https://github.com/o/r/pull/{800 + i}",
+                repo="o/r",
+                iid=str(800 + i),
+            )
+            if i < stuck:
+                SweepSkipStreak.objects.create(
+                    slug="o/r",
+                    pr_id=800 + i,
+                    reason="ci red",
+                    tick_count=5,
+                    overlay="acme",
+                )
+
+    def test_a_fully_stuck_pipeline_claims_nothing_new_and_says_why(self) -> None:
+        self._pile_up(count=3, stuck=3)
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled()),
+            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
+        ):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert scanner is None or scanner.can_claim is False
+        reported = "\n".join(logs.output)
+        assert "merge sweep" in reported
+        assert "3 of 3" in reported
+
+    def test_one_pr_still_moving_lets_intake_keep_claiming(self) -> None:
+        self._pile_up(count=3, stuck=2)
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_small_pile_never_brakes(self) -> None:
+        self._pile_up(count=2, stuck=2)
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_streak_recorded_under_a_differently_cased_slug_still_counts(self) -> None:
+        """A forge slug is case-insensitive, so `O/R` and `o/r` name the same repo.
+
+        Matching the two sides exactly makes every streak miss, `stuck_prs` reads 0, the
+        brake never fires and the gate fails toward MORE claiming — the one direction it
+        exists to prevent. The repo-wide rule is `__iexact` (`PullRequestQuerySet.for_pr`).
+        """
+        self._pile_up(count=3, stuck=0)
+        for i in range(3):
+            SweepSkipStreak.objects.create(
+                slug="O/R",
+                pr_id=800 + i,
+                reason="ci red",
+                tick_count=5,
+                overlay="acme",
+            )
+
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        assert scanner is None or scanner.can_claim is False, "a case difference must not silence the brake"
+
+
+class TestMergeSignalCountsOnlyLivePrs(TestCase):
+    """The stuck count reads streaks against the LIVE PR set, per overlay.
+
+    ``SweepSkipStreak.resolve`` fires only on a live ``pr_sweep.*`` signal for that exact
+    ``(slug, pr_id)``, so a PR that merged or closed outside the sweep leaves its row
+    behind forever. Counting rows independently of the live set lets those fossils brake a
+    pipeline whose every open PR is healthy.
+    """
+
+    def _live_pr(self, *, overlay: str, repo: str, iid: int) -> None:
+        ticket = TicketFactory(overlay=overlay, issue_url=f"https://github.com/{repo}/issues/{iid}")
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay=overlay,
+            url=f"https://github.com/{repo}/pull/{iid}",
+            repo=repo,
+            iid=str(iid),
+        )
+
+    def test_streaks_left_by_settled_prs_never_brake_a_healthy_pipeline(self) -> None:
+        for i in range(3):
+            self._live_pr(overlay="acme", repo="o/r", iid=900 + i)
+        for i in range(5):
+            SweepSkipStreak.objects.create(slug="o/r", pr_id=700 + i, reason="ci red", tick_count=9, overlay="acme")
+
+        signal = read_merge_signal(overlay="acme")
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        assert not signal.stalled, "fossil streak rows must not report a healthy pipeline as stalled"
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_two_casings_of_one_pr_count_once_against_the_live_set(self) -> None:
+        """The unique constraint is case-SENSITIVE, so one PR can hold two streak rows.
+
+        Counting streaks by row while the live set is counted by de-duplicated key lets
+        that one PR contribute 2 to ``stuck_prs`` and 1 to ``open_prs`` — a brake fired on
+        arithmetic, with a healthy moving PR still in the pile.
+        """
+        for iid in (800, 801, 802):
+            self._live_pr(overlay="acme", repo="o/r", iid=iid)
+        for slug in ("o/r", "O/R"):
+            SweepSkipStreak.objects.create(slug=slug, pr_id=800, reason="ci red", tick_count=9, overlay="acme")
+        SweepSkipStreak.objects.create(slug="o/r", pr_id=801, reason="ci red", tick_count=9, overlay="acme")
+
+        signal = read_merge_signal(overlay="acme")
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        assert signal.open_prs == 3
+        assert signal.stuck_prs == 2, "two casings of one PR are one stuck PR, not two"
+        assert not signal.stalled, "PR 802 is healthy and moving — the pipeline is not stalled"
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_stall_in_one_overlay_leaves_another_overlay_claiming(self) -> None:
+        for i in range(3):
+            self._live_pr(overlay="other", repo="x/y", iid=500 + i)
+            SweepSkipStreak.objects.create(slug="x/y", pr_id=500 + i, reason="conflict", tick_count=9, overlay="other")
+
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend("acme"))
+
+        braked = scanner is None or scanner.can_claim is False
+        assert not braked, "a stall in 'other' must not brake intake in 'acme'"

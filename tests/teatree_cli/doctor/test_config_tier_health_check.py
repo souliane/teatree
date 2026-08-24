@@ -46,7 +46,7 @@ class TestTheDegradedTierIsReported:
             tmp_path,
             {
                 "scopes": ["global"],
-                "callers": ["headless.py:198 in _run_headless_agent"],
+                "callers": ["runner.py:198 in _run_agent"],
                 "occurrences": 4,
                 "first_seen": time.time(),
                 "last_seen": time.time(),
@@ -55,7 +55,7 @@ class TestTheDegradedTierIsReported:
         with mock.patch("teatree.config.override_read_health.marker_path", return_value=marker):
             assert _check_config_override_tier_healthy() is False
         out = capsys.readouterr().out
-        assert "headless.py:198 in _run_headless_agent" in out
+        assert "runner.py:198 in _run_agent" in out
         assert "async frame" in out
 
     def test_a_marker_without_callers_still_reports(self, tmp_path: Path, capsys) -> None:

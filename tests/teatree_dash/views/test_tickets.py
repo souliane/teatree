@@ -1,5 +1,6 @@
-"""Ticket drawer + legal-only FSM-transition POST executed via the guarded method (#3162)."""
+"""Ticket drawer, the legal-only FSM-transition POST, and the phase-enqueue POST (#3162, #4085)."""
 
+from django.http import HttpResponse
 from django.test import Client, TestCase
 from django.urls import reverse
 
@@ -7,6 +8,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.dash.task_actions import enqueue_buttons
 from teatree.dash.ticket_detail import legal_transition_names
 from tests.factories import TaskFactory, TicketFactory
 
@@ -171,7 +173,6 @@ class DrawerPayloadIsBoundedTestCase(TestCase):
             TaskAttempt.objects.bulk_create(
                 TaskAttempt(
                     task=task,
-                    execution_target=Task.ExecutionTarget.HEADLESS,
                     model="claude-opus-4-8",
                     error="a recorded failure reason that occupies a realistic amount of the row",
                 )
@@ -195,3 +196,95 @@ class DrawerPayloadIsBoundedTestCase(TestCase):
         assert f"of {self.TRANSITIONS}" in body, "transition history does not state its total"
         assert f"of {self.TASKS}" in body, "task list does not state its total"
         assert f"of {self.ATTEMPTS_PER_TASK}" in body, "attempt list does not state its total"
+
+
+class TaskEnqueuePostTestCase(TestCase):
+    """The drawer's "Review now" / "Ship now" buttons — prioritise work, never record an outcome (#4085)."""
+
+    def setUp(self) -> None:
+        self.ticket = TicketFactory(state=State.STARTED)
+        self.url = reverse("dash:task_action", args=[self.ticket.pk])
+
+    def _post(self, phase: str, *, htmx: bool = True, **extra: str) -> HttpResponse:
+        headers = {"HTTP_HX_REQUEST": "true"} if htmx else {}
+        return self.client.post(self.url, {"phase": phase, **extra}, **headers)
+
+    def test_a_click_enqueues_an_unstarted_task_for_that_phase(self) -> None:
+        response = self._post("reviewing")
+        assert response.status_code == 200
+        task = Task.objects.get(ticket=self.ticket, phase="reviewing")
+        assert task.status == Task.Status.PENDING
+        assert task.execution_reason.strip()
+
+    def test_the_answer_is_the_refreshed_drawer_carrying_the_new_task(self) -> None:
+        body = self._post("reviewing").content.decode()
+        assert "<!doctype html>" not in body.lower()
+        assert 'class="drawer"' in body
+        task = Task.objects.get(ticket=self.ticket, phase="reviewing")
+        assert f"TODO-{task.pk}" in body
+
+    def test_the_enqueue_is_audited_with_actor_phase_and_ticket(self) -> None:
+        with self.assertLogs("teatree.dash.audit", level="INFO") as logs:
+            self._post("shipping")
+        line = next(entry for entry in logs.output if "task:enqueue:shipping" in entry)
+        assert f"target={self.ticket.pk}" in line
+        assert "actor=" in line
+
+    def test_an_explicit_reason_becomes_the_worker_prompt(self) -> None:
+        self._post("reviewing", reason="PR is green and blocked on a verdict.")
+        task = Task.objects.get(ticket=self.ticket, phase="reviewing")
+        assert task.execution_reason == "PR is green and blocked on a verdict."
+
+    def test_a_phase_outside_the_button_set_is_refused(self) -> None:
+        response = self._post("retro")
+        assert response.status_code == 400
+        assert not Task.objects.filter(ticket=self.ticket).exists()
+
+    def test_a_second_click_reports_the_queued_task_rather_than_duplicating(self) -> None:
+        self._post("reviewing")
+        response = self._post("reviewing")
+        assert response.status_code == 400
+        assert Task.objects.filter(ticket=self.ticket, phase="reviewing").count() == 1
+        task = Task.objects.get(ticket=self.ticket, phase="reviewing")
+        assert f"TODO-{task.pk}" in response.content.decode()
+
+    def test_a_no_js_client_gets_a_navigable_page_on_a_refusal(self) -> None:
+        response = self._post("retro", htmx=False)
+        assert response.status_code == 400
+        body = response.content.decode()
+        assert "<!doctype html>" in body.lower()
+        assert reverse("dash:board") in body
+
+    def test_a_no_js_enqueue_keeps_the_board_redirect(self) -> None:
+        assert self._post("reviewing", htmx=False).status_code == 302
+
+    def test_a_missing_ticket_is_a_404(self) -> None:
+        response = self.client.post(reverse("dash:task_action", args=[999999]), {"phase": "reviewing"})
+        assert response.status_code == 404
+
+    def test_csrf_is_enforced(self) -> None:
+        csrf_client = Client(enforce_csrf_checks=True)
+        assert csrf_client.post(self.url, {"phase": "reviewing"}).status_code == 403
+
+    def test_a_get_is_refused(self) -> None:
+        assert self.client.get(self.url).status_code == 405
+
+
+class TaskEnqueueButtonsRenderTestCase(TestCase):
+    def setUp(self) -> None:
+        self.ticket = TicketFactory(state=State.STARTED)
+
+    def _drawer(self) -> str:
+        return self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()
+
+    def test_the_drawer_offers_every_enqueueable_phase_wired_to_swap_the_drawer(self) -> None:
+        body = self._drawer()
+        assert f'hx-post="{reverse("dash:task_action", args=[self.ticket.pk])}"' in body
+        for button in enqueue_buttons(self.ticket):
+            assert button.label in body
+
+    def test_a_queued_phase_renders_disabled_with_its_reason(self) -> None:
+        task = TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.PENDING)
+        body = self._drawer()
+        assert "disabled" in body
+        assert f"TODO-{task.pk} is already queued for reviewing" in body

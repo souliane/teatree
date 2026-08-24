@@ -249,7 +249,7 @@ ET_MODEL_MULTIPLIER: dict[str, float] = {
 # The Layer-2 lane (souliane/teatree#2887) a dispatch's usage is unattributable
 # to — no explicit ``agent_harness_provider`` pin was configured, so the
 # ambient-credential default authenticated however the ``claude`` CLI's own
-# login state resolved (see ``teatree.agents.headless._resolve_dispatch_lane``).
+# login state resolved (see ``teatree.agents.runner._resolve_dispatch_lane``).
 UNATTRIBUTED_LANE = "unattributed"
 
 # The phase bucket for a usage whose phase was never captured (#3157 E2d).

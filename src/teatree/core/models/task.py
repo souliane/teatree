@@ -7,6 +7,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django_fsm import FSMField, TransitionNotAllowed
 
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, classify_failure
@@ -27,12 +28,14 @@ from teatree.core.models.ticket import Ticket
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
 
+#: Every column a claim writes, so the ``update_fields`` lists that release one cannot drift
+#: from :meth:`Task._clear_claim` nor from the compare-and-swap releases that splat
+#: :data:`~teatree.core.claim_liveness.RELEASED_CLAIM` — a released claim that kept a stale
+#: ``owner_pid`` would report a dead owner as the executor of whoever holds the row next.
+CLAIM_FIELDS = tuple(RELEASED_CLAIM)
+
 
 class Task(models.Model):
-    class ExecutionTarget(models.TextChoices):
-        HEADLESS = "headless", "Headless"
-        INTERACTIVE = "interactive", "Interactive"
-
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         CLAIMED = "claimed", "Claimed"
@@ -61,11 +64,6 @@ class Task(models.Model):
     subject = models.CharField(max_length=120, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     phase = models.CharField(max_length=64, blank=True)
-    execution_target = models.CharField(
-        max_length=32,
-        choices=ExecutionTarget.choices,
-        default=ExecutionTarget.HEADLESS,
-    )
     execution_reason = models.TextField(blank=True)
     # #3957: why this task FAILED, as distinct from ``execution_reason`` (why it was
     # SCHEDULED). Written only by :meth:`fail`, which REQUIRES a reason, so no failure
@@ -81,12 +79,38 @@ class Task(models.Model):
     claimed_by_session = models.CharField(max_length=255, blank=True, default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # #4164 The OS process currently executing this claim, so a sweep can tell a stalled
+    # worker from a dead one — a lapsed lease is evidence about the LEASE, not the process.
+    # The namespace rides along because a bare pid means nothing outside the namespace it
+    # was recorded in (#4253): each service in the deployment has its own, so the same
+    # integer names a different process — or none — depending on who reads it.
+    owner_pid = models.PositiveIntegerField(null=True, blank=True)
+    # ``db_default`` beside the Python default is load-bearing, not belt-and-braces (#4379):
+    # Django never persists a Python ``default`` into the column, so #4309's ``AddField``
+    # produced a NOT NULL column with NO DB default. An INSERT from a process whose model
+    # class predates the field OMITS it and writes NULL — the measured
+    # ``IntegrityError: NOT NULL constraint failed: teatree_task.owner_pid_namespace`` that
+    # rolled back completed runs. The claim gate (#4387) protects processes running the new
+    # code; this protects every process, including ones older than the gate itself.
+    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="", db_default="")
+    # #4164 follow-up: SET once when a drive begins, CLEARED once when it ends — never
+    # periodically renewed, so a memory-thrashed event loop that cannot heartbeat still
+    # recorded it before the stall began. The cross-process twin of claim_liveness's
+    # in-memory ``driving`` registry: a sweep running in a SEPARATE loops_tick subprocess
+    # cannot see that registry, but can read this column plus verify owner_pid is alive.
+    owner_driving_since = models.DateTimeField(null=True, blank=True)
     # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
     # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
     # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
     # skips it until then, so a parked task never re-dispatches into the same 429. Null
     # (every task that was never limit-parked) leaves the claim path byte-identical.
     not_before = models.DateTimeField(null=True, blank=True)
+    # #4098 When this row was last handed to the task runner. A row is PENDING both
+    # before and after that handoff, so without the stamp an admission a chokepoint has
+    # just made is invisible to the next probe — which is how a burst of cheap rows
+    # outran the lane ceiling. Stamped by ``TaskQuerySet.record_admission`` at every
+    # admission chokepoint; null = never admitted.
+    admitted_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
     # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
     # checked via an atomic conditional UPDATE before verifying its artifact,
@@ -100,12 +124,7 @@ class Task(models.Model):
         db_table = "teatree_task"
 
     def __str__(self) -> str:
-        return f"task-{self.pk}-{self.execution_target!s}"
-
-    def save(self, *args: object, **kwargs: object) -> None:
-        if self._state.adding and self.execution_target == self.ExecutionTarget.HEADLESS:
-            self._default_loop_dispatched_to_interactive()
-        super().save(*args, **kwargs)  # type: ignore[arg-type]
+        return f"task-{self.pk}"
 
     def display_subject(self) -> str:
         """A human-readable one-line description of the work this task is about.
@@ -135,13 +154,10 @@ class Task(models.Model):
     def loop_dispatched(cls, *, role: str, phase: str) -> bool:
         """True iff ``(role, phase)`` has a registered phase sub-agent.
 
-        Pure registry membership (``SUBAGENT_BY_PHASE``). Whether such a task
-        runs in-session or headless is the ``agent_runtime`` setting's call,
-        resolved by ``headless_dispatch.runs_in_session``: under ``interactive``
-        (default) it is dispatched per-phase by the in-session ``/loop`` slot
-        (``loop_dispatch claim-next`` → the ``Agent`` tool); under a headless
-        runtime it runs via ``agents/headless.py``. A pair with no registered
-        agent is free-form headless work and always runs headless.
+        Pure registry membership (``SUBAGENT_BY_PHASE``): such a pair is worked by
+        that agent, and a pair with no registered agent is free-form work the
+        generic runner takes. Either way the task runs through
+        ``core.tasks.execute_task``.
         """
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415 — deferred: call-time import
 
@@ -159,46 +175,14 @@ class Task(models.Model):
 
         The ONE source of truth every dispatch consumer builds on: the
         ``orchestrate`` planner's target + admit sweep and its in-flight budget
-        count, and the live ``claim-next``/``pending-spawn`` in ``loop_dispatch``
-        (which AND ``execution_target == INTERACTIVE`` on top). Because all sites
-        reference this symbol, the external-delivery exclusion and the role/phase
-        set can never diverge across them the way #2218's fix landed on one side.
+        count. Because all sites reference this symbol, the external-delivery
+        exclusion and the role/phase set can never diverge across them the way
+        #2218's fix landed on one side.
         """
         role_phase = Q(pk__in=[])
         for role, phase in SUBAGENT_BY_PHASE:
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
         return role_phase & not_under_external_delivery_q()
-
-    def _default_loop_dispatched_to_interactive(self) -> None:
-        """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
-
-        The single chokepoint for "phase tasks default to interactive": when the
-        ``agent_runtime`` setting selects ``interactive`` the loop
-        is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
-        site inherits the rule here without each having to know it. Under
-        ``agent_runtime=headless`` the row is left HEADLESS so the headless lane
-        takes it. Only an insert-time HEADLESS row is touched; an explicit
-        ``route_to_interactive`` / ``route_to_headless`` after creation goes
-        through ``_route`` (not an insert) and is never overridden here.
-
-        Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
-        drain / refusal gates share). It is inlined here rather than called because
-        ``core.models`` may not depend on the parent ``teatree.core`` node where
-        ``headless_dispatch`` lives (tach); the ``teatree.config`` edge is allowed.
-        """
-        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-
-        try:
-            role = self.ticket.role
-        except Task.ticket.RelatedObjectDoesNotExist:
-            return
-        if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
-            return
-        if not self.loop_dispatched(role=role, phase=self.phase):
-            return
-        self.execution_target = self.ExecutionTarget.INTERACTIVE
-        if not self.execution_reason:
-            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
         _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
@@ -208,12 +192,6 @@ class Task(models.Model):
 
     def is_window_parked(self, now: datetime | None = None) -> bool:
         return _window_parked(self, now)
-
-    def route_to_headless(self, *, reason: str = "") -> None:
-        self._route(self.ExecutionTarget.HEADLESS, reason)
-
-    def route_to_interactive(self, *, reason: str = "") -> None:
-        self._route(self.ExecutionTarget.INTERACTIVE, reason)
 
     def complete(self, *, result_artifact_path: str = "") -> None:
         """Mark the task COMPLETED and auto-advance the ticket — atomically.
@@ -237,11 +215,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
             self._advance_ticket()
@@ -275,11 +249,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
         try:
@@ -480,11 +450,7 @@ class Task(models.Model):
                 "status",
                 "failure_reason",
                 "failure_kind",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -517,11 +483,7 @@ class Task(models.Model):
             update_fields=[
                 "status",
                 "not_before",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -536,8 +498,10 @@ class Task(models.Model):
         task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         attempt = task_attempt_model.objects.create(
+            # no-usage: the caller reaches here from an exception that ESCAPED the drive, so
+            # no result message exists to read spend off — and core cannot import the agent
+            # layer to parse one. A harness crash's spend stays unrecorded (#4164).
             task=self,
-            execution_target=self.execution_target,
             ended_at=timezone.now(),
             exit_code=exit_code,
             artifact_path=artifact_path,
@@ -564,7 +528,6 @@ class Task(models.Model):
                 ticket=self.ticket,
                 session=self.session,
                 phase=phase or self.phase,
-                execution_target=self.execution_target,
                 execution_reason=f"Repo: {repo}",
                 parent_task=self,
             )
@@ -596,27 +559,6 @@ class Task(models.Model):
 
         check_requeue_allowed(self)
 
-    def _route(self, target: ExecutionTarget, reason: str) -> None:
-        self.execution_target = target
-        self.execution_reason = reason
-        self.status = self.Status.PENDING
-        self._clear_claim()
-        self.save(
-            update_fields=[
-                "execution_target",
-                "execution_reason",
-                "status",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
-            ],
-        )
-
     def _clear_claim(self) -> None:
-        self.claimed_at = None
-        self.claimed_by = ""
-        self.claimed_by_session = ""
-        self.lease_expires_at = None
-        self.heartbeat_at = None
+        for field, released in RELEASED_CLAIM.items():
+            setattr(self, field, released)

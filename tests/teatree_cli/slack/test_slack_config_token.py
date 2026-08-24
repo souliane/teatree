@@ -26,6 +26,7 @@ class _FakePassStore:
     def __init__(self, initial: dict[str, str] | None = None, *, refuse: set[str] | None = None) -> None:
         self.values = dict(initial or {})
         self.refuse = refuse or set()
+        self.refuse_all = False
         self.writes: list[str] = []
 
     def read(self, key: str) -> str:
@@ -33,10 +34,13 @@ class _FakePassStore:
 
     def write(self, key: str, value: str) -> bool:
         self.writes.append(key)
-        if key in self.refuse:
+        if self.refuse_all or key in self.refuse:
             return False
         self.values[key] = value
         return True
+
+    def remove(self, key: str) -> bool:
+        return self.values.pop(key, None) is not None
 
 
 def _seeded(*, issued_at: dt.datetime | None, refuse: set[str] | None = None) -> _FakePassStore:
@@ -50,6 +54,7 @@ def _run(store: _FakePassStore, rotate: object, *, now: dt.datetime = _NOW):
     with (
         patch("teatree.cli.slack.config_token.read_pass", side_effect=store.read),
         patch("teatree.cli.slack.config_token.write_pass", side_effect=store.write),
+        patch("teatree.cli.slack.config_token.remove_pass", side_effect=store.remove),
         patch("teatree.cli.slack.config_token.rotate_config_token", side_effect=rotate),
     ):
         return ensure_fresh_config_token(now=now)
@@ -130,13 +135,24 @@ class TestPersistenceIsAtomic:
         assert _STORE.refresh_key in str(exc_info.value)
         assert "re-minted" in str(exc_info.value)
 
-    def test_a_write_that_cannot_be_read_back_is_a_failure(self) -> None:
-        """A `pass insert` reporting success while storing nothing must not pass for persistence."""
-        store = _seeded(issued_at=None)
-        store.write = lambda key, value: True  # type: ignore[method-assign] — accepts, stores nothing
+    def test_a_write_that_cannot_be_read_back_is_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A `pass insert` reporting success while storing nothing must not pass for persistence.
 
-        with pytest.raises(SlackConfigTokenPersistError):
-            _run(store, _issues_new_pair)
+        Asserted directly against :meth:`ConfigTokenStore.persist`, because the
+        write-ahead guard now refuses this store shape before a rotation is ever
+        spent (see ``TestRefusesToRotateWhenTheStoreCannotPersist``). This keeps
+        the persist-level check pinned as defence in depth, for a store that
+        degrades in the window between the probe and the write.
+        """
+        store = _seeded(issued_at=None)
+        monkeypatch.setattr(store, "write", lambda key, value: True)
+
+        with (
+            patch("teatree.cli.slack.config_token.read_pass", side_effect=store.read),
+            patch("teatree.cli.slack.config_token.write_pass", side_effect=store.write),
+            pytest.raises(SlackConfigTokenPersistError),
+        ):
+            _STORE.persist(access="xoxe.xoxp-NEW", refresh="xoxe-NEWR", issued_at=_NOW)
 
     def test_the_refresh_half_is_written_before_the_access_half(self) -> None:
         """Crash-order matters: a stored refresh token can mint another pair, a stored access token cannot."""
@@ -194,3 +210,72 @@ class TestIssueTimeIsRecorded:
 
         with patch("teatree.cli.slack.config_token.read_pass", side_effect=store.read):
             assert _STORE.age(now=_NOW) == dt.timedelta(0)
+
+
+class _WriteSwallowingPassStore(_FakePassStore):
+    """A store whose writes REPORT success but never land — the venue failure seen in the container.
+
+    ``pass insert`` only needs the public key, so it exits 0 where ``pass show``
+    cannot start ``gpg-agent``/``keyboxd`` and fails. A writability check that
+    trusts the write's exit code therefore passes on a store nothing can be read
+    back out of, which is exactly the state that turns a rotate into a
+    permanently-lost credential.
+    """
+
+    def write(self, key: str, value: str) -> bool:
+        self.writes.append(key)
+        return True
+
+
+class TestRefusesToRotateWhenTheStoreCannotPersist:
+    """Write-ahead: prove the store round-trips BEFORE spending an irreversible rotate.
+
+    Slack invalidates the previous pair the instant ``tooling.tokens.rotate``
+    issues a new one, so a rotate whose result cannot be stored destroys the
+    credential with no way back. Ordering is the guarantee: the store must be
+    proven writable with a real write-then-read of a throwaway value FIRST, and
+    Slack must not be called at all when that proof fails.
+    """
+
+    def test_rotate_is_never_called_when_the_store_refuses_writes(self) -> None:
+        store = _seeded(issued_at=_NOW - ROTATE_AFTER - dt.timedelta(minutes=1))
+        store.refuse_all = True
+        attempted: list[str] = []
+
+        def record(*, refresh_token: str) -> tuple[str, str]:
+            attempted.append(refresh_token)
+            return "xoxe.xoxp-NEW", "xoxe-NEWR"
+
+        report = _run(store, record)
+
+        assert attempted == [], "an unwritable store must not spend an irreversible rotate"
+        assert report.outcome is RotationOutcome.STORE_UNWRITABLE
+        assert store.values[_STORE.refresh_key] == "xoxe-OLDR"
+
+    def test_rotate_is_never_called_when_writes_report_success_but_do_not_land(self) -> None:
+        store = _WriteSwallowingPassStore(
+            {
+                _STORE.access_key: "xoxe.xoxp-OLD",
+                _STORE.refresh_key: "xoxe-OLDR",
+                _STORE.issued_at_key: (_NOW - ROTATE_AFTER - dt.timedelta(minutes=1)).isoformat(),
+            }
+        )
+        attempted: list[str] = []
+
+        def record(*, refresh_token: str) -> tuple[str, str]:
+            attempted.append(refresh_token)
+            return "xoxe.xoxp-NEW", "xoxe-NEWR"
+
+        report = _run(store, record)
+
+        assert attempted == [], "a write that cannot be read back must not spend an irreversible rotate"
+        assert report.outcome is RotationOutcome.STORE_UNWRITABLE
+
+    def test_the_writability_probe_leaves_no_residue_in_the_store(self) -> None:
+        """A healthy rotate still ends with only the three real slots — the probe cleans up after itself."""
+        store = _seeded(issued_at=_NOW - ROTATE_AFTER - dt.timedelta(minutes=1))
+
+        report = _run(store, _issues_new_pair)
+
+        assert report.outcome is RotationOutcome.ROTATED
+        assert set(store.values) == {_STORE.access_key, _STORE.refresh_key, _STORE.issued_at_key}

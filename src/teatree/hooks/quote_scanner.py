@@ -14,7 +14,10 @@ Design notes:
 The module is pure detection. The Bash/t3 command surfaces are parsed
 into a payload, then the payload runs through :func:`scan_text`. The
 PreToolUse hook in ``hooks/scripts/hook_router.py`` is the only place
-that knows about ``stdout``/``permissionDecision`` JSON.
+that knows about ``stdout``/``permissionDecision`` JSON, and the
+operator-facing reasons live in ``teatree.hooks.quote_gate_messages``
+because rendering one requires knowing WHICH surface produced the
+verdict, which detection does not.
 
 Patterns are split into ``HIGH`` (refuse publish) and ``MEDIUM`` (warn
 but allow). Both severities log to a JSONL ledger so cold review can
@@ -46,6 +49,7 @@ from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_cl
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.hooks._hook_state import hook_state_root, note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
+from teatree.hooks._quote_normalize import normalize_quotes as _normalize_quotes
 
 _QUOTE_OK_ENV = "QUOTE_OK"
 
@@ -267,37 +271,6 @@ def reset_blocklist_cache() -> None:
     every test so a blocklist written by one test can never leak into another.
     """
     _BLOCKLIST_CACHE.clear()
-
-
-# Unicode smart-quote variants normalised to their ASCII equivalents before
-# pattern matching. Codex round-2 #7 surfaced curly-quoted blockquote bodies
-# bypassing every quote-aware regex — the fix is upstream normalisation, not
-# new patterns per quote shape. Code points referenced by ``\N{...}`` so the
-# lint checker is not confused by ambiguous glyphs in the source file.
-_SMART_QUOTE_TRANSLATIONS: Final[dict[int, str]] = {
-    # Double quotes
-    ord("\N{LEFT DOUBLE QUOTATION MARK}"): '"',
-    ord("\N{RIGHT DOUBLE QUOTATION MARK}"): '"',
-    ord("\N{DOUBLE LOW-9 QUOTATION MARK}"): '"',
-    ord("\N{DOUBLE HIGH-REVERSED-9 QUOTATION MARK}"): '"',
-    ord("\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
-    ord("\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
-    # Single quotes / apostrophes
-    ord("\N{LEFT SINGLE QUOTATION MARK}"): "'",
-    ord("\N{RIGHT SINGLE QUOTATION MARK}"): "'",
-    ord("\N{SINGLE LOW-9 QUOTATION MARK}"): "'",
-    ord("\N{SINGLE HIGH-REVERSED-9 QUOTATION MARK}"): "'",
-}
-
-
-def _normalize_quotes(text: str) -> str:
-    """Translate Unicode smart-quote variants to straight ASCII quotes.
-
-    The detection regexes are written against ASCII quotes; normalising
-    upstream means a single regex per shape continues to cover every
-    typographic variant a publish surface might emit.
-    """
-    return text.translate(_SMART_QUOTE_TRANSLATIONS)
 
 
 # ── HIGH shape patterns that require adjacent quote evidence (#3240) ──
@@ -576,7 +549,7 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
 # publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts
 # that have no analogue inside an Agent/Task prompt body), the dispatch gate
 # opt-out is an in-prompt token mirroring the existing
-# ``[skip-skill-gate: <reason>]`` convention in ``hook_router``. The reason is MANDATORY — an empty reason does not
+# ``[skill-load-ok: <reason>]`` convention in ``hook_router``. The reason is MANDATORY — an empty reason does not
 # bypass — so an audit can read WHY a quote-shaped dispatch was sanctioned.
 _DISPATCH_QUOTE_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[quote-ok:\s*(\S[^\]]*?)\s*\]")
 
@@ -624,46 +597,3 @@ def log_decision(
     except OSError:
         # The ledger is best-effort — never block on a write failure.
         return
-
-
-def format_block_message(result: ScanResult) -> str:
-    """Render the PreToolUse deny reason for a HIGH match.
-
-    The false-positive escape names the leading ``QUOTE_OK=1`` env PREFIX, not a
-    ``--quote-ok`` CLI flag: the flag is consumed by the gate's parser, never by
-    the posting command, so a ``t3 review post-comment`` (or any other
-    subcommand) would reject it as an unknown option. The env prefix is a real
-    shell construct every command accepts and is the spelling that actually
-    works at the prompt.
-    """
-    names = ", ".join(sorted({f.name for f in result.high}))
-    return (
-        "BLOCKED: pre-publish quote-scanner gate (#1213). "
-        f"Matched patterns: {names}. "
-        "Paraphrase any user-attributed content; do not quote verbatim. "
-        "If the match is a false positive, re-issue the command with a leading "
-        "QUOTE_OK=1 env prefix (e.g. `QUOTE_OK=1 <command>`)."
-    )
-
-
-def format_dispatch_block_message(result: ScanResult) -> str:
-    """Render the PreToolUse deny reason for a HIGH match in a dispatch prompt (#1401)."""
-    names = ", ".join(sorted({f.name for f in result.high}))
-    excerpt = next((f.excerpt for f in result.high if f.excerpt), "")
-    matched = f' (e.g. "{excerpt}")' if excerpt else ""
-    return (
-        "BLOCKED: pre-dispatch quote-scanner gate (#1401). The Agent/Task prompt "
-        f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
-        "Paraphrase it into author-voice description before dispatching (the sub-agent "
-        "would otherwise echo it into a published output, defeating the #1213 publish gate). "
-        "If the match is a false positive, add `[quote-ok: <reason>]` near the start of the prompt."
-    )
-
-
-def format_warn_message(result: ScanResult) -> str:
-    """Render the stderr warning for a MEDIUM-only match."""
-    names = ", ".join(sorted({f.name for f in result.medium}))
-    return (
-        f"WARNING: pre-publish quote-scanner gate (#1213) — attribution patterns matched ({names}). "
-        "Verify the content is paraphrased, not lifted from user speech."
-    )

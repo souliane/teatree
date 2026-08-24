@@ -39,7 +39,7 @@ class WorktreeTeardown(RunnerBase):
         self.ticket = ticket
 
     def run(self) -> RunnerResult:
-        worktrees = list(self.ticket.worktrees.all())  # ty: ignore[unresolved-attribute]
+        worktrees = list(self.ticket.worktrees.all())
         if not worktrees:
             return RunnerResult(ok=True, detail="no worktrees to tear down")
 

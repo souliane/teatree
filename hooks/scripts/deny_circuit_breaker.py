@@ -80,14 +80,25 @@ _FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
 # Canonical catalog of every escape marker + kill-switch: hooks/CLAUDE.md
 # § "Escape markers & kill-switches".
 _SIGNATURE_STRIP_RE = re.compile(
-    r"\[(?:fp-confirmed|fg-ok|skip-skill-gate|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok):[^\]]*\]"
+    r"\[(?:fp-confirmed|fg-ok|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok"
+    r"|brief-anchor-ok):[^\]]*\]"
     r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
 )
 
 # The PUBLIC-egress leak gate is fail-CLOSED always (BLUEPRINT §17 hard
 # invariant): its deny is NEVER suppressible by a confirmed-FP grant. A denied
 # leak can only be a privacy regression, not a false positive worth granting.
-_LEAK_GATE_MARKERS: tuple[str, ...] = ("banned-terms", "quote-scanner", "leak")
+# The secret/credential vocabulary is a family member in its own right (#4218):
+# the high-confidence-secret deny names no gate, and an agent pasting a token it
+# believes is a placeholder is exactly the agent that writes its own
+# ``[fp-confirmed:]`` token — so without these it granted itself the publish.
+_LEAK_GATE_MARKERS: tuple[str, ...] = (
+    "banned-terms",
+    "quote-scanner",
+    "leak",
+    "secret",
+    "credential",
+)
 
 # Tool-input fields a call may carry the ``[fp-confirmed:]`` token in, mirroring
 # the skill-loading gate's per-call token surface (command for Bash;
@@ -237,8 +248,10 @@ def _deny_fingerprint(gate_id: str, reason: str, signature: str) -> str:
 def _deny_is_leak_gate(reason: str) -> bool:
     """True iff *reason* is a PUBLIC-egress leak deny (never grantable, #3252).
 
-    The banned-terms / quote-scanner public-egress path is fail-CLOSED always;
-    a confirmed-FP grant must never suppress it.
+    The banned-terms / quote-scanner / high-confidence-secret path is fail-CLOSED
+    always; a confirmed-FP grant must never suppress it. Membership is read off
+    the reason because that is the only thing this seam receives — the gate's own
+    identity does not reach the breaker (see the ``_LEAK_GATE_MARKERS`` note).
     """
     low = reason.lower()
     return any(marker in low for marker in _LEAK_GATE_MARKERS)

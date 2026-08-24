@@ -9,7 +9,6 @@ requires:
   - verification-before-completion
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # t3:answerer — Draft, Get Approval, Post

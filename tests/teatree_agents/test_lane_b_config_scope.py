@@ -3,7 +3,7 @@
 The Lane-B settings (``openai_compatible_base_url``, ``pydantic_ai_request_limit``,
 ``agent_harness``, …) are all per-overlay overridable, but ``resolve_harness`` read
 them with no overlay — so an overlay-scoped override for a NON-active overlay was
-ignored during headless dispatch. The dispatch is per-task and the task's overlay is
+ignored during agent dispatch. The dispatch is per-task and the task's overlay is
 authoritative (``task.ticket.overlay``), so the harness must resolve there.
 """
 

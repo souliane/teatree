@@ -20,10 +20,20 @@ passed in, is a loud error rather than a silent wrong-render.
 snapshots the SUPERSEDED body+params as a :class:`PromptVersion` row (keyed on
 ``(prompt, version)``) before writing the new content, so the full edit history
 is durable and auditable. An identical revise is a no-op — no version churn.
+
+**An empty body is legal, and only where it means something (#4166).** A standing
+directive is switched off by giving its override prompt an empty body, so the
+field allows blank and the admin change form accepts it. That would otherwise let
+a live :class:`~teatree.core.models.loop.Loop` tick an empty instruction, so both
+write surfaces refuse an empty body on a prompt a loop references — empty means
+"off", never "run nothing". :meth:`Prompt.clean` covers the admin form and any
+``full_clean`` caller; :meth:`Prompt.revise` runs the same guard, because it is
+the versioned content-change path and a form-only guard does not reach it.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 
 
@@ -46,8 +56,14 @@ class PromptManager(models.Manager["Prompt"]):
 class Prompt(models.Model):
     """One row per named, reusable, triggerable prompt."""
 
+    if TYPE_CHECKING:
+        # Reverse accessor Django synthesises at class-prep time from the
+        # ``related_name`` on ``PromptVersion.prompt`` — invisible to a static checker.
+        # Annotation-only; never evaluated at runtime.
+        versions: "models.Manager[PromptVersion]"
+
     name = models.CharField(max_length=64, unique=True)
-    body = models.TextField()
+    body = models.TextField(blank=True)
     params = models.JSONField(default=list, blank=True)
     description = models.TextField(blank=True, default="")
     overlay = models.CharField(max_length=64, blank=True, default="")
@@ -63,6 +79,18 @@ class Prompt(models.Model):
     def __str__(self) -> str:
         return f"prompt<{self.name}>"
 
+    def clean(self) -> None:
+        """Refuse an empty body on a prompt a :class:`Loop` runs."""
+        self._refuse_empty_body_a_loop_would_tick(self.body)
+
+    def _refuse_empty_body_a_loop_would_tick(self, body: str) -> None:
+        # ``loops`` is the reverse accessor of Loop.prompt's related_name — ty resolves
+        # forward FKs only, so the same suppression sits on ``versions`` below.
+        if body.strip() or self.pk is None or not self.loops.exists():  # ty: ignore[unresolved-attribute]
+            return
+        msg = "A prompt a loop runs needs a body — an empty body would tick an empty instruction."
+        raise ValidationError({"body": msg})
+
     @property
     def declared_params(self) -> frozenset[str]:
         """The declared param names as a set (``params`` stores them as a list)."""
@@ -71,7 +99,7 @@ class Prompt(models.Model):
     @property
     def current_version(self) -> int:
         """How many revisions this prompt has — the highest snapshotted version (0 = none)."""
-        latest = self.versions.aggregate(models.Max("version"))["version__max"]  # ty: ignore[unresolved-attribute]
+        latest = self.versions.aggregate(models.Max("version"))["version__max"]
         return latest or 0
 
     def render(self, **args: str) -> str:
@@ -106,12 +134,17 @@ class Prompt(models.Model):
         snapshots nor bumps ``updated_at``. Otherwise the OLD content is captured
         as the next :class:`PromptVersion` row, THEN the live row is rewritten —
         all in one transaction so a snapshot can never be orphaned from its edit.
+
+        Raises the same :class:`ValidationError` :meth:`clean` does when the new
+        body would leave a :class:`Loop` ticking an empty instruction: this is the
+        write path, and a guard only the admin form runs does not hold there.
         """
+        self._refuse_empty_body_a_loop_would_tick(body)
         new_params = list(params if params is not None else self.params or [])
         if body == self.body and new_params == list(self.params or []):
             return None
         with transaction.atomic():
-            version = self.versions.create(  # ty: ignore[unresolved-attribute]
+            version = self.versions.create(
                 version=self.current_version + 1,
                 body=self.body,
                 params=list(self.params or []),

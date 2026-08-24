@@ -53,9 +53,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree import paths
+from teatree.core.cleanup import checkout_registry
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
-from teatree.core.management.commands._workspace import checkout_registry, owner_stamps
+from teatree.core.management.commands._workspace import owner_stamps
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 

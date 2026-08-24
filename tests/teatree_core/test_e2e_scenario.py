@@ -16,7 +16,7 @@ class TestCapture:
     def test_is_frozen(self) -> None:
         capture = Capture(slot="step1", caption="the field")
         with pytest.raises(dataclasses.FrozenInstanceError):
-            capture.slot = "other"  # type: ignore[misc]
+            capture.slot = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestScenario:
@@ -45,4 +45,4 @@ class TestScenario:
     def test_is_frozen(self) -> None:
         scenario = Scenario(surface="Login")
         with pytest.raises(dataclasses.FrozenInstanceError):
-            scenario.surface = "other"  # type: ignore[misc]
+            scenario.surface = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.

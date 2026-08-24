@@ -97,8 +97,16 @@ def check_command() -> None:
     Reads the JSONL queue written by ``t3 slack listen``, filters for
     user messages (ignoring bot posts), reacts with ``eyes`` on each
     to signal the bot has seen it, then prints each as a JSON line.
-    Returns exit code 0 when messages were found, 1 when the queue
+    Returns exit code 0 when messages were found, 2 when the queue
     was empty. Designed to be called from a fast cron (every 30s).
+
+    Exit code 2 (not 1) for the empty-queue case is deliberate: a crashing
+    drain (Django boot failure, a DB error) also exits 1 with empty stdout —
+    byte-identical to the old "empty queue" signal — so a caller polling on
+    "rc=1 and no stdout" could not tell a healthy quiet box from a crash. 2
+    is unambiguous, and preferred over an ``EMPTY`` stdout sentinel: stdout
+    is already the message channel, and a sentinel would need filtering by
+    every future consumer.
 
     A singleton guard serialises the drain: the 30s cron can double-fire and
     two concurrent drains would ack the same mentions twice, so a second drain
@@ -138,7 +146,7 @@ def _drain_and_emit() -> None:
         # Nothing actionable to emit, but the drained file must still be
         # discarded so empty/bot-only events don't replay on every drain.
         commit_drain()
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=2)
     _ack_messages(messages)
     # Discard the backing file only after acking — a crash before this point
     # leaves it for the next drain to recover (Slack never retries mentions).

@@ -56,6 +56,10 @@ class BotPing(models.Model):
         # An INTERNAL-audience notification: logged + terminally recorded, never
         # DM'd and never re-delivered. The deny-by-default counterpart to SENT.
         LOGGED = "logged", "Logged (internal audience, never DM'd)"
+        # An owner-audience STATUS signal the push/pull classifier routed away from
+        # the DM (#4524). Terminal and never re-delivered — the owner reads it on the
+        # pulled surface, so re-attempting delivery would defeat the routing.
+        PULLED = "pulled", "Pulled (status signal, read on demand)"
 
     class Transport(models.TextChoices):
         """Which delivery path actually landed the DM (#1181).
@@ -143,6 +147,21 @@ class BotPing(models.Model):
         return posted_at <= moment - cls.SENDING_STALE_AFTER
 
     @classmethod
+    def redeliverable_q(cls, *, now: datetime | None = None) -> Q:
+        """Rows a fresh :meth:`claim_delivery` would CLAIM rather than stand down on.
+
+        The single source of truth for "will the send path actually re-deliver this?",
+        shared by :meth:`recoverable_info`, :meth:`expire_stale_info` and the resurface
+        drain's ledger read-back. Its complement is every status whose claim returns
+        ``ALREADY_SENT`` or ``IN_FLIGHT`` — SENT, SENT_UNVERIFIED, EXPIRED, LOGGED and a
+        FRESH SENDING. A selection that read only ``status=SENT`` as handled left the
+        other four in its window, where nothing skips them and nothing re-delivers them
+        (#4064).
+        """
+        stale_before = (now or timezone.now()) - cls.SENDING_STALE_AFTER
+        return Q(status__in=tuple(cls._RECOVERABLE)) | Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
+
+    @classmethod
     def recoverable_info(cls, *, limit: int = 50) -> "models.QuerySet[BotPing]":
         """INFO rows that never delivered and can be re-attempted on a later tick.
 
@@ -172,13 +191,10 @@ class BotPing(models.Model):
         rather than surfacing late in the owner's DM.
         """
         moment = timezone.now()
-        stale_before = moment - cls.SENDING_STALE_AFTER
         age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
-        terminal = Q(status__in=tuple(cls._RECOVERABLE))
-        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         return (
             cls.objects.filter(kind=cls.Kind.INFO, audience__in=OWNER_AUDIENCE_VALUES)
-            .filter(terminal | stale_claim)
+            .filter(cls.redeliverable_q(now=moment))
             .filter(posted_at__gt=age_cutoff, attempts__lt=cls.MAX_REDELIVERY_ATTEMPTS)
             .order_by("posted_at", "pk")[:limit]
         )
@@ -202,16 +218,13 @@ class BotPing(models.Model):
         of rows expired.
         """
         moment = now or timezone.now()
-        stale_before = moment - cls.SENDING_STALE_AFTER
         age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
-        terminal = Q(status__in=tuple(cls._RECOVERABLE))
-        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         too_old = Q(posted_at__lte=age_cutoff)
         too_many = Q(attempts__gte=cls.MAX_REDELIVERY_ATTEMPTS)
         not_owner = ~Q(audience__in=OWNER_AUDIENCE_VALUES)
         return (
             cls.objects.filter(kind=cls.Kind.INFO)
-            .filter(terminal | stale_claim)
+            .filter(cls.redeliverable_q(now=moment))
             .filter(too_old | too_many | not_owner)
             .update(status=cls.Status.EXPIRED)
         )
@@ -236,28 +249,41 @@ class BotPing(models.Model):
         cls.objects.filter(idempotency_key=idempotency_key).update(attempts=models.F("attempts") + 1)
 
     @classmethod
+    def _record_undelivered(cls, idempotency_key: str, *, kind: str, text: str, audience: str, status: str) -> None:
+        """Terminally record a notification that will never be DM'd, under *status*.
+
+        Idempotent on ``idempotency_key`` (``get_or_create``) so a per-tick re-flag of
+        the same signal never accumulates rows.
+        """
+        try:
+            with transaction.atomic():
+                cls.objects.get_or_create(
+                    idempotency_key=idempotency_key,
+                    defaults={"kind": kind, "status": status, "text": text, "audience": audience},
+                )
+        except IntegrityError:
+            pass
+
+    @classmethod
     def record_logged(cls, idempotency_key: str, *, kind: str, text: str, audience: str) -> None:
         """Terminally record an INTERNAL-audience notification — logged, never DM'd.
 
         The deny-by-default sink for :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL`
         notifications: :func:`teatree.core.notify.notify_user` short-circuits BEFORE
         any backend resolution and calls this so a durable LOGGED audit row exists
-        without a DM. Idempotent on ``idempotency_key`` (``get_or_create``) so a
-        per-tick re-flag of the same signal never accumulates rows.
+        without a DM.
         """
-        try:
-            with transaction.atomic():
-                cls.objects.get_or_create(
-                    idempotency_key=idempotency_key,
-                    defaults={
-                        "kind": kind,
-                        "status": cls.Status.LOGGED,
-                        "text": text,
-                        "audience": audience,
-                    },
-                )
-        except IntegrityError:
-            pass
+        cls._record_undelivered(idempotency_key, kind=kind, text=text, audience=audience, status=cls.Status.LOGGED)
+
+    @classmethod
+    def record_pulled(cls, idempotency_key: str, *, kind: str, text: str, audience: str) -> None:
+        """Terminally record an owner-audience STATUS signal — kept, never DM'd (#4524).
+
+        The row is the pulled surface's whole content: the text, the key and the audience
+        are preserved exactly as the caller passed them, so routing a signal away from the
+        DM loses nothing — only the Slack post is suppressed.
+        """
+        cls._record_undelivered(idempotency_key, kind=kind, text=text, audience=audience, status=cls.Status.PULLED)
 
     @classmethod
     def claim_delivery(

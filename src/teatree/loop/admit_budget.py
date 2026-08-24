@@ -23,6 +23,12 @@ Two halves cross the process boundary through one JSON file:
 At ``medium`` wip or with the toggle off the tick writes NO budget key (it
 clears any prior one), so the claimer reads ``None`` = unclamped = byte-
 identical to today.
+
+:func:`meta_path` and :func:`load_meta` are the sidecar's shared accessors, used
+by every writer into it — the freshness header (:mod:`teatree.loop.tick_freshness`)
+and the admission governor's brake state (:mod:`teatree.loop.admission`) as well as
+this module. The file has several independent tenants whose keys are read by other
+PROCESSES, so a writer that does not load-merge deletes state it never owned.
 """
 
 import json
@@ -51,14 +57,27 @@ WRITTEN_AT_KEY = f"{BUDGET_KEY}_written_at"
 _TTL_CADENCE_MULTIPLIER = 2
 
 
-def _meta_path(statusline_path: Path) -> Path:
+def meta_path(statusline_path: Path) -> Path:
+    """The ONE resolver for the sidecar beside *statusline_path*.
+
+    Public because three modules write this file — the freshness header, the
+    admission governor's brake state, and this module's budget — and a second
+    spelling of the path is a second file.
+    """
     return statusline_path.with_name("tick-meta.json")
 
 
-def _load_meta(meta_path: Path) -> TickMeta:
+def load_meta(path: Path) -> TickMeta:
+    """The sidecar's current contents, or ``{}`` when it is absent or unusable.
+
+    The merge idiom every writer into ``tick-meta.json`` reads first: the file is
+    shared, so a writer that does not load-merge silently deletes its co-tenants'
+    keys. An unreadable or malformed sidecar degrades to an empty mapping — a write
+    must never abort a tick.
+    """
     try:
-        body = meta_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+        body = path.read_text(encoding="utf-8")
+    except OSError:
         return {}
     try:
         data = json.loads(body)
@@ -77,12 +96,12 @@ def write_admit_budget(budget: int, *, statusline_path: Path) -> None:
     ``_write_tick_meta`` / ``write_open_prs_cache``) so an observability write
     can never crash the tick.
     """
-    meta_path = _meta_path(statusline_path)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _load_meta(meta_path)
+    path = meta_path(statusline_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = load_meta(path)
     payload[BUDGET_KEY] = int(budget)
     payload[WRITTEN_AT_KEY] = time.time()
-    meta_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
 def clear_admit_budget(*, statusline_path: Path) -> None:
@@ -91,16 +110,16 @@ def clear_admit_budget(*, statusline_path: Path) -> None:
     Surgical: drops only the budget + ``written_at`` keys, preserving every
     other tick-meta key. A no-op when the sidecar (or the key) is absent.
     """
-    meta_path = _meta_path(statusline_path)
-    payload = _load_meta(meta_path)
+    path = meta_path(statusline_path)
+    payload = load_meta(path)
     if BUDGET_KEY not in payload and WRITTEN_AT_KEY not in payload:
         return
     payload.pop(BUDGET_KEY, None)
     payload.pop(WRITTEN_AT_KEY, None)
     try:
-        meta_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     except OSError:
-        logger.exception("clear_admit_budget could not rewrite %s", meta_path)
+        logger.exception("clear_admit_budget could not rewrite %s", path)
 
 
 def read_admit_budget(*, statusline_path: Path, cadence_seconds: int) -> int | None:
@@ -116,7 +135,7 @@ def read_admit_budget(*, statusline_path: Path, cadence_seconds: int) -> int | N
     A dead loop must never wrongly clamp live dispatch, so every uncertain
     case degrades to ``None`` (no clamp), never to a residual stale ceiling.
     """
-    payload = _load_meta(_meta_path(statusline_path))
+    payload = load_meta(meta_path(statusline_path))
     raw_budget = payload.get(BUDGET_KEY)
     if not isinstance(raw_budget, int) or isinstance(raw_budget, bool):
         return None
@@ -132,7 +151,10 @@ def read_admit_budget(*, statusline_path: Path, cadence_seconds: int) -> int | N
 __all__ = [
     "BUDGET_KEY",
     "WRITTEN_AT_KEY",
+    "TickMeta",
     "clear_admit_budget",
+    "load_meta",
+    "meta_path",
     "read_admit_budget",
     "write_admit_budget",
 ]

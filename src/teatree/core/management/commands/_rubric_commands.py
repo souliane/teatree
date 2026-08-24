@@ -132,7 +132,7 @@ def clear_honesty_escalation_on_pass(ticket: Ticket) -> None:
     from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
-        sessions = ticket.sessions.exclude(agent_id="")  # ty: ignore[unresolved-attribute]
+        sessions = ticket.sessions.exclude(agent_id="")
         for agent_id in sessions.values_list("agent_id", flat=True).distinct():
             HonestyEscalation.mark_cleared(agent_id)
     except Exception:  # noqa: BLE001 — best-effort side-effect; a failure degrades to no-op

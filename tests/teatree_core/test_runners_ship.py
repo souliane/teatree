@@ -5,9 +5,13 @@ the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
 ``ShipExecutor`` and on success advances ``SHIPPED → IN_REVIEW``.
 """
 
+import os
 import shutil
 import subprocess
+import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +20,8 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
+from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
@@ -52,7 +58,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
             result = ShipExecutor(ticket).run()
@@ -73,8 +79,9 @@ class TestShipExecutor(TestCase):
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
         # budget gate must live at the ShipExecutor chokepoint. With the cap at 1
         # and one open PR already recorded for this (repo, ticket), the ship is
-        # refused and NO PR is created. RED before the _open_pr_and_record guard:
-        # host.create_pr is called on the pre-fix code.
+        # refused and NO PR is created. #4151: nor is the branch PUSHED — the push
+        # fires the pre-push `ensure-pr` hook, which opens a PR, so a refusal
+        # concluded after it reports "refused" for a ship whose PR now exists.
         slug = "souliane/teatree"
         ticket = self._ticket_with_worktree()
         PullRequest.objects.create(
@@ -91,7 +98,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(
@@ -105,6 +112,7 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "max_open_prs_per_repo_per_ticket" in result.detail
         host.create_pr.assert_not_called()
+        push.assert_not_called()
 
     def test_loop_ship_path_allows_pr_when_budget_not_reached(self) -> None:
         # Inert-at-limit companion: with the cap at 1 and no existing open PR for
@@ -118,7 +126,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(
@@ -137,8 +145,8 @@ class TestShipExecutor(TestCase):
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
         # same bypass class the budget gate closed. With require_debt_delta on and
         # a net-new noqa in the branch diff, the ship is refused and NO PR is
-        # created. RED before the _open_pr_and_record debt guard: the pre-fix loop
-        # path calls host.create_pr with the debt un-gated.
+        # created. #4151: nor is the branch PUSHED — the push opens a PR through the
+        # pre-push `ensure-pr` hook, so a refusal concluded after it is a lie.
         slug = "souliane/teatree"
         ticket = self._ticket_with_worktree()
         host = MagicMock()
@@ -153,7 +161,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
@@ -164,6 +172,7 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "debt_delta_gate" in result.detail
         host.create_pr.assert_not_called()
+        push.assert_not_called()
 
     def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
         # Inert companion: require_debt_delta on but the branch introduces no
@@ -182,7 +191,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
@@ -199,7 +208,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=None),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -232,7 +241,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
             result = ShipExecutor(ticket).run()
@@ -259,7 +268,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
             result = ShipExecutor(ticket).run()
@@ -287,7 +296,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
             result = ShipExecutor(ticket).run()
@@ -313,7 +322,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
                 return_value=("feat(core): add thing (https://example.com/issues/77)", "Longer body.\nMore detail."),
@@ -338,7 +347,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "")),
         ):
             ShipExecutor(ticket).run()
@@ -360,7 +369,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "")),
         ):
             ShipExecutor(ticket).run()
@@ -413,9 +422,9 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -439,8 +448,8 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -459,9 +468,9 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -484,9 +493,9 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -506,8 +515,8 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -568,9 +577,9 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -606,7 +615,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
         ):
             result = ShipExecutor(ticket).run()
 
@@ -627,9 +636,9 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             ShipExecutor(ticket).run()
 
@@ -654,9 +663,9 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             ShipExecutor(ticket).run()
 
@@ -725,8 +734,8 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -750,8 +759,8 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
             patch.object(Worktree, "save", autospec=True) as wt_save,
         ):
@@ -779,8 +788,8 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -799,8 +808,8 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -826,8 +835,8 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         patches = (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
@@ -924,7 +933,7 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
                 autospec=True,
                 return_value=PrOpenState.OPEN,
             ),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -947,7 +956,7 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
                 "teatree.core.runners.ship.code_host_for_repo_from_overlay",
                 side_effect=BackendResolutionError("repo origin resolves to the gitlab forge but no gitlab token"),
             ),
-            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.push_branch") as push,
         ):
             result = ShipExecutor(ticket).run()
 
@@ -1077,8 +1086,8 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
                 return_value=("fix(ship): honor auto-close", "Closes #873"),
@@ -1143,8 +1152,8 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
                 return_value=("chore: unrelated subject (#298)", "Body."),
@@ -1214,7 +1223,7 @@ class TestShipPrUrlRepoMismatch(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: y", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=self._EXPECTED_SLUG),
         ):
@@ -1241,3 +1250,251 @@ class TestShipPrUrlRepoMismatch(TestCase):
         assert result.detail == self._EXPECTED_URL
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == [self._EXPECTED_URL]
+
+
+def _tmp_dir(case: TestCase) -> Path:
+    """A temp dir bound to *case*'s lifetime — ``TestCase`` has no ``tmp_path`` fixture."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    return Path(tmp.name)
+
+
+def _only_teatree_named_token() -> AbstractContextManager[None]:
+    """The venue the raw push cannot serve: the token is present, but not under git's name.
+
+    Only ``GH_TOKEN`` reaches git's credential helper, so a push lands here iff the
+    caller resolves the credential itself. The value is a test sentinel.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+    env["TEATREE_GH_TOKEN"] = "sentinel-not-a-credential"
+    return patch.dict(os.environ, env, clear=True)
+
+
+def _make_repo_with_origin(tmp_path: Path, *, branch: str) -> str:
+    """A real clone on *branch*, with a real bare ``origin`` it has not pushed to yet."""
+    origin = tmp_path / "origin.git"
+    subprocess.run([_GIT, "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    _run_git("init", "-b", "main", cwd=clone)
+    _run_git("config", "user.email", "dev@example.com", cwd=clone)
+    _run_git("config", "user.name", "Dev", cwd=clone)
+    _run_git("remote", "add", "origin", str(origin), cwd=clone)
+    (clone / "README.md").write_text("base\n")
+    _run_git("add", "README.md", cwd=clone)
+    _run_git("commit", "-m", "chore: base", cwd=clone)
+    _run_git("push", "-u", "origin", "main", cwd=clone)
+    _run_git("checkout", "-b", branch, cwd=clone)
+    (clone / "feature.txt").write_text("work\n")
+    _run_git("add", "feature.txt", cwd=clone)
+    _run_git("commit", "-m", "feat: the branch's own work", cwd=clone)
+    return str(clone)
+
+
+def _merge_main_into_head(repo: str) -> None:
+    """Advance ``origin/main`` and merge it in, so HEAD is the merge commit ``pr create`` makes."""
+    _run_git("checkout", "main", cwd=Path(repo))
+    (Path(repo) / "other.txt").write_text("moved on\n")
+    _run_git("add", "other.txt", cwd=Path(repo))
+    _run_git("commit", "-m", "chore: main moved on", cwd=Path(repo))
+    _run_git("push", "origin", "main", cwd=Path(repo))
+    _run_git("checkout", "-", cwd=Path(repo))
+    _run_git("merge", "--no-ff", "--no-edit", "main", cwd=Path(repo))
+
+
+class TestShipPushSuppliesTheForgeCredential(TestCase):
+    """#4103: the ship path pushed with a raw ``git push`` carrying no forge credential.
+
+    ``t3 push`` resolves the credential through ``forge_push`` and hands it to git
+    as ``GH_TOKEN`` env; the ship path did not, so ``pr create --sync`` died on
+    git's own ``could not read Username`` in exactly the venues the credential
+    chain exists for.
+    """
+
+    def _ticket_for(self, repo: str, branch: str) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4103")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo,
+            branch=branch,
+            extra={"worktree_path": repo},
+        )
+        return ticket
+
+    def _ship(self, ticket: Ticket) -> tuple[RunnerResult, MagicMock, list[dict[str, str]]]:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1"}
+        host.current_user.return_value = "souliane"
+        push_envs: list[dict[str, str]] = []
+        real_run = subprocess.run
+
+        def spy(
+            cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            if "push" in cmd:
+                push_envs.append(dict(env or {}))
+            return real_run(cmd, env=env, **kwargs)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.utils.run.subprocess.run", side_effect=spy),
+        ):
+            return ShipExecutor(ticket).run(), host, push_envs
+
+    def test_push_carries_the_resolved_credential_git_alone_cannot_see(self) -> None:
+        """A ``TEATREE_GH_TOKEN``-only venue is the one the raw push cannot serve.
+
+        Only ``GH_TOKEN`` reaches git's credential helper, so a venue carrying the
+        token under teatree's own name pushes iff the ship path resolves the
+        credential itself. Asserted on the KEY's presence — never on a value.
+        """
+        repo = _make_repo_with_origin(_tmp_dir(self), branch="4103-feature")
+        ticket = self._ticket_for(repo, "4103-feature")
+
+        with _only_teatree_named_token():
+            result, _host, push_envs = self._ship(ticket)
+
+        assert result.ok is True
+        assert push_envs, "the ship path never ran a git push"
+        assert all("GH_TOKEN" in env for env in push_envs)
+
+    def test_failed_push_is_a_structured_refusal_and_opens_no_pr(self) -> None:
+        """An unreachable remote must name its failure, not raise git's raw error."""
+        tmp = _tmp_dir(self)
+        repo = _make_repo_with_origin(tmp, branch="4103-feature")
+        _run_git("remote", "set-url", "origin", str(tmp / "gone.git"), cwd=Path(repo))
+        ticket = self._ticket_for(repo, "4103-feature")
+
+        with _only_teatree_named_token():
+            result, host, _envs = self._ship(ticket)
+
+        assert result.ok is False
+        assert "push" in result.detail
+        host.create_pr.assert_not_called()
+
+
+class TestShipTitleSkipsMergeCommits(TestCase):
+    """#4103: ``pr create``'s own auto-merge left a merge commit at the tip.
+
+    The title was then derived from ``Merge branch 'main' …``, which the overlay's
+    own conventional-commit validator rejects — a command generating a title its
+    sibling validator refuses.
+    """
+
+    def test_title_comes_from_the_branch_s_own_last_real_commit(self) -> None:
+        repo = _make_repo_with_origin(_tmp_dir(self), branch="4103-feature")
+        _merge_main_into_head(repo)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4103")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo,
+            branch="4103-feature",
+            extra={"worktree_path": repo},
+        )
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        (spec,) = host.create_pr.call_args.args
+        assert spec.title == "feat: the branch's own work"
+
+
+class _HookHost:
+    """The forge the pre-push ``ensure-pr`` hook opens its PR against."""
+
+    URL = "https://github.com/souliane/teatree/pull/4305"
+
+    def current_user(self) -> str:
+        return "souliane"
+
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        return True
+
+    def create_pr(self, spec):
+        return {"web_url": self.URL}
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        return PrOpenState.OPEN
+
+
+class TestPostPushRefusalLeavesAReconcilableState(TestCase):
+    """#4305: a refusal reached AFTER the push must not orphan the PR the push opened.
+
+    ``push_branch`` fires the git pre-push hook, which runs ``ensure-pr`` and opens
+    a PR for the branch. Every refusal after that point — the post-push fleet-claim
+    fence here, the PR-open half's no-URL / wrong-slug / 404 returns — returns
+    ``ok=False`` for a ship whose PR is live on the forge. Unrecorded, that PR was
+    invisible to the retry, which collided with ``already exists``.
+    """
+
+    BRANCH = "fix/4305-post-push"
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _repo(self) -> Path:
+        origin = self._tmp_path / "origin.git"
+        subprocess.run([_GIT, "init", "--bare", str(origin)], check=True, capture_output=True)
+        work = self._tmp_path / "work"
+        subprocess.run([_GIT, "init", "-b", "main", str(work)], check=True, capture_output=True)
+        _run_git("config", "user.email", "agent@example.com", cwd=work)
+        _run_git("config", "user.name", "agent", cwd=work)
+        _run_git("remote", "add", "origin", str(origin), cwd=work)
+        (work / "README.md").write_text("seed\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "seed", cwd=work)
+        _run_git("push", "-u", "origin", "main", cwd=work)
+        _run_git("checkout", "-b", self.BRANCH, cwd=work)
+        (work / "fix.py").write_text("x = 1\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "fix(core): own commit", cwd=work)
+        return work
+
+    def test_the_hook_opened_pr_is_on_the_ticket_after_a_post_push_refusal(self) -> None:
+        repo = self._repo()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/4305")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(repo),
+            branch=self.BRANCH,
+            extra={"worktree_path": str(repo)},
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: _HookHost())
+        ship_host = MagicMock()
+        ship_host.current_user.return_value = "souliane"
+
+        def fire_pre_push_hook(*, repo: str, remote: str, branch: str):
+            create_or_defer_pr(repo, branch)
+            return MagicMock(ok=True)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=ship_host),
+            patch("teatree.core.runners.ship.push_branch", side_effect=fire_pre_push_hook),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("fix(core): own commit", "")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch.object(
+                ShipExecutor,
+                "_fleet_claim_lost",
+                side_effect=[None, RunnerResult(ok=False, detail="fleet claim lost")],
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        ship_host.create_pr.assert_not_called()
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"] == {self.BRANCH: _HookHost.URL}

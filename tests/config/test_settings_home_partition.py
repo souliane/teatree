@@ -49,7 +49,6 @@ def test_toml_carve_out_is_empty() -> None:
     moved_to_db = (
         "workspace_dir",
         "check_updates",
-        "timezone",
         "handover_mirror_path",
         "statusline_chain",
         "autoload",
@@ -61,18 +60,9 @@ def test_toml_carve_out_is_empty() -> None:
         assert SETTING_HOMES[moved] is SettingHome.DB
 
 
-def test_falsely_bootstrap_fields_are_db_home() -> None:
-    # ``timezone`` was tagged "needed to open the DB", but Django ``settings.py``
-    # hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES`` without reading
-    # it — so it is DB-home, not bootstrap. (Its former sibling ``worktrees_dir``
-    # was removed as redundant — see ``test_removed_dead_settings.py``.)
-    assert SETTING_HOMES["timezone"] is SettingHome.DB
-
-
 def test_per_overlay_fields_are_db_home() -> None:
     # A per-overlay override lives in a ``ConfigSetting`` overlay row, not a file.
     assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
-    assert SETTING_HOMES["privacy"] is SettingHome.DB
 
 
 def test_handover_mirror_path_is_db_home() -> None:

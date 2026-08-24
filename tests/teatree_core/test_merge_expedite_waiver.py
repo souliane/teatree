@@ -29,6 +29,7 @@ from teatree.core.models import (
     ReviewVerdictError,
     Ticket,
 )
+from tests._forge_stub import changed_files_stdout
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -83,7 +84,7 @@ class _GhStub:
             return (0, self.checks, "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "expedited0merged"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
 
 def _pending_stub() -> _GhStub:
@@ -328,7 +329,7 @@ class TestExpediteMergeTime(TestCase):
         # required checks is STILL refused — no MergeAudit, FSM stays IN_REVIEW.
         ticket = _expedited_ticket()
         clear = _issue_expedite_clear(ticket, pr_id=300)
-        with pytest.raises(MergePreconditionError, match="FAILED required check"):
+        with pytest.raises(MergePreconditionError, match="FAILED or UNREADABLE required check"):
             _run(clear, _failed_stub(), expedite_authorized="owner-x")
         ticket.refresh_from_db()
         clear.refresh_from_db()

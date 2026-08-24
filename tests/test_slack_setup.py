@@ -10,7 +10,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import httpx
@@ -45,7 +45,7 @@ def _seed_overlays(overlays: dict[str, dict]) -> None:
 
 
 def _overlays() -> dict:
-    return ConfigSetting.objects.get_effective("overlays") or {}
+    return cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays") or {})
 
 
 def _seed_cold_registry(db: Path, overlays: dict[str, dict]) -> None:

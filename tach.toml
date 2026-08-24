@@ -191,6 +191,9 @@ depends_on = [
   "teatree.core.models.errors",
   "teatree.core.models",
   "teatree.core.schema_readiness",
+  # the mirror gate (#4387): CoreConfig.ready() freezes its snapshot and
+  # gates/schema_guard renders the records it publishes.
+  "teatree.core.process_freshness",
   # selectors reuse the single-source overlay Q-builder that lives in its own
   # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
   # → managers.
@@ -226,12 +229,20 @@ depends_on = []
 [[modules]]
 path = "teatree.core.session_handover_manager"
 layer = "domain"
-depends_on = []
+# The hand-off write seam parks the runner principal, so it asks the
+# zero-dependency identity leaf what that principal is — the same downward edge
+# teatree.loop.session_identity already takes.
+depends_on = ["teatree.core.session_identity"]
 
 [[modules]]
 path = "teatree.core.loop_lease_liveness"
 layer = "platform"
 depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.core.claim_liveness"
+layer = "platform"
+depends_on = ["teatree.core.loop_lease_liveness"]
 
 [[modules]]
 path = "teatree.core.loop_lease_manager"
@@ -251,12 +262,12 @@ depends_on = []
 [[modules]]
 path = "teatree.core.managers_task_claim"
 layer = "domain"
-depends_on = ["teatree.core.schema_readiness"]
+depends_on = ["teatree.config", "teatree.core.process_freshness", "teatree.core.schema_readiness"]
 
 [[modules]]
 path = "teatree.core.managers_task_sweeps"
 layer = "domain"
-depends_on = ["teatree.core.modelkit", "teatree.core.repair_loop"]
+depends_on = ["teatree.core.claim_liveness", "teatree.core.modelkit", "teatree.core.repair_loop"]
 
 [[modules]]
 path = "teatree.core.managers_inbound"
@@ -284,10 +295,20 @@ layer = "domain"
 depends_on = ["teatree.config"]
 
 [[modules]]
+# The mirror of schema_readiness (#4387): "is the code THIS process loaded as new as the
+# schema the DB has applied?". Its own node for the same reason — the claim chokepoint
+# reads it through managers_task_claim, and CoreConfig.ready() freezes its snapshot, so it
+# must stay below both with no cycle.
+path = "teatree.core.process_freshness"
+layer = "domain"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
   "teatree.config",
+  "teatree.core.claim_liveness",
   "teatree.utils",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
@@ -307,10 +328,14 @@ depends_on = [
 path = "teatree.core.models"
 layer = "domain"
 depends_on = [
+  "teatree.core.claim_liveness",
   "teatree.core.modelkit",
   "teatree.core.managers",
   "teatree.core.models.errors",
   "teatree.core.repair_loop",
+  # SessionHandover's check constraint names the runner principal, so the value
+  # comes from the identity leaf rather than a second literal to drift from.
+  "teatree.core.session_identity",
   "teatree.instance_id",
   "teatree.url_classify",
   "teatree.verification"
@@ -551,6 +576,7 @@ depends_on = [
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
   "teatree.loop.pr_ticket_index",
+  "teatree.loop.main_check_runs",
   "teatree.loop.scanners",
   "teatree.loop.dispatch_reducer",
   "teatree.loop.dispatch_gates",
@@ -562,7 +588,8 @@ depends_on = [
   "teatree.loop.rendering_permalinks",
   "teatree.loop.rendering_zones",
   "teatree.loop.rendering",
-  "teatree.loop.slack_answer"
+  "teatree.loop.slack_answer",
+  "teatree.loop.question_binding"
 ]
 
 [[modules]]
@@ -614,6 +641,26 @@ layer = "domain"
 depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
 
 [[modules]]
+# Which queued DeferredQuestion a Slack reply answers. Consumed by BOTH consumers of
+# the PendingChatInjection queue — teatree.loop.slack_answer and teatree.loop.scanners
+# (both domain) — which is the point: one binder, so their reply->question join cannot
+# drift. Declared at domain rather than inheriting orchestration from its package,
+# mirroring teatree.loop.inbound_reading above.
+path = "teatree.loop.question_binding"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.loop.inbound_reading"]
+
+[[modules]]
+# The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf
+# (stdlib only) consumed by teatree.loop.scanners AND by the bare teatree.loop
+# (orchestration) module (red_set_surface), so it is declared at domain rather than
+# inheriting orchestration from its package — the same sub-node shape as
+# teatree.loop.inbound_classifier above.
+path = "teatree.loop.main_check_runs"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.loop.loop_scoping"
 layer = "domain"
 depends_on = ["teatree.core.loop_lease_manager", "teatree.loop.session_identity"]
@@ -631,6 +678,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
+  "teatree.loop.session_identity",
   "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette"
 ]
@@ -696,6 +744,8 @@ path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
+  "teatree.loop.question_binding",
+  "teatree.loop.main_check_runs",
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
@@ -823,6 +873,7 @@ layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
   "teatree.loop.inbound_classifier",
+  "teatree.loop.question_binding",
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",
@@ -838,6 +889,7 @@ depends_on = [
   "teatree.agents",
   "teatree.config",
   "teatree.core",
+  "teatree.core.claim_liveness",
   "teatree.core.modelkit",
   "teatree.loop",
   "teatree.loop.loop_state_db",

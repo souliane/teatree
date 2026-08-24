@@ -5,6 +5,7 @@ from teatree.core.models.attachment_manifest import AttachmentManifest
 from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
+from teatree.core.models.branch_update_attempt import BranchUpdateAttempt
 from teatree.core.models.ci_eval_heal_session import CiEvalHealSession, CiEvalHealSessionManager
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.compliance_snapshot import (
@@ -46,6 +47,7 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
+from teatree.core.models.external_outcome_snapshot import ExternalOutcomeSnapshot, ExternalOutcomeSnapshotManager
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import (
@@ -54,7 +56,9 @@ from teatree.core.models.implemented_issue_marker import (
     MarkerReconcileResult,
 )
 from teatree.core.models.incoming_event import IncomingEvent
+from teatree.core.models.intake_scan_cursor import INCOMPLETE_PASS_ALARM, IntakeScanCursor, IntakeScanCursorManager
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.interactive_dispatch import SEAT_WINDOW, InteractiveDispatch, InteractiveDispatchManager
 from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
 from teatree.core.models.landscape_artifact import LandscapeArtifact
 from teatree.core.models.live_post_approval import (
@@ -67,7 +71,7 @@ from teatree.core.models.local_stack_queue import LocalStackQueueItem
 from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop import Loop, LoopManager
 from teatree.core.models.loop_lease import LoopDriver, LoopLease
-from teatree.core.models.loop_preset import PIN_MODES, Mode, ModeManager, ModeOverride, ModeOverrideManager
+from teatree.core.models.loop_preset import Mode, ModeManager, ModeOverride, ModeOverrideManager
 from teatree.core.models.loop_schedule import ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
@@ -83,7 +87,7 @@ from teatree.core.models.outer_loop_experiment import (
     ProposalSpec,
 )
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
-from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
 from teatree.core.models.pending_pull_request import PendingPullRequest, PendingPullRequestManager
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
@@ -104,12 +108,13 @@ from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import (
+    ChecksContradictionError,
     Finding,
     ReviewVerdict,
     ReviewVerdictError,
     Severity,
-    normalize_reviewer_identity,
 )
+from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
@@ -135,6 +140,12 @@ from teatree.core.models.ticket_artifacts import (
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
+from teatree.core.models.unclaimed_intake_candidate import (
+    STARVED_AFTER,
+    UnclaimedIntakeCandidate,
+    UnclaimedIntakeCandidateManager,
+    WaitingCandidate,
+)
 from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
@@ -142,10 +153,12 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
     "DEFAULT_LOCK_TTL",
+    "INCOMPLETE_PASS_ALARM",
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
-    "PIN_MODES",
+    "SEAT_WINDOW",
+    "STARVED_AFTER",
     "AnthropicActivePick",
     "AnthropicActivePickManager",
     "AnthropicTokenUsage",
@@ -156,7 +169,9 @@ __all__ = [
     "AutoReviewDispatch",
     "BindingFeedbackError",
     "BotPing",
+    "BranchUpdateAttempt",
     "BroadcastObservation",
+    "ChecksContradictionError",
     "CiEvalHealSession",
     "CiEvalHealSessionManager",
     "ClearIssuanceError",
@@ -189,6 +204,7 @@ __all__ = [
     "DirectiveError",
     "DirectiveManager",
     "DirtyWorktreeError",
+    "DmContext",
     "DreamQaProbe",
     "DreamRunMarker",
     "E2EBypassApproval",
@@ -199,6 +215,8 @@ __all__ = [
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
+    "ExternalOutcomeSnapshot",
+    "ExternalOutcomeSnapshotManager",
     "FactoryScoreSnapshot",
     "FactoryScoreSnapshotManager",
     "Finding",
@@ -208,7 +226,11 @@ __all__ = [
     "IncomingEvent",
     "InstructionComplianceRecord",
     "InstructionComplianceSnapshot",
+    "IntakeScanCursor",
+    "IntakeScanCursorManager",
     "IntentClassification",
+    "InteractiveDispatch",
+    "InteractiveDispatchManager",
     "InvalidTransitionError",
     "InvariantOutcome",
     "KnownIssue",
@@ -321,9 +343,12 @@ __all__ = [
     "TrajectoryToolCall",
     "TrustedIdentity",
     "TrustedIdentityManager",
+    "UnclaimedIntakeCandidate",
+    "UnclaimedIntakeCandidateManager",
     "UnshippedWorkRecord",
     "UsageWindowState",
     "UsageWindowStateQuerySet",
+    "WaitingCandidate",
     "WaitingItem",
     "WaitingItemError",
     "WaitingItemManager",

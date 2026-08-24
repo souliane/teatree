@@ -6,7 +6,7 @@ record of ``name`` / ``lane`` / ``verdict`` plus the triage discriminators
 the ``triage_class`` :func:`teatree.eval.triage.classify_red` derives from them.
 It is built ONLY from spec identity + verdict + discriminators — NEVER a
 transcript, a tool-call input, or a judge rationale — the same sanitization
-contract as :func:`teatree.eval.report.render_summary_markdown`, so the CI heal
+contract as :func:`teatree.eval.summary_markdown.render_summary_markdown`, so the CI heal
 workflow can upload it as a published artifact. Works for a single-trial run and
 for a ``--trials``/pass@k run (the aggregate discriminators fold over each
 scenario's per-trial results).
@@ -26,6 +26,7 @@ from pathlib import Path
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.discovery import find_spec
+from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
@@ -65,7 +66,10 @@ class _ScenarioRow:
         )
         # A red row keeps its triage_class whatever the surface — the artifact is the
         # triage record, so an interactive regression stays VISIBLE. `advisory` is the
-        # separate question of whether that red may GATE (#3855, #3921).
+        # separate question of whether that red may GATE (#3855, #3921) — and a row whose
+        # run MEASURED NOTHING has no verdict to exempt, so it is never advisory (#3922).
+        # The lane already exited on the guard; this keeps the merged-artifact gate that
+        # re-runs afterwards from blessing the shard the first gate failed.
         return {
             "name": self.name,
             "lane": self.lane,
@@ -76,7 +80,7 @@ class _ScenarioRow:
             "matcher_failed": self.matcher_failed,
             "judge_failed": self.judge_failed,
             "triage_class": triage.value if triage is not None else None,
-            "advisory": self.surface == INTERACTIVE_SURFACE,
+            "advisory": self.surface == INTERACTIVE_SURFACE and not measured_nothing(self.terminal_reason),
         }
 
 
@@ -98,7 +102,15 @@ def _row_from_scenario(result: ScenarioResult) -> _ScenarioRow:
 
 
 def _pass_at_k_terminal_reason(result: PassAtKResult, executed: Sequence[ScenarioResult]) -> str:
-    """The aggregate terminal reason: a cap outranks a throttle common to every trial."""
+    """The aggregate terminal reason: a harness failure outranks a cap outranks a throttle.
+
+    ``PassAtKResult.terminal_reason`` carries only the CAP reason, so a cell whose every
+    trial died on a harness failure would serialize an EMPTY reason — and the row would
+    then read advisory. The harness fold ranks first: it is the one reason that says the
+    cell measured nothing at all.
+    """
+    if result.harness_failed and executed:
+        return executed[0].run.terminal_reason
     if result.terminal_reason:
         return result.terminal_reason
     if executed and all(t.run.terminal_reason.startswith(THROTTLE_TERMINAL_PREFIX) for t in executed):

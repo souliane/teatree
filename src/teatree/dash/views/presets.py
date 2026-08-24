@@ -73,9 +73,9 @@ def preset_use(request: "HttpRequest") -> "HttpResponse":
     name = request.POST.get("preset", "").strip()
     try:
         if name == "auto":
-            clear_preset_override(user_id=actor(request))
+            clear_preset_override()
         else:
-            activate_preset(name, hold=True, reason="dashboard", user_id=actor(request))
+            activate_preset(name, hold=True, reason="dashboard")
     except PresetEditError as exc:
         return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:use", after=name)
@@ -98,14 +98,10 @@ def preset_create(request: "HttpRequest") -> "HttpResponse":
 @require_loopback_or_staff
 @require_POST
 def preset_meta(request: "HttpRequest") -> "HttpResponse":
-    """POST a preset's description and availability pin — an empty pin CLEARS it."""
+    """POST a preset's description."""
     name = request.POST.get("preset", "").strip()
     try:
-        update_preset_meta(
-            name,
-            description=request.POST.get("description", ""),
-            availability_pin=request.POST.get("availability_pin", ""),
-        )
+        update_preset_meta(name, description=request.POST.get("description", ""))
     except PresetEditError as exc:
         return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:meta", target=name)

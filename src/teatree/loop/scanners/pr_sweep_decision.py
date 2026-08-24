@@ -2,24 +2,25 @@
 
 The scanner core (:class:`PrSweepScanner`, the signal builders) lives in
 ``pr_sweep``; this module holds the pure check-classification predicates and the
-``MergeClear`` / ``ReviewVerdict`` / external-delivery lookups the decision
-ladder consults. Splitting them out keeps the scanner module focused on
-orchestration and under the module-health LOC cap (same split rationale as
-``pr_sweep_adapters``).
+``ReviewVerdict`` / external-delivery lookups the decision ladder consults (the
+CLEAR lookup is its own concern, in ``pr_sweep_clear_lookup``). Splitting them out
+keeps the scanner module focused on orchestration and under the module-health LOC
+cap (same split rationale as ``pr_sweep_adapters``).
 """
 
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import classify_required_rollup, failing_required_names
-from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
+from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, HeadReview, MergeAttempt, PrSummary
 
 if TYPE_CHECKING:
+    from teatree.core.models.review_verdict import ReviewVerdict
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -104,38 +105,41 @@ def classify_sweep_ci(
     return None, False, failing
 
 
-def red_required_all_repo_state(failing_required: set[str]) -> bool:
-    """True iff there is ≥1 failing REQUIRED check and EVERY one is repo-state (#2045).
+def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) -> MergeAttempt:
+    """Stamp the CI facts a CROSS-PR comparison needs onto *attempt* (#4090).
+
+    The failing REQUIRED set and whether the run judged the CURRENT base are both
+    already computed for the merge decision; carrying them out to the signal is
+    what lets the set-level report compare PRs without re-listing them and
+    running a second, divergent classifier over the same rollups (#12). The PR
+    URL rides along so the report can render a clickable ref for a plain skip.
+    """
+    return replace(
+        attempt,
+        failing_required=tuple(sorted(failing)),
+        base_current=not pr.behind_main,
+        url=attempt.url or pr.url,
+    )
+
+
+def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:
+    """True iff ≥1 REQUIRED check is failing against a base that has MOVED (#4063).
 
     *failing_required* is the branch-protection-required set that is currently
-    failing (:func:`teatree.core.merge.failing_required_names`). Repo-state checks
-    (``REPO_STATE_CHECK_NAMES``) diff the head against the base, so a fix already
-    on ``main`` leaves them red on an un-updated branch and a ``gh run rerun``
-    re-tests the stale base — a merge-update is the remedy. A single non-repo-state
-    failing required check (a genuine test failure) makes this ``False`` so the
-    sweep keeps the bare ``ci_red`` skip.
+    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main* is
+    GitHub's ``mergeStateStatus == "BEHIND"``.
+
+    What makes a red verdict unreliable is not WHICH check failed but that the run
+    judged a base the branch has since fallen behind — so this generalises the
+    repo-state-only rule (#2045) it replaces, which is now one instance of it. A
+    repo-state check diffs the head against the base directly; a test check re-runs
+    against the run's pinned OLD base. Either way a fix that landed on ``main``
+    leaves the check red and ``gh run rerun`` cannot clear it, so the PR carries an
+    UNKNOWN verdict and only a merge-update resolves it. An UP-TO-DATE branch's red
+    IS its own verdict: it stays a bare ``ci_red`` skip, which is what stops a
+    genuinely broken PR from being update-looped.
     """
-    return bool(failing_required) and failing_required <= REPO_STATE_CHECK_NAMES
-
-
-def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:
-    """Locate the actionable, SHA-matched CLEAR for *(slug, pr_id, head_sha)*.
-
-    A row whose ``reviewed_sha`` does not match the live PR head is treated
-    as absent (the CLEAR was issued against stale code — §17.4.2 binds the
-    authorisation to the exact reviewed tree). The keystone transition
-    re-validates SHA-match at merge time as well, so even a stale match
-    here would be refused — this lookup just keeps the scanner quiet.
-    """
-    candidates = MergeClear.objects.filter(
-        slug=slug,
-        pr_id=pr_id,
-        consumed_at__isnull=True,
-    ).order_by("-issued_at")
-    for clear in candidates:
-        if clear.reviewed_sha == head_sha and clear.is_actionable():
-            return clear
-    return None
+    return bool(failing_required) and behind_main
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
@@ -143,7 +147,7 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
-    self-attested verdict (``is_non_reviewer_role``), so any row that
+    self-attested verdict (``is_independent_reviewer_identity``), so any row that
     exists was issued by an identity that is not the maker/coding-agent/
     loop. The bypass requires a ``merge_safe`` verdict bound to the live
     head SHA — a stale verdict reviewed a tree the PR no longer points at
@@ -162,6 +166,53 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
 
     state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
     return state is HeadVerdictState.MERGE_SAFE
+
+
+def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
+    """What the recorded verdicts say about *head_sha* — the holds, and the authorisation (#4380).
+
+    The extra precondition on the autonomous, no-CLEAR solo-overlay merge, plus the
+    record that merge names as its authorisation. A standing hold is NOT the effective
+    verdict: a later ``merge_safe`` from a DIFFERENT reviewer wins under newest-wins and
+    still leaves the hold standing, which is exactly the contested head that merged
+    itself. Only the holding reviewer lifting their own hold, a human CLEAR, or a new
+    push clears it.
+
+    Both held shapes refuse and both escalate to the owner; :attr:`HeadReview.hold_reason`
+    names them apart because they are different events to the reader. A ``merge_safe``
+    standing beside the hold is a real two-reviewer disagreement — necessarily two
+    DISTINCT identities, since :meth:`ReviewVerdict.record` is an ``update_or_create`` on
+    ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``. A hold with none beside
+    it is the ordinary outcome of a cold review that holds, and reporting that as a
+    disagreement names a second reviewer who does not exist.
+
+    Three lookups, and the middle one is why: ``standing_merge_safe_at`` asks who stands
+    beside the hold, ``authorizing_verdict_at`` asks what a merge may rest on, and only
+    the second is gated on newest-wins. Asking one question for both made the wording of
+    a refusal depend on recording order. It costs ONE extra queryset scan per held-head
+    evaluation, on a path that already runs once per open PR per tick.
+
+    No ``try/except`` on purpose — unlike :func:`record_mergeable_notified`,
+    where degrading to empty means "stay quiet", here it would mean "no hold,
+    go ahead and merge", so a DB hiccup would merge over a hold. The caller's
+    existing handler logs and skips the PR for the tick, and the next tick
+    retries — the safe direction. :func:`has_independent_cold_review` above
+    behaves the same way.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
+
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    standing = ReviewVerdict.objects.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    authorizing = ReviewVerdict.objects.authorizing_verdict_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    return HeadReview(
+        held_verdicts=tuple(_verdict_ref(hold) for hold in holds),
+        authorizing_verdict=None if authorizing is None else _verdict_ref(authorizing),
+        standing_merge_safe=None if standing is None else _verdict_ref(standing),
+    )
+
+
+def _verdict_ref(verdict: "ReviewVerdict") -> tuple[int, str]:
+    return int(verdict.pk), verdict.reviewer_identity_normalized or verdict.reviewer_identity
 
 
 def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:

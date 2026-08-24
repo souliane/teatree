@@ -137,7 +137,8 @@ class TestReinstallRunningEditable:
         monkeypatch.setattr(self_update_mod, "current_editable_source", lambda _uv: vendored)
 
         assert reinstall_running_editable(runner=_runner).ok is True
-        assert calls[0] == [
+        install = next(c for c in calls if "--reinstall" in c)
+        assert install == [
             "/usr/bin/uv",
             "tool",
             "install",
@@ -162,7 +163,7 @@ class TestReinstallRunningEditable:
         monkeypatch.setattr(self_update_mod, "current_editable_source", lambda _uv: source)
 
         assert reinstall_running_editable(runner=_runner).ok is True
-        assert "--with-editable" not in calls[0]
+        assert "--with-editable" not in next(c for c in calls if "--reinstall" in c)
 
     def test_skips_reinstall_for_non_editable_install_but_runs_setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []

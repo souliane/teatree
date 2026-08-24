@@ -101,6 +101,18 @@ on:
     # cannot see a brand name already committed; this catches a pre-existing
     # leak even when no new diff touches it.
     - cron: "17 6 * * *"
+  # The daily cron's durations-refresh path, reachable on demand (#4048). It had
+  # never produced a PR, and one attempt a day is no way to establish that it can:
+  # every downstream fix waits on the refreshed file. Opt-in, so a dispatch run for
+  # any other reason still records nothing and force-pushes no branch.
+  workflow_dispatch:
+    inputs:
+      refresh_durations:
+        description: >-
+          Record fresh per-test durations across the shard lane and open/update the
+          ci/test-durations-refresh PR.
+        type: boolean
+        default: false
 
 # Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
 # push-to-main or scheduled run (unique run_id group) so the full-tree
@@ -188,7 +200,7 @@ jobs:
             docker build -f dev/Dockerfile.test --target lint -t "$IMAGE" .
           fi
       # Run prek from the image's locked venv (`uv run`) so the prek RUNNER
-      # version is exactly the one the lockfile pins (prek==0.3.13) — identical
+      # version is exactly the one the lockfile pins (prek==0.4.14) — identical
       # to the documented local gate, which also runs `uv run prek`
       # (dev/ci-parity.sh). This closes the runner-version gap that let a hook
       # pass locally and fail here (or the reverse); a lockfile bump moves local
@@ -706,6 +718,22 @@ jobs:
       # --clean-durations` records THIS shard's fresh, tests-that-ran durations
       # (each group's clean slice) for the `refresh-durations` merge job below;
       # PR/push runs never pay the store write.
+      #
+      # `-o timeout=180` is the lane's OWN ceiling, not a global raise (#4048).
+      # Twelve shards each at `-n auto` on one runner cost a test roughly 3x what it
+      # costs alone — #4035 measured 20.15s on an idle tree against a 60s ceiling the
+      # same test then exceeded under this matrix, twice, on a PR whose diff could not
+      # touch it. 60s x that measured factor is 180s: the same real-time budget the
+      # tight ceiling expresses, translated through the contention this lane actually
+      # pays. Raising `[tool.pytest.ini_options] timeout` instead would buy the same
+      # thing here and lose the fast hang signal in `dev/ci-parity-fast.sh`,
+      # `dev/ci-shard.sh` and every bare `uv run pytest`, which inherit it. A
+      # `@pytest.mark.timeout` still wins over this (`pytest_timeout._get_item_settings`),
+      # so a test with its own stated ceiling is unaffected either way. What the raise
+      # must not do is hide a test drifting toward the new ceiling: the shard-stats
+      # plugin records each test's seconds against the ceiling that applied to it, and
+      # `scripts/ci/report_timeout_headroom.py` prints the suite-wide worst to the run
+      # summary below. `tests/test_ci_timeout_ceilings.py` pins the raise to this job.
       - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
         run: >
           docker run --rm
@@ -716,13 +744,14 @@ jobs:
           ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
+          -o timeout=180
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
           --splits 12 --group ${{ matrix.group }} --durations-path dev/.test_durations
           --splitting-algorithm least_duration
           -p scripts.ci.shard_stats_plugin
           --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
           -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
-          ${{ github.event_name == 'schedule' && '--store-durations --clean-durations' || '' }}
+          ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
@@ -730,17 +759,20 @@ jobs:
           path: |
             coverage.shard${{ matrix.group }}
             shard-stats.${{ matrix.group }}.json
-      # Scheduled run only: the fresh durations this shard just recorded, so the
+      # Refresh runs only: the fresh durations this shard just recorded, so the
       # `refresh-durations` job can merge the twelve groups into one balanced file.
-      - name: Upload this shard's recorded durations (scheduled refresh source)
-        if: github.event_name == 'schedule'
+      # Same gate as the recording above — an upload that opens without it would
+      # publish the committed file back as if it were freshly measured.
+      - name: Upload this shard's recorded durations (refresh source)
+        if: (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
 
-  # MAINTENANCE (scheduled only): keep `dev/.test_durations` from rotting (#3160).
-  # The twelve shards on the daily cron each recorded their group's fresh, clean
+  # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
+  # from rotting (#3160).
+  # The twelve shards on a refresh run each recorded their group's fresh, clean
   # durations (`--store-durations --clean-durations` above, including the
   # previously-unrecorded `tests/quality` + doctest items). This job unions them
   # back into one complete file and, ONLY when the drift gate fires (test set
@@ -750,14 +782,65 @@ jobs:
   # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
   # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
   # Never gates a PR; a merge failure or empty diff is a no-op.
+  #
+  # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
+  # `schedule`, `test-shard` runs anyway because its own `if` says `always()`, and
+  # GitHub then propagates that upstream skip THROUGH it to every dependent whose
+  # `if` does not re-establish `always()` — an explicit condition is evaluated in
+  # addition to the inherited status gate, not instead of it. Without it this job
+  # was skipped on every scheduled run while all twelve shards were green and had
+  # uploaded their durations, so no refresh PR was ever opened and
+  # `dev/.test_durations` decayed to 11% of the test files while pytest-split kept
+  # splitting the matrix from it. The two conditions after it still gate the job.
+  #
+  # `github.ref` is part of the gate because this job force-pushes a branch and opens
+  # a PR against `main`. A cron always runs on the default branch, so it is a no-op
+  # there; a dispatch can name any ref, and one launched from a feature branch would
+  # push that branch's commits over the real refresh branch. The gate is byte-identical
+  # at all three sites on this path (the two `test-shard` steps above and here) —
+  # `tests/test_ci_durations_refresh_gate.py` pins that, because a shard that records
+  # nothing and a merge job that runs anyway is a refresh that reads as a clean no-op.
   refresh-durations:
     needs: test-shard
-    if: github.event_name == 'schedule' && needs.test-shard.result == 'success'
+    if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && needs.test-shard.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
+      # #4262: FIRST, because the checkout below is what consumes the credential. A rejected
+      # PAT makes checkout die in `could not read Username for 'https://github.com'` — the
+      # same bytes an unset secret produces — and this job's own guard sat in its last step,
+      # unreachable. Inline rather than a `scripts/` file: nothing is checked out yet.
+      - name: Verify TEATREE_GH_TOKEN before the checkout consumes it
+        env:
+          TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_API_URL:-https://api.github.com}"
+          if [ -z "${TEATREE_GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset or rejected — it is UNSET on ${GITHUB_REPOSITORY}. Set or rotate the secret: the checkout below persists it as the git credential, and git with no usable one falls back to an interactive prompt and dies as 'could not read Username for https://github.com', naming nothing." >&2
+            exit 1
+          fi
+          # A heredoc into curl's config keeps the credential out of argv and the process table.
+          cfg="$(mktemp)"
+          trap 'rm -f "$cfg"' EXIT
+          cat > "$cfg" <<CURLRC
+          header = "Authorization: Bearer ${TEATREE_GH_TOKEN}"
+          CURLRC
+          status="$(curl -sS --config "$cfg" -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 -H 'Accept: application/vnd.github+json' "${API}/repos/${GITHUB_REPOSITORY}" || true)"
+          case "${status:-000}" in
+            200)
+              echo "TEATREE_GH_TOKEN accepted for ${GITHUB_REPOSITORY}."
+              ;;
+            401|403|404)
+              echo "::error::TEATREE_GH_TOKEN is unset or rejected — the forge answered HTTP ${status} for ${GITHUB_REPOSITORY}. The secret IS set, so presence is not the failure: rotate the credential. The checkout below would otherwise die as 'could not read Username for https://github.com', naming nothing." >&2
+              exit 1
+              ;;
+            *)
+              echo "::warning::TEATREE_GH_TOKEN is UNVERIFIED — the probe could not reach ${API} (HTTP ${status:-000}). Continuing: read a checkout failure below as unexplained, not as a rejected credential." >&2
+              ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -766,7 +849,7 @@ jobs:
           # TRIGGERS the required `test (3.13)` check. A push authenticated with
           # GITHUB_TOKEN never fires downstream workflows (GitHub's recursion guard), so
           # the refresh PR would sit forever without its required check and could never
-          # merge. The token guard in the PR step below fails loud if it is unset.
+          # merge. The probe step above has already proved this credential usable.
           token: ${{ secrets.TEATREE_GH_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -833,6 +916,44 @@ jobs:
               --label "ci"
           fi
 
+  # MAINTENANCE HONESTY (#4262): "the scheduled run passed" and "the maintenance job ran"
+  # are different claims, and only the first was ever checked. `refresh-durations` was
+  # skipped on every scheduled run for two weeks — skipped does not red a run — so the lane
+  # reported success while `dev/.test_durations` decayed to 10.8% of the test files. This
+  # job is where the second claim is made, so a job that did not run says so.
+  # `always()` is load-bearing for the same reason it is on `refresh-durations`: both of its
+  # dependencies run via `always()`, and GitHub propagates their skip through to anything
+  # that does not re-establish it — the very bug being reported here.
+  scheduled-maintenance-report:
+    needs: [test-shard, refresh-durations]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report whether the scheduled maintenance job actually ran
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+          REFRESH: ${{ needs.refresh-durations.result }}
+        run: |
+          set -euo pipefail
+          echo "test-shard: ${SHARDS}"
+          echo "refresh-durations: ${REFRESH}"
+          if [ "${SHARDS}" != "success" ]; then
+            echo "::notice::refresh-durations did not run because test-shard was '${SHARDS}' — the shard result is the cause and already reds this run."
+            exit 0
+          fi
+          case "${REFRESH}" in
+            success)
+              echo "refresh-durations ran and passed."
+              ;;
+            failure)
+              echo "::notice::refresh-durations ran and FAILED — this run is already red, which is an honest report."
+              ;;
+            *)
+              echo "::error::refresh-durations was '${REFRESH}' on this scheduled run while every shard passed. A job that did not run does not red a run, so the lane would otherwise report green while dev/.test_durations goes unrefreshed (#4262)." >&2
+              exit 1
+              ;;
+          esac
+
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).
   # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
@@ -891,6 +1012,20 @@ jobs:
           shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
           shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
           shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+      # What the shard lane's raised `-o timeout=180` bought, on every run (#4048).
+      # The raise stops contention from reddening a PR whose diff cannot have caused
+      # it; left unmeasured it would only move the cliff, so the same shard-stats
+      # artifacts carry each test's seconds against the ceiling that applied to it and
+      # this names whatever is running out of room, into the run summary. Deliberately
+      # NOT a gate — it exits 0 on an over-run too, because the required context
+      # reddening for a slow test nobody caused is the failure being fixed.
+      - name: Report per-test timeout headroom (report only, never gates)
+        run: >
+          uv run -p ${{ matrix.python-version }} python scripts/ci/report_timeout_headroom.py
+          shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
+          shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
+          shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+          >> "$GITHUB_STEP_SUMMARY"
       # Combine the twelve shards' data and enforce the whole-tree 93% branch floor
       # ONCE — same data, same floor as the old single-process lane. `coverage
       # report --fail-under=93` is the explicit invocation-site floor
@@ -1326,6 +1461,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: "3.13"
+      # A green audit is only evidence if the audit can still SEE. Nothing reds
+      # when the surface reports NOTHING, and an empty OSV response, a parser
+      # regression or a renamed flag all look exactly like "no findings" —
+      # souliane/teatree#4346. The canary feeds the same tool a pin with known
+      # advisories and demands at least one back.
+      - name: Canary — prove the audit surface can see a known advisory
+        run: python scripts/ci/audit_canary.py
       - name: Export shipped runtime surface for audit
         run: uv export --no-default-groups --all-extras --format requirements-txt --no-emit-workspace --no-header --quiet > requirements.audit.txt
       - name: Read CVE allowlist
@@ -1339,12 +1481,27 @@ jobs:
             echo "flags=" >> "$GITHUB_OUTPUT"
           fi
       - name: pip-audit (OSV backend; strict; allowlist applied)
+        id: audit
         env:
           IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
         # shellcheck disable=SC2086 — word-splitting on IGNORE_FLAGS is intentional:
         # it expands to zero or more ``--ignore-vuln GHSA-xxxx`` pairs from the
         # committed requirements.audit.ignore allowlist (never user-supplied input).
         run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
+      # A raw CVE list makes the reader re-derive the question that decides what
+      # to do. Django 6.0.8's High-severity raster CVE could not be reached from
+      # src/ while its Moderate admin one could, so the severity column ranked
+      # them the wrong way round (souliane/teatree#4346). Failure-only: the
+      # blocking verdict is the step above, this just annotates its findings.
+      - name: Reachability assessment for the advisories found
+        if: failure() && steps.audit.outcome == 'failure'
+        env:
+          IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
+        # shellcheck disable=SC2086 — same intentional word-splitting as above.
+        run: |
+          uvx pip-audit --vulnerability-service osv --disable-pip --format json \
+            -r requirements.audit.txt $IGNORE_FLAGS > audit-report.json || true
+          uv run t3 tool dependency-audit --report audit-report.json
 
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.

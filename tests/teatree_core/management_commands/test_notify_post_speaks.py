@@ -32,6 +32,7 @@ from django.core.management import call_command
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.types import LocalPlayback, SpeakConfig
+from tests._speak_thread_sentinel import join_speak_threads
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -114,6 +115,9 @@ class TestNotifyPostSpeaks:
 
         assert code == 0
         _wait_for(marker)
+        # The fake ``say`` sleeps PAST the marker write, so the playback thread outlives
+        # the wait — hand it back here or it runs on inside the next test (#4277).
+        join_speak_threads()
         assert marker.exists(), "self-DM notify post did not invoke `say` (the IM egress was silent)"
         assert "spoke" in marker.read_text()
 

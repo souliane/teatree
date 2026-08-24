@@ -7,8 +7,9 @@ merged, delivered, or ignored) the question is MOOT — the loop will never retr
 that phase again, so the only possible answer is "ignore". Left pending, these
 moot rows bury the one live question the owner needs to answer.
 
-The reconcile dismisses exactly the provably-moot rows: a row is drained ONLY when
-EVERY ticket that raised it is terminal. A row with even one still-live subject —
+The generalised drain (:mod:`teatree.loop.question_drain`) subsumes the reconcile and
+keeps its predicate verbatim: a row is drained ONLY when EVERY ticket that raised it is
+terminal. A row with even one still-live subject —
 or whose subject cannot be determined — is KEPT. Dropping a question whose subject
 is still live is the failure mode these tests pin against.
 """
@@ -18,7 +19,7 @@ from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.repair_halt_reconcile import resolve_reconciled_repair_halts
+from teatree.loop.question_drain import drain_pending_questions
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
 
@@ -32,7 +33,6 @@ def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) ->
 def _add_failed_attempt(task: Task, *, error: str) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=error,
@@ -57,7 +57,7 @@ class TestRepairHaltReconcile(TestCase):
         task = _escalated_halt_task()
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 1
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
@@ -70,7 +70,7 @@ class TestRepairHaltReconcile(TestCase):
         # genuine live question, so the reconcile must leave it pending untouched.
         _escalated_halt_task()
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 0
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
@@ -88,7 +88,7 @@ class TestRepairHaltReconcile(TestCase):
         assert DeferredQuestion.objects.filter(dedupe_marker__startswith="repair-halt:").count() == 1
         Ticket.objects.filter(pk=merged.ticket_id).update(state=Ticket.State.MERGED)
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 0  # `live`'s ticket is still STARTED
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
@@ -103,7 +103,7 @@ class TestRepairHaltReconcile(TestCase):
         assert requeue_transient_failed() == 0
         Ticket.objects.filter(pk__in=[first.ticket_id, second.ticket_id]).update(state=Ticket.State.MERGED)
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 1
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
@@ -117,7 +117,7 @@ class TestRepairHaltReconcile(TestCase):
             audience=DeferredQuestion.Audience.INTERNAL,
         )
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 1
         assert DeferredQuestion.objects.get(dedupe_marker__startswith="repair-stall:").status == (
@@ -132,7 +132,7 @@ class TestRepairHaltReconcile(TestCase):
             audience=DeferredQuestion.Audience.INTERNAL,
         )
 
-        resolved = resolve_reconciled_repair_halts()
+        resolved = drain_pending_questions().drained
 
         assert resolved == 0
         assert DeferredQuestion.objects.get(dedupe_marker__startswith="repair-cap:").status == (
@@ -147,13 +147,13 @@ class TestRepairHaltReconcile(TestCase):
             audience=DeferredQuestion.Audience.INTERNAL,
         )
 
-        assert resolve_reconciled_repair_halts() == 0
+        assert drain_pending_questions().drained == 0
         assert DeferredQuestion.objects.filter(dismissed_at__isnull=True).count() == 1
 
     def test_non_repair_question_is_never_touched(self) -> None:
         DeferredQuestion.record("A real owner decision", dedupe_marker="attachment-hold:5")
 
-        assert resolve_reconciled_repair_halts() == 0
+        assert drain_pending_questions().drained == 0
         assert DeferredQuestion.objects.get(dedupe_marker="attachment-hold:5").status == (
             DeferredQuestion.STATUS_PENDING
         )
@@ -162,9 +162,9 @@ class TestRepairHaltReconcile(TestCase):
         task = _escalated_halt_task()
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
 
-        assert resolve_reconciled_repair_halts() == 1
+        assert drain_pending_questions().drained == 1
         # Idempotent: a second pass finds it already dismissed and drains nothing.
-        assert resolve_reconciled_repair_halts() == 0
+        assert drain_pending_questions().drained == 0
 
     def test_reconcile_keys_on_the_same_marker_the_escalation_writes(self) -> None:
         # The reconcile re-derives a parked task's marker to map it back to its question,

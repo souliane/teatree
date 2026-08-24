@@ -15,6 +15,7 @@ from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
 from teatree.cli.enforcement_tools import _coverage_is_stale
 from teatree.cli.tools import ToolRunner, _validation_errors
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
 
@@ -428,6 +429,41 @@ class TestToolCommands:
             mock.assert_called_once_with("bump-pyproject-deps-from-lock-file")
 
 
+class TestOpenPrProbeCommand:
+    """``t3 tool open-pr`` — the shell face of the tri-state open-PR probe (#4151).
+
+    A gate that concludes refusal needs to say whether the artifact it guards
+    already exists, and a cold hook can only ask by shelling ``t3``. The tri-state
+    must survive that boundary intact: a caller reading ``unknown`` as "no PR" is
+    the failure the probe itself was built to prevent.
+    """
+
+    def _invoke(self, tmp_path: Path, probe: PrProbe):
+        with patch("teatree.core.forge_pr_probe.find_open_pr_for_branch", return_value=probe) as mock:
+            result = runner.invoke(app, ["tool", "open-pr", "--repo", str(tmp_path), "--branch", "feat/x"])
+        assert result.exit_code == 0
+        return json.loads(result.stdout), mock
+
+    def test_found_reports_the_url(self, tmp_path):
+        payload, mock = self._invoke(tmp_path, PrProbe.found("https://github.com/o/r/pull/7"))
+        assert payload == {"outcome": "found", "url": "https://github.com/o/r/pull/7"}
+        mock.assert_called_once_with(tmp_path, "feat/x")
+
+    def test_none_is_distinct_from_unknown(self, tmp_path):
+        assert self._invoke(tmp_path, PrProbe.none())[0] == {"outcome": "none", "url": ""}
+        assert self._invoke(tmp_path, PrProbe.unknown())[0] == {"outcome": "unknown", "url": ""}
+
+    def test_omitted_branch_falls_back_to_the_repo_head(self, tmp_path):
+        with (
+            patch("teatree.utils.git.current_branch", return_value="checked-out") as head,
+            patch("teatree.core.forge_pr_probe.find_open_pr_for_branch", return_value=PrProbe.none()) as probe,
+        ):
+            result = runner.invoke(app, ["tool", "open-pr", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+        head.assert_called_once_with(repo=str(tmp_path))
+        probe.assert_called_once_with(tmp_path, "checked-out")
+
+
 class TestRepoModeCommand:
     """``t3 tool repo-mode`` wires the resolver to plain/JSON output and flags."""
 
@@ -600,6 +636,9 @@ class TestValidateMrCommand:
             )
         ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here", require_sections=True)
 
+    # The cold interpreter below imports the whole CLI + Django: 2.9s alone, 56.9s recorded
+    # under the 12-shard matrix. 180 is that lane's own `-o timeout=`, so CI is unchanged (#4369).
+    @pytest.mark.timeout(180)
     def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
         # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
         # a session shell with no ``DJANGO_SETTINGS_MODULE``. ``get_overlay()``

@@ -4,22 +4,32 @@ The four tools are teatree-owned ``FunctionToolset`` functions (adopting
 pydantic_ai's native toolset primitive rather than hand-rolling a toolset
 framework). Every path argument is resolved through :func:`resolve_within` before
 any I/O, so a ``../`` traversal or an absolute path outside the jail root is
-refused with a :class:`PathTraversalError` the model sees as a tool error — the
-capability can only ever touch files under the dispatch's own worktree.
+refused with a :class:`PathTraversalError` — the capability can only ever touch
+files under the dispatch's own worktree.
+
+That refusal, and every other way these tools can fail on the model's own input,
+is a :class:`~teatree.agents.lane_b.tool_errors.ToolInputError`, so
+:class:`~teatree.agents.lane_b.gating.HardDenyToolset` hands the model the reason
+as a bounded retryable tool error instead of the run dying on it.
 """
 
 from pathlib import Path
 
 from pydantic_ai.toolsets.function import FunctionToolset
 
+from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_EDIT, TOOL_GREP, TOOL_READ, TOOL_WRITE
 
 _MAX_READ_BYTES = 1_000_000
 _MAX_SEARCH_HITS = 200
 
 
-class PathTraversalError(ValueError):
+class PathTraversalError(ToolInputError, ValueError):
     """A tool path resolved outside its jail root — refused before any I/O."""
+
+
+class SubstringNotFoundError(ToolInputError, ValueError):
+    """``edit_file``'s *old* text is not in the file — nothing was written."""
 
 
 def resolve_within(root: Path, candidate: str) -> Path:
@@ -102,7 +112,7 @@ def _add_write_tools(toolset: FunctionToolset[None], root: Path) -> None:
         text = target.read_text(encoding="utf-8")
         if old not in text:
             msg = f"substring not found in {path!r}; no edit made"
-            raise ValueError(msg)
+            raise SubstringNotFoundError(msg)
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
         return f"edited {path}"
 

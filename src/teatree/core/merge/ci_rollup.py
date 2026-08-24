@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.core.backend_protocols import DraftState, PrMergeState, changed_paths_unavailable, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import warn_throttled
@@ -76,9 +77,21 @@ class CodeHostQuery:
         rebound = PrRef(slug=slug, pr_id=self.ref.pr_id, host_kind=self.ref.host_kind)
         return CodeHostQuery(ref=rebound, backend=self.backend)
 
+    def live_head_read(self) -> LiveHeadRead:
+        """The step-2 head read, with UNREADABLE kept distinct from an empty answer.
+
+        An unreadable forge named no head AT ALL — a different fact from a head that
+        moved, and the one a reporting caller must tell apart before it cries "stale".
+        """
+        return LiveHeadRead.of(self.backend.fetch_live_head_sha(slug=self.ref.slug, pr_id=self.ref.pr_id))
+
     def live_head_sha(self) -> str:
-        """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2."""
-        return self.backend.fetch_live_head_sha(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2.
+
+        ``""`` for an UNREADABLE read as well as an empty one, so every fail-closed gate
+        keeps refusing on a falsy sha and the sentinel never arrives as a truthy oid.
+        """
+        return self.live_head_read().sha
 
     def pr_merge_state(self) -> PrMergeState:
         """Whether the PR/MR is already merged, and at which commit — §928 reconciliation.
@@ -151,19 +164,20 @@ class CodeHostQuery:
         Evaluated against the forge's live state at merge time (the authoritative
         set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
         ``"green"`` only when every branch-protection-REQUIRED context concluded
-        successfully; ``"pending"`` while a required context is still running or has
-        not reported; otherwise ``"failed"``.
+        successfully; ``"pending"`` while a required context is still running or has not
+        reported; ``"unreadable"`` when the forge could not be read at all; else ``"failed"``.
 
         The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
         GitLab pipeline entries); core does the verdict classification here so the
-        §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A
-        rollup query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel →
-        ``failed``.
+        §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A rollup
+        query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel →
+        ``unreadable``, refused at every gate exactly as ``failed`` is
+        (:data:`REFUSING_CHECK_VERDICTS`) — same posture, a word an operator can act on.
 
         **GitHub — the required set is branch protection, not the whole rollup.**
         Only a check whose name is in the branch-protection ``required_status_checks``
         contexts can block the merge; a non-required check NEVER blocks. If the
-        required set cannot be fetched the merge fails CLOSED (``failed``). An empty
+        required set cannot be fetched the merge fails CLOSED (``unreadable``). An empty
         required set means no gate → ``green``. The rollup is first deduped to the
         newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
         superseded by a newer SUCCESS for the same name does not false-block.
@@ -174,7 +188,7 @@ class CodeHostQuery:
         """
         rollup = self.backend.fetch_required_checks_rollup(slug=self.ref.slug, pr_id=self.ref.pr_id)
         if rollup_query_failed(rollup):
-            return "failed"
+            return CHECKS_UNREADABLE
         if self.ref.host_kind == "gitlab":
             return _gitlab_pipeline_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
         return _github_required_checks_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
@@ -184,11 +198,19 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     """Populate ``clear.touched_paths`` from the forge's live changed-file list.
 
     A non-``MergeClear`` *clear* (the gate handles that refusal) is a no-op. When the
-    changed-path list cannot be read to completion — a forge error (exception) or the
-    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff — the diff
-    can no longer be PROVEN non-substrate, so ``substrate_paths_indeterminate`` is set
-    and ``is_substrate()`` fails CLOSED (holds the merge). A complete list populates
-    ``touched_paths`` for the path detector and clears the indeterminate flag.
+    changed-path list cannot be read to completion — a forge error (exception), the
+    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff, or an EMPTY
+    list — the diff can no longer be PROVEN non-substrate, so
+    ``substrate_paths_indeterminate`` is set and ``is_substrate()`` fails CLOSED (holds
+    the merge). A complete list populates ``touched_paths`` for the path detector and
+    clears the indeterminate flag.
+
+    An empty list is a read failure, not a confirmed non-substrate diff: a real open PR
+    always changes at least one file, so ``[]`` means the fetch returned nothing usable
+    (a rate-limited 200 with an empty array, a response-shape change, a token whose
+    scope yields no files). The solo sibling
+    (:func:`~teatree.loop.scanners.pr_sweep_substrate.pr_diff_is_substrate`) already
+    holds on it; both paths read the same rule so they cannot disagree on one diff.
     """
     if not isinstance(clear, MergeClear):
         return
@@ -202,9 +224,9 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
         )
         clear.substrate_paths_indeterminate = True
         return
-    if changed_paths_unavailable(paths):
+    if not paths or changed_paths_unavailable(paths):
         logger.warning(
-            "ci_rollup: changed-paths list truncated/unavailable for %s#%s — holding as substrate (fail closed)",
+            "ci_rollup: empty/truncated changed-paths list for %s#%s — holding as substrate (fail closed)",
             query.ref.slug,
             query.ref.pr_id,
         )
@@ -425,7 +447,9 @@ def _gitlab_pipeline_verdict(
         # "all checks passed"; a genuinely CI-less project is unblocked by the same
         # required-context floor the GitHub path uses.
         return "pending"
-    head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
+    # Normalised, never raw: an UNREADABLE head must reach the pipeline picker as
+    # the same empty string an unnamed head does, not as a sentinel oid to match on.
+    head_sha = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)).sha
     head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
     if head is None:
         return "failed"
@@ -465,7 +489,8 @@ def _github_required_checks_verdict(
 ) -> str:
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
-    Fail CLOSED when the required set is indeterminate. When the required set is a
+    Fail CLOSED as ``unreadable`` when the required set is indeterminate — the endpoint
+    did not answer, which is not the same fact as a red check. When the required set is a
     DETERMINATE-EMPTY set (branch protection removed/never configured), fail CLOSED
     too if the operator configured an ``expected_required_contexts`` floor OR if the
     floor itself could not be read (``None`` — indeterminate) — a removed
@@ -476,7 +501,10 @@ def _github_required_checks_verdict(
     """
     required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
     if required_names is None:
-        return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
+        # Fail CLOSED, and say WHY: the branch-protection required set could not be
+        # read, so no verdict about the checks exists. Refused on the same terms as a
+        # red (``REFUSING_CHECK_VERDICTS``) — only the word the operator sees differs.
+        return CHECKS_UNREADABLE
     if not required_names:
         floor = _expected_required_contexts_floor()
         if floor is None:

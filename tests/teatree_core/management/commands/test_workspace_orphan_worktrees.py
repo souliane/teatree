@@ -19,8 +19,8 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.cleanup.checkout_registry import raw_worktree_paths
 from teatree.core.cleanup.unshipped_work import bundle_path
-from teatree.core.management.commands._workspace.checkout_registry import raw_worktree_paths
 from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git

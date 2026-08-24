@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from teatree.utils.ram_probe import derive_worker_cpus, derive_worker_mem_limit_mib
+from teatree.utils.ram_probe import DockerWorkerSizing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = REPO_ROOT / "deploy"
@@ -43,8 +43,8 @@ class TestDeploySizingWiring:
         assert "ram_probe.py" in text
         assert "compose-sizing" in text
         assert "export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT" in text
-        # The derivation must precede the `docker compose up` it feeds.
-        assert text.index("compose-sizing") < text.index("up -d --build")
+        # The derivation must precede the staged convergence it feeds.
+        assert text.index("compose-sizing") < text.index("staged_swap || {")
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -84,6 +84,9 @@ class TestDeployShRunDerivesWorkerCaps:
             f'    up) printf %s "$TEATREE_WORKER_CPUS" > "{record_cpus}"; '
             f'printf %s "$TEATREE_WORKER_MEM_LIMIT" > "{record_mem}"; exit 0;;\n'
             "    exec) echo '{\"running\": true}'; exit 0;;\n"
+            # The staged swap polls init's terminal state before it swaps anything.
+            "    ps) echo stubcid; exit 0;;\n"
+            "    inspect) echo 'exited 0'; exit 0;;\n"
             "  esac\n"
             "done\n"
             "exit 0\n",
@@ -101,6 +104,10 @@ class TestDeployShRunDerivesWorkerCaps:
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         env["HOME"] = str(home)
+        # Bounded so a stub gap surfaces as a fast failure, never a 30-min poll.
+        env["TEATREE_INIT_WAIT_TIMEOUT"] = "5"
+        env["TEATREE_ADMIN_SWAP_BUDGET"] = "5"
+        env["TEATREE_RESUME_TIMEOUT"] = "5"
         return repo, record_cpus, record_mem, env
 
     def test_run_exports_host_derived_cpus_into_compose_up(self, tmp_path: Path) -> None:
@@ -119,8 +126,8 @@ class TestDeployShRunDerivesWorkerCaps:
         assert record_cpus.exists(), f"docker compose up was never reached:\n{proc.stdout}\n{proc.stderr}"
         # deploy.sh runs uncapped here just as on the host; the value it exported is
         # exactly what ram_probe derives in-process — the host-sized worker cap.
-        assert record_cpus.read_text() == str(derive_worker_cpus())
-        expected_mem = derive_worker_mem_limit_mib()
+        assert record_cpus.read_text() == str(DockerWorkerSizing.worker_cpus())
+        expected_mem = DockerWorkerSizing.worker_mem_limit_mib()
         if expected_mem > 0:
             assert record_mem.read_text() == f"{expected_mem}m"
 

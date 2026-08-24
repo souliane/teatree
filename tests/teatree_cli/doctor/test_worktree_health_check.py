@@ -22,6 +22,7 @@ from teatree.cli.doctor.checks_worktree_health import (
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.occupancy import acquire
+from tests._git_repo import make_git_repo, run_git
 
 
 def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
@@ -112,16 +113,33 @@ class RegisteredCheckoutCheckTest(_TmpTestCase):
 
 
 class OneWorktreeRootCheckTest(_TmpTestCase):
-    def test_a_worktree_outside_the_canonical_root_warns(self) -> None:
-        outside = self.tmp / "elsewhere" / "wt"
-        outside.mkdir(parents=True)
-        self._register(outside, branch="wt")
+    """The split-namespace WARN, against real checkouts relocate can and cannot move.
+
+    Real git under ``tmp_path``: relocate's refusal policy runs for real, so the
+    partition this asserts is the one an operator would actually get.
+    """
+
+    def _pin_canonical(self) -> Path:
+        canonical_root = self.tmp / "canonical"
         canonical = mock.patch(
             "teatree.core.worktree.worktree_roots.canonical_worktree_root",
-            return_value=self.tmp / "canonical",
+            return_value=canonical_root,
         )
         canonical.start()
         self.addCleanup(canonical.stop)
+        return canonical_root
+
+    def _checkout_outside(self, branch: str) -> Path:
+        """A real linked worktree under ``<tmp>/elsewhere`` — movable unless made otherwise."""
+        clone = make_git_repo(self.tmp / "elsewhere" / "myrepo")
+        checkout = self.tmp / "elsewhere" / branch / "myrepo"
+        run_git(clone, "worktree", "add", "-q", "-b", branch, str(checkout))
+        self._register(checkout, branch=branch)
+        return checkout
+
+    def test_a_relocatable_worktree_outside_the_canonical_root_warns(self) -> None:
+        self._checkout_outside("wt")
+        self._pin_canonical()
 
         ok, out = _echoes(_check_one_worktree_root)
 
@@ -129,6 +147,81 @@ class OneWorktreeRootCheckTest(_TmpTestCase):
         assert ok is True
         assert "WARN" in out
         assert "outside the canonical root" in out
+        assert "Fix: t3 <overlay> workspace relocate." in out
+
+    def test_a_worktree_relocate_refuses_is_named_and_gets_no_relocate_remedy(self) -> None:
+        # #4368: counting a row relocate refuses forever prescribes a command that
+        # cannot discharge the finding, so the WARN recurs at that number for good.
+        checkout = self._checkout_outside("wt")
+        (checkout / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+        self._pin_canonical()
+
+        ok, out = _echoes(_check_one_worktree_root)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "outside the canonical root" in out
+        assert f"{checkout}: uncommitted changes" in out
+        assert "workspace relocate" not in out
+
+    def test_a_mixed_set_counts_only_the_relocatable_ones_in_the_remedy(self) -> None:
+        self._checkout_outside("movable")
+        stuck = self._checkout_outside("stuck")
+        (stuck / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+        canonical_root = self._pin_canonical()
+
+        ok, out = _echoes(_check_one_worktree_root)
+
+        assert ok is True
+        assert "1 of 2 registered worktree(s)" in out
+        assert "Fix: t3 <overlay> workspace relocate." in out
+        assert f"1 registered worktree(s) live outside the canonical root {canonical_root} that" in out
+        assert f"{stuck}: uncommitted changes" in out
+
+    def test_a_cross_mount_worktree_is_named_by_its_boundary_not_prescribed_relocate(self) -> None:
+        # The deployment shape of #4368: the checkout and the canonical root are
+        # separate bind mounts of ONE device, so `git worktree move` returns EXDEV.
+        checkout = self._checkout_outside("wt")
+        canonical_root = self._pin_canonical()
+        canonical_root.mkdir(parents=True)
+        rows = [
+            f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/hk-root rw"
+            for point in (Path("/"), self.tmp / "elsewhere", canonical_root)
+        ]
+        mountinfo = self.tmp / "mountinfo"
+        mountinfo.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        with mock.patch("teatree.utils.mount_points._MOUNTINFO", mountinfo):
+            ok, out = _echoes(_check_one_worktree_root)
+
+        assert ok is True
+        assert f"{checkout}: mount-point boundary" in out
+        assert "EXDEV" in out
+        assert "workspace relocate" not in out
+
+    def test_a_half_moved_row_is_counted_movable_not_refused(self) -> None:
+        # #4368 regression: `run_relocate` HEALS a row whose recorded path is gone
+        # from disk but whose target already sits under the canonical root as a
+        # git worktree (a prior move succeeded, only the DB save threw) — see
+        # `_workspace.relocate._reconcile_half_move`. Naming this row "missing on
+        # disk (stale row)" and withholding the `workspace relocate` remedy would
+        # repeat #4368's own bug class: a finding relocate CAN discharge, reported
+        # as one it cannot.
+        checkout = self._checkout_outside("wt")
+        clone = self.tmp / "elsewhere" / "myrepo"
+        canonical_root = self._pin_canonical()
+        target = canonical_root / "wt" / "myrepo"
+        target.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "move", str(checkout), str(target))
+        # The row still records the OLD (now-gone) path — a half-move, not a fresh row.
+
+        ok, out = _echoes(_check_one_worktree_root)
+
+        assert ok is True
+        assert "1 of 1 registered worktree(s)" in out
+        assert "Fix: t3 <overlay> workspace relocate." in out
+        assert "stale row" not in out
+        assert "missing on disk" not in out
 
     def test_all_worktrees_inside_the_canonical_root_is_silent(self) -> None:
         inside = self.tmp / "canonical" / "wt"

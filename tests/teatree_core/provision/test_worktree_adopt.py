@@ -15,6 +15,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.provision.worktree_adopt import (
+    NotAWorktreeError,
     WorktreeAdoptError,
     adopt_worktree_for_ticket,
     reopen_ticket_for_followup,
@@ -52,12 +53,20 @@ class TestAdoptWorktreeForTicket(TestCase):
         plain = self._tmp / "plain"
         plain.mkdir()
 
+        # NotAWorktreeError, not the base: the CLI routes on it to tell "the
+        # operator stood outside a worktree" from "their directory never crossed
+        # the container boundary" (#4281) — same refusal, opposite fixes.
         with (
             patch(_BRANCH, return_value="4321-followup"),
-            pytest.raises(WorktreeAdoptError, match="not a git worktree"),
+            pytest.raises(NotAWorktreeError, match="not a git worktree"),
         ):
             adopt_worktree_for_ticket(ticket, cwd=str(plain))
         assert not Worktree.objects.exists()
+
+    def test_not_a_worktree_error_is_a_worktree_adopt_error(self) -> None:
+        # Subtyping is what keeps every existing `except WorktreeAdoptError`
+        # catching the refusal it always caught.
+        assert issubclass(NotAWorktreeError, WorktreeAdoptError)
 
     def test_refuses_main_clone_dot_git_directory(self) -> None:
         # A main clone keeps .git as a DIRECTORY — the #752 main-clone refusal.

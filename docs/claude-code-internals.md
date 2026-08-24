@@ -343,13 +343,19 @@ Anthropic replaced `TodoWrite`/`TodoRead` with a four-tool Tasks API (v2.1.19 de
 
 Neither event supports matchers — they fire on every occurrence.
 
-`{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
+`{"continue": false, "stopReason": "..."}` in hook output sets `preventContinuation` — which the task-creation consumer never reads (see "The block reason does NOT ride `stopReason`" below).
 
-> **TeaTree uses this seam to close the fan-out skill-loading bypass (#1488).** Because the Task/Workflow vehicle bypasses `PreToolUse` (see Known Limitations below), the `PreToolUse`-only skill-loading gate (`handle_enforce_skill_loading`, matcher `Bash|Edit|Write`) was never consulted on a fanned-out task — which is how a bespoke review workflow ran instead of `/t3:review`. `handle_enforce_skill_loading_on_task_create` now rides `TaskCreated` and emits this `{"continue": false, "stopReason": …}` envelope to force the matching teatree skill onto the dispatched task. The exact firing + schema were confirmed against the Claude Code 2.1.156 binary. See BLUEPRINT.md §17.6.4 gate 17 and `hooks/CLAUDE.md`.
+`task_description`, `teammate_name` and `team_name` are all **optional** on both events.
+
+**`TaskCreated` has exactly ONE producer: the `TaskCreate` tool body ([#4216](https://github.com/souliane/teatree/issues/4216)).** It therefore fires only for an entry a session adds to its OWN task list — an `Agent`/`Task`/Workflow sub-agent fan-out never reaches it, and no field on the payload marks a dispatch. `teammate_name`/`team_name` are the CREATING session's own ambient agent identity (the async-context store's `agentName`/`teamName`, falling back to the process's), so they answer *which session added this entry*, never *what the entry dispatches*. Re-check on any harness upgrade: `grep -a -o -P '.{200}hook_event_name:"TaskCreated".{200}'` over `/usr/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude` names the emitter, and a word-boundary grep for that emitter's minified name yields its definition plus its call sites (verified on 2.1.220: one call site, inside the `TaskCreate` tool's `call`).
+
+**The block reason does NOT ride `stopReason` (#4216).** The harness's task-creation consumer reads one field — the `blockingError` its hook runner derives. `continue: false` becomes `preventContinuation`, which that consumer never looks at, so an exit-2 deny carrying only the teammate-stop envelope falls through to the runner's fallback `[<command>]: <stderr or "No stderr output">` and surfaces as an empty failure. The documented per-event contract is: exit 0 — stdout/stderr not shown; exit 2 — **stderr** shown to the model and the task creation prevented; other codes — stderr shown to the user only. `decision: "block"` is the one stdout key the runner turns into a `blockingError` carrying the hook's own text.
+
+> **The single-producer fact BOUNDS what any teatree gate on this seam can reach ([#4216](https://github.com/souliane/teatree/issues/4216)).** A gate here observes task-list entries only, so a demand that the entry's own description name the creating session's skills is unsatisfiable by construction — nothing reads a todo as a prompt — and a demand that a todo be admitted against the agent ceiling charges a seat for an agent that does not exist. Both were retired; the one arm that remains, `handle_dispatch_prompt_quote_scanner_on_task_create`, scans the entry's own text for a HIGH verbatim quote, which is a property of the text rather than of a dispatch. A `PreToolUse` bypass a sub-agent dispatch enjoys is NOT closable here — the `Agent` matcher is its only interception point. See BLUEPRINT.md §17.6.4 and `hooks/CLAUDE.md`.
 
 ### Known Limitations
 
-- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. TeaTree works around this for the skill-loading gate by riding `TaskCreated` instead (see the note above the Known Limitations heading; #1488).
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. This is the task-LIST tool family (`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`), which is why they carry their own `TaskCreated`/`TaskCompleted` events; do NOT read it as covering the `Agent`/`Task` sub-agent dispatch tool, which does reach `PreToolUse` (matcher `Agent`).
 - **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
 - **Task UI freezes during auto-compact** — no status updates on completed tasks
 

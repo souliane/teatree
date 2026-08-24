@@ -5,6 +5,7 @@ single ``overlays`` row (``{name: {fields}}``), so the config-touching classes a
 DB-backed ``TestCase`` subclasses that seed via ``ConfigSetting.objects.set_value``.
 """
 
+from typing import Any, cast
 from unittest.mock import patch
 
 import httpx
@@ -25,7 +26,7 @@ def _seed(overlays: dict[str, dict]) -> None:
 
 
 def _registry() -> dict:
-    return ConfigSetting.objects.get_effective("overlays") or {}
+    return cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays") or {})
 
 
 class TestReadOverlayField(TestCase):

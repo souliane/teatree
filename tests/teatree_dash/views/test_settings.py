@@ -6,7 +6,6 @@ is reachable on its own, and the page's SIZE — form / input / CSRF-token count
 where it was 272 forms, 1,060 inputs and 271 tokens.
 """
 
-import io
 import re
 from unittest.mock import patch
 
@@ -16,7 +15,7 @@ from django.urls import resolve, reverse
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
+from teatree.config.setting_groups import UNGROUPED_PATH, setting_comment, setting_group_path
 from teatree.config.setting_help import setting_help
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
@@ -31,9 +30,8 @@ from teatree.dash.settings_editor import (
 )
 from teatree.dash.settings_readouts import ReadoutsView
 from teatree.dash.views import settings_readouts as exported_readouts_view
+from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.settings import (
-    MAX_IMPORT_BYTES,
-    SAFETY_CONFIRM_PHRASE,
     ReadoutsContext,
     SettingsGroupContext,
     SettingsPageContext,
@@ -51,7 +49,6 @@ _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
 _READOUT_HEADINGS = ("Model &amp; reasoning effort", "Credentials", "Self-repairs")
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
-_SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 
 #: The page's whole DB cost: the readouts' reads, the scope-column DISTINCT, and ONE settings
 #: read PER SCOPE that every cell in that column resolves from. Constant in the number of
@@ -60,12 +57,6 @@ _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 _PAGE_QUERIES = 7
 _PANE_QUERIES = 4
 _READOUTS_QUERIES = 3
-
-
-def _upload(text: str, name: str = "config.toml") -> io.BytesIO:
-    upload = io.BytesIO(text.encode("utf-8"))
-    upload.name = name
-    return upload
 
 
 def _section_slug(key: str) -> str:
@@ -77,12 +68,6 @@ def _row_html(client, key: str) -> str:
     """One setting's rendered ``<tr>``, fetched through its own section's pane."""
     body = client.get(reverse("dash:settings_group", args=[_section_slug(key)]), **_LOOPBACK).content.decode()
     return body[body.index(f'id="setting-{key}"') :].split("</tr>")[0]
-
-
-def _import_block(body: str) -> str:
-    """The import-result region only — the pane above it may mention the same key."""
-    start = body.index('class="import-result"')
-    return body[start : body.index("</section>", start)]
 
 
 class TestSettingsPage(TestCase):
@@ -246,7 +231,7 @@ class TestThePageIsSmall(TestCase):
     """The measured defect: 272 forms, 1,060 inputs, 812 hidden fields, 271 CSRF tokens.
 
     Rendering one section at a time, moving ``key``/``scope`` into the ``hx-post`` URL and
-    letting the body's ``hx-headers`` carry ONE CSRF token is what takes those down. The
+    letting the body's ``hx-headers`` carry the CSRF token is what takes those down. The
     numbers are asserted as ceilings so a regression toward the old page turns this red.
     """
 
@@ -257,12 +242,12 @@ class TestThePageIsSmall(TestCase):
 
     def _pane(self) -> str:
         body = self._body()
-        return body[body.index('id="settings-pane"') : body.index("<h2>Export</h2>")]
+        return body[body.index('id="settings-pane"') : body.index("<h2>Import / export</h2>")]
 
-    def test_the_page_carries_exactly_one_csrf_token(self) -> None:
-        # The import upload needs a real form field; every htmx POST rides the body's
-        # hx-headers instead, which is the pattern the terminal button already uses.
-        assert self._body().count("csrfmiddlewaretoken") == 1
+    def test_the_page_carries_no_form_level_csrf_token(self) -> None:
+        # The one real form left was the import upload, and that moved to its own page
+        # (#4340); every write here is an htmx POST riding the body's hx-headers.
+        assert self._body().count("csrfmiddlewaretoken") == 0
 
     def test_no_row_carries_a_hidden_input(self) -> None:
         assert 'type="hidden"' not in self._pane()
@@ -554,105 +539,6 @@ class TestHtmxRowSwap(TestCase):
         assert response["Location"] == reverse("dash:settings")
 
 
-class TestSettingsExport(TestCase):
-    def test_export_downloads_a_dump_withholding_secrets(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])
-        ConfigSetting.objects.set_value("mode", "auto")
-        response = self.client.get(reverse("dash:settings_export"), **_LOOPBACK)
-        body = response.content.decode()
-        assert response.status_code == 200
-        assert response["Content-Disposition"] == 'attachment; filename="teatree-config.toml"'
-        assert "synthetic" not in body
-        assert "mode" in body
-
-    def test_the_page_offers_both_filters_unticked(self) -> None:
-        body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
-        for name in ("default_keys_only", "include_defaults"):
-            control = body[body.index(f'name="{name}"') - 60 : body.index(f'name="{name}"') + 60]
-            assert 'type="checkbox"' in control, name
-            assert "checked" not in control, name
-
-    def test_both_filters_download_the_defaults_shape_under_its_own_name(self) -> None:
-        url = f"{reverse('dash:settings_export')}?default_keys_only=1&include_defaults=1"
-        response = self.client.get(url, **_LOOPBACK)
-        body = response.content.decode()
-        assert response["Content-Disposition"] == 'attachment; filename="defaults.toml"'
-        assert body.startswith("# teatree shipped defaults")
-        assert "merge_wip" in body
-
-
-class TestSettingsImportTakesAFile(TestCase):
-    """Import is a file upload — the operator picks the file they exported."""
-
-    def _post(self, text: str, **extra: str):
-        return self.client.post(reverse("dash:settings_import"), {"toml_file": _upload(text), **extra}, **_LOOPBACK)
-
-    def test_the_page_offers_a_file_input_not_a_textarea(self) -> None:
-        body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
-        assert 'type="file"' in body
-        assert 'name="toml_file"' in body
-        assert 'enctype="multipart/form-data"' in body
-        assert "<textarea" not in body
-
-    def test_dry_run_preview_writes_nothing(self) -> None:
-        response = self._post('[teatree]\nmode = "auto"\n', apply="")
-        assert response.status_code == 200
-        assert "dry-run" in response.content.decode()
-        assert ConfigSetting.objects.count() == 0
-
-    def test_apply_writes_the_rows(self) -> None:
-        self._post('[teatree]\nmode = "interactive"\n', apply="1")
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-
-    def test_a_nested_file_imports_exactly_as_a_flat_one_does(self) -> None:
-        self._post('[teatree.Agents."Mode & harness"]\nmode = "interactive"\n', apply="1")
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-
-    def test_no_file_is_refused_with_a_reason_rather_than_a_crash(self) -> None:
-        response = self.client.post(reverse("dash:settings_import"), {"apply": ""}, **_LOOPBACK)
-        assert response.status_code == 400
-        assert "choose a .toml file" in response.content.decode()
-
-    def test_a_non_utf8_file_is_refused_with_a_reason(self) -> None:
-        upload = io.BytesIO(b"\xff\xfe\x00binary")
-        upload.name = "config.toml"
-        response = self.client.post(reverse("dash:settings_import"), {"toml_file": upload}, **_LOOPBACK)
-        assert response.status_code == 400
-        assert "not UTF-8" in response.content.decode()
-
-    def test_an_oversized_file_is_refused_before_it_is_parsed(self) -> None:
-        response = self._post("#" * (MAX_IMPORT_BYTES + 1))
-        assert response.status_code == 400
-        assert "import limit" in response.content.decode()
-
-    def test_malformed_toml_is_refused_with_a_reason(self) -> None:
-        response = self._post("[teatree\nmode = ")
-        assert response.status_code == 400
-        assert "invalid TOML" in response.content.decode()
-
-    def test_a_safety_posture_key_is_not_written_without_the_confirm_phrase(self) -> None:
-        response = self._post(_SAFETY_TOML, apply="1")
-        assert ConfigSetting.objects.get_effective("autonomy") is None
-        assert "safety-posture" in response.content.decode()
-
-    def test_a_safety_posture_key_is_written_with_the_confirm_phrase(self) -> None:
-        self._post(_SAFETY_TOML, apply="1", confirm=SAFETY_CONFIRM_PHRASE)
-        assert ConfigSetting.objects.get_effective("autonomy") == "babysit"
-
-    def test_the_dry_run_preview_flags_the_safety_posture_row(self) -> None:
-        response = self._post(_SAFETY_TOML, apply="")
-        block = _import_block(response.content.decode())
-        assert "autonomy" in block
-        assert "safety-posture" in block
-        assert ConfigSetting.objects.count() == 0
-
-    def test_apply_with_a_rejected_row_writes_nothing(self) -> None:
-        response = self._post('[teatree]\nnot_a_setting = 1\nmode = "auto"\n', apply="1")
-        assert response.status_code == 200
-        assert "rejected" in response.content.decode()
-        assert ConfigSetting.objects.count() == 0
-
-
 class TestShippedDefaultColumn(TestCase):
     """The pane shows each key's shipped default and where the effective value came from."""
 
@@ -726,18 +612,6 @@ class SettingsScopeControlTestCase(TestCase):
         assert scopes[0] == ""
         assert {"alpha", "beta"} <= set(scopes)
 
-    def test_an_import_re_renders_the_grid_with_every_scope_still_on_it(self) -> None:
-        """The file's own tables decide each row's scope; the grid shows them all either way."""
-        ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="demo-overlay")
-        response = self.client.post(
-            reverse("dash:settings_import"),
-            {"toml_file": _upload('[teatree]\nissue_implementer_label = "x"\n'), "apply": ""},
-        )
-        assert response.status_code == 200
-        scopes = response.context["editor"].group.scopes
-        assert scopes[0] == ""
-        assert "demo-overlay" in scopes
-
 
 class TestTheGridIsOneRowPerSettingAcrossEveryScope(TestCase):
     """#3880: one row per setting, every scope on it, drift coloured against the default."""
@@ -789,8 +663,12 @@ class TestHelpTextIsAuthoredOnceAndRenderedHere(TestCase):
             assert all(row.help_text for row in group.settings), section.slug
 
     def test_the_tooltip_is_the_same_sentence_the_shipped_file_comments_the_key_with(self) -> None:
+        # The file's comment is composed by `setting_comment` — what the key accepts, then what
+        # it means — so the expectation is read from that one renderer rather than re-typed. The
+        # tooltip is the help HALF of it, which is what this class is about.
         shipped = DEFAULTS_TOML.read_text(encoding="utf-8")
-        assert f"merge_wip = 1 # {setting_help('merge_wip')}" in shipped
+        assert f"merge_wip = 1 # {setting_comment('merge_wip')}" in shipped
+        assert setting_help("merge_wip") in setting_comment("merge_wip")
 
 
 class TestConstrainedTypesRenderAsSelects(TestCase):
@@ -812,6 +690,13 @@ class TestConstrainedTypesRenderAsSelects(TestCase):
         row = _row_html(self.client, "merge_wip")
         assert "<select" not in row
         assert 'type="text"' in row
+
+    def test_a_closed_str_setting_renders_a_select_of_every_member_including_the_empty_one(self) -> None:
+        row = _row_html(self.client, "repo_mode")
+        assert "<select" in row
+        assert 'type="text"' not in row
+        for member in ("", "solo", "collaborative"):
+            assert f'value="&quot;{member}&quot;"' in row
 
     def test_the_options_come_from_the_schema_rather_than_a_list_kept_beside_it(self) -> None:
         with patch("teatree.dash.settings_editor.setting_choices", return_value=("only-this",)):

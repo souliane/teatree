@@ -70,9 +70,8 @@ class _StubAPI:
 
 def _service_with_stub() -> tuple[ReviewService, _StubAPI]:
     """Build a ReviewService backed by the recording stub API."""
-    service = ReviewService(token="t")
     stub = _StubAPI()
-    service._get_api = lambda: stub  # type: ignore[method-assign]
+    service = ReviewService(token="t", api=stub)
     return service, stub
 
 

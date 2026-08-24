@@ -26,14 +26,30 @@ genuine migrate failure raises :class:`SelfDbMigrationError` with the
 actionable remediation rather than proceeding against a half-migrated DB.
 ``migrate_self_db`` (exposed as ``t3 teatree db migrate``) stays the
 explicit, always-available manual self-rescue.
+
+The module carries the second schema-skew doctor surface too, and the two are
+mirror images. :func:`doctor_check_self_db_migrations` asks whether the DB is
+BEHIND this code, which any process can answer for itself.
+:func:`doctor_check_process_code_freshness` asks whether a long-running role is
+behind the DB — a question no fresh process can answer about another one — so it
+reads the records those roles publish (:mod:`teatree.core.process_freshness`)
+instead of measuring itself.
 """
+
+from datetime import UTC, datetime
 
 import typer
 from django.core.management import call_command
 from django.db import DEFAULT_DB_ALIAS
 from django.db.utils import OperationalError
 
+from teatree.core.process_freshness import published_readings
 from teatree.core.schema_readiness import pending_migrations
+
+#: How long a published freshness record stays trustworthy. A live role rewrites its own
+#: record on every memo miss (60s), so ten missed refreshes is evidence the role stopped
+#: ticking rather than evidence about its code.
+_FRESHNESS_RECORD_MAX_AGE_SECONDS = 600.0
 
 _REMEDIATION = (
     "Run the sanctioned non-destructive migrate against the runtime self-DB:\n"
@@ -152,3 +168,53 @@ def doctor_check_self_db_migrations(alias: str = DEFAULT_DB_ALIAS) -> bool:
         f"The sanctioned merge path needs a current schema — run `t3 teatree db migrate`."
     )
     return False
+
+
+def doctor_check_process_code_freshness() -> bool:
+    """``t3 doctor`` surface for the process-freshness gate (#4387, #4390).
+
+    Reads what long-running roles PUBLISH; it never measures itself, and that is the
+    whole design. The watchdog runs ``t3 doctor check --json`` through ``docker compose
+    exec``, i.e. in a FRESH process whose own snapshot is current by construction, so a
+    self-measuring check reports healthy exactly while the stale worker is discarding
+    finished runs — the actively-misleading probe #4390 measured. The stale process is
+    the only witness there is, so the check reads its record instead.
+
+    Fail-open in every direction but the proven one: no records at all, a record too old to
+    trust, and a role whose own reading is ``UNKNOWN`` each ``WARN`` and pass. A role writes
+    its first record on its first claim after start, so an empty data dir means "nobody has
+    reported yet", which is a question mark rather than a finding.
+    """
+    readings = published_readings()
+    if not readings:
+        typer.echo(
+            "WARN  No process-freshness record published yet — a role writes one on its first claim "
+            "after start, so this is expected until every role has been restarted once."
+        )
+        return True
+    now = datetime.now(UTC)
+    ok = True
+    for reading in readings:
+        role = reading.role or "unattributed"
+        if reading.is_behind:
+            typer.echo(
+                f"FAIL  {role} is running code OLDER than the applied schema: {reading.describe()}. "
+                f"Every result it records rolls back, so a run that finished is stored as failed. "
+                f"The claim gate has already stopped it taking new work — restart that role's "
+                f"container once no task is claimed."
+            )
+            ok = False
+            continue
+        if reading.is_unknown:
+            typer.echo(
+                f"WARN  {role} (pid {reading.pid}) could not measure its own freshness: "
+                f"{reading.detail or 'no detail recorded'}. It is admitting work — an unmeasured role "
+                f"is a question mark, not evidence that its code is current."
+            )
+        age = reading.age_seconds(now)
+        if age is None or age > _FRESHNESS_RECORD_MAX_AGE_SECONDS:
+            typer.echo(
+                f"WARN  {role} (pid {reading.pid}) has published no freshness reading since "
+                f"{reading.at or 'an unreadable time'} — it may not be ticking."
+            )
+    return ok

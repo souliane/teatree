@@ -1,19 +1,34 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
+from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 
 if TYPE_CHECKING:
+    from teatree.core.managers import SessionQuerySet, TaskQuerySet
+    from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
+    from teatree.core.models.worktree import Worktree
 
 
 class TicketIntrospectionModel(TicketFacet):
     """Read-only identity, liveness, and diff/artifact introspection over the ticket and its related rows."""
+
+    if TYPE_CHECKING:
+        # Reverse accessors Django synthesises at class-prep time from the
+        # ``related_name`` on ``Task.ticket`` / ``Session.ticket`` — invisible to a
+        # static checker, so declared here. Annotation-only; never evaluated at
+        # runtime. Typed as the QUERYSET because each manager is built dynamically
+        # via ``Manager.from_queryset(...)``, whose name holds a variable and so
+        # cannot appear in a type expression.
+        tasks: "TaskQuerySet"
+        sessions: "SessionQuerySet"
 
     class Meta:
         abstract = True
@@ -29,16 +44,48 @@ class TicketIntrospectionModel(TicketFacet):
         The bound is what lets the reapers converge; it cannot mask real in-flight
         work, because the task half below carries no time bound at all.
         """
-        if self.sessions.live().exists():  # type: ignore[attr-defined]  # Django reverse FK
+        if self.sessions.live().exists():  # Django reverse FK
             return True
         # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
-        task_model = apps.get_model("core", "Task")
-        return self.tasks.filter(status__in=task_model.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        return self.tasks.filter(status__in=task_model.Status.active()).exists()  # Django reverse FK
+
+    def newest_task_was_cancelled(self) -> bool:
+        """True when a human cancelled this ticket's NEWEST task (#4105).
+
+        The ONE reading of "an operator said stop", shared by the marker reconciler
+        (which releases such a claim as DECLINED rather than the re-claimable
+        ABANDONED) and the stuck-ticket drain (which leaves the ticket alone). Two
+        opinions here would let one actor undo the other's honoured decision.
+
+        The NEWEST task decides, so anything the pipeline did afterwards — a re-queue,
+        a later failure — is the "something changed" that puts the ticket back in play.
+        ``SUPERSEDED`` is deliberately not included: that is rework the factory itself
+        initiated, so the ticket stays claimable.
+
+        The newest task is read with ``Max``, not ``order_by("-created_at")``:
+        ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
+        PostgreSQL (last on SQLite), so one null-stamped row would decide this.
+        """
+        newest = self.tasks.aggregate(latest=Max("created_at"))["latest"]  # Django reverse FK
+        if newest is None:
+            return False
+        return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
 
     @property
     def is_terminal(self) -> bool:
         """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
+
+    @classmethod
+    def phase_producing_state(cls, state: str) -> str:
+        """The phase whose successful output IS *state*, or ``""`` for an off-ladder state.
+
+        The inverse of :attr:`_PHASE_PRODUCES_STATE`, read by the cycle-time layer to
+        name the phase that occupied a ``from_state -> to_state`` span. Derived rather
+        than re-listed so a phase added to the forward map cannot go unnamed here.
+        """
+        return next((phase for phase, produces in cls._PHASE_PRODUCES_STATE.items() if produces == state), "")
 
     def has_completed_phase(self, phase: str) -> bool:
         """True when the FSM state has already reached the state *phase* produces.
@@ -83,7 +130,7 @@ class TicketIntrospectionModel(TicketFacet):
         landed via sibling PRs. Manual ``schedule_shipping()`` callers are not
         gated.
         """
-        worktree_model = apps.get_model("core", "Worktree")
+        worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
         return any(worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
 
     def artifacts(self: "Ticket", *, port_resolver: "PortResolver | None" = None) -> "TicketArtifacts":

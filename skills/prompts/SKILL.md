@@ -7,7 +7,6 @@ requires:
   - rules
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Prompts — Reusable, Triggerable Prompts

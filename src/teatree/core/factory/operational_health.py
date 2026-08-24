@@ -16,7 +16,10 @@ Two entry points, split by side-effect:
 *   :func:`reconcile_health` collects every live signal, upserts a
     :class:`KnownIssue` row per signal, and auto-resolves the rows whose signal
     has cleared — the writing path, called from the loop tick and from
-    ``health show``.
+    ``health show``. Auto-resolution runs only on a COMPLETE observation: a
+    collector that could not READ contributes the same empty slice as one
+    reporting "all clear", so absence is evidence of resolution only when every
+    source answered (:class:`SignalCollection`, #4354).
 *   :func:`read_health` is read-only: it computes the verdict + open-issue set
     from the persisted rows alone, for the statusline chip that renders every
     tick without wanting to write.
@@ -30,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
@@ -37,6 +41,10 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_sl
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.utils.throttled_log import warn_throttled
+
+if TYPE_CHECKING:
+    from teatree.core.models.loop_lease import LoopLease
+    from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +78,26 @@ class HealthSignal:
     evidence_url: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class SignalCollection:
+    """What a health read SAW, and which sources it could not read at all (#4354).
+
+    ``signals`` are the live observations. ``unread`` names every source whose read
+    FAILED — an overlay that raised, a DB query that errored, a whole collector that
+    blew up. The two are kept apart because both a failed read and an all-clear read
+    contribute zero signals, and :meth:`KnownIssueManager.reconcile` treats a missing
+    fingerprint as RESOLVED: collapsing them retires an issue nothing has fixed.
+    """
+
+    signals: tuple[HealthSignal, ...] = ()
+    unread: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """True iff every source answered, so an absent fingerprint really did clear."""
+        return not self.unread
+
+
 class HealthStatus(StrEnum):
     """The global-health verdict, in ascending severity."""
 
@@ -90,18 +118,21 @@ class HealthReport:
         return len(self.open_issues)
 
 
-def _overlay_health_signals() -> list[HealthSignal]:
-    """Fold every registered overlay's ``get_health_signals()`` into one list.
+def _overlay_health_signals() -> SignalCollection:
+    """Fold every registered overlay's ``get_health_signals()`` into one collection.
 
     Each overlay is queried independently and fail-open — one overlay raising
     never suppresses another's signals, so a broken overlay degrades to
-    "declares nothing" rather than blanking the whole health surface.
+    "declares nothing" rather than blanking the whole health surface. It names
+    itself in ``unread`` so "declares nothing" is never read as "declares clear".
     """
     signals: list[HealthSignal] = []
+    unread: list[str] = []
     for name, overlay in get_all_overlays().items():
         try:
             signals.extend(overlay.get_health_signals())
         except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+            unread.append(f"overlay:{name}")
             # A one-off miss is expected; a persistently-failing overlay health
             # read is a real fault the chip would otherwise silently drop — surface
             # it at warning, throttled so a per-tick failure is not logged every beat.
@@ -112,7 +143,7 @@ def _overlay_health_signals() -> list[HealthSignal]:
                 name,
                 exc_info=True,
             )
-    return signals
+    return SignalCollection(tuple(signals), tuple(unread))
 
 
 def _lease_reference_seconds(name: str) -> int:
@@ -145,7 +176,7 @@ def _lease_reference_seconds(name: str) -> int:
     return cadence_seconds()
 
 
-def _stale_tick_signals() -> list[HealthSignal]:
+def _stale_tick_signals() -> SignalCollection:
     """One warning per cadence-ticked loop lease that has overrun its OWN cadence.
 
     A held :class:`~teatree.core.models.loop_lease.LoopLease` whose last acquire
@@ -164,13 +195,14 @@ def _stale_tick_signals() -> list[HealthSignal]:
     *   the transient per-loop tick mutex ``loop-tick:<name>`` (#2650) is a
         concurrency lock held only for the beat, never a user-facing loop.
 
-    Fail-open to ``[]``.
+    Fail-open, naming itself ``unread`` so a lease table it could not query is
+    never read as "no loop is wedged".
     """
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
 
         now = timezone.now()
-        lease_model = apps.get_model("core", "LoopLease")
+        lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
         rows = lease_model.objects.filter(
             lease_expires_at__gt=now,
             acquired_at__isnull=False,
@@ -184,48 +216,52 @@ def _stale_tick_signals() -> list[HealthSignal]:
         ]
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-stale-tick", "stale-tick health read failed — skipped", exc_info=True)
-        return []
-    return [
-        HealthSignal(
-            fingerprint=f"stale-tick:{row.name}",
-            severity=KnownIssue.Severity.WARNING,
-            kind="stale_tick",
-            summary=f"loop {row.name} has not ticked in over {_TICK_OVERRUN_MULTIPLE}x its cadence",
+        return SignalCollection(unread=("_stale_tick_signals",))
+    return SignalCollection(
+        tuple(
+            HealthSignal(
+                fingerprint=f"stale-tick:{row.name}",
+                severity=KnownIssue.Severity.WARNING,
+                kind="stale_tick",
+                summary=f"loop {row.name} has not ticked in over {_TICK_OVERRUN_MULTIPLE}x its cadence",
+            )
+            for row in stale
         )
-        for row in stale
-    ]
+    )
 
 
-def _failed_task_signals() -> list[HealthSignal]:
+def _failed_task_signals() -> SignalCollection:
     """One warning summarising recently-failed tasks (spec: failed answering tasks).
 
     Collapses every :class:`~teatree.core.models.task.Task` that FAILED inside
     :data:`_FAILED_TASK_WINDOW` into a single count so N failures are one chip
-    line, not N. Fail-open to ``[]``.
+    line, not N. Fail-open, naming itself ``unread`` on a read it could not make.
     """
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
 
-        task_model = apps.get_model("core", "Task")
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
         cutoff = timezone.now() - _FAILED_TASK_WINDOW
         count = task_model.objects.filter(status="failed", created_at__gte=cutoff).count()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-failed-task", "failed-task health read failed — skipped", exc_info=True)
-        return []
+        return SignalCollection(unread=("_failed_task_signals",))
     if count <= 0:
-        return []
+        return SignalCollection()
     noun = "task" if count == 1 else "tasks"
-    return [
-        HealthSignal(
-            fingerprint="failed-tasks",
-            severity=KnownIssue.Severity.WARNING,
-            kind="failed_tasks",
-            summary=f"{count} {noun} failed in the last {int(_FAILED_TASK_WINDOW.total_seconds() // 3600)}h",
-        ),
-    ]
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="failed-tasks",
+                severity=KnownIssue.Severity.WARNING,
+                kind="failed_tasks",
+                summary=f"{count} {noun} failed in the last {int(_FAILED_TASK_WINDOW.total_seconds() // 3600)}h",
+            ),
+        )
+    )
 
 
-def _harness_provider_consistency_signals() -> list[HealthSignal]:
+def _harness_provider_consistency_signals() -> SignalCollection:
     """One CRITICAL per scope whose effective (agent_harness, agent_harness_provider) pair is inconsistent (#3688).
 
     A pair the harness registry would refuse at dispatch — set before the
@@ -244,6 +280,7 @@ def _harness_provider_consistency_signals() -> list[HealthSignal]:
     )
 
     signals: list[HealthSignal] = []
+    unread: list[str] = []
     seen: set[str] = set()
     scopes: list[str | None] = [None, *sorted(get_all_overlays())]
     for scope in scopes:
@@ -255,6 +292,7 @@ def _harness_provider_consistency_signals() -> list[HealthSignal]:
                 provider.value if provider is not None else None,
             )
         except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+            unread.append(f"harness-provider-pair:{scope or 'global'}")
             warn_throttled(
                 logger,
                 f"health-harness-pair:{scope or 'global'}",
@@ -279,10 +317,10 @@ def _harness_provider_consistency_signals() -> list[HealthSignal]:
                 summary=f"agent_harness/agent_harness_provider mismatch [{label}]: {reason}",
             ),
         )
-    return signals
+    return SignalCollection(tuple(signals), tuple(unread))
 
 
-def _fleet_loop_policy_signals() -> list[HealthSignal]:
+def _fleet_loop_policy_signals() -> SignalCollection:
     """One WARNING when this box's fleet loop declaration is unsatisfiable.
 
     ``deploy/entrypoint.sh`` resolves a contradictory ``TEATREE_DISABLED_LOOPS``
@@ -294,7 +332,8 @@ def _fleet_loop_policy_signals() -> list[HealthSignal]:
     role read is readable here; this turns the transient warning into a durable
     :class:`KnownIssue` row that clears on its own once the repo variable is fixed.
 
-    A sound or partially-pruned declaration emits nothing. Fail-open to ``[]``.
+    A sound or partially-pruned declaration emits nothing. An env read cannot fail,
+    so this collector has no ``unread`` state of its own.
     """
     import os  # noqa: PLC0415 — deferred: keeps the module cold-import cheap, like the sibling collectors
 
@@ -309,15 +348,17 @@ def _fleet_loop_policy_signals() -> list[HealthSignal]:
         disabled_raw=os.environ.get(FLEET_DISABLED_VARIABLE),
     )
     if not reason:
-        return []
-    return [
-        HealthSignal(
-            fingerprint="fleet-loop-policy-contradiction",
-            severity=KnownIssue.Severity.WARNING,
-            kind="config_pair_drift",
-            summary=f"fleet loop policy: {reason}",
+        return SignalCollection()
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="fleet-loop-policy-contradiction",
+                severity=KnownIssue.Severity.WARNING,
+                kind="config_pair_drift",
+                summary=f"fleet loop policy: {reason}",
+            ),
         )
-    ]
+    )
 
 
 # The deterministic signal collectors, run in order. Each is fail-open on its
@@ -332,13 +373,19 @@ _COLLECTORS = (
 )
 
 
-def collect_signals() -> list[HealthSignal]:
-    """Run every collector, fail-open, and return the union of live signals."""
+def collect_signals() -> SignalCollection:
+    """Run every collector, fail-open, and return the live signals plus the unread sources.
+
+    A collector that raises still never crashes the tick — but it names itself in
+    ``unread`` instead of passing for a clean read.
+    """
     signals: list[HealthSignal] = []
+    unread: list[str] = []
     for collector in _COLLECTORS:
         try:
-            signals.extend(collector())
+            collected = collector()
         except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+            unread.append(collector.__name__)
             warn_throttled(
                 logger,
                 f"health-collector:{collector.__name__}",
@@ -346,7 +393,28 @@ def collect_signals() -> list[HealthSignal]:
                 collector.__name__,
                 exc_info=True,
             )
-    return signals
+            continue
+        signals.extend(collected.signals)
+        unread.extend(collected.unread)
+    return SignalCollection(tuple(signals), tuple(unread))
+
+
+def _unread_source_signals(unread: tuple[str, ...]) -> list[HealthSignal]:
+    """One loud CRITICAL per source that could not be read.
+
+    Without it the chip renders an unreadable factory exactly as it renders a
+    healthy one, which is the whole defect: a suspended auto-resolve keeps the
+    known issues visible, and this makes the blindness itself visible.
+    """
+    return [
+        HealthSignal(
+            fingerprint=f"health-collector-failed:{label}",
+            severity=KnownIssue.Severity.CRITICAL,
+            kind="health_collector_failed",
+            summary=f"health source {label} could not be read — its signals are unknown, auto-resolve suspended",
+        )
+        for label in unread
+    ]
 
 
 def _status_from_issues(issues: Iterable[KnownIssue]) -> HealthStatus:
@@ -384,16 +452,20 @@ def reconcile_health() -> HealthReport:
     """Collect live signals, upsert a row per signal, auto-resolve cleared ones.
 
     The writing entry point: called from the loop tick and from ``health show``.
-    Every auto-derived row whose signal is no longer live auto-resolves; manual
-    rows are untouched. Returns the fresh :class:`HealthReport`. Fail-open — a
-    signal-collection or write error degrades to the read-only view so a broken
-    reconcile never crashes the tick.
+    On a COMPLETE observation every auto-derived row whose signal is no longer live
+    auto-resolves; manual rows are untouched. When a source could not be read the
+    auto-resolve is suspended for that tick (its fingerprints are unknown, not
+    cleared) and each unread source is recorded as its own CRITICAL, so the tick
+    reads RED rather than reporting the unreadable factory as healthy. Returns the
+    fresh :class:`HealthReport`. Fail-open — a signal-collection or write error
+    degrades to the read-only view so a broken reconcile never crashes the tick.
     """
     try:
-        signals = collect_signals()
+        collection = collect_signals()
+        signals = [*collection.signals, *_unread_source_signals(collection.unread)]
         for signal in signals:
             KnownIssue.objects.record_signal(signal)
-        KnownIssue.objects.reconcile({s.fingerprint for s in signals})
+        KnownIssue.objects.reconcile({s.fingerprint for s in signals}, complete=collection.complete)
     except Exception:
         logger.exception("health reconcile failed — returning read-only view")
     return read_health()

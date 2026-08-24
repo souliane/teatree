@@ -95,6 +95,19 @@ class TestReviewerIndependentFacet(TestCase):
         with pytest.raises(MergePreconditionError, match="non-reviewer role"):
             _assert_reviewer_independent(clear, executing_loop_identity="merge-loop")
 
+    def test_reviewer_differing_only_in_case_is_refused(self) -> None:
+        # The identity is free text; ``ReviewVerdict`` canonicalizes case + whitespace,
+        # so a raw comparison let a loop self-issue its own clearance under another
+        # spelling of its own name.
+        clear = _clear(reviewer_identity="Worker-Alpha")
+        with pytest.raises(MergePreconditionError, match="equals the executing loop"):
+            _assert_reviewer_independent(clear, executing_loop_identity="worker-alpha")
+
+    def test_reviewer_differing_only_in_inner_whitespace_is_refused(self) -> None:
+        clear = _clear(reviewer_identity="worker  alpha")
+        with pytest.raises(MergePreconditionError, match="equals the executing loop"):
+            _assert_reviewer_independent(clear, executing_loop_identity="worker alpha")
+
     def test_independent_reviewer_passes(self) -> None:
         _assert_reviewer_independent(_clear(), executing_loop_identity="merge-loop")
 

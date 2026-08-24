@@ -7,6 +7,13 @@ one self-describing module. ``teatree.core.managers`` re-exports the public
 symbols so existing ``from teatree.core.managers import …`` call sites are
 unchanged.
 
+Every pid is stored beside the ``owner_pid_namespace`` it was recorded in, and no
+decision here reads a pid another namespace owns (#4253): the deployment runs each
+service in its own namespace, so the same integer is a different process — or none —
+depending on who asks, and both the same-pid carve-outs and the dead-pid probe fire on
+a bare integer match. An unattributable pid therefore decides nothing and the TTL is
+the only release.
+
 Liveness is slot-aware via ``lease_is_live``'s ``trust_pid_past_ttl``.
 The GLOBAL ``t3-master`` slot is PID-ANCHORED: an alive ``owner_pid`` keeps the
 lease live past its TTL (a busy owner fires no self-pump so no tick re-claims),
@@ -34,12 +41,16 @@ from django.db.models.expressions import Combinable
 from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import (
+    CLAIM_COLUMNS,
     LeaseClaim,
     anchorable_owner_pid,
+    claim_pid_is_foreign,
     lease_is_live,
     live_foreign_owner_session,
+    namespace_is_attributable,
     pid_alive_probe,
-    pid_is_foreign,
+    reader_pid_namespace,
+    reclaim_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +109,23 @@ def is_per_loop_owner_slot(slot: str) -> bool:
 #: statusline never renders it; the loop is already represented by its
 #: ``loop:<name>`` owner-lease chunk.
 PER_LOOP_TICK_MUTEX_PREFIX = "loop-tick:"
+
+#: How far past its expiry a non-owner work lease must be before
+#: :meth:`LoopLeaseQuerySet.reap_expired_leases` deletes it. An order of magnitude
+#: past the 1800 s owner TTL, so no row a caller is about to renew is ever in range.
+EXPIRED_LEASE_REAP_GRACE = timedelta(hours=6)
+
+
+def _namespace_for(owner_pid: int | None) -> str:
+    """The pid namespace to store beside ``owner_pid``, ``""`` when no pid is anchored.
+
+    Recorded at claim time from the claimer's own kernel, so a later reader can tell
+    whether the number it is about to probe means anything in its own namespace (#4253).
+    A null pid anchors nothing, so it carries no namespace to attribute.
+    """
+    if owner_pid is None:
+        return ""
+    return reader_pid_namespace()
 
 
 def is_per_loop_tick_mutex(slot: str) -> bool:
@@ -161,6 +189,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         self.filter(name=name).update(
             session_id=session_id,
             owner_pid=owner_pid,
+            owner_pid_namespace=_namespace_for(owner_pid),
             acquired_at=now,
             lease_expires_at=expires,
             generation=self._generation_after(holder_changed=prior != session_id),
@@ -211,9 +240,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         # dead-owned and evict it, re-entering the reclaim path every tick.
         owner_pid = anchorable_owner_pid(owner_pid)
 
-        claim = LeaseClaim.from_row(
-            self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
-        )
+        claim = LeaseClaim.from_row(self.filter(name=name).values(*CLAIM_COLUMNS).first())
         live_owner = live_foreign_owner_session(
             claim, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name)
         )
@@ -226,7 +253,7 @@ class LoopLeaseQuerySet(models.QuerySet):
 
         if live_owner:
             stored_pid = claim.owner_pid
-            if not pid_is_foreign(stored_pid, owner_pid):
+            if not claim_pid_is_foreign(claim, owner_pid):
                 # Same-process self-reclaim across a session-id rotation (#2835):
                 # context compaction rotates ``session_id`` but does NOT restart
                 # the durable session process, so ``owner_pid`` is unchanged — the
@@ -239,6 +266,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                 won = self.filter(name=name, owner_pid=stored_pid).update(
                     session_id=session_id,
                     owner_pid=owner_pid,
+                    owner_pid_namespace=_namespace_for(owner_pid),
                     acquired_at=now,
                     lease_expires_at=expires,
                     # A same-process rotation is not a transfer, so preserve the
@@ -263,6 +291,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             .update(
                 session_id=session_id,
                 owner_pid=owner_pid,
+                owner_pid_namespace=_namespace_for(owner_pid),
                 acquired_at=now,
                 lease_expires_at=expires,
                 # Reclaiming an unowned/expired slot from a DIFFERENT prior holder
@@ -332,19 +361,17 @@ class LoopLeaseQuerySet(models.QuerySet):
         process means that session is the rightful owner and a fresh session must
         stay idle (INV1). Reuses :func:`live_foreign_owner_session` for the
         foreign-and-live decision (the same pid-anchored liveness ``claim_ownership``
-        and ``evict_stale_owner`` use) plus the :func:`pid_is_foreign` carve-out so
-        a same-process self-reclaim is never reported as foreign. Returns ``""``
+        and ``evict_stale_owner`` use) plus the :func:`claim_pid_is_foreign` carve-out
+        so a same-process self-reclaim is never reported as foreign. Returns ``""``
         when the slot is unowned, owned by ``session_id`` itself, owned by a
         dead/expired owner, or owned by this very process.
         """
         now = timezone.now()
-        claim = LeaseClaim.from_row(
-            self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
-        )
+        claim = LeaseClaim.from_row(self.filter(name=name).values(*CLAIM_COLUMNS).first())
         owner = live_foreign_owner_session(claim, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name))
         if not owner:
             return ""
-        return owner if pid_is_foreign(claim.owner_pid, current_pid) else ""
+        return owner if claim_pid_is_foreign(claim, current_pid) else ""
 
     def evict_stale_owner(
         self,
@@ -368,6 +395,11 @@ class LoopLeaseQuerySet(models.QuerySet):
             the pid match is the safety condition, regardless of TTL).
         - Live + null owner_pid: KEEP (unknown process, INV4 bias).
         - Live + alive owner_pid != current_pid: KEEP (INV1, foreign lease).
+        - Live + a pid recorded in ANOTHER pid namespace: KEEP (#4253). Neither the
+            same-pid carve-out nor the dead-pid probe means anything about a process
+            this kernel cannot see, and both fire on a bare integer — so a container
+            that happens to reuse the worker's number would evict the live worker's
+            own lease. Such an owner is released by its TTL, not by a guess here.
 
         The final UPDATE re-asserts the safety condition in its ``WHERE``
         clause (backend-agnostic CAS) so a concurrent tick that refreshed
@@ -378,10 +410,9 @@ class LoopLeaseQuerySet(models.QuerySet):
 
         Returns the number of rows orphaned (0 or 1).
         """
-        pid_alive = pid_alive_probe()
         now = timezone.now()
         candidates = self.filter(name=name).exclude(session_id=keep_session_id)
-        row = candidates.values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
+        row = candidates.values(*CLAIM_COLUMNS).first()
         if not row or not (row["session_id"] or ""):
             return 0
 
@@ -399,29 +430,32 @@ class LoopLeaseQuerySet(models.QuerySet):
             cas = Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)
             if stored_pid is not None:
                 cas |= Q(owner_pid=stored_pid)
-            return candidates.filter(cas).update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
+            return candidates.filter(cas).update(
+                session_id="", owner_pid=None, owner_pid_namespace="", acquired_at=None, lease_expires_at=None
+            )
 
-        if stored_pid is None:
+        if stored_pid is None or not namespace_is_attributable(claim.owner_pid_namespace):
             return 0
 
-        if current_pid is not None and stored_pid == current_pid:
-            return (
-                self.filter(name=name, owner_pid=stored_pid)
-                .exclude(session_id=keep_session_id)
-                .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
-            )
+        if not claim_pid_is_foreign(claim, current_pid):
+            return self._orphan_pid(name, stored_pid, keep_session_id=keep_session_id)
 
+        pid_alive = pid_alive_probe()
         if pid_alive is not None and not pid_alive(stored_pid):
-            return (
-                self.filter(name=name, owner_pid=stored_pid)
-                .exclude(session_id=keep_session_id)
-                .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
-            )
+            return self._orphan_pid(name, stored_pid, keep_session_id=keep_session_id)
 
         return 0
 
+    def _orphan_pid(self, name: str, stored_pid: int, *, keep_session_id: str) -> int:
+        """Blank ``name``'s ownership, CAS'd on the exact pid read (concurrent-claim safe)."""
+        return (
+            self.filter(name=name, owner_pid=stored_pid)
+            .exclude(session_id=keep_session_id)
+            .update(session_id="", owner_pid=None, owner_pid_namespace="", acquired_at=None, lease_expires_at=None)
+        )
+
     def reclaim_dead_owner_leases(self, *, current_pid: int | None = None) -> list[str]:
-        """Orphan every owner-slot lease whose owning SESSION is provably dead (#3571).
+        """Orphan every owner-slot lease whose owner no longer holds it (#3571).
 
         The background reclaim the worker supervisor, ``run_boot_sweeps`` (``t3
         recover``) and the self-heal watchdog run on a cadence so a dead session's
@@ -431,24 +465,61 @@ class LoopLeaseQuerySet(models.QuerySet):
         fires), which routes through the shared discriminator — a busy ``t3-master``
         owner is KEPT (#1604), a per-loop lease past its TTL is reclaimed regardless of
         a reused pid, a fresh-heartbeat owner is never touched. Idempotent and
-        conservative. Returns the reclaimed slot names; every eviction is logged loudly.
+        conservative. Returns the reclaimed slot names; every eviction is logged loudly,
+        under the :func:`reclaim_reason` the pid probe actually supports (#4141).
         """
         reclaimed: list[str] = []
-        owned = self.exclude(session_id="").values("name", "session_id", "owner_pid", "lease_expires_at")
+        owned = self.exclude(session_id="").values("name", *CLAIM_COLUMNS)
         for row in list(owned):
             name = row["name"]
             if not self.evict_stale_owner(name, keep_session_id="", current_pid=current_pid):
                 continue
             reclaimed.append(name)
             logger.warning(
-                "Reclaimed dead-owner loop lease %r (session %r, owner_pid %s, expired at %s): the owning "
-                "session is provably dead past TTL, returning the lease to the pool (#3571).",
+                "Reclaimed stale loop lease %r (session %r, owner_pid %s, expired at %s): %s — returning "
+                "the lease to the pool (#3571).",
                 name,
                 row["session_id"],
                 row["owner_pid"],
                 row["lease_expires_at"],
+                reclaim_reason(row["owner_pid"], owner_pid_namespace=row["owner_pid_namespace"] or ""),
             )
         return reclaimed
+
+    def reap_expired_leases(self, *, older_than: timedelta = EXPIRED_LEASE_REAP_GRACE) -> int:
+        """Delete long-expired work leases nothing will ever consult again (#4253).
+
+        ``acquire``/``release`` mints a row per unit of work (``work:pr:<hash>``,
+        ``work:issue:<hash>``) and nothing retires it, so the table accumulates
+        indefinitely — 123 of 182 rows on one box, every sampled one expired hours
+        earlier. Individually harmless (an expired lease blocks no claim), collectively
+        the table stops being readable: an operator cannot tell a live holder from a
+        year of debris without checking every expiry by hand.
+
+        Deliberately narrow, because a lease row can carry state a delete would reset:
+
+        - An OWNER slot (``t3-master`` / ``loop:<name>``) is never touched — its
+            ``generation`` is the §5 fencing token, and a token that goes backwards
+            un-fences an already-fenced worker. Those are returned to the pool by
+            :meth:`reclaim_dead_owner_leases`, which blanks ownership and keeps the row.
+        - A row still held by a session is never touched, at any expiry.
+        - ``older_than`` keeps a grace well past any lease TTL, so a row a caller is
+            about to renew is never deleted out from under it. ``acquire`` re-creates a
+            missing row on first contact, so a mistaken delete would cost a lost mutex
+            rather than corrupt one — the grace makes even that unreachable.
+
+        Returns the number of rows deleted.
+        """
+        cutoff = timezone.now() - older_than
+        reapable = (
+            self.filter(session_id="", lease_expires_at__lt=cutoff)
+            .exclude(name=T3_MASTER_SLOT)
+            .exclude(name__startswith=PER_LOOP_OWNER_PREFIX)
+        )
+        deleted, _ = reapable.delete()
+        if deleted:
+            logger.info("Reaped %d expired loop-lease row(s) older than %s (#4253).", deleted, older_than)
+        return deleted
 
     def heartbeat_ownership(self, name: str, *, session_id: str, ttl_seconds: int = 1800) -> bool:
         """Extend the t3-master lease IFF this session still holds it (#1073).
@@ -482,11 +553,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         owner-past-TTL window the #1604 fix targets. A missing row reports
         ``("", None, False)`` — unclaimed.
         """
-        row = (
-            self.filter(name=name)
-            .values("session_id", "lease_expires_at", "owner_pid", "generation", "driver", "acquired_at")
-            .first()
-        )
+        row = self.filter(name=name).values(*CLAIM_COLUMNS, "generation", "driver").first()
         if row is None:
             return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0, driver="")
         claim = LeaseClaim.from_row(row)
@@ -517,6 +584,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         released = held.exclude(session_id="").update(
             session_id="",
             owner_pid=None,
+            owner_pid_namespace="",
             acquired_at=None,
             lease_expires_at=None,
             # Release = no owner = no driver, by definition.

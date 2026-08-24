@@ -12,6 +12,7 @@ from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
 if TYPE_CHECKING:
+    from teatree.core.managers import TaskQuerySet
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
@@ -26,12 +27,17 @@ def _auto_ship_enabled() -> bool:
 class TicketSchedulingModel(TicketFacet):
     """Fresh-session phase-task scheduling, orphan-task consumption, and the dirty-worktree preflight."""
 
+    if TYPE_CHECKING:
+        # Reverse accessor for ``Task.ticket``'s ``related_name="tasks"`` — Django
+        # synthesises it at class-prep time, invisible to a static checker.
+        tasks: "TaskQuerySet"
+
     class Meta:
         abstract = True
 
     def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless planning task after provisioning completes."""
-        return self._schedule_headless(
+        return self._schedule_phase_task(
             "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
         )
 
@@ -43,7 +49,7 @@ class TicketSchedulingModel(TicketFacet):
         plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
         re-entries that mint a coding task directly are exempt (they carry no plan).
         """
-        return self._schedule_headless(
+        return self._schedule_phase_task(
             "coding",
             "Auto-scheduled coding — implement the ticket",
             parent_task,
@@ -51,7 +57,7 @@ class TicketSchedulingModel(TicketFacet):
             gate="plan_currency",
         )
 
-    def _schedule_headless(
+    def _schedule_phase_task(
         self,
         phase: str,
         reason: str,
@@ -119,18 +125,19 @@ class TicketSchedulingModel(TicketFacet):
                 ticket=self,
                 session=session,
                 phase=phase,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 execution_reason=reason,
                 parent_task=parent_task,
             )
 
     def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless testing task after coding completes."""
-        return self._schedule_headless("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
+        return self._schedule_phase_task("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
 
     def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
-        return self._schedule_headless("reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task)
+        return self._schedule_phase_task(
+            "reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task
+        )
 
     def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
         """Create a review task within an existing session (sub-agent, not a new session)."""
@@ -140,7 +147,6 @@ class TicketSchedulingModel(TicketFacet):
             ticket=self,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Auto-review before shipping — sub-agent in current session",
             parent_task=parent_task,
         )
@@ -171,7 +177,6 @@ class TicketSchedulingModel(TicketFacet):
             ticket=self,
             session=session,
             phase="shipping",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason=reason,
             parent_task=parent_task,
         )

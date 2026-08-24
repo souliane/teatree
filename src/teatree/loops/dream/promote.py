@@ -368,7 +368,11 @@ def promote_candidate(
     gate = _run_pre_write_gates(candidate, live_gate or LiveGate())
     if gate.withhold is not None:
         return gate.withhold
-    candidate = gate.candidate  # type: ignore[assignment] — a cleared gate always carries the scrubbed candidate
+    cleared = gate.candidate
+    if cleared is None:  # pragma: no cover — a cleared gate always carries the scrubbed candidate
+        msg = "pre-write gates cleared the candidate but carried no scrubbed payload"
+        raise RuntimeError(msg)
+    candidate = cleared
     name = str(candidate["scenario_name"])
 
     scen_dir = scenarios_dir or SCENARIOS_DIR

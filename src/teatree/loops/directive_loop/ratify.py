@@ -19,8 +19,7 @@ from teatree.core.models import DeferredQuestion, Directive
 from teatree.core.models.approval_dial import auto_answer_by_policy, policy_dial
 from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, Decision, approval_policy
 from teatree.core.models.mechanism_sketch import MechanismSketch
-
-_APPROVE_TOKENS = frozenset({"approve", "approved", "yes", "y", "1", "ratify", "admit", "ok"})
+from teatree.core.models.ratification import RatificationVerdict, classify_ratification_answer
 
 #: The action class the admit-gate floors on. Owner taint reaches the #119 dial; any
 #: untrusted taint short-circuits to ASK BEFORE the dial (the taint floor).
@@ -35,11 +34,13 @@ def render_sketch(sketch: MechanismSketch) -> str:
     """A compact human-readable rendering of the sketch the ratify question shows."""
     rejected = "; ".join(sketch.rejected_alternatives) or "(none named — INVALID)"
     scope = sketch.activation_scope or "<global>"
-    return (
-        f"kind={sketch.kind}; setting={sketch.setting_key}: {sketch.setting_type} "
-        f"(neutral default {sketch.neutral_default!r}); chokepoint={sketch.policy_chokepoint}; "
-        f"activate {scope}={sketch.activation_value!r}; rejected alternatives: {rejected}"
+    mechanism = (
+        f"setting={sketch.setting_key}: {sketch.setting_type} (neutral default {sketch.neutral_default!r}); "
+        f"chokepoint={sketch.policy_chokepoint}; activate {scope}={sketch.activation_value!r}"
+        if sketch.setting_key
+        else f"unconditional behaviour at {sketch.policy_chokepoint} (no setting, no activation)"
     )
+    return f"kind={sketch.kind}; {mechanism}; rejected alternatives: {rejected}"
 
 
 def ask_ratification(directive: Directive) -> DeferredQuestion:
@@ -105,6 +106,11 @@ def _payload_visible_question(directive: Directive, sketch: MechanismSketch, con
 
 def _mechanism_facts(sketch: MechanismSketch) -> list[str]:
     """2-3 concrete "this changes X" facts a human can judge, derived from the sketch."""
+    if not sketch.setting_key:
+        return [
+            f"make the constraint the unconditional behaviour at {sketch.policy_chokepoint}",
+            "mint no setting — there is no knob that can leave it off",
+        ]
     scope = sketch.activation_scope or "<global>"
     return [
         f"add setting `{sketch.setting_key}` ({sketch.setting_type}), neutral default {sketch.neutral_default!r}",
@@ -116,19 +122,35 @@ def _mechanism_facts(sketch: MechanismSketch) -> list[str]:
 def try_admit(directive: Directive) -> str:
     """Resolve a ``RATIFY_PENDING`` directive from its answered question.
 
-    Returns ``"admitted"`` (approved), ``"rejected"`` (denied), or ``"pending"``
-    (no answer yet). The single :meth:`Directive.admit` call site — a denial rejects
-    with the human's words.
+    Returns ``"admitted"`` (approved), ``"rejected"`` (denied), ``"reasked"`` (the
+    answer decided nothing, so a fresh question replaces it and the directive holds),
+    or ``"pending"`` (no answer yet). The single :meth:`Directive.admit` call site — a
+    denial rejects with the human's words.
     """
     question = directive.ratify_question
     if question is None or question.answered_at is None:
         return "pending"
-    if _is_approval(question.answer_text):
+    verdict = classify_ratification_answer(question.answer_text)
+    if verdict is RatificationVerdict.APPROVAL:
         directive.admit()
         return "admitted"
-    directive.reject(f"ratification denied: {question.answer_text.strip()!r}")
-    return "rejected"
+    if verdict is RatificationVerdict.DENIAL:
+        directive.reject(f"ratification denied: {question.answer_text.strip()!r}")
+        return "rejected"
+    directive.reask_ratification(_undecidable_answer_question(directive, question))
+    return "reasked"
 
 
-def _is_approval(answer: str) -> bool:
-    return answer.strip().lower() in _APPROVE_TOKENS
+def _undecidable_answer_question(directive: Directive, answered: DeferredQuestion) -> DeferredQuestion:
+    """Re-ask the ratify question, quoting back the answer that decided nothing."""
+    sketch = directive.sketch
+    mechanism = render_sketch(sketch) if sketch is not None else "(no sketch)"
+    return DeferredQuestion.record(
+        f"Directive #{directive.pk} is STILL awaiting ratification — the recorded answer read "
+        f"as neither an approval nor a denial, so nothing was decided and the directive was "
+        f"held.\n\nPrevious answer: {answered.answer_text.strip()[:_EXCERPT_LEN]!r}\n\n"
+        f"Directive: {directive.constraint_statement or directive.raw_text}\n"
+        f"Proposed mechanism: {mechanism}\n\n"
+        f"Answer 'approve' to admit, or 'reject' to deny.",
+        options_hash=f"directive_ratify:{directive.pk}:{directive.generation}:reask",
+    )

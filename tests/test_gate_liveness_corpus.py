@@ -25,11 +25,11 @@ PreToolUse and a registered ``Agent`` matcher delivers it). The
 orchestrator-boundary foreground-Agent guard is additionally default-ON (#1733),
 with its never-lockout off-ramps intact (sub-agent context,
 ``run_in_background: true``, ``[fg-ok: <reason>]`` token, kill-switch,
-deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). Distinguish the
-PreToolUse ``Agent`` path from the ``Task``/``Workflow`` fan-out vehicle, which
-genuinely DOES bypass PreToolUse and fires ``TaskCreated`` instead (no
-``run_in_background`` in its schema) — that is why the dispatch-quote concern
-also carries a reachable ``TaskCreated`` counterpart.
+deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). The ``Agent`` matcher is the
+ONLY interception point a sub-agent dispatch has (#4216); the task-LIST tools are
+a separate family that bypasses PreToolUse, and ``TaskCreated`` is THEIR event —
+which is why the quote concern also carries a reachable ``TaskCreated`` arm over
+task-list entries.
 The phantom roster is now asserted EMPTY (also visible via ``-rsx``); a row
 silently gaining phantom status without a deliberate update FAILS the build.
 """
@@ -41,16 +41,23 @@ import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.verbatim_paste_gate as _verbatim_paste_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
+from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
+from teatree.hooks import verbatim_paste as _verbatim_paste
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
+
+if TYPE_CHECKING:
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import ProvisionStep
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -242,21 +249,6 @@ def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.write_state("skills", "")
 
 
-def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
-    ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "code\n")
-    ctx.write_state("skills", "")
-
-
-def _task_created(description: str, *, skip: bool) -> dict:
-    token = "[skip-skill-gate: false-trigger] " if skip else ""
-    return {
-        "session_id": "sess-liveness",
-        "task_subject": "do the thing",
-        "task_description": f"{token}{description}",
-    }
-
-
 # block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
 # worktree's ticket is still in STARTED state (no PlanArtifact yet).
 # _ticket_state_for_cwd() resolves via Django/DB, so the corpus monkeypatches it
@@ -406,7 +398,6 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
 
 def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.write_state("teatree-active", "")
-    ctx.seed_setting("agent_runtime", "headless")
     ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     ctx.monkeypatch.setenv("CLAUDECODE", "1")
     ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
@@ -592,8 +583,8 @@ def _mcp_slack_write_allow(ctx: GateContext) -> dict:
 
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
-# the `Agent` PreToolUse matcher in hooks.json. The clean-prompt fan-out concern
-# is also covered by the reachable TaskCreated counterpart below.
+# the `Agent` PreToolUse matcher in hooks.json, the only interception point a
+# dispatch has. The task-list arm below covers a quote pasted into a todo.
 
 
 def _dispatch_quote_deny(ctx: GateContext) -> dict:
@@ -608,11 +599,12 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
     }
 
 
-# dispatch-prompt quote-scanner ON TaskCreated (the fan-out arm, #171): the
-# fan-out path bypasses PreToolUse, so this TaskCreated handler scans the
-# task subject/description. Ships default-OFF (opt-in pending #1640-class
-# fan-out validation), so the corpus enables it explicitly to prove it CAN
-# fire when on: reachable + denies a HIGH-quote fan-out + allows a clean one.
+# quote-scanner ON TaskCreated (the task-list arm, #171): the task-LIST tools
+# bypass PreToolUse, so this TaskCreated handler scans the task
+# subject/description. Ships default-OFF pending validation of its live
+# enforcement, so the corpus enables it explicitly to prove it CAN fire when on:
+# reachable + denies a HIGH-quote entry + allows a clean one. The payload carries
+# no teammate field — a top-level session's own todo is the shape it must handle.
 
 
 def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
@@ -631,6 +623,66 @@ def _dispatch_quote_task_allow(ctx: GateContext) -> dict:
     }
 
 
+# admission governor on dispatch (#4107): the governor had two callers, both
+# factory lanes, so an interactive Agent/Task dispatch was admitted with no
+# ceiling and no load brake. Both arms are arranged over the load-brake
+# watermark (deterministic, no DB read — a brake short-circuits before the live
+# count), so the deny is the governor's own reason and the allow is the per-call
+# `[admission-ok:]` escape that keeps the gate never-lockout.
+_ADMISSION_OK = "[admission-ok: the merge keystone is blocked on this dispatch]"
+
+
+def _arrange_dispatch_admission(ctx: GateContext) -> None:
+    from teatree.core import dispatch_admission  # noqa: PLC0415 — deferred: arranged per-row, not at import
+
+    over_the_watermark = MachineSignal(cores=8, load1=BRAKE_LOAD_PER_CORE * 8 + 1, ram_available_gb=1.0)
+    ctx.monkeypatch.setattr(dispatch_admission, "governor_enabled", lambda: True)
+    ctx.monkeypatch.setattr(dispatch_admission, "read_machine_signal", lambda: over_the_watermark)
+    ctx.monkeypatch.setattr(
+        dispatch_admission,
+        "read_quota_signal",
+        lambda: QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        ),
+    )
+
+
+def _dispatch_admission_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": "review the diff"}}
+
+
+def _dispatch_admission_allow(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
+
+
+# brief-anchor lint on dispatch (#4341): a brief asserting a file:line and a
+# count with no SHA anchor and no trust-the-code clause. Arranged in REFUSE
+# posture — the shipped default warns without denying, so only the opt-in
+# posture has a deny arm to prove reachable.
+_BRIEF_ANCHOR_OK = "[brief-anchor-ok: the sha is on the ticket]"
+_UNANCHORED_BRIEF = "The guard is in src/teatree/core/ticket.py:412 and there are 3 callers. Fix each."
+
+
+def _arrange_brief_anchor(ctx: GateContext) -> None:
+    ctx.seed_setting("brief_anchor_gate_refuse", value=True)
+
+
+def _brief_anchor_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": _UNANCHORED_BRIEF}}
+
+
+def _brief_anchor_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Agent",
+        "tool_input": {"prompt": f"{_BRIEF_ANCHOR_OK} {_UNANCHORED_BRIEF}"},
+    }
+
+
 # banned-terms (PreToolUse Bash arm): a publish body carrying a configured
 # banned term denies; a clean body allows. (No Slack-MCP arm exists.)
 
@@ -639,6 +691,33 @@ def _arrange_banned_terms(ctx: GateContext) -> None:
     ctx.seed_setting("banned_terms", ["acme"])
     ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
     _pin_public_probe(ctx)
+
+
+# block-verbatim-operator-paste (PreToolUse Bash): a public issue body that
+# blockquotes a recorded operator message denies; a paraphrase allows. The
+# operator message carries no banned term, so the denial is this gate's alone.
+
+_OPERATOR_SAID = (
+    "Stop pasting my chat messages into public issues verbatim. I want you to "
+    "write the summary in your own words every single time, without exception."
+)
+
+
+def _arrange_verbatim_paste(ctx: GateContext) -> None:
+    _pin_public_probe(ctx)
+    ctx.monkeypatch.delenv(_verbatim_paste.OVERRIDE_ENV, raising=False)
+    _verbatim_paste_gate.handle_record_operator_message({"session_id": ctx.session_id, "prompt": _OPERATOR_SAID})
+
+
+def _verbatim_paste_deny(ctx: GateContext) -> dict:
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "> {_OPERATOR_SAID}"')
+
+
+def _verbatim_paste_allow(ctx: GateContext) -> dict:
+    return _bash(
+        "gh issue create --repo souliane/teatree --title t "
+        '--body "The operator asked for their chat text to be summarised, never reproduced."'
+    )
 
 
 def _banned_bash_deny(ctx: GateContext) -> dict:
@@ -778,6 +857,18 @@ def _direct_allow(_ctx: GateContext) -> dict:
     return _bash("t3 teatree ticket list")
 
 
+# block-git-add-all (PreToolUse Bash): the whole-tree stage denies; naming the
+# paths allows.
+
+
+def _add_all_deny(_ctx: GateContext) -> dict:
+    return _bash("git add -A")
+
+
+def _add_all_allow(_ctx: GateContext) -> dict:
+    return _bash("git add src/app/models.py")
+
+
 # block-out-of-band-merge (PreToolUse Bash): a raw merge in a managed repo
 # denies; the same merge in an unmanaged repo allows.
 
@@ -811,7 +902,7 @@ class _OptedInScopeOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return []
 
-    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
         _ = worktree
         return []
 
@@ -905,11 +996,10 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 # `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
 # are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
 # `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
-# additionally default-ON (#1733). The SEPARATE `Task`/`Workflow` fan-out vehicle
-# still bypasses PreToolUse and fires TaskCreated (no `run_in_background` in its
-# schema; verified against the Claude Code binary, docs/claude-code-internals.md
-# §9) — that is why the dispatch-quote concern ALSO carries a reachable
-# TaskCreated counterpart. Do not conflate the two.
+# additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
+# PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
+# body (verified against the Claude Code binary, docs/claude-code-internals.md
+# §9) — that arm governs task-list entries and never a dispatch (#4216).
 
 
 GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
@@ -925,15 +1015,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
             "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
         },
         arrange=_arrange_skill_loading,
-    ),
-    GateRow(
-        gate_id="enforce-skill-loading-on-task-create",
-        handler=router.handle_enforce_skill_loading_on_task_create,
-        event="TaskCreated",
-        matched="Task",
-        deny_input=lambda _c: _task_created("review the acme MR", skip=False),
-        allow_input=lambda _c: _task_created("review the acme MR", skip=True),
-        arrange=_arrange_skill_loading_on_task,
     ),
     GateRow(
         gate_id="block-edit-before-planned",
@@ -1069,6 +1150,24 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_dispatch_quote_on_task,
     ),
     GateRow(
+        gate_id="dispatch-admission-governor",
+        handler=router.handle_dispatch_admission,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_dispatch_admission_deny,
+        allow_input=_dispatch_admission_allow,
+        arrange=_arrange_dispatch_admission,
+    ),
+    GateRow(
+        gate_id="brief-anchor-lint",
+        handler=router.handle_brief_anchor_lint,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_brief_anchor_deny,
+        allow_input=_brief_anchor_allow,
+        arrange=_arrange_brief_anchor,
+    ),
+    GateRow(
         gate_id="banned-terms-bash",
         handler=router.handle_banned_terms_pretool,
         event="PreToolUse",
@@ -1076,6 +1175,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_banned_bash_deny,
         allow_input=_banned_bash_allow,
         arrange=_arrange_banned_terms,
+    ),
+    GateRow(
+        gate_id="block-verbatim-operator-paste",
+        handler=router.handle_block_verbatim_operator_paste,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_verbatim_paste_deny,
+        allow_input=_verbatim_paste_allow,
+        arrange=_arrange_verbatim_paste,
     ),
     GateRow(
         gate_id="block-glab-stale-base-remote",
@@ -1128,6 +1236,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_direct_deny,
         allow_input=_direct_allow,
+    ),
+    GateRow(
+        gate_id="block-git-add-all",
+        handler=router.handle_block_git_add_all,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_add_all_deny,
+        allow_input=_add_all_allow,
     ),
     GateRow(
         gate_id="block-out-of-band-merge",
@@ -1324,10 +1440,6 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # Side-effect-only mirror — always returns ``False`` (posts the
         # AskUserQuestion to Slack, never denies).
         router.handle_mirror_question_to_slack,
-        # Availability router — its deny is a routing conversion of an
-        # AskUserQuestion into a DeferredQuestion, not a content/enforcement
-        # gate with a must-deny corpus payload.
-        router.handle_route_away_mode_question,
         # Responsiveness nudge — advisory only (prints additionalContext once a
         # turn crosses the tool-call budget), returns ``None``, never denies.
         router.handle_orchestrator_turn_budget_nudge,
@@ -1338,6 +1450,10 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # + always returns ``False``); it has no deny path, so no must-deny
         # corpus payload.
         router.handle_enforce_orchestrator_investigation_boundary,
+        # Merged-branch-detection probe (#4070) — a WARN-only nudge (stderr +
+        # always returns ``False``); pinned structurally to have no deny path by
+        # ``tests/test_merged_detection_probe_gate.py``.
+        router.handle_warn_merged_detection_probe,
     }
 )
 

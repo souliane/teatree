@@ -31,12 +31,13 @@ nothing is removed.
 import logging
 from pathlib import Path
 
+from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
-from teatree.core.management.commands._workspace.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged
+from teatree.core.worktree.venue_safe_registry import prune_worktrees
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -96,7 +97,7 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
     """Remove the orphan worktree and prune the registry. Returns success."""
     if not git.worktree_remove(repo, wt_path):
         return False
-    git.run(repo=repo, args=["worktree", "prune"])
+    prune_worktrees(repo)
     if branch != git.DETACHED_HEAD:
         git.branch_delete(repo, branch)
     return True

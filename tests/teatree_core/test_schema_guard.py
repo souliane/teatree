@@ -194,6 +194,15 @@ class TestSchemaGuardOnPrivateAlias:
         assert MergeClear.objects.using(alias).count() == 0  # healed: the table is now usable
 
 
+# Measured idle on an 8-core box: 7.3s in ``setUp`` and 1.5s in the call. The narrow
+# unapply/reapply of the initial migration on the SHARED ``default`` connection dominates
+# — the aggregation the body asserts costs comparatively little in-process — and neither
+# part can be stubbed away, since the migration gap IS the precondition and the aggregate
+# IS the subject. ~9s clears the global 60s ``pytest-timeout`` alone and does not under
+# CI's 12-way shard matrix, where contention has taken it past 60s on four separate PRs.
+# Same scoped bump, same reason, as ``BehindSelfDbSelfHealsTest`` below (#1189); the
+# global 60s stays as the hang-detector everywhere else (#4048).
+@pytest.mark.timeout(240)
 class BehindSelfDbReportingTest(TransactionTestCase):
     """The one surface that cannot move off ``default`` (#2915).
 
@@ -225,6 +234,12 @@ class BehindSelfDbReportingTest(TransactionTestCase):
 # single-core that exceeds the global 60s ``pytest-timeout`` under maximum
 # parallel contention. Scoped 240s bump for the genuinely-slow migrations; the
 # global 60s stays as the hang-detector everywhere else (#1189).
+def _forge_offline(argv: list[str]) -> tuple[int, str, str]:
+    """Every forge read fails — the repo-reconcile probe falls back to its initial slug."""
+    del argv
+    return (1, "", "forge unreachable")
+
+
 @pytest.mark.timeout(240)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """The sanctioned commands that cannot move off ``default`` (#2915).
@@ -243,18 +258,21 @@ class BehindSelfDbSelfHealsTest(TransactionTestCase):
         self.addCleanup(_migrate_core_forward)
 
     def test_ticket_clear_command_proceeds_past_schema_gate(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                866,
-                "statusline-stale-wakeup",
-                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
-                reviewer_identity="coldrev-866",
-                blast_class="logic",
-            ),
-        )
+        # A workstream-slug CLEAR probes the forge to reconcile its repo. This case is
+        # about the schema gate, so answer that probe offline instead of shelling out.
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_forge_offline):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    866,
+                    "statusline-stale-wakeup",
+                    reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                    reviewer_identity="coldrev-866",
+                    blast_class="logic",
+                ),
+            )
         # The clear proceeds past the schema gate; whatever its outcome, it
         # is never the unapplied-migration refusal that #2006 eliminates.
         assert "unapplied migration" not in str(result.get("error", ""))

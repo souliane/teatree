@@ -3,11 +3,15 @@ import logging
 import os
 from pathlib import Path
 
+from django_fsm import can_proceed
+
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.service_launch import ServiceLauncher
+from teatree.core.worktree.stack_probe import running_container_ids
+from teatree.core.worktree.venue import unusable_path_reason
 from teatree.core.worktree.worktree_env import compose_project, write_env_cache
 from teatree.timeouts import DOCKER_COMPOSE_BUILD, DOCKER_COMPOSE_DOWN, DOCKER_COMPOSE_UP, TimeoutConfig, load_timeouts
 from teatree.utils.ports import get_worktree_ports
@@ -54,11 +58,22 @@ def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volume
 class WorktreeStartRunner(RunnerBase):
     """Run the docker side-effects of ``Worktree.start_services()``.
 
-    Executes after the FSM advances to ``SERVICES_UP``. Stops any previous
-    containers, runs overlay pre-run steps, brings up docker-compose, then
-    queries the auto-mapped host ports and stores them in
-    ``Worktree.extra["ports"]``. Idempotent: re-firing replays the down/up
-    cycle so a partially-failed previous run gets a clean retry.
+    Executes after the FSM advances to ``SERVICES_UP``. Validates the worktree,
+    runs overlay pre-run steps, writes the env cache and builds any missing
+    image; only then replaces the containers (``down`` → ``up``) and records the
+    auto-mapped host ports in ``Worktree.extra["ports"]``. Idempotent: re-firing
+    replays the down/up cycle so a partially-failed previous run gets a clean
+    retry.
+
+    DESTROY LAST. Every fallible step runs BEFORE the ``down``, so a failure
+    anywhere in preparation leaves the previous stack exactly as it was. The
+    reverse order — down first, validate afterwards — turned an ordinary
+    preparation error into an unrecoverable outage: the stack was gone, and
+    ``docker compose up`` is itself gated, so there was no way back. The ``down``
+    is kept (it is what makes a re-fire a clean retry of a partially-failed
+    stack) but it now runs one statement before the ``up`` that replaces it, so
+    the window in which the worktree has no containers is as short as the
+    operation itself.
     """
 
     def __init__(
@@ -81,44 +96,65 @@ class WorktreeStartRunner(RunnerBase):
         worktree.assert_compose_project_unclaimed()
         project = compose_project(worktree)
 
-        docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))
+        unusable = unusable_path_reason(Path(worktree.worktree_path), subject=f"worktree #{worktree.pk}")
+        if unusable:
+            # Refused before anything ran, so the row still describes the live
+            # stack — no reconciliation, and nothing to undo.
+            return RunnerResult(ok=False, detail=unusable)
 
         commands = overlay.runtime.run_commands(worktree)
         ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
-
         write_env_cache(worktree, overlay=overlay)
 
         compose_file = overlay.provisioning.compose_file(worktree)
         if not compose_file:
             return RunnerResult(ok=True, detail=f"no compose file for {worktree.repo_path}")
 
-        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
+        env: dict[str, str] = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
-        ok, reason = self._docker_compose_up(project, compose_file, env)
+        # The build is the last fallible step, so it belongs on this side of the
+        # down: a missing base image is an ordinary, recoverable condition and
+        # must not cost the operator a running stack.
+        build_error = self._ensure_images_built(project, compose_file, env)
+        if build_error:
+            return self._failed(f"docker compose up failed for {worktree.repo_path}: {build_error}", project)
+
+        docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))
+        ok, reason = self._compose_up(project, compose_file, env)
         if not ok:
-            return RunnerResult(
-                ok=False,
-                detail=f"docker compose up failed for {worktree.repo_path}: {reason}",
-            )
+            return self._failed(f"docker compose up failed for {worktree.repo_path}: {reason}", project)
 
         ports = get_worktree_ports(project, compose_file=compose_file)
-        extra = worktree.extra or {}
-        extra["services"] = list(commands)
-        extra["ports"] = ports
-        worktree.extra = extra
-        worktree.save(update_fields=["extra"])
+        worktree.merge_extra(set_keys={"services": list(commands), "ports": ports})
         return RunnerResult(ok=True, detail=f"started {len(commands)} service(s)")
 
-    def _docker_compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> tuple[bool, str]:
+    def _failed(self, detail: str, project: str) -> RunnerResult:
+        """Report the failure after making the recorded state match the stack.
+
+        ``SERVICES_UP`` is committed before this runner is reached, so a failed
+        start used to leave the row asserting a stack that does not exist — the
+        FSM stating the intent as though it were the outcome. The row is
+        reconciled against the daemon instead of assumed: demoted only when the
+        project is PROVEN to have no running container, kept when containers
+        survive or when docker cannot answer.
+
+        ``can_proceed`` because reporting a failure must never itself raise: a
+        caller may hold a row that has already moved on, and a
+        ``TransitionNotAllowed`` here would replace a legible failure detail with
+        a traceback.
+        """
+        if running_container_ids(project) == [] and can_proceed(self.worktree.start_failed):
+            self.worktree.start_failed()
+            self.worktree.save(update_fields=["state"])
+        return RunnerResult(ok=False, detail=detail)
+
+    def _compose_up(self, project: str, compose_file: str, env: dict[str, str]) -> tuple[bool, str]:
         """Bring the stack up.
 
         Returns ``(ok, reason)`` — *reason* carries the real failure cause
-        (build error, timeout, or compose stderr) so the caller can surface
-        it instead of a generic "failed" message.
+        (timeout, or compose stderr) so the caller can surface it instead of a
+        generic "failed" message.
         """
-        build_error = self._ensure_images_built(project, compose_file, env)
-        if build_error:
-            return False, build_error
         cmd = [
             "docker",
             "compose",

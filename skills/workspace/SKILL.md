@@ -6,7 +6,6 @@ requires:
 compatibility: macOS/Linux, zsh or bash, git, docker with compose plugin, PostgreSQL CLIs (psql, createdb, dropdb, pg_restore), direnv, lsof. Optional dslr, uv, jq.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Environment & Workspace Lifecycle
@@ -125,6 +124,11 @@ row. Re-firing `start` against an already-running worktree is allowed
 idempotence). The cap is scoped per overlay, so a heavy overlay can
 cap to `1` while a cheap dogfood overlay stays unbounded.
 
+This cap covers docker stacks only. The sibling bound — concurrent
+**test workers**, where each dispatched agent's `-n auto` pool multiplies
+by the number of agents — is `/t3:rules` § "Sub-Agent Limitations", and it
+is set per brief, not per overlay.
+
 ### Data Directory (XDG-Compliant)
 
 Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
@@ -154,6 +158,10 @@ Worktrees regroup under a dedicated dir PER OVERLAY. Two DISTINCT roots — conf
 
 **A checkout is only DEAD when a single venue can prove it (#3912, #3853).** A linked checkout records its admin dir as an ABSOLUTE path written by whichever execution context created it. Read from a context that reaches the clone elsewhere, that path resolves to nothing and `git rev-parse` fails with the SAME wording it uses for a directory that never held a repository — so "dead" and "not visible from here" are the same bytes, and a healthy in-flight worktree reads as reapable. `probe_checkout` therefore reports `NOT_A_CHECKOUT` only when the dir carries no `.git` at all AND git agrees there is no repository; it reports `CHECKOUT` when the caller hands it a source clone that still holds the checkout's admin entry (looked up by name, which is context-free) — a caller that cannot resolve the clone gets UNKNOWN, not a verdict; everything else is UNKNOWN too. `CHECKOUT` means "live, hands off", not "git works here": a clone-vouched checkout still fails every git command run inside it. UNKNOWN never reaps, exactly as in the reviewer orphan sweep. So `release-dead-rows` and `clean-all` act on nothing they cannot positively prove dead, and the broken-DIR pass REPORTS unresolvable dirs instead of removing them — recover their work with `t3 <overlay> workspace salvage`.
 
+**A `git worktree prune` cannot tell "not mounted here" from "deleted", so it is gated (#4287).** The prune deregisters every registration whose checkout it cannot stat IN THE READING VENUE, and a checkout mounted only where it was created is absent here in the same `ENOENT` a deleted one produces — measured: one containerised pass deregistered 86 host checkouts, which then answered `fatal: not a git repository`. Every prune call site therefore routes through `core/worktree/venue_safe_registry.prune_worktrees`, which runs the prune only when each registration it would drop lies under `config.worktree_root()` — the one root this venue provisions into — AND sits in a directory readable here. A readable neighbourhood alone is not enough: a host checkout directly under `$HOME` is absent-with-a-readable-parent from inside the container. The prune takes no per-entry scope, so one unvouchable registration withholds the whole prune and the refusal names the offenders; release it by pruning from the venue that owns them, or by `git worktree lock`-ing each one so the prune skips it. The same predicate answers the #706 work guard, which reports UNKNOWN — never "no work" — for a checkout it cannot read, so no branch delete proceeds on an unreadable path.
+
+**Provisioning may not re-create what it cannot prove disposable (#3967).** Clearing a worktree slot is a deletion like any other, so `worktree provision` asks `core/worktree/checkout_disposal.disposal_refusal` before it removes anything. Two things authorise disposal and nothing else does: a directory carrying no `.git` at all (a `git worktree add` that died before writing one), or a checkout the acting clone itself vouches for by admin-entry name. A checkout whose gitdir names a root absent here is refused as a VIEW MISMATCH — act from the context that resolves that root — and one no reachable clone holds is refused as unproven, to be disposed of from the clone whose registry holds it. Occupancy overrides both: a path a busy ticket holds is never re-created, whatever git says about it. Provisioning fails loudly on a refusal rather than clearing the slot, so the operator sees the reason instead of losing the work.
+
 **A dead registered checkout has ONE owner (#3583 follow-up).** A registered `Worktree` row whose dir is provably not a git repo is released by the ROW reaper (`core/worktree/broken_checkout.py`). The release is decided from the BRANCH in the source clone under the #706 standard: released only when the checkout is PROVABLY not a repo AND the branch holds nothing that exists on no remote. The clone is resolved BEFORE the dir is probed, because it is what tells a checkout that is live in another context from one that is dead everywhere. An unresolvable clone, an unreadable push state, or genuinely unpushed commits KEEP the row with a reason — recover those with `t3 <overlay> workspace salvage`. The DIRECTORY is never removed on this evidence; disposing of it stays an explicit operator decision.
 
 To move an overlay's EXISTING teatree-managed worktrees onto the new per-overlay dir:
@@ -163,11 +171,38 @@ t3 <overlay> workspace relocate            # move existing worktrees under the r
 t3 <overlay> workspace relocate --dry-run  # list the moves without touching anything
 ```
 
-It uses `git worktree move` (never a raw `mv` — git's worktree admin must update so the moved worktree stays linked to its clone), then rewrites each `Worktree` row's stored path. It **SKIPS and reports** any worktree that is git-locked, has uncommitted changes, or is a live mid-task one (its ticket has a live session/active task, or the process CWD is inside it); it is **idempotent** (a worktree already there is a no-op) and **continues past a single failed move** (reports it, never aborts the run).
+It uses `git worktree move` (never a raw `mv` — git's worktree admin must update so the moved worktree stays linked to its clone), then rewrites each `Worktree` row's stored path. It **SKIPS and reports** any worktree that is git-locked, has uncommitted changes, or is a live mid-task one (its ticket has a live session/active task, or the process CWD is inside it); it is **idempotent** (a worktree already there is a no-op) and **continues past a single failed move** (reporting git's own stderr, never aborting the run).
+
+**A move across a MOUNT-POINT boundary is refused by name, not attempted (#4368).** `git worktree move` is a `rename(2)`, which returns `EXDEV` between distinct mount points — including two bind mounts of ONE filesystem, which report the same `st_dev`. So a guard keyed on the device concludes the move is safe and it fails anyway with a bare `rc=128`; `core/worktree/relocation.py` therefore keys on the mount table (`utils/mount_points.py`, `/proc/self/mountinfo`) and refuses with both mount points named. A venue that cannot read that table gets UNKNOWN and the move goes ahead, so git's stderr still speaks. The boundary is reported ahead of the transient refusals (dirty, busy, locked) because it is the only one no operator action can clear — "uncommitted changes" on a cross-boundary worktree invites a commit-and-retry that cannot succeed.
+
+That policy is the SAME one `t3 doctor check`'s split-namespace WARN consults: it prescribes `workspace relocate` only for the rows relocate would actually move, and NAMES each refused row with its reason instead of counting it. A count that includes an un-relocatable row prescribes a remedy that provably cannot discharge the finding, so the WARN recurs at that number on every run forever.
+
+## Is this branch landed? One canonical answer
+
+Never hand-roll it. `git cherry origin/main HEAD`, `git branch --merged`, `git merge-base --is-ancestor` and `git log … --not origin/main` all answer by SHA or ancestry, and a squash-merge rewrites the branch's commits into a new SHA on the default branch — so every one of them reports already-landed work as unmerged. That misread once escalated three merged branches to the owner as false completions and dispatched a shipper to push them.
+
+```bash
+t3 <overlay> workspace branch-verdict <branch> [<branch> …] [--repo <path>] [--json]
+```
+
+Read-only, works on any local branch (no `Worktree` row needed), and the sweep across N worktrees is ONE call. It serializes the three-layer content classifier: `redundant` + the deciding `source` (`cherry-zero-unique` / `synthetic-squash` / `branch-merged`), plus `forge_merged`, `merged_with_post_merge_work` and `unique_shas` **together** — a branch the forge calls merged whose tip still carries unique commits is reported NOT redundant with those SHAs named, so "merged" is never readable on its own as "safe to delete". An inconclusive probe answers NOT landed, so an uncertain branch is kept.
+
+A fourth field, `content_present_on_target`, is the present-tense question the other three structurally cannot ask: `git cherry` reads a patch's PRIOR appearance on the target, and a REVERT there does not erase it, so a squash-merged-then-reverted branch reads `redundant` on every patch-id layer. The report carries both, and the human line says so; the boolean `branch_is_landed` (what `ship`'s duplicate-PR refusal consumes) requires BOTH, so a reverted branch ships a fresh PR instead of being refused one. Post-merge drift on unrelated files stays LANDED; drift that re-edits the same region reads NOT LANDED — an unmergeable region is not proof of presence, and a needless PR is the cheap direction to be wrong in.
+
+`workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory (`t3 <overlay> gate merged-detect`) nudges a hand-rolled probe back here.
 
 ## Cleanup Patterns
 
 `t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal with a patch-id `git cherry` fallback — a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree (only projects teatree itself provisioned — those named `<repo>-wt<ticket-pk>`; the deploy stack and unrelated user projects are never candidates), reaps the auto-isolated worktree env roots **whose own stamp names a checkout this venue can see is gone** (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` — never one holding a `.git` checkout, never an unstamped one), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), REPORTS **unresolvable checkouts** as UNKNOWN and removes none (#3912 — a dir that CARRIES a `.git` entry yet fails `git rev-parse` is either a corrupted worktree or a perfectly healthy one created in another execution context, and no venue can tell those apart; a dir with NO `.git` was never a checkout and belongs to the auto-isolated env-dir reaper above), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+
+**Every reaping pass captures a checkout's unshipped work first, and `restore` reads it back (#4435).** Ahead of any disposition, `core/cleanup/unshipped_work.py` writes a salvage bundle — the staged + unstaged + untracked delta, plus a patch per unpushed commit — and an `UnshippedWorkRecord` row pointing at it. Two properties make it recoverable rather than merely present: the patches are captured VERBATIM (a stripped patch is one `git apply` rejects as `corrupt patch`), and a read this venue could not complete writes its cause to a distinct `.unreadable` key instead of overwriting a good capture with zero bytes. Apply one back with:
+
+```bash
+t3 <overlay> workspace restore <checkout-path-or-bundle-prefix> --into <checkout> --dry-run   # report only
+t3 <overlay> workspace restore <checkout-path-or-bundle-prefix> --into <checkout>             # apply
+```
+
+`--into` is never inferred, the commits patch applies before the uncommitted one (the latter is the delta on top), and each part is reported on its own line — `git apply` is all-or-nothing per invocation, so a part that fails leaves the target exactly as it was. `t3 doctor check` names the recorded checkouts to restore.
 
 **The judgment layer is a separate skill.** `clean-all` is the mechanical reaper — it auto-deletes the provably-redundant and EMITs every item it could not auto-decide (`t3 <overlay> workspace emit` → a JSON array). Deciding what to DO with each emitted item — salvage unmerged work to a fresh PR (`workspace salvage`), delete a shipped/superseded item, push post-merge commits to a new PR, skip a colleague's or a live item, or keep an uncertain one — is the **`/t3:sweeping-worktrees`** skill. Load it when sweeping stale/lost worktrees, branches, or stashes, or triaging `workspace emit`.
 
@@ -207,7 +242,38 @@ It reports per-step and total reclaimed bytes. `--dry-run` plans the set without
 
 **It fails loud, and `0B` means `0B`.** A prune that docker actively refuses (daemon down, or no `/var/run/docker.sock` in the container the CLI runs in) is marked `FAILED — <reason>` on its step and exits the command **non-zero**. Every step still runs, so one refusal never forfeits the reclaim the others can do. Only an *absent* docker binary (CI sandboxes) stays silent. So a clean exit reporting `Total reclaimed: 0B` genuinely means there was nothing left to reclaim — treat it as such, and never read a `FAILED` line as "already clean".
 
-**When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so compose re-reads `deploy/docker-socket-gid.sh` — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
+**When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so `deploy/deploy.sh` re-resolves the socket gid — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
+
+### The checkout pool's retention policy (#4244)
+
+Docker cache is not where the disk goes. The pool of checkouts is: each carries a
+`.venv` and a `.venv-hook` at roughly 1.1 GB together, and they accumulate across every
+ticket ever worked — measured at ~82 GB across two locations on a box that was 92% full,
+about half of it in ad-hoc session checkouts (`wt-*`, `fix<NNNN>`, `cold<NNNN>`) that
+appear in **no** ledger, so `workspace emit` never surfaces them.
+
+The policy is enforced by the `resource_pressure` loop, not by a human running a command:
+
+- **A venv untouched for `venv_idle_days` (default 2) is evicted as the cache it is.** `uv
+  sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
+  the tree, the commits and every uncommitted change live outside the venv. Set the
+  retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+- **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
+  candidate set; a live process decides. The guard reads the HOST's process table
+  (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it
+  cannot — a container's own PID namespace shows none of the host's agents. The same
+  refusal now governs the heuristic worktree GC, which until [#4244](https://github.com/souliane/teatree/issues/4244)
+  read an unusable table's empty answer as "nobody is inside".
+- **The guard is re-established immediately before each deletion, not at plan time.** Minutes
+  of walks and prunes separate the two, and a checkout is matched under both its written and
+  its resolved spelling — a symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`.
+  What the delete-time guard stopped is named in the persisted plan.
+- **Steady state is therefore one venv per checkout worked inside the window** — on this
+  box's cadence, single-digit GB rather than tens. A pool materially above that means the
+  pass is being refused; read `t3 loop status`'s persisted plan, which reports
+  considered/evicting/kept counts and names what it could not see.
+- Worktrees whose ticket is done are swept on the same pass (the `clean-merged` predicate),
+  so a merged ticket's checkout does not wait for someone to remember.
 
 ### Single-repo cleanup
 
@@ -244,12 +310,23 @@ When `clean-all` skips a branch with this warning, the branch has commits the cl
 
 `clean-all` drops only stashes whose source branch is gone. For stashes you encounter on existing branches, verify before dropping:
 
+Every worktree of a repo shares ONE stash stack, so `stash@{N}` names a different
+entry the moment any other worktree pushes or drops one. Resolve the entry to a
+SHA and work from that:
+
 ```bash
-git stash show -p stash@{N}  # inspect the diff
+sha=$(git rev-parse "stash@{N}")   # pin the identity before doing anything else
+git stash show -p "$sha"           # inspect by SHA, never by index
 # Grep main for the changed lines/sections to confirm content is on main
 ```
 
-If the content is on `main` (typical for stashes that pre-date a squash-merged branch), drop with `git stash drop stash@{N}`.
+If the content is on `main` (typical for stashes that pre-date a squash-merged
+branch), drop it — but re-check that the index still resolves to the SHA you
+inspected, because the drop is the step that destroys the wrong entry:
+
+```bash
+[ "$(git rev-parse "stash@{N}")" = "$sha" ] && git stash drop "stash@{N}"
+```
 
 ## Rules
 
@@ -322,6 +399,24 @@ Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3
 - Health checks after startup
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
+
+### Cut Every Branch From Fresh `origin/main` (Non-Negotiable)
+
+A local `main` is stale the moment anything merges upstream, so a branch forked from it carries a base nobody else shares and conflicts on every later merge. Every new branch starts from a freshly-fetched `origin/main` — never from whatever the local ref happens to hold.
+
+```bash
+# RIGHT — the sanctioned path: it fast-forwards the clone's default branch, then forks the branch off that:
+t3 <overlay> workspace ticket <issue-url-or-id>
+
+# RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
+# `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
+# refuses confusingly — and aims at main under push.default=upstream.
+git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+
+# WRONG — forks whatever the local ref holds:
+git checkout -b <branch>     # FORBIDDEN — stale local main
+git fetch origin main        # FORBIDDEN as the whole answer — refreshes the ref, branches nothing
+```
 
 ### Never Edit Files in the Main Clone (Non-Negotiable)
 
@@ -455,6 +550,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify

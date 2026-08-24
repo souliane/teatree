@@ -75,68 +75,137 @@ fi
 # *visibility*. The #256 colleague guarantee still holds: with `autoload` off and the
 # opt-in unset the bar shows only the neutral hint, regardless of the marker.
 
-# The canonical ConfigSetting store's GLOBAL `autoload` value, JSON-decoded:
-# `true` / `false` / empty. Read-only via the sqlite3 CLI (so the statusline needs
-# no importable teatree python), mirroring teatree.config.cold_reader's WAL
-# fallback: `mode=ro` first (live writer, sidecars present), then `immutable=1`
-# (quiescent WAL, no sidecars — `mode=ro` then errors). Fails silent (empty) on no
-# sqlite3, a missing DB, or any read error.
-_autoload_db_value() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
-    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
-    local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='autoload' LIMIT 1;"
-    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
-        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
-        || return 0
+# The host-visible projection of the container-owned control DB (#3499). Every
+# ConfigSetting read below resolves a HOST sqlite path, but a containerized deploy
+# keeps the control DB in a volume the host cannot open at all, so that path is
+# absent (or, after the migration that moved it, a leftover 0-byte stub) and each
+# reader returns empty — which reads as "autoload is off" and silently takes the
+# whole statusline with it. The publisher writes this file for exactly this
+# consumer; `teatree.config.cold_db.canonical_projection()` is the Python half of
+# the same fallback.
+#
+# Echoes the decoded value — empty when the key is simply unset — and returns:
+#   0  the projection ANSWERED (a value, or a readable projection with no such key)
+#   1  there is no projection on this host to answer with
+#   2  a projection is present but could not be read or parsed
+# The 1/2 split is the whole point: "no store here" is a plain-clone host that has
+# genuinely opted into nothing, while "a store is here and I cannot read it" is an
+# unknown that must never be rendered as a stored value.
+_projection_setting() {
+    command -v jq >/dev/null 2>&1 || return 1
+    local proj="${TEATREE_HOST_PROJECTION:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/host-projection.json}"
+    if [ ! -r "$proj" ]; then
+        # Present yet denied is the unreadable half of the 1/2 split, not an absence (#4205).
+        [ -e "$proj" ] && return 2
+        return 1
+    fi
+    # `settings` is keyed by SCOPE; "" is global. Values are stored decoded, so a
+    # bool arrives as `true`/`false` — the same text the sqlite read yields.
+    local out
+    out=$(jq -r --arg k "$1" \
+        'if (.settings | type) != "object" then halt_error(3) else (.settings[""][$k] // empty) end' \
+        "$proj" 2>/dev/null) || return 2
+    printf '%s' "$out"
+}
+
+# THE single GLOBAL-scope ConfigSetting read for every key this script gates on, so
+# the keys can never disagree about what "could not be read" means. Read-only via
+# the sqlite3 CLI (the statusline needs no importable teatree python), mirroring
+# teatree.config.cold_reader's WAL fallback: `mode=ro` first (live writer, sidecars
+# present), then `immutable=1` (quiescent WAL, no sidecars — `mode=ro` then errors),
+# then the published projection.
+#
+# Echoes the JSON-decoded value and returns 0 when a tier ANSWERED; empty output
+# there means the store is readable and holds no such row, a genuine absence the
+# caller's default covers. Returns 1 — and echoes nothing — when a store is present
+# on this host but NO tier could read it. That is `unknown`, not `unset`; conflating
+# them is what rendered a confident "off" for a setting the DB actually holds as
+# true (#4041). The DB is tested with `-s`, not `-f`: the control-DB migration left
+# a 0-byte stub at the old host path, and a stub that holds nothing is a store this
+# host cannot see — exactly the case the projection exists to answer. Presence is
+# then re-tested with `-e` at the end (#4205): the stub, and a non-empty DB on a
+# host with no sqlite3, both reach the projection, and when THAT cannot answer
+# either, a store is here that nothing read — the same unknown, not a fresh clone.
+_config_setting_read() {
+    local key="$1" db out rc
+    db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    if command -v sqlite3 >/dev/null 2>&1 && [ -s "$db" ]; then
+        local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='${key}' LIMIT 1;"
+        if out=$(sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null) \
+            || out=$(sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null); then
+            printf '%s' "$out"
+            return 0
+        fi
+        # A DB file present yet unreadable is a store this host cannot see, exactly
+        # like the container-only volume — fall through rather than report its
+        # contents as empty.
+        _projection_setting "$key" && return 0
+        return 1
+    fi
+    _projection_setting "$key"
+    rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        2) return 1 ;;
+    esac
+    # A store IS on this host (the 0-byte stub, or a DB no sqlite3 exists to open)
+    # and no tier read it — unknown, exactly as in the sqlite branch above.
+    [ -e "$db" ] && return 1
+    # No store on this host at all: nothing was ever written here to read, so the
+    # shipped default is the answer rather than a guess. This keeps the #256
+    # colleague guarantee — a plain clone renders the neutral off hint, not a "?".
+    return 0
 }
 
 # The canonical ConfigSetting store's GLOBAL `statusline_chain` (a JSON array of
-# glob patterns), one element per line. Read-only via the sqlite3 CLI + `json_each`
-# (so the statusline needs no importable teatree python), with the same WAL
-# fallback as `_autoload_db_value`. Empty on no sqlite3, a missing DB, no row, or a
-# non-array value.
+# glob patterns), one element per line. Same tiers as `_config_setting_read`, kept
+# separate because the caller wants one pattern per line and the projection holds
+# the array whole. Fail-silent-empty is correct HERE — an unresolved chain renders
+# no extra chips, which is a display absence, not a verdict about owner intent.
 _statusline_chain_db() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
-    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
-    local q="SELECT je.value FROM teatree_config_setting t, json_each(t.value) je WHERE t.scope='' AND t.key='statusline_chain';"
-    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
-        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
-        || return 0
+    local db out
+    db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    if command -v sqlite3 >/dev/null 2>&1 && [ -s "$db" ]; then
+        local q="SELECT je.value FROM teatree_config_setting t, json_each(t.value) je WHERE t.scope='' AND t.key='statusline_chain';"
+        if out=$(sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null) \
+            || out=$(sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null); then
+            [ -n "$out" ] && printf '%s\n' "$out"
+            return 0
+        fi
+    fi
+    command -v jq >/dev/null 2>&1 || return 0
+    local proj="${TEATREE_HOST_PROJECTION:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/host-projection.json}"
+    [ -r "$proj" ] || return 0
+    jq -r '.settings[""].statusline_chain // [] | .[]' "$proj" 2>/dev/null || return 0
 }
 
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
 # hook_router._autoload_enabled — env T3_AUTOLOAD first, then the canonical
-# ConfigSetting DB read via the sqlite3 CLI (_autoload_db_value). autoload is
-# DB-home only (no file fallback); fails closed (silent OFF) on absence.
-autoload_enabled() {
+# ConfigSetting read (_config_setting_read). autoload is DB-home only (no file
+# fallback).
+#
+# Echoes exactly one of `on`, `off`, `unknown`. `unknown` is NOT `off`: it means a
+# store exists here that no tier could read, so the shipped default is a guess and
+# must not be rendered as the owner's stored choice.
+autoload_state() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
         case "$(printf '%s' "$env_val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-            1|true|yes|on) return 0 ;;
-            *) return 1 ;;
+            1|true|yes|on) printf 'on' ;;
+            *) printf 'off' ;;
         esac
+        return 0
     fi
-    case "$(_autoload_db_value)" in
-        true) return 0 ;;
+    # The exit status of the substitution is the reader's, so the unknown signal
+    # survives the subshell that a plain global would not.
+    local value
+    value=$(_config_setting_read autoload) || { printf 'unknown'; return 0; }
+    case "$value" in
+        true) printf 'on' ;;
+        *) printf 'off' ;;
     esac
-    return 1
-}
-
-# The canonical ConfigSetting store's GLOBAL `statusline_engaged_render` value
-# (#3502), JSON-decoded: `true` / `false` / empty. Read-only via the sqlite3 CLI
-# with the same WAL fallback and fail-silent-empty contract as `_autoload_db_value`.
-_statusline_engaged_render_db_value() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
-    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
-    local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='statusline_engaged_render' LIMIT 1;"
-    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
-        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
-        || return 0
 }
 
 # A session is explicitly engaged when it carries either engage marker under
@@ -146,23 +215,39 @@ session_engaged() {
     [ -n "$1" ] && { [ -f "$state_dir/$1.teatree-active" ] || [ -f "$state_dir/$1.t3-engaged" ]; }
 }
 
-# The opt-in render path: the flag is a strict-bool `true` AND this session is
-# explicitly engaged. Default false → a colleague never reaches it (#256).
+# The opt-in render path (`statusline_engaged_render`, #3502): the flag is a
+# strict-bool `true` AND this session is explicitly engaged. Default false → a
+# colleague never reaches it (#256). An unreadable store is not `true`, so this
+# stays closed; the honesty of that state is carried by `autoload_state` instead,
+# which is the flag the hint line is about.
 engaged_render_enabled() {
-    case "$(_statusline_engaged_render_db_value)" in
+    local value
+    value=$(_config_setting_read statusline_engaged_render) || return 1
+    case "$value" in
         true) session_engaged "$1" ;;
         *) return 1 ;;
     esac
 }
 
-if [ -n "$session_id" ] && ! autoload_enabled && ! engaged_render_enabled "$session_id"; then
+teatree_autoload_state=$(autoload_state)
+if [ -n "$session_id" ] && [ "$teatree_autoload_state" != "on" ] && ! engaged_render_enabled "$session_id"; then
     # #3233: CC discards zero-byte statusline output, so a silent ``exit 0``
     # here renders a mysteriously BLANK bar under the non-TTY CC invocation
     # (session_id set) — invisible to every run-the-script-by-hand debug pass.
     # Emit one neutral hint line instead so the bar is never empty; the #256
     # colleague guarantee still holds (the loop statusline stays suppressed —
     # only this one-line how-to shows).
-    printf 'teatree: statusline off (autoload disabled) · enable: t3 <overlay> config_setting set autoload true\n'
+    #
+    # #4041: "I could not read the setting" and "the setting is off" are different
+    # facts, and the second is a verdict the reader has no way to distrust. The
+    # degraded read gets its own line saying so, and points at the check that
+    # explains it — never the enable-it hint, which would be advice to overwrite a
+    # value that may already be true.
+    if [ "$teatree_autoload_state" = "unknown" ]; then
+        printf 'teatree: statusline ? · autoload UNKNOWN — config unreadable here, NOT off · diagnose: t3 doctor check\n'
+    else
+        printf 'teatree: statusline off (autoload disabled) · enable: t3 <overlay> config_setting set autoload true\n'
+    fi
     exit 0
 fi
 

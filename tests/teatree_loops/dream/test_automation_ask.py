@@ -30,7 +30,8 @@ from teatree.loops.dream.automation_ask import (
     row_looks_like_ask,
     run_automation_asks_phase,
 )
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet
+from teatree.loops.dream.engine import DistilledCluster
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 
@@ -47,7 +48,7 @@ def _ask_snippet(name: str, body: str) -> WeightedSnippet:
 
 
 def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
-    return ConsolidationExtract(snippets=tuple(snippets), truncated=False)
+    return ConsolidationExtract(snippets=tuple(snippets))
 
 
 #: An ask whose subject names an existing mechanism — a review/MR reminder the

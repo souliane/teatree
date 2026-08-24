@@ -35,6 +35,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.config.host_projection import ProjectionPublisher
 from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool
 from teatree.loop.statusline_render import StatuslineEntry, StatuslineZones, default_path, render
 
@@ -320,3 +321,190 @@ def test_the_consumer_and_its_dependencies_are_present() -> None:
     assert _SCRIPT.is_file()
     assert shutil.which("jq"), "statusline.sh parses its stdin payload with jq"
     assert shutil.which("sqlite3"), "the settings tier under test IS the sqlite3 CLI read"
+
+
+class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:
+    """The Django PUBLISHER's projection is read by the Django-free shell CONSUMER.
+
+    The shell tier resolves a HOST sqlite path. Once the control DB moved into a
+    container-only volume (#4001) that path was absent, every ConfigSetting read returned
+    empty, and an ABSENT store is indistinguishable from ``autoload = false`` — so the bar
+    vanished and claimed "autoload disabled", which is a different and untrue statement.
+    The Python tier already had this fallback (``cold_db.canonical_projection``); the shell
+    did not, which is why ``t3 loop status`` kept working while the statusline went dark.
+
+    This is a real both-tier lane: :class:`ProjectionPublisher` WRITES the artifact and the
+    shell READS it, so a change to either side's shape fails here rather than in production.
+    """
+
+    def _publish(self, sandbox: Path, rows: dict[str, object]) -> None:
+        """Write the projection the way production does — through the real publisher."""
+        db = sandbox / "source.sqlite3"
+        _seed_config_db(db, rows)
+        # The publisher projects the loop/mode tables alongside settings, so the source
+        # has to carry them. Empty is honest here: this lane is about the settings tier
+        # reaching the shell, and an empty loop table projects as no loop state.
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS teatree_loop_state (name TEXT, status TEXT)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_preset "
+                "(name TEXT, defers_questions INT, pauses_self_pump INT, presence_sensitive INT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_preset_override (preset_name TEXT, until TEXT, set_at TEXT)"
+            )
+            conn.execute("CREATE TABLE IF NOT EXISTS teatree_loop_schedule (name TEXT, id INT, timezone TEXT)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_schedule_slot "
+                "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        data_dir = sandbox / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        ProjectionPublisher(db, data_dir).publish()
+        # The consumer hardcodes this filename, so the name IS part of the seam: rename it
+        # publisher-side and the shell silently reads nothing, which is the failure this
+        # whole lane exists to catch.
+        assert (data_dir / "host-projection.json").is_file(), "the publisher wrote the file the shell reads"
+
+    def _render(self, sandbox: Path) -> str:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] projection chip"]), target=target, colorize=False)
+        # A path that does NOT exist: exactly the containerized host's situation.
+        result = _run_shell(sandbox, statusline_file=target, autoload_env=None, config_db=sandbox / "absent.sqlite3")
+        assert result.returncode == 0, result.stderr
+        return _strip_ansi(result.stdout)
+
+    def test_a_published_opt_in_opens_the_gate(self, sandbox: Path) -> None:
+        self._publish(sandbox, {"autoload": True})
+        assert "projection chip" in self._render(sandbox), "the publisher's value reached the shell"
+
+    def test_no_projection_still_refuses(self, sandbox: Path) -> None:
+        # Anti-vacuous: a fallback that ignored its input, or opened the gate whenever the
+        # sqlite path was missing, would pass the test above and fail this one.
+        assert "statusline off" in self._render(sandbox)
+
+    def test_a_published_false_still_refuses(self, sandbox: Path) -> None:
+        # The shell must READ the published value, not merely notice the file exists.
+        self._publish(sandbox, {"autoload": False})
+        assert "projection chip" not in self._render(sandbox)
+
+
+class TestAnUnreadableStoreRendersUnknownNotOff:
+    """Could-not-read and is-off must not render alike (#4041).
+
+    The live defect: the control DB moved into a container-only volume (#4001) and the
+    migration left a 0-byte stub at the old host path. ``[ -f "$db" ]`` saw a file, so the
+    projection fallback never ran; the sqlite read then failed with "no such table", the
+    failure collapsed to an empty value, and the bar announced ``statusline off (autoload
+    disabled)`` while the DB held ``autoload = True``. A confident verdict the reader has
+    no way to distrust is worse than no verdict at all.
+
+    The foils carry this lane: a script that rendered "?" whenever it felt uncertain would
+    pass the unknown case and fail every determinate one, which is the #256 colleague
+    guarantee (a plain clone must get the neutral off hint, never a diagnostic).
+    """
+
+    _UNKNOWN = "UNKNOWN"
+    _OFF = "statusline off"
+
+    def _render(self, sandbox: Path, config_db: Path) -> str:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] degraded chip"]), target=target, colorize=False)
+        result = _run_shell(sandbox, statusline_file=target, autoload_env=None, config_db=config_db)
+        assert result.returncode == 0, result.stderr
+        return _strip_ansi(result.stdout)
+
+    def _unreadable_db(self, sandbox: Path) -> Path:
+        # Present and non-empty, yet no sqlite reader can open it. NOT the same observable
+        # state as the 0-byte stub: non-empty takes the sqlite branch and fails inside it,
+        # while the stub is routed straight past it. Both are a store this host cannot see;
+        # `_zero_byte_stub` carries the second shape, which no test covered before #4205.
+        db = sandbox / "unreadable.sqlite3"
+        db.write_text("this is not a sqlite database")
+        return db
+
+    def _zero_byte_stub(self, sandbox: Path) -> Path:
+        # The defect's literal shape: the control-DB migration left a 0-byte stub at the old
+        # host path. A stub holds nothing, so it is a store this host cannot see.
+        stub = sandbox / "stub.sqlite3"
+        stub.touch()
+        return stub
+
+    def _publish(self, sandbox: Path, body: str) -> None:
+        data_dir = sandbox / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "host-projection.json").write_text(body)
+
+    def test_an_unreadable_store_says_unknown_and_never_off(self, sandbox: Path) -> None:
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a read that failed was rendered as a stored 'off'"
+
+    def test_an_unparseable_projection_is_unknown_too(self, sandbox: Path) -> None:
+        # The second tier failing is still a failure to READ, not evidence of absence.
+        self._publish(sandbox, "{not json")
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out
+
+    def test_a_zero_byte_stub_with_no_projection_is_unknown(self, sandbox: Path) -> None:
+        # #4205: the stub skips the sqlite branch, so the ONLY tier left is the projection —
+        # and when that cannot answer either, nothing read the store. Rendering the shipped
+        # default as the owner's stored choice here is the original defect's exact shape.
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a stub no tier could read was rendered as a stored 'off'"
+
+    def test_a_zero_byte_stub_still_defers_to_a_readable_projection(self, sandbox: Path) -> None:
+        # Foil: the stub is not itself a verdict. A projection that answers still decides.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert "degraded chip" in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_projection_that_answers_false_over_a_stub_still_says_off(self, sandbox: Path) -> None:
+        # Second foil: an answered `false` is determinate, so it must NOT degrade to unknown.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": False}}}))
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_projection_present_but_unreadable_is_unknown(self, sandbox: Path) -> None:
+        # #4205: `_projection_setting` answered "no projection on this host" for a file that
+        # IS here and denied the read, collapsing the 1/2 split its own contract documents.
+        # With no DB either that verdict is the last word, and it renders a stored "off".
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        (sandbox / "xdg" / "teatree" / "host-projection.json").chmod(0o000)
+        out = self._render(sandbox, sandbox / "absent.sqlite3")
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a projection that denied the read was rendered as a stored 'off'"
+
+    def test_a_host_with_no_store_at_all_still_says_off(self, sandbox: Path) -> None:
+        # Foil for #256: a plain clone stored nothing, so "off" is determinate, not a guess.
+        # Paired with the case above: absent and unreadable must not render alike either.
+        out = self._render(sandbox, sandbox / "absent.sqlite3")
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_readable_stored_false_still_says_off(self, sandbox: Path) -> None:
+        # Foil: a store that answers is never unknown, whatever it answers.
+        db = sandbox / "db.sqlite3"
+        _seed_config_db(db, {"autoload": False})
+        out = self._render(sandbox, db)
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_the_projection_still_resolves_past_an_unreadable_db(self, sandbox: Path) -> None:
+        # The root repair: an unreadable DB must fall THROUGH to the published projection
+        # rather than stop at it. Without this the fix above would render an honest "?" on
+        # a host whose projection could have answered the question outright.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert "degraded chip" in out, out
+        assert self._UNKNOWN not in out

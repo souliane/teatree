@@ -5,9 +5,11 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
+from django.db.models.lookups import LessThan
 from django.utils import timezone
 
-from teatree.config import worker_is_quiescing
+from teatree.core.claim_liveness import current_owner
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
@@ -24,7 +26,7 @@ from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim_admission_block_reason
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
@@ -70,6 +72,66 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
+
+#: How long an admitted-but-unclaimed row keeps its seat in the cheap lane (#4098).
+#: It covers the runner handoff — the seconds between ``enqueue`` and the worker's
+#: claim — and no more: past it the seat is released, so a runner that died holding
+#: an admission cannot wedge the lane shut, and the drain re-admits (and re-stamps)
+#: the row on its next pass. Erring long would trade a melt for a stall; erring short
+#: reopens the burst window this bounds.
+ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
+
+
+def _cheap_phase_q() -> Q:
+    """Every row of the cheap phase class, whichever spelling it was stored with.
+
+    The lane's membership test, held apart from any one question about it so the seat
+    predicates below share a single hop to the phase vocabulary — one intra-core edge
+    hidden from tach's acyclic guard, not one per question.
+    """
+    from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+    return Q(phase__in=cheap_phase_spellings())
+
+
+def _lane_occupancy_q(now: datetime, *, cheap: bool) -> Q:
+    """The rows holding a seat in one cost class's lane at *now*.
+
+    One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
+    ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
+    conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
+    bound at all. The two lanes PARTITION the queue — the expensive one is the exact
+    complement of the cheap one — so an unregistered phase lands in the braked class,
+    matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
+    """
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+    membership = _cheap_phase_q() if cheap else ~_cheap_phase_q()
+    return membership & (
+        Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+        | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
+    )
+
+
+def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan:
+    """A ``WHERE`` term true only while that lane has a free seat at *now*.
+
+    ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
+    ``NULL < ceiling`` is not true — an empty lane would refuse every admission.
+    """
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+    occupied = (
+        task_model.objects.filter(_lane_occupancy_q(now, cheap=cheap))
+        .order_by()
+        .values(_lane=models.Value(1))
+        .annotate(seats=models.Count("*"))
+        .values("seats")[:1]
+    )
+    return LessThan(
+        Coalesce(models.Subquery(occupied, output_field=models.IntegerField()), models.Value(0)),
+        ceiling,
+    )
 
 
 class TicketQuerySet(models.QuerySet):
@@ -173,7 +235,7 @@ class TaskQuerySet(models.QuerySet):
         ticket's or the session's, so the scope clause spans both relations
         and includes legacy empty-overlay rows. An empty ``overlay`` returns
         every task. Delegates to :func:`overlay_scope_q`, the single source of
-        truth for the Task overlay clause, shared with ``_claimable_for_target``
+        truth for the Task overlay clause, shared with ``claimable``
         (the loop claim), the MCP ``loop_stats`` read, and the dashboard
         selectors (F1.6).
         """
@@ -236,7 +298,7 @@ class TaskQuerySet(models.QuerySet):
         """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
 
         Read by the periodic cadence scanners AND by the phase-task mint itself
-        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        (``Ticket._schedule_phase_task``, #3903), so the one lock the codebase
         documents is consulted at the write rather than restated per caller.
         Matches every accepted spelling of *phase* via ``phase_spellings``, the
         same SSOT ``pending_in_phase`` reads.
@@ -249,15 +311,27 @@ class TaskQuerySet(models.QuerySet):
         """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
         return _last_run_at_for_phase(self, overlay, phase, statuses=statuses)
 
-    def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
+    def claimable(self, overlay: str | None = None) -> models.QuerySet:
+        """The tasks a worker may claim right now — the ONE claim candidate set.
+
+        Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
+        the claim commands admit zero new tasks during the deploy window. Orthogonal
+        to the supervisor's stop condition — in-flight leases keep renewing.
+        """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self._claimable_for_target(task_model.ExecutionTarget.HEADLESS, overlay)
-
-    def claimable_for_interactive(self, overlay: str | None = None) -> models.QuerySet:
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-        return self._claimable_for_target(task_model.ExecutionTarget.INTERACTIVE, overlay)
+        if claim_admission_block_reason():
+            return self.none()
+        now = timezone.now()
+        qs = (
+            self.filter(status__in=task_model.Status.active())
+            .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+            .filter(_claimable_now_q(now))
+            .order_by("pk")
+        )
+        if overlay:
+            qs = qs.for_overlay(overlay)
+        return qs
 
     def claim_next_pending(
         self,
@@ -304,7 +378,7 @@ class TaskQuerySet(models.QuerySet):
         # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
         # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
         # are untouched by either.
-        if worker_is_quiescing() or schema_behind_code():
+        if claim_admission_block_reason():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
@@ -321,6 +395,7 @@ class TaskQuerySet(models.QuerySet):
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
             # predicate is the status CAS token and stays untouched by it.
+            owner_pid, owner_pid_namespace = current_owner()
             claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
                 status=task_model.Status.CLAIMED,
                 claimed_by=claimed_by,
@@ -328,6 +403,9 @@ class TaskQuerySet(models.QuerySet):
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
+                owner_pid=owner_pid,
+                owner_pid_namespace=owner_pid_namespace,
+                owner_driving_since=None,
             )
             if claimed_count != 1:
                 return None
@@ -361,7 +439,7 @@ class TaskQuerySet(models.QuerySet):
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
 
-    def live_headless_agent_count(self) -> int:
+    def claimed_agent_count(self) -> int:
         """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
 
         The single divisor for the per-agent test-worker budget AND the
@@ -379,8 +457,85 @@ class TaskQuerySet(models.QuerySet):
         return self.filter(
             status=task_model.Status.CLAIMED,
             lease_expires_at__gt=now,
-            execution_target=task_model.ExecutionTarget.HEADLESS,
         ).count()
+
+    def cheap_lane_occupancy(self) -> int:
+        """How full the CHEAP admission lane is — the bound BOTH chokepoints read (#4098).
+
+        Deliberately a sibling of :meth:`claimed_agent_count` rather than a
+        parameter on it: that number is also the per-agent test-worker divisor, and it
+        must keep counting EVERY live agent. This one answers a different question —
+        how full is the small lane the cheap class is admitted through while the
+        expensive class is braked — so the exemption is bounded rather than a second
+        unbounded lane.
+
+        Occupancy is agents ALREADY RUNNING plus admissions still in the runner's hand:
+        a claimed row and a row a chokepoint enqueued a second ago put the same load on
+        the box, but the second is still PENDING, so counting only CLAIMED made a burst's
+        own admissions invisible to the very next probe. The drain could carry that in
+        memory across its loop; the one-row-at-a-time ``post_save`` cannot, so the bound
+        has to live where both can see it. :data:`ADMITTED_INFLIGHT_WINDOW` bounds how
+        long an unclaimed admission keeps its seat, so a runner that died holding one
+        cannot wedge the lane shut.
+        """
+        return self.filter(_lane_occupancy_q(timezone.now(), cheap=True)).count()
+
+    def expensive_lane_occupancy(self) -> int:
+        """How much of the box the EXPENSIVE class holds — the reservation's divisor (#4374).
+
+        Deliberately not :meth:`claimed_agent_count`, which counts every live agent whatever
+        its class: measured against that number the reservation inverts into the opposite
+        starvation, refusing coding work because reviews are running — the reviews that
+        exist to retire it. Same seat-aware shape as its cheap twin, for the same reason:
+        a burst of ``post_save`` admissions is still PENDING, so a count of CLAIMED rows
+        alone cannot see the seats it just handed out.
+        """
+        return self.filter(_lane_occupancy_q(timezone.now(), cheap=False)).count()
+
+    def cheap_lane_seats_released(self) -> int:
+        """Cheap rows the seat window took back while they were still unclaimed.
+
+        The number an operator cannot otherwise see: releasing an unclaimed seat keeps a
+        dead runner from wedging the lane shut, but it fires precisely when the runner
+        backlog outruns :data:`ADMITTED_INFLIGHT_WINDOW` — a saturated box — and the
+        re-admission that follows drifts the live agent count above the ceiling. Non-zero
+        means the bound is soft right now.
+        """
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        return self.filter(
+            _cheap_phase_q(),
+            status=task_model.Status.PENDING,
+            admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
+        ).count()
+
+    def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
+        """Take *task_pk*'s seat in its cost class's lane — ``True`` when this call got it.
+
+        The bound is arbitrated INSIDE this write, not between the caller's probe and it
+        (#4125). A probe is stale the moment it returns, so two processes reaching a
+        chokepoint in one window each saw room and each admitted, bounding the lane at
+        ceiling plus however many raced. Re-checking occupancy in the ``WHERE`` makes the
+        loser match no row and be refused instead. *cheap* picks which lane's occupancy is
+        re-counted, so the expensive lane's reserved-slot bound is held by the same
+        mechanism rather than by a probe two racers can both pass (#4374).
+
+        A row still holding a live seat is refused too: it is already in the runner's
+        hand, so a second booking is a duplicate dispatch. ``lane_ceiling`` of ``None``
+        is UNBOUNDED — the kill-switch, fail-open and zero-ceiling/zero-reservation paths,
+        where the governor has no opinion on the lane's width.
+
+        A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
+        auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
+        inside it would re-enter the receiver, and the stamp must not be able to re-arm
+        the dispatch it is recording.
+        """
+        now = timezone.now()
+        unseated = models.Q(admitted_at__isnull=True) | models.Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
+        seat = self.filter(unseated, pk=task_pk)
+        if lane_ceiling is not None:
+            seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
+        return bool(seat.update(admitted_at=now))
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
@@ -406,29 +561,6 @@ class TaskQuerySet(models.QuerySet):
         agent.
         """
         return self.active_claims().exists()
-
-    def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-        # Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
-        # the interactive/headless claim commands admit zero new tasks during the
-        # deploy window. Orthogonal to the supervisor's stop condition — in-flight
-        # leases keep renewing.
-        if worker_is_quiescing() or schema_behind_code():
-            return self.none()
-        now = timezone.now()
-        qs = (
-            self.filter(
-                execution_target=target,
-                status__in=task_model.Status.active(),
-            )
-            .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
-            .filter(_claimable_now_q(now))
-            .order_by("pk")
-        )
-        if overlay:
-            qs = qs.for_overlay(overlay)
-        return qs
 
 
 TicketManager = models.Manager.from_queryset(TicketQuerySet)

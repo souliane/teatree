@@ -28,16 +28,22 @@ straight from ``TaskAttempt`` telemetry, so a regression of the CAS is caught
 here even if Wave A's own unit tests stay green.
 """
 
-import dataclasses
 import datetime as dt
 
 import typer
+
+from teatree.cli.doctor.checks_external_outcomes import EXTERNAL_CHECKS
+from teatree.cli.doctor.reconciliation_finding import Level, ReconciliationFinding, _alarm, _degraded, _now, _ok
 
 # ``notify_policy`` is enum-only (Django-free), so it is safe at module load — the
 # doctor CLI group loads BEFORE ``ensure_django()``. ``teatree.core.notify`` pulls
 # in the ORM, so it is imported lazily inside :func:`_notify_finding` to keep this
 # module import-clean under the Django-free CLI, matching the sibling ``checks_*``.
 from teatree.core.modelkit.notify_policy import NotifyAudience
+
+# Django-free pure arithmetic, so it is safe beside ``notify_policy`` above — and it is
+# the ONE home for "how stale is stale", which a local re-derivation here would fork.
+from teatree.loops.loop_staleness import freeze_cutoff_seconds
 
 #: The 24h operational window most freeze/spin invariants are measured over.
 _DAY = dt.timedelta(hours=24)
@@ -76,49 +82,6 @@ MAX_INCOMING_EVENT_ROWS = 100_000
 #: blind to 85% of the live data by construction.
 MAX_TICKET_TRANSITION_ROWS = 100_000
 MAX_TASK_RESULT_ROWS = 100_000
-
-
-class _Level:
-    OK = "ok"
-    ALARM = "alarm"
-    DEGRADED = "degraded"
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class ReconciliationFinding:
-    """One end-to-end invariant's verdict: healthy, violated (DM'd), or unreadable."""
-
-    check_id: str
-    level: str
-    message: str
-
-    @property
-    def is_alarm(self) -> bool:
-        return self.level == _Level.ALARM
-
-
-def _ok(check_id: str, message: str = "") -> ReconciliationFinding:
-    return ReconciliationFinding(check_id=check_id, level=_Level.OK, message=message)
-
-
-def _alarm(check_id: str, message: str) -> ReconciliationFinding:
-    return ReconciliationFinding(check_id=check_id, level=_Level.ALARM, message=message)
-
-
-def _degraded(check_id: str, exc: Exception) -> ReconciliationFinding:
-    return ReconciliationFinding(
-        check_id=check_id,
-        level=_Level.DEGRADED,
-        message=f"reconciliation check `{check_id}` read crashed: {exc.__class__.__name__}: {exc}",
-    )
-
-
-def _now(now: dt.datetime | None) -> dt.datetime:
-    if now is not None:
-        return now
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    return timezone.now()
 
 
 def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
@@ -239,32 +202,65 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
 
 
 def _check_enabled_loops_ticked(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when an enabled loop has not ticked in 24h (a silent freeze).
+    """ALARM when a verdict-ADMITTED loop's cadence anchor is older than its own cadence allows.
 
-    Query: ``Loop.objects.enabled()`` whose ``last_run_at`` is null or older than
-    24h. Any such loop alarms.
+    Query: every ``Loop`` row the effective verdict admits (hold > forced > preset >
+    ``Loop.enabled``) whose ``last_run_at`` is null or older than
+    :func:`~teatree.loops.loop_staleness.freeze_cutoff_seconds`. Keyed on the raw
+    ``enabled`` column instead, a preset-forced-on loop froze invisibly — this bug's exact
+    signature — and a preset-masked-off enabled loop false-alarmed (#4185). Deliberately
+    NOT intersected with the live-tick registry: an ``off_live_tick`` loop has its own
+    driver chain and freezes just as silently. An anchor exactly AT the cutoff is stale, as
+    that function documents — three missed slots is a stopped loop, not the last moment
+    before one.
+
+    Two states are reported apart, because they have different causes and different
+    remedies: FROZEN (no tick executed at all) and WITHHELD (ticks executing on cadence,
+    every pass declining to advance the anchor). Rendering both as one freeze sent readers
+    hunting for a driver that was in fact running every ten minutes (#4355).
     """
-    check_id = "enabled_loops_ticked_24h"
+    check_id = "enabled_loops_ticked"
     try:
         from teatree.core.models import Loop  # noqa: PLC0415 — ORM import needs the app registry
+        from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — ORM-backed resolver
 
-        cutoff = _now(now) - _DAY
-        stale = sorted(
-            row.name
-            for row in Loop.objects.enabled().only("name", "last_run_at")
-            if row.last_run_at is None or row.last_run_at < cutoff
-        )
+        admitted = {verdict.name for verdict in effective_verdicts() if verdict.admitted}
+        moment = _now(now)
+        frozen: list[str] = []
+        withheld: list[str] = []
+        for row in Loop.objects.filter(name__in=admitted):
+            cutoff = moment - dt.timedelta(seconds=freeze_cutoff_seconds(row.cadence_seconds))
+            if row.last_run_at is not None and row.last_run_at > cutoff:
+                continue
+            bucket = withheld if row.last_attempt_at is not None and row.last_attempt_at > cutoff else frozen
+            bucket.append(row.name)
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
-    if not stale:
-        return _ok(check_id, "all enabled loops ticked in 24h")
-    names = ", ".join(f"`{name}`" for name in stale)
-    return _alarm(
-        check_id,
-        f"Loop-freeze alarm: {len(stale)} enabled loop(s) have not ticked in 24h: {names}. "
-        f"An enabled loop that stops ticking is a silent freeze — start the worker "
-        f"(`t3 worker ensure`) or inspect `t3 loops`.",
-    )
+    if not frozen and not withheld:
+        return _ok(check_id, "all admitted loops ticked within their cadence")
+    return _alarm(check_id, " ".join(_freeze_clauses(sorted(frozen), sorted(withheld))))
+
+
+def _freeze_clauses(frozen: list[str], withheld: list[str]) -> list[str]:
+    """One clause per state present, each carrying only the remedy that fits it."""
+    clauses = ["Loop-freeze alarm:"]
+    if frozen:
+        clauses.append(
+            f"{len(frozen)} admitted loop(s) FROZEN — no tick executed within their cadence: "
+            f"{_backticked(frozen)}. Nothing is driving them: start the worker (`t3 worker ensure`) "
+            f"and check `t3 loops` for a loop no driver reaches."
+        )
+    if withheld:
+        clauses.append(
+            f"{len(withheld)} admitted loop(s) WITHHELD — ticking on cadence, every pass declining to "
+            f"advance the anchor: {_backticked(withheld)}. The driver is fine; read the tick's own "
+            f"verdict (its command exits non-zero and names the gate it failed)."
+        )
+    return clauses
+
+
+def _backticked(names: list[str]) -> str:
+    return ", ".join(f"`{name}`" for name in names)
 
 
 def _check_vacuous_eval_gates(now: dt.datetime | None = None) -> ReconciliationFinding:
@@ -466,6 +462,14 @@ def _check_high_churn_table_size(now: dt.datetime | None = None) -> Reconciliati
     )
 
 
+def _external_window(now: dt.datetime | None) -> tuple[dt.datetime, dt.timedelta]:
+    from teatree.core.factory.external_outcomes import (  # noqa: PLC0415 — deferred: ORM-backed, Django-free at CLI load
+        DEFAULT_EXTERNAL_WINDOW_DAYS,
+    )
+
+    return _now(now), dt.timedelta(days=DEFAULT_EXTERNAL_WINDOW_DAYS)
+
+
 #: Every reconciliation check, in a stable report order.
 CHECKS: tuple = (
     _check_park_spin,
@@ -478,6 +482,7 @@ CHECKS: tuple = (
     _check_duplicate_execution,
     _check_high_churn_table_size,
     _check_review_dispatch_saturation,
+    *EXTERNAL_CHECKS,
 )
 
 
@@ -534,6 +539,6 @@ def _check_reconciliation_ledger() -> bool:
         typer.echo(f"WARN  Reconciliation ledger crashed: {exc.__class__.__name__}: {exc}")
         return True
     for finding in findings:
-        if finding.level in {_Level.ALARM, _Level.DEGRADED}:
+        if finding.level in {Level.ALARM, Level.DEGRADED}:
             typer.echo(f"WARN  {finding.message}")
     return True

@@ -48,21 +48,21 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         fired_at = timezone.now() - dt.timedelta(seconds=60)
         _make_loop("dispatch", 300, last_run_at=fired_at)
         _make_loop("news", 3600, last_run_at=fired_at)
-        schedules = {name: (next_fire, cadence) for name, next_fire, cadence in mini_loop_schedules()}
+        schedules = {row.name: (row.next_fire_at, row.cadence_seconds) for row in mini_loop_schedules()}
         assert schedules["dispatch"] == (fired_at + dt.timedelta(seconds=300), 300)
         assert schedules["news"] == (fired_at + dt.timedelta(seconds=3600), 3600)
 
     def test_never_run_loop_has_no_next_fire(self) -> None:
         Loop.objects.all().delete()
         _make_loop("inbox", 60)
-        schedules = {name: next_fire for name, next_fire, _ in mini_loop_schedules()}
+        schedules = {row.name: row.next_fire_at for row in mini_loop_schedules()}
         assert schedules["inbox"] is None
 
     def test_disabled_loop_is_excluded(self) -> None:
         Loop.objects.all().delete()
         _make_loop("dispatch", 300)
         _make_loop("review", 300, enabled=False)
-        names = [name for name, _, _ in mini_loop_schedules()]
+        names = [row.name for row in mini_loop_schedules()]
         assert names == ["dispatch"]
         assert "review" not in names
 
@@ -71,7 +71,7 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         _make_loop("ship", 300)
         _make_loop("audit", 300)
         _make_loop("inbox", 60)
-        names = [name for name, _, _ in mini_loop_schedules()]
+        names = [row.name for row in mini_loop_schedules()]
         assert names == ["audit", "inbox", "ship"]
 
     def test_paused_loop_is_excluded(self) -> None:
@@ -83,7 +83,7 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         _make_loop("dispatch", 300, last_run_at=timezone.now())
         _make_loop("review", 300, last_run_at=timezone.now())
         LoopState.objects.pause("review")
-        names = [name for name, _, _ in mini_loop_schedules()]
+        names = [row.name for row in mini_loop_schedules()]
         assert "review" not in names
         # The peer loop proves the schedule is non-empty (not a blanket exclude).
         assert "dispatch" in names
@@ -106,16 +106,16 @@ class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
         Loop.objects.all().delete()
         _make_loop("dispatch", 300, last_run_at=timezone.now())
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
-        names = [name for name, _, _ in mini_loop_schedules()]
+        self._activate("maintenance", {"review": False})
+        names = [row.name for row in mini_loop_schedules()]
         assert "review" not in names
         assert "dispatch" in names
 
     def test_preset_forced_on_base_disabled_loop_is_included(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        self._activate("engaged", {"audit": True})
-        names = [name for name, _, _ in mini_loop_schedules()]
+        self._activate("present", {"audit": True})
+        names = [row.name for row in mini_loop_schedules()]
         assert "audit" in names
 
 

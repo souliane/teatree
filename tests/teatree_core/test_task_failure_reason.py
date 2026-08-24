@@ -17,14 +17,28 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.management.commands.tasks_session_view import render_tasks_table
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import (
+    FailureKind,
+    RecoveryStrategy,
+    classify_failure,
+    is_causeless,
+    is_environmental,
+    recovery_strategy,
+    stall_fingerprints,
+    stall_kinds,
+)
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.dash.selectors import build_kanban_columns
-from teatree.failure_signatures import is_transient_failure
 
 if TYPE_CHECKING:
     from teatree.core.management.commands.tasks_session_view import TaskRow
     from teatree.dash.selectors import KanbanBoard, KanbanCard
+
+
+def _ceiling_reason(seconds: int) -> str:
+    """The production runtime-ceiling reason (``agents.runner``), which interpolates the breach."""
+    return f"stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting"
 
 
 def _task(*, phase: str = "reviewing", status: str = Task.Status.PENDING) -> Task:
@@ -136,8 +150,91 @@ class TestClassifier(TestCase):
             "Unable to connect to API",
         ]
         for reason in transient_reasons:
-            assert is_transient_failure(reason), reason
+            assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY, reason
             assert is_environmental(classify_failure(reason)), reason
+
+
+class TestCauselessKinds:
+    """#4075: a failure that named no cause must not be compared against itself.
+
+    Membership is the absence-of-a-cause test, not fingerprint collision:
+    ``no_result_envelope``'s constant reason self-collides, ``runtime_ceiling``'s
+    interpolated one does not. Without the drop, "we learned nothing, twice" reads as
+    "one defect recurred twice" and halts a phase that was never doomed.
+    """
+
+    def test_the_two_reporting_failures_are_causeless(self) -> None:
+        assert is_causeless(classify_failure("no_result_envelope: agent produced no JSON result envelope"))
+        assert is_causeless(classify_failure("stuck_loop: runtime ceiling exceeded after 3600s"))
+
+    def test_a_named_defect_is_not_causeless(self) -> None:
+        # The control the whole change rests on: the stall check must still be able to fire.
+        assert not is_causeless(classify_failure("missing required evidence for phase 'coding'"))
+        assert not is_causeless(classify_failure("AssertionError: expected 3 got 4"))
+
+    def test_an_unnamed_kind_is_not_causeless(self) -> None:
+        # ``unclassified``/``unrecorded`` also fail to NAME a cause, but their free text
+        # differs, so the fingerprint check discriminates them and is deliberately kept.
+        assert not is_causeless(FailureKind.UNCLASSIFIED)
+        assert not is_causeless(FailureKind.UNRECORDED)
+
+    def test_causeless_fingerprints_are_dropped_from_the_stall_comparison(self) -> None:
+        fingerprint = terminal_reason_fingerprint("no_result_envelope: agent produced no JSON result envelope")
+        kind = classify_failure("no_result_envelope: agent produced no JSON result envelope")
+        assert stall_fingerprints([(kind, fingerprint), (kind, fingerprint)]) == []
+
+    def test_a_named_defects_fingerprints_still_count(self) -> None:
+        reason = "missing required evidence for phase 'coding'"
+        fingerprint = terminal_reason_fingerprint(reason)
+        kind = classify_failure(reason)
+        assert stall_fingerprints([(kind, fingerprint), (kind, fingerprint)]) == [fingerprint, fingerprint]
+
+    def test_an_empty_fingerprint_is_dropped_as_before(self) -> None:
+        assert stall_fingerprints([(FailureKind.UNCLASSIFIED, ""), (FailureKind.UNCLASSIFIED, "fp")]) == ["fp"]
+
+    def test_runtime_ceiling_reasons_never_collide_so_the_fingerprint_filter_has_nothing_to_drop(self) -> None:
+        # The fact the corrected #4075 prose rests on: ``\b\d+\b`` has no word boundary
+        # before the ``s``, so the breach survives normalization.
+        assert terminal_reason_fingerprint(_ceiling_reason(3601)) != terminal_reason_fingerprint(_ceiling_reason(3722))
+
+    def test_the_collision_assertion_can_detect_a_collision(self) -> None:
+        # Control for the assertion above: the same two counts written as bare words ARE
+        # masked, so it is a real discrimination and not a hash that differs on everything.
+        bare = "stuck_loop: runtime ceiling exceeded: ran {} seconds without exiting"
+        assert terminal_reason_fingerprint(bare.format(3601)) == terminal_reason_fingerprint(bare.format(3722))
+
+
+class TestStallKinds:
+    """#4276: the KIND-side stall filter — the mechanism ``runtime_ceiling`` actually needs.
+
+    ``no_result_envelope``'s reason is a module constant, so it self-collides and the
+    fingerprint filter drops it even with this clause gone. ``runtime_ceiling``'s
+    interpolates the breach and never collides, so this drop is its whole mechanism.
+    """
+
+    def test_a_causeless_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.RUNTIME_CEILING, FailureKind.RUNTIME_CEILING]) == []
+        assert stall_kinds([FailureKind.NO_RESULT_ENVELOPE, FailureKind.NO_RESULT_ENVELOPE]) == []
+
+    def test_a_named_deterministic_kind_still_counts(self) -> None:
+        # The control the whole filter rests on: the named-cause stall must still fire.
+        kinds = [FailureKind.EVIDENCE_MISSING, FailureKind.EVIDENCE_MISSING]
+        assert stall_kinds(kinds) == kinds
+
+    def test_an_environmental_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.OUTAGE, FailureKind.LEASE_LOST]) == []
+
+    def test_an_unnamed_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.UNCLASSIFIED, FailureKind.UNRECORDED]) == []
+
+    def test_a_blank_kind_is_dropped(self) -> None:
+        assert stall_kinds(["", FailureKind.EVIDENCE_MISSING]) == [FailureKind.EVIDENCE_MISSING]
+
+    def test_a_dropped_kind_leaves_the_survivors_in_order(self) -> None:
+        # Dropping rather than substituting a placeholder is what breaks a run: the two
+        # named kinds either side of a causeless one are not adjacent, so they never stall.
+        kinds = [FailureKind.RECORDING_REFUSED, FailureKind.RUNTIME_CEILING, FailureKind.EVIDENCE_MISSING]
+        assert stall_kinds(kinds) == [FailureKind.RECORDING_REFUSED, FailureKind.EVIDENCE_MISSING]
 
 
 class TestAttemptStampsFailureKind(TestCase):
@@ -147,7 +244,6 @@ class TestAttemptStampsFailureKind(TestCase):
         task = _task()
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=1,
             error="stuck_loop: lease lost for task 1: re-claimed by another worker",
@@ -159,7 +255,6 @@ class TestAttemptStampsFailureKind(TestCase):
         task = _task()
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=0,
         )
@@ -182,7 +277,7 @@ class TestNoFailurePathRecordsNothing(TestCase):
         """The structural guarantee: a new failure path CANNOT record nothing."""
         task = _task(status=Task.Status.CLAIMED)
         with pytest.raises(TypeError):
-            task.fail()  # type: ignore[call-arg]
+            task.fail()  # ty: ignore[missing-argument] — the missing argument IS the assertion: `pytest.raises(TypeError)`.
 
     def test_lease_reaper_records_why_each_row_was_failed(self) -> None:
         """``reap_stale_claims`` bulk-UPDATEd rows to FAILED, recording no attempt and no reason."""

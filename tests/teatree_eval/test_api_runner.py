@@ -2323,7 +2323,7 @@ class TestApiRunnerParams:
     def test_params_object_is_frozen(self) -> None:
         params = ApiRunnerParams()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            params.max_turns_override = 3  # type: ignore[misc]
+            params.max_turns_override = 3  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 def _scripted_query(script: list[BaseException | list[Any]]):

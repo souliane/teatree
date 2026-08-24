@@ -7,7 +7,6 @@ requires:
 eval_exempt: thin detail/reference skill — points at the `health` CLI; no standalone agent behaviour to grade.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Health — Global Operational-Health Chip + Known-Issues Registry
@@ -25,6 +24,8 @@ Computed from deterministic durable signals — stale loop ticks, failed tasks, 
 - **green** — nothing open.
 
 The chip is read-only (it never reconciles at render time). The loop tick reconciles the registry each beat, and `health show` reconciles before printing — so an auto-derived issue whose signal has cleared auto-resolves by construction; you never chase a stale entry.
+
+**A tick that could not READ a signal source resolves nothing** ([#4354](https://github.com/souliane/teatree/issues/4354)). A collector whose read failed contributes the same empty slice as one reporting all-clear, and absence is what retires a row — so an unreadable source used to retire the CRITICAL it could no longer see and turn the chip green on an unchanged fault. Each unread source is now recorded as its own critical `health-collector-failed:<source>` row (the tick reads **red**, not green) and the auto-resolve pass is suspended until every source answers again. A `health-collector-failed:*` row on the chip means the verdict beside it is incomplete: fix the read, and it clears itself on the next healthy tick.
 
 ## The single command
 
@@ -122,11 +123,11 @@ PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the wh
 ```bash
 t3 loop preset list                      # every preset + the ACTIVE marker
 t3 loop preset show                      # active preset + WHY + per-loop effective verdict (deciding layer)
-t3 loop preset show heads-down           # a named preset's entries
-t3 loop preset use heads-down            # activate until the next scheduled boundary
-t3 loop preset use unattended --hold     # sticky until cleared; --for 2h / --until <iso> for a TTL
+t3 loop preset show maintenance          # a named preset's entries
+t3 loop preset use maintenance           # activate until the next scheduled boundary
+t3 loop preset use away --hold           # sticky until cleared; --for 2h / --until <iso> for a TTL
 t3 loop preset auto                      # clear the override — the schedule decides again
-t3 loop preset create|edit <name> --set review=off --set dispatch=on [--pin autonomous_away] [--scope <overlay>]
+t3 loop preset create|edit <name> --set review=off --set dispatch=on [--scope <overlay>]
 t3 loop preset delete <name>
 
 t3 loop schedule list | show [<name>]    # the weekly calendars + their slots
@@ -134,9 +135,9 @@ t3 loop schedule set-active standard     # one write switches calendars (e.g. fl
 t3 loop schedule clear-active            # no L2 layer — presets apply only via a manual override
 ```
 
-Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `engaged` / `heads-down` / `unattended` / `maintenance` / `low-power` / `off`, and schedules `standard` / `always-unattended`. A fresh install seeds everything but leaves `active_loop_schedule` **unset** — fully opt-in, so with no active schedule and no override every loop admits exactly as its two-plane verdict does today. Everything fails OPEN: a deleted preset/loop/schedule resolves to base config with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset carries its own posture booleans (activated through the one `set_mode_override` chokepoint behind `t3 loop preset use`) and a `focus:<overlay>` preset's `overlay_scope` restricts the tick to one backend. `low-power` auto-engages while a usage window is parked, behind the default-off `low_power_auto_engage` flag.
+Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `present` / `away` / `maintenance` / `low-token` / `off`, and schedules `standard` / `always-away`. A fresh install seeds everything but leaves `active_loop_schedule` **unset** — fully opt-in, so with no active schedule and no override every loop admits exactly as its two-plane verdict does today. Everything fails OPEN: a deleted preset/loop/schedule resolves to base config with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset is a pure per-loop on/off table (activated through the one `set_mode_override` chokepoint behind `t3 loop preset use`) and a `focus:<overlay>` preset's `overlay_scope` restricts the tick to one backend. `low-token` auto-engages while a usage window is parked, behind the default-off `low_power_auto_engage` flag.
 
-The dashboard's **`/dash/presets/`** page is the same control surface with a UI: switch the active schedule and the active preset, edit a preset's per-loop tri-state entries, create / rename / delete a preset, edit its description, and add or remove schedule slots. Every write goes through the `teatree.loops.preset_editing` / `preset_admin` / `schedule_editing` seams — the same ones the CLI verbs above call — so the two surfaces cannot diverge. A rename re-points every by-name referrer (the override row, schedule slots, and the settings that select a preset) in one transaction, and a delete is refused while any of them still names the preset. A preset row is never selected by a hard-coded name: the posture switch resolves the mode carrying the requested posture via `Mode.objects.by_posture`, so renaming a seeded preset cannot change behaviour.
+The dashboard's **`/dash/presets/`** page is the same control surface with a UI: switch the active schedule and the active preset, edit a preset's per-loop tri-state entries, create / rename / delete a preset, edit its description, and add or remove schedule slots. Every write goes through the `teatree.loops.preset_editing` / `preset_admin` / `schedule_editing` seams — the same ones the CLI verbs above call — so the two surfaces cannot diverge. A rename re-points every by-name referrer (the override row, schedule slots, and the settings that select a preset) in one transaction, and a delete is refused while any of them still names the preset. The switch refuses a preset name no row carries rather than writing an override that would silently fall open to base config.
 
 To read what the box is currently configured to DO — model and reasoning effort per tier, credential entry names and whether each resolves, the kill switches, the concurrency and memory caps, and any config self-repairs that were applied — open **`/dash/settings/`** (#3664), the ONE settings page (`/dash/config/` redirects there). The resolved readouts sit at the top; below them every config key is listed and EDITABLE, grouped by the declaration it belongs to, so nothing is hidden. It is composed from the same resolvers the CLI reads (`get_effective_settings()`, `resolve_agent_config()`), so it cannot disagree with `t3 <overlay> config_setting get`, and it never renders a secret value — a credential row shows the entry NAME plus a resolves yes/no, and a secret setting's value is masked to `***`.
 

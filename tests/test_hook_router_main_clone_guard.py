@@ -317,6 +317,140 @@ class TestNonStandardDefaultBranch:
         assert _deny(capsys) is not None
 
 
+class TestBashMediatedWriteIntoMainClone:
+    """A file WRITTEN through Bash into the clone is a mutation too (#4092).
+
+    Before this arm the guard classified a tool call two ways — an Edit/Write
+    ``file_path``, or a git subcommand — and a shell write (``sed -i``,
+    ``cat > path <<EOF``, a ``python3`` heredoc) matched neither, so it was
+    allowed. It then fired on the git command used to REVERT, i.e. after the
+    shared base was already dirty. These tests pin the write-time deny.
+    """
+
+    def test_sed_in_place_on_a_main_clone_file_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event(f"sed -i 's/x = 1/x = 2/' {clone}/app.py", clone, "sess-sed-deny")
+        assert router.handle_block_main_clone_mutation(event) is True
+        deny = _deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+        assert "MAIN CLONE" in deny["permissionDecisionReason"]
+
+    def test_heredoc_redirect_into_a_main_clone_file_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        command = f"cat > {clone}/app.py <<'EOF'\nx = 2\nEOF\n"
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, "sess-heredoc-deny")) is True
+        assert _deny(capsys) is not None
+
+    def test_python_heredoc_write_into_a_main_clone_file_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        command = f'python3 - <<PY\nopen("{clone}/app.py", "w").write("x = 2\\n")\nPY\n'
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, "sess-py-deny")) is True
+        assert _deny(capsys) is not None
+
+    def test_relative_write_from_a_main_clone_cwd_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The recorded incident shape: the cwd DRIFTED into the clone, so the
+        # write target was a bare relative path with nothing naming the clone.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        assert router.handle_block_main_clone_mutation(_bash_event("sed -i 's/1/2/' app.py", clone, "sess-rel")) is True
+        assert _deny(capsys) is not None
+
+    def test_write_into_a_worktree_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"sed -i 's/x = 1/x = 2/' {wt}/app.py", wt, "sess-wt-sed")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    def test_write_to_a_scratch_path_from_a_main_clone_cwd_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The false positive that would make this gate unusable: a heredoc into
+        # /tmp (or any path outside the clone) run from a main-clone cwd.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        command = f"cat > {tmp_path}/scratch.txt <<'EOF'\nnotes\nEOF\n"
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, "sess-scratch")) is False
+        assert _deny(capsys) is None
+
+    def test_unresolvable_write_target_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # This module's posture on anything it cannot pin statically is ALLOW —
+        # the same stance it already takes on an unpinnable git target.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event('echo hi > "$OUT/app.py"', clone, "sess-unresolvable")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    def test_read_only_command_on_a_main_clone_file_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        clone = _managed_main_clone(tmp_path / "teatree")
+        event = _bash_event(f"grep -n 'x' {clone}/app.py && cat {clone}/app.py", clone, "sess-readonly")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    @pytest.mark.parametrize(
+        ("command", "session"),
+        [
+            ("grep -rn '>' .", "sess-quoted-gt"),
+            ('git commit -m "> blockquote note"', "sess-quoted-blockquote"),
+            ("rg -n '>>' app.py", "sess-quoted-append"),
+        ],
+    )
+    def test_a_quoted_redirect_character_is_an_argument_not_a_write(
+        self, command: str, session: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Redirection is shell SYNTAX. Classifying it on the quote-DECODED token
+        # read `grep -rn '>' .` as writing the clone root and denied it.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, session)) is False
+        assert _deny(capsys) is None
+
+    @pytest.mark.parametrize(
+        ("command", "session"),
+        [
+            ("cat in.txt | tee >(gzip -c > /tmp/a.gz)", "sess-procsub-tee"),
+            ("make 2> >(tee /tmp/err.log)", "sess-procsub-stderr"),
+        ],
+    )
+    def test_process_substitution_is_not_a_write_into_the_clone(
+        self, command: str, session: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `>(...)` was parsed as a `> path` redirect, so the guard denied a
+        # legitimate command while naming `<clone>/(gzip` — a path that does not
+        # exist, which reads as a broken guard rather than a rule (#4127).
+        clone = _managed_main_clone(tmp_path / "teatree")
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, session)) is False
+        assert _deny(capsys) is None
+
+    def test_a_real_redirect_beside_a_substitution_is_still_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The anti-vacuous companion: reporting the substitution unresolved must
+        # not blind the guard to a genuine `> path` on the same line (#4127).
+        clone = _managed_main_clone(tmp_path / "teatree")
+        command = f"make 2> >(tee /tmp/err.log) > {clone}/app.py"
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, "sess-procsub-real")) is True
+        assert _deny(capsys) is not None
+
+    def test_write_into_a_main_clone_on_a_feature_branch_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Same #3256 carve-out the Edit/Write arm already honours.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        _git(clone, "checkout", "-b", "feat-bootstrap")
+        event = _bash_event(f"sed -i 's/x = 1/x = 2/' {clone}/app.py", clone, "sess-feat-sed")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+
 class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         clone = _managed_main_clone(tmp_path / "teatree")

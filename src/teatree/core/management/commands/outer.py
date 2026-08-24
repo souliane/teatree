@@ -31,7 +31,7 @@ class Command(TyperCommand):
     @command(name="tick")
     def tick(self) -> None:
         """Advance the outer loop one step IF the cadence elapsed (cron entry)."""
-        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — cross-layer import cycle
+        from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — cross-layer import cycle
         from teatree.loops.outer_loop.loop import (  # noqa: PLC0415 — cross-layer import cycle
             MINI_LOOP,
             OUTER_LOOP_LEASE_NAME,
@@ -41,7 +41,7 @@ class Command(TyperCommand):
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
-        if row is None or not loop_enabled(MINI_LOOP.name):
+        if row is None or not loop_admits(MINI_LOOP.name):
             self.stdout.write("SKIP  outer_loop disabled (no enabled Loop row / LoopState hold).")
             return
         if not row.is_due(now):

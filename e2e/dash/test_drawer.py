@@ -107,3 +107,23 @@ def test_close_button_closes_the_panel(live_server: LiveServer, page: Page, seed
     drawer = board.open_drawer_for(seeded_board.building.pk)
     drawer.close_button.click()
     expect(drawer.root).to_be_empty()
+
+
+def test_review_now_enqueues_a_task_and_disables_its_own_button(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
+    """#4085: prioritising a PR is a click — and a second click cannot duplicate it."""
+    board = BoardPage(page, live_server.url)
+    board.open()
+    drawer = board.open_drawer_for(seeded_board.reviewing.pk)
+    review_now = drawer.enqueue_buttons.filter(has_text="Review now")
+    expect(review_now).to_be_enabled()
+
+    page.on("dialog", lambda dialog: dialog.accept())
+    review_now.click()
+
+    # The drawer swaps in place carrying the queued task, and the button that queued
+    # it is now disabled — the refusal is shown rather than left to be discovered.
+    expect(drawer.root.locator(".task-block")).to_contain_text("reviewing")
+    expect(drawer.enqueue_buttons.filter(has_text="Review now")).to_be_disabled()
+    expect(drawer.enqueue_buttons.filter(has_text="Ship now")).to_be_enabled()

@@ -1,4 +1,7 @@
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from teatree.core.provision.provision_report import ProvisionReportDict
 
 type Ports = dict[str, int]
 
@@ -97,6 +100,9 @@ class TicketExtra(TypedDict, total=False):
     ship_invoking_branch: str
     ignored_from: str
     reopened_from: str
+    # Board reconcile rule E's revival cap. Undeclared it is stripped by every
+    # ladder transition, so the cap reads 0 forever and never fires (#4152).
+    reopen_revivals: int
     visual_qa: VisualQASummary
     branch: str
     # #33 per-repo branch override map (repo → branch). A ticket whose repos
@@ -192,6 +198,12 @@ class TicketExtra(TypedDict, total=False):
     dream_gap_key: str
     dream_memory_cluster_key: str
     dream_umbrella_url: str
+    # Idempotency stamp for the merged-gap reconcile: the ISO timestamp at which
+    # this ticket's merged fix was folded back into the umbrella checkbox and its
+    # memory retired. Its PRESENCE is the signal — the reconcile scan skips an
+    # already-stamped ticket, so a merged gap is not re-read from the forge on
+    # every pass. See ``teatree.loops.dream.umbrella_ledger``.
+    dream_gap_reconciled_at: str
     # #2886: durable pydantic_ai harness conversation store for cached-resume
     # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
     # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
@@ -254,8 +266,8 @@ class ReviewContext(TypedDict, total=False):
     ``Ticket.record_review_context`` once the reviewer has fetched the
     work item from its source (``work_item``: the Notion/GitLab/tracker URL),
     followed every link in the MR description + ticket, downloaded each
-    referenced document (``documents``: spec, design doc, amortization /
-    Tilgungsplan schedule, requirement doc), and analyzed them against the
+    referenced document (``documents``: spec, design doc, amortization
+    schedule, requirement doc), and analyzed them against the
     diff (``analysis``: how the implementation was checked against the
     specified requirements + business rules). The reviewing-phase gate
     (``teatree.core.gates.review_context_gate``) consumes it: when
@@ -580,6 +592,17 @@ def validated_ticket_extra(raw: dict | None) -> TicketExtra:
     return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
+class WorktreeSiblingFields(TypedDict, total=False):
+    """Non-``extra`` ``Worktree`` fields a locked ``merge_extra`` co-writes.
+
+    The intake resolver re-points a reused row's ``branch`` alongside its
+    ``extra.worktree_path``; ``Worktree.merge_extra(also_set=…)`` keeps that
+    write in the same locked UPDATE. Mirrors :class:`TicketSiblingFields`.
+    """
+
+    branch: str
+
+
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     clone_path: str
@@ -590,6 +613,12 @@ class WorktreeExtra(TypedDict, total=False):
     db_refreshed_at: str
     db_import_failures: int
     setup_hook: str
+    # Written by the start runner alongside ``services`` in one locked update, and
+    # by the provision runner at the end of a provision. Both were absent from this
+    # TypedDict, so ``_WORKTREE_EXTRA_KEYS`` filtered them straight back out of
+    # every ``get_extra()`` read — declared here so the accessor keeps them.
+    ports: Ports
+    provision_report: "ProvisionReportDict"
     # #2227 Explicit operator pin: when true the idle-stack reaper never reaps
     # this worktree, regardless of idleness — the manual escape hatch alongside
     # the active-delivery-lease and recent-E2E-run KEEP guards.

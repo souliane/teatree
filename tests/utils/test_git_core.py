@@ -5,6 +5,7 @@ import pytest
 
 from teatree.utils import git
 from teatree.utils import run as utils_run_mod
+from teatree.utils.git_commit import last_commit_message
 from tests.teatree_core.cleanup._shared import _run_git
 
 
@@ -273,6 +274,18 @@ def _origin_with_branch(tmp_path: Path, branch_commits: list[tuple[str, str]]) -
     return clone
 
 
+def test_last_commit_message_skip_merges_reads_the_branch_s_own_last_real_commit(tmp_path: Path) -> None:
+    """#4103: a merge commit at the tip must not supply the PR subject."""
+    clone = _origin_with_branch(tmp_path, [("feat(x): the branch's own work", "Body.")])
+    _run_git("checkout", "-q", "main", cwd=clone)
+    _run_git("commit", "--allow-empty", "-q", "-m", "chore(z): main moved on", cwd=clone)
+    _run_git("checkout", "-q", "feature", cwd=clone)
+    _run_git("merge", "-q", "--no-ff", "--no-edit", "main", cwd=clone)
+
+    assert last_commit_message(repo=str(clone))[0].startswith("Merge branch")
+    assert last_commit_message(repo=str(clone), skip_merges=True) == ("feat(x): the branch's own work", "Body.")
+
+
 def test_first_commit_message_returns_oldest_branch_commit_not_default_head(tmp_path: Path) -> None:
     clone = _origin_with_branch(
         tmp_path,
@@ -309,12 +322,17 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
+    # The `worktree add` call, not calls[-1]: a created branch is followed by the
+    # upstream normalisation's own git calls (#4225).
+    def last_worktree_add() -> list[str]:
+        return [call for call in calls if "worktree" in call and "add" in call][-1]
+
     assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", create_branch=True) is True
-    assert "-b" in calls[-1]
+    assert "-b" in last_worktree_add()
 
     assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
-    assert "-b" not in calls[-1]
-    assert "feat-1" in calls[-1]
+    assert "-b" not in last_worktree_add()
+    assert "feat-1" in last_worktree_add()
 
 
 def _orphan_ref_worktree(tmp_path: Path) -> tuple[Path, str]:

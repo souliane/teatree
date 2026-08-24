@@ -10,8 +10,17 @@ status`` reports *stale* (re-review needed); record at the live head with green
 checks and it reports *safe-to-approve*; with nothing recorded it reports *no
 verdict*. Issuing a CLEAR records a merge_safe verdict as a by-product so the
 two contracts stay coherent.
+
+``TestUnreadableForgeIsNotAVerdict`` covers the fourth case: the forge could not
+be read at all. Neither half of that — no head, no rollup — is a fact about the
+pull request, so neither may be reported as *stale* or as *checks failed*; both
+would send a reader off to spend a cold re-review on a tree nobody touched. Those
+tests drive the REAL classifier over a stubbed ``gh``, not a patched verdict
+constant, so a producer that went back to saying "failed" fails them.
 """
 
+import json
+from collections.abc import Callable
 from typing import cast
 from unittest.mock import patch
 
@@ -19,6 +28,8 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.modelkit.diff_scope import ChangedFileSet
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear, ReviewVerdict
 from tests.factories import TicketFactory
 
@@ -28,6 +39,9 @@ pytestmark = pytest.mark.django_db
 _REVIEWED = "a" * 40
 _MOVED = "b" * 40
 _URL = "https://github.com/souliane/teatree/pull/1680"
+_HEAD_READ = "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_read"
+_GH_RUNNER = "teatree.backends.forge_merge_rpc.gh_runner"
+_REQUIRED_CONTEXT = "test (3.13)"
 
 
 def _record(**overrides: object) -> dict[str, object]:
@@ -46,9 +60,55 @@ def _record(**overrides: object) -> dict[str, object]:
 
 
 def _status(*, head: str, checks: str = "green") -> dict[str, object]:
+    # The head seam is the READ, not the sha: an unreadable forge and a forge
+    # reporting no head are different facts, and only the read carries both.
     with (
-        patch("teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha", return_value=head),
+        patch(_HEAD_READ, return_value=LiveHeadRead.of(head)),
         patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value=checks),
+    ):
+        return cast("dict[str, object]", call_command("review", "status", _URL))
+
+
+def _gh(*, rollup_rc: int, rollup_body: str) -> Callable[[list[str]], tuple[int, str, str]]:
+    """A ``gh`` answering exactly what ``required_checks_status`` asks, over ONE required context.
+
+    Scripting the transport rather than the verdict is the point: these tests must
+    fail if the CLASSIFIER stops distinguishing an unreadable rollup from a red one.
+    """
+
+    def run(argv: list[str]) -> tuple[int, str, str]:
+        joined = " ".join(argv)
+        if "statusCheckRollup" in joined:
+            return (rollup_rc, rollup_body, "")
+        if "baseRefName" in joined:
+            return (0, "main", "")
+        if "rules/branches" in joined:
+            return (1, "", "HTTP 500: server error")
+        if "required_status_checks" in joined:
+            return (0, json.dumps({"contexts": [_REQUIRED_CONTEXT]}), "")
+        return (0, "", "")
+
+    return run
+
+
+def _red_rollup() -> str:
+    return json.dumps(
+        [
+            {
+                "__typename": "CheckRun",
+                "name": _REQUIRED_CONTEXT,
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "completedAt": "2026-08-18T10:00:00Z",
+            },
+        ],
+    )
+
+
+def _status_over_live_checks(*, head: str, rollup_rc: int, rollup_body: str) -> dict[str, object]:
+    with (
+        patch(_HEAD_READ, return_value=LiveHeadRead.of(head)),
+        patch(_GH_RUNNER, return_value=_gh(rollup_rc=rollup_rc, rollup_body=rollup_body)),
     ):
         return cast("dict[str, object]", call_command("review", "status", _URL))
 
@@ -170,3 +230,87 @@ class TestTicketClearRecordsVerdict(TestCase):
         )
         result = _status(head=_REVIEWED, checks="green")
         assert result["state"] == "safe_to_approve"
+
+
+class TestRecordDiffScopeGate(TestCase):
+    """``review record`` reads the PR's changed-file set and refuses a branch-only probe (#4251)."""
+
+    _SRC_FINDING = (
+        '[{"severity": "high", "summary": "grant is too narrow", '
+        '"file": "src/teatree/core/modelkit/phase_tools.py", "line": 41}]'
+    )
+
+    def _record_src_finding(self, changed: ChangedFileSet, **overrides: object) -> dict[str, object]:
+        with patch(
+            "teatree.core.management.commands._review_impl.changed_file_set_for_findings",
+            return_value=changed,
+        ):
+            return _record(verdict="hold", findings_json=self._SRC_FINDING, **overrides)
+
+    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
+        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+
+        assert not result["recorded"]
+        assert "t3 review merge-tree" in cast("str", result["error"])
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_the_merge_result_retake_flag_records_the_same_finding(self) -> None:
+        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]), merge_result_retake=True)
+
+        assert result["recorded"]
+        assert ReviewVerdict.objects.count() == 1
+
+    def test_a_verdict_with_no_blocking_citation_never_reads_the_diff(self) -> None:
+        with patch("teatree.core.review.diff_scope_probe.changed_file_set_for") as fetch:
+            result = _record(findings_json='[{"severity": "nit", "summary": "rename x", "file": "a.py"}]')
+
+        fetch.assert_not_called()
+        assert result["recorded"]
+
+
+class TestUnreadableForgeIsNotAVerdict(TestCase):
+    """A forge nobody could read says nothing about the PR — and must not pretend to."""
+
+    def test_an_unreadable_head_is_not_reported_as_stale(self) -> None:
+        """The measured incident: a merge_safe PR, untouched, reported stale mid-503.
+
+        ``is_stale_at("")`` is ``reviewed_sha != ""`` — always true — so every head
+        read the forge failed to answer arrived at the reader as head drift, and each
+        one cost a full cold re-review of a tree that had not moved.
+        """
+        _record()
+        result = _status(head=HEAD_SHA_UNREADABLE)
+        assert result["state"] == "head_unreadable"
+        assert result["verdict"] == ReviewVerdict.Verdict.MERGE_SAFE
+
+    def test_a_forge_that_names_no_head_is_also_not_reported_as_stale(self) -> None:
+        # A readable-but-degraded payload carrying no oid is the same non-answer: a
+        # real PR always has a head, so "" is a failed read, not a moved branch.
+        _record()
+        assert _status(head="")["state"] == "head_unreadable"
+
+    def test_an_unreadable_rollup_is_not_reported_as_failing_checks(self) -> None:
+        """The rollup query itself 503s: no verdict exists, so none may be reported."""
+        _record()
+        result = _status_over_live_checks(head=_REVIEWED, rollup_rc=1, rollup_body="")
+        assert result["state"] == "checks_unreadable"
+        assert result["verdict"] == ReviewVerdict.Verdict.MERGE_SAFE
+
+    def test_a_genuinely_failing_required_check_still_reports_failed(self) -> None:
+        """The over-correction guard: a real red must NOT be laundered into "unreadable".
+
+        "Stop saying failed" is otherwise satisfiable by never saying it, which would
+        report a genuinely red PR as a forge hiccup worth retrying.
+        """
+        _record()
+        result = _status_over_live_checks(head=_REVIEWED, rollup_rc=0, rollup_body=_red_rollup())
+        assert result["state"] == "not_safe"
+        assert result["live_checks"] == "failed"
+
+    def test_a_recorded_verdict_survives_an_unreadable_head_unchanged(self) -> None:
+        # The whole payoff: the row is untouched, so the retry that follows the hiccup
+        # answers safe-to-approve from the SAME verdict rather than from a new review.
+        _record()
+        _status(head=HEAD_SHA_UNREADABLE)
+        assert _status(head=_REVIEWED, checks="green")["state"] == "safe_to_approve"
+        assert ReviewVerdict.objects.count() == 1

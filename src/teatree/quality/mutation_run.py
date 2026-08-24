@@ -18,6 +18,12 @@ A mutant is a *survivor* only when its status is ``survived`` or ``no tests`` �
 the cases where the test suite did not catch the change. ``timeout`` /
 ``segfault`` / ``suspicious`` are *inconclusive* (an environment artifact, not a
 test gap) and never fail the gate.
+
+Inconclusive never PASSES the gate either. A module whose every mutant segfaulted
+reports the same zero survivors a perfectly-tested module reports, so the ratchet
+is decided per module on whether any CONCLUSIVE mutant was attributed to it — an
+unmeasured module keeps its committed count rather than being ratcheted to zero
+against a run that measured nothing.
 """
 
 import dataclasses
@@ -96,6 +102,16 @@ class MutationOutcome:
     def total_mutants(self) -> int:
         return len(self.killed) + len(self.survived) + len(self.inconclusive)
 
+    @property
+    def is_unmeasured(self) -> bool:
+        """Mutants were generated but NONE was conclusive — a run that measured nothing.
+
+        Distinct from :attr:`is_no_op` (nothing was in scope) and from a clean run
+        with zero survivors: here every mutant segfaulted or timed out, so "0
+        survivors" is the absence of a measurement, not the result of one.
+        """
+        return self.total_mutants > 0 and not self.killed and not self.survived
+
 
 def load_settings(pyproject_path: Path | None = None) -> MutationSettings:
     path = pyproject_path or registry_pyproject_path()
@@ -121,7 +137,7 @@ def load_baseline_per_module(pyproject_path: Path | None = None) -> dict[str, in
     return {str(entry["path"]): int(entry.get("count", 0)) for entry in section.get("baseline_surviving", [])}
 
 
-def tests_for(module: str, settings: MutationSettings) -> tuple[str, ...]:
+def module_test_paths(module: str, settings: MutationSettings) -> tuple[str, ...]:
     return settings.module_tests.get(module, settings.module_tests.get("default", ("tests/",)))
 
 
@@ -209,27 +225,43 @@ class BaselineRatchet:
         return module.removeprefix("src/").removesuffix(".py").replace("/", ".")
 
     @classmethod
-    def survivors_per_module(cls, outcome: MutationOutcome) -> dict[str, int]:
-        """Count surviving mutants attributed to each scoped registry module.
+    def _attribute(cls, names: Sequence[str], scoped_modules: Sequence[str]) -> dict[str, int]:
+        """Count *names* (mutmut mutant ids) against each scoped registry module.
 
-        A survivor's mutmut name starts with its module's dotted prefix. Longest
+        A mutant's mutmut name starts with its module's dotted prefix. Longest
         matching prefix wins so a nested module (``teatree.core.merge.execution``)
-        is not stolen by a shorter sibling. A survivor matching no scoped module
-        is not attributed (it cannot, by construction — mutmut only mutates the
-        scoped paths), so the counts sum to at most ``len(outcome.survived)``.
+        is not stolen by a shorter sibling. A name matching no scoped module is
+        not attributed (it cannot, by construction — mutmut only mutates the
+        scoped paths), so the counts sum to at most ``len(names)``.
         """
         prefixes = sorted(
-            ((cls.module_dotted_prefix(m), m) for m in outcome.scoped_modules),
+            ((cls.module_dotted_prefix(m), m) for m in scoped_modules),
             key=lambda pair: len(pair[0]),
             reverse=True,
         )
-        counts = dict.fromkeys(outcome.scoped_modules, 0)
-        for name in outcome.survived:
+        counts = dict.fromkeys(scoped_modules, 0)
+        for name in names:
             for prefix, module in prefixes:
                 if name == prefix or name.startswith(f"{prefix}."):
                     counts[module] += 1
                     break
         return counts
+
+    @classmethod
+    def survivors_per_module(cls, outcome: MutationOutcome) -> dict[str, int]:
+        """Count surviving mutants attributed to each scoped registry module."""
+        return cls._attribute(outcome.survived, outcome.scoped_modules)
+
+    @classmethod
+    def measured_modules(cls, outcome: MutationOutcome) -> set[str]:
+        """The scoped modules at least one CONCLUSIVE mutant was attributed to.
+
+        A module whose every mutant segfaulted contributes zero survivors — the
+        same number a perfectly-tested module contributes. Only this set separates
+        the two, so only these modules may move the baseline.
+        """
+        conclusive = cls._attribute([*outcome.killed, *outcome.survived], outcome.scoped_modules)
+        return {module for module, count in conclusive.items() if count > 0}
 
     @staticmethod
     def exceeds_baseline(outcome: MutationOutcome, *, baseline: int) -> bool:
@@ -251,15 +283,19 @@ class BaselineRatchet:
     ) -> tuple[dict[str, int], bool]:
         """The new per-module baseline (only shrinks) and whether the diff would loosen.
 
-        For every scoped module the new count is ``min(committed, measured)`` — a
-        module with fewer survivors auto-tightens, one at-or-above holds its lower
-        committed count. ``committed`` entries for modules NOT in this run are
-        carried through unchanged (a diff-scoped run only observed a subset). The
-        second element is True when any scoped module measured MORE survivors than
-        its committed baseline — the regression the rewrite refuses without an
-        explicit override (mirrors test_shape's ``loosens_baseline``).
+        For every MEASURED scoped module the new count is ``min(committed,
+        measured)`` — a module with fewer survivors auto-tightens, one at-or-above
+        holds its lower committed count. ``committed`` entries for modules NOT in
+        this run are carried through unchanged (a diff-scoped run only observed a
+        subset), and so are modules that WERE in scope but produced no conclusive
+        mutant: recording their 0 would ratchet a module the run never measured
+        down to "no survivors", against which the next honest run reds. The second
+        element is True when any measured module surfaced MORE survivors than its
+        committed baseline — the regression the rewrite refuses without an explicit
+        override (mirrors test_shape's ``loosens_baseline``).
         """
-        measured = cls.survivors_per_module(outcome)
+        survivors = cls.survivors_per_module(outcome)
+        measured = {module: count for module, count in survivors.items() if module in cls.measured_modules(outcome)}
         loosens = any(count > committed.get(module, 0) for module, count in measured.items())
         new_baseline = dict(committed)
         for module, count in measured.items():
@@ -303,7 +339,7 @@ def run_scoped(
 
     tests_dir: list[str] = []
     for module in scoped:
-        for path in tests_for(module, settings):
+        for path in module_test_paths(module, settings):
             if path not in tests_dir:
                 tests_dir.append(path)
 
@@ -324,6 +360,16 @@ def run_scoped(
             "Refusing to pass a mutation gate that tested nothing."
         )
         raise ZeroMutantsError(detail)
+    # Mutants were generated and EVERY one was inconclusive (segfault/timeout on a
+    # loaded runner). "0 survivors" here is the absence of a measurement, so it must
+    # neither satisfy the ratchet nor be written back as a baseline — the same
+    # whole-run environment artifact `_run_mutmut` raises for a tool crash.
+    if outcome.is_unmeasured:
+        detail = (
+            f"every one of mutmut's {outcome.total_mutants} mutants for {list(scoped)!r} was "
+            "inconclusive (segfault/timeout) — the run measured nothing (tool crash, not a test gap)."
+        )
+        raise MutationToolCrashError(detail)
     return outcome
 
 

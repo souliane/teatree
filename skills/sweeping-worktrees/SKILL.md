@@ -7,7 +7,6 @@ requires:
   - rules
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Cleanup Sweep — Judgment Over Stale Worktrees, Branches, and Stashes
@@ -92,6 +91,15 @@ whatever the commit probe concluded.
 
 `emit` is **read-only** — it removes nothing. `clean-all` already removed the
 provably-redundant; this surfaces the rest for you to route.
+
+**A branch `emit` does not mention is landed — never re-derive that by hand.** To ask
+about one specific branch (or re-check a routing decision), run
+`t3 <overlay> workspace branch-verdict <branch> …` — the same three-layer verdict as a
+per-branch query, described in [`../workspace/SKILL.md`](../workspace/SKILL.md) § "Is this
+branch landed? One canonical answer". A hand-rolled `git cherry origin/main HEAD` /
+`git branch --merged` / `git merge-base --is-ancestor` answers by SHA or ancestry, both of
+which a squash-merge defeats — that is how three already-merged branches were once
+escalated as unshipped work.
 
 ### 2. Route each record, in this order
 
@@ -302,7 +310,7 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 
 // F. no commits ahead, but the work is STAGED → SALVAGE the working tree, never delete.
 { "kind": "worktree", "branch": "feat-gate", "owner": "souliane", "path": "/wk/feat-gate",
-  "unique_commit_shas": [], "uncommitted_paths": ["src/gate.py", "tests/test_gate.py"],
+  "unique_commit_shas": [], "uncommitted_paths": ["src/acme/gate.py", "tests/acme/test_gate.py"],
   "content_verified": false, "verdict_source": "uncommitted-work",
   "merged_with_post_merge_work": false, "banned_terms_status": "unknown", "liveness": "" }
 // → commit the named files onto a branch and push them FIRST — they exist on no ref, so a

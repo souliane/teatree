@@ -13,6 +13,11 @@ the contract. It stays in the catalog and stays graded — Claude Code interacti
 used heavily and is worth measuring — but it is labelled ``surface: interactive`` and
 its verdict is ADVISORY. Only ``surface: headless`` scenarios gate.
 
+The exemption weighs a VERDICT, so it presupposes one. A run that measured nothing —
+the harness itself failed — has none, and :mod:`teatree.eval.harness_failure` is that
+separate axis: it is read by the unconditional ``RunGuards.hooks_registered`` guard that
+runs BESIDE each lane's verdict, so nothing here can reach it (souliane/teatree#3922).
+
 This module is the structural sibling of :mod:`teatree.eval.matcher_vacuity`: a pure,
 fixture-free predicate over the loaded specs, so the mislabelled shape is a fast RED at
 test time rather than a red suite the next time the SDK moves.

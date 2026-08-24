@@ -741,7 +741,6 @@ class TestNoAgentsLineInInFlight:
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         task.claim(claimed_by="coding-worker")
 

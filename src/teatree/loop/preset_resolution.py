@@ -87,7 +87,7 @@ def resolve_preset_state(loop_name: str, now: dt.datetime | None = None) -> bool
     """The single-lookup preset opinion for *loop_name*: ``True``/``False``/``None``.
 
     The per-loop form the off-live-tick daily gates and connector preflight consume
-    through :func:`teatree.loop.loop_state_db.loop_enabled`; the bulk tick resolves
+    through :func:`teatree.loops.enable_verdict.loop_admits`; the bulk tick resolves
     :func:`resolve_active_preset` once and calls :func:`preset_state_for` per row.
     """
     return preset_state_for(resolve_active_preset(now), loop_name)
@@ -234,7 +234,7 @@ def _governing_and_next(
 def _candidate_starts(
     schedule: "ModeSchedule", now_local: dt.datetime, tz: dt.tzinfo
 ) -> "list[tuple[dt.datetime, ModeScheduleSlot]]":
-    slots = list(schedule.slots.all())  # ty: ignore[unresolved-attribute]  # Django reverse FK (related_name="slots")
+    slots = list(schedule.slots.all())  # Django reverse FK (related_name="slots")
     days = [(now_local + dt.timedelta(days=offset)).date() for offset in range(-_LOOKBACK_DAYS, _LOOKBACK_DAYS + 1)]
     return [
         (dt.datetime.combine(day, slot.start_time, tzinfo=tz), slot)

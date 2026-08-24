@@ -9,7 +9,7 @@ from datetime import date
 
 import pytest
 
-from teatree.agents.headless_usage import _attempt_usage
+from teatree.agents.runner_usage import _attempt_usage
 from teatree.core.cost import AttemptUsage, CostBreakdown, CostReport
 from tests.teatree_agents._sdk_fake import result_message
 

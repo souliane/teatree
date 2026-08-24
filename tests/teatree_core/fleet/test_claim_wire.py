@@ -20,6 +20,7 @@ from django.test import TestCase
 
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
+from teatree.core.forge_push import CredentialSource, PushOutcome
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
@@ -27,6 +28,8 @@ from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from ._git_origin import init_bare, init_client, ref_sha
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.core.backend_protocols import CodeHostBackend
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4242"
@@ -262,6 +265,29 @@ class TestHeartbeatSweep(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
 
+    def test_heartbeat_skips_a_declined_marker(self) -> None:
+        """An operator let this one go — refreshing its claim keeps a sibling out (#4105)."""
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        thief = init_client(tmp / "thief", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin", ttl_seconds=100.0, now=1000.0)
+        assert claim is not None
+        ImplementedIssueMarker.objects.create(
+            issue_url=_ISSUE,
+            overlay="acme",
+            claim_ref_sha=claim.sha,
+            state=ImplementedIssueMarker.State.DECLINED,
+        )
+        with (
+            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
+            patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
+            patch("teatree.core.fleet.claim.time.time", return_value=1090.0),
+        ):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+        # Un-refreshed, the original claim expired at t=1100, so the rival takes it.
+        assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=2000.0) is not None
+
     def test_heartbeat_is_a_no_op_when_switch_off(self) -> None:
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
         with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=False):
@@ -294,6 +320,18 @@ class TestHeartbeatSweep(TestCase):
         assert marker.claim_ref_sha == "a" * 40
 
 
+#: A landed push, so a fence test observes the fence and never a push-refusal detour.
+_LANDED = PushOutcome(ok=True, branch="feat", remote="origin", credential_source=CredentialSource.AMBIENT)
+
+
+def _record_push(seen: list[dict[str, object]]) -> "Callable[..., PushOutcome]":
+    def push(**kwargs: object) -> PushOutcome:
+        seen.append(kwargs)
+        return _LANDED
+
+    return push
+
+
 class TestExecuteShipFence(TestCase):
     """B2: ``execute_ship`` re-fences and aborts (no push, no PR) under a stolen claim."""
 
@@ -312,12 +350,12 @@ class TestExecuteShipFence(TestCase):
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
 
-        pushed: list[dict] = []
+        pushed: list[dict[str, object]] = []
         executor = ShipExecutor(ticket)
         with (
             patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(ShipExecutor, "_check_branch_currency", return_value=None),
-            patch("teatree.core.runners.ship.git.push", side_effect=lambda **kw: pushed.append(kw)),
+            patch("teatree.core.runners.ship.push_branch", side_effect=_record_push(pushed)),
         ):
             result = executor._push_and_open(ticket, {}, cast("object", None), str(holder), "feat")
 
@@ -341,15 +379,16 @@ class TestExecuteShipFence(TestCase):
 
         from teatree.core.runners.ship import ShipExecutor  # noqa: PLC0415 — test-local
 
-        def _steal_during_push(**_kw: object) -> None:
+        def _steal_during_push(**_kw: object) -> PushOutcome:
             # a rival steals the claim in the gap between the push and the PR-open
             fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=1e12)
+            return _LANDED
 
         executor = ShipExecutor(ticket)
         with (
             patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(ShipExecutor, "_check_branch_currency", return_value=None),
-            patch("teatree.core.runners.ship.git.push", side_effect=_steal_during_push),
+            patch("teatree.core.runners.ship.push_branch", side_effect=_steal_during_push),
         ):
             result = executor._push_and_open(ticket, {}, cast("object", None), str(holder), "feat")
 

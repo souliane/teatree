@@ -23,7 +23,7 @@ import io
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import IO, Annotated, cast
+from typing import IO, TYPE_CHECKING, Annotated, cast
 
 import typer
 from django.utils import timezone
@@ -45,6 +45,9 @@ from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,16 +302,16 @@ def _validate_since(since: str) -> None:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _overlay_code_host(overlay: object) -> str:
+def _overlay_code_host(overlay: "OverlayBase") -> str:
     try:
-        return overlay.config.code_host or ""  # type: ignore[union-attr]
+        return overlay.config.code_host or ""
     except Exception:  # noqa: BLE001 — best-effort render; a failure degrades to empty
         return ""
 
 
-def _overlay_repos(overlay: object) -> list[str]:
+def _overlay_repos(overlay: "OverlayBase") -> list[str]:
     try:
-        repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())  # type: ignore[union-attr]
+        repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())
         return [r for r in repos if isinstance(r, str) and r]
     except Exception:  # noqa: BLE001 — best-effort; a failure degrades to no rows
         return []

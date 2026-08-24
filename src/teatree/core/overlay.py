@@ -176,7 +176,7 @@ class OverlayConfig(BaseModel):
     # ``overlays`` registry row; a JSON list of service names validates against
     # the ``Service`` enum and fails loud on an unknown one. Empty default =
     # an undeclared overlay wraps nothing (fail-closed).
-    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset)
+    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset[Service])
     sentry_org: str = ""
     sentry_url: str = "https://sentry.io"
     # #36 settings promoted to an overlay code default: genuinely-constant, public
@@ -195,6 +195,11 @@ class OverlayConfig(BaseModel):
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfood-smoke"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+    # ``<repo-slug>=<branch>`` entries; empty means the gate is inert here. The
+    # field must exist even for an overlay that declares nothing, because the
+    # provider reads every promoted key off the config in one comprehension and
+    # a single missing attribute collapses the whole tier to ``{}``.
+    single_branch_repos: list[str] = Field(default_factory=list)
 
     def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
         super().__init__(**data)
@@ -653,5 +658,10 @@ class OverlayBase(ABC):
         return []
 
     def get_eval_scenarios_dir(self) -> Path | None:
-        """Return the directory holding overlay-contributed behavioral eval scenarios."""
+        """Return the directory holding overlay-contributed behavioral eval scenarios.
+
+        ``None`` means "I contribute none"; a returned path is a claim the directory
+        EXISTS, and discovery degrades the catalog when it does not. Never collapse a
+        missing directory into ``None`` — that reports a defect as the legitimate answer.
+        """
         return None

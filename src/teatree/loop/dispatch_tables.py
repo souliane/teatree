@@ -119,6 +119,11 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
+    # #4104 The RAM half of the ladder ran dead on Linux for as long as it existed,
+    # because a probe that could not answer returned nothing and a box with no guard
+    # rendered exactly like a healthy one. An inert probe is the operator's problem to
+    # fix, not background noise, so it sits in action_needed next to real pressure.
+    "resource.probe_inert": "action_needed",
     # #3992 The resource loop moved intake concurrency by itself — an observation the
     # operator should be able to SEE, but never a thing for them to act on, so it
     # renders in in_flight rather than competing with the pressure advisories above.
@@ -156,17 +161,25 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request.resume_failed": "in_flight",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
     # (see is_pr_sweep_flag): a conflicted open PR (#78), a green
-    # solo-overlay PR with no recorded independent cold-review (#68), a PR
-    # red only on repo-state checks against a stale base that a rerun can't fix
-    # (#2045 — only a merge-update can), and a colleague-facing own PR that is
+    # solo-overlay PR with no recorded independent cold-review (#68), a PR whose
+    # required red judged a stale base that the sweep declined to merge-update
+    # itself (#4063 — over the per-tick cap, already attempted at this head, or
+    # not the operator's own PR), and a colleague-facing own PR that is
     # green+clean+up-to-date but uncleared — mergeable, awaiting the operator's
     # review-request decision. All need an operator decision, so they surface in
     # action_needed rather than being dropped with the rest of the diagnostic
-    # pr_sweep.* family.
+    # pr_sweep.* family. An APPLIED merge-update (``pr_sweep.branch_updated``) is
+    # a completed action, not a request, so it stays in the diagnostic family.
     "pr_sweep.flag_conflict": "action_needed",
     "pr_sweep.flag_no_review": "action_needed",
+    "pr_sweep.flag_held": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
+    # A persistent refusal — every reason that rides ``decision="blocked"``,
+    # ``keystone_refused`` among them — is the same shape: the sweep declined and
+    # will decline again next pass, so it needs an operator decision rather than
+    # another silent log line.
+    "pr_sweep.blocked": "action_needed",
     # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
     # duplicate-scope drift the factory was blind to until a human asked. Each
     # finding needs an operator decision (salvage/push/dedup), and an errored
@@ -218,17 +231,20 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
 
 # pr_sweep flag-level kinds the scanner deliberately did NOT act on: a merge
-# conflict, a missing independent cold-review on a solo overlay, a PR red
-# only on repo-state checks against a stale base that needs a merge-update
-# (#2045), or a colleague-facing own PR that is mergeable but uncleared and
-# awaits the operator's review-request decision. They share the ``pr_sweep.``
+# conflict, a missing independent cold-review on a solo overlay, a PR whose
+# required red judged a stale base the sweep declined to merge-update (#4063),
+# or a colleague-facing own PR that is mergeable but uncleared and
+# awaits the operator's review-request decision, or a merge the keystone REFUSED
+# (every ``decision="blocked"`` reason). They share the ``pr_sweep.``
 # prefix for log grouping but must escape the diagnostic drop so the operator
 # sees them — the same exemption shape as the CI-green-gate self_update skip
 # above.
 PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset(
     {
+        "pr_sweep.blocked",
         "pr_sweep.flag_conflict",
         "pr_sweep.flag_no_review",
+        "pr_sweep.flag_held",
         "pr_sweep.needs_branch_update",
         "pr_sweep.flag_mergeable",
     }

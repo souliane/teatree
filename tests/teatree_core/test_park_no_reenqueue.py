@@ -2,7 +2,7 @@
 
 ``Task.park`` returns the task to the queue PENDING with a future ``not_before``, and that
 save fires the ``post_save`` auto-enqueue. Before the fix the signal read only
-``status == PENDING`` and immediately enqueued a fresh ``execute_headless_task`` for a task
+``status == PENDING`` and immediately enqueued a fresh ``execute_task`` for a task
 its own claim CAS refuses — a self-feeding edge that, before the claim gained the same
 ``not_before`` predicate, spun at the worker round-trip (a measured 47,172 park rows on one
 task in eight hours). The drain (``_claimable_now_q``) and the claim CAS both honour the
@@ -16,6 +16,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.usage_window import maybe_park_for_active_window
+from teatree.core.agent_admission import AgentAdmission
+from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.models.config_setting import ConfigSetting
@@ -31,8 +33,8 @@ class TestParkDoesNotReEnqueue(TestCase):
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         self.admit = mock.patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
-            return_value=None,
+            "teatree.core.agent_admission.agent_admission_verdict",
+            return_value=AgentAdmission(expensive_denied=None, cheap_denied=None),
         )
         self.admit.start()
         self.addCleanup(self.admit.stop)
@@ -46,7 +48,6 @@ class TestParkDoesNotReEnqueue(TestCase):
             ticket=self.ticket,
             session=self.session,
             phase=_FREE_FORM_PHASE,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED)
         task.refresh_from_db()
@@ -59,10 +60,10 @@ class TestParkDoesNotReEnqueue(TestCase):
             resets_at=self.resets_at,
         )
 
-    def test_park_does_not_re_arm_the_headless_dispatch(self) -> None:
+    def test_park_does_not_re_arm_the_agent_runner(self) -> None:
         window = self._exhausted_lane()
         task = self._dispatching_task()
-        with mock.patch("teatree.core.tasks.execute_headless_task") as job:
+        with mock.patch("teatree.core.tasks.execute_task") as job:
             attempt = maybe_park_for_active_window(task, lane=_LANE)
         assert job.enqueue.call_count == 0
         task.refresh_from_db()
@@ -76,7 +77,7 @@ class TestParkDoesNotReEnqueue(TestCase):
     def test_repeated_park_stays_one_visible_row(self) -> None:
         self._exhausted_lane()
         task = self._dispatching_task()
-        with mock.patch("teatree.core.tasks.execute_headless_task"):
+        with mock.patch("teatree.core.tasks.execute_task"):
             maybe_park_for_active_window(task, lane=_LANE)
             maybe_park_for_active_window(task, lane=_LANE)
         rows = TaskAttempt.objects.filter(task=task)
@@ -85,12 +86,11 @@ class TestParkDoesNotReEnqueue(TestCase):
 
     def test_unparked_headless_task_is_still_enqueued(self) -> None:
         # Control: the guard is scoped to the park gate, not a blanket disable of the lane.
-        with mock.patch("teatree.core.tasks.execute_headless_task") as job:
+        with mock.patch("teatree.core.tasks.execute_task") as job:
             task = Task.objects.create(
                 ticket=self.ticket,
                 session=self.session,
                 phase=_FREE_FORM_PHASE,
-                execution_target=Task.ExecutionTarget.HEADLESS,
             )
         job.enqueue.assert_called_once_with(task.pk, task.phase)
 
@@ -99,7 +99,11 @@ class TestParkDoesNotReEnqueue(TestCase):
         # suppression is keyed on the FUTURE instant rather than on the field being set.
         task = self._dispatching_task()
         task.park(not_before=timezone.now() - dt.timedelta(minutes=1))
-        with mock.patch("teatree.core.tasks.execute_headless_task") as job:
+        # A re-arm is a LATER instant, so the row's admission seat has aged out by then too.
+        # Within ADMITTED_INFLIGHT_WINDOW the re-enqueue is a duplicate dispatch (#4125), which
+        # is a second suppression this control is not measuring.
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW)
+        with mock.patch("teatree.core.tasks.execute_task") as job:
             task.save(update_fields=["status", "not_before"])
         job.enqueue.assert_called_once_with(task.pk, task.phase)
 

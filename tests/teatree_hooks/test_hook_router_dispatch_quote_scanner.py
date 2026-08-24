@@ -198,7 +198,7 @@ class TestToolScope:
 
 
 def _task(description: str, *, subject: str = "do work", session_id: str = "sess-1") -> dict:
-    """A ``TaskCreated`` event payload (no ``tool_input`` — the fan-out schema)."""
+    """A ``TaskCreated`` event payload (no ``tool_input`` — the task-list schema)."""
     return {"session_id": session_id, "task_subject": subject, "task_description": description}
 
 
@@ -237,13 +237,13 @@ def _enable_task_gate() -> None:
 
 
 class TestOnTaskCreateGate:
-    """The TaskCreated dispatch-quote arm (#171): scans the fan-out task subject/description.
+    """The TaskCreated quote arm (#171): scans the new task's subject/description.
 
     The PreToolUse dispatch-quote gate keys on ``Agent``/``Task`` but the
-    harness Workflow/Task fan-out (where dispatch prompts are actually created)
-    BYPASSES ``PreToolUse`` — only ``TaskCreated`` reaches it. This arm rides
-    that event. It ships default-OFF (opt-in, a #1640-class fan-out gate whose
-    live behavior is unvalidated) and emits the ``TaskCreated`` teammate-stop
+    task-LIST tools BYPASS ``PreToolUse`` — only ``TaskCreated`` reaches them,
+    and that event has one producer, so this arm never sees a sub-agent dispatch
+    (#4216). It rides that event. It ships default-OFF (opt-in, a #1640-class
+    gate whose live behavior is unvalidated) and emits the ``TaskCreated`` teammate-stop
     envelope (``continue: false``), NOT the PreToolUse deny.
     """
 
@@ -256,7 +256,10 @@ class TestOnTaskCreateGate:
         assert payload["continue"] is False
         assert "stopReason" in payload
         assert "permissionDecision" not in payload
-        assert "pre-dispatch quote-scanner" in payload["stopReason"]
+        # The arm's OWN surface: this event has one producer, so a "pre-dispatch"
+        # reason would name a seam the entry never crossed (#4381).
+        assert "task-entry quote-scanner" in payload["stopReason"]
+        assert "pre-dispatch" not in payload["stopReason"]
         assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
     def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:

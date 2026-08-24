@@ -32,8 +32,8 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
 
     def test_known_references_pass(self) -> None:
         Loop.objects.create(name="kr-review", delay_seconds=60, script="src/teatree/loops/kr-review/loop.py")
-        Mode.objects.create(name="heads-down", entries={"kr-review": False})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={"kr-review": False})
+        ModeOverride.objects.set_override("maintenance")
         assert _check_loop_presets() is True
 
     def test_active_schedule_naming_unknown_warns(self) -> None:

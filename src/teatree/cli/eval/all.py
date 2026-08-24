@@ -1,8 +1,13 @@
 """``t3 eval list`` table render + bare-``t3 eval`` full-suite lane orchestration.
 
-The six model-free deterministic lanes (skill-coverage, pinned-regressions,
-negative-control, transcript-replay, corpus-grade, skill-command-validity) always run;
-skill-coverage is warn-first (reports a gap, never FAILs in Phase A), transcript-replay
+The seven model-free deterministic lanes (catalog-discovery, skill-coverage,
+pinned-regressions, negative-control, transcript-replay, corpus-grade,
+skill-command-validity) always run; catalog-discovery FAILs when an overlay surface
+contributed no scenarios because it RAISED or named a directory that is not there, and
+when the core count falls below its floor (a shrunken catalog is invisible to every other
+guard — the run still executes, still meters, still reports green),
+skill-coverage FAILs on an uncovered skill (Phase-B enforcement, matching the
+``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate), transcript-replay
 surfaces as a SKIP when no real session transcript is in scope (never a FAIL), corpus-grade
 grades the ground-truth corpus deterministically (judge-oracle entries skip), and
 skill-command-validity (#550 Tier-1) FAILs on a backticked ``t3 …`` in a SKILL.md that no
@@ -29,14 +34,14 @@ from rich.table import Table
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker
-from teatree.cli.eval.run_modes import build_transcript_manifest, render_transcript_text
+from teatree.cli.eval.run_modes import RunGuards, build_transcript_manifest, render_transcript_text
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
 from teatree.cli.eval.verdict import LaneResult, print_verdict
 from teatree.eval.backends import TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import CoverageReport, skill_eval_coverage
-from teatree.eval.discovery import discover_specs
+from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog, discover_catalog
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
@@ -107,11 +112,38 @@ def regression_lane(report: RegressionReport) -> LaneResult:
 def coverage_lane(report: CoverageReport) -> LaneResult:
     gap_names = ", ".join(r.skill for r in report.gaps)
     detail = (
-        f"{len(report.rows)} skills, {len(report.gaps)} uncovered (warn-first): {gap_names}"
+        f"{len(report.rows)} skills, {len(report.gaps)} uncovered: {gap_names}"
         if report.gaps
         else f"{len(report.rows)} skills, all covered or eval_exempt"
     )
-    return LaneResult(name="skill-coverage", cost="model-free", passed=True, skipped=False, detail=detail)
+    # Phase-B enforcement has shipped, so all three surfaces reading this one report —
+    # this lane, ``test_no_shipped_skill_is_an_uncovered_gap`` and ``t3 eval coverage`` —
+    # FAIL on a gap. One predicate, one verdict.
+    return LaneResult(name="skill-coverage", cost="model-free", passed=not report.gaps, skipped=False, detail=detail)
+
+
+def catalog_discovery_lane(catalog: ScenarioCatalog) -> LaneResult:
+    """FAIL when an overlay surface contributed nothing, or the core catalog shrank.
+
+    A shrunken catalog passes every other guard in the suite: the run still
+    executes scenarios, still meters spend, and still reports green — it simply
+    never evaluates the part that vanished. This is the only lane that can see it,
+    so it reads both routes: an overlay that raised or named a missing directory,
+    and a core count that fell below :data:`~teatree.eval.discovery.CORE_CATALOG_FLOOR`.
+    """
+    above_floor = catalog.core_count >= CORE_CATALOG_FLOOR
+    detail = f"{len(catalog.specs)} scenarios discovered ({catalog.core_count} core, floor {CORE_CATALOG_FLOOR})"
+    if not above_floor:
+        detail += "; the CORE catalog SHRANK — scenarios were removed, or SCENARIOS_DIR no longer resolves"
+    if not catalog.is_complete:
+        detail += "; " + "; ".join(f"{name}: {reason}" for name, reason in sorted(catalog.degraded.items()))
+    return LaneResult(
+        name="catalog-discovery",
+        cost="model-free",
+        passed=catalog.is_complete and above_floor,
+        skipped=False,
+        detail=detail,
+    )
 
 
 def negative_control_lane(outcome: NegativeControlOutcome) -> LaneResult:
@@ -315,10 +347,13 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
-    The bare ``t3 eval`` default calls this. The six model-free deterministic lanes
-    (skill-coverage, pinned-regressions, negative-control,
+    The bare ``t3 eval`` default calls this. The seven model-free deterministic lanes
+    (catalog-discovery, skill-coverage, pinned-regressions, negative-control,
     transcript-replay, corpus-grade, skill-command-validity) always run;
-    skill-coverage is warn-first, transcript-replay SKIPs when no real session
+    catalog-discovery FAILs when an overlay surface raised or named a missing
+    directory, and when the core count falls below its floor (the one degradation
+    no other lane can see),
+    transcript-replay SKIPs when no real session
     transcript is in scope (a missing run is not a violation), corpus-grade grades
     the ground-truth corpus deterministically (judge entries skip), and
     skill-command-validity FAILs on a stale ``t3 …`` reference in a SKILL.md. The
@@ -353,7 +388,9 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
             raise typer.Exit(code=2) from None
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
+    catalog = discover_catalog()
     lanes = [
+        _timed(lambda: catalog_discovery_lane(catalog)),
         _timed(lambda: coverage_lane(skill_eval_coverage())),
         _timed(lambda: regression_lane(run_regression_corpus())),
         _timed(lambda: negative_control_lane(run_negative_control())),
@@ -367,7 +404,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         # transcript backend grades on-disk transcripts ($0 extra) and never runs
         # a model, so it is safe on the bare-`t3 eval` path.
         started = time.monotonic()
-        ai_outcome = run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel)
+        ai_outcome = run_ai_lane(catalog.specs, backend=backend, target_dir=target_dir, parallel=parallel)
         ai_results = ai_outcome.results
         lanes.append(dataclasses.replace(ai_outcome.lane, duration_s=time.monotonic() - started))
     if metered:
@@ -388,6 +425,10 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     # verdict so the closing line can never print "✅ ALL GOOD" a beat before the
     # process exits 1 on an unmetered lane.
     _assert_metered_api_ai_lane(backend=backend, results=ai_results)
+    # A hooked scenario that captured zero hook events measured the RAW MODEL, not the
+    # system under test — a HARNESS failure with no verdict for the surface exemption to
+    # weigh, so it gates here whatever the scenario's surface (#3922).
+    RunGuards.hooks_registered(ai_results)
     print_verdict(lanes)
     if _suite_should_fail(lanes, strict=strict, metered=metered):
         sys.exit(1)

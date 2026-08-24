@@ -9,9 +9,9 @@ The guard is deliberately two complementary defenses (both required — neither 
 is sufficient):
 
 1.  This explicit denylist — the per-setting ``private`` flag, expressed as set
-    membership. ``config_migration.export_db_to_toml`` drops these keys by default.
+    membership. ``config_interchange.migration.export_db_to_toml`` drops these keys by default.
 2.  An active banned-term CONTENT scan over every exported key+value (in
-    ``config_migration``), which catches a NON-listed key whose value happens to
+    ``config_interchange.migration``), which catches a NON-listed key whose value happens to
     contain a customer/brand term (e.g. ``ban_close_trailers_on_namespaces =
     ['acme-engineering/*']``) — the case a static keylist can never enumerate.
 
@@ -43,7 +43,6 @@ SECRET_SETTINGS: frozenset[str] = frozenset(
         "internal_publish_namespaces",
         "overlay_leak_terms",
         "private_repos",
-        "private_tests",
         "slack_token_ref",
         "user_token_ref",
     }
@@ -56,13 +55,12 @@ SECRET_SETTINGS: frozenset[str] = frozenset(
 #: export withhold-set both resolve through it (F2).
 CREDENTIAL_REFERENCE_RE = re.compile(r"(pass_path|pass_paths|pass_key|token_ref|credential_entry)$")
 
-#: An operator's OWN personal identifiers — account handle, channel, schedule. They
+#: An operator's OWN personal identifiers — account handle and channel. They
 #: carry no customer/brand term (so the banned-term scan misses them) and are not a
 #: credential coordinate (so the suffix rule misses them), yet must not reach a shared
 #: export. Kept explicit because there is no derivable rule for "this is personal" (F2).
 PERSONAL_IDENTIFIERS: frozenset[str] = frozenset(
     {
-        "availability_schedule",
         "slack_user_channel",
         "slack_user_id",
     }

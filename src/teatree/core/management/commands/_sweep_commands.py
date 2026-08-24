@@ -22,7 +22,8 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Ticket
-from teatree.loop.scanners.board_reconcile import DEFAULT_PROBE_BUDGET, BoardTransition, reconcile_board
+from teatree.loop.scanners.board_reconcile import DEFAULT_PROBE_BUDGET, reconcile_board
+from teatree.loop.scanners.board_reconcile_report import BoardTransition
 
 logger = logging.getLogger(__name__)
 

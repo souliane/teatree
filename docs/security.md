@@ -40,24 +40,24 @@ the `args` parameter to `subprocess.run()` or `subprocess.Popen()`
 
 | Hook | Return type | Consuming command |
 |---|---|---|
-| `OverlayBase.get_run_commands()` | `dict[str, list[str]]` | `run backend`, `run build-frontend`, `run tests`, `worktree start` |
-| `OverlayBase.get_test_command()` | `list[str]` | `run tests` |
-| `OverlayBase.get_lint_command()` | `list[str]` | `run lint` |
-| `OverlayBase.get_services_config()` | `dict[str, ServiceSpec]` | `run backend`, `worktree start` (reads `start_command`) |
+| `OverlayRuntime.run_commands()` | `dict[str, list[str]]` | `run backend`, `run build-frontend`, `run tests`, `worktree start` |
+| `OverlayRuntime.test_command()` | `list[str]` | `run tests` |
+| `OverlayRuntime.lint_command()` | `list[str]` | `run lint` |
+| `OverlayProvisioning.services_config()` | `dict[str, ServiceSpec]` | `run backend`, `worktree start` (reads `start_command`) |
 | `OverlayBase.get_provision_steps()` | `list[ProvisionStep]` | `worktree provision` (calls `step.callable()`) |
-| `OverlayBase.get_post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |
-| `OverlayBase.get_pre_run_steps()` | `list[ProvisionStep]` | `worktree start` / `worktree provision` |
-| `OverlayBase.get_cleanup_steps()` | `list[ProvisionStep]` | `workspace clean-all` |
-| `OverlayBase.get_reset_passwords_command()` | `ProvisionStep \| None` | `worktree provision` |
-| `OverlayBase.get_env_extra()` | `dict[str, str]` | Injected into subprocess `env` for run/lifecycle commands |
-| `OverlayBase.get_envrc_lines()` | `list[str]` | Written to `.envrc` in the worktree directory |
+| `OverlayProvisioning.post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |
+| `OverlayRuntime.pre_run_steps()` | `list[ProvisionStep]` | `worktree start` / `worktree provision` |
+| `OverlayProvisioning.cleanup_steps()` | `list[ProvisionStep]` | `workspace clean-all` |
+| `OverlayProvisioning.reset_passwords_command()` | `ProvisionStep \| None` | `worktree provision` |
+| `OverlayProvisioning.env_extra()` | `dict[str, str]` | Injected into subprocess `env` for run/lifecycle commands |
+| `OverlayProvisioning.envrc_lines()` | `list[str]` | Written to `.envrc` in the worktree directory |
 
 `ProvisionStep.callable` is an arbitrary `Callable[[], None]` — the
 overlay can do anything it wants inside that callback.
 
 ### Environment variables
 
-`OverlayBase.get_env_extra()` returns a dict merged into `os.environ`
+`OverlayProvisioning.env_extra()` returns a dict merged into `os.environ`
 before spawning service processes.  A malicious overlay could inject
 `LD_PRELOAD`, `PATH`, or similar variables.  This is acceptable
 because the overlay already has full code-execution capability through
@@ -74,7 +74,7 @@ Overlay authors **must**:
    should contain only literal arguments, not unsanitised user input.
 3. Treat `ProvisionStep.callable` as privileged code.  It runs with
    the user's full permissions and no sandbox.
-4. Keep `get_env_extra()` values to what the service actually needs.
+4. Keep `overlay.provisioning.env_extra()` values to what the service actually needs.
    Do not inject variables that alter the behaviour of unrelated
    processes.
 
@@ -85,7 +85,7 @@ gets executed.
 ## Recommendations for overlay authors
 
 - Prefer `list[str]` commands over shell strings wherever possible.
-  The `get_run_commands()` and `get_test_command()` hooks already
+  The `overlay.runtime.run_commands()` and `overlay.runtime.test_command()` hooks already
   expect lists.
 - When a tool command must use `shell=True` (pipelines, redirects,
   globbing), keep the command string as a static constant rather than

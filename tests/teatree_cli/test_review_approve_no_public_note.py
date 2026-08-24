@@ -78,9 +78,8 @@ def _immediate_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _service_with_stub() -> tuple[ReviewService, _SilentApproveStubAPI]:
-    service = ReviewService(token="t")
     stub = _SilentApproveStubAPI()
-    service._get_api = lambda: stub  # type: ignore[method-assign]
+    service = ReviewService(token="t", api=stub)
     return service, stub
 
 
@@ -151,12 +150,12 @@ class TestApproveAcceptsDraftFootprint:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_draft_note_footprint_satisfies_precondition(self) -> None:
+    def test_draft_note_footprint_satisfies_precondition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A colleague-invisible draft review satisfies the precondition — no public note forced."""
         _immediate_gate(self.tmp_path, self.monkeypatch)
         service = ReviewService(token="t")
         stub = _DraftReviewStubAPI()
-        service._get_api = lambda: stub  # type: ignore[method-assign]
+        monkeypatch.setattr(service, "_get_api", lambda: stub)
 
         msg, code = service.approve("org/repo", 7)
 

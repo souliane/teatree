@@ -71,7 +71,7 @@ def format_intake_summary(ticket: "Ticket", ticket_dir: str, branch: str, *, pro
     Worktree list, ticket header, branch, and the collapsed durable-context
     + project-learnings sections, returned as one string.
     """
-    lines = [f"  {wt.repo_path}: worktree #{wt.pk}" for wt in ticket.worktrees.all()]  # ty: ignore[unresolved-attribute]
+    lines = [f"  {wt.repo_path}: worktree #{wt.pk}" for wt in ticket.worktrees.all()]
     lines.extend(
         (
             f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}",

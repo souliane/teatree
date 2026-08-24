@@ -9,7 +9,6 @@ requires:
   - requesting-code-review
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Code Review
@@ -29,7 +28,7 @@ Both self-review and external review cycles.
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
-- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
+- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `overlay.config.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
   **Do this — never skip it (imperative, the prose above is the WHY):** reviewing ANY overlay repo, the FIRST actions — before reading the diff, fetching ticket context, or asking for an MR URL — are to derive the declared set (`get_review_companion_skills()` = `[pr_review_companion, *companion_skills]`) and load every skill in it via the `Skill` tool, in order — never proceed to the diff with only the generic `/t3:review`:
 
@@ -41,16 +40,17 @@ Both self-review and external review cycles.
 
 ## Workflows
 
-### North-Star Rubric — Six Quality Attributes
+### North-Star Rubric — Seven Quality Attributes
 
-Everything you write and everything you review aims at six attributes. Treat them as the lens for both self-review and giving review:
+Everything you write and everything you review aims at seven attributes. Treat them as the lens for both self-review and giving review:
 
-- **Clean** — readable, no dead code or duplication, names that say what they hold.
+- **Clean** — readable, no dead code or duplication, names that say what they hold, and comments that earn their line. An ADDED comment is one line carrying a non-obvious *why*; a multi-line block that narrates what the next lines already say is a real finding (the fix is a rename or a split, not a shorter paragraph), not a style preference. Judge only what the diff ADDS — pre-existing comments are not this review's business. See [`../code/SKILL.md`](../code/SKILL.md) § "Comments Are Code".
 - **Robust** — survives the real failure case, not only the favorable one; edge cases handled, inputs validated.
 - **Maintainable** — the next reader can change it safely; structure documents itself.
 - **Coherent** — fits the surrounding patterns and stays consistent across the whole changeset. Coherence includes **cross-repo coherence** (a referenced artifact — a skill name, a CLI command, a sibling-repo path — must actually exist where it's referenced) and **wired-and-exercised** (a mechanism must actually fire — a hook that's defined but never invoked, or a gate that's declared but never reached, is incoherent even if it reads correctly).
 - **Reliable** — does what it claims under repeated and concurrent use; no flaky or order-dependent behavior.
 - **Proactive** — sweeps the class, not just the instance; when a fix reveals a broader pattern, address the pattern rather than the single symptom.
+- **Scoped** — carries everything the ask requires, and no behaviour it did not. **Under-delivery** is work the author already understands, parked as a follow-up issue, a `TODO`, or a "phase 2" — refused by First Principles 8-10; the only sanctioned deferral is one the OWNER stated and governs. **Over-delivery is measured in customer-observable behaviour, never in diff size**: an unrequested feature, a reworded label, a moved control, an altered default is a finding even when it is an improvement, while extra *mechanism* — an extraction, a guard, a hardened path, a test nobody asked for — changes nothing a customer can perceive and is how **Clean**, **Robust** and **Maintainable** get paid for. So size only earns the question "which of these does the ask require?": a 300-file refactor that answers it is fine, a 3-line diff that quietly changes a default is not. This is also the boundary against **Proactive** — sweeping a class *within* the surface the change already touches is completeness; adding capability past it is scope the owner never approved (`AGENTS.md` § "What 8-10 bind — and what they do not").
 
 ### Spawn the t3:reviewer Sub-Agent Before Pushing (Non-Negotiable)
 
@@ -89,10 +89,44 @@ Run this **before** the cleanup checklist. Resolve any conflicts the same way yo
 
 **Cold-review checkout — fetch the exact pushed head, never `git worktree add <branch>` (Non-Negotiable).** A cold-review sub-agent reviewing a PR on a fresh checkout must NOT run `git worktree add <dir> origin/<branch>` (or the local-branch form). When that branch is already checked out in another worktree on the same machine, `worktree add` fails and the agent silently falls back to a pre-existing (stale) checkout — reviewing a tree one commit behind the pushed head and producing a spurious CHANGES_NEEDED (souliane/teatree#2132). Use the verify-or-fail helper `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`: it fetches the ref into a guaranteed-unique temp dir, checks it out with `git worktree add --detach FETCH_HEAD` (cannot collide with a branch worktree), and asserts the materialised HEAD equals the PR head SHA — hard-failing with `StaleReviewCheckoutError` rather than ever falling back to a stale tree. Remove the returned worktree with `teatree.utils.git.worktree_remove` when the review is done.
 
+#### Two Axes: Read the Diff Three-Dot, MEASURE on the Merge Result (Non-Negotiable)
+
+The three-dot guidance above covers the **diff axis** — what the branch introduced. It says nothing about the **runtime axis** — which tree you import, run, and measure on. A reviewer can diff three-dot correctly and still take every runtime measurement against the branch checkout, which reports what `main` did to a file since the branch was cut. That is how a docs-only PR (zero `src/` files changed) was blocked by a confident, high-severity `src/` finding about code it does not touch, whose every prescription was already on `main` — applying them would have turned an `rc=0` merge into a conflict. A stale finding is not inert.
+
+**Probe the merge result, in one step:**
+
+```bash
+t3 review merge-tree --repo <clone> --base origin/main --head <pr-head-sha>
+# → {"path": "/tmp/t3-merge-tree-XXXX", "tree_oid": ..., "base_sha": ..., "head_sha": ...}
+```
+
+It extracts the merge result to a **plain directory** and git-inits it with the source clone's real `origin` URL. Do not hand-roll it; each of the obvious hand-rolled shortcuts has produced a confident, reproducible, wrong answer on this repo:
+
+1. **Never a git worktree.** `resolve_data_dir` (`src/teatree/paths.py`) auto-isolates a worktree onto a per-worktree DB, so the probe measures a different database than the one under discussion.
+2. **Never a bare `git archive` extract.** A tree with no `.git` breaks every test that shells out to git.
+3. **Never a clone whose `origin` is a local path.** `resolved_repo_slug` (`src/teatree/core/merge/pr_slug_resolution.py`) returns `""` for an unresolvable origin, silently defeating every repo-scoped match downstream — a test then fails on the branch and passes on `main` for reasons that have nothing to do with the diff.
+
+**Before filing a finding whose evidence is a difference between two trees, enumerate what differs between them besides the diff.** Origin URL, presence of `.git`, working directory, data dir, installed venv, and ambient credentials have each produced a false result here. "Fails on the branch, passes on main" is a claim about a *difference*; the diff is only one candidate for it.
+
+**A recorded HOLD is READ, never re-derived (#4476).** Findings are persisted on the verdict and rendered by two surfaces, so an author fixes what the reviewer actually found and a later reviewer CHECKS the findings were addressed rather than reaching a fresh judgment:
+
+```bash
+t3 <overlay> review findings <pr-url>            # the findings, rendered; --json for the machine shape, --sha to pin a tree
+t3 <overlay> review status <pr-url> --json       # the full status record, findings included
+t3 <overlay> review publish-findings <pr-url>    # post them to the PR (idempotent) — `review record` already tries
+```
+
+`review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: on the shipped `draft_or_ask` it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
+
+Discharging a hold needs no new state: verdicts are newest-wins, so a later `merge_safe` recorded at the same head supersedes the HOLD.
+
+**Mechanically enforced (#4251):** a blocking finding (`blocker`/`major`/`high`/`critical`) citing a file outside the PR's own changed-file set is REFUSED at record time — by `t3 <overlay> review record` and by the headless orchestrator that records a returned `review_verdict` alike. Re-measure on the merge result, then re-record with `--merge-result-retake` (CLI) or `"merge_result_retake": true` (envelope) if the finding survives. The gate declines to judge when the changed-file set cannot be read: an unread diff proves nothing. The check is also the cheapest one available to you by hand — a finding that asserts the PR changes no `src/` file *and* reports a `src/` regression refutes itself, and `git log origin/main -- <cited-file>` names the PR actually responsible.
+
 Cleanup checklist:
 
 - [ ] No code duplication introduced
 - [ ] No dead code left behind
+- [ ] **Comments earn their line:** every comment the diff ADDS is one line carrying a non-obvious *why*. A multi-line block narrating the code is a refactor signal — rename or split rather than shorten the prose. Pre-existing comments stay untouched.
 - [ ] **Routing reachability:** every modified component is reachable via the target flow's route tree. Read the relevant `routes.ts` and confirm the component (or its parent shell) appears there. If the component lives in a flow-specific folder (e.g., `natural-person-calculation/`), verify the target flow actually routes through it.
 - [ ] Naming follows project conventions
 - [ ] Patterns match existing codebase
@@ -333,125 +367,13 @@ When the PR under review belongs to the **user themselves**, do NOT post review 
 
 **Step 0 — Gather Ticket Context:**
 
-Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior:
+Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior. Extract the ticket URL from the PR title/description, then fetch it via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool — falling back to the issue-tracker CLI (`gh issue view`, `glab issue view`) when the MCP server is not connected. Fetch every attached spec and linked external requirement too; attachments are the authoritative spec, and an author's docstring summarising them is not a substitute.
 
-1. Extract the ticket URL or number from the PR title/description.
-2. Fetch the issue via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool (structured JSON; fall back to the issue tracker CLI — `glab issue view`, `gh issue view` — when the MCP server isn't connected).
-3. **Fetch every attached spec** (PDFs, OpenAPI files, vendor docs) and every linked external requirement. For GitLab attachments, the working path is `glab api projects/<id>/uploads/<secret>/<filename>` — browser-style URLs (`gitlab.com/<group>/<repo>/uploads/...`, `gitlab.com/-/project/<id>/uploads/...`) require session cookies and return login HTML when hit with a PAT. Attachments are the authoritative spec; an author docstring summarising them is not a substitute.
+**Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you could not fetch, what you tried, and what access is needed. An overlay MAY declare specific sources out of scope (a partner portal behind SSO); honour those exceptions. For anything else, a review with missing spec context is not a review — it is guessing, and guessing attached to the user's account damages the author's trust.
 
-   A posted image or screenshot is two layers, and a fetched image is read in two passes. The first pass is the raw capture — what the tool, page, or table actually shows. The second pass is the poster's overlay drawn on top: borders and boxes, arrows, circles, highlights and colour, underlines, callout text, numbering, redaction. Those marks are a deliberate hint pointing at exactly what the poster wants seen; reading only the raw content answers a question the poster did not ask. For each annotation, ask "why did they mark exactly this" and resolve it concretely: a boxed cell is the load-bearing value the argument turns on; an arrow is an A→B link being asserted; bordered individual letters spell an acronym — decode it; a circled token is the disputed item; added callout text is the poster's claim restated. When an annotation's meaning is non-obvious, decoding it is required investigation, not optional — an unresolved mark is an unread part of the spec, treated the same as an attachment that did not download.
-4. If external requirements links are referenced, fetch those too.
-5. Use the ticket context + attachments as the ground truth for evaluating correctness.
+**The reviewer does the verification, not the author (Non-Negotiable).** Every comment goes out under the user's name, so one that boils down to "I'm unsure, please confirm" makes the user look like they do not know their own codebase. If a draft comment names a file, function, schema, enum, or downstream caller reachable from the local checkout, open it and read it before posting. "Worth checking `foo.py`" is not a review comment — it is the reviewer outsourcing their job. Either the file says the code is wrong (post a verified finding) or it says the code is fine (post nothing).
 
-**Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document that you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you couldn't fetch, what you tried, and what permission / access / exception is needed. Overlay skills MAY declare specific sources as out-of-scope (partner portals behind SSO the sandbox cannot reach, for example); honour those per-overlay exceptions. For anything else, a review with missing spec context is not a review — it's guessing, and guessing attached to the user's account damages the author's trust.
-
-Without ticket context you cannot judge whether the implementation is correct — only whether it compiles.
-
-**Step 0b — Review All Commits, Not Just the Final Diff:**
-
-The combined diff can hide mistakes. Always check individual commits:
-
-1. List all PR commits (e.g., `glab api .../merge_requests/<IID>/commits`).
-2. Inspect each commit's diff individually — a later commit may accidentally revert an earlier fix.
-3. Look for "Tests fix" / "Fix tests" follow-up commits that change production code alongside test adjustments.
-
-**Step 0c — Discuss Before Posting:**
-
-Present ALL findings to the user before posting any comments. Never silently drop findings between the discussion phase and the posting phase — if a finding was discussed, it gets posted unless the user explicitly removes it. The user curates; you surface.
-
-When raising concerns about caching, stale data, or side effects: **investigate first**. Check the actual code paths and real data before speculating. A concern backed by evidence ("I checked the DB — durations do vary") is useful; a speculative "this might be a problem" wastes the author's time.
-
-**Step 0d — Answer Your Own Questions Before Posting (Non-Negotiable):**
-
-Every review comment is posted under the user's name. A comment that boils down to "I'm unsure, please confirm" makes the *user* look like they don't know their own codebase. Do not post it.
-
-Before drafting any comment, if it would contain any of the following phrases — or their equivalents — **STOP and investigate first**:
-
-- "worth confirming with the business that…"
-- "worth checking `<file>` / `<function>` / the downstream serializer / etc."
-- "can you confirm this value matches what upstream emits?"
-- "is this string / identifier / enum value correct?"
-- "does this field exist in the producer schema?"
-- "I'm not sure whether…"
-- "does this mean that… / or… / or…?" (listing options instead of picking one)
-- "verify that …" / "please check …" / "confirm whether …" — any imperative that asks the author to do verification work the reviewer is capable of doing themselves.
-
-**The reviewer does the verification, not the author.** If the comment names a file, function, schema, enum, downstream caller, or any other artifact reachable from the local checkout, **open it and read it before posting**. "Worth checking `foo.py`" is not a review comment — it is the reviewer outsourcing their job. Either the file says the code is wrong (post a verified finding) or it says the code is fine (post nothing).
-
-Investigate first by exhausting the sources you **can** reach:
-
-1. **Grep the repo** for the symbol / string / identifier — producers, consumers, enums, tests, fixtures, docs.
-2. **Grep sibling repos** when the value crosses a service boundary (e.g., webhook producer → consumer, API schema → client). The upstream producer's source of truth lives there. Discover sibling repos via `T3_WORKSPACE_DIR` or the overlay's configured repo list — never hardcode a user-specific path.
-3. **Read the producer's schema / enum / migration** — whichever repo emits the value. If it's a Django model, check the field's `choices=` and the migration history. If it's a Pydantic model, check the field type.
-4. **Check commit history** for the rename, addition, or removal — `git log -S "<symbol>" --all --oneline` often shows exactly when and why the value changed.
-5. **Read the test fixtures** — realistic test inputs show what the producer actually sends.
-6. **Check related PRs** on the same or upstream repos for the same symbol — someone may have already merged or discussed it.
-
-Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
-
-**Scale severity to confidence — on a colleague-facing post, drop what stays speculative.** A speculative "maybe wrong?" is a nit at best; do not post it under the owner's name. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review. In the **verdict envelope** the disposal is the opposite: record the uncertain observation with its confidence rather than dropping it.
-
-**When the investigation confirms the code is correct, post nothing — on a colleague-facing post.** Silence on a check you performed is the correct outcome there, not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR. In the **verdict envelope** that same clean check is *recorded*, not silenced: name what you checked and that it came back clean.
-
-**Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
-
-Do NOT leave review comments about an external author's PR title format, description wording, commit-message style, work-item link spacing, or whether their description "reads better" in a different shape. These rules are enforced by CI and by the overlay's `validate_pr()` check — not by the reviewer. Raising them manually duplicates the bot and nags a colleague for something a machine already polices.
-
-The reviewer's responsibility is to ensure **their own** PRs pass the title/description check. On other authors' PRs, silence on formatting is the correct outcome. If something is objectively wrong in a way that affects traceability or release notes (e.g., the title references the wrong ticket), frame it as a **correctness** finding, not as a style nit.
-
-**Step 0f — Respect the Overlay's Auto-Close Policy (Non-Negotiable):**
-
-Do NOT suggest adding `Closes #NNN`, `Fixes #NNN`, `Resolves #NNN`, or any other auto-close keyword to a PR description unless the active overlay's conventions explicitly require it. Many overlays manage issue closure via their own ticket/PR linking rather than via GitHub-style auto-close trailers, and suggesting them contradicts the overlay convention.
-
-Check the overlay skill's commit-message and PR-description rules **before** proposing any trailer. The default when the overlay is silent on the topic is: do not suggest auto-close trailers.
-
-**Step 0g — Cross-Service Verification (Non-Negotiable):**
-
-A review of a service that talks to other services is incomplete until those other services have been checked. Reviewing one repo in isolation produces blind comments — the reviewer asserts "this is the convention" or "this default is fine" without knowing what the producers and consumers across the platform actually do. Comments built on that premise undermine the reviewer's credibility when the author replies with "have you checked the FE / the gateway / the sibling microservice?".
-
-**Before posting any comment about a name, contract, default value, schema field, response shape, or wire format, exhaust the cross-service grep:**
-
-1. **Enumerate the related services** at the start of the review. From the PR's repo, list every service that produces or consumes the same data: upstream gateway, downstream consumers (frontend, sibling backend, document generation, data warehouse), shared schema/proto repos. Discover them via `T3_WORKSPACE_DIR` (or the overlay's configured repo list) — never hardcode a user-specific path. State the list explicitly so the user can correct gaps before you start.
-2. **Grep every related service** for the symbol/string/identifier/field name. Frontend models, backend serializers, fixture files, generated docs, OpenAPI specs, migration histories. Note where each occurrence lives.
-3. **Cite the cross-service evidence in the comment.** "Frontend has 18 references to `idExpirationDate` in `libs/shared/data-model/...`; the gateway-side Python repo has matching references in `report-generator/serializers/...`" is a finding. "I think this should be spelled differently" is a guess.
-4. **When the cross-service check reveals the comment was wrong, drop the comment.** A comment that survives the check survives because the platform-wide convention contradicts the diff. Silence is the correct outcome on a check that confirmed the diff is fine.
-5. **When the cross-service check is impossible** (a repo is not in scope, sandboxed, or behind access you don't have), say so explicitly in the comment and name what was checked vs not. Don't pretend you ran a check you didn't.
-
-**Triggers for this step** — every diff touching:
-
-- A schema field name, enum value, or wire format (Pydantic models, DRF serializers, TypeScript interfaces, OpenAPI definitions).
-- A default value or boolean flag that previously had a different default (especially flags with always-on/always-off semantics like loyalty enrichment, feature gates, search filters).
-- A response shape or wrapper type returned by an endpoint already consumed by another service.
-- A query parameter name or required/optional toggle on a public endpoint.
-- A renamed function, method, or class that is used cross-repo (gateway client, shared library, public CLI command).
-
-If none of those triggers apply (purely internal refactor, test-only change, comment fix), this step is satisfied automatically.
-
-**Failure mode this step prevents:** a reviewer posts "the canonical name should be X" based on the local repo's pattern, the author replies "the FE has 20 usages of Y, please check before commenting", and the user (whose name is on the comment) loses credibility for a finding that would have been correct if the reviewer had grepped the FE first.
-
-**Step 0h — Discussion Venue: PR Over Chat (Non-Negotiable):**
-
-Discussion topics that anchor to specific code in a PR — design questions about a function, a TODO in the diff, a missing call compared to a sibling endpoint, a hardcoded value, an architectural choice visible in the patch — belong on the **PR**, not in a Slack/Teams DM or chat thread. Default to PR notes whenever the topic references something the reviewer can point to in the diff.
-
-**Why PR over chat:**
-
-- PR notes are persistent, threaded per topic, and resolve with the PR. Chat scrolls away.
-- Other reviewers and stakeholders see PR notes; chat is a private channel between two people.
-- PR notes attach to the line/file, so the conversation stays anchored to the code that triggered it.
-- The ticket's audit trail benefits from the discussion living next to the code change.
-
-**When chat is the right venue:**
-
-- A heads-up that the review is ready and points to the PR for the discussion ("left some thoughts on !351").
-- Coordination/scheduling ("can we pair on the LE flow tomorrow?").
-- Sensitive feedback that doesn't belong in a public review trail.
-- Topics genuinely unrelated to the diff (e.g., process discussion about how the team reviews PRs).
-
-**Inline first, general note second:**
-
-When posting on the PR, prefer **inline** (line-anchored) discussions over **general** PR comments. Inline notes show the exact code that triggered the question and let the author resolve them per topic. Use a general PR comment only when the topic is not anchorable to a single line — for example, an architectural question that spans the whole file or a code block that is not part of the PR's diff (so GitLab cannot anchor an inline note to it).
-
-**Failure mode this step prevents:** the reviewer drafts a Slack message containing 5 design questions about specific lines of a PR, sends it as a DM, and the discussion lives in chat where it is invisible to the rest of the team and disconnected from the code. The author then has to copy-paste the chat back into PR comments to track resolution. The right move was to post the topics as PR discussions in the first place and send a one-line Slack heads-up pointing to the PR.
+The rest of steps 0 through 0h — the attachment-fetching recipes and annotation reading, reviewing all commits individually, discussing before posting, the full investigation ladder behind the rule above, not policing another author's title format, the overlay's auto-close policy, cross-service verification, and choosing PR over chat as the venue — are in [`skills/review/references/giving-review-investigation.md`](references/giving-review-investigation.md).
 
 **Step 1 — Structured Review Checklist:**
 
@@ -510,68 +432,7 @@ Failure mode this prevents: re-asking a colleague to do work they have explicitl
 
 **Step 3 — Post Draft Review Comments (babysit tier):**
 
-This step is the **`autonomy = "babysit"`** flow. Under an autonomous tier (`full` / `notify`), follow "Colleague-MR Autonomy — Act on the Verdict, Don't Ask" above instead: act on the verdict without a per-MR ask, and approve per the merge-safe rule. The tier removes the round-trip, not the egress gate — a live post still needs `on_behalf_post_mode = "immediate"` or a recorded approval.
-
-**Under babysit, always use draft notes** (or the platform's equivalent "pending review" feature), not direct/immediate comments. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit all comments as a batch.
-
-**Pre-flight: read existing comments (Non-Negotiable).** Before posting any new comments, fetch all existing discussions and notes on the PR (from all authors, not just the current user):
-
-1. **List all discussions** via `GET .../merge_requests/<IID>/discussions?per_page=100` and read each note's `body`.
-2. **For each finding**, check whether an existing comment already raises the same concern — same file, same line range, same substance. If so, **do not post a duplicate**.
-3. **If you have something to add** to an existing discussion (additional context, a related concern on the same code), **reply in that thread** via `t3 review reply-to-discussion <REPO> <MR_IID> <DISCUSSION_ID> "body"` instead of creating a new top-level comment.
-4. **Only post new draft notes** for findings not already covered by existing comments.
-
-This prevents noise from multiple review passes or multiple reviewers covering the same ground.
-
-**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. A draft note is colleague-invisible until the user submits it, so the user is the filter here exactly as the merge gate is on the verdict envelope — the suppression rules bind on what reaches a colleague, never on what reaches a curator. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
-
-When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
-
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review/service.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `run`, `post-comment`, `authorize`, `approve-live-post`, `delete-draft-note`, `delete-discussion`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`. (`post-draft-note` is deprecated — see below.)
-
-**Read-only review-shape audit — `t3 review run <MR_URL>` (#1206).** Run before manually scanning the diff: the CLI emits a JSON summary (`changes.{files,additions,deletions}`, `complexity`, `existing_review.{open_discussions,draft_notes,approvals}`, `findings_catalog`, `verdict`) so every reviewer sub-agent starts from the same shape instead of improvising. The command never publishes; it just gathers what the reviewer needs to decide what to post via `post-comment` / `post-draft-note`. GitHub PR URLs and GitLab MR URLs both audit into the same payload shape; a URL naming neither forge exits 2 with `bad_url` — no masquerading success.
-
-**Default-safe `t3 review post-comment` (Mandatory, #1207).** The subcommand creates a DRAFT by default and DMs the user the link — the CLI itself enforces the draft-by-default rule, so no separate prose check is required. To publish live (colleague-visible), authorize the MR in **one step** with `t3 review authorize <repo>!<mr> --approver <user-id>` (records the durable on-behalf authorization AND mints the single-use live-post token), then the agent re-runs with `--live`. Without an authorization `--live` refuses without any GitLab side effect, naming the `authorize` command in the refusal. The earlier two-command dance (`approve-on-behalf` + `approve-live-post --from-on-behalf`) still works and remains for the Slack-ts verification path, but `authorize` is the one-step collapse (#126).
-
-```bash
-t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
-```
-
-**Large evidence bodies — use `--body-file` (the scannable path, #32).** The comment body may come from the positional `NOTE`, `-m`/`--body <text>`, or `--body-file <path>` — exactly one source. For a large MR-thread evidence body (a verdict table, a multi-row reconciliation), write it to a file and pass `--body-file`, matching how `gh`/`glab` comment commands accept a body file. This avoids shell-quoting a huge positional and routes the body through the well-known flag the #1415 banned-terms gate reads and scans (the gate skips the `--file` diff anchor, which is a SOURCE path, not the body). `--file`/`--line` stay the inline diff anchor and compose with any body source.
-
-```bash
-t3 review post-comment <REPO> <MR_IID> --body-file <path/to/evidence.md>
-```
-
-The CLI validates the target line is an added (`+`) line in the MR diff before posting, and verifies the response anchored correctly (non-null `line_code`). When something goes wrong it refuses upfront — common rejected cases:
-
-- **Context line:** the target is unchanged in the diff. CLI rejects and lists the nearby added lines so you can pick one.
-- **File not in diff:** the file path isn't part of the MR. CLI rejects with the list of changed files.
-- **Collapsed-diff file:** GitLab's draft-note anchoring fails on large files whose diff was collapsed server-side. CLI detects the null `line_code` after posting, deletes the broken draft, and suggests `post-comment` (below).
-
-**Workaround for collapsed-diff files — `t3 review post-comment --live`.** When the file is too large for GitLab to anchor a draft, the post-flight anchor check refuses the draft. The historical workaround used the `/discussions` endpoint, which anchors even on collapsed diffs. Under #1207 that path requires a Slack-recorded approval — the user DMs an approval phrase ("post live" / "submit it" / "go ahead"), the agent records it via `t3 review approve-live-post <mr-url> --slack-ts <ts>`, and then re-runs:
-
-```bash
-t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number> --live
-```
-
-The `--live` post lands immediately instead of batching with a review. Reserve this for the cases where the default draft path explicitly errors with the collapsed-diff message AND the user has authorised the live post in Slack.
-
-**Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
-
-1. Pick the nearest added line in `foo.py` (even a whitespace or adjacent-line change) and open the body with "Note on an unchanged line below:" so the reader sees the anchor is a stand-in.
-2. Post a general (PR-level) note instead of anchoring on a sibling.
-A comment anchored on the wrong file is worse than a general note — the author opens `baz.py` looking for the problem, finds nothing, and loses trust in the review.
-
-**Post-flight: verify response.** Response must confirm the comment landed on the correct file/line — if position data is missing in the response, the comment landed as a general comment (wrong). After posting all notes, list them via the API and confirm the count and positions match expectations.
-
-**Do NOT submit the review without explicit user instruction.** By default, the user reviews draft notes in the platform's UI, edits if needed, and submits manually. If the user explicitly asks to publish (e.g., "post with t3 cli", "submit the review"), use:
-
-```bash
-t3 review publish-draft-notes <REPO> <MR_IID>
-```
-
-**If `t3 review delete-draft-note` returns 404** — the draft was already submitted (published to regular notes) by the user from the GitLab UI. Use `DELETE projects/{encoded_repo}/merge_requests/{iid}/notes/{note_id}` via the regular notes endpoint instead.
+The babysit-tier draft flow — the pre-flight read of existing discussions, the `t3 review post-comment` / `--body-file` / `--live` recipes, the anchoring pre-flight and post-flight checks, the collapsed-diff workaround, and the publish/delete subcommands — is in [`skills/review/references/posting-review-comments.md`](references/posting-review-comments.md).
 
 #### Position field reference
 

@@ -5,6 +5,7 @@ the single ``overlays`` registry row. Registry-touching classes are DB-backed an
 seed via :func:`_seed`.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -54,7 +55,7 @@ def _seed(overlays: dict[str, dict]) -> None:
 
 
 def _overlays() -> dict:
-    return ConfigSetting.objects.get_effective("overlays") or {}
+    return cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays") or {})
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

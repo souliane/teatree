@@ -12,7 +12,6 @@ tag back into ``(model, effort)`` when building :class:`ClaudeAgentOptions` —
 """
 
 import dataclasses
-from typing import cast
 
 from claude_agent_sdk.types import EffortLevel
 
@@ -49,7 +48,7 @@ def parse_model_variant(raw: str) -> ModelVariant:
     if effort not in EFFORT_LEVELS:
         msg = f"unknown effort {effort!r} in --models entry {raw!r}; known levels: {', '.join(EFFORT_LEVELS)}"
         raise ModelVariantError(msg)
-    return ModelVariant(model=model, effort=cast("EffortLevel", effort))
+    return ModelVariant(model=model, effort=effort)
 
 
 def parse_model_variants(raw: str) -> list[ModelVariant]:

@@ -33,7 +33,7 @@ dependencies = [
   # ``[tool.uv] override-dependencies`` entry below narrows it back to what it
   # actually uses so this pin and the ``mcp>=2,<3`` bound resolve together.
   # ``tests/test_claude_agent_sdk_pin.py`` keeps that override honest.
-  "claude-agent-sdk==0.2.128",
+  "claude-agent-sdk==0.2.139",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -61,6 +61,22 @@ dependencies = [
   # in production while every CI lane stayed green. Move this bound and the
   # imports together, never one alone.
   "mcp>=2,<3",
+  # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
+  # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
+  # module — and ``t3 doctor``'s MCP skew check reaches it on every run. It was
+  # never declared: it arrived transitively through ``gunicorn``'s own requirements,
+  # so ``uv.lock`` carried it and every CI and dev venue stayed green. gunicorn
+  # 26.1.0 SHED that dependency, and ``deploy/entrypoint.sh``'s
+  # ``uv tool install --editable --reinstall`` re-resolves WITHOUT the lockfile — so
+  # the container picked up the shedding release and the doctor plane died on import
+  # for 72 consecutive watchdog passes. Same class as the ``coverage`` / ``pyyaml``
+  # runtime-dep declarations above: a transitive arrival is not a declaration.
+  # Bounded to the major whose module layout ``dep_skew`` imports, same posture as the
+  # ``mcp>=2,<3`` pin above: ``uv tool install`` re-resolves this declaration with no
+  # lockfile, so an unbounded floor lets the container run a major the test suite never
+  # saw. ``<27`` admits the resolved 26.x line (uv.lock pins 26.2; the container has
+  # independently resolved 26.3) with one full major of headroom.
+  "packaging>=24,<27",
   # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only
@@ -127,7 +143,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.4.11",
+  "prek==0.4.14",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
@@ -140,7 +156,16 @@ dev = [
   "tach>=0.34",
   "trogon[typer]>=0.6",
   "ty>=0.0.18",
-  "typer>=0.12",
+  # Upper-bounded because ``django-typer`` gates it: 3.8.0 (the newest release)
+  # requires ``typer<0.26.0``. Without the ceiling the resolver takes typer 0.27,
+  # finds 3.8.0 unsatisfiable and backtracks to django-typer 3.5.1, which pulls
+  # ``typer-slim`` and ``click<8.4`` instead. That combination hands the CLI
+  # ``typer._click`` Command objects while the code reads the real ``click``
+  # context stack, so every command dies with "There is no active click context"
+  # (#4570). 3.5.1 also caps ``django<6.1``, which would block the Django 6.1
+  # move #4404 owns. Raise this ceiling only together with a django-typer
+  # release that supports the newer typer.
+  "typer>=0.12,<0.26",
 ]
 docs = [
   "mkdocs>=1.6",
@@ -439,11 +464,11 @@ name = "Overlays must not import private agents internals"
 type = "forbidden"
 source_modules = [ "teatree.contrib" ]
 forbidden_modules = [
-  "teatree.agents._headless_options",
-  "teatree.agents._headless_env",
+  "teatree.agents._runner_options",
+  "teatree.agents._runner_env",
 ]
 # Direct-only: an overlay may use the SANCTIONED public surface (``teatree.overlay_sdk``,
-# ``run_headless``), which internally touches these agents-private modules — that transitive
+# ``run_agent``), which internally touches these agents-private modules — that transitive
 # chain is fine. Only a DIRECT ``import teatree.agents._headless_*`` from an overlay is the
 # reach-into-privates this gate forbids.
 allow_indirect_imports = "true"

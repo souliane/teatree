@@ -4,7 +4,9 @@
 the supervisor, because a container deploy replaces the process and ``deploy/entrypoint.sh``
 clears ``worker_quiescing`` on the fresh boot. On a bare host nothing replaces it: after a
 drain the worker keeps running with the gate ON, so the box admits ZERO work with no
-indication and no discoverable way back.
+indication — and, short of the doctor's stranded-quiescing self-heal eventually proving the
+convergence dead (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), no discoverable way
+back.
 
 :class:`WorkerStopper` closes that gap. It drains (REUSING ``drain_worker``), signals the
 flock holder, and proves the exit against the kernel ``flock`` probe — the same

@@ -11,6 +11,12 @@ Read-only. Scoping is **fail-open**: an anonymous / cron tick (empty
 broken read can never blank the statusline.
 """
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from teatree.core.models.loop import Loop
+    from teatree.core.models.loop_lease import LoopLease
+
 
 def owned_per_loop_slots(session_id: str) -> set[str] | None:
     """Return the ``loop:<name>`` slots owned by ``session_id`` (#1834 WI-2).
@@ -29,7 +35,7 @@ def owned_per_loop_slots(session_id: str) -> set[str] | None:
 
         from teatree.core.loop_lease_manager import PER_LOOP_OWNER_PREFIX  # noqa: PLC0415 — tick-time import
 
-        lease_model = apps.get_model("core", "LoopLease")
+        lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
         rows = lease_model.objects.filter(name__startswith=PER_LOOP_OWNER_PREFIX, session_id=session_id).values_list(
             "name", flat=True
         )
@@ -116,7 +122,7 @@ def loop_is_actively_ticking(slot: str) -> bool:
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
-        loop_model = apps.get_model("core", "Loop")
+        loop_model = cast("type[Loop]", apps.get_model("core", "Loop"))
         row = loop_model.objects.filter(name=per_loop_loop_name(slot)).only("last_run_at", "delay_seconds").first()
         if row is None or row.last_run_at is None or not row.delay_seconds:
             return False

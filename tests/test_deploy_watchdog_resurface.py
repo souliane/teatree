@@ -126,6 +126,7 @@ class Watchdog:
         env["TEATREE_WATCHDOG_DAY_BUCKET"] = day
         env["TEATREE_WATCHDOG_DEPLOY_PENDING_STATE"] = str(self.tmp_path / "pending.state")
         env["TEATREE_WATCHDOG_RED_STATE"] = str(self.tmp_path / "red.state")
+        env["TEATREE_WATCHDOG_UNDELIVERED_STATE"] = str(self.tmp_path / "undelivered.state")
         env["TEATREE_WATCHDOG_DEPLOY_LOCK"] = str(self.tmp_path / "absent-deploy.lock")
         subprocess.run([_BASH, str(self.harness)], capture_output=True, text=True, check=False, env=env)
 

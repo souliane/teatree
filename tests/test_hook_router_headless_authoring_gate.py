@@ -1,7 +1,7 @@
 # test-path: cross-cutting — tests the headless_authoring_gate PreToolUse handler wired into hook_router.py.
 """The configured headless posture must be ENFORCED, not merely stored (#3883).
 
-``agent_runtime = headless`` says all implementation work runs through the factory. Nothing
+Teatree runs headless: all implementation work goes through the factory. Nothing
 made that true: an interactive Claude Code session could edit ``src/``, dispatch ``t3:coder``
 sub-agents, and commit — and none of it was refused.
 
@@ -49,7 +49,6 @@ def engaged_session(tmp_path: Path) -> Iterator[Path]:
     with (
         mock.patch.object(router, "STATE_DIR", tmp_path),
         mock.patch.object(router, "_teatree_engaged", return_value=True),
-        mock.patch.object(gate, "_posture_is_headless", return_value=True),
         mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
         mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
         mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
@@ -92,7 +91,6 @@ class TestTheFactoryIsNeverRefused:
         with (
             mock.patch.object(router, "STATE_DIR", tmp_path),
             mock.patch.object(router, "_teatree_engaged", return_value=True),
-            mock.patch.object(gate, "_posture_is_headless", return_value=True),
             mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
             mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
             mock.patch.dict(os.environ, _SDK_ENV, clear=False),
@@ -107,17 +105,12 @@ class TestTheFactoryIsNeverRefused:
         with (
             mock.patch.object(router, "STATE_DIR", tmp_path),
             mock.patch.object(router, "_teatree_engaged", return_value=True),
-            mock.patch.object(gate, "_posture_is_headless", return_value=True),
             mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
             mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
             mock.patch.dict(os.environ, {}, clear=False),
         ):
             for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_AGENT_SDK_VERSION"):
                 os.environ.pop(key, None)
-            assert _run_chain(_edit()) is False
-
-    def test_an_unreadable_posture_allows(self, engaged_session: Path) -> None:
-        with mock.patch.object(gate, "_posture_is_headless", return_value=None):
             assert _run_chain(_edit()) is False
 
 
@@ -194,11 +187,6 @@ class TestTheCarveOutsHold:
 
 
 class TestDefaultOffIsPreserved:
-    def test_nothing_is_refused_when_the_posture_is_not_headless(self, engaged_session: Path) -> None:
-        with mock.patch.object(gate, "_posture_is_headless", return_value=False):
-            assert _run_chain(_edit()) is False
-            assert _run_chain(_dispatch("t3:coder")) is False
-
     def test_an_unengaged_session_is_never_refused(self, engaged_session: Path) -> None:
         # A colleague cloning the repo has not opted in and must feel nothing.
         with mock.patch.object(router, "_teatree_engaged", return_value=False):
@@ -224,30 +212,6 @@ def _write_config_db(db: Path, rows: dict[str, object]) -> Path:
         )
     conn.close()
     return db
-
-
-class TestThePostureReadIsRealRatherThanAlwaysUnreadable:
-    """The posture reader, exercised for real rather than mocked.
-
-    The gate is inert if ``_posture_is_headless`` always raises — and every other case here
-    mocks it, so nothing above would notice. These run the REAL reader against a real control
-    DB, so a wrong call signature (which fails open and disables the gate silently) turns this
-    red instead of passing unnoticed.
-    """
-
-    def test_a_stored_headless_runtime_reads_as_headless(self, tmp_path: Path) -> None:
-        db = _write_config_db(tmp_path / "db.sqlite3", {"agent_runtime": "headless"})
-        with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}):
-            assert gate._posture_is_headless() is True
-
-    def test_a_stored_interactive_runtime_reads_as_not_headless(self, tmp_path: Path) -> None:
-        db = _write_config_db(tmp_path / "db.sqlite3", {"agent_runtime": "interactive"})
-        with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}):
-            assert gate._posture_is_headless() is False
-
-    def test_an_absent_store_is_unreadable_rather_than_a_verdict(self, tmp_path: Path) -> None:
-        with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(tmp_path / "missing.sqlite3")}):
-            assert gate._posture_is_headless() is None
 
 
 def _bash(command: str, cwd: str) -> dict:
@@ -294,7 +258,6 @@ def headless_interactive(tmp_path: Path) -> Iterator[None]:
         mock.patch.object(router, "STATE_DIR", tmp_path / "state"),
         mock.patch.object(router, "_teatree_engaged", return_value=True),
         mock.patch.object(gate, "_gate_enabled", return_value=True),
-        mock.patch.object(gate, "_posture_is_headless", return_value=True),
         mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
         mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
     ):
@@ -425,18 +388,18 @@ def _seeded_clone(path: Path) -> Path:
 
 @pytest.fixture
 def managed_and_unmanaged(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
-    """Two real clones, one teatree-MANAGED, under an engaged interactive headless session.
+    """Two real clones, one teatree-MANAGED, under an engaged interactive session.
 
-    Neither the posture nor the managed-repo classification is mocked: the control DB stores
-    ``agent_runtime`` and an overlay registry whose ``path`` covers the managed clone, so both
-    resolve exactly as they do in production. Which of the two the gate judges is the whole
-    question these cases ask, and a mock of that dimension would answer it for them.
+    The managed-repo classification is not mocked: the control DB stores an overlay registry
+    whose ``path`` covers the managed clone, so it resolves exactly as it does in production.
+    Which of the two the gate judges is the whole question these cases ask, and a mock of that
+    dimension would answer it for them.
     """
     managed = _seeded_clone(tmp_path / "managed")
     unmanaged = _seeded_clone(tmp_path / "unmanaged")
     db = _write_config_db(
         tmp_path / "db.sqlite3",
-        {"agent_runtime": "headless", "overlays": {"probe": {"path": str(managed)}}},
+        {"overlays": {"probe": {"path": str(managed)}}},
     )
     with (
         mock.patch.object(router, "STATE_DIR", tmp_path / "state"),

@@ -141,7 +141,7 @@ def _git_commits_since(since: datetime) -> CommitCollector:
 
     def collect(ticket: Ticket) -> list[str]:
         out: list[str] = []
-        for worktree in ticket.worktrees.all():  # ty: ignore[unresolved-attribute]
+        for worktree in ticket.worktrees.all():
             path = worktree.worktree_path
             if not path:
                 continue

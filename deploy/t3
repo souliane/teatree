@@ -10,16 +10,33 @@
 # stack is down, overriding the role-dispatch entrypoint to run the CLI directly.
 set -euo pipefail
 
-# PHYSICAL resolution (`pwd -P`), not logical: a fork commonly exposes
-# `<fork>/deploy -> vendor/teatree/deploy`, and bash resolves `..` LOGICALLY —
-# `<fork>/deploy/..` is `<fork>`, which rebases REPO_ROOT onto the fork root and
+# PHYSICAL resolution (`pwd -P`), not logical: a host project commonly exposes
+# `<host>/deploy -> vendor/teatree/deploy`, and bash resolves `..` LOGICALLY —
+# `<host>/deploy/..` is `<host>`, which rebases REPO_ROOT onto the host root and
 # defeats the layout checks below. Resolving both hops physically makes the
-# symlinked and the direct entry point resolve identically. On the box, where no
-# symlink is involved, `pwd -P` is `pwd`.
+# symlinked and the direct entry point resolve identically. On a standalone clone,
+# where no symlink is involved, `pwd -P` is `pwd`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
 SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
+# Every control-DB route, preferred first. A convergence recreates them ONE AT A
+# TIME (deploy.sh's staged swap), so the one being replaced always has a live
+# sibling — dispatching there turns what used to be an opaque `service "X" is not
+# running` into a call that simply works. The worker leads because it alone carries
+# the docker-socket group, so `worktree provision` needs it; the admin is the
+# documented second `docker exec` target and shares every mount.
+CLI_SERVICE_FALLBACKS="${TEATREE_DOCKER_CLI_FALLBACK_SERVICES:-teatree-admin teatree-worker}"
+# deploy.sh's single-convergence lock — the authoritative "an update is happening
+# right now" signal, read the same read-only way deploy/watchdog.sh reads it.
+DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
+# How long to wait for a route to come back when a convergence is demonstrably in
+# flight. 0 reports immediately instead of waiting.
+UPDATE_WAIT_SECONDS="${TEATREE_UPDATE_WAIT_SECONDS:-180}"
+# EX_TEMPFAIL, distinct from every code the CLI itself returns, so a caller branches
+# on "the substrate is mid-update" rather than parsing a message.
+UPDATE_IN_PROGRESS_EXIT=75
 # The container path the source mount always lands on (the compose target is
 # fixed — it is what `teatree.paths` resolves inside the container).
 CONTAINER_SOURCE_DIR=/home/teatree/teatree
@@ -36,6 +53,26 @@ fi
 # which is what makes the stack mountable there at all: dockerd refuses a source
 # path that does not exist on the host ("mounts denied: … is not shared").
 export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
+
+# PATH IDENTITY for the worktree tree, added only when the host home differs from the
+# container's. docker-compose.yml deliberately gives up path identity off-box: mount
+# TARGETS are fixed container paths under the container HOME while the host-side SOURCE
+# root follows the real host home. That is right for everything the container reads
+# itself — and wrong for what it hands the docker DAEMON. `t3 <overlay> worktree start`
+# runs `docker compose up` for a worktree stack through the mounted socket; compose
+# resolves that stack's relative `volumes:` against its own cwd (a CONTAINER path) and
+# gives the daemon a source that does not exist on the host, which answers "mounts
+# denied: the path ... is not shared from the host" and fails every worktree stack. The
+# overlay ADDS a second, host-identical view so a worktree path is valid as both
+# coordinates. On the box the two homes coincide, the two mount targets would collide,
+# and the overlay is correctly not added — so the box is byte-identical to before.
+# Derived from the source-mount target rather than restated, so the container HOME
+# has exactly one definition in this file.
+CONTAINER_HOME="${CONTAINER_SOURCE_DIR%/*}"
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [ "$TEATREE_HOST_HOME" != "$CONTAINER_HOME" ]; then
+    COMPOSE_ARGS+=(-f "$HOST_IDENTITY_FILE")
+fi
 
 # The checkout this wrapper runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
@@ -94,35 +131,37 @@ DATA_MOUNT_SOURCES=(
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
 install -d "${DATA_MOUNT_SOURCES[@]}"
 
-# Run the WORKING TREE the wrapper was invoked from when that tree vendors
-# teatree core — the fork layout `<fork>/vendor/teatree/deploy/t3`. The tree is
-# bind-mounted over the container's source path, so the containerized `t3`
+# Run the WORKING TREE the wrapper was invoked from when teatree is installed
+# BENEATH a host project — the `<host>/vendor/teatree/deploy/t3` layout. The tree
+# is bind-mounted over the container's source path, so the containerized `t3`
 # executes the code being edited here instead of the `teatree_src` volume's
-# clone. A stock teatree checkout (`<clone>/deploy/t3`, the box) does not match
-# and keeps the volume — the box's self-update path via the entrypoint's origin
+# clone. A standalone teatree checkout (`<clone>/deploy/t3`) does not match and
+# keeps the volume — the self-update path via the entrypoint's origin
 # fast-forward. `TEATREE_SOURCE_MOUNT` set in the environment always wins.
 #
-# What gets mounted is the FORK ROOT, not the vendored core alone. Overlays
+# What gets mounted is the HOST PROJECT ROOT, not the nested core alone. Overlays
 # register through the HOST project's `teatree.overlays` entry point, so the
-# container resolves a downstream overlay only once the fork root is installed
+# container resolves a host-provided overlay only once the host root is installed
 # alongside core (`--with-editable`, deploy/entrypoint.sh). The entrypoint
-# derives that host root from the layout it can SEE — `$TEATREE_CLONE_DIR`
-# ending in `/vendor/teatree` with a `pyproject.toml` at its parent — so
-# mounting core alone leaves it nothing to find, no overlay registered, and
-# every headless task on an overlay-owned ticket dead at dispatch ("Overlay
-# '<name>' not found. Available: t3-teatree"). Mounting the fork root puts core
-# one level down, which is exactly the shape that detection matches;
-# `TEATREE_CLONE_DIR` follows it there and reaches the container through the
-# compose services' `environment:` (an operator's own value still wins).
+# derives that host root from the layout it can SEE — `$TEATREE_CLONE_DIR` ending
+# in `/vendor/teatree`, the conventional path a host project installs core at,
+# with a `pyproject.toml` at its parent — so mounting core alone leaves it
+# nothing to find, no overlay registered, and every headless task on an
+# overlay-owned ticket dead at dispatch ("Overlay '<name>' not found. Available:
+# t3-teatree"). Mounting the host root puts core one level down, which is exactly
+# the shape that detection matches; `TEATREE_CLONE_DIR` follows it there and
+# reaches the container through the compose services' `environment:` (an
+# operator's own value still wins).
 #
-# A vendor parent with no `pyproject.toml` is not a host project — the entrypoint
-# would reject it too — so that layout keeps the core-only mount unchanged.
+# A `vendor/` parent with no `pyproject.toml` is not a host project — the
+# entrypoint would reject it too — so that layout keeps the core-only mount
+# unchanged.
 if [ -z "${TEATREE_SOURCE_MOUNT:-}" ] &&
     [ "$(basename "$REPO_ROOT")" = teatree ] &&
     [ "$(basename "$(dirname "$REPO_ROOT")")" = vendor ]; then
-    FORK_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
-    if [ -f "$FORK_ROOT/pyproject.toml" ]; then
-        export TEATREE_SOURCE_MOUNT="$FORK_ROOT"
+    HOST_PROJECT_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
+    if [ -f "$HOST_PROJECT_ROOT/pyproject.toml" ]; then
+        export TEATREE_SOURCE_MOUNT="$HOST_PROJECT_ROOT"
         export TEATREE_CLONE_DIR="${TEATREE_CLONE_DIR:-$CONTAINER_SOURCE_DIR/vendor/teatree}"
     else
         export TEATREE_SOURCE_MOUNT="$REPO_ROOT"
@@ -134,7 +173,7 @@ fi
 # containerized CLI sees the same directory no matter where `t3` was typed. Most
 # commands do not care; a command whose whole contract is "resolve from where I
 # am" is dead on arrival — `t3 overlay install` walks up from cwd to find the
-# teatree workspace and failed identically from the fork root and from /tmp.
+# teatree workspace and failed identically from the host root and from /tmp.
 #
 # A `--workdir` cannot carry it: the path must exist INSIDE the container, and the
 # host cwd usually has no container counterpart, so passing it would make docker
@@ -322,7 +361,124 @@ warn_unreachable_host_paths() {
 
 warn_unreachable_host_paths "$@"
 
-compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+compose() { docker compose "${COMPOSE_ARGS[@]}" "$@"; }
+
+# The first control-DB route that is actually running, preferring $SERVICE. Echoes
+# its name; non-zero when none of them is up.
+first_running_service() {
+    local svc seen=""
+    for svc in $SERVICE $CLI_SERVICE_FALLBACKS; do
+        case " $seen " in
+        *" $svc "*) continue ;;
+        esac
+        seen="$seen $svc"
+        if [ -n "$(compose ps --status running --quiet "$svc" 2>/dev/null)" ]; then
+            printf '%s' "$svc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# True when deploy.sh's single-convergence flock is held. READ-ONLY by construction:
+# it matches the lock file's device+inode against /proc/locks and never opens the
+# file for locking. A probe that briefly ACQUIRED the lock would make a deploy
+# starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
+# that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
+# (macOS, an unreadable /proc/locks, no lock file), which keeps the stopped-stack
+# path below rather than inventing an update that may not be running.
+deploy_lock_held() {
+    local fields maj min ino
+    [ -r /proc/locks ] || return 1
+    fields="$(stat -c '%Hd %Ld %i' "$DEPLOY_LOCK" 2>/dev/null)" || return 1
+    read -r maj min ino <<<"$fields"
+    [ -n "${ino:-}" ] || return 1
+    grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
+}
+
+# WHICH TREE THE RUNNING CONTAINER ACTUALLY EXECUTES. `TEATREE_SOURCE_MOUNT` above
+# resolves the host project this wrapper was invoked from, so the container runs the
+# code being edited here — but that value reaches a container only through `up` /
+# `run`. The fast path below is `exec` into an ALREADY-RUNNING worker, and no exec
+# can change a mount, so the resolved value is silently DISCARDED and the CLI
+# executes whatever tree was in effect when the stack came up.
+#
+# Measured: a running stack bind-mounting a clone 16 commits behind this checkout.
+# Every fix of that day was invisible to the running system — including the fix for
+# a bug that destroyed a development stack — and nothing reported it, because
+# nothing compared the two. Staleness is not the defect; SILENCE is.
+#
+# Reporting rather than refusing. A false positive here would break every `t3` call
+# on a live stack, and the wrapper already owns a loud non-blocking diagnostic
+# (warn_unreachable_host_paths). An answer the daemon cannot give is not evidence of
+# divergence, so an unreadable inspect stays silent rather than inventing a drift.
+warn_source_mount_drift() {
+    local container mounted running_type running_source resolved
+    [ -n "${TEATREE_SOURCE_MOUNT:-}" ] || return 0
+    container="$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" || return 0
+    container="${container%%$'\n'*}"
+    [ -n "$container" ] || return 0
+    mounted="$(docker inspect --format \
+        "{{range .Mounts}}{{if eq .Destination \"$CONTAINER_SOURCE_DIR\"}}{{.Type}} {{.Source}}{{end}}{{end}}" \
+        "$container" 2>/dev/null)" || return 0
+    [ -n "$mounted" ] || return 0
+    running_type="${mounted%% *}"
+    running_source="${mounted#* }"
+    # Docker Desktop reports some bind sources under `/host_mnt`; comparing raw would
+    # flag every mount on a Mac and make the warning worthless.
+    running_source="${running_source#/host_mnt}"
+    if [ "$running_type" = bind ]; then
+        resolved="$(cd "$running_source" 2>/dev/null && pwd -P)" || resolved="$running_source"
+        [ "$resolved" = "$TEATREE_SOURCE_MOUNT" ] && return 0
+    fi
+    echo "deploy/t3: WARNING the running $SERVICE runs a DIFFERENT source tree than this checkout." >&2
+    echo "           editing here : $TEATREE_SOURCE_MOUNT" >&2
+    echo "           executing    : ${running_source:-<the teatree_src volume clone>} ($running_type)" >&2
+    echo "           Every change made here is invisible to the running factory until the" >&2
+    echo "           stack is recreated against this tree:" >&2
+    echo "             TEATREE_SOURCE_MOUNT=$TEATREE_SOURCE_MOUNT \\" >&2
+    echo "               docker compose ${COMPOSE_ARGS[*]} up -d" >&2
+    return 0
+}
+
+warn_source_mount_drift
+
+# THE GPG HOME AN EXEC'D PROCESS MUST ADOPT, decided INSIDE the container.
+#
+# gpg-agent and keyboxd bind their `S.*` sockets inside GNUPGHOME. When the host's
+# `~/.gnupg` mount cannot host a unix socket (Docker Desktop for Mac serves it over
+# `fakeowner`), deploy/entrypoint.sh's `resolve_gnupg_home` copies the key material
+# onto the `.gnupg-run` tmpfs and exports GNUPGHOME to that copy. The export reaches
+# only the ROLE's own process tree: `compose exec` starts from the container's own
+# environment, which still carries the image's baked GNUPGHOME, so every secret read
+# through this wrapper dies on `No Keybox daemon running` and yields an EMPTY value —
+# indistinguishable from the credential simply being absent, which is how a messaging
+# backend ends up posting with no token and reporting success.
+#
+# A container-level `environment:` pin (the shape TMPDIR uses) cannot carry it: the
+# correct value differs per host. A mount that hosts sockets in place MUST keep the
+# in-place home, because one shared home is what gives the services one gpg-agent and
+# makes a cached passphrase work; a sharing-transport host must use the tmpfs copy.
+# Pinning the derived path everywhere would also defeat the entrypoint's own
+# `[ -d "$GNUPGHOME" ]` guard, skipping the copy that creates it.
+#
+# So this reads the EVIDENCE the entrypoint left on disk instead of re-deriving
+# anything: a derived home holding private keys exists only where the entrypoint
+# decided the mount could not host the sockets. Elsewhere the tmpfs stays empty and
+# GNUPGHOME is left exactly as the image set it. An empty derived home is never
+# adopted — that would replace a readable home with an unusable one.
+#
+# Single-quoted, and passed as the `sh -c` PROGRAM so the HOST shell never expands
+# it: `$0` is the label, `$@` the command to run.
+CONTAINER_GNUPG_PROLOGUE='derived="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
+for key in "$derived"/private-keys-v1.d/*.key; do
+    if [ -f "$key" ]; then
+        GNUPGHOME="$derived"
+        export GNUPGHOME
+        break
+    fi
+done
+exec "$@"'
 
 # Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
 # start the process from the service's own `environment:`, so a value the operator
@@ -407,18 +563,46 @@ done
 # `set -u` treats an empty array's plain expansion as an unbound-variable error on
 # bash 3.2 (the macOS default), so every use below takes the empty-safe form.
 
-# A running worker is the cheapest, most consistent runtime — exec into it. `-T`
+RUNNING_SERVICE="$(first_running_service || true)"
+
+# A convergence swaps the routes one at a time, so a moment with NONE of them up is
+# short and self-clearing. Waiting it out is what turns the window from an outage an
+# operator escalates on into a call that simply succeeds; a caller who cannot wait
+# sets TEATREE_UPDATE_WAIT_SECONDS=0 and gets the named refusal immediately.
+if [ -z "$RUNNING_SERVICE" ] && deploy_lock_held; then
+    if [ "$UPDATE_WAIT_SECONDS" -gt 0 ]; then
+        echo "deploy/t3: a teatree update is in progress — waiting up to ${UPDATE_WAIT_SECONDS}s for a control-DB route." >&2
+        UPDATE_WAITED=0
+        while [ "$UPDATE_WAITED" -lt "$UPDATE_WAIT_SECONDS" ]; do
+            sleep 2
+            UPDATE_WAITED=$((UPDATE_WAITED + 2))
+            RUNNING_SERVICE="$(first_running_service || true)"
+            [ -z "$RUNNING_SERVICE" ] || break
+        done
+    fi
+    if [ -z "$RUNNING_SERVICE" ]; then
+        echo "deploy/t3: a teatree update is in progress and no control-DB service came back within ${UPDATE_WAIT_SECONDS}s." >&2
+        echo "           This is an UPDATE, not an outage — retry shortly; exit $UPDATE_IN_PROGRESS_EXIT says so to a caller." >&2
+        exit "$UPDATE_IN_PROGRESS_EXIT"
+    fi
+fi
+
+# A running service is the cheapest, most consistent runtime — exec into it. `-T`
 # is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
 # to allocate one; an interactive shell keeps the TTY for prompts/pagers.
-if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
+if [ -n "$RUNNING_SERVICE" ]; then
+    if [ "$RUNNING_SERVICE" != "$SERVICE" ]; then
+        echo "deploy/t3: $SERVICE is not running — dispatching in $RUNNING_SERVICE instead. It shares every mount," >&2
+        echo "           but only the worker carries the docker-socket group, so a provisioning command needs it back." >&2
+    fi
     # `compose` is a shell function, not a binary on PATH — `exec` replaces the
     # process image via a real command lookup and cannot resolve a function
     # (`exec: compose: not found`), so the final hop inlines `docker compose`
     # directly instead of calling through the function.
     if [ -t 0 ]; then
-        exec docker compose -f "$COMPOSE_FILE" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" t3 "$@"
+        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
     fi
-    exec docker compose -f "$COMPOSE_FILE" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" t3 "$@"
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
 fi
 
 # Nothing running. Two different worlds reach this line: a merely STOPPED stack,
@@ -459,6 +643,16 @@ if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null
     refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
 fi
 
+# Bypassing the entrypoint is also what makes this container credential-less: the
+# entrypoint is where GH_TOKEN is exported and git's credential helper is wired, so a
+# push from here fails on `could not read Username` — a failure of the venue, not of the
+# branch. Announced BEFORE the dispatch, on stderr so a `--json` consumer is unaffected;
+# said afterwards it arrives as one more opaque rc=1 (#4076).
+echo "deploy/t3: the teatree worker is not running — dispatching in a one-off container." >&2
+echo "           It shares the mounts but not the worker's environment: git has no credential" >&2
+echo "           helper there, so a push cannot authenticate. Start the stack first for a push:" >&2
+echo "           $REPO_ROOT/deploy/deploy.sh" >&2
+
 # `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
 # directly, not a server.
-exec docker compose -f "$COMPOSE_FILE" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"
+exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"

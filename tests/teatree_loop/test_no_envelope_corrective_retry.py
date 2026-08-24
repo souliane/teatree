@@ -13,7 +13,7 @@ corrective retry never fired for: the first prose-only run parked the task and
 paged a human. These tests pin the routing (retry once, then escalate) and the
 phase-accuracy of the instruction; the producer/consumer parity that let the two
 strings drift apart is pinned on the runner side, in
-``tests/teatree_agents/test_headless_no_envelope_guard.py``.
+``tests/teatree_agents/test_runner_no_envelope_guard.py``.
 """
 
 from django.test import TestCase
@@ -34,7 +34,6 @@ def _failed_task(*, phase: str, state: str = Ticket.State.STARTED) -> Task:
 def _add_failed_attempt(task: Task, *, error: str) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,  # an envelope refusal is a clean REFUSAL, not a crash
         error=error,
@@ -97,6 +96,31 @@ class TestNoEnvelopeCorrectiveRetry(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
         # Durably parked — a later sweep never resurrects another retry.
         assert requeue_transient_failed() == 0
+
+    def test_a_fresh_task_row_earns_its_own_retry_after_an_earlier_ones_refusal(self) -> None:
+        # #4075. The budget spans Task ROWS of one ticket-phase, so a re-dispatched task
+        # inherits the earlier row's no-envelope attempt. Both carry the same CONSTANT
+        # reason and so the same fingerprint — which used to read as a two-strikes stall
+        # and page a human before this row had run its own single corrective retry.
+        first = _failed_task(phase="debugging")
+        _add_failed_attempt(first, error=NO_ENVELOPE_ERROR)
+        assert requeue_transient_failed() == 1
+        Task.objects.filter(pk=first.pk).update(status=Task.Status.COMPLETED)
+
+        second = Task.objects.create(
+            ticket=first.ticket,
+            session=first.session,
+            phase="debugging",
+            status=Task.Status.FAILED,
+        )
+        _add_failed_attempt(second, error=NO_ENVELOPE_ERROR)
+
+        assert requeue_transient_failed() == 1
+
+        second.refresh_from_db()
+        assert second.status == Task.Status.PENDING
+        assert "[auto-corrective-retry]" in second.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_corrective_instruction_names_only_the_phases_own_required_keys(self) -> None:
         # The note lands in the re-dispatched prompt (``execution_reason`` →

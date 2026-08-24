@@ -90,6 +90,8 @@ class UnshippedWorkCheckTest(TestCase):
         assert "1 unpushed commit(s)" in out
         assert "unshipped-work/agent-a1" in out
         assert "workspace salvage" in out
+        # The finding must name the recovery path, not just the capture (#4435).
+        assert "workspace restore" in out
 
     def test_a_re_capture_does_not_reset_the_reported_age(self) -> None:
         # The regression. Capture re-runs on every non-dry-run sweep for every kept
@@ -121,8 +123,16 @@ class UnshippedWorkCheckTest(TestCase):
 
         _ok, out = _echoes(check_unshipped_work)
 
-        assert "state git could not read" in out
+        assert "unreadable here" in out
         assert "fatal: bad object" in out
+
+    def test_an_unreadable_record_does_not_blame_git_for_a_venue_miss(self) -> None:
+        _capture("/w/scratch/elsewhere", unreadable="/w/scratch/elsewhere records its git dir at /other/venue")
+
+        _ok, out = _echoes(check_unshipped_work)
+
+        assert "records its git dir at /other/venue" in out
+        assert "git could not read" not in out
 
     def test_a_record_with_no_branch_is_still_reported(self) -> None:
         _capture("/w/scratch/detached", dirty=["src/a.py"])

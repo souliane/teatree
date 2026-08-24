@@ -1,10 +1,11 @@
-"""PreToolUse: refuse INTERACTIVE authoring of teatree while the headless posture is set (#3883).
+"""PreToolUse: refuse INTERACTIVE authoring of teatree (#3883).
 
-``agent_runtime = headless`` declares that implementation work runs through the factory.
-Nothing enforced it, so an interactive session could hand-write ``src/``, dispatch ten
-``t3:coder`` agents, and commit — each step individually reasonable, none of it refused.
-The instruction half of the control (#3869) is prose an agent can reason around; this is
-the deterministic backstop underneath it.
+Teatree runs headless: implementation work goes through the factory. Nothing enforced
+that, so an interactive session could hand-write ``src/``, dispatch ten ``t3:coder``
+agents, and commit — each step individually reasonable, none of it refused. The
+instruction half of the control (#3869) is prose an agent can reason around; this is the
+deterministic backstop underneath it. It applies unconditionally: there is no setting to
+read, because there is no other lane the work could legitimately run in.
 
 The line: **the main session monitors and dogfoods; the factory implements.** Reading,
 searching, diagnosing, reviewing, merging, answering questions, filing issues, and every
@@ -19,10 +20,8 @@ WHO IS ACTING, NOT WHAT IS TOUCHED
 The factory's own workers run through the Agent SDK with this SAME hook set. A gate keyed
 on the path would refuse the agents meant to do the implementing, and the failure would
 present as "every headless task refuses" with no obvious cause. So the discriminator is
-the LANE, read from the transport's own env contract: the SDK subprocess sets
-``CLAUDE_CODE_ENTRYPOINT=sdk-py``, sets ``CLAUDE_AGENT_SDK_VERSION``, and strips
-``CLAUDECODE`` from the child env. Only a positively-identified interactive CLI session is
-ever refused.
+the LANE (``session_lane.session_lane``, shared with the engagement seam). Only a
+positively-identified interactive CLI session is ever refused.
 
 FAILS OPEN, INVERTING THE HOUSE RULE
 ------------------------------------
@@ -36,7 +35,6 @@ Cold-import safe: stdlib-only at module top; the router helpers and the ``teatre
 read are imported lazily inside the functions.
 """
 
-import os
 import re
 import sys
 import time
@@ -44,6 +42,7 @@ from pathlib import Path
 
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed, resolve_branch_and_root, teatree_src_on_path
 from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
 
 # Alias both identities so the handler the router registers and a test patching a helper
 # here operate on the SAME module object — the pattern every sibling uses.
@@ -85,14 +84,9 @@ _FILE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
 #: false-negative every sibling accepts, and the right one for a gate that fails OPEN.
 _AUTHORING_BASH_RE = re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:-C\s+\S+\s+)?(?:commit|push)\b")
 
-# ``session_lane`` vocabulary.
-LANE_INTERACTIVE_CLI = "interactive_cli"
-LANE_SDK = "sdk"
-LANE_UNKNOWN = "unknown"
-
 _REFUSAL = (
-    "HEADLESS POSTURE: this session is teatree-engaged and `agent_runtime = headless`, which "
-    "means implementation of teatree runs through the factory, not by hand here. This session's "
+    "HEADLESS POSTURE: this session is teatree-engaged, and implementation of teatree runs "
+    "through the factory, not by hand here. This session's "
     "job is to monitor and dogfood — read, search, diagnose, review, merge, answer questions, "
     "run `t3`, and FILE what it finds.\n"
     "Refused: an edit, a `git commit`, or a `git push` — push included — whose resolved target "
@@ -112,52 +106,11 @@ _REFUSAL = (
 )
 
 
-def session_lane() -> str:
-    """Which lane this hook is running in — the ONLY thing the refusal keys on.
-
-    Returns :data:`LANE_SDK` for any Agent-SDK embedding (the factory's own headless workers
-    included), :data:`LANE_INTERACTIVE_CLI` for a human-driven Claude Code CLI session, and
-    :data:`LANE_UNKNOWN` when the env carries neither signature.
-
-    The SDK signature is checked FIRST and is the broader test, so a transport that sets both
-    (or an env teatree does not recognise) resolves toward "not interactive" — the direction
-    that cannot take the factory down.
-    """
-    entrypoint = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip().lower()
-    if os.environ.get("CLAUDE_AGENT_SDK_VERSION", "").strip() or entrypoint.startswith("sdk"):
-        return LANE_SDK
-    if entrypoint == "cli" and os.environ.get("CLAUDECODE", "").strip():
-        return LANE_INTERACTIVE_CLI
-    return LANE_UNKNOWN
-
-
 def _gate_enabled() -> bool:
     """Whether the gate is on (default True). ``headless_authoring_gate_enabled = false`` disables it."""
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("headless_authoring_gate_enabled", default=True)
-
-
-def _posture_is_headless() -> bool | None:
-    """Whether ``agent_runtime`` resolves to ``headless``; ``None`` when it cannot be read.
-
-    ``None`` is the fail-OPEN answer and is returned for every unreadable shape — teatree not
-    importable from the hook interpreter, an unreachable DB, an unrecognised value. A posture
-    teatree cannot read is not a posture it may enforce.
-    """
-    try:
-        with teatree_src_on_path():
-            from teatree.config.cold_reader import overlay_then_global  # noqa: PLC0415 — deferred: cold-hook import
-
-            # Overlay scope first, then global — the cold twin of the resolver's own two-tier
-            # layering, so a per-overlay runtime beats the workspace-wide one exactly as it
-            # does in ``get_effective_settings``. An unresolvable overlay reads global only.
-            value = overlay_then_global("agent_runtime", os.environ.get("T3_OVERLAY_NAME", "").strip())
-    except Exception:  # noqa: BLE001 — crash-proof: an unreadable posture ALLOWS, never refuses
-        return None
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return value.strip().lower() == "headless"
 
 
 def _targets_teatree_repo(file_path: str) -> bool:
@@ -298,7 +251,7 @@ def _refusal_applies(data: dict, session_id: str) -> bool:
         return False
     from hooks.scripts.hook_router import _teatree_engaged  # noqa: PLC0415 deferred back-import
 
-    if not _teatree_engaged(session_id) or _posture_is_headless() is not True:
+    if not _teatree_engaged(session_id):
         return False
     if not _is_authoring_call(data):
         return False
@@ -310,8 +263,8 @@ def handle_block_interactive_authoring(data: dict) -> bool:
 
     Every condition must hold POSITIVELY before anything is refused (:func:`_refusal_applies`):
     the gate is enabled, the lane is a positively-identified interactive CLI session, teatree
-    is engaged, the posture reads ``headless``, the call authors teatree's own source, and no
-    audited override is present. Any unreadable answer allows.
+    is engaged, the call authors teatree's own source, and no audited override is present.
+    Any unreadable answer allows.
 
     The deny routes through the router's ``_fail_open_or_deny`` chokepoint, so the self-rescue
     allowlist, the master ``danger_gate_fail_open`` switch, and the deny circuit breaker all

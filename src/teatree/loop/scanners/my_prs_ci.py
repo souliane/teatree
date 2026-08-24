@@ -14,10 +14,12 @@ required set as ``"green"`` — so calling it directly would manufacture a green
 an MR whose CI nobody looked at. ``required_checks_status`` dispatches on the forge
 kind and applies the GitLab pipeline verdict instead.
 
-It is a merge-gate read, so it fails CLOSED: a rollup query that errors surfaces as
-``"failed"`` rather than as unknown. Carried through deliberately — a false red
-routes the MR to the debug agent, which is where an unreadable pipeline belongs;
-the opposite bias would let a genuinely red MR read as benign.
+It is a merge-gate read, so it fails CLOSED on a genuine red. It does NOT fail
+closed on an UNREADABLE one: ``required_checks_status`` reports a rollup it could
+not read as ``"unreadable"``, and this module maps that to the empty status — the
+same "nobody looked yet" reading an unread MR gets. A forge hiccup is not a broken
+PR, and routing one to the debug agent spends an agent on a pipeline nobody has
+seen. A genuinely red MR still reports ``"failed"`` and is still dispatched.
 
 Cost control is two-layered. The per-tick cap lives on the instance (the loop
 builds one enricher per tick, so a fresh instance is a fresh budget) and the memo
@@ -29,16 +31,21 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
 #: Forge verdict → the pipeline-status vocabulary ``my_prs`` classifies on. A verdict
 #: outside this table stays unknown rather than being coerced toward either pole.
+#: ``unreadable`` is mapped EXPLICITLY to the empty status so the no-dispatch reading
+#: is a decision recorded here, not an accident of the ``.get`` default that a later
+#: edit could silently turn into a debug-agent dispatch.
 _STATUS_BY_VERDICT: dict[str, str] = {
     "green": "success",
     "pending": "pending",
     "failed": "failed",
+    CHECKS_UNREADABLE: "",
 }
 
 #: Per tick, per overlay. Small because the enrichment only has to reach the MRs the

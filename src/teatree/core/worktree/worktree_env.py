@@ -13,14 +13,14 @@ truth.
 
 import logging
 import os
-import platform
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils import secrets
+from teatree.utils.ports import docker_host_address
 from teatree.utils.postgres_secret import (
     PASS_KEY_ENV,
     POSTGRES_PASSWORD_ENV,
@@ -29,7 +29,7 @@ from teatree.utils.postgres_secret import (
 )
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket, Worktree
+    from teatree.core.models import Worktree
     from teatree.core.models.types import WorktreeExtra
     from teatree.core.overlay import OverlayBase
 
@@ -113,13 +113,6 @@ def env_cache_path(worktree: "Worktree") -> Path | None:
     return _cache_path_for(Path(wt_path))
 
 
-def _docker_host_address() -> str:
-    """Return the address Docker containers should use to reach the host."""
-    if platform.system() in {"Darwin", "Windows"}:
-        return "host.docker.internal"
-    return "172.17.0.1"
-
-
 def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
     """Return the key-value pairs that core contributes to every cache."""
     from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
@@ -130,7 +123,7 @@ def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
         return []
     wt_path = Path(wt_path_str)
     ticket_dir = wt_path.parent
-    ticket = cast("Ticket", worktree.ticket)
+    ticket = worktree.ticket
 
     pairs = [
         ("WT_VARIANT", ticket.variant or ""),
@@ -244,7 +237,7 @@ def render_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = No
 
     db_strategy = overlay.provisioning.db_import_strategy(worktree)
     if db_strategy and db_strategy.get("shared_postgres"):
-        pairs["POSTGRES_HOST"] = _docker_host_address()
+        pairs["POSTGRES_HOST"] = docker_host_address()
 
     _check_overlay_does_not_collide_with_core(overlay)
     pairs.update(overlay.provisioning.env_extra(worktree))
@@ -347,7 +340,7 @@ def worktree_pg_connection(
         overlay = get_overlay_for_worktree(worktree)
     resolved = dict(overlay.provisioning.env_extra(worktree))
 
-    env = {**os.environ, **resolved}
+    env: dict[str, str] = {**os.environ, **resolved}
     env.pop("VIRTUAL_ENV", None)
     return resolved.get("POSTGRES_USER", ""), resolved.get("POSTGRES_HOST", ""), pg_env(env)
 

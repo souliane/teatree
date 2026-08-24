@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from teatree.loop.loop_cadences import (
     drain_cadence_seconds,
@@ -10,8 +10,10 @@ from teatree.loop.loop_cadences import (
     slack_answer_cadence_seconds,
 )
 from teatree.loop.loop_scoping import current_session_owned_per_loop_slots
+from teatree.loop.session_identity import is_loop_runner_session
 from teatree.loop.statusline_loop_chunks import (
     LeaseRenderContext,
+    MiniLoopSchedule,
     _colorize_chunk,
     lease_chunks,
     mini_loop_chunks,
@@ -21,6 +23,7 @@ from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 if TYPE_CHECKING:
     from teatree.core.managers import OwnershipStatus
+    from teatree.core.models.loop_lease import LoopLease
 
 
 def _configured_overlay_names() -> list[str]:
@@ -111,7 +114,7 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-    lease_model = apps.get_model("core", "LoopLease")
+    lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
     rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
     return [(row.name, row.acquired_at) for row in rows]
 
@@ -130,7 +133,7 @@ def _live_lease_drivers() -> dict[str, tuple[str, str]]:
     from django.utils import timezone  # noqa: PLC0415 — deferred: keep this module Django-free at import
 
     try:
-        lease_model = apps.get_model("core", "LoopLease")
+        lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
         rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id", "driver")
         return {row.name: (row.session_id, row.driver) for row in rows}
     except Exception:  # noqa: BLE001 — fail-open: a broken driver read never blanks the loop line
@@ -148,7 +151,9 @@ def _live_lease_drivers() -> dict[str, tuple[str, str]]:
 # :func:`set_mini_loop_schedules_reader`; absent injection (a quiet machine,
 # a unit test) the default reader returns ``[]`` and the mini-loop chunks are
 # simply omitted — never an import-direction violation, never a crash.
-type MiniLoopSchedule = tuple[str, datetime | None, int]
+#: Re-exported from the leaf so the up-stack reader in :mod:`teatree.loops.schedule` builds
+#: the SAME record the renderer reads, without :mod:`teatree.loop` importing
+#: :mod:`teatree.loops` (the tach edge points the other way).
 type MiniLoopSchedulesReader = Callable[[], list[MiniLoopSchedule]]
 
 
@@ -336,9 +341,13 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     never ticks (PR-26). This session owns it WITH a driver, or no live owner →
     ``("anchors", "")``. Callers suppress empty lines.
 
+    The ``t3 worker`` holding the slot (#3968) is NEVER the hijack: it is the
+    machine-wide driver rather than a competing session, so every interactive
+    session reads it as foreign and would otherwise carry a permanent false RED.
+
     ``short8`` is the first 8 chars of the owner session id.
     """
-    if not status.is_live:
+    if not status.is_live or is_loop_runner_session(status.owner_session):
         return "anchors", ""
     if this_session and status.owner_session == this_session:
         if not status.driver:
@@ -391,8 +400,8 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     *   ``mode: <name>`` (schedule/default) / ``mode: manual`` (manual override) —
         the merged operating mode (#61), replacing the old ``preset:`` +
         ``availability:`` handles. The mode name conveys reachability, so an
-        away-class mode (``unattended`` / ``offline``) needs no separate
-        availability segment. A NON-``off`` mode is the summary handle the domain
+        away-class mode (``away``) needs no separate availability segment.
+        A NON-``off`` mode is the summary handle the domain
         loops fold under.
     *   the loop section:
 

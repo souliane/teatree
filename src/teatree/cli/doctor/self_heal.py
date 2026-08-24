@@ -4,21 +4,20 @@ The worker WAS the monitor, so when it died the alerting died with it (the
 recorded seven-hour silent freeze). These crash-proof ``_check_*`` detectors
 surface the silent-failure classes as loud findings so the in-daemon watchdog
 (the ``deploy/watchdog.sh`` sidecar, kept alive by the Docker daemon independently
-of the stack it watches) can restart the stack and DM the owner:
+of the stack it watches) can restart the stack and DM the owner. Each says REPAIRS or REPORTS (#4359):
 
 - a compose init container that exited non-zero, or any long-running service —
-    worker, admin, or the watchdog itself — stuck ``Created``/``Exited``,
-- a free worker flock while the loop machinery has queued, overdue work,
-- an ``execute_headless_task`` claimed RUNNING with no live worker to finish it,
-- a READY loop timer stale past 2x its cadence (a wedged drain),
-- a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
-- a FAILED task on a still-live ticket (the silent-freeze signature),
-- a runtime clone that has drifted off its default branch,
-- a ``worker_quiescing`` gate outliving any deploy that could explain it,
-- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
+    worker, admin, or the watchdog itself — stuck ``Created``/``Exited`` (REPORTS),
+- a free worker flock while the loop machinery has queued, overdue work (REPORTS),
+- an ``execute_task`` claimed RUNNING with no live worker to finish it (REPORTS),
+- a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
+- a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
+- a runtime clone that has drifted off its default branch (REPORTS),
+- a ``worker_quiescing`` gate outliving any deploy that could explain it (REPAIRS when provably dead, else REPORTS),
+- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain`` — REPORTS),
 - a Slack app-config token pair aging toward its 12-hour expiry, past which it is
-    unrecoverable (``self_heal_slack_config_token`` — this one AUTO-ROTATES),
-- a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
+    unrecoverable (``self_heal_slack_config_token`` — REPAIRS, it auto-rotates),
+- a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (REPAIRS).
 
 Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and so
 the watchdog's ``t3 doctor --json``). Every check is crash-proof: any error degrades
@@ -65,8 +64,11 @@ _STALE_TIMER_CADENCE_MULTIPLIER = 2
 _MIN_STALE_TIMER_SECONDS = 300
 #: A loop with no interval/daily cadence falls back to this nominal cadence.
 _DEFAULT_CADENCE_SECONDS = 300
-#: The box's runtime clone; used as a fallback when the running code's repo root
-#: cannot be resolved (``deploy/docker-compose.yml`` mounts the clone here).
+#: Env vars ``deploy/docker-compose.yml`` forwards into every service naming the box's
+#: runtime clone, most specific first. Hard-coding the box default instead left the
+#: drift detector silently inert wherever the deployment put its clone elsewhere.
+_RUNTIME_CLONE_ENVS = ("TEATREE_CLONE_DIR", "TEATREE_DEPLOY_CHECKOUT")
+#: Where the box has historically kept it, for a venue that declares neither.
 _BOX_RUNTIME_CLONE = Path("/home/teatree/teatree")
 
 
@@ -195,35 +197,46 @@ class _Probe:
         return overdue
 
     @staticmethod
-    def stranded_headless_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
-        """``(job_id, started_at)`` for ``execute_headless_task`` RUNNING past the stranded grace."""
+    def stranded_runner_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
+        """``(job_id, started_at)`` for ``execute_task`` RUNNING past the stranded grace."""
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
 
         from teatree.core.tasks import (  # noqa: PLC0415 — deferred: task import needs the registry
             STRANDED_JOB_GRACE_SECONDS,
-            execute_headless_task,
+            execute_task,
         )
 
         cutoff = now - dt.timedelta(seconds=STRANDED_JOB_GRACE_SECONDS)
         rows = DBTaskResult.objects.filter(
-            task_path=execute_headless_task.module_path,
+            task_path=execute_task.module_path,
             status=TaskResultStatus.RUNNING,
         )
         return [(str(row.id), row.started_at) for row in rows if row.started_at is not None and row.started_at < cutoff]
 
     @staticmethod
+    def declared_runtime_clones() -> list[Path]:
+        """Every runtime-clone path this venue's deployment declares, most specific first.
+
+        Empty on a venue that declares none (any dev machine) — which is what tells a
+        misconfigured deployment from a laptop that simply has no H24 clone.
+        """
+        declared = (os.environ.get(name, "").strip() for name in _RUNTIME_CLONE_ENVS)
+        return [Path(value) for value in declared if value]
+
+    @staticmethod
     def runtime_clone_root() -> Path | None:
         """The box's long-lived runtime clone if present as a git checkout, else ``None``.
 
-        Scoped to the fixed box mount (``deploy/docker-compose.yml`` mounts the
-        clone there) — deliberately NOT the running code's repo root, so this
-        invariant fires only for the H24 factory's own runtime clone and never
-        for a legitimate feature-branch worktree a developer runs ``t3`` from.
-        A box without that clone (any dev machine) resolves to ``None`` and the
-        check degrades to a pass.
+        Scoped to what the DEPLOYMENT declares (:func:`declared_runtime_clones`, falling
+        back to the historical box path) — deliberately NOT the running code's repo root,
+        so this invariant fires only for the H24 factory's own runtime clone and never
+        for a legitimate feature-branch worktree a developer runs ``t3`` from. A venue
+        with no such clone (any dev machine) resolves to ``None`` and the check degrades
+        to a pass.
         """
-        return _BOX_RUNTIME_CLONE if (_BOX_RUNTIME_CLONE / ".git").exists() else None
+        candidates = [*_Probe.declared_runtime_clones(), _BOX_RUNTIME_CLONE]
+        return next((root for root in candidates if (root / ".git").exists()), None)
 
     @staticmethod
     def parse_findings(text: str) -> list[dict[str, str]]:
@@ -321,8 +334,8 @@ def _check_loop_worker_alive() -> bool:
     return False
 
 
-def _check_stranded_headless_task() -> bool:
-    """FAIL when an ``execute_headless_task`` is RUNNING past its grace with no live worker.
+def _check_stranded_task() -> bool:
+    """FAIL when an ``execute_task`` is RUNNING past its grace with no live worker.
 
     A headless task claimed RUNNING whose executor died leaves the row RUNNING
     forever — nothing will ever finish it, and the ticket silently freezes. When
@@ -332,7 +345,7 @@ def _check_stranded_headless_task() -> bool:
     try:
         if not _Probe.worker_flock_free():
             return True
-        stranded = _Probe.stranded_headless_results(_now())
+        stranded = _Probe.stranded_runner_results(_now())
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Stranded-headless-task check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -340,7 +353,7 @@ def _check_stranded_headless_task() -> bool:
         return True
     ids = ", ".join(job_id for job_id, _ in stranded)
     typer.echo(
-        f"FAIL  {len(stranded)} execute_headless_task job(s) are RUNNING with no live worker to "
+        f"FAIL  {len(stranded)} execute_task job(s) are RUNNING with no live worker to "
         f"finish them ({ids}) — the claiming executor died mid-run and the ticket is frozen. "
         f"Restart the worker (`t3 worker ensure`); the reconciler re-heads the chain."
     )
@@ -381,67 +394,42 @@ def _check_stale_loop_timer() -> bool:
     return False
 
 
-def _check_interactive_task_under_headless() -> bool:
-    """FAIL when PENDING ``interactive`` tasks exist under ``agent_runtime=headless``.
-
-    In headless runtime only the headless lane drains the queue, so a PENDING
-    task pinned ``execution_target=interactive`` can never be claimed — it stalls
-    forever with no error. Surfaces the count so the operator can re-target or
-    flip the runtime.
-    """
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
-        from teatree.config.agent_enums import AgentRuntime  # noqa: PLC0415 — deferred: keeps CLI startup light
-        from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        if get_effective_settings().agent_runtime is not AgentRuntime.HEADLESS:
-            return True
-        stalled = Task.objects.filter(
-            status=Task.Status.PENDING,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        ).count()
-    except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
-        typer.echo(f"WARN  Interactive-under-headless check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    if not stalled:
-        return True
-    typer.echo(
-        f"FAIL  {stalled} PENDING task(s) are pinned execution_target=interactive under "
-        f"agent_runtime=headless — the headless lane cannot claim them, so they stall silently. "
-        f"Re-target them or run the interactive loop lane."
-    )
-    return False
-
-
 def _check_failed_tasks_on_live_tickets() -> bool:
-    """FAIL when FAILED tasks sit on still-live (non-terminal) tickets — the freeze signature.
+    """FAIL when a live ticket's NEWEST task is FAILED — work that died with no successor.
 
-    A FAILED task whose ticket has not reached a terminal/retrospected state is
-    work that died with nothing advancing the ticket: the silent-freeze pattern
-    the incident exhibited. Reports the count and the affected ticket numbers.
+    The decision rule (souliane/teatree#4357): a non-terminal ticket whose newest task
+    FAILED and which nothing re-dispatched is either re-dispatched or explicitly parked,
+    never left in neither state. A ticket that DOES carry a successor is being advanced,
+    so naming it says nothing an operator can act on — and a line of dozens of
+    unactionable names is how a real freeze becomes invisible among them.
+
+    Newest is by ``pk``: an ``AutoField`` is monotonic and never null, where
+    ``Task.created_at`` is nullable and would order legacy rows arbitrarily.
 
     Synthetic rows are excluded (souliane/teatree#3492). A
     ``<scheme>://<overlay>`` loop-cadence anchor is a recurring schedule with no
     terminal state to reach, and a bare-number ``issue_url`` is malformed debris
     whose real, terminal ticket exists separately. Neither is frozen deliverable
     work, yet both render as forge-looking numbers and pin a permanent,
-    unactionable FAIL — which trains operators to ignore the one line that would
-    flag a real freeze. A ticket with no forge issue at all (``""`` /
+    unactionable FAIL. A ticket with no forge issue at all (``""`` /
     ``auto:<branch>``) is ordinary work and still counts.
     """
     try:
+        from django.db.models import OuterRef, Subquery  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
         from teatree.core.forge_url import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
             is_synthetic_ticket_url,
         )
         from teatree.core.models import Task, Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         terminal = set(Ticket._TERMINAL_STATES) | {Ticket.State.RETROSPECTED}  # noqa: SLF001 — the model's SSOT terminal set
+        newest_status = Subquery(Task.objects.filter(ticket=OuterRef("pk")).order_by("-pk").values("status")[:1])
         frozen = (
-            Task.objects.filter(status=Task.Status.FAILED).exclude(ticket__state__in=terminal).select_related("ticket")
+            Ticket.objects.exclude(state__in=terminal)
+            .annotate(newest_task_status=newest_status)
+            .filter(newest_task_status=Task.Status.FAILED)
         )
-        numbers = sorted(
-            {task.ticket.ticket_number for task in frozen if not is_synthetic_ticket_url(task.ticket.issue_url)}
-        )
+        numbers = sorted({ticket.ticket_number for ticket in frozen if not is_synthetic_ticket_url(ticket.issue_url)})
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Failed-task-on-live-ticket check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -449,9 +437,9 @@ def _check_failed_tasks_on_live_tickets() -> bool:
         return True
     listed = ", ".join(f"#{number}" for number in numbers)
     typer.echo(
-        f"FAIL  FAILED task(s) sit on {len(numbers)} non-terminal ticket(s) ({listed}) — the "
-        f"silent-freeze signature: work died and nothing is advancing the ticket. Inspect the "
-        f"failed attempts and re-dispatch or close the tickets."
+        f"FAIL  The newest task FAILED with no successor on {len(numbers)} non-terminal ticket(s) "
+        f"({listed}) — the silent-freeze signature: work died and nothing is advancing the ticket. "
+        f"Re-dispatch each, or park it with a reason."
     )
     return False
 
@@ -462,13 +450,23 @@ def _check_runtime_clone_on_default_branch() -> bool:
     The box's ``t3 worker`` imports teatree from a long-lived clone that must
     track the default branch; a stray checkout (or a self-update left mid-flight)
     leaves the loop running stale/wrong code with no error. Best-effort: a
-    non-git or unresolvable clone degrades to a pass.
+    non-git or unresolvable clone degrades to a pass — but a DECLARED clone that
+    cannot be resolved is WARNed rather than passed over in silence, since an
+    inert detector reads exactly like a healthy one (#4339).
     """
     from teatree.utils import git  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     try:
         root = _Probe.runtime_clone_root()
         if root is None:
+            declared = _Probe.declared_runtime_clones()
+            if declared:
+                typer.echo(
+                    f"WARN  No declared runtime clone is a git checkout "
+                    f"({', '.join(str(path) for path in declared)}) — the drift detector cannot "
+                    f"run, so a clone left on a stray branch would go unreported. Point "
+                    f"{_RUNTIME_CLONE_ENVS[0]} at the box's clone, or mount it there."
+                )
             return True
         current = git.current_branch(repo=str(root))
         default = git.default_branch(repo=str(root))
@@ -522,9 +520,8 @@ def run_self_heal_checks() -> bool:
     checks: tuple[Callable[[], bool], ...] = (
         _check_compose_stack,
         _check_loop_worker_alive,
-        _check_stranded_headless_task,
+        _check_stranded_task,
         _check_stale_loop_timer,
-        _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
         check_stranded_quiescing_gate,
@@ -546,12 +543,26 @@ def check_as_json(run_checks: Callable[[], bool]) -> bool:
     *run_checks* is a zero-arg callable that already carries the resolved
     ``repair`` value, so the JSON path never re-invokes with repair implicitly
     enabled (#3313).
+
+    A RAISING check emits the JSON anyway, with the exception as a FAIL finding.
+    The line is written only after ``run_checks()`` RETURNS, so a check that dies
+    on an import — an undeclared ``packaging`` in the tool env, reached eagerly
+    through ``teatree.utils.dep_skew`` — produced ZERO BYTES. The watchdog's
+    no-verdict branch then DMs once a day naming no cause, which is how 72
+    consecutive passes ran without anyone learning the word ``packaging``. The
+    crash is turned into the one thing a silent outage never gives you: a red
+    verdict that names itself. Findings echoed before the crash are kept, so the
+    checks that DID run are not lost with the one that failed.
     """
     import contextlib  # noqa: PLC0415 — deferred: loaded only on the --json path
     import io  # noqa: PLC0415 — deferred: loaded only on the --json path
 
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        ok = run_checks()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            ok = run_checks()
+    except Exception as exc:  # noqa: BLE001 — a crashed doctor must still emit a verdict naming its cause
+        ok = False
+        buffer.write(f"FAIL  doctor crashed: {type(exc).__name__}: {exc}\n")
     typer.echo(json.dumps({"ok": ok, "findings": _Probe.parse_findings(buffer.getvalue())}))
     return ok

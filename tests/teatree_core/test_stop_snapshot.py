@@ -80,18 +80,15 @@ class TestResumePlan(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree")
         PullRequest.objects.create(ticket=ticket, url="https://x/pr/9", repo="souliane/teatree", iid="9")
         DeferredQuestion.objects.create(question="Which branch — main or dev?")
-        # A real away-class mode override — the resume plan reads the merged mode.
-        Mode.objects.update_or_create(
-            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
-        )
-        ModeOverride.objects.set_override("offline")
+        # A real mode override — the resume plan reads the merged mode.
+        Mode.objects.update_or_create(name="off", defaults={"entries": {}})
+        ModeOverride.objects.set_override("off")
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             body = stop_snapshot.write_resume_plan("sess-1", str(tmp), base=tmp).read_text()
         assert "souliane/teatree #9" in body
         assert "Which branch" in body
-        assert "mode: offline" in body
-        assert "defers questions: True" in body
+        assert "mode: off (source: override)" in body
 
     def test_merged_prs_excluded(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")

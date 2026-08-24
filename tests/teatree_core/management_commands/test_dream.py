@@ -21,15 +21,21 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
-from teatree.loops.dream.engine import (
-    ConsolidationExtract,
-    DistilledCluster,
-    DreamRunResult,
-    TranscriptMember,
-    WeightedSnippet,
-)
+from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
-from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+from teatree.loops.dream.loop import (
+    DREAM_LEASE_NAME,
+    DREAM_LEASE_SECONDS,
+    DREAM_LOOP_NAME,
+    DREAM_OFF_TICK_DEADLINE_SECONDS,
+    DREAM_PASS_BUDGET_SECONDS,
+    DREAM_RETRY_BACKOFF_SECONDS,
+    DREAM_TAIL_RESERVE_SECONDS,
+)
+from teatree.loops.dream.pass_config import PassBudget
+from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
+
+_COMMAND = "teatree.core.management.commands.dream.Command"
 
 
 def _enable_dream_loop(*, last_run_at: "dt.datetime | None" = None) -> None:
@@ -68,7 +74,7 @@ def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
     # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
     # measure. No correction turn ⇒ 0 violations ⇒ an empty compliance summary clause.
     snippet = WeightedSnippet(path=Path("/memory/feedback_x.md"), kind="memory", weight=90, text="a durable lesson")
-    extract = ConsolidationExtract(snippets=(snippet,), truncated=False)
+    extract = ConsolidationExtract(snippets=(snippet,))
     return DreamRunResult(
         clusters_recorded=1,
         members_replayed=3,
@@ -130,7 +136,9 @@ class DreamDryRunTestCase(TestCase):
     def test_dry_run_writes_no_marker_and_no_rows(self) -> None:
         called: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             called["dry_run"] = dry_run
             called["eval_proposals"] = eval_proposals
             return _ok_result(dry_run=dry_run)
@@ -159,7 +167,9 @@ class DreamDryRunTestCase(TestCase):
 class DreamProposeEvalsFlagTestCase(TestCase):
     @staticmethod
     def _capture(seen: dict[str, object]):
-        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _run(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -209,7 +219,9 @@ class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase
 
     @staticmethod
     def _capture(seen: dict[str, object]):
-        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _run(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -1152,7 +1164,6 @@ def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
                 path=Path("/sessions/session-a.jsonl"), kind="main", weight=80, text=_COMPLIANCE_VIOLATION_TURN
             ),
         ),
-        truncated=False,
     )
     return DreamRunResult(
         clusters_recorded=1, members_replayed=5, dry_run=dry_run, snippets_distilled=2, extract=extract
@@ -1160,7 +1171,7 @@ def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
 
 
 class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase):
-    """Phase 3c measurement runs on EVERY pass (default ON); escalation is --full + toggle gated (#2663)."""
+    """Phase 3c measurement runs on EVERY pass (default ON); escalation is toggle-gated (#2663, #4176)."""
 
     def test_measurement_runs_on_a_plain_run_and_records_a_snapshot(self) -> None:
         # RED before the measure/escalate split: compliance was wired ONLY under
@@ -1226,13 +1237,16 @@ class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase)
         esc.assert_called_once()
 
     def test_escalation_skipped_under_full_when_toggle_off(self) -> None:
-        # Green pin: escalation stays gated on --full AND its own default-OFF toggle,
-        # so --full alone (toggle off) measures but never files.
+        # The must-block pin, unchanged by #4176: escalation FILES tickets, so it stays
+        # behind its own default-OFF toggle — --full alone measures but never files.
         esc = self._run_full(escalate="0")
         esc.assert_not_called()
 
-    def test_run_without_full_never_escalates_even_with_toggle_on(self) -> None:
-        # The AND-gate: the toggle alone (no --full) measures but does not escalate.
+    def test_run_with_the_toggle_on_escalates_without_full(self) -> None:
+        # Inverted by #4176. The gate was `force_all_phases and compliance_escalate_enabled()`,
+        # and the cron tick never sets force_all_phases — so the toggle was dead on the
+        # nightly path. The default-OFF opt-in is unchanged; only the extra --full term,
+        # which cron cannot satisfy, is gone.
         esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
         with (
             patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
@@ -1245,7 +1259,7 @@ class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase)
             ),
         ):
             call_command("dream", "run", stdout=StringIO())
-        esc.assert_not_called()
+        esc.assert_called_once()
 
 
 class DreamFullFlagTestCase(TestCase):
@@ -1254,7 +1268,9 @@ class DreamFullFlagTestCase(TestCase):
     def test_full_requests_eval_proposals(self) -> None:
         seen: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -1308,7 +1324,9 @@ class DreamFullFlagTestCase(TestCase):
     def test_full_dry_run_previews_but_writes_nothing(self) -> None:
         seen: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["dry_run"] = dry_run
             seen["eval_proposals"] = eval_proposals
             return _ok_result(dry_run=dry_run)
@@ -1444,6 +1462,63 @@ class DreamTickCadenceTestCase(TestCase):
         assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is None
 
 
+class DreamTickRecordsLivenessSeparatelyTestCase(TestCase):
+    """A withheld cadence anchor must not read as "nothing drove this loop" (#4355).
+
+    Withholding ``last_run_at`` on a non-stamping pass is the #2285 retry-until-success
+    decision and stays. What it may not do is make the loop LOOK dead: the pass ran, and
+    ``last_attempt_at`` is where that fact lives.
+    """
+
+    def test_a_withheld_pass_still_records_the_attempt(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # due
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            assert _run_dream("tick") == 1
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is None
+        assert row.last_attempt_at is not None
+
+    def test_the_attempt_is_recorded_even_when_the_engine_raises(self) -> None:
+        _enable_dream_loop(last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=RuntimeError("engine boom")):
+            assert _run_dream("tick") == 1
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at is not None
+
+    def test_the_attempt_is_already_recorded_when_the_pass_starts(self) -> None:
+        # The ordering IS the guarantee: the observed production shape is a pass SIGKILLed
+        # at its 1800s deadline mid-run, which no in-process test can stage and which
+        # reaches no line after the engine call. Stamping first is what survives it.
+        _enable_dream_loop(last_run_at=None)
+        seen: list[dt.datetime | None] = []
+
+        def _record_then_fail(**_kwargs: object) -> DreamRunResult:
+            seen.append(Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at)
+            message = "killed at the deadline"
+            raise RuntimeError(message)
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_record_then_fail):
+            assert _run_dream("tick") == 1
+        assert len(seen) == 1
+        assert seen[0] is not None
+
+    def test_a_skipped_tick_records_no_attempt(self) -> None:
+        # Not due ⇒ no pass executed ⇒ nothing to claim. An attempt stamped here would
+        # make the driver's own SKIP indistinguishable from work.
+        _enable_dream_loop(last_run_at=timezone.now())
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            assert _run_dream("tick") == 0
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at is None
+
+    def test_a_succeeding_pass_moves_both_anchors(self) -> None:
+        _enable_dream_loop(last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            call_command("dream", "tick", stdout=StringIO())
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is not None
+        assert row.last_attempt_at is not None
+
+
 class DreamZeroMembersFailLoudTestCase(TestCase):
     def test_zero_members_does_not_stamp_succeeded(self) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
@@ -1479,6 +1554,100 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
             call_command("dream", "run", stdout=StringIO())
         marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
         assert marker.last_succeeded_at is not None
+
+
+def _broken_distillation_result(*, dry_run: bool = False) -> DreamRunResult:
+    """A pass whose distiller produced nothing BECAUSE it was broken, not because it was quiet."""
+    return DreamRunResult(
+        clusters_recorded=0,
+        members_replayed=407,
+        dry_run=dry_run,
+        snippets_distilled=20,
+        empty_batches=1,
+        broken_batches=1,
+        distill_diagnostics=("batch of 20 member(s): unparsable — reply: 'Not logged in · Please run /login'",),
+    )
+
+
+class DreamBrokenDistillerFailsLoudTestCase(TestCase):
+    """A distiller that could not do its job fails the pass — it never reports success.
+
+    The pass that motivated this printed a WARNING and exited 0 while its `claude`
+    subprocess was unauthenticated, so nothing distinguished a broken consolidation
+    from a night with nothing to consolidate.
+    """
+
+    def test_broken_distillation_exits_non_zero(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_on_a_dry_run_also_exits_non_zero(self) -> None:
+        broken = _broken_distillation_result(dry_run=True)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_reports_the_raw_reply(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+        assert "Not logged in" in stdout.getvalue()
+
+    def test_broken_distillation_does_not_stamp_succeeded(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is None or marker.last_succeeded_at is None
+
+    def test_broken_distillation_still_runs_the_maintenance_phases(self) -> None:
+        """It must not short-circuit: `write_clusters` already wrote the healthy batches' rows.
+
+        Returning at the broken check left those rows behind AND skipped cross-link,
+        re-index, decay and the §4 gates — the phases that reconcile them. `main`
+        counted the failures and carried on; the pass still refuses to stamp succeeded,
+        which is the part that has to hold.
+        """
+        broken = _broken_distillation_result()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("; phases ran", True, "")) as phases,
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert exc.value.code == 1, "a broken distiller must still fail the pass"
+        phases.assert_called_once()
+
+    def test_broken_distillation_names_itself_on_the_final_line(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("", True, "")),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+        out = stdout.getvalue()
+        assert "the distiller FAILED on some batch(es)" in out
+        assert "NOT stamped succeeded" in out
+
+    def test_healthy_quiet_pass_still_exits_zero(self) -> None:
+        quiet = DreamRunResult(clusters_recorded=0, members_replayed=407, dry_run=True, snippets_distilled=20)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=quiet):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
 
 
 class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):
@@ -1565,7 +1734,12 @@ class DreamSinceTestCase(TestCase):
         captured: dict[str, object] = {}
 
         def _capture(
-            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+            *,
+            overlay: str,
+            since: dt.datetime | None,
+            dry_run: bool,
+            eval_proposals: object = None,
+            distill: object = None,
         ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
@@ -1583,7 +1757,12 @@ class DreamSinceTestCase(TestCase):
         captured: dict[str, object] = {}
 
         def _capture(
-            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+            *,
+            overlay: str,
+            since: dt.datetime | None,
+            dry_run: bool,
+            eval_proposals: object = None,
+            distill: object = None,
         ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
@@ -1602,3 +1781,231 @@ class DreamSinceTestCase(TestCase):
         ):
             call_command("dream", "run", "--since", "not-a-date", stdout=StringIO())
         engine.assert_not_called()
+
+
+class _FakeClock:
+    """A monotonic clock the test advances by hand — no pass here sleeps for minutes."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _burning_members(tmp: Path, count: int) -> list[TranscriptMember]:
+    """A memory corpus large enough to need many distiller batches."""
+    members: list[TranscriptMember] = []
+    for i in range(count):
+        path = tmp / f"feedback_{i:04d}.md"
+        path.write_text(f"BINDING: lesson {i} — the agent lost the branch " + "x" * 4000, encoding="utf-8")
+        members.append(TranscriptMember(path=path, kind="memory"))
+    return members
+
+
+class _SimulatedSigkillError(BaseException):
+    """Stands in for the driver's SIGKILL at the external deadline.
+
+    A ``BaseException``, deliberately: ``_distil_one`` catches ``Exception`` so one bad
+    batch cannot discard the others' paid work, and the command catches ``Exception``
+    around the engine. A real SIGKILL is caught by neither, so modelling it as an
+    ordinary exception would let the pass carry on to a tail the real kill never reaches
+    — the test would pass for the wrong reason.
+    """
+
+
+class DreamPassReachesItsTailUnderAnOverrunningDistillerTestCase(TestCase):
+    """THE proof: a distil phase that would overrun stops, and the TAIL runs.
+
+    Before this, the pass had no in-pass clock at all and the driver's SIGKILL landed at
+    a deadline EQUAL to the pass budget (both 1800s). Every pass therefore died mid-
+    distil, and everything after ``run_consolidation`` — compliance, the automatable-ask
+    and Pass-2 promoters, phases 4-6, the §4 acceptance gates, ``mark_succeeded`` — was
+    code that could not be reached on the cron path. Measured on the live deploy
+    2026-08-20: 17 consecutive ticks killed at 1800s, ``Loop.last_run_at`` 15 days stale,
+    and the tail's own ``DreamRunMarker.last_attempted_at`` 6 days stale behind them.
+
+    The assertion that matters is not "it stopped" but "having stopped, it ARRIVED":
+    the acceptance gates ran and the marker was stamped.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.corpus = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        self.clock = _FakeClock()
+        self.gate_report = DreamQaReport(gate_results=(GateResult(name="retention", passed=True, detail="ok"),))
+
+    def _run_pass(self, *, per_call_seconds: float, batches: int = 12) -> tuple[int, str, list[int]]:
+        """One real ``run_consolidation`` whose only fake is a clock-burning distiller."""
+        launched: list[int] = []
+
+        def _burn(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            launched.append(len(batch.snippets))
+            self.clock.advance(per_call_seconds)
+            return []
+
+        budget = PassBudget.start(
+            total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS, clock=self.clock
+        )
+        members = _burning_members(self.corpus, batches * ConsolidationExtract.CHAR_CEILING // 4000)
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=members),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_burn),
+            patch.object(PassBudget, "start", return_value=budget),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=self.gate_report),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            code = _run_dream("run", stdout=stdout)
+        return code, stdout.getvalue(), launched
+
+    def test_an_overrunning_distiller_still_reaches_the_gates_and_stamps_the_marker(self) -> None:
+        code, out, launched = self._run_pass(per_call_seconds=200.0)
+
+        assert launched, "the pass never launched a batch at all"
+        assert "STOPPED distilling on the pass budget" in out, out
+        # The tail — the whole point. Reaching it is what every downstream phase waits on.
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None, (
+            "the pass stopped distilling but never reached mark_succeeded — the tail is still unreachable"
+        )
+        assert code == 0
+
+    def test_the_pass_stops_itself_before_the_drivers_kill_can_land(self) -> None:
+        """The whole defect in one assertion: WHO ends the pass decides whether it arrives.
+
+        The distiller here dies uncatchably once the clock reaches the driver's external
+        deadline — exactly what the deploy does 48 times a day. The pass must stop on its
+        OWN budget first and reach ``mark_succeeded``; if it does not, the kill lands
+        mid-distil and every phase after the distiller is unreachable.
+        """
+        killed: list[float] = []
+
+        def _burn_until_killed(_batch: ConsolidationExtract) -> list[DistilledCluster]:
+            if self.clock.now >= DREAM_OFF_TICK_DEADLINE_SECONDS:
+                killed.append(self.clock.now)
+                raise _SimulatedSigkillError
+            self.clock.advance(200.0)
+            return []
+
+        budget = PassBudget.start(
+            total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS, clock=self.clock
+        )
+        members = _burning_members(self.corpus, 40 * ConsolidationExtract.CHAR_CEILING // 4000)
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=members),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_burn_until_killed),
+            patch.object(PassBudget, "start", return_value=budget),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=self.gate_report),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            code = _run_dream("run", stdout=StringIO())
+
+        assert not killed, f"the driver's kill landed at {killed}s — the pass never stopped itself"
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None, "the pass was killed before its tail"
+        assert code == 0
+
+    def test_the_stop_leaves_the_tail_its_reserve_of_wall_clock(self) -> None:
+        self._run_pass(per_call_seconds=200.0)
+        spent = self.clock.now
+        assert spent <= DREAM_PASS_BUDGET_SECONDS - DREAM_TAIL_RESERVE_SECONDS, (
+            f"distil spent {spent}s of a {DREAM_PASS_BUDGET_SECONDS}s budget, "
+            f"leaving less than the {DREAM_TAIL_RESERVE_SECONDS}s the tail is owed"
+        )
+
+    def test_a_cheap_pass_finishes_its_corpus_and_still_stamps(self) -> None:
+        """The over-correction guard: the budget must bind on the CLOCK, never always."""
+        code, out, launched = self._run_pass(per_call_seconds=0.0)
+
+        assert "STOPPED distilling on the pass budget" not in out, out
+        assert "DEFERRED to the next pass" not in out, out
+        assert len(launched) > 1, "this corpus must need more than one batch or it proves nothing"
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert code == 0
+
+
+class DreamRetryBackoffTestCase(_DreamTickEnabledMixin, TestCase):
+    """A pass that ends without stamping must not relaunch on the very next driver fire.
+
+    ``Loop.is_due`` reads ``last_run_at`` and only a STAMPED pass bumps it (#2285 keeps a
+    failed pass retrying rather than waiting out the full day), so a pass that ends
+    unstamped leaves the loop due and the 600s driver chain relaunches it ~immediately.
+    Measured on the live deploy 2026-08-20: dream ticks killed at 08:29, 08:59, 09:29,
+    09:59 … — exactly two an hour, 48 a day, each re-spending metered distiller calls.
+    ``last_attempt_at`` is the anchor that survives a SIGKILL, which is why the floor
+    keys on it.
+    """
+
+    def test_a_failed_pass_does_not_relaunch_inside_the_backoff(self) -> None:
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=RuntimeError("killed")):
+            assert _run_dream("tick") == 1
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is None, "an unstamped pass must leave the cadence anchor alone (#2285)"
+        assert row.last_attempt_at is not None, "the backoff has no anchor to key on"
+
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation") as engine:
+            _run_dream("tick", stdout=stdout)
+        engine.assert_not_called()
+        assert "retry backoff" in stdout.getvalue(), stdout.getvalue()
+
+    def test_the_retry_runs_once_the_backoff_has_elapsed(self) -> None:
+        """Retry-until-success (#2285) survives — the floor bounds the RATE, not the retry."""
+        stale = timezone.now() - dt.timedelta(seconds=DREAM_RETRY_BACKOFF_SECONDS + 60)
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=stale, last_run_at=None)
+
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("tick") == 0
+        engine.assert_called_once()
+
+    def test_a_never_attempted_loop_is_not_held_by_the_backoff(self) -> None:
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=None, last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("tick") == 0
+        engine.assert_called_once()
+
+    def test_a_stamped_pass_still_advances_the_cadence_anchor(self) -> None:
+        """The backoff sits BEFORE the pass, so it can never withhold a success's anchor."""
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            assert _run_dream("tick") == 0
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is not None
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_the_manual_run_ignores_the_backoff(self) -> None:
+        """``run`` is the escape hatch: it ignores cadence, so it must ignore the floor too."""
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=timezone.now())
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("run") == 0
+        engine.assert_called_once()

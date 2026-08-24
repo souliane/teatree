@@ -19,7 +19,6 @@ import logging
 from datetime import datetime
 from typing import ClassVar
 
-from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -27,69 +26,33 @@ from teatree.core.models.config_setting import ConfigSetting
 
 logger = logging.getLogger(__name__)
 
-# The legacy availability-pin token set — the values the ``availability_mode`` seed
-# field may carry during the #61 merge (mapped to the intrinsic booleans by the
-# migration/seeder). Referenced by the model's ``availability_pin`` property and the
-# ``loop_preset`` command's pin validator — the single source both consult.
-PIN_MODES = frozenset({"present", "away", "autonomous_away"})
-
 # Low-power auto-engage (#3159 build item 6): default-OFF flag + re-pointable target.
 LOW_POWER_AUTO_ENGAGE_SETTING = "low_power_auto_engage"
 LOW_POWER_PRESET_SETTING = "low_power_preset_name"
-DEFAULT_LOW_POWER_PRESET = "low-power"
+DEFAULT_LOW_POWER_PRESET = "low-token"
 # Marks an override this system engaged automatically (vs. one the user set), so
 # the re-arm path clears only its OWN override and never a user's.
-_AUTO_LOW_POWER_REASON = "auto:low-power (usage window parked)"
+_AUTO_LOW_POWER_REASON = "auto:low-token (usage window parked)"
 
 
 class ModeManager(models.Manager["Mode"]):
     def by_name(self, name: str) -> "Mode | None":
         return self.filter(name=name).first()
 
-    def by_posture(self, *, defers_questions: bool, pauses_self_pump: bool) -> "Mode | None":
-        """The mode carrying an intrinsic availability posture — the by-ROW lookup.
-
-        Lets every availability consumer select a mode by what it MEANS rather than
-        by a hard-coded name, so renaming a seeded mode cannot change behaviour.
-        """
-        return self.filter(defers_questions=defers_questions, pauses_self_pump=pauses_self_pump).first()
-
 
 class Mode(models.Model):
-    """One named operating **mode** (#61 merge).
+    """One named operating **mode** — a pure per-loop on/off table plus an overlay scope.
 
-    A tri-state per-loop opinion, an overlay scope, AND the intrinsic availability
-    posture that used to live in the standalone availability module
-    string modes.
-
-    The three booleans ARE the availability payload — a mode's reachability is
-    fully expressed by them (the merge's key finding: availability adds no state a
-    preset can't carry, only two booleans plus a presence rule):
-
-    *   ``defers_questions`` — the user is unreachable NOW: ``AskUserQuestion``
-        defers to the durable backlog, local TTS is silenced, colleague-facing
-        loops are gated off, and returning to a non-deferring mode drains the
-        backlog. Maps to the old ``away`` + ``autonomous_away`` modes.
-    *   ``pauses_self_pump`` — stop self-driving too (holiday): the loop tick parks.
-        Maps to the old ``away`` mode only. Requires ``defers_questions`` (the
-        nonsensical "pump paused but questions answered" 4th point is unrepresentable).
-    *   ``presence_sensitive`` — a fresh keystroke upgrades an away-class mode
-        reached *by schedule/default* to the configured ``presence_upgrade_mode``.
-        Defaults ``True`` so any scheduled away honours a live keystroke, exactly as
-        the old presence rule did.
-
-    The legacy ``availability_mode`` string is retained during the merge only to
-    seed/back-fill the booleans and to keep the deprecation aliases working; it is
-    scheduled for deletion once every consumer reads the booleans.
+    The five shipped modes (``present`` / ``away`` / ``maintenance`` / ``low-token`` /
+    ``off``) differ ONLY in which loops they admit, so every reachability consequence
+    an operator wants is expressed by turning a loop on or off in :attr:`entries` — the
+    ``away`` table drops ``followup`` (the sole ``colleague_facing`` loop) rather than
+    carrying a posture flag a runtime gate has to re-derive.
     """
 
     name = models.SlugField(max_length=64, unique=True)
     description = models.TextField(blank=True, default="")
     entries = models.JSONField(default=dict)
-    availability_mode = models.CharField(max_length=32, blank=True, default="")
-    defers_questions = models.BooleanField(default=False)
-    pauses_self_pump = models.BooleanField(default=False)
-    presence_sensitive = models.BooleanField(default=True)
     overlay_scope = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -103,20 +66,6 @@ class Mode(models.Model):
     def __str__(self) -> str:
         return f"loop-preset<{self.name} ({self.entry_count} entries)>"
 
-    def clean(self) -> None:
-        """A paused self-pump must also defer questions (§0.4 invariant).
-
-        The reachable state space is the three points ``(F,F)`` present,
-        ``(T,F)`` autonomous-away and ``(T,T)`` holiday-away; the fourth point
-        ``(F,T)`` — the pump paused while questions still answer in-band — is
-        nonsensical and rejected here (and asserted by a model test).
-        """
-        super().clean()
-        if self.pauses_self_pump and not self.defers_questions:
-            raise ValidationError(
-                {"pauses_self_pump": "pauses_self_pump requires defers_questions (a paused pump must also defer)."}
-            )
-
     def state_for(self, loop_name: str) -> bool | None:
         """The tri-state opinion for *loop_name*: ``True``/``False`` forced, ``None`` = inherit.
 
@@ -129,12 +78,6 @@ class Mode(models.Model):
     @property
     def entry_count(self) -> int:
         return len(self.entries) if isinstance(self.entries, dict) else 0
-
-    @property
-    def availability_pin(self) -> str | None:
-        """The availability mode this preset pins when active, or ``None`` for no pin."""
-        mode = self.availability_mode.strip()
-        return mode if mode in PIN_MODES else None
 
     @property
     def overlay_scope_names(self) -> list[str]:
@@ -167,10 +110,10 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         return deleted > 0
 
     def auto_engage_low_power(self, *, resets_at: datetime, now: datetime | None = None) -> bool:
-        """Engage the low-power preset until *resets_at* when a usage window parks (#3159 item 6).
+        """Engage the low-token preset until *resets_at* when a usage window parks (#3159 item 6).
 
         A no-op unless the default-off ``low_power_auto_engage`` flag is on AND the
-        re-pointable target preset (``low_power_preset_name``, default ``low-power``)
+        re-pointable target preset (``low_power_preset_name``, default ``low-token``)
         exists. **Never overwrites an existing override** — a user ``--hold`` (or any
         live override) outranks — so it engages only when nothing is currently active.
         The override is marked auto-engaged so the re-arm path clears only its own.
@@ -178,7 +121,7 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         """
         if not _low_power_auto_engage_enabled():
             return False
-        preset_name = _low_power_preset_name()
+        preset_name = low_power_preset_name()
         if Mode.objects.by_name(preset_name) is None:
             logger.warning("low_power_auto_engage on but preset %r is absent — not engaging", preset_name)
             return False
@@ -190,7 +133,7 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
     def clear_auto_engaged_low_power(self) -> bool:
         """Clear an override THIS system auto-engaged on a park; leave a user override intact.
 
-        Returns ``True`` iff an auto-engaged low-power override was cleared. A user
+        Returns ``True`` iff an auto-engaged low-token override was cleared. A user
         override (any other reason) is never touched — the re-arm must not undo an
         override the operator set by hand.
         """
@@ -227,6 +170,7 @@ def _low_power_auto_engage_enabled() -> bool:
     return bool(ConfigSetting.objects.get_effective(LOW_POWER_AUTO_ENGAGE_SETTING))
 
 
-def _low_power_preset_name() -> str:
+def low_power_preset_name() -> str:
+    """The mode the token-budget escape points at — the one mode allowed to quiet the load-bearing tier."""
     value = ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING)
     return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_LOW_POWER_PRESET

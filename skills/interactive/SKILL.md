@@ -7,14 +7,74 @@ requires:
 eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # TeaTree — Interactive Session
 
 The Claude Code side of teatree: what engages a session, how skills reach an agent, how hooks are registered — and the one rule an attended session must not break. Loading this skill is itself the engagement act.
 
-Not `subagent_safe`: loading it writes the `.teatree-active` engagement marker and its procedures run `t3` commands, so it is not the pure methodology that flag is reserved for.
+## This session does not implement — it files and enqueues (Non-Negotiable)
+
+When the operator asks for something that would change the code, do NOT implement it.
+File a ticket for it, get it prioritized, and let the factory pick it up. Report the
+ticket back to the operator.
+
+All three parts are the order; dropping any one recreates the failure:
+
+1. **Do not implement.** Not the edit, not the commit, not the push.
+2. **File the ticket.** A request that produces no durable row is a dropped request — the
+   operator must never have to repeat themselves.
+3. **Get it prioritized and enqueued**, so the factory actually reaches it. A
+   filed-but-unadmitted issue looks identical to a delivered one from the operator's side
+   and is not the same thing at all.
+
+File it through the MCP forge tool, and carry the admit label — the label is what
+makes intake reach it, and a filed issue without one is not enqueued (it resolves
+from `issue_implementer_label`, falling back to `t3-auto`):
+
+```text
+mcp__teatree__github_issue_create(
+  title="<what the operator asked for>", body="<detail>", labels=["t3-auto"])
+```
+
+**Reviewing, merging, diagnosing and answering are NOT implementation.** They are this
+session's actual job, and they are unaffected: read, search, probe, run tests, reproduce a
+failure, review a PR, merge through the keystone, answer a question, file what you find.
+
+**Two exemptions, and only these two.** They are narrow, and naming them is what stops the
+order being read as wider than it is:
+
+- **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
+  ticket the factory already started.
+- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+  genuine emergency (the factory itself is down). Single-use, recorded, per action.
+
+The deterministic backstop is the PreToolUse authoring gate
+(`hooks/scripts/headless_authoring_gate.py`), which refuses an interactive session's edit,
+commit or push against a teatree-managed repo. It applies unconditionally — there is no
+setting to flip — and carries both exemptions above.
+
+## If it does code, it plans first (Non-Negotiable)
+
+Whenever this session legitimately writes code under either exemption — the factory is
+down, or it is finishing work already in flight — **a plan artifact exists before the first
+edit.** This is an order, not a preference.
+
+It is written hard because it is the rule that fails under pressure: an emergency is exactly
+when "there is no time to plan" feels true, and that is when hand-editing does its damage.
+The emergency path is unreviewed by construction, so the plan is the only checkpoint it has
+left. An emergency is not an exception to this.
+
+```bash
+t3 <overlay> ticket plan <ticket-id> "<the plan>"   # PlanArtifact; STARTED → PLANNED
+```
+
+Scope: this governs CODE CHANGES, not diagnosis. Reading, grepping, probing, running tests
+and reproducing a failure need no plan — they are how the plan gets written.
+
+Beyond the plan, reach for the factory's remaining habits by imitation when you are on the
+emergency path: route the work to a sub-agent rather than editing inline, let a reviewer who
+is not the maker check it, and verify by executing rather than by reading.
 
 ## No work-bearing state is terminal
 
@@ -40,11 +100,11 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 **Durable deferral + drain.** `ensure-pr` runs pre-push, and a branch's FIRST push legitimately has no remote ref to open a PR against. That deferral persists a row carrying the repo, the branch and the PR spec rather than exiting quietly; the `dispatch` loop drains it on a later tick, and a row that ages without draining becomes a `t3 doctor check` failure. Verify: `t3 doctor check`.
 
-**Teardown capture.** A checkout is snapshotted before it can be reaped — tracked modifications, staged changes and unpushed commits, recorded in the DB rather than only on disk. Dirtiness is read with `git status --porcelain` / `git diff HEAD` everywhere it is decided; a bare `git diff` reports zero bytes against a worktree holding only staged work. Verify: `t3 teatree workspace emit`, and `/t3:sweeping-worktrees` for what to do with each emitted item.
+**Sweep capture.** A checkout is snapshotted whenever a sweep OBSERVES it — tracked modifications, staged changes and unpushed commits, recorded in the DB rather than only on disk, then aged into a `t3 doctor check` line. Every disposition is covered, KEPT ones included: capturing only before a teardown missed the one disposition that tears nothing down, a row whose ticket is still open, so 75 of 77 registered worktrees held work no surface named. Dirtiness is read with `git status --porcelain` / `git diff HEAD` everywhere it is decided; a bare `git diff` reports zero bytes against a worktree holding only staged work. A checkout this venue cannot resolve is reported as a WRONG VENUE, never as a broken repository — `t3` runs in Docker, so a container-created checkout reads as corrupt from the host. Verify: `t3 doctor check`, `t3 teatree workspace emit`, and `/t3:sweeping-worktrees` for what to do with each emitted item.
 
 **Session-end check.** Every session end sweeps all five states and names each item with the exact command that advances it. It runs unconditionally — which skills a session loaded says nothing about whether it stranded work — and it fails open, so a probe that cannot answer contributes nothing rather than breaking the session. It lives in `hooks/scripts/session_end_work_check.py`.
 
-**Aged-skip surfacing.** The merge sweep declines to merge on about ten reasons, all of them sound per tick and all of them silent. A reason that repeats for the same PR across consecutive passes is announced once, naming the PR, the reason and how long it has been held; `t3 doctor check` reports every aged hold standing.
+**Aged-skip surfacing.** The merge sweep declines to merge on about ten reasons, all of them sound per tick and all of them silent. A reason that repeats for the same PR across consecutive passes is announced once, naming the PR, the reason and how long it has been held, then re-announced only after a 24h backoff — the backoff is per PR, not per reason, so a stuck PR whose reason wobbles between `ci_red` and `ci_pending` gets a daily reminder rather than a DM per flap; `t3 doctor check` reports every aged hold standing.
 
 ### Using it
 
@@ -59,6 +119,45 @@ Skill loading is fully explicit — there is no free-text scan of the prompt. Sk
 The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
 
 **Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing the plugin does NOT force teatree onto every session. A fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages teatree when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded (the `<session>.teatree-active` marker); or **any** `t3:` skill loaded (the `<session>.t3-engaged` marker, set by `handle_track_skill_usage`). The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. Note the two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling still gates exclusively on `.teatree-active` (so a plain lifecycle skill never arms loops). Explicitly running `/t3:interactive` engages the session for the next prompt.
+
+## Standing directives
+
+Three standing rules are re-delivered to an engaged session on their own cadence, because
+they were written down in three places and skipped anyway — the failure is context decay,
+so the repetition is automated rather than remembered.
+
+| Slot | Cadence | Reaches | What it holds |
+|---|---|---|---|
+| `standing-golden-rule` | 300s | every attended session, costing no turn | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
+| `standing-todo-consolidate` | 1800s | an attended session that drives itself | Every user request is captured as a task; reconcile from durable state first, rescan the transcript only if something is unaccounted for; then implement the outstanding requests, oldest first. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+
+The third column is the cost story. A rule that only has to be in context when you next act
+rides the turn already happening, so it reaches widest and is never rationed; a rule that
+has to drive work with nobody prompting costs a whole turn, so it reaches only a session
+that opted into driving itself — and the board is one board per host, not one per session.
+That comes to **2 self-woken turns per hour per attended session plus 6 per host**, and
+none at all while the active preset pauses the self-pump (the zero-turn rule still arrives).
+
+Read the live text and that budget with `t3 loop directives show` (`--json` for the machine
+contract: `{slot_id, cadence_seconds, text, scope, wakes_session}` per directive). The text
+is data, not code — an owner edits a directive by creating a `Prompt` row named
+`standing-directive:<slot_id>`, versioned like any other prompt, and the cadences are
+tunable per slot (`T3_GOLDEN_RULE_CADENCE`, `T3_TODO_CONSOLIDATE_CADENCE`,
+`T3_PR_BOARD_CADENCE`, floors 60/600/300).
+
+Switching a slot off:
+
+```bash
+t3 loop directives disable standing-pr-board   # one slot off, versioned and reversible
+t3 loop directives enable standing-pr-board    # back on, restoring your own text if you had one
+t3 loop directives disable --all               # the whole feature off
+```
+
+The directives themselves are harness-neutral: teatree owns the text, the cadences, the
+scoping rule and the per-slot delivery cost, and each harness supplies its own delivery
+adapter over the JSON contract above. They are advisory — repeated prose, not a gate. A
+rule that is repeated is one the session still holds; it is not one it cannot break.
 
 ## Plugin Hooks Architecture
 

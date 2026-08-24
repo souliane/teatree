@@ -33,7 +33,7 @@ def register(loop_app: typer.Typer) -> None:
 
     @preset_app.command("list")
     def list_command(*, json_output: Annotated[bool, typer.Option("--json")] = False) -> None:
-        """List every preset with its pin, scope, entry count, and ACTIVE marker."""
+        """List every preset with its scope, entry count, and ACTIVE marker."""
         _delegate("list", json_output=json_output)
 
     @preset_app.command("show")
@@ -74,11 +74,10 @@ def register(loop_app: typer.Typer) -> None:
         *,
         set_: Annotated[list[str], typer.Option("--set", help="<loop>=on|off (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description")] = "",
-        pin: Annotated[str, typer.Option("--pin")] = "",
         scope: Annotated[str, typer.Option("--scope")] = "",
     ) -> None:
-        """Create a preset from ``--set`` entries, an optional availability pin and overlay scope."""
-        _delegate(*_edit_args("create", name, _EditFields(set_, description, pin, scope)))
+        """Create a preset from ``--set`` entries and an optional overlay scope."""
+        _delegate(*_edit_args("create", name, _EditFields(set_, description, scope)))
 
     @preset_app.command("edit")
     def edit_command(
@@ -86,11 +85,10 @@ def register(loop_app: typer.Typer) -> None:
         *,
         set_: Annotated[list[str], typer.Option("--set", help="<loop>=on|off|inherit (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description")] = "",
-        pin: Annotated[str, typer.Option("--pin")] = "",
         scope: Annotated[str, typer.Option("--scope")] = "",
     ) -> None:
-        """Edit a preset's entries / description / pin / scope in place."""
-        _delegate(*_edit_args("edit", name, _EditFields(set_, description, pin, scope)))
+        """Edit a preset's entries / description / scope in place."""
+        _delegate(*_edit_args("edit", name, _EditFields(set_, description, scope)))
 
     @preset_app.command("delete")
     def delete_command(
@@ -131,11 +129,10 @@ def _use_args(name: str, *, expiry: str, hold: bool, reason: str) -> list[str]:
 
 @dataclass(frozen=True, slots=True)
 class _EditFields:
-    """The create/edit CLI flags (`--set`/`--description`/`--pin`/`--scope`) bundled for passthrough."""
+    """The create/edit CLI flags (`--set`/`--description`/`--scope`) bundled for passthrough."""
 
     set_: list[str]
     description: str
-    pin: str
     scope: str
 
 
@@ -145,8 +142,6 @@ def _edit_args(verb: str, name: str, fields: _EditFields) -> list[str]:
         args += ["--set", entry]
     if fields.description:
         args += ["--description", fields.description]
-    if fields.pin:
-        args += ["--pin", fields.pin]
     if fields.scope:
         args += ["--scope", fields.scope]
     return args

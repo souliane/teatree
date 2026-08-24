@@ -17,7 +17,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, fake_config
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -58,7 +58,7 @@ class TestOutboundBridgeEndToEnd:
         sent = notify_user(
             "tests green",
             kind=NotifyKind.INFO,
-            idempotency_key="sess=1;turn=1",
+            idempotency_key="watchdog:doctor-unreachable:sess=1;turn=1",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -75,7 +75,10 @@ class TestOutboundBridgeEndToEnd:
                 "text": ":information_source: *info*\ntests green",
             }
         )
-        assert BotPing.objects.get(idempotency_key="sess=1;turn=1").status == BotPing.Status.SENT
+        assert (
+            BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:sess=1;turn=1").status
+            == BotPing.Status.SENT
+        )
 
     def test_per_overlay_routing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """RED if ``messaging_from_overlay`` stops honouring its ``overlay_name`` arg.
@@ -113,7 +116,7 @@ class TestOutboundBridgeEndToEnd:
         # that DEFINES it and where ``_messaging_from_toml_overlay`` looks it up.
         with (
             patch.object(toml_backends, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch.object(backend_factory, "get_overlay", side_effect=ImproperlyConfigured),
         ):
             alpha = messaging_from_overlay("alpha")
@@ -154,7 +157,7 @@ class TestOutboundBridgeEndToEnd:
         # config + ``read_pass`` stub. See the conftest module docstring.
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={}),
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookup.get(k, "")),
         ):
             result = iter_overlay_backends()
@@ -177,7 +180,7 @@ class TestOutboundBridgeEndToEnd:
         notify_user(
             "first",
             kind=NotifyKind.INFO,
-            idempotency_key="dup-key",
+            idempotency_key="watchdog:doctor-unreachable:dup-key",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -186,7 +189,7 @@ class TestOutboundBridgeEndToEnd:
         sent2 = notify_user(
             "second-skip-me",
             kind=NotifyKind.INFO,
-            idempotency_key="dup-key",
+            idempotency_key="watchdog:doctor-unreachable:dup-key",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -194,7 +197,7 @@ class TestOutboundBridgeEndToEnd:
 
         assert sent2 is True
         assert len(transport.calls_to("chat.postMessage")) == first_count == snapshot(1)
-        assert BotPing.objects.filter(idempotency_key="dup-key").count() == 1
+        assert BotPing.objects.filter(idempotency_key="watchdog:doctor-unreachable:dup-key").count() == 1
 
 
 class TestNotifyUserThroughOverlayFactory:
@@ -227,7 +230,7 @@ class TestNotifyUserThroughOverlayFactory:
             sent = notify_user(
                 "fallback path",
                 kind=NotifyKind.INFO,
-                idempotency_key="fallback-1",
+                idempotency_key="watchdog:doctor-unreachable:fallback-1",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_HUMAN",

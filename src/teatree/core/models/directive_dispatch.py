@@ -90,8 +90,14 @@ class DirectiveDispatch(models.Model):
             ),
         ]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        directive_id: int
+
     def __str__(self) -> str:
-        return f"directive-dispatch<{self.pk}:directive:{self.directive_id} {self.purpose}@gen{self.generation}>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"directive-dispatch<{self.pk}:directive:{self.directive_id} {self.purpose}@gen{self.generation}>"
 
     def has_live_interpreter(self) -> bool:
         """Whether this dispatch's interpret task is still in flight (PENDING/CLAIMED).
@@ -141,6 +147,5 @@ class DirectiveDispatch(models.Model):
             ticket=ticket,
             session=session,
             phase=INTERPRET_PHASE,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason=contract,
         )

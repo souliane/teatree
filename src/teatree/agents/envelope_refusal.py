@@ -8,7 +8,7 @@ never be added on the producing side without the consuming side learning it.
 Two seams produce an envelope refusal, and they used to name it in two
 hand-maintained vocabularies that drifted:
 
-* the RUNNER (:func:`teatree.agents.headless._record_success`) refuses a run whose
+* the RUNNER (:func:`teatree.agents.runner._record_success`) refuses a run whose
     output carried no JSON object at all — :data:`NO_ENVELOPE_ERROR`;
 * the RECORDER (:mod:`teatree.agents.attempt_recorder`, :func:`…result_schema.check_evidence`)
     refuses an envelope that parsed but is unusable — wrong keys, not an object, or
@@ -27,15 +27,17 @@ What this module makes possible is a BOUNDED, satisfiable correction of it.
 
 from teatree.agents.result_schema import required_evidence_for_phase
 
-#: Prefix the headless runner stamps on a run that emitted no JSON object at all.
+#: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
 
-#: The runner's full refusal reason. Deliberately a CONSTANT with no run-specific
-#: detail: ``TaskAttempt.error_fingerprint`` hashes it and the repair loop halts on
-#: two consecutive identical fingerprints, so folding the agent's (always-different)
-#: prose into the reason would make every no-envelope run look like a fresh failure
-#: and defeat the stall check. The prose is preserved on the failed attempt's
-#: ``result`` for diagnosis instead.
+#: The runner's full refusal reason. Deliberately a CONSTANT with no run-specific detail,
+#: so the reason CLASSIFIES stably (:func:`is_no_envelope_refusal`, ``classify_failure``)
+#: instead of varying with whatever prose the agent happened to emit; that prose is
+#: preserved on the failed attempt's ``result`` for diagnosis. The constant does NOT feed
+#: the repair loop's stall check: ``no_result_envelope`` is the absence of a cause, so
+#: ``task_failure_taxonomy.is_causeless`` drops it from the identical-failure comparison
+#: (souliane/teatree#4075) — otherwise the corrective retry below manufactured the second
+#: identical fingerprint and halted a phase that was never doomed.
 NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
 
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that

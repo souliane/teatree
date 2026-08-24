@@ -1,12 +1,20 @@
-"""Anti-cheat structural gate for the CI-eval self-healing loop (#3201 PR-2).
+"""Anti-cheat structural gate for the CI-eval self-healing loop (#3201 PR-2, #4220).
 
 The invariant this gate enforces is non-negotiable: a behavioral eval red must be
 FIXED, never suppressed. The healer's fix diff may touch the *product* — skill
 prose, hooks, core code — the levers that actually change agent behaviour. It may
 NEVER touch the *test*: the scenario definitions (``evals/scenarios/**``) or the
-red-matcher grading machinery that decides a scenario is red. Editing either would
-turn a red green without changing behaviour — a suppressed red masquerading as a
-pass.
+eval harness that grades them (``src/teatree/eval/**``). Editing either would turn
+a red green without changing behaviour — a suppressed red masquerading as a pass.
+
+Both bans are DEFAULT-DENY prefixes, which is the #4220 fix. A hand-listed set of
+four graders (``matchers``/``triage``/``judge``/``matcher_vacuity``) admitted
+``report.py`` — the module computing ``ScenarioResult.passed`` — and every other
+grading module by omission, so a fixer could widen the verdict itself and pass the
+gate. A prefix cannot drift away from a surface it does not enumerate;
+``EVAL_HARNESS_ALLOWED_PATHS`` carries the exceptions, and
+``tests/teatree_core/gates/test_eval_heal_anticheat_gate.py`` refuses an entry
+that sits on the computed grading call graph (:mod:`teatree.quality.eval_grading_surface`).
 
 The gate is a pure structural decision over the set of changed paths (from ``git
 diff --name-only``), so it is deterministic and testable with no git/network. It
@@ -27,23 +35,20 @@ from teatree.core.models.errors import InvalidTransitionError
 #: under this prefix is a forbidden edit (the healer would be rewriting the test).
 SCENARIO_DIR_PREFIX = "evals/scenarios/"
 
-#: The red-matcher grading machinery — the code that decides a scenario is red.
-#: Weakening any of these turns a red green without a behavioural fix:
-#: ``matchers.py`` (the assertion engine), ``triage.py`` (``classify_red``),
-#: ``judge.py`` (the LLM judge), ``matcher_vacuity.py`` (the anti-vacuity guard
-#: whose neutering would let a vacuous matcher pass everything).
-RED_MATCHER_PATHS: frozenset[str] = frozenset(
-    {
-        "src/teatree/eval/matchers.py",
-        "src/teatree/eval/triage.py",
-        "src/teatree/eval/judge.py",
-        "src/teatree/eval/matcher_vacuity.py",
-    }
-)
+#: The eval harness — everything that loads, runs, grades, or reports a scenario.
+#: Denied wholesale rather than enumerated: no heal fix has ever needed to edit
+#: the harness, and a red the harness itself caused is a human decision (halt and
+#: escalate), so default-deny costs nothing and closes the omission class.
+EVAL_HARNESS_PREFIX = "src/teatree/eval/"
+
+#: The reviewed exemptions from :data:`EVAL_HARNESS_PREFIX`. Empty by design — an
+#: entry is a deliberate decision, and the conformance test refuses one that lies
+#: on the grading call graph.
+EVAL_HARNESS_ALLOWED_PATHS: frozenset[str] = frozenset()
 
 
 class EvalHealCheatError(InvalidTransitionError):
-    """A heal fix was refused: it edits the scenario tree or the red matcher.
+    """A heal fix was refused: it edits the scenario tree or the eval harness.
 
     A subclass of :class:`InvalidTransitionError` so a ``record_fix`` that hits it
     rolls the FSM advance back and the session stays in ``FIXING``. The message
@@ -54,14 +59,16 @@ class EvalHealCheatError(InvalidTransitionError):
 def _is_forbidden(path: str) -> bool:
     normalized = str(PurePosixPath(path)) if path not in {"", "."} else path
     normalized = normalized.removeprefix("./")
-    return normalized.startswith(SCENARIO_DIR_PREFIX) or normalized in RED_MATCHER_PATHS
+    if normalized.startswith(SCENARIO_DIR_PREFIX):
+        return True
+    return normalized.startswith(EVAL_HARNESS_PREFIX) and normalized not in EVAL_HARNESS_ALLOWED_PATHS
 
 
 def classify_fix_diff(changed_paths: Iterable[str]) -> tuple[str, ...]:
     """Return, in input order, the changed paths a fix diff may not touch.
 
     Empty tuple means the diff is clean (product code only). A non-empty tuple is
-    the set of scenario-tree / red-matcher paths that make the fix a cheat.
+    the set of scenario-tree / eval-harness paths that make the fix a cheat.
     """
     return tuple(path for path in changed_paths if _is_forbidden(path))
 
@@ -71,7 +78,7 @@ def _deny_message(forbidden: tuple[str, ...]) -> str:
     return (
         "Refusing this heal fix — it touches the eval TEST, not the code. A behavioral eval red must be "
         "FIXED by changing the product (skill prose, hooks, core code), never by editing the scenario "
-        "definitions or the red matcher that grades them. Forbidden paths in this diff:\n"
+        "definitions or the eval harness that grades them. Forbidden paths in this diff:\n"
         f"{listed}\n"
         "Revert those edits and fix the behaviour the scenario asserts. If the scenario itself is wrong, "
         "that is a human decision — halt and escalate, do not self-edit the test."

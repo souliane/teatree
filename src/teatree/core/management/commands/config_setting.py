@@ -27,7 +27,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from django.core.exceptions import ValidationError
@@ -41,10 +41,12 @@ from teatree.config import (
     get_effective_settings,
 )
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
@@ -82,6 +84,17 @@ def _stored_row_suffix(key: str) -> str:
 
 
 class Command(TyperCommand):
+    def _refuse_unknown_key(self, key: str) -> NoReturn:
+        """Refuse *key*, rendering its retirement record when one is on file (#4094).
+
+        The registry is the single source, so this surface, the resolver's loud
+        warning and the ``list`` marker cannot come to describe a retirement
+        differently. A retired key stays unwritable — the record is the answer, not
+        an admission that would resolve nowhere.
+        """
+        self.stderr.write(f"  refusing: {retirement_notice(key) or f'{key!r} is not a known config setting'}")
+        raise SystemExit(2)
+
     @command()
     def set(
         self,
@@ -107,8 +120,7 @@ class Command(TyperCommand):
         on write is what keeps a bad row from bricking all reads.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -161,8 +173,7 @@ class Command(TyperCommand):
         from an operator's deliberate pin. Same key/JSON validation as ``set``.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -239,6 +250,17 @@ class Command(TyperCommand):
         self.stdout.write(render_flags_audit(FEATURE_FLAGS))
 
     @command()
+    def inert(self) -> None:
+        """Which gated features shipped and then never ran (#4189).
+
+        One line per gate that is off in every scope and whose declared observable is
+        empty — the feature twin of ``t3 loops audit``'s shipped-seed report. A gate
+        nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
+        staged is listed quietly, so the report stays worth reading.
+        """
+        self.stdout.write(render_inertness_report(feature_inertness()))
+
+    @command()
     def get(
         self,
         key: Annotated[str, typer.Argument(help="UserSettings field name to read (must be overridable).")],
@@ -255,8 +277,7 @@ class Command(TyperCommand):
         accepts every key ``list`` can display (the unified known-key set).
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
             self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
@@ -310,12 +331,24 @@ class Command(TyperCommand):
         overlay; omitted, every scope is dumped. ``--output <path>`` writes a file;
         omitted, the TOML goes to stdout.
 
+        Each line carries a trailing comment saying what the key ACCEPTS — its stored
+        type, plus the alternatives where the schema constrains them to a set — then what
+        it means. Reviewing defaults away from the dashboard is exactly where "may this
+        take any string?" gets asked, and the answer is the schema's own
+        (:func:`~teatree.config.schema.setting_choices`, the derivation the dashboard's
+        selects are built from), so the two surfaces cannot come to disagree.
+
         The secret guard withholds private rows by DEFAULT — a known-private key
         (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
         SHARED export (auto-configuring a fresh teatree) cannot leak customer data
         even though the private DB store keeps it. Each withheld row is named on
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
-        backup.
+        backup. That file carries the rows an ordinary ``import`` refuses, so it stamps
+        itself a backup and is restored with ``import --restore-private`` (#4156).
+
+        A stored row that is not a SETTING — internal runtime state sharing the store, a
+        key outliving its declaration — is named on stderr and left out whatever the flags
+        say: ``import`` has no home for such a key and refuses the whole file on one.
 
         Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
         restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
@@ -335,6 +368,15 @@ class Command(TyperCommand):
             self.stderr.write(
                 f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
             )
+        for row in result.omitted:
+            self.stderr.write(f"  omitted {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
+        if result.omitted:
+            self.stderr.write(
+                f"  {len(result.omitted)} stored row(s) omitted: not configuration, so import refuses them."
+            )
+        if result.private_backup:
+            self.stderr.write("  this is a PERSONAL BACKUP carrying private rows an ordinary import refuses.")
+            self.stderr.write("  never share it; restore it with `config_setting import --restore-private`.")
         if output:
             Path(output).expanduser().write_text(result.toml, encoding="utf-8")
             self.stdout.write(f"  exported config store to {output}")
@@ -355,6 +397,13 @@ class Command(TyperCommand):
                 "--dry-run", help="Classify every row (folded / written / skipped / rejected); write nothing."
             ),
         ] = False,
+        restore_private: Annotated[
+            bool,
+            typer.Option(
+                "--restore-private",
+                help="Restore the private rows of a --include-private personal backup (that file only).",
+            ),
+        ] = False,
     ) -> None:
         """Load a ``config_setting export`` TOML dump into the store — the inverse of ``export``.
 
@@ -362,29 +411,48 @@ class Command(TyperCommand):
         rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
-        ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+        ``defaults.toml`` imports to zero rows), and a value the store already holds is reported
+        as unchanged rather than written. What the export could NOT carry cannot become a change
+        either: a row omitted as non-configuration is simply absent, and a registry field the
+        secret guard withheld is merged back from the store rather than deleted. So re-importing
+        this box's own export writes nothing and deletes nothing — an import never removes a
+        value; ``config_setting clear`` does. ``--dry-run`` classifies without writing.
 
         Safety-posture keys import here without a confirm phrase: typing this command IS the
         operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
         textarea is the surface that demands one, because a paste is not a per-key intent.
+
+        ``--restore-private`` accepts the private rows of an ``export --include-private``
+        backup, the one file that carries them — so the flag whose purpose is a COMPLETE
+        backup produces one that restores (#4156). It grants nothing on any other file: an
+        ordinary dump's secret rows are refused under it exactly as without it.
         """
         text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
         try:
-            result = import_toml_to_db(text, dry_run=dry_run, allow_safety_posture=True)
+            result = import_toml_to_db(
+                text, dry_run=dry_run, allow_safety_posture=True, restore_private=restore_private
+            )
         except tomllib.TOMLDecodeError as exc:
             self.stderr.write(f"  invalid TOML: {exc}")
             raise SystemExit(2) from exc
+        if restore_private and not result.private_backup:
+            self.stderr.write("  --restore-private ignored: this file is not an --include-private personal backup.")
         for old, new in result.folded:
             self.stdout.write(f"  folded retired alias {old} -> {new}")
         for row in result.rejected:
             self.stderr.write(f"  rejected {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.rejected:
+            if result.private_backup and not restore_private:
+                self.stderr.write(
+                    "  this file is an --include-private personal backup; "
+                    "pass --restore-private to restore its private rows."
+                )
             self.stderr.write(f"  {len(result.rejected)} row(s) rejected; nothing was imported.")
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"
         for row in result.written:
-            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+            self.stdout.write(f"  {verb} {row.key} = {row.toml_value}  [{scope_label(row.scope)}]")
         self.stdout.write(
-            f"  {verb} {len(result.written)} row(s); "
+            f"  {verb} {len(result.written)} row(s); {len(result.unchanged)} already at that value; "
             f"{len(result.skipped_default)} equal to the shipped default (no row)."
         )

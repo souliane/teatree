@@ -2,7 +2,7 @@
   "skills": [
     {
       "name": "ac-reviewing-codebase",
-      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
+      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
     },
     {
       "name": "answerer",
@@ -66,7 +66,7 @@
     },
     {
       "name": "mode",
-      "summary": "The operating mode \u2014 one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run"
+      "summary": "The operating mode \u2014 one of five named presets (present / away / maintenance / low-token / off) deciding which loops run"
     },
     {
       "name": "next",
@@ -122,7 +122,7 @@
     },
     {
       "name": "sweeping-tickets",
-      "summary": "Evidence-gated ticket/issue consolidation and triage \u2014 classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging \u2014 never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"shipped by merged PR #X\" class), posting a one-line reason on every close"
+      "summary": "Evidence-gated ticket/issue grouping \u2014 classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism: a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging \u2014 never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first"
     },
     {
       "name": "sweeping-worktrees",

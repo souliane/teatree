@@ -163,9 +163,11 @@ class _Host:
     raises: bool = False
     seen_authors: list[str] = field(default_factory=list)
     seen_merged_authors: list[str] = field(default_factory=list)
+    enrich_requested: list[bool] = field(default_factory=list)
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str, enrich: bool = True) -> list[RawAPIDict]:
         self.seen_authors.append(author)
+        self.enrich_requested.append(enrich)
         if self.raises:
             msg = "forge down"
             raise RuntimeError(msg)

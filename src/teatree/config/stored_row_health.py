@@ -58,9 +58,19 @@ class InternalStateKey:
 
 INTERNAL_STATE_KEYS: tuple[InternalStateKey, ...] = (
     InternalStateKey(
+        key="host_projection_generation",
+        owner="teatree.config.host_projection",
+        purpose="the ratcheting generation counter every projection publish stamps its payload with",
+    ),
+    InternalStateKey(
         key="loop_preset_transition_stamp",
         owner="teatree.loops.preset_transitions",
-        purpose="the last-applied mode name each transition pass compares against",
+        purpose="the last-applied PRESET name the owner-facing drain and Slack line compare against",
+    ),
+    InternalStateKey(
+        key="loop_mode_transition_stamp",
+        owner="teatree.loops.preset_transitions",
+        purpose="the last-applied RESOLVED MODE name the timer-chain reconcile compares against",
     ),
     InternalStateKey(
         key="approval_dial",
@@ -87,7 +97,7 @@ def internal_state_key(key: str) -> InternalStateKey | None:
     return _INTERNAL_STATE_BY_KEY.get(key)
 
 
-def stored_row_note(key: str) -> str:
+def stored_row_kind(key: str) -> str:
     """What *key* is, when it is not a live setting — the empty string when it is one.
 
     The remedy is offered only where clearing the row is the right move: a retired or
@@ -103,14 +113,38 @@ def stored_row_note(key: str) -> str:
         return ""
     state = internal_state_key(key)
     if state is not None:
-        return f"[internal state — {state.purpose}, owned by {state.owner}]"
+        return f"internal state — {state.purpose}, owned by {state.owner}"
     replacement = RENAMED_SETTING_KEYS.get(key)
     if replacement is not None:
-        return f"[retired alias — resolves onto {replacement}]"
+        return f"retired alias — resolves onto {replacement}"
     remedy = CLEAR_REMEDY.format(key=key)
     if removed_setting(key) is not None:
-        return f"[retired — not in effect; clear with `{remedy}`]"
-    return f"[unknown — not a declared setting; clear with `{remedy}`]"
+        return f"retired — not in effect; clear with `{remedy}`"
+    return f"unknown — not a declared setting; clear with `{remedy}`"
 
 
-__all__ = ["INTERNAL_STATE_KEYS", "InternalStateKey", "internal_state_key", "stored_row_note"]
+def stored_row_note(key: str) -> str:
+    """:func:`stored_row_kind` in the brackets a raw-row listing appends it to a row in."""
+    kind = stored_row_kind(key)
+    return f"[{kind}]" if kind else ""
+
+
+def is_operator_configuration(key: str) -> bool:
+    """Whether a stored row under *key* is CONFIGURATION rather than something else.
+
+    A live setting, or a retired alias whose stored value still migrates onto one. The
+    negative cases — internal state a module owns, a removed key, an orphan — share one
+    consequence: nothing will ever read them back as config, so an interchange format that
+    carries them (souliane/teatree#4147) is offering rows its own reader has no home for.
+    """
+    return key in ALL_KNOWN_CONFIG_SETTINGS or key in RENAMED_SETTING_KEYS
+
+
+__all__ = [
+    "INTERNAL_STATE_KEYS",
+    "InternalStateKey",
+    "internal_state_key",
+    "is_operator_configuration",
+    "stored_row_kind",
+    "stored_row_note",
+]

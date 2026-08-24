@@ -120,7 +120,10 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         del repo, login
         return True
 
-    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
+        # GitLab's MR list already carries the pipeline fields GitHub needs a second read for,
+        # so there is no enrichment to skip.
+        del enrich
         return self._client.list_all_open_mrs(author, updated_after=updated_after)
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
@@ -147,6 +150,15 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
         return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """MRs on *repo* merged at or after ISO-8601 *since* — raises rather than degrading."""
+        return _pr_reads.list_project_merged_prs_since(
+            self._client,
+            self._resolve_project(repo),
+            repo=repo,
+            since=since,
+        )
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
@@ -250,7 +262,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         project = self._resolve_project(repo)
         if project is None:
             return []
-        return cast("list[RawAPIDict]", self._client.get_mr_discussions(project.project_id, pr_iid))
+        return self._client.get_mr_discussions(project.project_id, pr_iid)
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
@@ -346,7 +358,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return ""
         author = cast("_GitLabMergeRequestSummary", mr).get("author")
         if isinstance(author, dict):
-            username = cast("_GitLabUser", author).get("username")
+            username = author.get("username")
             if isinstance(username, str):
                 return username
         return ""

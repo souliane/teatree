@@ -69,9 +69,22 @@ class MergeKeystoneResult(TypedDict, total=False):
 
 
 class _MergeClearLike(Protocol):
-    slug: str
-    pr_id: int | str
-    ticket: object
+    """The read surface ``merge_clear_refusal`` needs off a CLEAR row.
+
+    Members are read-only properties, not mutable attributes: every consumer only
+    READS them, and a bare attribute excludes the Django model that is the sole real
+    implementation — a model field is a class-level descriptor (``CharField[str]``,
+    not ``str``), which cannot satisfy a settable protocol member.
+    """
+
+    @property
+    def slug(self) -> str: ...
+
+    @property
+    def pr_id(self) -> int | str: ...
+
+    @property
+    def ticket(self) -> object: ...
 
     def is_substrate(self) -> bool: ...  # pragma: no branch
 

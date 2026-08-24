@@ -19,9 +19,11 @@ from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
 from teatree.config.cold_defaults import flatten_settings_table
-from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
+from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
-from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
+from teatree.config.setting_annotation import choice_token
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import resolve_export_scan_terms
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
@@ -81,6 +83,44 @@ class TestExportDbToToml(TestCase):
 
     def test_empty_store_exports_empty_document(self) -> None:
         assert export_db_to_toml(scan_terms=()).toml.strip() == ""
+
+
+class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
+    """A dumped line answers "what may I put here", not only "what is it now".
+
+    The export is where defaults get reviewed away from the dashboard, so a line reading
+    ``wip = "full"`` alone leaves the reader unable to tell an open string from one of four
+    words. The answer is the schema's own (``setting_choices``, which the dashboard's
+    selects are built from) — these pin it reaching the dump intact and still importable.
+    """
+
+    def _line(self, key: str) -> str:
+        return next(line for line in export_db_to_toml(scan_terms=()).toml.splitlines() if line.startswith(f"{key} ="))
+
+    def test_a_constrained_keys_line_names_every_value_the_schema_admits(self) -> None:
+        ConfigSetting.objects.set_value("wip", "full")
+        offered = self._line("wip").split("one of:", 1)[1]
+        for choice in setting_choices("wip"):
+            assert choice_token(choice) in offered, f"{choice!r} missing from {offered!r}"
+
+    def test_an_open_typed_keys_line_names_its_type_and_offers_no_list(self) -> None:
+        ConfigSetting.objects.set_value("agent_max_turns", 400)
+        line = self._line("agent_max_turns")
+        assert "# int" in line
+        assert "one of:" not in line
+
+    def test_the_annotated_dump_still_imports_back_into_the_store(self) -> None:
+        # The annotation lives in a TOML comment, so it must be invisible to the inverse.
+        # Both values diverge from their shipped default, so a row is genuinely rewritten
+        # (import skips a value equal to the default, which would prove nothing here).
+        ConfigSetting.objects.set_value("wip", "slow")
+        ConfigSetting.objects.set_value("agent_max_turns", 400)
+        dumped = export_db_to_toml(scan_terms=()).toml
+        ConfigSetting.objects.all().delete()
+        result = import_toml_to_db(dumped, scan_terms=())
+        assert not result.rejected, result.rejected
+        assert ConfigSetting.objects.get_effective("wip") == "slow"
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 400
 
 
 class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):
@@ -182,7 +222,7 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
 
 
 class TestExportScanTermsRoutesThroughRegistry:
-    """``_resolve_export_scan_terms`` resolves through the consolidated registry.
+    """``resolve_export_scan_terms`` resolves through the consolidated registry.
 
     Seeds the canonical config DB directly (via ``T3_CONFIG_DB``) so ``cold_reader``
     reads it, then asserts the export scan set is the union of every ban class,
@@ -212,7 +252,7 @@ class TestExportScanTermsRoutesThroughRegistry:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        assert set(_resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
+        assert set(resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
 
 
 class TestImportTomlToDb(TestCase):
@@ -273,11 +313,46 @@ class TestImportTomlToDb(TestCase):
         result = import_toml_to_db('[teatree]\nmode = "interactive"\n', scan_terms=())
         assert [(r.key, r.is_safety_posture) for r in result.written] == [("mode", False)]
 
+    def test_a_restored_private_row_is_flagged_and_withholds_its_value(self) -> None:
+        text = '[backup]\ninclude_private = true\n[teatree]\nslack_user_id = "synthetic-user-ref"\nmerge_wip = 4\n'
+        result = import_toml_to_db(text, scan_terms=(), restore_private=True)
+        assert [(r.key, r.is_private) for r in result.written] == [("slack_user_id", True), ("merge_wip", False)]
+        rendered = {r.key: r.toml_value for r in result.written}
+        assert "synthetic-user-ref" not in rendered["slack_user_id"]
+        assert rendered["merge_wip"] == "4"
+
+    def test_a_row_private_only_by_its_value_is_flagged_too(self) -> None:
+        # The fourth withhold class: no key rule catches it, so `is_private` must be asked of
+        # `redaction_reason` and not of `_unstorable_reason` (which returns None under the flag).
+        text = '[backup]\ninclude_private = true\n[teatree]\ndashboard_instance_label = "acmecorp"\n'
+        result = import_toml_to_db(text, scan_terms=("acmecorp",), restore_private=True)
+        assert [(r.key, r.is_private) for r in result.written] == [("dashboard_instance_label", True)]
+        assert "acmecorp" not in result.written[0].toml_value
+
     def test_a_safety_posture_value_equal_to_its_default_is_skipped_not_rejected(self) -> None:
         # It writes no row, so there is nothing for the confirm gate to authorize.
         result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())
         assert result.rejected == ()
         assert [r.key for r in result.skipped_default] == ["autonomy"]
+
+    def test_a_safety_posture_value_the_store_already_holds_is_unchanged_not_rejected(self) -> None:
+        # The `unchanged` disposition is evaluated BEFORE the safety-posture refusal, so a box
+        # re-importing its own export is not refused over a posture it is already running. The
+        # refusal guards a CHANGE of posture, and this row changes nothing there is to authorize.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\nmode = "interactive"\n', scan_terms=())
+        assert result.rejected == ()
+        assert [r.key for r in result.unchanged] == ["autonomy"]
+        assert [r.key for r in result.written] == ["mode"]
+
+    def test_a_safety_posture_change_still_refuses_the_whole_file(self) -> None:
+        # The anti-vacuous half of the pair above: relaxing the UNCHANGED case must not relax
+        # the case the gate exists for. One posture change still costs every clean row.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        result = import_toml_to_db('[teatree]\nautonomy = "notify"\nmode = "interactive"\n', scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("autonomy", "safety-posture")]
+        assert result.written == ()
+        assert ConfigSetting.objects.get_effective("mode") != "interactive"
 
     def test_retired_alias_folds_onto_its_replacement(self) -> None:
         # `speed` was renamed to `wip`; the stored value migrates onto the live key.
@@ -432,10 +507,10 @@ class TestSeedTableExport(_SeedRowsTestCase):
         assert doc["loops"] == {"inbox": {"default_enabled": False}}
 
     def test_a_retuned_mode_and_schedule_export_their_diverging_fields(self) -> None:
-        Mode.objects.filter(name="off").update(defers_questions=True)
+        Mode.objects.filter(name="off").update(description="my own words")
         ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
         doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
-        assert doc["modes"] == {"off": {"defers_questions": True}}
+        assert doc["modes"] == {"off": {"description": "my own words"}}
         assert doc["schedules"] == {"standard": {"timezone": "UTC"}}
 
     def test_an_overlay_scoped_export_carries_no_seed_table(self) -> None:
@@ -460,9 +535,9 @@ class TestSeedTableImport(_SeedRowsTestCase):
         assert Loop.objects.get(name="inbox").delay_seconds == 90
 
     def test_a_mode_and_a_schedule_field_write_onto_their_rows(self) -> None:
-        toml = '[modes.off]\ndefers_questions = true\n\n[schedules.standard]\ntimezone = "UTC"\n'
+        toml = '[modes.off]\ndescription = "my own words"\n\n[schedules.standard]\ntimezone = "UTC"\n'
         assert import_toml_to_db(toml, scan_terms=()).rejected == ()
-        assert Mode.objects.get(name="off").defers_questions is True
+        assert Mode.objects.get(name="off").description == "my own words"
         assert ModeSchedule.objects.get(name="standard").timezone == "UTC"
 
     def test_a_shipped_entry_with_no_row_yet_is_rejected_not_raised(self) -> None:
@@ -470,7 +545,7 @@ class TestSeedTableImport(_SeedRowsTestCase):
         # nothing to land on. Refuse the whole import and say so, rather than raise
         # DoesNotExist halfway through and leave a partly-written store behind.
         Mode.objects.all().delete()
-        result = import_toml_to_db("[modes.off]\ndefers_questions = true\n", scan_terms=())
+        result = import_toml_to_db('[modes.off]\ndescription = "my own words"\n', scan_terms=())
         assert [(r.scope, r.reason) for r in result.rejected] == [
             ("modes.off", "no modes row yet — run `t3 setup` to seed it")
         ]
@@ -537,12 +612,12 @@ class TestSeedTableImport(_SeedRowsTestCase):
 class TestSeedTableRoundTripIsByteStable(_SeedRowsTestCase):
     def test_export_import_export_is_byte_identical_for_a_retuned_box(self) -> None:
         Loop.objects.filter(name="inbox").update(delay_seconds=90, colleague_facing=True)
-        Mode.objects.filter(name="off").update(defers_questions=True)
+        Mode.objects.filter(name="off").update(description="my own words")
         ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
         export1 = export_db_to_toml(scan_terms=()).toml
 
         Loop.objects.filter(name="inbox").update(delay_seconds=60, colleague_facing=False)
-        Mode.objects.filter(name="off").update(defers_questions=False)
+        Mode.objects.filter(name="off").update(description="the shipped words")
         ModeSchedule.objects.filter(name="standard").update(timezone="Europe/Vienna")
         assert import_toml_to_db(export1, scan_terms=()).rejected == ()
 

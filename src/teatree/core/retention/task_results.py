@@ -28,7 +28,7 @@ from django.core.management import call_command
 from django_tasks import DEFAULT_TASK_BACKEND_ALIAS
 
 if TYPE_CHECKING:
-    from django_tasks_db.models import DBTaskResult, DBTaskResultQuerySet
+    from django_tasks_db.models import DBTaskResultQuerySet
 
 #: Every configured queue. The command's own default is the single ``default`` queue,
 #: which would silently exclude the ``loops`` chain rows that dominate the table.
@@ -49,7 +49,7 @@ def task_results_are_stored_in_the_db() -> bool:
     return isinstance(task_backends[DEFAULT_TASK_BACKEND_ALIAS], DatabaseBackend)
 
 
-def prunable_task_results(cutoff: dt.datetime) -> "DBTaskResultQuerySet[DBTaskResult]":
+def prunable_task_results(cutoff: dt.datetime) -> "DBTaskResultQuerySet":
     """The finished result rows older than *cutoff* — read-only, deletes nothing.
 
     A READY or RUNNING row is never in the set: ``finished()`` is the library's own

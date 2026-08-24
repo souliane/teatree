@@ -53,16 +53,23 @@ except Exception as exc:
 # produces at the engagement seam, and whether the canonical token that demand
 # lands in ``<session>.pending`` as still resolves for the skill-loading gate.
 # Every link is a place the owner's opt-in has silently evaporated.
+#
+# The lane is reported from HERE rather than read in the CLI process, because the
+# demand is only interpretable against the lane that produced it — and this is the
+# process that produced it. A second reading in the doctor could disagree with the
+# one the seam actually consulted, which is the drift ``session_lane`` exists to
+# foreclose.
 _ENGAGEMENT_PROBE = """
 import json, sys
 sys.path.insert(0, {plugin_root!r})
 try:
     from hooks.scripts.engagement import autoload_skill_demand
     from hooks.scripts.hook_router import _skill_resolves, _skill_search_dirs, normalize_skill_name
+    from hooks.scripts.session_lane import session_lane
     demand = autoload_skill_demand([])
     search_dirs = _skill_search_dirs()
     enforceable = [normalize_skill_name(s) for s in demand if _skill_resolves(normalize_skill_name(s), search_dirs)]
-    print(json.dumps({{"status": "ok", "demand": demand, "enforceable": enforceable}}))
+    print(json.dumps({{"status": "ok", "lane": session_lane(), "demand": demand, "enforceable": enforceable}}))
 except Exception as exc:
     print(json.dumps({{"status": "probe_failed", "error": exc.__class__.__name__ + ": " + str(exc)}}))
 """
@@ -72,6 +79,12 @@ _PROBE_TIMEOUT_SECONDS = 30
 # ``HookResolution.status`` vocabulary.
 _STATUS_OK = "ok"
 _STATUS_PROBE_FAILED = "probe_failed"
+
+# ``hooks.scripts.session_lane.LANE_SDK``, restated rather than imported: ``hooks/``
+# is a repo-root sibling of ``src/`` and ships in no teatree distribution, which is
+# why every reference to it here is a resolved PATH. The two copies are bound by
+# ``tests/teatree_cli/doctor/test_autoload_engagement_check.py``.
+_LANE_SDK = "sdk"
 
 
 @dataclass(frozen=True)
@@ -156,10 +169,14 @@ def _check_cold_hook_settings_readable() -> bool:
 
     Crash-proof: an unaskable probe (missing shim, no interpreter, timeout, unparsable
     output) is a WARN, never a hard FAIL — an undiagnosable environment must not turn
-    a doctor run red on this check alone.
+    a doctor run red on this check alone. A venue that cannot open the store ITSELF gets
+    the same treatment for the COMPARISON only (#4357): the CLI side would be a shipped
+    default, so a difference measures database access rather than disagreement. The two
+    hook-side verdicts stand — they rest on the hook's own read, not on the CLI's.
     """
     import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config.override_reader import config_store_readable  # noqa: PLC0415 — deferred: light import
 
     repo_root = Path(teatree.__file__).resolve().parents[2]
     resolution = _hook_interpreter_resolution(repo_root)
@@ -185,6 +202,18 @@ def _check_cold_hook_settings_readable() -> bool:
             "Re-run `t3 setup`, then re-run `t3 doctor check`.",
         )
         return False
+
+    # #4357: the CLI half of the comparison is a shipped default when THIS venue cannot
+    # open the store, so a difference then measures database access rather than a
+    # CLI/hook disagreement. Placed after the hook-side verdicts above, which stand on
+    # the hook's own read and are unaffected by what the CLI can reach.
+    if not config_store_readable():
+        typer.echo(
+            "WARN  CLI-versus-hook `autoload` agreement is UNVERIFIED: this venue cannot open the "
+            "ConfigSetting store, so the CLI side of the comparison is a shipped default rather "
+            "than your stored row. Re-run `t3 doctor check` from a venue that reaches the control DB.",
+        )
+        return True
 
     hook_autoload = resolution.autoload
     cli_autoload = get_effective_settings().autoload
@@ -239,9 +268,30 @@ def _check_config_override_tier_healthy() -> bool:
         "frame (deterministic — fix the caller, not the DB), SQLite lock contention against a "
         "large control DB, an exhausted file-handle budget, or a full disk. Fix the underlying "
         "fault; the record clears itself once no further read fails for "
-        f"{MARKER_TTL_SECONDS // 3600}h, or delete {marker_path()} to acknowledge it now."
+        f"{MARKER_TTL_SECONDS // 3600}h, or delete {report.path or marker_path()} to acknowledge it now."
     )
     return False
+
+
+def _autoload_claim_is_verifiable() -> bool:
+    """Whether an ``autoload`` claim exists here AND this venue could actually read it (#4357).
+
+    False in two ways that must not be conflated. A store that will not open resolves
+    ``autoload`` to its shipped ``False``, so the caller's "nothing was claimed" exit would
+    be a definite green about a flag never read — that one WARNs UNVERIFIED. A genuinely
+    stored ``false`` claims nothing, so it is silent.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config.override_reader import config_store_readable  # noqa: PLC0415 — deferred: light import
+
+    if not config_store_readable():
+        typer.echo(
+            "WARN  Autoload engagement is UNVERIFIED: this venue cannot open the ConfigSetting "
+            "store, so `autoload` resolves to its shipped default rather than to your stored row. "
+            "Re-run `t3 doctor check` from a venue that reaches the control DB.",
+        )
+        return False
+    return get_effective_settings().autoload
 
 
 def _check_autoload_engages_platform_skill() -> bool:
@@ -261,18 +311,27 @@ def _check_autoload_engages_platform_skill() -> bool:
     actually be made to load, and FAILS when the two disagree.
 
     Off when ``autoload`` is off: nothing was claimed, so there is nothing to
-    contradict.
+    contradict. Off too when the probe reports a POSITIVELY SDK lane, where the
+    seam withholds the skill on purpose — the demand is enforced by a
+    ``PreToolUse`` gate that refuses every ``Edit``/``Write``/``Bash``, so
+    engaging a headless worker would block the factory this check protects. An
+    empty demand there is the contract being honoured, not the chain degrading.
+    Only a positively SDK lane is excused: an UNKNOWN lane (a doctor run from a
+    plain shell carries no Claude markers) keeps the FAIL, mirroring the seam's
+    own resolution of an unreadable signal toward the attended reading.
 
     An UNASKABLE probe (no bash, no shim, spawn failure, unparsable output) is a
     WARN — an undiagnosable environment must not turn a doctor run red on this
     check alone. A probe that RAN and crashed is a FAIL, not a WARN: the live
     hook path could not compute the demand, which settles the question rather
     than leaving it open.
+
+    Both "nothing was claimed" exits — a stored ``false``, and a venue that cannot
+    read the claim at all (#4357) — are :func:`_autoload_claim_is_verifiable`'s.
     """
     import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    if not get_effective_settings().autoload:
+    if not _autoload_claim_is_verifiable():
         return True
 
     repo_root = Path(teatree.__file__).resolve().parents[2]
@@ -294,6 +353,14 @@ def _check_autoload_engages_platform_skill() -> bool:
 
     enforceable = parsed.get("enforceable")
     if isinstance(enforceable, list) and enforceable:
+        return True
+    if parsed.get("lane") == _LANE_SDK:
+        typer.echo(
+            "WARN  `autoload` is true, but this doctor run sits in the SDK lane, where the "
+            "platform skill is withheld by design — the gate enforcing it would refuse every "
+            "edit the factory's own workers make. Attended-session engagement is unverified "
+            "from here; re-run `t3 doctor check` from an interactive session to check it.",
+        )
         return True
     typer.echo(
         f"FAIL  `autoload` is true in the settings store, but the LIVE hook path engages no "

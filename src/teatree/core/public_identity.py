@@ -6,7 +6,7 @@ machine's inherited git identity. Strictly scoped by remote host AND
 visibility — non-github (e.g. GitLab) and private remotes are excluded
 so their own configured identity is left as-is. Reused by the worktree
 provisioner and the fast-push commit-identity leak gate
-(:meth:`teatree.core.fast_push.LeakGateScan._author_identity`).
+(:meth:`teatree.core.push.fast_push.LeakGateScan._author_identity`).
 
 The gate is HOST-AWARE (#2655): callers pass the full remote URL (host
 intact), never the host-stripped slug — a bare ``owner/repo`` from a
@@ -17,6 +17,7 @@ GitLab clone could be stamped with the github identity.
 import re
 from typing import NotRequired, TypedDict
 
+from teatree.core.forge_pr_probe import forge_cli_env
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -140,6 +141,7 @@ def is_public_github_remote(remote: str) -> bool:
         result = run_allowed_to_fail(
             ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
             expected_codes=(0,),
+            env=forge_cli_env(),
         )
     except CommandFailedError:
         return False

@@ -9,7 +9,7 @@ from teatree.core.models import ModeSchedule, ModeScheduleSlot
 
 class TestLoopScheduleSlotWeekdays(django.test.SimpleTestCase):
     def test_weekdays_keeps_valid_ints(self) -> None:
-        slot = ModeScheduleSlot(days=[0, 6, 7, -1, "x"], start_time=dt.time(8, 0), preset_name="engaged")
+        slot = ModeScheduleSlot(days=[0, 6, 7, -1, "x"], start_time=dt.time(8, 0), preset_name="present")
         assert slot.weekdays == {0, 6}
 
     def test_weekdays_empty_for_non_list(self) -> None:
@@ -20,6 +20,6 @@ class TestLoopScheduleSlotWeekdays(django.test.SimpleTestCase):
 class TestLoopSchedulePersistence(django.test.TestCase):
     def test_cascade_deletes_slots(self) -> None:
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
-        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="present")
         schedule.delete()
         assert ModeScheduleSlot.objects.count() == 0

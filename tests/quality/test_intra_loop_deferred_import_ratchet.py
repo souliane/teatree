@@ -322,6 +322,9 @@ class TestLoopStatuslineLoopsNode:
             "teatree.loop.statusline_loop_chunks",
             "teatree.loop.loop_cadences",
             "teatree.loop.loop_scoping",
+            # #3968: the loop-runner predicate, so the worker owning `t3-master` is
+            # never painted as a hijack. Another eager DOWN edge to a declared leaf.
+            "teatree.loop.session_identity",
         }
         # The severed back-edges: `statusline_loops` NEVER depends on the
         # orchestration-top cadence homes nor the parent node.
@@ -477,6 +480,7 @@ class TestLoopSlackAnswerNode:
         assert loop_deps == {
             "teatree.loop.inbound_classifier",
             "teatree.loop.inbound_reading",
+            "teatree.loop.question_binding",
             "teatree.loop.self_improve",
             "teatree.loop.statusline",
         }

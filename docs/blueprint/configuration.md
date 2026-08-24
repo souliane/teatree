@@ -25,7 +25,6 @@ The keys and value shapes below are illustrative — set each one with
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
 # a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
-privacy = "strict"
 orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django, DB-first w/ TOML self-rescue)
 # statusline_chain is DB-home now (extra statusline scripts, glob patterns, chained after the loop's zones).
 # Set it with `t3 <overlay> config_setting set statusline_chain '[...]'`; a value left here is ignored on read (the bash hook reads the DB via the sqlite3 CLI).
@@ -117,13 +116,20 @@ env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend
 posts, remote branch deletion):
 
-| Mode | Default | Meaning |
-|------|---------|---------|
-| `interactive` | ✅ | Canonical default. Confirm before push, PR create, messaging-backend posts, any remote write. Always-gated destructive ops (force-push to default branches, history rewrites on shared defaults, destructive DB ops on non-ticket schemas, unauthorized external writes) stay gated regardless of mode. |
-| `auto` |  | Opt-in per overlay. End-to-end autonomy: push, PR create, clean-all's branch pruning, retro writes, overlay-approved messaging-backend posts run without prompts. Merge is gated by `require_human_approval_to_merge` (default `true`). Always-gated destructive ops still apply. Recommended for personal dogfooding overlays where the user accepts the trust boundary; use `interactive` for client / shared-team overlays. |
+| Mode | Meaning |
+|------|---------|
+| `interactive` | Confirm before push, PR create, messaging-backend posts, any remote write. Recommended for client / shared-team overlays. |
+| `auto` | End-to-end autonomy: push, PR create, clean-all's branch pruning, retro writes, overlay-approved messaging-backend posts run without prompts. Merge is gated by `require_human_approval_to_merge`. |
 
-The env var `T3_MODE` overrides the stored DB-home value. Unknown values raise
-`ValueError` — typos never silently downgrade to a less-safe mode.
+Always-gated destructive ops (force-push to default branches, history rewrites on
+shared defaults, destructive DB ops on non-ticket schemas, unauthorized external
+writes) stay gated in **both** modes.
+
+`src/teatree/config/defaults.toml` is the single authority for which mode — and
+every other setting's value — a fresh install ships with; this table describes the
+postures, not which one is the default. The env var `T3_MODE` overrides the stored
+DB-home value. Unknown values raise `ValueError` — typos never silently downgrade to
+a less-safe mode.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 
@@ -138,16 +144,19 @@ DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `timezone`
 — the Django settings module hardcodes `TIME_ZONE` and configures
 `DATABASES` without reading it, so it was not a bootstrap dep (its former sibling
-`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the two former
-per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
-per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
+`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the former
+per-overlay-TOML-overridable field `orchestrator_bash_gate_enabled` — per-overlay
+override now lives in a `ConfigSetting` overlay-scope row (`timezone` and its carve-out
+sibling `privacy` made the same DB-home move and were later retired reader-less by
+[#4203](https://github.com/souliane/teatree/issues/4203)) — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
 the same default bootstrap path `write_mirror` uses when unset; that default is the SHARED
 data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatree`) plus
 `handover/latest.md` (#3563) — the state dir is runtime-local, so a hand-off created inside
 the worker container wrote its mirror to a filesystem the host could not read and the host's
 `latest.md` stayed pinned to an ancient session, while the data dir is the one directory
-every runtime shares (the deploy already bind-mounts it) — `statusline_chain` —
+every runtime shares (the deploy already bind-mounts it); the mirror is BOOTSTRAP-ONLY, read
+only when the DB is unreachable and never merely because the drain came back empty (#4194) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
 `json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
 that renders the statusline in a hand-engaged session (an engage marker present) even
@@ -341,8 +350,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and `on_behalf_post_mode` for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
-| `wip` | Bounded-WIP throughput dial `slow < medium < full < boost` (default `medium`): how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
-| `privacy` | Stricter for client code, looser for personal |
+| `wip` | Bounded-WIP throughput dial `slow < medium < full < boost`: how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
 | `loop_cadence_seconds` | Per-overlay tick cadence (e.g. tighter on a hot overlay, looser on a maintenance one) |
@@ -381,16 +389,19 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `eval_local_disabled` | Escape hatch for the periodic local-eval scanner (`eval_local`). The loop fires a weekly `eval_local` task so the SCOPED eval suite runs locally via the no-API-key subscription runner (the local half of "evals run locally + in CI weekly"; CI half is the standalone `.github/workflows/eval.yml` weekly schedule). |
 | `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
 | `eval_local_cadence_hours` | Cadence floor for the local-eval scanner (default 168 = weekly) |
-| `backlog_sweep_disabled` | Kill switch for the periodic backlog-sweep scanner (`backlog_sweep`, #2419) — **defaults `true` (default-OFF)** because the sweep is destructive-capable (it can propose closing issues). The loop fires a weekly `backlog_sweep` task only after the user opts in with `config_setting set backlog_sweep_disabled false`. Mirrors `t3:scanning-news`'s cadence/ask-gate wiring; the queued task carries an `ASK-GATE` directive so the dispatched skill never mass-closes or mass-folds unattended. |
+| `backlog_sweep_disabled` | Kill switch for the periodic backlog-sweep scanner (`backlog_sweep`, #2419, #4344) — **ships open**, leaving the `backlog_sweep` `Loop` row (seeded `enabled = false`) as the single switch an operator flips. Set it to stop scheduling sweeps without touching the row. Mirrors `t3:scanning-news`'s cadence/ask-gate wiring; the queued task always carries the group-first, close-nothing-for-real directive. |
 | `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `sweeping-tickets`) |
-| `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 168 = weekly) |
-| `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep issue closes (default `true`). When on, the dispatched skill records each close/fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing — only the high-confidence shipped-by-merged-PR class auto-closes. Per-overlay overridable. |
+| `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 24 = daily) |
+| `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep row retirements (default `true`). When on, the dispatched skill records each fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing, and routes every retirement through the gated `ticket bulk-close`. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (default `1`, the headless-safe single in-flight stack; `0` = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay can relax to `0`; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `task_attempt_retention_days` | #3693: retention window (days) for `TaskAttempt` rows (default `30`, `0` disables). `t3 <overlay> retention prune` deletes attempts OLDER than this window whose owning task AND ticket are TERMINAL — never a live/in-flight row. Dry-run by default (`--apply` deletes). Per-overlay overridable; enforced by `teatree.core.retention`. |
 | `incoming_event_retention_days` | #3693: retention window (days) for `IncomingEvent` rows (default `30`, `0` disables). `retention prune` deletes only FINISHED events (drained/dead-lettered) received before this window; an un-processed, non-dead-lettered event is never pruned. Per-overlay overridable. |
 | `park_attempt_retention_days` | Retention window (days) for limit-PARK audit rows on `TaskAttempt` (default `7`, `0` disables). A separate lane from `task_attempt_retention_days`, because a park RETURNS its task to the queue PENDING — so a park row's owning task is by construction non-terminal and the terminal-owned guard can never reach one, which is why a park-bloated table reported "would prune 0". This lane keys on the canonical `limit_parked:` marker, NEVER deletes a row carrying billed telemetry (the priced rows are the whole cost ledger), and measures age on `ended_at` (the last observation) so a live coalesced park is not deleted. Deletes in separately-committed batches so no single statement holds the SQLite write lock across the whole set. Per-overlay overridable; enforced by `teatree.core.retention` via `TaskAttempt.objects.prunable_parks`. |
 | `ticket_transition_prune_disabled` | #3871: kill switch for the `TicketTransition` lane (default `false`). The lane has no window — its trigger is the owning ticket CLOSING (`Ticket.marker_release_states()` plus RETROSPECTED), because a closed ticket's operational residue is dead weight the moment it closes and waiting out a window is arbitrary. What it removes is decided per ROW, not per table: only a `from_state == to_state` row, which records no edge and so is not history a reopened ticket (`reopen` / `reopen_for_followup` / `rework`) needs. Every real state edge survives for as long as the ticket does. Each ticket's earliest row (the creation proxy `factory_signal_queries` dates a fix ticket by via `Min(created_at)`) and latest row (the last-activity signal the stale-ticket and stuck-redispatch scanners read) are never touched. Per-overlay overridable; enforced by `teatree.core.models.transition`. |
+| `deferred_question_age_ceiling_days` | #4178: age backstop over the pending `DeferredQuestion` backlog (default `3` days, `0` disables). A pending row older than the ceiling is ESCALATED by the tick sweep `teatree.loop.question_drain.drain_pending_questions` — `escalated_at`/`escalation_count` stamped plus an `escalated` audit row — and NEVER dismissed, so directive #45 (an unresolved request is never silently dropped) still holds. Rate-limited to one escalation per ceiling window, so a long-lived question is re-surfaced rather than re-stamped every tick. Per-overlay overridable. |
 | `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the daily `prune_task_results` maintenance chain, through one seam (`teatree.core.retention.task_results`). Per-overlay overridable. |
+| `scratch_retention_days` | #4165: retention window (days) for agent scratch under the temp root (default `0` — the lane ships OFF, as every destructive lever does; set a positive window to arm it). On a RAM-backed `/tmp` this is MEMORY, not idle disk — the measured box carried 8.8 GB of week-old sqlite/venv scratch inside a 15 GB tmpfs on 31 GB of RAM, 28% of the working pool. `t3 <overlay> retention scratch` reclaims a top-level entry only when it is older than the window, owned by this uid, held open (fd or cwd) by no live process the probe can see, not a registered worktree checkout nor a parent/child of one, and not protected by name. Every guard that cannot be answered KEEPS the entry with its reason printed; an unreadable process table or worktree read makes the whole plan removable-empty. Dry-run by default (`--apply` reclaims). Per-overlay overridable; enforced by `teatree.core.retention.scratch`. |
+| `scratch_sweep_root` | #4165: temp root the scratch sweep reclaims from (default `""` = auto-resolve). Blank resolves to the HOST view `/host-tmp` when the deployment mounts it paired with the host process table at `/host-proc`, else to this venue's own `/tmp`. The pairing is the point: containers do not share the host temp root, so a container-scoped sweep of the container's own `/tmp` reclaims nothing of what fills the box — and sweeping one namespace's files while reading another's process table is exactly what blinds the open-file guard. An explicitly configured root that is not the host mount is swept against this venue's own `/proc`. Per-overlay overridable. |
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
@@ -404,11 +415,11 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
-| `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` and the fanned-out `TaskCreated` counterpart until the resolvable pending teatree skills load. Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
+| `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` code work until the resolvable pending teatree skills load. It has no `TaskCreated` counterpart (#4216). Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
 | `plan_edit_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 gate 16 early DX signal (`handle_block_edit_before_planned`) that denies `Edit`/`Write` while the worktree's ticket is in `STARTED` state. Read directly by the hook layer; set `false` under `[teatree]` or disable via `t3 <overlay> gate plan disable`. Per-call escape: `[skip-plan-gate: <reason>]` in `new_string`/`content`/`file_path` (first 512 chars). |
 | `gate_relaxation_gate_enabled` | Kill-switch (default `true`, [#850](https://github.com/souliane/teatree/issues/850)) for the §17.6.1/§17.6.2 anti-relaxation + tach-soundness prek gate (`scripts/hooks/check_gate_relaxation.py`) that refuses a commit whose staged diff relaxes a lint/coverage constraint or a tach boundary. DB-home (per-overlay overridable): the hook resolves it DB-first through `get_effective_settings`, so `config_setting set gate_relaxation_gate_enabled false` actuates it exactly like the sibling gates, and `t3 <overlay> gate gate-relaxation disable` is the self-rescue. Per-commit escape: the `ALLOW_GATE_RELAX='<reason>'` env marker (non-empty reason) records a sanctioned relaxation and lets the commit through. |
 | `mcp_privacy_gate_enabled` | #171: canary off-switch (default `true`) for the Slack-MCP arm of the #1213 quote-scanner and #1218 bare-reference publish-privacy gates (reachable via the `mcp__.*[Ss]lack.*` matcher). Fails OPEN; set `false` to disable the Slack-MCP arm alone if it misfires. The Bash arm of both gates is unaffected. |
-| `dispatch_quote_gate_on_task_create_enabled` | #171: opt-in switch (default `false`) for the `TaskCreated` dispatch-quote gate (`handle_dispatch_prompt_quote_scanner_on_task_create`) — the fan-out counterpart of the `PreToolUse` dispatch-quote gate (the `Task`/`Workflow` fan-out bypasses `PreToolUse`, so only `TaskCreated` reaches a fanned-out dispatch). Fails CLOSED (unvalidated fan-out gate stays inert by default); set `true` to scan fanned-out task subjects/descriptions for HIGH verbatim user quotes. Clears on a `[quote-ok: <reason>]` token. |
+| `dispatch_quote_gate_on_task_create_enabled` | #171: opt-in switch (default `false`) for the task-list quote gate (`handle_dispatch_prompt_quote_scanner_on_task_create`) — the task-LIST tools bypass `PreToolUse`, so only `TaskCreated` reaches a task-list write, and that event never reaches a sub-agent dispatch (#4216). The key name predates the correction and is kept: it is a persisted DB-home setting, so a rename would churn operator config and buy no behaviour. Fails CLOSED (an unvalidated gate stays inert by default); set `true` to scan task subjects/descriptions for HIGH verbatim user quotes. Clears on a `[quote-ok: <reason>]` token. |
 | `dispatch_quote_scan_enabled` | #1564: kill-switch (default `true`) for the `PreToolUse` pre-dispatch quote scan (`handle_dispatch_prompt_quote_scanner`) that refuses an `Agent`/`Task` dispatch whose prompt carries a HIGH verbatim user quote. Set `false` under `[teatree]` to disable the scan if it misfires. Fails OPEN to enabled; **fails LOUD on an unknown value** — a non-boolean (`"yes"`, `on`, `2`) emits one stderr `WARNING` line and keeps the protective default rather than silently swallowing the misconfiguration (`teatree_bool_setting_loud`). |
 | `orchestrator_boundary_agent_gate_enabled` | Kill-switch (default `true`, #1733) for the `Agent` arm of the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary` → `_deny_foreground_agent_dispatch`, #1442), denying a main-agent FOREGROUND `Agent` dispatch. Now LIVE: an `Agent` `PreToolUse` matcher is wired in `hooks.json` ([#1646](https://github.com/souliane/teatree/issues/1646)) and the gate is default-ON after its attended pre-INSTALL dry-run. Fails OPEN to enabled on a missing/broken config; only an explicit bare `false` disables it. Off-ramps (never-lockout): sub-agent context, `run_in_background: true`, per-call `[fg-ok: <reason>]`, the deny-circuit-breaker, and — via `_fail_open_or_deny` ([#1692](https://github.com/souliane/teatree/issues/1692)) — the self-rescue allowlist + the master `danger_gate_fail_open` switch. The `Bash` arm (`orchestrator_bash_gate_enabled`) is unaffected. |
 | `danger_gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. The `danger_` prefix flags that a forgotten `true` override silently disables protective gates. See BLUEPRINT §17 invariant 10. |
@@ -453,20 +464,12 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 double-play to suppress. The config lives in the DB store (read cold via
 `cold_reader` on the Stop path); there is no other per-run state.
 
-**Away-gate.** When availability resolves to `away` (§5.6.3), local playback is
-silenced while the configured `slack` value is preserved — so no audio plays
-through the local speakers while the user is unreachable, but a Slack-attached
-rendition still reaches their phone. The gate lives at the PLAYBACK call site
-(`speak._speak_local` consults `_is_away()`), not in `resolve_speak()`, so the
-user's stored `speak` config is never mutated and every local consumer (`speak()`
-and the local leg of `deliver_user_dm`) is gated by the one check. The away
-check is exception-safe — a resolution failure is treated as **not** away (local
-plays), so it can never spuriously mute audio or turn `slack` off.
-
-**Meeting-mute (#2171).** Beside the away-gate, `_speak_local` also silences
-local playback while a configured presence backend reports the user IN A
-MEETING — same call-site gate, same Slack-arm exemption (a Slack-attached
-rendition still reaches the phone). It is opt-in via `[teatree.speak]
+**Meeting-mute (#2171).** `_speak_local` silences local playback while a
+configured presence backend reports the user IN A MEETING — the gate lives at
+the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
+config is never mutated and every local consumer (`speak()` and the local leg of
+`deliver_user_dm`) is gated by the one check. The `slack` arm is exempt (a
+Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
 presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
 token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
 resolves it: it probes the backend (`current_presence()`), caches the result
@@ -523,10 +526,10 @@ t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collabor
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
 ```
 
-`privacy` is DB-home too — scope it to a client overlay:
+Any DB-home key can be scoped to a client overlay the same way:
 
 ```bash
-t3 <overlay> config_setting set privacy '"strict"' --overlay client-project
+t3 <overlay> config_setting set on_behalf_post_mode '"ask"' --overlay client-project
 ```
 
 ### 10.1.2 Agent model tiering & session pins (`[agent]`)
@@ -610,8 +613,7 @@ default, so nothing routes to one without an operator writing the id into
 
 | Setting | Type | Purpose |
 |---------|------|---------|
-| `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
-| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
+| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `src/teatree/agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
 | `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
 | `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |
 
@@ -840,7 +842,7 @@ subset, because a subset check still passes while a key silently vanishes, which
 failure mode that makes replacing the shipped file dangerous. It renders through
 `defaults_snapshot.render_toml`, the SAME emitter `snapshot_settings_defaults` writes with
 (one emitter, two callers — pinned by an identity assertion), and reproduces the seed tables
-from `core.config_seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
+from `core.config_interchange.seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
 therefore byte-for-byte the shipped file, header and seed tables included:
 `tests/teatree_core/test_config_export_filters.py` asserts it against the real committed
 file, with a control proving a single live override moves exactly one line.
@@ -848,10 +850,26 @@ file, with a control proving a single live override moves exactly one line.
 **The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
 schema so every key is listable with no hand-kept list, writes each edit through
 `ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
-row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
-dry-run preview of an UPLOADED import file. A SECRET value AND its shipped default are
-masked to `***` before the row enters the response context — pinned by a test asserting a
-configured secret never appears in the response bytes.
+row, and gates a safety-posture key behind an extra confirm phrase. A SECRET value AND its
+shipped default are masked to `***` before the row enters the response context — pinned by a
+test asserting a configured secret never appears in the response bytes.
+
+**The import/export page** (`/dash/import-export/`,
+[#4340](https://github.com/souliane/teatree/issues/4340)). Its own page, because a dump is a
+superset of the settings page: alongside `[teatree]` / `[overlays.*]` / `[e2e_repos.*]` it
+carries the `[loops.*]` / `[modes.*]` / `[schedules.*]` seed families, so importing one from
+the settings page could change loop enablement and the active schedule while reading as
+"restore my settings". The page STATES that scope before the controls, from
+`core/config_interchange/scope.py`'s `EXPORT_SECTIONS` — one entry per top-level table with
+what it holds, declared off the same constants `document_layout` and
+`seed_defaults.SEED_TABLES` hand the writers, so the copy and the file cannot drift.
+`tests/teatree_core/config_interchange/test_scope.py` is the pin: it exports a box tuned in
+every family and asserts the emitted top-level tables against the statement, the `[backup]`
+format marker being the one named exception. The dry-run preview is counted PER section too
+(`dash/interchange.py`'s `changed_sections`, over the single `section_for_row` canonicaliser),
+so a preview reading "12 rows" cannot hide the one that changes a loop. Export and the
+safety-posture confirm phrase are otherwise unchanged; the settings page links here, and
+`/dash/settings/export/` redirects with its filters intact.
 
 **One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
 Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key

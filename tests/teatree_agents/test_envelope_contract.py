@@ -20,6 +20,7 @@ from teatree.agents.envelope_contract import (
 )
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
+from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models import Session, Task, Ticket
 
 _WORK_PHASE = "coding"
@@ -67,6 +68,36 @@ class TestEnvelopeContractText(SimpleTestCase):
             assert set(envelope_example(phase)) <= set(allowed_keys()), phase
 
 
+class TestReviewVerdictMustDiscloseTheHeadItBoundTo(SimpleTestCase):
+    """#4168: the head is the one field the merge-safety chain cannot infer."""
+
+    def _required_properties(self) -> list[str]:
+        properties = RESULT_JSON_SCHEMA["properties"]
+        assert isinstance(properties, dict)
+        schema = properties["review_verdict"]
+        assert isinstance(schema, dict)
+        required = schema["required"]
+        assert isinstance(required, list)
+        return [str(name) for name in required]
+
+    def _example_reviewed_sha(self) -> str:
+        verdict = envelope_example("reviewing").get("review_verdict")
+        assert isinstance(verdict, dict)
+        asserted_head = verdict.get("reviewed_sha")
+        assert isinstance(asserted_head, str)
+        return asserted_head
+
+    def test_reviewed_sha_is_a_required_property(self) -> None:
+        assert "reviewed_sha" in self._required_properties()
+
+    def test_the_copyable_example_shows_a_placeholder_not_a_literal_sha(self) -> None:
+        # A verbatim copy of a literal SHA is indistinguishable from a real assertion —
+        # the undisclosed-head miss wearing a disclosed head's clothes.
+        asserted_head = self._example_reviewed_sha()
+        assert asserted_head.startswith("<")
+        assert asserted_head.endswith(">")
+
+
 class TestSystemContextCarriesTheContract(TestCase):
     def _context(self, phase: str) -> str:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/3660")
@@ -90,3 +121,36 @@ class TestSystemContextCarriesTheContract(TestCase):
         context = self._context("scoping")
         assert CONTRACT_HEADING in context
         assert check_evidence(_contract_example(context), "scoping") == ""
+
+
+class TestVerdictPhasesAreTaughtTheChecksRule(SimpleTestCase):
+    """#4522: cut the merge_safe-over-red-checks contradiction where it is written.
+
+    ``ReviewVerdict.record`` refuses that combination and the refusal is right, but no
+    re-review of the same head can satisfy it — the checks stay red — so the brief has to
+    tell the reviewer the recordable shape (a HOLD carrying the CI finding) BEFORE it
+    writes the contradiction. Prompt-side and unfalsifiable on its own; these only pin
+    that the clause reaches the phases that can breach it and no others.
+    """
+
+    def test_a_verdict_returning_phase_carries_the_rule(self) -> None:
+        for phase in ("reviewing", "codex_reviewing", "codex_adversarial_reviewing"):
+            text = "\n".join(envelope_contract_lines(phase))
+            assert VERDICT_CHECKS_RULE in text, phase
+
+    def test_a_phase_that_returns_no_verdict_is_not_taught_a_reviewer_rule(self) -> None:
+        for phase in ("coding", "planning", "shipping", "scoping"):
+            text = "\n".join(envelope_contract_lines(phase))
+            assert VERDICT_CHECKS_RULE not in text, phase
+
+    def test_the_rule_names_the_recordable_shape_not_only_the_refusal(self) -> None:
+        # A brief that only forbids leaves the reviewer without an answer for a red PR,
+        # which is how "merge_safe anyway" gets written in the first place.
+        assert '"hold"' in VERDICT_CHECKS_RULE
+        assert '"findings"' in VERDICT_CHECKS_RULE
+
+    def test_the_clause_does_not_disturb_the_copyable_example(self) -> None:
+        # ``_contract_example`` raw-decodes from the FIRST brace after the heading, so a
+        # clause carrying one would silently make every brief teach an unparsable example.
+        text = "\n".join(envelope_contract_lines("reviewing"))
+        assert check_evidence(_contract_example(text), "reviewing") == ""

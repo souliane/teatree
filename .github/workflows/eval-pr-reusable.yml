@@ -144,7 +144,9 @@ jobs:
       # malformed YAML) and silently skip the eval — indistinguishable from a
       # clean no-change PR. skip-code 3 disambiguates "no scenario changed" from
       # Python's uncaught-exception exit 1 and argparse's exit 2. The git diff is
-      # its own command so a bad ref fails loud (bash `-e`).
+      # its own command so a bad ref fails loud (bash `-e`). A scenario in the
+      # known-red quarantine is dropped from the lane and named on stderr (#4173);
+      # the registry sits beside `--scenarios-dir`, so a consumer reaches its own.
       - name: Select the scenarios this PR changed
         id: select
         env:
@@ -217,11 +219,11 @@ jobs:
       # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
       # runner actually execs (`_find_cli` returns the bundle first; this global install
       # is only the presence-gate). Matching it stops the two CLIs in one image from
-      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
-      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+      # disagreeing. The DEPLOYED runtime is pinned independently, may LEAD this
+      # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.220
+          npm install -g @anthropic-ai/claude-code@2.1.233
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without

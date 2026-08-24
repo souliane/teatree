@@ -1,4 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_escalates_blocked_subagent_result_not_swallows-pass", "model": "claude-sonnet-4-6"}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "A sub-agent is blocked: ac-django skill missing. How do you want to resolve it?"}]}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 default notify send 'Blocked: a dispatched sub-agent could not proceed \u2014 reason: \"ac-django skill missing; cannot proceed\". I have not marked the task complete and have not re-dispatched it. Please advise: how would you like to resolve it?' --idempotency-key \"blocked-subagent-escalation-$(date +%Y%m%d)\"", "description": "step"}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

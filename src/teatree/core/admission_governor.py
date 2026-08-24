@@ -18,6 +18,17 @@ Refusals are visible by construction: every :class:`AdmissionDecision` carries a
 ``reason``, and the loop-side caller logs it. A governor that refuses silently
 recreates the exact class of bug that hid a dead merge loop for weeks.
 
+**Which signals are whole-box, and which are lane-local (#4407).** Load and memory are
+whole-box: an orchestrating session's harness sub-agents never claim a ``Task``, so they
+are invisible to every count the factory keeps, but they consume the same cores. Counts
+— ``claimed_agent_count``, the intake in-flight budget — are lane-local by construction
+and named so at each call site. The deliberate split is that foreign occupancy BRAKES the
+producer and only REPORTS on the rest: :func:`box_load_headroom` bounds intake, because
+slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
+pile, while the agent lanes keep only the binary watermark brake below — scaling their
+already-small ``floor(cores * WRITE_CONCURRENCY_PER_CORE)`` ceiling by the same headroom
+would leave a 4-core box ONE expensive slot and starve the drain.
+
 Ships behind the default-ON ``admission_governor_enabled`` setting; setting it false is
 the kill-switch and the rollback lever (see :func:`governor_enabled`).
 """
@@ -28,24 +39,61 @@ import math
 import os
 from dataclasses import dataclass
 
+from teatree.utils import ram_scope
+
 logger = logging.getLogger(__name__)
 
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
 
+_MIB_PER_GB = 1024.0
+
 #: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
-#: up automatically. 8 cores → 2, the empirically-sustainable default measured on this box.
-WRITE_CONCURRENCY_PER_CORE = 0.25
+#: up automatically. 8 cores → 4.
+#:
+#: This was 0.25 (8 cores → 2), calibrated against the meltdown recorded on
+#: :data:`TOTAL_TEST_WORKERS_PER_CORE` below — which names its own cause: "the per-agent
+#: expansion is the melt driver, NOT the agent count". That driver is now bounded
+#: independently by :func:`per_agent_test_workers`, which divides a ``cores * 2`` TOTAL
+#: worker budget by the active-agent count, so total workers stay bounded however many
+#: agents run. The old value was set before that guard existed and priced agent count as
+#: if it were the hazard.
+#:
+#: Raising it is safe to attempt rather than safe by assertion: the load brake still denies
+#: above ``BRAKE_LOAD_PER_CORE * cores`` and holds to ``RESUME_LOAD_PER_CORE * cores``, so an
+#: over-aggressive value throttles itself instead of melting the box. Measured at the change:
+#: load 13.4/15.9/16.5 on 8 cores against a deny watermark of 40, 14 GB RAM free.
+WRITE_CONCURRENCY_PER_CORE = 0.5
 
 #: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
 #: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
 #: per-agent expansion is the melt driver, not the agent count.
 TOTAL_TEST_WORKERS_PER_CORE = 2
 
+#: TOTAL host agent population per core — deliberately its own constant rather than the
+#: per-lane :data:`WRITE_CONCURRENCY_PER_CORE`. A lane's concurrency bounds that lane; the
+#: population a session RESTORE re-creates is a whole-box fact, and pricing it off a lane
+#: setting is exactly the conflation #4108 records (a lane capped at 3 while the box carried
+#: enough agents to reach load 58 on 8 cores).
+HOST_AGENT_POPULATION_PER_CORE = 1.0
+
 #: Load watermarks, as multiples of the core count. Above ``BRAKE`` new admissions are
 #: denied; a braked governor only re-admits once load falls back under ``RESUME``. The
 #: gap is the hysteresis that stops it flapping around one threshold.
 BRAKE_LOAD_PER_CORE = 5.0
 RESUME_LOAD_PER_CORE = 3.0
+
+#: Memory watermarks in GB, the same shape as the load pair above: below ``RAM_BRAKE``
+#: new admissions are denied, and a braked governor re-admits only above ``RAM_RESUME``.
+#: Absolute rather than per-core because a pytest worker's footprint is a property of the
+#: suite, not of the box that runs it.
+#:
+#: ``4.0`` is the headroom one p90 worker (1.24 GB) plus the OS and page cache need to
+#: survive the burst a fresh admission creates; it matches ``intake_ram_reserve_gb``,
+#: which reserves the same margin for the same reason one layer up. ``6.0`` is one more
+#: worker's worth above it — the gap is the hysteresis, so a box hovering at the floor
+#: cannot flap admissions on and off.
+RAM_BRAKE_FLOOR_GB = 4.0
+RAM_RESUME_FLOOR_GB = 6.0
 
 #: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
 SHORT_WINDOW_BRAKE = 0.95
@@ -64,13 +112,22 @@ PACE_DENY = 0.1
 YIELD_COLLAPSE_RATIO = 0.2
 YIELD_MIN_SAMPLES = 5
 
+#: Open unmerged PRs above which a zero-merge window is inventory pile-up rather than a
+#: quiet day. Below it "nothing merged" is unremarkable and must never brake.
+MERGE_STALL_MIN_OPEN_PRS = 3
+
+#: Consecutive merge-sweep refusals before a PR counts as STUCK rather than merely
+#: waiting. Matches the aged-skip surfacing threshold, so the two agree on the word.
+MERGE_STUCK_AFTER_TICKS = 3
+
 
 @dataclass(frozen=True)
 class QuotaSignal:
     """Live model-quota headroom — the PRIMARY admission signal.
 
-    ``fresh`` is False when no account's headroom is known; the decision then keeps the
-    operator's static ceiling rather than trusting a guess.
+    ``fresh`` is False when no account's headroom is known; the decision then drops the
+    weekly-pace scaling — the only part that needs this signal — rather than trusting a
+    guess, and bounds the lane on the machine signal alone.
     Utilizations are the BEST (lowest) across usable accounts: the account selector
     already falls through to a non-exhausted account, so the governor asks what the
     healthiest remaining account has left, and ``all_accounts_exhausted`` is the
@@ -112,16 +169,74 @@ class YieldSignal:
 
 
 @dataclass(frozen=True)
+class MachineBrake:
+    """The caller's two inputs to the LOAD brake, as one value.
+
+    ``braked`` is the previous decision's brake state and supplies the hysteresis — a
+    braked governor is held to the lower watermark so it cannot flap.
+
+    ``applies`` is the cheap-phase exemption (#4098): the read-only phases that RETIRE
+    work were being refused on the very load their expensive siblings created, which
+    removed the only relief available and held the brake on. ``False`` skips the LOAD
+    brake for that class alone — never the token brakes, which are a claim about budget
+    rather than pressure and so refuse a cheap phase exactly as they refuse an expensive
+    one. The caller supplies the exemption's own bound; :func:`decide_admission` never
+    widens a lane on its own.
+    """
+
+    applies: bool = True
+    braked: bool = False
+
+
+#: The default: the brake applies, with no prior brake state to hold it to the low watermark.
+UNBRAKED = MachineBrake()
+
+
+@dataclass(frozen=True)
+class MergeSignal:
+    """Merge throughput — whether produced work is actually LANDING.
+
+    :class:`YieldSignal` asks "did tasks finish?", and a task that finished by opening a
+    PR nothing can merge answers yes. This asks what that cannot: did anything merge? A
+    factory whose tasks all complete while its PRs pile up is producing inventory, and
+    each further coding admission deepens the pile without making any of it likelier to
+    land — the state that held four PRs for a day while every loop read green.
+
+    Consumed by the ISSUE-INTAKE gate, not by :func:`decide_admission`: it must stop new
+    work being started without touching the ship and review lanes that drain the pile,
+    and intake is the only decision point where that distinction exists.
+
+    ``fresh`` is False when the rows could not be read. Unknown never brakes, the same
+    rule :func:`read_quota_signal` follows and for the same reason: a probe that cannot
+    answer must not be able to halt the factory.
+    """
+
+    fresh: bool
+    open_prs: int
+    stuck_prs: int
+
+    @property
+    def stalled(self) -> bool:
+        """Every open PR is one the sweep keeps refusing — nothing can land at all."""
+        if not self.fresh:
+            return False
+        return self.open_prs >= MERGE_STALL_MIN_OPEN_PRS and self.stuck_prs >= self.open_prs
+
+
+@dataclass(frozen=True)
 class AdmissionDecision:
     """The verdict a dispatcher acts on. ``reason`` is never empty — refusals are visible.
 
-    ``ceiling is None`` means NO clamp — the governor has no ceiling opinion and the
-    caller keeps whatever it had. It is never a synonym for zero.
+    ``ceiling`` is always a positive bound, never ``None``: an unbounded lane is not a
+    state the governor can express (#4097), and the floor of 1 means it can never
+    deadlock the factory to zero either. "The governor has no opinion" is the ABSENCE of
+    a decision — :func:`teatree.loop.admission.governor_verdict` returns ``None`` for the
+    kill-switch and the failed-probe paths — not a decision carrying an absent ceiling.
     """
 
     admit: bool
     reason: str
-    ceiling: int | None
+    ceiling: int
     braked: bool
 
 
@@ -154,12 +269,33 @@ def weekly_pace(quota: QuotaSignal) -> float:
     return headroom / runway
 
 
-def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
+def per_agent_test_workers(
+    *,
+    cores: int,
+    active_agents: int,
+    ram_available_gb: float | None = None,
+    per_worker_gb: float = 0.0,
+) -> int:
     """Per-agent pytest worker count, so the TOTAL stays bounded however many agents run.
 
     Exported to a child agent as ``PYTEST_XDIST_AUTO_NUM_WORKERS``, which is how
     pytest-xdist resolves ``-n auto`` — so the addopts stay untouched and a human
     running the suite alone still gets the whole box.
+
+    Cores alone sized the TOTAL at ``cores * 2``, which on 8 cores is 16 workers — 10.4 GB
+    at the measured p50 worker RSS but 19.8 GB at the p90, against 19.7 GB usable (#4163).
+    The bound is safe at the median and over the line at the tail, which is why the OOMs
+    were relentless but intermittent. *ram_available_gb* (the live cgroup-aware reading)
+    and *per_worker_gb* (the operator's ``test_worker_ram_gb``) add the term that makes
+    the total respond to the resource that actually saturates: whichever of the two totals
+    is smaller wins. Both are applied to the TOTAL, never to the per-agent share — a
+    per-agent memory budget would hand each of N agents the whole box.
+
+    Omitting either is the fail-safe path, and it is BOUNDED rather than closed: the
+    result is exactly the cores-derived bound, never a manufactured clamp to 1. Denying
+    on an unreadable ``/proc`` file is a kill switch operated by a missing file (#4097),
+    and the pure function is deliberately config-free — the consumer resolves the setting
+    and passes it in.
 
     The share floors at 1 (an agent with zero test workers cannot run its suite), so the
     total bound holds while *active_agents* stays within the admission ceiling — which
@@ -167,6 +303,9 @@ def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
     floor wins: a 50-agent box is already a governor failure, not a division problem.
     """
     total = max(1, int(cores)) * TOTAL_TEST_WORKERS_PER_CORE
+    if ram_available_gb is not None and per_worker_gb > 0:
+        budget = math.floor(max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / per_worker_gb)
+        total = min(total, budget)
     return max(1, total // max(1, int(active_agents)))
 
 
@@ -183,18 +322,69 @@ def _quota_brake(quota: QuotaSignal) -> str:
 
 
 def _machine_brake(machine: MachineSignal, *, braked: bool) -> str:
+    """Load and memory watermarks, both riding the *braked* hysteresis and the exemption.
+
+    Memory sits HERE rather than in the ceiling because ``_adaptive_ceiling`` already owns
+    "how many agents fit", and two unsynchronised readers of one quantity drift (#4125). A
+    brake answers a different question — "is the box in trouble right now?" — so it
+    inherits the load brake's hysteresis and cheap-lane exemption for free. An unread
+    reading is not a brake: unknown never denies.
+    """
     cores = max(1, machine.cores)
     watermark = (RESUME_LOAD_PER_CORE if braked else BRAKE_LOAD_PER_CORE) * cores
     if machine.load1 >= watermark:
         return f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)"
+    ram_floor = RAM_RESUME_FLOOR_GB if braked else RAM_BRAKE_FLOOR_GB
+    if machine.ram_available_gb is not None and machine.ram_available_gb <= ram_floor:
+        return f"{machine.ram_available_gb:.1f} GB available at/under the {ram_floor:.0f} GB watermark"
     return ""
+
+
+def _machine_ceiling(machine: MachineSignal) -> int:
+    """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
+    return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
+
+
+def box_load_headroom(*, load1: float | None, cores: int) -> float:
+    """The fraction of the box's load budget still free — ``1.0`` idle, ``0.0`` saturated.
+
+    The ONE whole-box occupancy reading, so every surface that asks "how much of this box
+    is already busy?" gets the same answer against the same :data:`BRAKE_LOAD_PER_CORE`
+    watermark the brake denies at. Two unsynchronised readers of one quantity drift
+    (#4125), and this quantity has two consumers: :func:`resume_agent_ceiling` and the
+    intake sizing in :mod:`teatree.core.intake.concurrency`.
+
+    Load is whole-box by construction, which is the point of consuming it: a harness
+    sub-agent an orchestrating session dispatched claims no ``Task`` and appears in no
+    factory count, yet it runs a test suite on the same cores. A bound derived only from
+    what the factory itself is running reads healthy on a box at load 53 (#4407).
+
+    ``None`` (nothing readable) is ``1.0`` for the reason every unknown here is: a probe
+    that cannot answer must not be able to lower a ceiling.
+    """
+    if load1 is None:
+        return 1.0
+    watermark = BRAKE_LOAD_PER_CORE * max(1, cores)
+    return min(1.0, max(0.0, watermark - load1) / watermark)
+
+
+def _ram_headroom(ram_available_gb: float | None) -> float:
+    """The fraction of the agent population the live memory reading still supports.
+
+    ``1.0`` at or above :data:`RAM_RESUME_FLOOR_GB` (inert on a healthy box), ramping to
+    ``0.0`` at :data:`RAM_BRAKE_FLOOR_GB`, which is where the brake refuses outright.
+    ``None`` is ``1.0`` for the reason every unknown here is: a probe that cannot answer
+    must not be able to lower a ceiling.
+    """
+    if ram_available_gb is None:
+        return 1.0
+    span = RAM_RESUME_FLOOR_GB - RAM_BRAKE_FLOOR_GB
+    return min(1.0, max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / span)
 
 
 def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
     """The live ceiling: the core-derived WRITE default, scaled by weekly pace, floored at 1."""
-    base = max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
-    scaled = math.floor(base * min(1.0, weekly_pace(quota)))
-    return max(1, scaled)
+    return max(1, math.floor(_machine_ceiling(machine) * min(1.0, weekly_pace(quota))))
 
 
 def decide_admission(
@@ -202,27 +392,36 @@ def decide_admission(
     quota: QuotaSignal,
     machine: MachineSignal,
     yield_signal: YieldSignal | None = None,
-    braked: bool = False,
+    load_brake: MachineBrake = UNBRAKED,
     static_ceiling: int | None = None,
 ) -> AdmissionDecision:
     """Decide whether to admit new work now, and at what ceiling.
 
     Order is the owner's: token budget first, machine pressure second, yield third.
-    *braked* is the previous decision's brake state and supplies the hysteresis — a
-    braked governor is held to the lower watermark so it cannot flap. *static_ceiling*
-    is the operator's configured concurrency, applied as an upper BOUND on the adaptive
-    answer rather than as the target — and it is what an unreadable quota probe falls
-    back to VERBATIM, ``None`` (no clamp) included. The governor tightens only on
-    evidence it actually has; the load brake reads its own signal and still applies.
+    Merge throughput is deliberately NOT here — see :class:`MergeSignal`: it gates new
+    ISSUE INTAKE only, because the ship and review lanes are what CLEAR a backed-up
+    pipeline and braking them on the backlog they exist to drain would deadlock the
+    factory against itself.
+    *load_brake* carries the caller's two machine-brake inputs (see :class:`MachineBrake`)
+    — the previous decision's brake state, for hysteresis, and whether the brake applies
+    to this class at all. *static_ceiling* is the operator's configured concurrency,
+    applied as an upper BOUND on whichever ceiling the signals produce rather than as
+    the target.
+
+    An UNKNOWN quota is the conservative case, never the unbounded one (#4097): the
+    ceiling falls back to :func:`_machine_ceiling`, which reads only the machine signal
+    the governor DID read successfully, so not knowing the budget can never buy more
+    concurrency than knowing it is healthy. Only the weekly-pace scaling on top of that
+    base genuinely needs a fresh quota, and that is exactly what is dropped. The load
+    brake reads its own signal and still applies either way.
     """
-    ceiling = static_ceiling
-    if quota.fresh:
-        ceiling = _adaptive_ceiling(quota, machine)
-        if static_ceiling is not None:
-            ceiling = max(1, min(ceiling, static_ceiling))
+    ceiling = _adaptive_ceiling(quota, machine) if quota.fresh else _machine_ceiling(machine)
+    if static_ceiling is not None:
+        ceiling = max(1, min(ceiling, static_ceiling))
 
     quota_brake = _quota_brake(quota) if quota.fresh else ""
-    for brake in (quota_brake, _machine_brake(machine, braked=braked)):
+    machine_brake = _machine_brake(machine, braked=load_brake.braked) if load_brake.applies else ""
+    for brake in (quota_brake, machine_brake):
         if brake:
             return AdmissionDecision(admit=False, reason=brake, ceiling=ceiling, braked=True)
 
@@ -233,18 +432,139 @@ def decide_admission(
         )
         return AdmissionDecision(admit=False, reason=reason, ceiling=ceiling, braked=True)
 
-    headroom = "unclamped" if ceiling is None else f"up to {ceiling}"
     return AdmissionDecision(
-        admit=True, reason=f"admitting {headroom} — signals healthy", ceiling=ceiling, braked=False
+        admit=True, reason=f"admitting up to {ceiling} — signals healthy", ceiling=ceiling, braked=False
     )
 
 
+def resume_agent_ceiling(machine: MachineSignal) -> int:
+    """How many background agents the box can carry RIGHT NOW, floored at 1 (#4108).
+
+    A session resume restores the whole previously-running set in one step: the stagger the
+    orchestrator applied was a property of the DISPATCH, not of the agents, so it is not
+    replayed. The restore is therefore not covered by any dispatch-side ceiling and needs its
+    own bound — and that bound is read live, because the box's spare capacity is what decides
+    whether a fleet is survivable, not a number set when it was quiet.
+
+    ``cores * HOST_AGENT_POPULATION_PER_CORE``, scaled by the SMALLER of two headrooms so
+    the tighter resource decides: the load still left under the same
+    :data:`BRAKE_LOAD_PER_CORE` watermark the dispatch lanes brake on, and the memory still
+    left above the same :data:`RAM_BRAKE_FLOOR_GB` floor they refuse at — the recorded
+    incident was load 58 AND 1 GB free, and a bound that reads only load calls that half
+    healthy. The memory term ramps between the two RAM watermarks and is inert above the
+    upper one, so it lowers the ceiling only on a box that is genuinely tight; an unread
+    reading leaves the ceiling load-derived, never lower.
+
+    The floor of 1 keeps this an admission ceiling rather than a kill switch: a wedged box
+    still gets to carry the one agent that might unwedge it.
+    """
+    base = max(1, math.floor(max(1, machine.cores) * HOST_AGENT_POPULATION_PER_CORE))
+    headroom = min(
+        box_load_headroom(load1=machine.load1, cores=machine.cores),
+        _ram_headroom(machine.ram_available_gb),
+    )
+    return max(1, math.floor(base * headroom))
+
+
+def resume_shed_directive(*, restored: int, machine: MachineSignal) -> str:
+    """The shed instruction for an over-ceiling restore, or ``""`` when the fleet fits.
+
+    Empty at or under the ceiling, so a resume on an idle host is unchanged. Over it the
+    string names the restored count AND the live ceiling that count is being judged against —
+    a refusal that does not say what it measured is the silent-brake failure the rest of this
+    module exists to avoid.
+    """
+    ceiling = resume_agent_ceiling(machine)
+    if restored <= ceiling:
+        return ""
+    return (
+        f"ADMISSION — RESTORED FLEET OVER CEILING. This resume brought back {restored} background "
+        f"agents; the live machine carries {ceiling} (load {machine.load1:.0f} on {max(1, machine.cores)} "
+        "cores). The ramp that paced this fleet belonged to the dispatch, not the agents, so the "
+        "restore replayed it in one step. Shed down to the ceiling — stop or collect the surplus "
+        "agents — BEFORE dispatching anything new."
+    )
+
+
+def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
+    """Open PRs, and how many of them the merge sweep keeps refusing.
+
+    Scoped to *overlay* because the gate it feeds is per-overlay: counting globally lets a
+    stall in one overlay brake intake in another, which is a silent cross-tenant brake that
+    a single-overlay box can never show.
+
+    A streak only counts when it names a PR that is STILL LIVE. ``SweepSkipStreak.resolve``
+    fires only on a live ``pr_sweep.*`` signal for that exact ``(slug, pr_id)``, so a PR that
+    merged or closed outside the sweep leaves its row behind forever. Counting rows
+    independently of the live set lets those fossils outnumber real PRs and brake a pipeline
+    in which every open PR is healthy.
+
+    Both slugs are folded to lower case before they are compared, the repo-wide rule
+    :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.for_pr` states: a forge slug
+    is case-insensitive, so a streak recorded as ``Owner/Repo`` names the very PR the live
+    set holds as ``owner/repo``. Matching exactly drops every such streak, ``stuck_prs``
+    undercounts and the brake never fires — failing toward MORE claiming, the one direction
+    this gate exists to prevent.
+
+    Both sides are then counted over that ONE de-duplicated key space. ``SweepSkipStreak``
+    is unique on ``(slug, pr_id)`` case-SENSITIVELY, so ``Owner/Repo``#800 and
+    ``owner/repo``#800 are two legal rows naming one PR: counting rows against a live set
+    counted by key lets that PR contribute 2 to ``stuck_prs`` and 1 to ``open_prs``, and
+    enough such pairs push ``stuck_prs >= open_prs`` while healthy PRs are still moving —
+    a brake fired on arithmetic, which is the silent stall this gate exists to catch.
+
+    A read that raises returns ``fresh=False`` — unknown never brakes, because a probe that
+    cannot answer must not be able to halt the factory.
+    """
+    from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    try:
+        live = PullRequest.objects.live()
+        streaks = SweepSkipStreak.objects.aged(threshold=stuck_after)
+        if overlay:
+            live = live.filter(overlay=overlay)
+            streaks = streaks.filter(overlay=overlay)
+        live_keys = {
+            (str(repo).lower(), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()
+        }
+        streak_keys = {(str(slug).lower(), int(pr_id)) for slug, pr_id in streaks.values_list("slug", "pr_id")}
+        stuck = len(streak_keys & live_keys)
+    except Exception:
+        logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
+        return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
+    return MergeSignal(fresh=True, open_prs=len(live_keys), stuck_prs=stuck)
+
+
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:
-    """The deterministic, model-free machine probe (stdlib only, no external process)."""
+    """The deterministic, model-free machine probe (stdlib only, no external process).
+
+    Memory comes from :attr:`~teatree.utils.ram_scope.RamHeadroom.box_watermark_mib`, the ONE
+    cgroup-aware reader. Reading ``/proc/meminfo`` here instead would report the HOST figure
+    inside a container and would be invisible to that reader's own fix (#4118).
+
+    That reading is SCOPE-QUALIFIED, which the watermarks this signal feeds require (#4217):
+    :data:`RAM_BRAKE_FLOOR_GB` and :data:`RAM_RESUME_FLOOR_GB` are absolute box-wide numbers,
+    so a reading taken in a cgroup too small to host an agent workload is not theirs to judge
+    — the admin sidecar read 1.65 GB at the same instant the worker read 15.88 GB, and its
+    fixed 2 GiB cap put every dispatch under a floor it could never rise above. Such a scope
+    falls back to the host component, which is box-wide at any cap, so a genuinely starved box
+    still brakes from inside a sidecar (#4252). ``None`` (nothing box-scoped readable) is a
+    different answer from ``0`` (readable, nothing left), carried through rather than collapsed
+    to a number nobody measured.
+
+    An explicit *ram_available_gb* wins, so a caller holding a reading of its own is never
+    made to pay for a second probe — which is also how a caller wanting only the load
+    average gets it without a second ``/proc`` read, since this is its one reader. A
+    platform with no load average reads ``0.0``: an unknown load is inert wherever it is
+    consumed (no brake, full :func:`box_load_headroom`), never a manufactured clamp.
+    """
     try:
         load1 = os.getloadavg()[0]
     except OSError:
         load1 = 0.0
+    if ram_available_gb is None:
+        available_mib = ram_scope.read_ram_headroom().box_watermark_mib
+        ram_available_gb = None if available_mib is None else available_mib / _MIB_PER_GB
     return MachineSignal(cores=os.cpu_count() or 1, load1=load1, ram_available_gb=ram_available_gb)
 
 
@@ -267,8 +587,8 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     against, never evidence that the fallthrough has nowhere left to go.
 
     When no fresh row is usable and the fleet is not known-exhausted, the healthy
-    accounts' headroom is simply unknown: ``fresh=False``, and the decision keeps the
-    operator's static ceiling. Reporting the surviving exhausted row's 100% instead
+    accounts' headroom is simply unknown: ``fresh=False``, and the decision falls back to
+    the machine-derived ceiling. Reporting the surviving exhausted row's 100% instead
     would brake the lane on a row that proves nothing about the account being used.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time
@@ -300,14 +620,21 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
 
 
 __all__ = [
+    "RAM_BRAKE_FLOOR_GB",
+    "RAM_RESUME_FLOOR_GB",
+    "UNBRAKED",
     "AdmissionDecision",
+    "MachineBrake",
     "MachineSignal",
     "QuotaSignal",
     "YieldSignal",
+    "box_load_headroom",
     "decide_admission",
     "governor_enabled",
     "per_agent_test_workers",
     "read_machine_signal",
     "read_quota_signal",
+    "resume_agent_ceiling",
+    "resume_shed_directive",
     "weekly_pace",
 ]

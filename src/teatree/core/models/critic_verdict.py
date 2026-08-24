@@ -12,9 +12,9 @@ mandatory citation, with ``grader_identity`` validated maker≠checker.
 
 Maker≠checker is structural, not prompt-level: the verdict is recorded server-side
 from the returned envelope by a DIFFERENT actor (``attempt_recorder``), and
-``record`` refuses a maker/coding/loop ``grader_identity`` via the same
-``is_non_reviewer_role`` primitive ``ReviewVerdict``/``MergeClear`` use — a
-self-attestation is a typed refusal.
+``record`` admits a ``grader_identity`` only when it POSITIVELY identifies an
+independent checker, via the same ``is_independent_reviewer_identity`` primitive
+``ReviewVerdict``/``MergeClear`` use — a self-attestation is a typed refusal.
 
 Anti-theater (SIG-PR-1 never-fake-green): a PASS item with NO citation is stored as
 ``instrumentation_gap`` and COUNTS AS A FAIL — a lazy model that waves an item
@@ -31,7 +31,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.critic_dispatch import CriticDispatch
-from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -107,8 +107,14 @@ class CriticVerdict(models.Model):
         ordering: ClassVar = ["-recorded_at"]
         indexes: ClassVar = [models.Index(fields=["ticket", "transition", "head_sha"])]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
+
     def __str__(self) -> str:
-        return f"critic-verdict<ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"critic-verdict<ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"
 
     def item_verdicts(self) -> list[CriticItemVerdict]:
         return [CriticItemVerdict.coerce(item) for item in self.items if isinstance(item, dict)]
@@ -130,21 +136,16 @@ class CriticVerdict(models.Model):
         """The single guarded factory — refuses a maker-graded verdict before any write.
 
         Mirrors ``ReviewVerdict.record``'s maker≠checker refusal: a
-        ``grader_identity`` that is a maker/coding-agent/loop role is a
-        self-attestation and is rejected (:class:`CriticVerdictError`). An empty
-        identity is likewise refused — an anonymous verdict is unattributable.
+        ``grader_identity`` that does not positively identify an independent
+        checker is rejected (:class:`CriticVerdictError`). An empty identity is
+        likewise refused — an anonymous verdict is unattributable.
         """
         grader = grader_identity.strip()
         if not grader:
             msg = "grader_identity is required — an anonymous critic verdict is unattributable"
             raise CriticVerdictError(msg)
-        if is_non_reviewer_role(grader):
-            msg = (
-                f"grader_identity {grader!r} is a maker/coding-agent/loop role — the critic verdict "
-                f"records an INDEPENDENT judgment, never a self-attestation (maker≠checker, mirrors "
-                f"ReviewVerdict.record / MergeClear.issue)"
-            )
-            raise CriticVerdictError(msg)
+        if not is_independent_reviewer_identity(grader):
+            raise CriticVerdictError(unrecognised_reviewer_message(grader, subject="a critic verdict", verb="recorded"))
         normalized_head = head_sha.strip().lower()
         with transaction.atomic():
             recorded = cls.objects.create(

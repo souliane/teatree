@@ -404,6 +404,10 @@ class _Overlay(OverlayBase):
 class TestTicketCompletionIsolation(TestCase):
     """Sibling ticket still emits when processing the first ticket raises."""
 
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_failing_first_ticket_does_not_suppress_second_ticket_completion(self) -> None:
         Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/1", state="shipped")
         Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/2", state="shipped")
@@ -416,14 +420,14 @@ class TestTicketCompletionIsolation(TestCase):
                 msg = "simulated host lookup failure"
                 raise RuntimeError(msg)
             host = _FakeCodeHost()
-            host.get_issue = lambda issue_url: {"state": "closed"}  # type: ignore[assignment]
+            self._monkeypatch.setattr(host, "get_issue", lambda issue_url: {"state": "closed"})
             return host
 
         scanner = TicketCompletionScanner(overlay=_Overlay(), overlay_name="acme")
         # The scanner resolves the host through the shared ``issue_is_done`` seam
-        # in ``teatree.backends.loader``; a raising host lookup there propagates
+        # in ``teatree.backends.issue_reads``; a raising host lookup there propagates
         # out of ``issue_is_done`` into the scanner's per-ticket ``except`` guard.
-        with patch("teatree.backends.loader.get_code_host_for_url", _patched_get_code_host):
+        with patch("teatree.backends.issue_reads.get_code_host_for_url", _patched_get_code_host):
             signals = scanner.scan()
 
         assert len(signals) == 1, "second ticket must still emit completion_detected"
@@ -623,6 +627,10 @@ URL_SWEEP_B = "https://example.com/issues/sweep/2"
 class TestTaskSweepIsolation(TestCase):
     """Second task still produces a signal when _verify raises on the first."""
 
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_failing_first_task_does_not_suppress_second_task_signal(self) -> None:
         overlay = _TaskSweepOverlay()
         ticket_a = Ticket.objects.create(overlay="acme", issue_url=URL_SWEEP_A)
@@ -645,7 +653,7 @@ class TestTaskSweepIsolation(TestCase):
             return original_verify(self_inner, task)
 
         host_b = _FakeCodeHost()
-        host_b.get_issue = lambda url: {"state": "closed"}  # type: ignore[assignment]
+        self._monkeypatch.setattr(host_b, "get_issue", lambda url: {"state": "closed"})
 
         with (
             patch.object(TaskSweepScanner, "_verify", _raising_verify),

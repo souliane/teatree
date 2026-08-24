@@ -235,6 +235,11 @@ class Command(TyperCommand):
                 )
                 raise SystemExit(2) from exc
             LoopState.objects.override(name, on=normalized == "on", until=until, reason=reason)
+        # The FORCED plane outranks the mode mask in the enable verdict, so a write here
+        # changes chain membership at once — same as the enable/disable verbs above. A
+        # `--for` override that later EXPIRES has no chokepoint of its own; the 5-minute
+        # reconcile chain is its only repair, which is the bound on that direction.
+        _reconcile_timers()
         _report_forced(self, name, json_output=json_output)
 
     @command(name="status")

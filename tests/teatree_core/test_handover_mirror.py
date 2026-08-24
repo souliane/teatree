@@ -40,7 +40,7 @@ class TestWriteMirrorPointerFallback(TestCase):
     def _handover(self) -> SessionHandover:
         return SessionHandover.objects.create_handover(
             from_session="sess-from", to_session="sess-to", payload="the durable state"
-        )
+        ).row
 
     def test_a_symlink_refusing_filesystem_falls_back_to_a_copy(self) -> None:
         pointer = Path(self.enterContext(tempfile.TemporaryDirectory())) / "latest.md"

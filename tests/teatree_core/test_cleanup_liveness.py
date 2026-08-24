@@ -15,9 +15,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 import teatree.core.cleanup.cleanup_liveness as cl
+from teatree.core.cleanup import process_table
 from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.utils.throttled_log import reset_throttle
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -248,8 +250,8 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         wt = self._tmp_path / "wt"
         wt.mkdir()
         proc = self._fake_proc_with_cwd("1234", wt)
-        with patch.object(cl, "_PROC_ROOT", proc):
-            assert cl._any_process_cwd_within(wt.resolve()) is True
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
+            assert cl._any_process_cwd_within(wt.resolve()).fired is True
 
     def test_proc_scan_ignores_process_cwd_outside_worktree(self) -> None:
         wt = self._tmp_path / "wt"
@@ -257,8 +259,22 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         other = self._tmp_path / "other"
         other.mkdir()
         proc = self._fake_proc_with_cwd("1234", other)
-        with patch.object(cl, "_PROC_ROOT", proc):
-            assert cl._any_process_cwd_within(wt.resolve()) is False
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
+            assert cl._any_process_cwd_within(wt.resolve()).fired is False
+
+    def test_the_worktrees_raw_spelling_is_matched_when_resolving_would_miss(self) -> None:
+        """Under the host bind mount the table holds HOST paths, which need not resolve in this namespace.
+
+        Same harness as :meth:`test_scans_proc_for_foreign_process_cwd_inside_worktree`
+        above, so a green there is the proof this one can detect what it looks for.
+        """
+        real = self._tmp_path / "real"
+        real.mkdir()
+        link = self._tmp_path / "link"
+        link.symlink_to(real)
+        proc = self._fake_proc_with_cwd("1234", link)
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
+            assert cl._is_cwd(link).fired is True
 
     def test_worktree_liveness_marks_active_on_foreign_process_cwd(self) -> None:
         wt = self._tmp_path / "wt"
@@ -267,7 +283,100 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         worktree = Worktree.objects.create(
             overlay="test", ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(wt)}
         )
-        with patch.object(cl, "_any_process_cwd_within", return_value=True):
+        with patch.object(cl, "_any_process_cwd_within", return_value=cl._GuardAnswer(fired=True)):
             verdict = worktree_liveness(worktree, wt_path=wt)
         assert verdict.active is True
         assert "CWD" in verdict.reason
+
+
+class TestBlindGuardIsUnverifiableNotSettled(TestCase):
+    """A guard that could not LOOK must not answer like one that looked and found nothing (#4354).
+
+    Two of the five signals are structurally unable to fire in some venues: the CWD
+    scan when no host-covering process table is reachable, and the ``index.lock``
+    check when the gitdir will not resolve. Both collapsed onto
+    ``LivenessVerdict(active=False, reason="")`` — byte-identical to a settled
+    worktree — so a defence-in-depth guard that is absent reported as one that ran.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        self._tmp_path = tmp_path
+        self._caplog = caplog
+
+    def _blind_table(self) -> Path:
+        """A proc root with no pids — unusable in a container AND on a host."""
+        blind = self._tmp_path / "blind-proc"
+        blind.mkdir()
+        return blind
+
+    def _answering_table(self, cwd_target: Path) -> Path:
+        proc = self._tmp_path / "proc"
+        (proc / "1234").mkdir(parents=True)
+        (proc / "1234" / "cwd").symlink_to(cwd_target)
+        return proc
+
+    def _worktree(self, wt: Path, slug: str) -> Worktree:
+        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{slug}", state=Ticket.State.STARTED)
+        return Worktree.objects.create(
+            overlay="test", ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(wt)}
+        )
+
+    def test_an_unreadable_process_table_is_unverifiable_not_not_live(self) -> None:
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        blind = self._blind_table()
+        with (
+            patch.object(process_table, "_HOST_PROC_ROOT", blind),
+            patch.object(process_table, "_OWN_PROC_ROOT", blind),
+        ):
+            verdict = worktree_liveness(self._worktree(wt, "blind"), wt_path=wt)
+        assert verdict.unverifiable is True
+        assert "process" in verdict.reason
+        # Disposition is unchanged: the blindness is reported, never promoted to a keep.
+        assert verdict.active is False
+
+    def test_control_a_table_that_answered_is_not_unverifiable(self) -> None:
+        """The control: the ONLY difference is a proc table with a pid in it."""
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        elsewhere = self._tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        with patch.object(process_table, "_HOST_PROC_ROOT", self._answering_table(elsewhere)):
+            verdict = worktree_liveness(self._worktree(wt, "seeing"), wt_path=wt)
+        assert verdict.unverifiable is False
+        assert verdict.active is False
+        assert verdict.reason == ""
+
+    def test_the_blindness_is_logged_so_the_absence_is_reported(self) -> None:
+        reset_throttle()
+        wt = self._tmp_path / "wt"
+        wt.mkdir()
+        blind = self._blind_table()
+        logger_name = "teatree.core.cleanup.cleanup_liveness"
+        with (
+            patch.object(process_table, "_HOST_PROC_ROOT", blind),
+            patch.object(process_table, "_OWN_PROC_ROOT", blind),
+            self._caplog.at_level("DEBUG", logger=logger_name),
+        ):
+            worktree_liveness(self._worktree(wt, "logged"), wt_path=wt)
+        warnings = [r for r in self._caplog.records if r.name == logger_name and r.levelname == "WARNING"]
+        assert warnings, "a guard that could not look must say so"
+        assert "could not answer" in warnings[0].getMessage()
+
+    def test_an_unresolvable_gitdir_is_unknown_not_no_lock(self) -> None:
+        wt = self._tmp_path / "brokenwt"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: /nonexistent/worktrees/brokenwt\n", encoding="utf-8")
+        answer = cl._git_lock_present(wt)
+        assert answer.fired is False
+        assert answer.unanswered is True
+
+    def test_control_an_intact_gitdir_answers_no_lock(self) -> None:
+        """The control: the same probe on a resolvable gitdir answers, and answers negative."""
+        wt = self._tmp_path / "realwt"
+        wt.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=wt)
+        answer = cl._git_lock_present(wt)
+        assert answer.fired is False
+        assert answer.unanswered is False

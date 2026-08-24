@@ -86,13 +86,43 @@ x-teatree-common: &teatree-common
     # tries to open the canonical DB gets a directory it cannot create, and fails
     # loudly instead of quietly opening a second database.
     - teatree_control_db:/var/lib/teatree/control-db
-    # The container's own CLONE root (`config.clone_root()`), holding the source
-    # clones worktrees are cut from. Mounted BENEATH the `t3-workspaces` bind
-    # below: docker orders mounts by target depth, so this lands first and the
-    # worktree bind lands on top of it. That nesting is deliberate — the clones
-    # are container-owned and invisible to the host, while the worktrees they
-    # produce stay host-visible so an operator can read and edit the code.
+    # The HOST's process table, read-only. The reapers that reclaim a checkout's
+    # rebuildable cache decide by asking whether anything is working inside it,
+    # and every service here has its own PID namespace: `/proc` in the container
+    # lists a handful of container processes and none of the host agents whose
+    # working directory IS the checkout under consideration. Without this mount
+    # that guard answers "nobody is inside" for every directory on the box —
+    # fail-OPEN, the shape recorded on #4306 — so
+    # `teatree.core.cleanup.process_table` refuses to reclaim rather than trust
+    # this namespace's `/proc` when the mount is absent.
+    - /proc:/host-proc:ro
+    # The container's own CLONE root (`config.clone_root()`). Mounted BENEATH the
+    # `t3-workspaces` bind below: docker orders mounts by target depth, so this
+    # lands first and the worktree bind lands on top of it. The root itself is
+    # container-owned; what it holds for a repo is a discovery SYMLINK, and the
+    # mount below is what that link resolves to.
     - teatree_clones:/home/teatree/workspace
+    # The checkout this stack was deployed from, at PATH IDENTITY, READ-WRITE —
+    # the clone `workspace ticket` cuts worktrees from (deploy/entrypoint.sh's
+    # retarget_clone_discovery points the discovery link at it).
+    #
+    # `git worktree add` bakes an ABSOLUTE `gitdir:` pointer into its source
+    # clone, so the CLONE's path decides who can use the worktree, not the
+    # worktree's own. Cutting from the container-only `teatree_src` volume at
+    # `$TEATREE_CLONE_DIR` recorded a path that exists in no other venue: the
+    # files stayed readable from the host (t3-workspaces is bind-mounted) while
+    # every git command against them answered `fatal: not a git repository`
+    # (#4120). Path identity is the same device the watchdog's own read-only
+    # spelling of this mount already relies on, and both sides read ONE variable
+    # so identity holds on any topology rather than only at the box default.
+    #
+    # Read-write because `worktree add` writes `.git/worktrees/<n>` into the
+    # clone — the watchdog's read-only mount cannot serve provisioning. The
+    # container's UID is the host deploy user's (README § UID invariant), so
+    # those writes land with the ownership the host expects.
+    - type: bind
+      source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+      target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree
       target: /home/teatree/.local/share/teatree
@@ -169,6 +199,30 @@ x-teatree-common: &teatree-common
     # a reader can check. Read-write on purpose: the docker API is a socket, and
     # a read-only bind would refuse the write half of every request.
     - /var/run/docker.sock:/var/run/docker.sock
+    # The HOST temp root + the HOST process table, so the agent-scratch retention
+    # sweep (#4165) reaches what actually fills the box. A container has its own
+    # /tmp, so a container-scoped sweep reclaims none of the host scratch that
+    # made 28% of the RAM pool week-old garbage on a tmpfs-backed /tmp.
+    #
+    # The PAIR is the point, and neither half works alone: the sweep refuses to
+    # remove a path any live process holds open, and that guard is read from a
+    # process table — reading THIS container's while sweeping the HOST's files
+    # would answer confidently about the wrong namespace. /host-proc is read-only
+    # (the sweep only reads /proc/<pid>/{cwd,fd}); /host-tmp is read-write because
+    # reclaiming is the whole point. Distinct targets, so the container's own /tmp
+    # and /proc are untouched.
+    #
+    # Strictly narrower than what the worker already holds: the docker socket
+    # above IS root-equivalent on the host (see deploy/README.md § security
+    # posture). What bounds this mount is the sweep's own guards — age, uid
+    # ownership, open-file, registered-worktree, protected-name — not the mount.
+    - type: bind
+      source: ${TEATREE_HOST_TMP:-/tmp}
+      target: /host-tmp
+    - type: bind
+      source: /proc
+      target: /host-proc
+      read_only: true
   init: true
 
 # Memory sizing (#3651). Every `mem_limit` below is a ceiling, not a reservation:
@@ -204,6 +258,15 @@ services:
       # install that registers the overlay entry point. Interpolated from the
       # host env because that is the only channel deploy/t3 can reach compose on.
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
+      # Init owns the shared clone root, so it is where the discovery link is
+      # retargeted at the host-visible checkout — before the worker that reads
+      # it starts (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     restart: "no"
 
   # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
@@ -216,6 +279,15 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
+      # Same value as the checkout bind in the shared anchor: the entrypoint
+      # points clone discovery at it so the worktrees this role cuts carry a
+      # `gitdir:` the host resolves too (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     # THE ONE SERVICE THAT MAY DRIVE THE DAEMON. The shared mount set carries
     # /var/run/docker.sock, but the socket is mode 0660 root-owned and every app
     # service runs as the non-root TEATREE_UID, so the mount alone grants nothing.
@@ -228,8 +300,7 @@ services:
     # the host socket is authoritative), while Docker Desktop serves the socket
     # from its own VM where it is root:root — gid 0. The default is therefore 0,
     # correct on Docker Desktop with nothing exported; on Linux
-    # deploy/docker-socket-gid.sh resolves the real gid and both deploy.sh and
-    # deploy/t3 export it. Adding a supplementary group is strictly narrower than
+    # both deploy.sh and deploy/t3 resolve the real gid and export it. Adding a supplementary group is strictly narrower than
     # the watchdog's `user: "0:0"` — the process keeps its own UID.
     #
     # Handing a container the host docker socket IS root-equivalent on the host,
@@ -289,6 +360,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -324,6 +400,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully

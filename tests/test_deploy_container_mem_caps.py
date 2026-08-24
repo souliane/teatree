@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from teatree.utils.ram_probe import _SIBLING_RESERVE_MIB, derive_worker_mem_limit_mib
+from teatree.utils.ram_probe import _SIBLING_RESERVE_MIB, DockerWorkerSizing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = REPO_ROOT / "deploy" / "docker-compose.yml"
@@ -92,7 +92,7 @@ class TestSiblingReserveMatchesTheDeclaredCaps:
 
     def test_derived_worker_ceiling_still_leaves_the_siblings_their_caps(self) -> None:
         host_mib = 32000
-        derived_mib = derive_worker_mem_limit_mib(total_ram_mib=host_mib)
+        derived_mib = DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=host_mib)
         siblings_mib = sum(_cap(name) for name in _SIBLING_SERVICES) // _MIB
         assert derived_mib + siblings_mib <= host_mib
 

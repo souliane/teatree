@@ -238,6 +238,20 @@ class TestGetSkillMetadata:
         assert skill_path.is_dir()
 
 
+class TestGetEvalScenariosDir:
+    def test_returns_a_directory_that_exists(self) -> None:
+        # The hook is a claim the dir is there; discovery degrades the catalog when
+        # it is not, so this reds where a move would otherwise only shrink the count.
+        scenarios = TeatreeOverlay().get_eval_scenarios_dir()
+        assert scenarios is not None
+        assert scenarios.is_dir()
+        assert sorted(scenarios.glob("*.yaml"))
+
+    def test_the_hook_does_not_launder_a_missing_dir_into_none(self) -> None:
+        with patch.object(overlay_mod.Path, "is_dir", return_value=False):
+            assert TeatreeOverlay().get_eval_scenarios_dir() is not None
+
+
 class TestGetProvisionSteps(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:

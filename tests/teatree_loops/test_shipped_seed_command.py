@@ -6,6 +6,7 @@ swallowed, so the process exits 0 and CI reports green on a real failure. These 
 assert ``SystemExit`` with its code, which is the only shape that survives the call chain.
 """
 
+import datetime as dt
 import io
 import json
 from unittest import mock
@@ -16,8 +17,9 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_shipped_seed_inertness
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.mode_shape import INTAKE_LOOPS
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.shipped_guard import shipped_delete_phrase
@@ -68,12 +70,41 @@ class TestAuditExitCode(django.test.TestCase):
         assert any(f["name"] == "review" and f["kind"] == "missing" for f in payload["findings"])
 
     def test_a_deliberate_note_alone_does_not_fail_the_audit(self) -> None:
-        """`always-unattended` is inactive by design — a note, never a non-zero exit."""
+        """`always-away` is inactive by design — a note, never a non-zero exit."""
         err = io.StringIO()
 
         call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
 
-        assert "always-unattended" in err.getvalue(), "the note is still reported"
+        assert "always-away" in err.getvalue(), "the note is still reported"
+
+    def test_an_operator_override_is_reported_under_the_notes_block_and_exits_zero(self) -> None:
+        """The report distinguishes never-seeded from deliberately overridden (#4096)."""
+        ModeScheduleSlot.objects.create(
+            schedule=ModeSchedule.objects.get(name="standard"),
+            days=[0, 1, 2, 3, 4],
+            start_time=dt.time(19, 0),
+            preset_name="maintenance",
+        )
+        err = io.StringIO()
+
+        call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
+
+        report = err.getvalue()
+        assert "NOTES (deliberate — not failures)" in report
+        assert "slots_overridden" in report
+        assert "adds Mon,Tue,Wed,Thu,Fri 19:00 -> maintenance" in report
+
+    def test_a_mode_that_masks_delivery_while_admitting_intake_exits_non_zero(self) -> None:
+        """The 13h-a-night stall the audit used to report as OK (#4096)."""
+        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=True)
+        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "tickets": False})
+        err = io.StringIO()
+
+        with pytest.raises(SystemExit) as caught:
+            call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
+
+        assert caught.value.code == 1
+        assert "intake_without_delivery" in err.getvalue()
 
 
 class TestDeleteVerbs(django.test.TestCase):
@@ -103,17 +134,15 @@ class TestDeleteVerbs(django.test.TestCase):
 
     def test_deleting_a_shipped_schedule_needs_the_phrase(self) -> None:
         with pytest.raises(SystemExit):
-            call_command(
-                "shipped_seed", "delete-schedule", "always-unattended", stdout=io.StringIO(), stderr=io.StringIO()
-            )
+            call_command("shipped_seed", "delete-schedule", "always-away", stdout=io.StringIO(), stderr=io.StringIO())
 
-        assert ModeSchedule.objects.filter(name="always-unattended").exists()
+        assert ModeSchedule.objects.filter(name="always-away").exists()
 
     def test_deleting_a_shipped_preset_needs_the_phrase(self) -> None:
         with pytest.raises(SystemExit):
-            call_command("shipped_seed", "delete-preset", "heads-down", stdout=io.StringIO(), stderr=io.StringIO())
+            call_command("shipped_seed", "delete-preset", "off", stdout=io.StringIO(), stderr=io.StringIO())
 
-        assert Mode.objects.filter(name="heads-down").exists()
+        assert Mode.objects.filter(name="off").exists()
 
     def test_a_blank_name_refuses(self) -> None:
         with pytest.raises(SystemExit) as caught:
@@ -130,30 +159,30 @@ class TestThePresetCliHonoursTheSharedSeam(django.test.TestCase):
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
 
     def test_a_preset_a_schedule_slot_names_is_refused(self) -> None:
-        assert Mode.objects.filter(name="engaged").exists()
+        assert Mode.objects.filter(name="present").exists()
 
         with pytest.raises(SystemExit):
-            call_command("loop_preset", "delete", "engaged", stdout=io.StringIO(), stderr=io.StringIO())
+            call_command("loop_preset", "delete", "present", stdout=io.StringIO(), stderr=io.StringIO())
 
-        assert Mode.objects.filter(name="engaged").exists(), "a referenced preset must survive"
+        assert Mode.objects.filter(name="present").exists(), "a referenced preset must survive"
 
     def test_a_shipped_unreferenced_preset_still_needs_the_phrase(self) -> None:
         with pytest.raises(SystemExit):
-            call_command("loop_preset", "delete", "heads-down", stdout=io.StringIO(), stderr=io.StringIO())
+            call_command("loop_preset", "delete", "off", stdout=io.StringIO(), stderr=io.StringIO())
 
-        assert Mode.objects.filter(name="heads-down").exists()
+        assert Mode.objects.filter(name="off").exists()
 
     def test_the_phrase_lets_an_unreferenced_shipped_preset_go(self) -> None:
         call_command(
             "loop_preset",
             "delete",
-            "heads-down",
-            confirm=shipped_delete_phrase("heads-down"),
+            "off",
+            confirm=shipped_delete_phrase("off"),
             stdout=io.StringIO(),
             stderr=io.StringIO(),
         )
 
-        assert not Mode.objects.filter(name="heads-down").exists()
+        assert not Mode.objects.filter(name="off").exists()
 
 
 class TestTheDoctorCheck(django.test.TestCase):

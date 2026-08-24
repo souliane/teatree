@@ -12,6 +12,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, Task, Ticket
 from teatree.instance_id import instance_id
 from tests.factories import ImplementedIssueMarkerFactory, PullRequestFactory, TaskFactory, TicketFactory
@@ -444,3 +445,225 @@ class TestDeadClaimGrace(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
         assert result.released == 0
+
+
+class TestHollowClaim(TestCase):
+    """A claim whose ticket was created and then deleted is provably over NOW (#4389).
+
+    ``TICKET_CREATED`` is written only alongside the ticket FK, so reaching it with no
+    ticket for the issue proves the dispatch got that far and its ticket is gone. The
+    six-hour orphan grace exists to cover a dispatch that has not created its ticket
+    YET, which this class cannot be — waiting it out costs six hours of dead intake
+    budget per crashed dispatch.
+    """
+
+    def _hollow(self, url: str) -> ImplementedIssueMarker:
+        """A marker linked to a ticket that has since been deleted, claimed just now."""
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ticket.delete()
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_a_hollow_claim_releases_with_no_grace(self) -> None:
+        marker = self._hollow("https://github.com/o/r/issues/600")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_the_hollow_claim_frees_the_budget_at_once(self) -> None:
+        self._hollow("https://github.com/o/r/issues/601")
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 1
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_the_released_issue_is_claimable_again(self) -> None:
+        url = "https://github.com/o/r/issues/602"
+        self._hollow(url)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is not None
+
+    def test_a_dispatched_orphan_keeps_the_full_grace(self) -> None:
+        """The control: a dispatch that never reached a ticket may still be mid-flight."""
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/603")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert result.released == 0
+
+    def test_find_stale_previews_the_hollow_claim_without_mutating(self) -> None:
+        marker = self._hollow("https://github.com/o/r/issues/604")
+
+        result = ImplementedIssueMarker.objects.find_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.abandoned == (marker.pk,)
+
+
+class TestFailureIsNotProgress(TestCase):
+    """A failed task must not renew the claim's own lease (#4389).
+
+    Recency was read from EVERY task, so a ticket that fails and re-queues faster than
+    the dead grace pushes its own release cutoff forward forever while nothing lands —
+    a livelock against the intake budget, not a slow attempt. One observed claim held a
+    slot for 12.5 hours across five failed coding tasks and never produced a PR.
+    """
+
+    def _crash_looping(self, url: str, *, newest: str, minutes_ago: int = 10) -> ImplementedIssueMarker:
+        """A 12h-old claim whose newest task landed *minutes_ago* with status *newest*."""
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        for status, age in ((Task.Status.FAILED, timedelta(hours=6)), (newest, timedelta(minutes=minutes_ago))):
+            task = TaskFactory(ticket=ticket, status=status)
+            Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - age)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(dispatched_at=timezone.now() - timedelta(hours=12))
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_a_crash_loop_releases_its_slot(self) -> None:
+        marker = self._crash_looping("https://github.com/o/r/issues/610", newest=Task.Status.FAILED)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_a_recent_completed_task_still_holds_the_slot(self) -> None:
+        """The control: real progress is still recency, so a working ticket keeps its slot."""
+        marker = self._crash_looping("https://github.com/o/r/issues/611", newest=Task.Status.COMPLETED)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_an_old_completed_task_does_not_hold_the_slot(self) -> None:
+        """Progress that predates the dead grace is history, not evidence of an attempt."""
+        url = "https://github.com/o/r/issues/612"
+        marker = self._crash_looping(url, newest=Task.Status.FAILED)
+        completed = TaskFactory(ticket=marker.ticket, status=Task.Status.COMPLETED)
+        Task.objects.filter(pk=completed.pk).update(created_at=timezone.now() - timedelta(hours=6))
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_a_requeued_task_still_holds_the_slot(self) -> None:
+        """A PENDING retry is the attempt still being worked, whatever the last one did."""
+        marker = self._crash_looping("https://github.com/o/r/issues/613", newest=Task.Status.PENDING)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+
+class TestOperatorCancelledClaim(TestCase):
+    """An operator cancellation is a DECISION, not a dead attempt (#4105).
+
+    Cancelling the task released the slot as ABANDONED, which is the state
+    ``claim`` re-claims from — so the next tick handed the same issue straight
+    back and the operator's decline was undone without anything changing. A
+    cancelled claim releases as DECLINED instead: terminal, so the budget still
+    self-heals, and outside the re-claim path, so intake leaves it alone.
+    """
+
+    def _cancelled(self, url: str, *, kind: str = FailureKind.CANCELLED, age_hours: int = 0) -> ImplementedIssueMarker:
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        task = TaskFactory(ticket=ticket, status=Task.Status.FAILED, failure_kind=kind)
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=age_hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_a_cancelled_claim_is_not_reclaimed_on_the_next_tick(self) -> None:
+        # Aged past the dead grace, which is what made the observed re-claim possible:
+        # ABANDONED is the one state ``claim`` resets, so the cancel lasted two hours.
+        url = "https://github.com/o/r/issues/400"
+        self._cancelled(url, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is None
+
+    def test_the_cancelled_claim_releases_as_declined(self) -> None:
+        marker = self._cancelled("https://github.com/o/r/issues/401")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DECLINED
+        assert result.declined == (marker.pk,)
+        assert result.released == 1
+
+    def test_the_declined_claim_still_frees_the_budget(self) -> None:
+        self._cancelled("https://github.com/o/r/issues/402")
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_the_decision_needs_no_grace_to_take_effect(self) -> None:
+        """The dead grace buys time for an attempt that MIGHT still be alive; this one is over."""
+        marker = self._cancelled("https://github.com/o/r/issues/403", age_hours=0)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DECLINED
+
+    def test_a_requeued_ticket_keeps_its_slot(self) -> None:
+        """Something DID change — a live task means the cancel was not the last word."""
+        marker = self._cancelled("https://github.com/o/r/issues/404")
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_a_superseded_task_is_not_an_operator_decline(self) -> None:
+        """Rework cancels the task on the factory's own initiative — the issue stays claimable."""
+        url = "https://github.com/o/r/issues/405"
+        marker = self._cancelled(url, kind=FailureKind.SUPERSEDED, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is not None
+
+    def test_a_plain_failure_still_abandons(self) -> None:
+        marker = self._cancelled("https://github.com/o/r/issues/406", kind=FailureKind.UNCLASSIFIED, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_an_older_cancel_under_a_newer_failure_does_not_decline(self) -> None:
+        """The NEWEST outcome decides — a cancel the pipeline moved past is not the last word."""
+        url = "https://github.com/o/r/issues/407"
+        marker = self._cancelled(url, age_hours=72)
+        newer = TaskFactory(ticket=marker.ticket, status=Task.Status.FAILED, failure_kind=FailureKind.UNCLASSIFIED)
+        Task.objects.filter(pk=newer.pk).update(created_at=timezone.now() - timedelta(hours=48))
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED

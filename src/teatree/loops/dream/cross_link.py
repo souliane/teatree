@@ -24,6 +24,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.loops.dream._shared import NON_MEMORY_DOCS
+
 #: A memory is significant enough to link when its token set overlaps a sibling's
 #: by at least this Jaccard ratio. Tuned so two memories about the same subsystem
 #: link while unrelated ones do not; deterministic, no model.
@@ -79,7 +81,7 @@ def _existing_links(text: str) -> frozenset[str]:
 def _load_memories(memory_dir: Path) -> list[_Memory]:
     memories: list[_Memory] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name in {"MEMORY.md", "MEMORY_ARCHIVE.md"}:  # never cross-link an index (#2723)
+        if md.name in NON_MEMORY_DOCS:  # never cross-link an index (#2723)
             continue
         try:
             text = md.read_text(encoding="utf-8")

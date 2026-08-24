@@ -125,7 +125,7 @@ mismatch, is a LOUD, named finding with a reconnect hint — never a silent pass
 A probe that cannot run (`claude` absent) degrades to a WARN.
 
 An overlay declares the **expected provider** per MCP server via
-`OverlayBase.get_mcp_provider_expectations() -> dict[str, str]` (default `{}`),
+`overlay.connectors.mcp_provider_expectations() -> dict[str, str]` (default `{}`),
 mapping a server name to either `CLAUDE_AI_HOSTED` (a `claude.ai <Service>`
 connector served from an Anthropic-hosted endpoint) or `THIRD_PARTY` (a
 self-hosted or local-command server). Teatree's own default is empty — the
@@ -149,8 +149,8 @@ active account; one that **has** connected before but is now down is a
 
 Beyond "is every *enabled* server connected" (§ 2.1), an overlay declares which
 claude.ai connectors it **hard-depends on** vs merely benefits from, by NAME, by
-overriding `OverlayBase.get_connector_manifest() -> list[ConnectorRequirement]`
-(default `[]`, the same method-override shape as `get_mcp_provider_expectations`;
+overriding `overlay.connectors.manifest() -> list[ConnectorRequirement]`
+(default `[]`, the same method-override shape as `mcp_provider_expectations`;
 core is empty — teatree's own dogfood overlay hard-depends on no claude.ai
 connector). `teatree.core.connector_manifest.check_connector_manifest`
 reads the same enabled/connected ground truth the § 2.1 probe uses and classifies
@@ -240,8 +240,8 @@ duplicates the other.
 | Bash standing permissions | plugin `settings.json` (broad allow / narrow deny) | `settings.json` (BLUEPRINT.md § 11.4) |
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
 | Enabled-MCP connectivity check | n/a — runs at session start / `t3 doctor` / account-switch | `teatree.core.mcp_connectivity.check_mcp_connectivity` (#2282) |
-| Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
-| Per-overlay connector manifest | overlay overrides `get_connector_manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
+| Per-server expected provider | overlay's `connectors.mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayConnectors` |
+| Per-overlay connector manifest | overlay overrides `connectors.manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
 | Connector reconnect | `t3 mcp reconnect [--open]` / `t3 setup recover-account-switch [--open]` | `teatree.cli.mcp.reconnect` (PR-19) |
 | Token-scope-failure cache | n/a — in-process, per loop tick; cleared by `t3 doctor authorizations` | `teatree.core.intake.scope_cache` (PR-19) |
 | Teatree's own bundled MCP server | n/a — ships in `.mcp.json`, auto-starts with the plugin | `teatree.core.mcp_registration` (#2863) |

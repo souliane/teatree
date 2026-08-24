@@ -265,7 +265,7 @@ class TestSkipSelfAuthorAcrossIdentities:
         mr = {
             "author": {"username": "bob"},
             "state": "opened",
-            "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "engaged"}],
+            "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "present"}],
         }
         assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
 

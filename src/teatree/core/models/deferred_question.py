@@ -106,7 +106,7 @@ class DeferredQuestion(models.Model):
     """One queued user-directed question recorded while availability=away.
 
     The question text and options are the verbatim ``AskUserQuestion``
-    payload; the hook layer (see ``hook_router.handle_route_away_mode_question``)
+    payload; the hook layer (see ``hook_router.handle_mirror_question_to_slack``)
     is the only producer. Single-use: once :meth:`consume` stamps either
     ``answered_at`` or ``dismissed_at``, the row no longer matches a
     pending-question scan. The original ``tool_use_id`` (when the harness
@@ -171,6 +171,11 @@ class DeferredQuestion(models.Model):
         choices=ResolvedVia.choices,
     )
     applied_at = models.DateTimeField(null=True, blank=True)
+    # #4178 age-backstop stamps. An escalation records that a row has sat past the
+    # ceiling WITHOUT resolving it — the row stays pending, so directive #45's "an
+    # unresolved request is never silently dropped" holds.
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    escalation_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = "teatree_deferred_question"
@@ -322,28 +327,58 @@ class DeferredQuestion(models.Model):
         return (current or 0) + 1
 
     @classmethod
-    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
-        """The single currently-live question a Slack reply can resolve.
+    def _reply_candidates(cls, *, channel: str, after_ts: str) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows mirrored to *channel* whose mirror ts precedes *after_ts*.
 
-        Returns the highest-generation pending row mirrored to *channel*
-        whose mirror ``slack_ts`` is strictly before *after_ts* (the
-        reply's ts) — so a reply can never bind a question posted after it
-        (the ``after_ts`` guard). ``None`` when no such live row exists,
-        which the caller treats as a stale reply (ordinary DM context).
+        The ``after_ts`` guard is the one invariant every reply-binding query
+        shares: a reply can never answer a question posted after it.
+        """
+        return cls.objects.filter(
+            slack_channel=channel,
+            slack_ts__lt=after_ts,
+            slack_ts__gt="",
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+        )
+
+    @classmethod
+    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The highest-generation pending question mirrored to *channel* before *after_ts*.
+
+        Recency is a heuristic, not identity: with a deep mirrored backlog the
+        newest row is reliably NOT the one an unaddressed reply answers. Reply
+        binding therefore goes through :meth:`for_thread` /
+        :meth:`sole_for_reply`; this stays the generation cursor for the
+        capture path, where one live generation per (session, run) is the rule.
         """
         if not channel or not after_ts:
             return None
-        return (
-            cls.objects.filter(
-                slack_channel=channel,
-                slack_ts__lt=after_ts,
-                slack_ts__gt="",
-                answered_at__isnull=True,
-                dismissed_at__isnull=True,
-            )
-            .order_by("-generation", "-created_at")
-            .first()
-        )
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-generation", "-created_at").first()
+
+    @classmethod
+    def for_thread(cls, *, channel: str, thread_ts: str, after_ts: str) -> "DeferredQuestion | None":
+        """The pending question *thread_ts* roots on — an exact mirror join, no guessing.
+
+        A Slack thread roots on the message being replied to, so a reply
+        carrying ``thread_ts`` names its question's mirror ``slack_ts``
+        outright. ``None`` when no pending row was mirrored at that ts.
+        """
+        if not channel or not thread_ts or not after_ts:
+            return None
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).filter(slack_ts=thread_ts).first()
+
+    @classmethod
+    def sole_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The only live question on *channel*, or ``None`` when there is not exactly one.
+
+        The fallback for a top-level reply that names no question: with a single
+        pending mirror the reply cannot be for anything else, and with two or
+        more it is unattributable — so nothing binds rather than the wrong row.
+        """
+        if not channel or not after_ts:
+            return None
+        candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
+        return candidates[0] if len(candidates) == 1 else None
 
     def mark_stale(self, reason: str) -> None:
         """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.
@@ -373,6 +408,32 @@ class DeferredQuestion(models.Model):
             self.dismissed_at = row.dismissed_at
             self.dismissed_reason = row.dismissed_reason
             self.resolved_via = row.resolved_via
+
+    def mark_escalated(self, note: str) -> bool:
+        """Stamp an age-backstop escalation on a still-pending row; ``True`` on the transition.
+
+        The transition a row past the age ceiling gets INSTEAD of a resolution: it
+        bumps ``escalation_count`` and writes an ``escalated`` audit row, leaving
+        ``answered_at``/``dismissed_at`` untouched so the question stays queued. The
+        ``select_for_update`` re-read is the verify-by-re-read seam — a row a
+        concurrent answer resolved first returns ``False`` and is not counted.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return False
+            row.escalated_at = timezone.now()
+            row.escalation_count += 1
+            row.save(update_fields=["escalated_at", "escalation_count"])
+            DeferredQuestionAudit.objects.create(question=row, action="escalated", note=note)
+            self.escalated_at = row.escalated_at
+            self.escalation_count = row.escalation_count
+            return True
 
     def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
         """Resolve this pending row with *answer*, stamping ``resolved_via``.
@@ -485,9 +546,13 @@ class DeferredQuestionAudit(models.Model):
         on_delete=models.CASCADE,
         related_name="audits",
     )
-    action = models.CharField(max_length=16)  # "answered" | "dismissed"
+    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated"
     answer_text = models.TextField(blank=True, default="")
     dismissed_reason = models.TextField(blank=True, default="")
+    # Why a NON-resolving action fired. Separate from ``dismissed_reason`` because an
+    # escalation leaves the row pending — reusing the dismissal column would read as
+    # a resolution that never happened.
+    note = models.TextField(blank=True, default="")
     resolver_id = models.CharField(max_length=255, blank=True, default="")
     resolved_at = models.DateTimeField(default=timezone.now)
 

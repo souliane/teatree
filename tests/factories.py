@@ -32,8 +32,24 @@ from teatree.core.models import (
     Worktree,
 )
 from teatree.core.models.pending_pull_request import SerializedPrSpec
+from teatree.core.models.plan_artifact import PlanArtifact
 
 _FORTY_HEX = "c" * 40
+
+
+def planned_ticket(**kwargs: object) -> Ticket:
+    """A ticket carrying the recorded plan every real implementing dispatch has.
+
+    The plan-before-dispatch gate (``core.gates.plan_dispatch_gate``) refuses a
+    coder / tester / e2e / debugger on a ticket where nobody recorded a decision
+    about scope, so a bare ``Ticket.objects.create()`` is a state no production
+    implementing dispatch is ever in. Tests whose subject is something ELSE — a
+    usage limit, an envelope refusal, a harness pin — build their ticket here so
+    they exercise the path they mean to.
+    """
+    ticket = Ticket.objects.create(**kwargs)
+    PlanArtifact.record(ticket=ticket, plan_text="test plan", recorded_by="tests")
+    return ticket
 
 
 class TicketFactory(DjangoModelFactory[Ticket]):
@@ -230,9 +246,6 @@ class TaskFactory(DjangoModelFactory[Task]):
     session = factory.SubFactory(SessionFactory)
     phase = "coding"
     status = Task.Status.PENDING
-    # INTERACTIVE keeps ``status`` deterministic: the HEADLESS save-override
-    # reroute only touches ``execution_target``, never the status the tests count.
-    execution_target = Task.ExecutionTarget.INTERACTIVE
 
 
 class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
@@ -242,7 +255,6 @@ class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
         model = TaskAttempt
 
     task = factory.SubFactory(TaskFactory)
-    execution_target = Task.ExecutionTarget.HEADLESS
     exit_code = 0
     iteration = 1
 

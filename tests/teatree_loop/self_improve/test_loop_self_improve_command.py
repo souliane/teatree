@@ -3,10 +3,17 @@
 Drives the full path: seed a smell, ``call_command('loop_self_improve',
 tier='cheap')``, then assert a ``SelfImproveFiring`` row is recorded for
 at least one detector.
+
+The forgotten-merge smell is a *stalled* merge, and since #4250 that means the forge
+reports the PR OPEN — a missing ``MergeAudit`` is not evidence on its own. The reader
+the cheap tier arms is therefore replaced with an OPEN-reading fake: no test may reach
+a forge (the CI test image has no ``gh``), and leaving it unstubbed would make the
+assertion below unsatisfiable rather than merely unverified.
 """
 
 import datetime as dt
 import io
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -17,9 +24,22 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.gates.t3_master_gate import T3MasterGate
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease, MergeClear, SelfImproveFiring, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
+from tests._loop_principal_env import pinned_loop_principal
+from tests._t3_master_env import worker_owns_t3_master
+
+_ARMED_READER = "teatree.loop.self_improve.schedule.live_pr_state_reader"
+
+
+def _reads_open() -> object:
+    def read(pr_url: str) -> str:
+        return "open"
+
+    return read
 
 
 class LoopSelfImproveCommandTests(TestCase):
@@ -38,6 +58,8 @@ class LoopSelfImproveCommandTests(TestCase):
         )
         self._ram_patch.start()
         self.addCleanup(self._ram_patch.stop)
+        # Stand in for the worker: the cycle runs only under a live t3-master owner (#3968).
+        self.enterContext(worker_owns_t3_master())
 
     def test_command_writes_firing_row_for_seeded_smell(self) -> None:
         # Seed a forgotten-merge smell: CLEAR > 30 min old, no audit.
@@ -55,7 +77,8 @@ class LoopSelfImproveCommandTests(TestCase):
         MergeClear.objects.filter(pk=clear.pk).update(issued_at=old)
 
         out = io.StringIO()
-        call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
+        with patch(_ARMED_READER, _reads_open):
+            call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
 
         # The forgotten_merge detector must have written a firing.
         assert SelfImproveFiring.objects.filter(detector="forgotten_merge").count() == 1
@@ -77,8 +100,8 @@ class LoopSelfImproveCommandTests(TestCase):
         MergeClear.objects.filter(pk=clear.pk).update(issued_at=old)
 
         out = io.StringIO()
-        call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
-        import json  # noqa: PLC0415
+        with patch(_ARMED_READER, _reads_open):
+            call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
 
         payload = json.loads(out.getvalue())
         assert payload["tier"] == "cheap"
@@ -128,3 +151,50 @@ class LoopSelfImproveCommandTests(TestCase):
 
         seam.assert_called_once()
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").count() == 1
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestSelfImproveT3MasterGate:
+    """The gate names WHICH condition stopped the cycle (#3968).
+
+    "nothing owns this" and "another live session owns this" call for opposite
+    operator responses; the pre-#3968 wording ("this session is not the loop owner")
+    reported both as the second and sent the operator hunting a session that did not
+    exist.
+    """
+
+    def test_unclaimed_slot_skips_and_says_so(self) -> None:
+        out = io.StringIO()
+        err = io.StringIO()
+        call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
+        call_command("loop_self_improve", tier="cheap", stdout=io.StringIO(), stderr=err)
+
+        payload = json.loads(out.getvalue())
+        assert payload["skipped"] is True
+        assert payload["skipped_reason"] == T3MasterGate.UNCLAIMED.value
+        assert payload["owner_session"] == ""
+        assert "`t3-master` owner lease is unheld" in err.getvalue()
+
+    def test_foreign_live_session_skips_and_names_the_owner(self) -> None:
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())
+        out = io.StringIO()
+        err = io.StringIO()
+        with pinned_loop_principal("sess-mine"):
+            call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
+            call_command("loop_self_improve", tier="cheap", stdout=io.StringIO(), stderr=err)
+
+        payload = json.loads(out.getvalue())
+        assert payload["skipped_reason"] == T3MasterGate.FOREIGN_OWNER.value
+        assert payload["owner_session"] == "sess-other"
+        assert "another live session" in err.getvalue()
+        assert "sess-other" in err.getvalue()
+
+    def test_worker_owned_slot_lets_the_cycle_run(self) -> None:
+        out = io.StringIO()
+        with worker_owns_t3_master(), pinned_loop_principal("sess-unrelated"):
+            call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert payload.get("skipped_reason") != T3MasterGate.UNCLAIMED.value
+        assert "report_count" in payload

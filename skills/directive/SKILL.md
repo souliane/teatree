@@ -6,7 +6,6 @@ requires:
   - rules
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Directive — Capture a Plain-English Self-Modification Request (Intake Only)

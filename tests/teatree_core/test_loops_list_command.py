@@ -8,6 +8,7 @@ against the seeded :class:`Loop` table, asserting the rendered text columns
 import datetime as dt
 import io
 import json
+from unittest.mock import patch
 
 import django.test
 import pytest
@@ -15,7 +16,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
+
+#: Patched where it is DEFINED — the command reaches it through a deferred import.
+_STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -232,19 +236,19 @@ class TestLoopsListPresetEffectiveColumn(django.test.TestCase):
 
     def test_masked_off_loop_is_annotated(self) -> None:
         Loop.objects.create(name="demo-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
-        self._activate("heads-down", {"demo-mask": False})
+        self._activate("maintenance", {"demo-mask": False})
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-mask"))
         assert "masked" in line
 
     def test_forced_on_loop_is_annotated(self) -> None:
         Loop.objects.create(name="demo-forced", delay_seconds=60, prompt=_prompt(), enabled=False)
-        self._activate("engaged", {"demo-forced": True})
+        self._activate("present", {"demo-forced": True})
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-forced"))
         assert "forced-on" in line
 
     def test_json_carries_effective_layer(self) -> None:
         Loop.objects.create(name="demo-json-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
-        self._activate("heads-down", {"demo-json-mask": False})
+        self._activate("maintenance", {"demo-json-mask": False})
         demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-json-mask")
         assert demo["effective_layer"] == "override"
         assert demo["effective_admitted"] is False
@@ -262,3 +266,97 @@ class TestLoopsListReadOnly(django.test.TestCase):
         _run()
         _run("--json")
         assert Loop.objects.count() == before
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
+    """State and Next come from the effective verdict, not ``Loop.enabled`` (#4185).
+
+    A preset-forced-on loop rendered ``disabled`` with a Next of ``—`` while the tick
+    was about to fire it — the raw column deciding both columns is the same defect the
+    timer chain had, on the read side.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(name="audit", delay_seconds=60, prompt=_prompt(), enabled=False)
+        Mode.objects.create(name="present", entries={"audit": True})
+        ModeOverride.objects.set_override("present")
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_forced_on_loop_renders_an_admitted_state(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "disabled" not in line
+        assert "enabled" in line
+
+    def test_a_forced_on_loop_renders_a_real_next_countdown(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "next —" not in line
+
+    def test_a_starved_loop_is_marked(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            line = self._line()
+        assert "starved" in line
+
+    def test_a_driven_loop_is_not_marked_starved(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            assert "starved" not in self._line()
+
+    def test_a_masked_off_loop_still_renders_disabled_with_no_countdown(self) -> None:
+        Loop.objects.filter(name="audit").update(enabled=True)
+        Mode.objects.filter(name="present").update(entries={"audit": False})
+        line = self._line()
+        assert "disabled" in line
+        assert "next —" in line
+
+    def test_json_carries_the_starved_flag(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["starved"] is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListSurfacesAWithheldAnchor(django.test.TestCase):
+    """A loop being driven must not render identically to one nothing drives (#4355).
+
+    ``dream`` read ``last 257h37m`` while its tick command ran every ten minutes and
+    declined to stamp each pass — so the issue filed against it opened "nothing drives
+    it", which the rendering had made the only available reading.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(
+            name="audit",
+            prompt=_prompt(),
+            delay_seconds=1800,
+            enabled=True,
+            last_run_at=timezone.now() - dt.timedelta(days=7),
+        )
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_withheld_anchor_renders_the_attempt(self) -> None:
+        Loop.objects.filter(name="audit").update(last_attempt_at=timezone.now())
+        assert "attempted" in self._line()
+
+    def test_a_loop_nothing_attempts_renders_no_note(self) -> None:
+        assert "attempted" not in self._line()
+
+    def test_an_attempt_that_only_matches_the_run_renders_no_note(self) -> None:
+        ran = timezone.now()
+        Loop.objects.filter(name="audit").update(last_run_at=ran, last_attempt_at=ran)
+        assert "attempted" not in self._line()
+
+    def test_json_carries_the_attempt_anchor(self) -> None:
+        attempted = timezone.now()
+        Loop.objects.filter(name="audit").update(last_attempt_at=attempted)
+        payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["last_attempt_at"] == attempted.isoformat()

@@ -16,7 +16,6 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 ``BEGIN IMMEDIATE`` write-serialization on the production SQLite engine (§4.3).
 """
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -25,25 +24,16 @@ from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.reviewer_identity import (
+    is_independent_reviewer_identity,
+    normalize_reviewer_identity,
+    unrecognised_reviewer_message,
+)
 from teatree.core.models.ticket import Ticket
 from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-# §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
-# cannot be recorded by the maker/coding-agent/loop side — the author would be
-# rubber-stamping their own work. The CLEAR-issuer guard (this module) and the
-# `reviewing`-attestation guard (lifecycle command) share this single list so
-# they cannot drift apart. It lives on the model because the model owns the
-# CLEAR contract (§17.4.2); the command layer imports it from here.
-#
-# Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched as
-# leading prefixes. Bare role words ("maker", "coding", "loop") are matched
-# when they appear as a delimited component (split on "-", ":", "_"), so the
-# executor's canonical identity "merge-loop" is caught even though it does not
-# *start* with "loop".
-NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
 # A CLEAR binds to the exact reviewed tree (§17.4.2). An abbreviated SHA is
@@ -54,14 +44,13 @@ _SHA_ALPHABET = frozenset("0123456789abcdef")
 SHA_FULL_LEN = 40
 
 
-_COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
-
 # A diff is substrate — independent of the reviewer's ``blast_class`` label —
 # when it touches the merge keystone, the architecture spec, a governance doc,
 # or the factory's OWN self-governance seams. Those seams are: the merge/CLEAR
 # classifier and the cold-review record that DEFINE the trust boundary itself
-# (``merge_clear.py`` — this module — and ``review_verdict.py``, the maker≠checker
-# guard), every merge/safety gate (``core/gates/``), the trust classifier
+# (``merge_clear.py`` — this module — ``review_verdict.py`` and
+# ``reviewer_identity.py``, the maker≠checker guard and the predicate it rests
+# on), every merge/safety gate (``core/gates/``), the trust classifier
 # (``author_trust.py``), the intake/admission trust boundary — the ONE decision
 # function (``factory_admission.py``), the scanner that consumes it
 # (``issue_intake.py``), the PR-side stranger-admission gate
@@ -84,6 +73,7 @@ _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
     "src/teatree/core/models/merge_clear.py",
     "src/teatree/core/models/review_verdict.py",
+    "src/teatree/core/models/reviewer_identity.py",
     "src/teatree/core/gates/",
     "src/teatree/core/migrations/",
     "src/teatree/core/review/author_trust.py",
@@ -107,7 +97,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth), the
     factory's self-governance seams (#3244) — the merge/CLEAR classifier and
     cold-review record that DEFINE the trust boundary (``merge_clear.py`` /
-    ``review_verdict.py``), every merge/safety gate (``core/gates/``), the trust
+    ``review_verdict.py`` / ``reviewer_identity.py``), every merge/safety gate
+    (``core/gates/``), the trust
     classifier (``author_trust.py``), the intake/admission trust boundary
     (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
@@ -128,23 +119,6 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
         if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
             return True
     return False
-
-
-def is_non_reviewer_role(identity: str) -> bool:
-    """True iff ``identity`` is a maker/coding-agent/loop role (§17.8 clause 3).
-
-    Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched
-    as leading prefixes. Bare role words ("maker", "coding", "loop") are also
-    matched when they appear as any delimited component of the identity, so the
-    executor's canonical identity "merge-loop" is blocked even though it does
-    not start with "loop". Incidental substrings (e.g. "decoding") are not
-    matched because the split honours delimiters only.
-    """
-    lowered = identity.strip().lower()
-    if any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES):
-        return True
-    parts = frozenset(re.split(r"[-:_]", lowered))
-    return bool(parts & _COMPONENT_ROLE_WORDS)
 
 
 def is_commit_sha(value: str) -> bool:
@@ -208,6 +182,11 @@ class MergeClear(models.Model):
     refuses to merge if GitHub's live head moved off it (§17.4.3, the
     TOCTOU/replay defence closed by ``expected_head_oid``).
     """
+
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow at class-prep time — invisible to a
+        # static checker. Annotation-only; never evaluated at runtime.
+        ticket_id: int | None
 
     class BlastClass(models.TextChoices):
         SUBSTRATE = "substrate", "Substrate (healing/gate substrate)"
@@ -332,19 +311,15 @@ class MergeClear(models.Model):
         if not reviewer:
             msg = "reviewer_identity is required and must be non-empty (§17.4.2)"
             raise ClearIssuanceError(msg)
-        if reviewer == request.executing_loop_identity.strip():
+        if normalize_reviewer_identity(reviewer) == normalize_reviewer_identity(request.executing_loop_identity):
             msg = (
                 f"reviewer_identity {reviewer!r} equals the executing loop identity "
                 f"({request.executing_loop_identity!r}) — a CLEAR must be issued by an independent "
                 f"cold reviewer, never self-issued by the loop that will execute it (§17.8 clause 3)"
             )
             raise ClearIssuanceError(msg)
-        if is_non_reviewer_role(reviewer):
-            msg = (
-                f"reviewer_identity {reviewer!r} is a maker/coding-agent/loop role — a CLEAR "
-                f"must be issued by an independent cold reviewer, not self-attested (§17.8 clause 3)"
-            )
-            raise ClearIssuanceError(msg)
+        if not is_independent_reviewer_identity(reviewer):
+            raise ClearIssuanceError(unrecognised_reviewer_message(reviewer, subject="a CLEAR", verb="issued"))
 
         if not is_commit_sha(request.reviewed_sha):
             candidate = request.reviewed_sha.strip()
@@ -465,22 +440,34 @@ class MergeClear(models.Model):
             )
             raise ClearIssuanceError(msg)
 
-    def record_merged_pull_request(self) -> "Ticket | None":
+    def record_merged_pull_request(self, repo_slug: str = "") -> "Ticket | None":
         """Bind a landed merge to the PR-side records; return the ticket the FSM must advance.
 
         The merge keystone is the authoritative moment the PR became merged — the
         open-PR-only reconciler that used to be ``PullRequest.mark_merged``'s sole
         caller can never observe a PR that merged between two of its ticks.
-        """
-        PullRequest.objects.record_forge_merge(slug=self.slug, pr_id=self.pr_id)
-        return self.adopt_owning_ticket()
 
-    def adopt_owning_ticket(self) -> "Ticket | None":
+        *repo_slug* is the real ``owner/repo`` the caller merged against; see
+        :meth:`adopt_owning_ticket` for why :attr:`slug` is not it.
+        """
+        PullRequest.objects.record_forge_merge(slug=repo_slug or self.slug, pr_id=self.pr_id)
+        return self.adopt_owning_ticket(repo_slug)
+
+    def adopt_owning_ticket(self, repo_slug: str = "") -> "Ticket | None":
         """Persist the PR's owning ticket onto a ticketless CLEAR; return the ticket adopted.
 
         ``--ticket-id`` is optional on ``ticket clear`` and the loop never passed one,
         so a CLEAR is routinely born with no ticket and the merge keystone then has no
         FSM to advance. The PR itself knows its ticket, so recover the link from there.
+
+        *repo_slug* is the real ``owner/repo`` the caller resolved for this PR, and it
+        is what the lookup is keyed on. :attr:`slug` is a WORKSTREAM name on exactly the
+        ticketless CLEARs this method exists for, so keying on it matched no
+        ``PullRequest`` row and adoption silently never happened for them — the board
+        never moved and the log said only "merged but resolved no owning ticket". The
+        caller supplies the slug rather than this model re-deriving it: the merge
+        keystone already reconciled the authoritative one, and ``core.models`` may not
+        depend on the ``core.merge`` resolver that would re-derive it (tach).
 
         Adoption is bookkeeping, never authorisation: the merge gates that read
         ``clear.ticket`` (anti-vacuity, rubric) run BEFORE the merge, so adopting
@@ -488,7 +475,7 @@ class MergeClear(models.Model):
         """
         if self.ticket is not None:
             return self.ticket
-        ticket = PullRequest.objects.owning_ticket(slug=self.slug, pr_id=self.pr_id)
+        ticket = PullRequest.objects.owning_ticket(slug=repo_slug or self.slug, pr_id=self.pr_id)
         if ticket is None:
             return None
         self.ticket = ticket

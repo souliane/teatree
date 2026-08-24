@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.utils import timezone
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DmContext, PendingChatInjection
 from teatree.loop.slack_answer.cycle import _COALESCE_WINDOW_SECONDS, _coalesce, run_slack_answer_cycle
 from teatree.types import RawAPIDict
 
@@ -60,7 +60,7 @@ class RecordingBackend:
 
 
 def _seed(ts: str, text: str, *, user: str, channel: str, secs_after_base: float) -> PendingChatInjection:
-    row = PendingChatInjection.record(channel=channel, slack_ts=ts, text=text, user_id=user)
+    row = PendingChatInjection.record(channel=channel, slack_ts=ts, text=text, context=DmContext(user_id=user))
     assert row is not None
     base = timezone.now().replace(microsecond=0)
     row.received_at = base + timezone.timedelta(seconds=secs_after_base)

@@ -9,11 +9,14 @@ from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import django.test
+import pytest
 from django.utils import timezone
 
 import teatree.agents.usage_window as usage_window_mod
+from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.usage_window import (
     ELAPSED_RESET_GRACE,
+    LimitSignal,
     effective_resets_at,
     maybe_park_for_active_window,
     park_or_rotate_on_limit,
@@ -54,9 +57,8 @@ def _claimed_task() -> Task:
         ticket=ticket,
         session=session,
         phase="coding",
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
-    Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS, status=Task.Status.CLAIMED)
+    Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED)
     task.refresh_from_db()
     return task
 
@@ -67,6 +69,7 @@ _CREDIT_MATCH = LimitMatch(phrase="out_of_credits", cause=LimitCause.API_CREDIT)
 _RATE_LIMIT_MATCH = LimitMatch(phrase="rate limit", cause=LimitCause.RATE_LIMIT)
 
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
+_USAGE = AttemptUsage(input_tokens=4200, output_tokens=310, cost_usd=0.42)
 
 
 def _seed_healthy(pass_path: str) -> None:
@@ -128,7 +131,7 @@ class TestParkTaskOnLimitFlagOff(django.test.TestCase):
     def test_inert_when_flag_off(self) -> None:
         _set_autorecovery(on=False)
         task = _claimed_task()
-        parked = park_task_on_limit(task, _SESSION_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        parked = park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert parked is None
         assert not UsageWindowState.objects.exists()
         task.refresh_from_db()
@@ -142,9 +145,7 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
     def test_session_limit_parks_task_and_records_window(self) -> None:
         now = timezone.now()
         task = _claimed_task()
-        parked = park_task_on_limit(
-            task, _SESSION_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now
-        )
+        parked = park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
         assert parked is not None
         assert parked.error.startswith(LIMIT_PARKED_PREFIX)
         task.refresh_from_db()
@@ -159,7 +160,13 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         now = timezone.now()
         sdk_epoch = int((now + timedelta(hours=3)).timestamp())
         task = _claimed_task()
-        park_task_on_limit(task, _SESSION_MATCH, sdk_resets_at=sdk_epoch, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+        park_task_on_limit(
+            task,
+            _SESSION_MATCH,
+            lane=TaskAttempt.Lane.SUBSCRIPTION,
+            now=now,
+            signal=LimitSignal(sdk_resets_at=sdk_epoch),
+        )
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
         assert window is not None
         assert window.resets_at == datetime.fromtimestamp(sdk_epoch, tz=UTC)
@@ -168,7 +175,9 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         # A garbage/overflowing SDK resets_at is ignored — the cause horizon fills the gap.
         now = timezone.now()
         task = _claimed_task()
-        park_task_on_limit(task, _SESSION_MATCH, sdk_resets_at=10**20, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+        park_task_on_limit(
+            task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now, signal=LimitSignal(sdk_resets_at=10**20)
+        )
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
         assert window is not None
         assert window.resets_at == now + timedelta(hours=5)
@@ -177,7 +186,7 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         # API-credit has no time-based recovery → nothing to re-arm to, so it stays a
         # terminal FAILED (the caller's fallback), never an indefinitely-parked task.
         task = _claimed_task()
-        parked = park_task_on_limit(task, _CREDIT_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.METERED)
+        parked = park_task_on_limit(task, _CREDIT_MATCH, lane=TaskAttempt.Lane.METERED)
         assert parked is None
         assert not UsageWindowState.objects.exists()
 
@@ -188,7 +197,9 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         now = timezone.now()
         sdk_epoch = int((now + timedelta(hours=1)).timestamp())
         task = _claimed_task()
-        parked = park_task_on_limit(task, _CREDIT_MATCH, sdk_resets_at=sdk_epoch, lane=TaskAttempt.Lane.METERED)
+        parked = park_task_on_limit(
+            task, _CREDIT_MATCH, lane=TaskAttempt.Lane.METERED, signal=LimitSignal(sdk_resets_at=sdk_epoch)
+        )
         assert parked is None
         assert not UsageWindowState.objects.exists()
         task.refresh_from_db()
@@ -199,8 +210,26 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred (test-local)
 
         task = _claimed_task()
-        park_task_on_limit(task, _SESSION_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION)
         assert phase_attempts(task) == []
+
+    def test_a_reactive_park_records_the_usage_the_triggering_result_billed(self) -> None:
+        """A limit reported ON a result is POST-turn — the park must not discard its spend (#4164)."""
+        task = _claimed_task()
+        parked = park_task_on_limit(
+            task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, signal=LimitSignal(usage=_USAGE)
+        )
+        assert parked is not None
+        assert parked.input_tokens == 4200
+        assert parked.output_tokens == 310
+        assert parked.cost_usd == pytest.approx(0.42)
+
+    def test_no_usage_still_records_null_not_zero(self) -> None:
+        """The default stays NULL for a genuinely pre-dispatch caller — no false measurement."""
+        task = _claimed_task()
+        parked = park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        assert parked is not None
+        assert parked.input_tokens is None
 
 
 class TestFlagReadFailsSafeOff(django.test.TestCase):
@@ -208,9 +237,7 @@ class TestFlagReadFailsSafeOff(django.test.TestCase):
         # An unreadable flag must never silently change dispatch behaviour — fail-safe OFF.
         task = _claimed_task()
         with mock.patch.object(usage_window_mod, "get_effective_settings", _raise_down):
-            assert (
-                park_task_on_limit(task, _SESSION_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
-            )
+            assert park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
         assert not UsageWindowState.objects.exists()
 
 
@@ -290,13 +317,16 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         parked = park_or_rotate_on_limit(
             task,
             _SESSION_MATCH,
-            sdk_resets_at=int(reset.timestamp()),
             lane=TaskAttempt.Lane.SUBSCRIPTION,
             now=now,
+            signal=LimitSignal(sdk_resets_at=int(reset.timestamp()), usage=_USAGE),
         )
 
         assert parked is not None, "the task is requeued (an audit attempt is recorded), never failed"
         assert parked.error.startswith(LIMIT_PARKED_PREFIX)
+        assert parked.input_tokens == 4200, (
+            "the rotation park is POST-turn too — it billed on the account that hit its limit"
+        )
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING, "requeued to rotate, NOT terminal FAILED"
         assert task.not_before is not None
@@ -320,12 +350,14 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         parked = park_or_rotate_on_limit(
             task,
             _WEEKLY_MATCH,
-            sdk_resets_at=int(later.timestamp()),  # account-1's own reset — later than account-2's
             lane=TaskAttempt.Lane.SUBSCRIPTION,
             now=now,
+            # account-1's own reset — later than account-2's
+            signal=LimitSignal(sdk_resets_at=int(later.timestamp()), usage=_USAGE),
         )
 
         assert parked is not None
+        assert parked.input_tokens == 4200, "reached via the rotation path's all-exhausted fallback — still POST-turn"
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING, "parked, not FAILED"
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
@@ -346,9 +378,9 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         parked = park_or_rotate_on_limit(
             task,
             _SESSION_MATCH,
-            sdk_resets_at=int(reset.timestamp()),
             lane=TaskAttempt.Lane.SUBSCRIPTION,
             now=now,
+            signal=LimitSignal(sdk_resets_at=int(reset.timestamp())),
         )
 
         assert parked is not None
@@ -367,9 +399,7 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         AnthropicActivePick.objects.set_pick("oauth", "", "acct/1/oauth")
         task = _claimed_task()
 
-        parked = park_or_rotate_on_limit(
-            task, _RATE_LIMIT_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now
-        )
+        parked = park_or_rotate_on_limit(task, _RATE_LIMIT_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
 
         assert parked is not None
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
@@ -388,9 +418,9 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
             park_or_rotate_on_limit(
                 task,
                 _SESSION_MATCH,
-                sdk_resets_at=int((now + timedelta(hours=3)).timestamp()),
                 lane=TaskAttempt.Lane.SUBSCRIPTION,
                 now=now,
+                signal=LimitSignal(sdk_resets_at=int((now + timedelta(hours=3)).timestamp())),
             )
             is None
         ), "flag off → caller records the terminal FAILED, byte-identical to today"
@@ -423,6 +453,26 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
             park_task_on_all_exhausted(task, resets_at=timezone.now() + timedelta(hours=1), lane="subscription") is None
         )
         assert not UsageWindowState.objects.exists()
+
+    def test_usage_defaults_to_null_for_the_pre_dispatch_caller(self) -> None:
+        """runner.py's own call site is a CredentialError before any turn ran — no usage passed."""
+        _set_autorecovery(on=True)
+        task = _claimed_task()
+        parked = park_task_on_all_exhausted(
+            task, resets_at=timezone.now() + timedelta(hours=1), lane=TaskAttempt.Lane.SUBSCRIPTION
+        )
+        assert parked is not None
+        assert parked.input_tokens is None
+
+    def test_usage_is_recorded_when_the_caller_supplies_it(self) -> None:
+        """Reached POST-turn via the rotation path's all-exhausted fallback — carries real spend."""
+        _set_autorecovery(on=True)
+        task = _claimed_task()
+        parked = park_task_on_all_exhausted(
+            task, resets_at=timezone.now() + timedelta(hours=1), lane=TaskAttempt.Lane.SUBSCRIPTION, usage=_USAGE
+        )
+        assert parked is not None
+        assert parked.input_tokens == 4200
 
     def test_no_reset_is_not_parked(self) -> None:
         _set_autorecovery(on=True)

@@ -99,11 +99,11 @@ def resolve_dial_table(*, overlay: str | None = None) -> dict[str, str]:
     merged: dict[str, str] = {}
     global_row = ConfigSetting.objects.get_effective(DIAL_CONFIG_KEY, GLOBAL_SCOPE)
     if isinstance(global_row, dict):
-        merged.update(global_row)
+        merged.update({str(k): str(v) for k, v in global_row.items()})
     if scope and scope != GLOBAL_SCOPE:
         overlay_row = ConfigSetting.objects.get_effective(DIAL_CONFIG_KEY, scope)
         if isinstance(overlay_row, dict):
-            merged.update(overlay_row)
+            merged.update({str(k): str(v) for k, v in overlay_row.items()})
     return {str(key): str(value) for key, value in merged.items()}
 
 

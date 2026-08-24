@@ -9,20 +9,35 @@ and emits ``resource.*`` signals; a paired mechanical handler
 ABSOLUTE BYTES, NEVER PERCENT. Disk is measured as ``os.statvfs("/").f_bavail
 * f_frsize`` (true free bytes) — a percent-of-nominal-total would misread an
 APFS shared container (a 460 G nominal total with 7 G free reads as "69 %
-full = fine" and the scanner never fires). RAM is measured as the sum of the
-genuinely-reclaimable ``vm_stat`` page classes (free + inactive + purgeable +
-speculative) — macOS keeps RAM ~99 % "used" by design (compressor + inactive
-cache), so a naive percent fires constantly and means nothing.
+full = fine" and the scanner never fires). RAM is read per platform: on Linux
+``/proc/meminfo``'s ``MemAvailable``, the kernel's own estimate of what it can
+hand out without swapping; on macOS the sum of the genuinely-reclaimable
+``vm_stat`` page classes (free + inactive + purgeable + speculative), which
+approximates the same quantity — macOS keeps RAM ~99 % "used" by design
+(compressor + inactive cache), so a naive percent fires constantly and means
+nothing. The machine figure is then floored by this process's own cgroup
+headroom, because a capped container OOMs at its own ceiling while the host
+still looks roomy.
 
-Decision ladder per tick. L0 OBSERVE — both resources above WARN: measure +
-upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
+A PROBE THAT CANNOT ANSWER SAYS SO (#4104). ``vm_stat`` is macOS-only, so the
+single-reader version returned ``None`` on every Linux pass and the caller
+silently skipped the whole RAM ladder — a scanner reporting "0 signals" on a
+box with 2 GB of 30 available, indistinguishable from a healthy one. When no
+scope can answer, the tick now emits ``resource.probe_inert`` instead of
+nothing. An unreadable resource is still treated as *unbounded* free (never
+0 GB) for the thresholds, so "can't tell" never fires a freeing pass either.
+
+Decision ladder per tick. L0 OBSERVE — both resources above WARN and both
+readable: measure + upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
 band: advisory ``resource.pressure_warn`` to the statusline, no freeing. L2
 CRITICAL — disk OR ram below the CRIT threshold AND the freeing rate-limit has
 elapsed: ``resource.cleanup_needed`` to the mechanical handler (allow-list
-cache purge / idle-container stop, both non-destructive). L3 CRITICAL
-DESTRUCTIVE — flag-gated: worktree GC (``allow_destructive_disk``) and renderer
-SIGTERM (``allow_destructive_ram`` after >= 2 consecutive CRITICAL-RAM ticks)
-live in the handler, never run without an explicit opt-in.
+cache purge, docker reclaim, dormant-venv eviction, the proven-done worktree
+sweep, idle-container stop — each losing nothing that is not rebuilt on demand).
+L3 CRITICAL DESTRUCTIVE — flag-gated: the heuristic worktree GC
+(``allow_destructive_disk``) and renderer SIGTERM (``allow_destructive_ram``
+after >= 2 consecutive CRITICAL-RAM ticks) live in the handler, never run
+without an explicit opt-in.
 
 Every action is best-effort: a measurement or freeing failure logs and
 returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
@@ -30,13 +45,20 @@ returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
 
 import logging
 import os
+import platform
 import shutil
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.ram_probe import linux_mem_available_kb
+from teatree.utils.ram_scope import cgroup_headroom_mib
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +67,27 @@ _GIB = 1024 * 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class ResourceReading:
-    """One absolute-bytes snapshot of free disk + reclaimable RAM."""
+    """One absolute-bytes snapshot of free disk + reclaimable RAM.
 
-    disk_free_gb: float
-    ram_avail_gb: float
+    ``None`` is "this host could not be asked", which is a different answer from
+    a low number and must never be compared against a threshold as if it were one
+    — the ``*_ladder_gb`` properties resolve it to unbounded free instead.
+    """
+
+    disk_free_gb: float | None
+    ram_avail_gb: float | None
+
+    @property
+    def disk_ladder_gb(self) -> float:
+        return self.disk_free_gb if self.disk_free_gb is not None else float("inf")
+
+    @property
+    def ram_ladder_gb(self) -> float:
+        return self.ram_avail_gb if self.ram_avail_gb is not None else float("inf")
+
+    @property
+    def ram_probe_inert(self) -> bool:
+        return self.ram_avail_gb is None
 
 
 def read_disk_free_gb(path: str = "/") -> float | None:
@@ -69,13 +108,62 @@ def read_disk_free_gb(path: str = "/") -> float | None:
 
 
 def read_ram_avail_gb() -> float | None:
-    """Absolute reclaimable RAM in GB from ``vm_stat`` (never raw percent-used).
+    """Absolute reclaimable RAM in GB — the tightest scope that can answer.
+
+    Two scopes can each run out independently, so the honest figure is whichever
+    binds first: the machine (Linux ``/proc/meminfo`` ``MemAvailable``, macOS's
+    reclaimable ``vm_stat`` page classes) and this process's own cgroup. Reading
+    only the machine is how a 23 GB-capped worker was OOM-killed three times while
+    the 30 GB host still reported ~10 GB free, an order of magnitude above every
+    threshold (#4104). Mirrors :func:`ram_scope.read_ram_headroom`, which the sibling
+    intake scanner in this same mini-loop already reasons in — and shares its cgroup
+    reader outright, so the two cannot drift.
+
+    ``None`` means no scope could answer — the caller reports the RAM ladder INERT
+    rather than skipping it silently.
+    """
+    system = platform.system()
+    readings = [gb for gb in (_read_machine_ram_avail_gb(system), _read_cgroup_headroom_gb()) if gb is not None]
+    if not readings:
+        logger.warning("resource_pressure: %s — the RAM ladder is inert", _ram_inert_reason(system))
+        return None
+    return min(readings)
+
+
+def _read_machine_ram_avail_gb(system: str) -> float | None:
+    """Machine-wide available RAM in GB, per platform."""
+    if system == "Linux":
+        available_kb = linux_mem_available_kb()
+        return None if available_kb is None else available_kb * 1024 / _GIB
+    if system == "Darwin":
+        return _read_vm_stat_avail_gb()
+    return None
+
+
+def _read_cgroup_headroom_gb() -> float | None:
+    """What this process's cgroup can still allocate — the scope a container OOMs in.
+
+    Delegated to :func:`~teatree.utils.ram_scope.cgroup_headroom_mib` so this reader and
+    the admission governor's cannot drift on what "available" means: both credit the
+    reclaimable page cache ``memory.current`` charges, exactly as ``MemAvailable`` does
+    on the machine arm above (#4217).
+    """
+    headroom_mib = cgroup_headroom_mib()
+    return None if headroom_mib is None else headroom_mib / 1024
+
+
+def _ram_inert_reason(system: str) -> str:
+    """Why no reading was possible — an operator chasing a platform gap needs the real cause."""
+    machine_reader = {"Linux": "/proc/meminfo unreadable", "Darwin": "vm_stat unavailable"}
+    return f"{machine_reader.get(system, f'no RAM reader for platform {system}')} and no cgroup memory limit"
+
+
+def _read_vm_stat_avail_gb() -> float | None:
+    """Reclaimable macOS RAM in GB from ``vm_stat``, ``None`` when it cannot be read.
 
     The honest "available" figure on macOS is the sum of the page classes the
     OS can hand back without swapping: free + inactive + purgeable +
     speculative. Wired/active/compressed pages are genuinely committed.
-    Returns ``None`` when ``vm_stat`` is unavailable (non-macOS host) or its
-    output cannot be parsed — the caller then skips the RAM ladder.
     """
     vm_stat = shutil.which("vm_stat")
     if vm_stat is None:
@@ -133,31 +221,31 @@ def _vm_stat_pages_for(output: str, label: str) -> int | None:
     return None
 
 
-def _measure() -> ResourceReading | None:
-    """Read both resources; ``None`` when neither could be measured.
+def _measure() -> ResourceReading:
+    """Read both resources, recording an unmeasurable one as ``None``."""
+    return ResourceReading(disk_free_gb=read_disk_free_gb(), ram_avail_gb=read_ram_avail_gb())
 
-    A resource that could not be read is treated as "above WARN" (infinity)
-    so a missing measurement never spuriously trips a CRITICAL freeing pass.
-    """
-    disk = read_disk_free_gb()
-    ram = read_ram_avail_gb()
-    if disk is None and ram is None:
-        return None
-    return ResourceReading(
-        disk_free_gb=disk if disk is not None else float("inf"),
-        ram_avail_gb=ram if ram is not None else float("inf"),
+
+def _ram_probe_inert_signal() -> ScanSignal:
+    """Say the RAM ladder is not protecting this host, so it reads differently from a healthy one."""
+    system = platform.system()
+    reason = _ram_inert_reason(system)
+    return ScanSignal(
+        kind="resource.probe_inert",
+        summary=f"ram probe INERT on {system} — {reason}; the RAM ladder is not guarding this host",
+        payload={"resource": "ram", "level": "inert", "platform": system, "reason": reason},
     )
 
 
-def _track_consecutive_critical(*, marker: object, ram_crit: bool) -> None:
+def _track_consecutive_critical(*, marker: "ResourcePressureMarker", ram_crit: bool) -> None:
     """Increment (on CRITICAL RAM) or reset the sustained-CRITICAL counter."""
     current = getattr(marker, "consecutive_critical", 0) or 0
     new_value = current + 1 if ram_crit else 0
     if new_value == current:
         return
     try:
-        marker.consecutive_critical = new_value  # type: ignore[attr-defined]
-        marker.save(update_fields=["consecutive_critical"])  # type: ignore[attr-defined]
+        marker.consecutive_critical = new_value
+        marker.save(update_fields=["consecutive_critical"])
     except Exception:
         logger.exception("resource_pressure: failed to update consecutive_critical")
 
@@ -184,10 +272,13 @@ class ResourcePressureScanner:
     min_free_interval_minutes: int = 30
     disk_cache_allowlist: tuple[str, ...] = ()
     allow_destructive_disk: bool = False
+    venv_idle_days: float = 2.0
     worktree_stale_days: int = 30
     max_worktree_gc_per_tick: int = 3
     allow_destructive_ram: bool = False
     ram_kill_allowlist: tuple[str, ...] = field(default_factory=tuple)
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     name: str = "resource_pressure"
 
     def scan(self) -> list[ScanSignal]:
@@ -201,8 +292,6 @@ class ResourcePressureScanner:
         if self._cadence_blocks(marker):
             return []
         reading = _measure()
-        if reading is None:
-            return []
         try:
             marker.record_measurement(
                 disk_free_gb=reading.disk_free_gb,
@@ -220,17 +309,23 @@ class ResourcePressureScanner:
         elapsed_minutes = (timezone.now() - last_run).total_seconds() / 60.0
         return elapsed_minutes < self.cadence_minutes
 
-    def _classify(self, *, reading: ResourceReading, marker: object) -> list[ScanSignal]:
-        disk_crit = reading.disk_free_gb < self.disk_crit_free_gb
-        ram_crit = reading.ram_avail_gb < self.ram_crit_avail_gb
+    def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
+        inert = [_ram_probe_inert_signal()] if reading.ram_probe_inert else []
+        disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
+        ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
         if disk_crit or ram_crit:
-            return self._critical_signals(reading=reading, marker=marker, disk_crit=disk_crit, ram_crit=ram_crit)
-        disk_warn = reading.disk_free_gb < self.disk_warn_free_gb
-        ram_warn = reading.ram_avail_gb < self.ram_warn_avail_gb
+            return inert + self._critical_signals(
+                reading=reading,
+                marker=marker,
+                disk_crit=disk_crit,
+                ram_crit=ram_crit,
+            )
+        disk_warn = reading.disk_ladder_gb < self.disk_warn_free_gb
+        ram_warn = reading.ram_ladder_gb < self.ram_warn_avail_gb
         if disk_warn or ram_warn:
-            return self._warn_signals(reading=reading, disk_warn=disk_warn, ram_warn=ram_warn)
-        return []
+            return inert + self._warn_signals(reading=reading, disk_warn=disk_warn, ram_warn=ram_warn)
+        return inert
 
     def _warn_signals(self, *, reading: ResourceReading, disk_warn: bool, ram_warn: bool) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
@@ -238,16 +333,16 @@ class ResourcePressureScanner:
             signals.append(
                 ScanSignal(
                     kind="resource.pressure_warn",
-                    summary=f"disk {reading.disk_free_gb:.1f} GB free (warn < {self.disk_warn_free_gb:.0f} GB)",
-                    payload={"resource": "disk", "free_gb": reading.disk_free_gb, "level": "warn"},
+                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free (warn < {self.disk_warn_free_gb:.0f} GB)",
+                    payload={"resource": "disk", "free_gb": reading.disk_ladder_gb, "level": "warn"},
                 ),
             )
         if ram_warn:
             signals.append(
                 ScanSignal(
                     kind="resource.pressure_warn",
-                    summary=f"ram {reading.ram_avail_gb:.1f} GB avail (warn < {self.ram_warn_avail_gb:.0f} GB)",
-                    payload={"resource": "ram", "avail_gb": reading.ram_avail_gb, "level": "warn"},
+                    summary=f"ram {reading.ram_ladder_gb:.1f} GB avail (warn < {self.ram_warn_avail_gb:.0f} GB)",
+                    payload={"resource": "ram", "avail_gb": reading.ram_ladder_gb, "level": "warn"},
                 ),
             )
         return signals
@@ -284,7 +379,7 @@ class ResourcePressureScanner:
         return elapsed_minutes < self.min_free_interval_minutes
 
     def _cleanup_needed_signal(self, *, resource: str, reading: ResourceReading, marker: object) -> ScanSignal:
-        free_gb = reading.disk_free_gb if resource == "disk" else reading.ram_avail_gb
+        free_gb = reading.disk_ladder_gb if resource == "disk" else reading.ram_ladder_gb
         crit_gb = self.disk_crit_free_gb if resource == "disk" else self.ram_crit_avail_gb
         return ScanSignal(
             kind="resource.cleanup_needed",
@@ -295,10 +390,13 @@ class ResourcePressureScanner:
                 "level": "critical",
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
                 "allow_destructive_disk": self.allow_destructive_disk,
+                "venv_idle_days": self.venv_idle_days,
                 "worktree_stale_days": self.worktree_stale_days,
                 "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,
                 "ram_kill_allowlist": list(self.ram_kill_allowlist),
+                "scratch_retention_days": self.scratch_retention_days,
+                "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,
             },
         )

@@ -1,12 +1,12 @@
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django_fsm import FSMField, transition
 
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
+from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields, validated_worktree_extra
 from teatree.utils.postgres_secret import postgres_pass_key
 
 
@@ -110,7 +110,7 @@ class Worktree(models.Model):
         """
         return postgres_pass_key(self.ticket_id)  # ty: ignore[unresolved-attribute]  # Django FK accessor
 
-    @transition(field=state, source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
+    @transition(field="state", source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
         """Schedule heavy provisioning side-effects.
 
@@ -133,7 +133,7 @@ class Worktree(models.Model):
         # stack was first brought up under.
         self.compose_project = self.compose_project or self._build_compose_project()
 
-    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
+    @transition(field="state", source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
         """Schedule docker compose up.
 
@@ -154,7 +154,25 @@ class Worktree(models.Model):
             self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.READY)
+    @transition(field="state", source=[State.SERVICES_UP], target=State.PROVISIONED)
+    def start_failed(self) -> None:
+        """Record that a start did not take — the row stops claiming a stack it has not got.
+
+        ``start_services`` commits ``SERVICES_UP`` before the runner does any
+        work, so the state is an INTENT until the containers exist. When the
+        runner fails and the compose project is proven empty, this returns the
+        row to the last state that is actually true.
+
+        Deliberately NOT ``stop_services``: that one enqueues a
+        ``docker compose down``, and firing a down on the way out of a failed
+        start is the destroy-before-validate fault wearing a different hat — the
+        stack this transition describes may be a healthy one the start never
+        touched. Nothing is keyed to this name in
+        ``teatree.core.signals._WORKTREE_TRANSITION_TASKS``, so it enqueues no
+        side effect at all; it is bookkeeping, and only bookkeeping.
+        """
+
+    @transition(field="state", source=[State.SERVICES_UP, State.READY], target=State.READY)
     def verify(self, *, urls: dict[str, str] | None = None) -> None:
         """Schedule overlay health checks.
 
@@ -175,7 +193,7 @@ class Worktree(models.Model):
         self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
+    @transition(field="state", source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def db_refresh(self) -> None:
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
@@ -184,7 +202,7 @@ class Worktree(models.Model):
         self.extra = extra
         self.last_used_at = timezone.now()
 
-    @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.PROVISIONED)
+    @transition(field="state", source=[State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def stop_services(self) -> None:
         """Schedule a reversible docker-compose-down → demote to ``provisioned``.
 
@@ -206,7 +224,7 @@ class Worktree(models.Model):
         name (#2385).
         """
 
-    @transition(field=state, source="*", target=State.CREATED)
+    @transition(field="state", source="*", target=State.CREATED)
     def teardown(self) -> None:
         """Schedule docker down + DB drop + git worktree removal.
 
@@ -229,7 +247,7 @@ class Worktree(models.Model):
         """
 
     def _build_db_name(self) -> str:
-        ticket = cast("Ticket", self.ticket)
+        ticket = self.ticket
         variant_suffix = f"_{ticket.variant}" if ticket.variant else ""
         # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
         # ``ticket_number``): two tickets sharing a trailing issue number must
@@ -264,7 +282,7 @@ class Worktree(models.Model):
             raise WorktreeDbNameConflictError(msg)
 
     def _build_compose_project(self) -> str:
-        ticket = cast("Ticket", self.ticket)
+        ticket = self.ticket
         # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
         # ``ticket_number``): two tickets sharing a trailing issue number must
         # never collide on one docker stack. Per-repo (NOT ticket-scoped) — each
@@ -302,6 +320,46 @@ class Worktree(models.Model):
 
     def _extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)
+
+    def merge_extra(
+        self,
+        *,
+        set_keys: "WorktreeExtra | None" = None,
+        also_set: "WorktreeSiblingFields | None" = None,
+    ) -> None:
+        """Locked read-modify-write of ``extra``, the counterpart of :meth:`Ticket.merge_extra`.
+
+        The keys land from different writers at different times: ``worktree_path`` from
+        intake, ``services``/``ports`` from the start runner, ``provision_report`` from
+        provisioning. Done as an unlocked ``self.extra = …; save(update_fields=["extra"])``
+        they last-writer-clobber each other — a provision report written from a snapshot
+        taken before the start runner stored its ports drops those ports, and the loss is
+        invisible because each writer's own key is present.
+
+        Same shape as the Ticket primitive: the RMW runs inside ``transaction.atomic()``
+        with the row ``select_for_update``-locked and re-read from the LOCKED row rather
+        than from the possibly-stale in-memory instance, which is what makes it correct on
+        the production SQLite backend where ``select_for_update`` is a no-op but the
+        writers are serialised. A merge that changes nothing issues no ``UPDATE``.
+
+        ``also_set`` writes sibling model fields (``branch``, …) in the SAME locked
+        ``UPDATE`` as ``extra``, so a caller that legitimately co-writes them keeps one
+        atomic write instead of splitting into two.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            merged = dict(locked.extra or {})
+            merged.update(set_keys or {})
+            changed_fields = [field for field, value in (also_set or {}).items() if getattr(locked, field) != value]
+            for field, value in (also_set or {}).items():
+                setattr(locked, field, value)
+                setattr(self, field, value)
+            if merged != (locked.extra or {}):
+                locked.extra = merged
+                changed_fields.append("extra")
+            if changed_fields:
+                locked.save(update_fields=changed_fields)
+            self.extra = merged
 
 
 class WorktreeEnvOverride(models.Model):

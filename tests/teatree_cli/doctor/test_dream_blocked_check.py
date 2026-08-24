@@ -19,6 +19,15 @@ from teatree.core.models import DreamRunMarker
 from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS
 
 _BLOCKED_HOURS = STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1
+#: The claim itself, not the bare word — the frozen wording legitimately says "not withheld".
+_WITHHELD_CLAIM = "every pass is being withheld"
+
+
+def _blocked_output() -> str:
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _check_dream_consolidation_blocked()
+    return buf.getvalue()
 
 
 class DreamBlockedDoctorCheckTestCase(TestCase):
@@ -48,6 +57,26 @@ class DreamBlockedDoctorCheckTestCase(TestCase):
         assert "FAIL" in out
         assert "t3 dream run" in out
 
+    def test_a_recently_attempted_pass_reads_as_withheld(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+        DreamRunMarker.objects.mark_attempted(timezone.now())
+        assert _WITHHELD_CLAIM in _blocked_output()
+
+    def test_an_unattempted_pass_says_frozen_and_does_not_claim_withholding(self) -> None:
+        # The wording #4355 was filed against: "every pass is being withheld" sends the
+        # reader hunting a gate that is refusing, when in fact no pass ran at all.
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+        out = _blocked_output()
+        assert "FAIL" in out
+        assert _WITHHELD_CLAIM not in out
+        assert "FROZEN" in out
+        assert "no pass has been attempted" in out
+
+    def test_a_stale_attempt_is_not_read_as_a_live_one(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+        DreamRunMarker.objects.mark_attempted(timezone.now() - dt.timedelta(hours=STALE_THRESHOLD_HOURS + 1))
+        assert _WITHHELD_CLAIM not in _blocked_output()
+
     def test_a_crashed_read_degrades_to_ok(self) -> None:
         buf = io.StringIO()
         with (
@@ -67,9 +96,9 @@ class DreamBlockedGatesTheDoctorExitCodeTestCase(TestCase):
     def test_the_advisory_set_does_not_swallow_it(self) -> None:
         import inspect  # noqa: PLC0415 — deferred: only this structural assertion needs it
 
-        from teatree.cli.doctor import app  # noqa: PLC0415 — deferred: heavy CLI import at call time
+        from teatree.cli.doctor import run_checks  # noqa: PLC0415 — deferred: heavy CLI import at call time
 
-        assert "_check_dream_consolidation_blocked" not in inspect.getsource(app._run_daily_advisories)
+        assert "_check_dream_consolidation_blocked" not in inspect.getsource(run_checks._run_daily_advisories)
 
 
 def _calls_feeding_the_exit_code() -> set[str]:
@@ -83,9 +112,9 @@ def _calls_feeding_the_exit_code() -> set[str]:
     import inspect  # noqa: PLC0415 — deferred: only this structural assertion needs it
     import textwrap  # noqa: PLC0415 — deferred: only this structural assertion needs it
 
-    from teatree.cli.doctor import app  # noqa: PLC0415 — deferred: heavy CLI import at call time
+    from teatree.cli.doctor import run_checks  # noqa: PLC0415 — deferred: heavy CLI import at call time
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app.run_doctor_checks)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(run_checks.run_doctor_checks)))
     return {
         call.func.id
         for node in ast.walk(tree)

@@ -72,10 +72,15 @@ class HTTPProbeSpec:
     ``response_header_equals`` enables CORS round-trip assertions
     (``Access-Control-Allow-Origin`` reflected with the configured origin).
 
-    ``retries`` controls how many times to retry on connection errors (not
-    on wrong status codes — those fail immediately). The default of 5 with
-    a 2-second initial delay handles the common case where Django inside
-    Docker needs a few seconds to boot after ``docker compose up``.
+    ``retries`` controls how many times to retry on transport failures —
+    a refused connection and a read timeout alike, since a service is just
+    as likely to be slow after it binds the socket as before (not on wrong
+    status codes, which fail immediately). The default of 5 with a 2-second
+    initial delay handles the common case where Django inside Docker needs
+    a few seconds to boot after ``docker compose up``.
+
+    ``max_retry_delay`` caps the exponential backoff, so a generous
+    ``retries`` cannot schedule days of sleeping.
     """
 
     url: str
@@ -86,6 +91,7 @@ class HTTPProbeSpec:
     timeout_seconds: float = 5.0
     retries: int = 5
     retry_delay: float = 2.0
+    max_retry_delay: float = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,22 +178,37 @@ def run_and_report_probes(
     return ProbeRunSummary(total=len(results), failures=failures)
 
 
-def _http_get_with_retry(
-    url: str,
-    headers: dict[str, str],
-    timeout: float,
-    retries: int,
-    retry_delay: float,
-) -> httpx.Response:
-    last_exc = httpx.NetworkError("no attempts made")
-    for attempt in range(max(1, retries + 1)):
+# A request the client itself rejects is decided before the peer is reached, so a retry
+# replays the same verdict — every other transport failure is the peer being slow or unwell.
+_CLIENT_DETERMINED_ERRORS = (httpx.UnsupportedProtocol, httpx.LocalProtocolError)
+
+
+class _ProbeRequestError(Exception):
+    """Carries the attempts actually made, so the failure text never interpolates config."""
+
+    def __init__(self, cause: httpx.HTTPError, attempts: int) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.attempts = attempts
+
+
+def _is_retryable(exc: httpx.HTTPError) -> bool:
+    return isinstance(exc, httpx.TransportError) and not isinstance(exc, _CLIENT_DETERMINED_ERRORS)
+
+
+def _http_get_with_retry(url: str, headers: dict[str, str], spec: HTTPProbeSpec) -> httpx.Response:
+    last_exc: httpx.HTTPError = httpx.TransportError("no attempts made")
+    attempts = 0
+    for attempt in range(max(1, spec.retries + 1)):
+        attempts += 1
         try:
-            return httpx.get(url, headers=headers, timeout=timeout)
-        except httpx.NetworkError as exc:
+            return httpx.get(url, headers=headers, timeout=spec.timeout_seconds)
+        except httpx.HTTPError as exc:
             last_exc = exc
-            if attempt < retries:
-                time.sleep(retry_delay * (2**attempt))
-    raise last_exc
+            if attempt >= spec.retries or not _is_retryable(exc):
+                break
+            time.sleep(min(spec.retry_delay * (2**attempt), spec.max_retry_delay))
+    raise _ProbeRequestError(last_exc, attempts)
 
 
 def _check_http(name: str, spec: HTTPProbeSpec) -> ProbeResult:
@@ -195,19 +216,14 @@ def _check_http(name: str, spec: HTTPProbeSpec) -> ProbeResult:
     headers = dict(spec.request_headers or {})
     expected_headers = dict(spec.response_header_equals or {})
     try:
-        response = _http_get_with_retry(
-            spec.url,
-            headers,
-            spec.timeout_seconds,
-            spec.retries,
-            spec.retry_delay,
-        )
-    except httpx.HTTPError as exc:
-        retried = f" (after {spec.retries} retries)" if spec.retries else ""
+        response = _http_get_with_retry(spec.url, headers, spec)
+    except _ProbeRequestError as failure:
+        plural = "" if failure.attempts == 1 else "s"
+        made = f" (after {failure.attempts} attempt{plural})"
         return ProbeResult(
             name=name,
             passed=False,
-            reason=f"{type(exc).__name__}: {exc}{retried}",
+            reason=f"{type(failure.cause).__name__}: {failure.cause}{made}",
             evidence=evidence,
         )
     status = response.status_code

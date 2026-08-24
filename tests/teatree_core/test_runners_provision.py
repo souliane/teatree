@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.runners.provision import _recorded_checkout_is_live
 from teatree.utils import git
@@ -857,6 +857,9 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            # The venue's owned root decides whether a missing registration may be
+            # pruned at all (#4287), so it must name the same workspace as above.
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
             # The clones have no remote: pin the two network-adjacent seams so the
             # test exercises the worktree lifecycle, not git's remote plumbing.
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
@@ -1235,3 +1238,211 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
         result, _ticket = self._run("feat/side-quest", enabled=False)
 
         assert result.ok is True, result.detail
+
+
+class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
+    """souliane/teatree#3967: a live checkout is never re-created underneath its writer.
+
+    The reconcile step used to clear its worktree slot on an INFERENCE — a directory
+    the acting clone had no registration for was "a partial leftover", so it was
+    removed before ``git worktree add``. A checkout records its admin dir as an
+    absolute path written by whatever context CREATED it, so a checkout created
+    elsewhere is unregistered here and reads exactly like that partial leftover. A
+    container-view actor resolved a host directory that way, removed the tree and
+    re-checked it out against its own gitdir, destroying a running agent's work.
+
+    Disposal now demands positive proof. Real git under ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, at: Path) -> Path:
+        """A real clone with one commit on ``main``, pushed to a real bare origin.
+
+        The origin is load-bearing: the teardown guard asks whether a leftover's
+        commits are absent from every remote, so a remote-less fixture would make
+        even the base commit look like unpushed work. Each clone gets its OWN origin —
+        two clones sharing one would make the second's push a non-fast-forward.
+        """
+        origin = self.tmp / "origin" / f"{at.parent.name}-{at.name}.git"
+        git.run_strict(repo=str(self.tmp), args=["init", "-q", "--bare", "-b", "main", str(origin)])
+        at.mkdir(parents=True)
+        git.run_strict(repo=str(at), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(at), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(at), args=["config", "user.name", "t"])
+        git.run_strict(repo=str(at), args=["remote", "add", "origin", str(origin)])
+        (at / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(at), args=["add", "-A"])
+        git.run_strict(repo=str(at), args=["commit", "-q", "-m", "init"])
+        git.run_strict(repo=str(at), args=["push", "-q", "-u", "origin", "main"])
+        return at
+
+    def _provision(self, branch: str) -> tuple[Any, Ticket]:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/3967",
+            repos=["repo-a"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run(), ticket
+
+    def test_a_checkout_registered_in_another_clone_is_not_destroyed(self) -> None:
+        # The incident's shape: the checkout standing in the scope's slot belongs to a
+        # clone this context is not acting for, so the acting clone's registration
+        # survey does not see it. Absence from that survey is not evidence of death.
+        self._clone(self.workspace / "repo-a")
+        foreign_clone = self._clone(self.tmp / "another-context" / "repo-a")
+        branch = "3967-foreign-clone"
+        wt_path = self.workspace / branch / "repo-a"
+        git.run_strict(repo=str(foreign_clone), args=["worktree", "add", "-q", "-b", branch, str(wt_path)])
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+
+        result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a live checkout registered in another clone was destroyed"
+        )
+        assert result.ok is False, "provisioning over an undisposable checkout must fail loudly"
+
+    def test_a_gitdir_naming_a_root_absent_here_is_refused_and_reported(self) -> None:
+        # The reported failure verbatim: the checkout's admin pointer names a root
+        # that exists only in the context that wrote it. git answers "not a git
+        # repository" here in the same words it uses for a directory that never held
+        # one, so the refusal must key on the pointer, not on git's wording.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-foreign-view"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / ".git").write_text("gitdir: /a-root-this-context-cannot-reach/.git/worktrees/repo-a\n")
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a checkout whose gitdir names a foreign root was destroyed"
+        )
+        assert result.ok is False
+        reported = "\n".join(logs.output)
+        assert "/a-root-this-context-cannot-reach" in reported, "the refusal must name the unreachable root"
+        assert "VIEW MISMATCH" in reported
+
+    def test_a_directory_a_busy_ticket_holds_is_refused(self) -> None:
+        # Occupancy is independent of every git question: the directory here carries
+        # no checkout at all, and is still not disposable while another ticket has a
+        # live session standing in it.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-occupied"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+        occupant = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3952", repos=["repo-a"])
+        Worktree.objects.create(
+            ticket=occupant, overlay="test", repo_path="repo-a", branch=branch, extra={"worktree_path": str(wt_path)}
+        )
+        Session.objects.create(ticket=occupant, overlay="test")
+
+        result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a directory a busy ticket holds was destroyed"
+        )
+        assert result.ok is False
+
+    def test_a_partial_non_checkout_directory_is_still_cleared(self) -> None:
+        # The preserved case the refusal must not swallow: a directory that never
+        # claimed to be a checkout is the one thing a single context CAN prove
+        # disposable, and clearing it is what makes provisioning idempotent.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-partial"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / "half-written.txt").write_text("from a died-mid-checkout attempt\n", encoding="utf-8")
+
+        result, _ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert (wt_path / ".git").exists(), "the worktree was not created over the partial directory"
+        assert git.current_branch(str(wt_path)) == branch
+        assert not (wt_path / "half-written.txt").exists()
+
+
+class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
+    """souliane/teatree#4287: a checkout mounted elsewhere is not deregistered from here.
+
+    Reconcile answered two questions with a filesystem probe taken in the READING
+    venue. ``git worktree prune`` dropped every registration whose directory it
+    could not stat, and the #706 work guard reported "no work" for the same
+    paths — so a container-side provision deregistered host checkouts (86 of
+    them, once) and deleted the branch refs that were their last reference.
+
+    Real git under ``tmp_path``: the assertions read the clone's own admin dir
+    and branch list, never a decision object.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, at: Path) -> Path:
+        at.mkdir(parents=True)
+        git.run_strict(repo=str(at), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(at), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(at), args=["config", "user.name", "t"])
+        (at / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(at), args=["add", "-A"])
+        git.run_strict(repo=str(at), args=["commit", "-q", "-m", "init"])
+        return at
+
+    def _provision(self, branch: str) -> Any:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/4287",
+            repos=["repo-a"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def _admin_entries(self, clone: Path) -> set[str]:
+        admin = clone / ".git" / "worktrees"
+        return {entry.name for entry in admin.iterdir()} if admin.is_dir() else set()
+
+    def test_a_registration_this_venue_cannot_stat_keeps_its_admin_dir_and_its_branch(self) -> None:
+        # The incident's shape: the branch this ticket wants is held by a checkout
+        # that lives in a subtree this process never had mounted. Unstattable is not
+        # deleted, so neither the registration nor the branch ref may be dropped.
+        clone = self._clone(self.workspace / "repo-a")
+        branch = "4287-mounted-elsewhere"
+        elsewhere = self.tmp / "never-mounted-here" / "repo-a"
+        elsewhere.parent.mkdir()
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(elsewhere)])
+        shutil.rmtree(elsewhere.parent)
+
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            result = self._provision(branch)
+
+        assert result.ok is False, "provisioning over an unreadable checkout must fail loudly"
+        assert self._admin_entries(clone) == {"repo-a"}, "the registration was pruned on a venue-local reading"
+        assert branch in git.run_strict(repo=str(clone), args=["branch", "--list", branch])
+        assert "unreadable in this execution context" in "\n".join(logs.output)

@@ -24,6 +24,10 @@ class _Api:
         _ = (slug, pr_id, expected_head_oid)
         return True, "sha"
 
+    def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
+        _ = (slug, pr_id, expected_head_oid)
+        return True
+
 
 class _Keystone:
     def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
@@ -41,7 +45,7 @@ class _Notifier:
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
         _ = (slug, pr_id, merged_sha, fallback)
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         _ = (slug, pr_id, reason, url)
 
 

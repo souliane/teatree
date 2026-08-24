@@ -37,7 +37,6 @@ class SessionRow:
     phase: str
     model: str
     lane: str
-    execution_target: str
     outcome: str
     started_at: datetime
     duration: str
@@ -77,7 +76,6 @@ def _row(attempt: TaskAttempt) -> SessionRow:
         phase=attempt.task.phase,
         model=attempt.model,
         lane=attempt.lane,
-        execution_target=attempt.execution_target,
         outcome=attempt.get_outcome_display() if attempt.outcome else "",  # ty: ignore[unresolved-attribute]
         started_at=attempt.started_at,
         duration=_duration(attempt),

@@ -10,8 +10,8 @@ orchestrator can SEE the empty termination instead of assuming success.
 
 It is a DETECTION/surfacing hook, not a deny — SubagentStop cannot un-terminate
 the agent. The signal is recorded through the SAME durable seam the
-dispatched-sub-agent roster uses: a per-session ``<session>.no-commit`` state
-file (mirrors ``<session>.agents``), which the PreCompact recovery snapshot
+dispatched-sub-agent dispatch ledger uses: a per-session ``<session>.no-commit``
+state file (mirrors ``<session>.agents``), which the PreCompact recovery snapshot
 already reads back and renders so it survives compaction. A structured stderr
 line (this module's logging channel) carries the same fact for the live
 transcript.
@@ -44,7 +44,7 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
 
     Durable channel: append a deduped ``<branch>\t<worktree>`` line to the
     per-session ``<session>.no-commit`` state file (same shape/seam as the
-    ``<session>.agents`` roster, which the PreCompact snapshot reads back).
+    ``<session>.agents`` dispatch ledger, which the PreCompact snapshot reads back).
     Live channel: a structured stderr line. Best-effort — a record failure
     must never propagate out of the Stop hook.
     """

@@ -19,9 +19,12 @@
 # 1: the pressure reading (`ResourcePressureMarker`) is an ORM import that must
 # resolve after the app registry is ready, so it stays call-time.
 "src/teatree/core/intake/concurrency.py" = 1
-# 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
-# after the app registry is ready, so it stays call-time.
-"src/teatree/core/admission_governor.py" = 1
+# 2: the token-budget read (`AnthropicTokenUsage`) and, since #4044, the merge-throughput
+# read (`PullRequest` + `SweepSkipStreak`) are both ORM imports that must resolve after the
+# app registry is ready, so each stays call-time. The reader sits beside its own signal here
+# rather than in `teatree.loop`, where it would have been an intra-loop deferred edge and
+# hidden from tach's acyclic guard.
+"src/teatree/core/admission_governor.py" = 2
 # 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
 # the app registry is not ready at module import, so these can never be top-level.
 "src/teatree/core/apps.py" = 3
@@ -47,7 +50,16 @@
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
 "src/teatree/core/gates/local_stack_gate.py" = 3
+# 2: the owner-ratification citation check needs `PlanArtifact` (an ORM read) and
+# `reviewer_identity.is_non_reviewer_role` (imports the model module), both of which
+# must resolve after the app registry is ready, so `_citations_the_owner_did_not_make`
+# keeps both deferred rather than moving one to module scope and leaving the other.
+"src/teatree/core/gates/open_questions_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
+# 2: mirrors plan_gate.py's own pair — `PlanArtifact` (an ORM read) and
+# `is_trivial_plan_skip` (imports the model module) both must resolve after the
+# app registry is ready, so `unplanned_dispatch_refusal` keeps both deferred.
+"src/teatree/core/gates/plan_dispatch_gate.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 6
@@ -88,14 +100,21 @@
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
 # 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
 # app-registry reason as the rest of this command's ORM reads.
+# 1: #4476 extracted `review`'s handlers into this module and the deferred import came
+# with them — an extraction inherits its origin's edges, and a NEW file has no peg row,
+# so it lands instantly over a default of 0.
+"src/teatree/core/management/commands/_review_impl.py" = 1
 "src/teatree/core/management/commands/_pending_pr_commands.py" = 1
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
 "src/teatree/core/management/commands/review_request_post.py" = 4
+# 6: #4476's publish path resolves the forge backend, its models and the outbound
+# privacy scan at call time so the command module stays import-light.
+"src/teatree/core/review/verdict_findings_publish.py" = 6
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
-# 1: both headless_dispatch refusals became a declared top-level edge; the one left
+# 1: both agent_runner refusals became a declared top-level edge; the one left
 # is `review.completion_evidence`, which pulls the review graph at command load.
 "src/teatree/core/management/commands/tasks.py" = 1
 # 4: the sweep subcommands split out to _sweep_commands.py in the ticket
@@ -117,11 +136,10 @@
 # PullRequest` — the merge-landed ledger write needs the app registry, same as every
 # other ORM read in this file's group.
 "src/teatree/core/merge/execution.py" = 3
-# souliane/teatree#3840: the keystone post hook moved to its own module and took its two
-# call-time ORM imports with it — the retry helper and the `MergeClear` the atomic block
-# re-reads under the row lock. Same edges, new home; the pair below is execution.py's old
-# 4 split, not a new one.
-"src/teatree/core/merge/post_hook.py" = 2
+# souliane/teatree#3840: the keystone post hook moved to its own module and took its
+# call-time ORM imports with it. Only the retry helper is left deferred — `MergeClear`
+# is now a module-level import, the same edge `ci_rollup` already declares.
+"src/teatree/core/merge/post_hook.py" = 1
 # substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
 # so resolving a repo's owning overlay stays a call-time read of the live overlay
 # registry — the edge moved here verbatim from merge/authorization.py (#3648).
@@ -160,7 +178,10 @@
 # imports that moved out of notify.py when the durable-audit helpers were split off to hold
 # notify.py under the 500-LOC module-health cap. Same pre-`django.setup()` import-safety
 # deferral as notify.py above — the app registry must be ready before these ORM imports resolve.
-"src/teatree/core/notify_ledger.py" = 7
+# 8: #4524's `record_pulled` is the exact peer of `record_outbound_claim` below it — the same
+# `BotPing` edge, deferred for the same reason, on the audit path of a signal the classifier
+# routed to the pulled surface.
+"src/teatree/core/notify_ledger.py" = 8
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1
@@ -209,8 +230,17 @@
 # _record_attachment_hold_question defers `from teatree.core.models.
 # deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
 # intake attachment-gate hold instead of silently freezing the ticket.
-"src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 headless_admission lazy imports
-"src/teatree/core/headless_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+"src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 agent_admission lazy imports
+"src/teatree/core/agent_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+# #4107: live_agent_count defers `from teatree.core.models import Task` for the same
+# reason its headless sibling does — the ceiling comparison reads the ORM, and this
+# module is imported from a bare PreToolUse/TaskCreated hook process, so an
+# app-registry read at module load would break the cold import.
+"src/teatree/core/dispatch_admission.py" = 1
+# #4374: the drain-starvation probe reads `Task` and the cheap-phase vocabulary, both of
+# which resolve only once the app registry is ready, so each stays call-time — the same
+# reason its `core/intake/budget.py` sibling defers its own ORM reads.
+"src/teatree/core/factory/drain_starvation.py" = 2
 "src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three

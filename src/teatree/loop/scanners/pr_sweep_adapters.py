@@ -9,13 +9,18 @@ module focused on logic and under the module-health LOC cap.
 """
 
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
+from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
+from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
+from teatree.loop.scanners.pr_sweep_types import HOLD_AT_HEAD_REASON as _HOLD_AT_HEAD_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -23,6 +28,8 @@ from teatree.utils.run import run_allowed_to_fail
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
     from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
 
@@ -184,16 +191,28 @@ class GhPrApiClient:
         return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
-        argv = [
-            "api",
-            f"repos/{slug}/commits/main/check-runs",
-            "--jq",
-            f'.check_runs | map(select(.name == "{check_name}")) | .[0].conclusion // ""',
-        ]
+        """Whether *check_name* has a completed, non-green conclusion on ``main`` (#4090 sibling).
+
+        Reads across ALL pages via the shared :mod:`teatree.loop.main_check_runs` reader —
+        an unpaginated single-page read sees only GitHub's first 30 check-runs, so a named
+        check landing past page 1 would read as absent and this would report "not failed"
+        even when ``main`` genuinely is red on it. Any read failure (non-zero ``gh`` exit,
+        unparsable pages, the check absent from every page) degrades to ``False`` — the
+        existing fail-toward-"not confirmed failed" direction the uv-audit fallback caller
+        already treats as safe.
+        """
+        argv = check_runs_argv(slug=slug, ref="main")
         rc, out, _ = self._run_gh(argv)
         if rc != 0:
             return False
-        return out.strip().lower() not in {"success", "neutral", "skipped", ""}
+        runs = parse_check_run_pages(out)
+        if runs is None:
+            return False
+        match = next((run for run in runs if str(run.get("name") or "") == check_name), None)
+        if match is None:
+            return False
+        conclusion = str(match.get("conclusion") or "").strip().lower()
+        return conclusion not in {"success", "neutral", "skipped", ""}
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge (#1985) — delegates to the keystone primitive.
@@ -212,6 +231,29 @@ class GhPrApiClient:
         except MergePreconditionError:
             return False, ""
         return True, merged_sha
+
+    def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
+        """Merge the base into the PR branch, bound to *expected_head_oid* (#4063).
+
+        The SHA-bound sibling of :meth:`merge_pr_squash_bound`: GitHub refuses the
+        update (422) when the live head is no longer *expected_head_oid*, so a
+        force-push in the TOCTOU window between the sweep's snapshot and this call
+        can never merge into a head the sweep did not judge. Returns ``False`` on
+        any non-zero rc (conflict, revoked permission, rate limit) — the caller
+        degrades to the ``needs_branch_update`` flag rather than retrying.
+        """
+        argv = [
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{slug}/pulls/{pr_id}/update-branch",
+            "-f",
+            f"expected_head_sha={expected_head_oid}",
+        ]
+        rc, _out, err = self._run_gh(argv)
+        if rc != 0:
+            logger.warning("pr_sweep update-branch refused for %s#%d rc=%d: %s", slug, pr_id, rc, err.strip()[:200])
+        return rc == 0
 
     def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
@@ -267,16 +309,50 @@ class AutoReviewTaskDispatcher:
         return row is not None
 
 
+#: Flag reasons the owner is DM'd about instead of only logged — a condition no
+#: further tick can clear on its own. The BotPing ledger still caps each at one DM
+#: per ``(repo, PR, reason)``, so escalating cannot reintroduce per-tick spam.
+OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
+    {
+        _CLEAR_PRESENT_UNUSABLE_REASON,
+        _CONTESTED_HOLD_REASON,
+        _HOLD_AT_HEAD_REASON,
+    }
+)
+
+_HELD_REMEDY = (
+    "the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at that SHA, "
+    "or a new commit moves the head"
+)
+
+_FLAG_TEXTS: dict[str, str] = {
+    _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
+    _CLEAR_PRESENT_UNUSABLE_REASON: (
+        "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
+    ),
+    _CONTESTED_HOLD_REASON: (
+        f"two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, so {_HELD_REMEDY}"
+    ),
+    _HOLD_AT_HEAD_REASON: (
+        f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
+    ),
+}
+
+
 @dataclass(slots=True)
 class SlackMergeNotifier:
     """Route merge announcements + flag signals through the notify-relevance policy.
 
     :meth:`announce` is an OWNER_DELIVERY (a PR merged) — DM'd exactly once per
     merge via the :class:`~teatree.core.models.BotPing` idempotency ledger keyed
-    on the merged SHA. :meth:`flag` is INTERNAL (the loop re-flags every
+    on the merged SHA. :meth:`flag` is INTERNAL by default (the loop re-flags every
     un-reviewed PR each ~5-minute tick) — logged only, never DM'd, so re-flagging
     the same stuck PR forever can never spam the owner. This replaces the former
     raw ``backend.post_message`` bypass that DM'd on every tick per open PR (F1).
+
+    :data:`OWNER_ESCALATION_FLAG_REASONS` names the flags that must not stay
+    log-only: a condition nothing in the loop can clear on its own needs the owner,
+    and the ledger still caps it at one DM per ``(repo, PR, reason)``.
     """
 
     backend: object
@@ -297,20 +373,20 @@ class SlackMergeNotifier:
             user_id=self.user_id or None,
         )
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
         from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
         from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         target = url or f"{slug}#{pr_id}"
-        if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
-            text = f"mergeable, ready to request review {target}"
-        else:
-            text = f"flag ({reason}) {target}"
+        suffix = f" ({detail})" if detail else ""
+        text = _FLAG_TEXTS.get(reason, f"flag ({reason})") + f" {target}{suffix}"
         notify_user(
             text,
             kind=NotifyKind.INFO,
             idempotency_key=f"pr-sweep-flag:{slug}#{pr_id}:{reason}",
-            audience=NotifyAudience.INTERNAL,
+            audience=(
+                NotifyAudience.OWNER_ESCALATION if reason in OWNER_ESCALATION_FLAG_REASONS else NotifyAudience.INTERNAL
+            ),
         )
 
 
@@ -320,9 +396,11 @@ class NullMergeNotifier:
 
     calls: list[tuple[str, int, str, bool]] = field(default_factory=list)
     flag_calls: list[tuple[str, int, str, str]] = field(default_factory=list)
+    flag_details: list[str] = field(default_factory=list)
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
         self.calls.append((slug, pr_id, merged_sha, fallback))
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         self.flag_calls.append((slug, pr_id, reason, url))
+        self.flag_details.append(detail)

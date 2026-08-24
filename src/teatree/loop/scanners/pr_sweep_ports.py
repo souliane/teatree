@@ -25,8 +25,9 @@ __all__ = [
 class PrApiClient(Protocol):
     """Adapter over ``gh`` used by the scanner — mockable in tests.
 
-    Two methods only: list open PRs on a repo, and fetch the per-PR
-    detail block (head SHA, draft, reviews, checks). The implementation
+    Lists open PRs on a repo, reads ``main``'s verdict for one check, and
+    performs the two SHA-bound writes the sweep is authorised to make — the
+    squash merge and the stale-base merge-update (#4063). The implementation
     shells out to ``gh`` with an optional ``GH_TOKEN`` override so each
     overlay can hit its private repos under its own PAT.
     """
@@ -42,6 +43,14 @@ class PrApiClient(Protocol):
         pr_id: int,
         expected_head_oid: str,
     ) -> tuple[bool, str]: ...  # pragma: no branch
+
+    def update_pr_branch(
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+        expected_head_oid: str,
+    ) -> bool: ...  # pragma: no branch
 
 
 @runtime_checkable
@@ -91,8 +100,12 @@ class MergeNotifier(Protocol):
     a green solo-overlay PR with no recorded independent cold-review. The
     statusline always carries the flag; the Slack DM is the optional
     escalation rung, mirroring the ``forgotten_merge`` detector ladder.
+
+    ``detail`` is the optional per-flag specifics the reason alone cannot carry —
+    which verdicts stand behind a held head (#4380). Defaulted so a notifier that
+    has nothing extra to say passes nothing.
     """
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None: ...  # pragma: no branch
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None: ...  # pragma: no branch
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None: ...  # pragma: no branch

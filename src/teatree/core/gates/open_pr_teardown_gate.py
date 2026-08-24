@@ -50,8 +50,11 @@ must never authorise it. The escape is the explicit ``--allow-open-prs``
 override, which is NOT ``--force`` — that one waives the unpushed-commit guard
 and must not silently also disable this gate.
 
-A worktree whose repo has no forge remote is CLEAR, not inconclusive: with no
-forge there is no MR to protect.
+A worktree whose repo has a READABLE remote on a non-forge host is CLEAR, not
+inconclusive: with no forge there is no MR to protect. A remote that cannot be
+read at all — no ``origin`` configured, a corrupted ``.git``, not a git
+checkout — is UNKNOWN and refuses: it is indistinguishable from a forge remote
+this venue simply failed to read (see ``find_open_pr_for_branch``).
 
 LAYERING
 --------

@@ -13,7 +13,7 @@ Two invariants are enforced structurally on the model, not left to the loop:
     terminal states are ``GREEN`` (genuinely clean) and ``HALTED`` (escalated).
 * **Fix the code, never the test.** ``record_fix`` runs the anti-cheat gate
     (``eval_heal_anticheat``, fetched from the gate registry so the model → gate
-    edge stays inverted); a fix diff touching the scenario tree or the red matcher
+    edge stays inverted); a fix diff touching the scenario tree or the eval harness
     raises :class:`EvalHealCheatError` and the transition rolls back to ``FIXING``.
 
 The bounded fix budget (``max_fix_attempts``) makes "un-greenable" decidable:
@@ -96,7 +96,7 @@ class CiEvalHealSession(models.Model):
         """True once no further fix attempt is allowed — the loop must halt+escalate."""
         return self.fix_attempts >= self.max_fix_attempts
 
-    @transition(field=state, source=[State.PENDING, State.PUSHED], target=State.AWAITING_CI)
+    @transition(field="state", source=[State.PENDING, State.PUSHED], target=State.AWAITING_CI)
     def trigger(self, *, ci_run_id: str, head_sha: str) -> None:
         """Record the dispatched CI-eval run and start monitoring.
 
@@ -106,20 +106,20 @@ class CiEvalHealSession(models.Model):
         self.ci_run_id = ci_run_id
         self.head_sha = head_sha
 
-    @transition(field=state, source=State.AWAITING_CI, target=State.TRIAGING)
+    @transition(field="state", source=State.AWAITING_CI, target=State.TRIAGING)
     def receive_result(self, *, red_scenarios: list[str]) -> None:
         """Record the red-scenario subset the CI ``--summary-json`` artifact reported."""
         self.red_scenarios = list(red_scenarios)
 
-    @transition(field=state, source=State.TRIAGING, target=State.GREEN, conditions=[_no_reds])
+    @transition(field="state", source=State.TRIAGING, target=State.GREEN, conditions=[_no_reds])
     def mark_green(self) -> None:
         """Terminal success — reachable ONLY when no red remains (:func:`_no_reds`)."""
 
-    @transition(field=state, source=State.TRIAGING, target=State.FIXING)
+    @transition(field="state", source=State.TRIAGING, target=State.FIXING)
     def begin_fix(self) -> None:
         """Start applying a code fix for the triaged behavioral reds."""
 
-    @transition(field=state, source=State.FIXING, target=State.PUSHED)
+    @transition(field="state", source=State.FIXING, target=State.PUSHED)
     def record_fix(self, *, changed_paths: list[str]) -> None:
         """Record a pushed fix — refused by the anti-cheat gate if it edits the test.
 
@@ -131,7 +131,7 @@ class CiEvalHealSession(models.Model):
         self.fix_attempts += 1
         self.last_fix_paths = list(changed_paths)
 
-    @transition(field=state, source=[State.AWAITING_CI, State.TRIAGING, State.FIXING], target=State.HALTED)
+    @transition(field="state", source=[State.AWAITING_CI, State.TRIAGING, State.FIXING], target=State.HALTED)
     def halt(self, *, reason: str) -> None:
         """Terminal escalation — an un-greenable red or an un-retryable infra failure.
 
