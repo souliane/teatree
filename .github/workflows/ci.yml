@@ -769,6 +769,12 @@ jobs:
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
+          # A DOTFILE, and upload-artifact v4.4+ drops hidden files unless told otherwise:
+          # without this the step matched nothing, published no artifact and still reported
+          # success, for a month, while `refresh-durations` died on the absent files (#4584).
+          include-hidden-files: true
+          # `dev/.test_durations` is committed, so zero matches can only mean the upload broke.
+          if-no-files-found: error
 
   # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
   # from rotting (#3160).
