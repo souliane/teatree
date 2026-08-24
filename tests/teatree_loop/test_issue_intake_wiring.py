@@ -380,8 +380,8 @@ class IssueIntakeMiniLoopTests(TestCase):
         assert persist_agent_actions(dispatch(signals)) == []
         assert not Task.objects.exists()
 
-    def test_claimed_issue_persists_orchestrator_coding_task(self) -> None:
-        """A claimed auto-implement issue must produce the orchestrator dispatch — a real Ticket + coding Task.
+    def test_claimed_issue_persists_orchestrator_planning_task(self) -> None:
+        """A claimed auto-implement issue must produce the orchestrator dispatch — a real Ticket + planning Task.
 
         Regression (#3100/#3213): the scanner claimed the issue (an
         ``ImplementedIssueMarker`` row was written) and ``dispatch`` emitted the
@@ -389,7 +389,9 @@ class IssueIntakeMiniLoopTests(TestCase):
         ``auto_start`` — so the shared ``_handle_orchestrator`` persistence handler
         (which returns ``None`` unless ``auto_start is True``) silently dropped it.
         No ``Ticket``/``Task`` was ever created and the claim stranded. This asserts
-        the WHOLE path scan → dispatch → persist yields the coding Task.
+        the WHOLE path scan → dispatch → persist yields the phase Task. That phase is
+        ``planning`` since #4578: the plan gate refuses a coder on an unplanned ticket, so
+        a coding Task minted here could only fail.
         """
         url = "https://github.com/souliane/teatree/issues/100"
         host = _authored_host(url)
@@ -402,7 +404,7 @@ class IssueIntakeMiniLoopTests(TestCase):
 
         assert len(created) == 1
         task = created[0]
-        assert task.phase == "coding"
+        assert task.phase == "planning"
         assert task.ticket.role == Ticket.Role.AUTHOR
         assert task.ticket.issue_url == url
 
@@ -420,7 +422,7 @@ class IssueIntakeMiniLoopTests(TestCase):
 
         assert len(first) == 1
         assert second == []
-        assert Task.objects.filter(ticket__issue_url=url, phase="coding").count() == 1
+        assert Task.objects.filter(ticket__issue_url=url, phase="planning").count() == 1
 
 
 class IssueIntakeAdaptiveConcurrencyTests(TestCase):

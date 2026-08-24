@@ -19,20 +19,22 @@ logger = logging.getLogger(__name__)
 
 
 def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
-    """Run the three recovery sweeps INDEPENDENTLY, recording each failure — never silently.
+    """Run every recovery sweep INDEPENDENTLY, recording each failure — never silently.
 
     Chains :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps` (the single
     SSOT, shared with ``t3 recover``), :func:`~teatree.loop.transient_requeue.requeue_transient_failed`
     (the bounded reopen of transient-FAILED tasks a crashed-session boot sweep never
-    rescues), :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
+    rescues), :func:`~teatree.loop.unplanned_ticket_redispatch.redispatch_unplanned_tickets`
+    (the drain of tickets the plan gate refused before intake scheduled planning),
+    :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
     (the bounded re-dispatch of stuck non-terminal tickets), and
     :func:`~teatree.loop.question_drain.drain_pending_questions` (the deferred-question
-    backlog's automated drain plus its age backstop). The two loop-layer sweeps
+    backlog's automated drain plus its age backstop). The loop-layer sweeps
     compose the ``agents``/``core`` surfaces, so they run here rather than in the
     core-only ``run_boot_sweeps``.
 
     Each sweep runs in its OWN ``try`` so ANY exception from the FIRST never skips the
-    other two (the old shared ``suppress(RuntimeError)`` let one boot-sweep failure
+    rest (the old shared ``suppress(RuntimeError)`` let one boot-sweep failure
     silently disable transient-requeue AND stuck-redispatch, and recovery itself failed
     invisibly). The catch is the broad ``Exception`` (#3441): a sweep can raise more than
     ``RuntimeError`` — a ``DatabaseError`` on a poison row, a ``ValueError`` from a
@@ -47,11 +49,16 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         question_drain,
         stuck_ticket_redispatch,
         transient_requeue,
+        unplanned_ticket_redispatch,
     )
 
     sweeps: tuple[tuple[str, Callable[[], object]], ...] = (
         ("recovery:boot_sweeps", run_boot_sweeps),
         ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
+        # Ordered BEFORE stuck_redispatch: it lifts a plan-gate-stranded ticket to STARTED,
+        # which is the rung stuck_redispatch picks tickets up at, so the two compose in one
+        # tick rather than two.
+        ("recovery:unplanned_redispatch", unplanned_ticket_redispatch.redispatch_unplanned_tickets),
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
     )

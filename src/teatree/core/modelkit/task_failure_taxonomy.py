@@ -104,6 +104,7 @@ class FailureKind(models.TextChoices):
     NO_RESULT_ENVELOPE = "no_result_envelope", "No result envelope produced"
     EVIDENCE_MISSING = "evidence_missing", "Required evidence missing"
     RECORDING_REFUSED = "recording_refused", "Recording refused by a gate"
+    PLAN_MISSING = "plan_missing", "No plan recorded before an implementing dispatch"
     CANCELLED = "cancelled", "Cancelled by an operator"
     SUPERSEDED = "superseded", "Superseded by rework"
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
@@ -152,6 +153,10 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.USAGE_LIMIT_PARKED: Recovery(_HALT, environmental=True),
     FailureKind.CREDENTIAL_EXHAUSTED: Recovery(_HALT, environmental=True),
     # A defect, a deliberate stop, or a failure this vocabulary cannot name: never auto-reopened.
+    # PLAN_MISSING is HALT because re-running the SAME implementing phase reproduces it exactly —
+    # the remedy is a different phase (planning), which `unplanned_ticket_redispatch` schedules off
+    # this very name rather than off the reason text (souliane/teatree#4578).
+    FailureKind.PLAN_MISSING: Recovery(_HALT, environmental=False),
     FailureKind.UNRECORDED: Recovery(_HALT, environmental=False),
     FailureKind.UNCLASSIFIED: Recovery(_HALT, environmental=False),
     FailureKind.RUNTIME_CEILING: Recovery(_HALT, environmental=False),
@@ -199,6 +204,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
+    (FailureKind.PLAN_MISSING, ("plan_missing:",)),
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
     (FailureKind.HARNESS_CONFIG_INVALID, ("is not valid for agent_harness", "agent_harness_provider=")),
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),

@@ -41,6 +41,35 @@ class TicketSchedulingModel(TicketFacet):
             "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
         )
 
+    def begin_planning(self, *, parent_task: "Task | None" = None) -> "Task":
+        """Walk an early-state author ticket up to STARTED and schedule its planning task.
+
+        The transitions are load-bearing, not decoration: ``Ticket.plan``'s FSM source is
+        exclusively STARTED, and ``Task._apply_phase_transition``'s planning branch is
+        guarded on the same state — so a planning task scheduled on a NOT_STARTED ticket
+        completes into ``escalate_unmatched_phase_transition`` and never reaches
+        ``plan()`` -> ``schedule_coding()``. Scheduling planning WITHOUT them is the shape
+        of the hourly wedge this replaces (souliane/teatree#4578).
+
+        Idempotent: past STARTED the ladder walk is skipped and ``schedule_planning``'s
+        CAS returns the in-flight sibling, so a repeated call mints nothing. A ticket
+        already past PLANNED has no planning left to begin and is refused, so a
+        mis-routed caller fails loudly rather than minting a phase task the FSM will
+        never consume.
+        """
+        early = (self.State.NOT_STARTED, self.State.SCOPED, self.State.STARTED)
+        if self.state not in early:
+            msg = f"begin_planning requires an early state {early!r} (got state={self.state!r})"
+            raise InvalidTransitionError(msg)
+        with transaction.atomic():
+            if self.state == self.State.NOT_STARTED:
+                self.scope()
+                self.save()
+            if self.state == self.State.SCOPED:
+                self.start()
+                self.save()
+            return self.schedule_planning(parent_task=parent_task)
+
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after planning completes.
 
