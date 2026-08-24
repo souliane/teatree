@@ -150,3 +150,12 @@ def test_probe_never_raises_on_an_unexpected_os_error(monkeypatch):
 
     assert verdict.reachable is False
     assert "no space left on device" in verdict.reason
+
+
+def test_description_distinguishes_a_role_a_bare_container_and_a_host():
+    """The description is what a refusal names, so each venue must read differently."""
+    assert venue.DockerVenue(reachable=False, containerized=True, service_role="admin").description == (
+        "the admin container"
+    )
+    assert venue.DockerVenue(reachable=False, containerized=True).description == "this container"
+    assert venue.DockerVenue(reachable=False).description == "this host"

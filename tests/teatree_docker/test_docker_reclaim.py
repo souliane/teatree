@@ -456,3 +456,11 @@ def test_a_reachable_venue_runs_the_three_prunes_unchanged(monkeypatch):
     assert len(fake.calls) == 3
     assert report.venue_blocked is False
     assert "Total reclaimed" in report.render()
+
+
+def test_a_reachable_dry_run_carries_no_venue_note():
+    """Anti-vacuous control for the dry-run note — it must stay silent when docker answers."""
+    rendered = reclaim.reclaim_disk(dry_run=True).render()
+
+    assert "Dry run" in rendered
+    assert "cannot execute" not in rendered
