@@ -196,6 +196,16 @@ class DiskDockerReclaimTests(TestCase):
         with patch.object(mechanical_resources, "reclaim_disk", side_effect=RuntimeError("docker down")):
             free_resources({"resource": "disk", "disk_cache_allowlist": []})  # must not raise
 
+    def test_plan_says_the_reclaim_did_not_run_when_the_venue_cannot_act(self) -> None:
+        """A 0B reclaim line in the persisted plan reads as "nothing to reclaim" (#4585)."""
+        with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
+            mock_reclaim.return_value = _venue_blocked_reclaim_report()
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        plan = ResourcePressureMarker.load().last_plan
+        assert "did not run" in plan
+        assert "permission denied" in plan
+        assert "docker reclaimed 0B" not in plan
+
     def test_ram_ladder_does_not_invoke_disk_reclaim(self) -> None:
         """The Docker disk reclaim belongs to the disk ladder, not the RAM ladder."""
         from unittest.mock import patch  # noqa: PLC0415
@@ -662,6 +672,16 @@ def _fake_reclaim_report(total_bytes: int = 0) -> object:
         outcome=PruneOutcome(reclaimed="x", bytes_reclaimed=total_bytes),
     )
     return ReclaimReport(steps=(step,), planned=(step,), dry_run=False)
+
+
+def _venue_blocked_reclaim_report() -> object:
+    """The socket-less service: nothing ran, so the plan must not read as a 0B reclaim."""
+    from teatree.docker.reclaim import ReclaimReport, ReclaimStep  # noqa: PLC0415 — lazy, as _fake_reclaim_report above
+    from teatree.docker.venue import DockerVenue  # noqa: PLC0415 — lazy, as _fake_reclaim_report above
+
+    step = ReclaimStep(argv=["docker", "builder", "prune", "-af"], label="build cache")
+    venue = DockerVenue(reachable=False, reason="permission denied", containerized=True, service_role="admin")
+    return ReclaimReport(steps=(), planned=(step,), dry_run=False, venue=venue)
 
 
 class ScratchSweepLadderTests(TestCase):

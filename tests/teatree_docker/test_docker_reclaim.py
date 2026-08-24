@@ -14,7 +14,14 @@ from subprocess import CompletedProcess
 import pytest
 
 from teatree.docker import reclaim
+from teatree.docker.venue import DockerVenue
 from teatree.utils.run import TimeoutExpired
+
+
+@pytest.fixture(autouse=True)
+def _reachable_venue(monkeypatch):
+    """Default every test to a venue that can act, so only the venue tests probe docker."""
+    monkeypatch.setattr(reclaim, "docker_venue", lambda: DockerVenue(reachable=True))
 
 
 class _FakePrune:
@@ -299,7 +306,12 @@ def test_every_step_still_runs_when_an_earlier_one_fails(monkeypatch):
 
 
 def test_missing_docker_binary_stays_tolerated(monkeypatch):
-    """No docker at all is ABSENCE, not failure — the CI-sandbox tolerance survives the fix."""
+    """No docker at all never raises and is never a per-STEP failure — the CI-sandbox tolerance.
+
+    Tolerated means the library does not crash, not that the run reads as a
+    completed reclaim: the venue probe answers that question separately, and
+    ``test_absent_docker_cli_is_venue_blocked_not_a_clean_zero`` pins it.
+    """
 
     def boom(cmd, **_):
         msg = "docker"
@@ -332,3 +344,115 @@ def test_successful_reclaim_reports_no_failures(monkeypatch):
 
     assert report.failures == ()
     assert "FAILED" not in report.render()
+
+
+# --- Venue detection: a reclaim that never ran must not read as one that ran (#4585) ---
+#
+# MEASURED on the box: `teatree-admin` mounts /var/run/docker.sock and carries no
+# `group_add`, so every prune answers "permission denied"; `teatree-worker` has
+# the grant AND the control DB, so it is the route that works. The three doomed
+# prunes are not attempted at all now, and — the part the acceptance bar turns
+# on — a run that could not act never prints the `Total reclaimed:` line that
+# reads as "nothing needed reclaiming".
+
+
+def _venue(**kwargs) -> DockerVenue:
+    defaults = {"reachable": False, "reason": "permission denied", "containerized": True, "service_role": "admin"}
+    return DockerVenue(**(defaults | kwargs))
+
+
+def test_an_unreachable_venue_attempts_no_prune_at_all(monkeypatch):
+    fake = _FakePrune()
+    monkeypatch.setattr(reclaim, "_run_prune", fake)
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    report = reclaim.reclaim_disk()
+
+    assert fake.calls == [], "three prunes that cannot succeed must not be attempted"
+    assert report.venue_blocked is True
+
+
+def test_venue_blocked_render_omits_the_total_reclaimed_success_line(monkeypatch):
+    """`Total reclaimed: 0B` beside a refusal reads as "nothing needed reclaiming"."""
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    rendered = reclaim.reclaim_disk().render()
+
+    assert "Total reclaimed" not in rendered
+    assert "did not run" in rendered
+    assert "permission denied" in rendered
+
+
+def test_venue_blocked_render_names_a_runnable_route(monkeypatch):
+    """A refusal with no route to satisfaction is the defect; the route must be in the output."""
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    rendered = reclaim.reclaim_disk().render()
+
+    assert "the admin container" in rendered
+    assert "teatree-worker" in rendered
+    assert "docker builder prune -af" in rendered
+
+
+def test_the_remedy_commands_are_exactly_the_reclaim_set(monkeypatch):
+    """The remedy is derived from the planned argv, so it can never drift from what would run."""
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    rendered = reclaim.reclaim_disk().render()
+
+    for argv, _label in reclaim._SAFE_STEPS:
+        assert " ".join(argv) in rendered
+    assert "system prune" not in rendered
+
+
+def test_a_worker_venue_refusal_still_names_the_host_route(monkeypatch):
+    """Refused inside the ONE granted service: pointing back at it would be a loop."""
+    monkeypatch.setattr(reclaim, "docker_venue", lambda: _venue(service_role="worker", reason="daemon down"))
+
+    rendered = reclaim.reclaim_disk().render()
+
+    assert "docker builder prune -af" in rendered
+    assert "exec teatree-worker" not in rendered
+
+
+def test_absent_docker_cli_is_venue_blocked_not_a_clean_zero(monkeypatch):
+    """The last silent-success hole: nothing ran, yet the report read as a completed 0B reclaim."""
+    monkeypatch.setattr(
+        reclaim, "docker_venue", lambda: DockerVenue(reachable=False, reason="no docker CLI here", has_cli=False)
+    )
+
+    report = reclaim.reclaim_disk()
+
+    assert report.venue_blocked is True
+    assert "Total reclaimed" not in report.render()
+
+
+def test_venue_blocked_summary_is_what_the_caller_puts_on_stderr(monkeypatch):
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    assert "permission denied" in reclaim.reclaim_disk().failure_summary()
+
+
+def test_dry_run_reports_the_venue_but_never_claims_a_reclaim(monkeypatch):
+    """A dry run removes nothing by construction, so it cannot be misread as a reclaim."""
+    monkeypatch.setattr(reclaim, "docker_venue", _venue)
+
+    report = reclaim.reclaim_disk(dry_run=True)
+
+    assert report.venue_blocked is False
+    rendered = report.render()
+    assert "Dry run" in rendered
+    assert "the admin container" in rendered
+
+
+def test_a_reachable_venue_runs_the_three_prunes_unchanged(monkeypatch):
+    """The venue gate must not narrow the ordinary path — the control for every test above."""
+    fake = _FakePrune()
+    monkeypatch.setattr(reclaim, "_run_prune", fake)
+    monkeypatch.setattr(reclaim, "docker_venue", lambda: DockerVenue(reachable=True))
+
+    report = reclaim.reclaim_disk()
+
+    assert len(fake.calls) == 3
+    assert report.venue_blocked is False
+    assert "Total reclaimed" in report.render()

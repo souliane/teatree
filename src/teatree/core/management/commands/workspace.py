@@ -391,7 +391,8 @@ class Command(TyperCommand):
         """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
         report = reclaim_disk(dry_run=dry_run)
         self.stdout.write(report.render())
-        if report.failures:
+        # A venue that could not act reclaimed nothing and must not exit 0 (#4585).
+        if report.failures or report.venue_blocked:
             self.stderr.write(report.failure_summary())
             raise SystemExit(1)
         return ""
