@@ -58,143 +58,135 @@ graph TB
 
 ## Gaps it tries to fill
 
-Each section below names a piece of friction the author kept hitting and what
-teatree does about it. None of these are framed as comparisons — other tools
-solve some of the same shapes well, and teatree borrows from them where it can.
+Each part names a piece of friction the author kept hitting, what teatree does
+about it, and where that lives. None of it is framed as a comparison — other
+tools solve some of these shapes well, and teatree borrows where it can.
 
 ### Why it is shaped this way
 
 The question a reader arrives with is usually "why not just use a coding agent,
-or a CI bot?". The honest answer is about the shape of the problem, not about
-anyone else's tool.
+or a CI bot?". A chat-driven agent holds the working picture in its context —
+what is in flight, which PR waits on what. Teatree keeps that in a database, so
+a run can be interrupted and resumed without re-deriving it. A CI bot reacts to
+events on someone else's schedule; teatree runs its own tick, so choosing what
+to start next is something it does rather than waits for.
 
-A chat-driven coding agent holds the working picture in its context — what is in
-flight, which PR waits on what, which review is half-done. Teatree keeps that
-picture in a database instead, which is what lets a run be interrupted and
-resumed without re-deriving it. A CI bot reacts to events on someone else's
-schedule; teatree runs a tick of its own, so deciding what to start next is
-something it does rather than something it waits for.
+Both choices cost: a database to migrate, a worker to keep alive, machinery
+between a ticket and a diff. On a single repo, for a task that fits in one
+sitting, a plain agent does the same job in one prompt and nothing here earns
+its keep — that reader is right to stop here.
 
-Both choices cost something. There is a database to migrate, a worker to keep
-alive, and a good deal of machinery standing between a ticket and a diff. On a
-single repo, for a task that fits in one sitting, a plain agent does the same job
-in one prompt and nothing here earns its keep — that reader is right to stop
-here.
-
-**Three layers do the work**, and two of them are meant to disappear:
-
-- **factory** — runs the lifecycle autonomously: ticket, plan, implement, test, review, merge.
-- **interactive** — a Claude Code session that reviews, merges, diagnoses, and files what the factory cannot yet do for itself.
-- **human** — the owner.
-
-The intent is to remove the human from the loop first, then the interactive
-session. A workaround performed by the interactive layer is a defect in the
-factory layer that has not been fixed yet, so each one should produce a fix
-rather than become a habit ([#4478](https://github.com/souliane/teatree/issues/4478)).
-Neither layer has disappeared; this is the direction of travel, not a description
-of where it currently stands.
+**Three layers do the work**, and two are meant to disappear: **factory** runs
+the lifecycle autonomously (ticket, plan, implement, test, review, merge);
+**interactive** is a Claude Code session that reviews, merges, diagnoses and
+files what the factory cannot yet do itself; **human** is the owner. The intent
+is to remove the human first, then the interactive session — so a workaround
+performed by the interactive layer is an unfixed defect in the factory layer,
+and should produce a fix rather than become a habit
+([#4478](https://github.com/souliane/teatree/issues/4478)). This is the
+direction of travel, not where it stands.
 
 ### A merge step that is neither a manual click nor a blind auto-merge
 
-The author kept ending up at one of two extremes: either babysitting every
-merge by hand (every PR a separate context switch back to the browser), or
-flipping on full auto-merge and watching the agent merge PRs against branches
-the reviewer had moved underneath. The first wastes the day; the second loses
-trust in a single bad merge.
+Babysitting every merge wastes the day; blind auto-merge loses trust in one bad
+merge, landing PRs against branches the reviewer moved underneath.
 
-Teatree puts a two-step contract between "looks done" and "merged". An
-orchestrator pass issues a per-diff CLEAR after an independent cold review;
-a separate merge worker re-verifies the live HEAD SHA, the green checks, and
-the non-draft state at the moment of merge, and refuses raw merge commands by
-default. Two independent passes have to agree on the same SHA before the host
-API gets called.
+So merging takes two passes that must agree on the same SHA. An orchestrator
+issues a per-diff CLEAR after an independent cold review; a separate worker
+re-verifies the live HEAD, the green checks and the non-draft state at merge
+time, and refuses raw merge commands. A verdict binds to the SHA it was given,
+so a later push voids the approval rather than inheriting it.
 
-### Posting under your identity without losing track of what was posted
-
-The author wanted the agent to handle Slack DMs, PR comments, MR approvals,
-Notion writes — anything that normally needs a hand on the keyboard — without
-the dread of finding out tomorrow that a message went to the wrong place or
-under the wrong voice. Logs in `~/.shell_history` are not enough; the agent's
-own claim about what it posted is the thing that needs verifying.
-
-Every on-behalf write records an `OutboundClaim` row, then re-reads the target
-surface (Slack permalink, GitLab note, Notion block) and compares the live
-content against the claim. A drift means the post landed wrong, was edited, or
-never made it; teatree surfaces those as actionable rows rather than silent
-failures. Combined with an approval gate (`OnBehalfApproval`), nothing
-colleague-facing ships unless the user has explicitly opted into either
-per-action approval or end-to-end autonomy for that overlay.
+`core/models/merge_clear.py`
 
 ### Workflow state that survives the session
 
-The author kept losing the picture every time a conversation ended or
-context got compacted — what was in flight, which PR was waiting on what,
-which review was half-done. Rebuilding it from `gh pr list` and chat
-history every morning gets old.
+The picture went missing whenever a conversation ended or context compacted, and
+rebuilding it from `gh pr list` and chat history every morning gets old.
 
-Teatree puts the state into a Django-backed SQLite/Postgres database:
-`Ticket`, `Worktree`, `Task`, `PullRequest`, each with its own state
-machine. Transitions are guarded methods (`Ticket.code()`, `Ticket.ship()`),
-not free-form field writes — the predicates run, the dependent gates stay
-aligned, illegal moves raise `InvalidTransitionError`. Snapshots before
-context compaction get recovered automatically on the next session start.
-Not perfect, but more reliable than picking up the picture from scratch.
+State lives in a Django-backed database — `Ticket`, `Worktree`, `Task`,
+`PullRequest`, each with a state machine whose transitions are guarded methods
+rather than field writes, so an illegal move raises rather than corrupts. A
+session hands its state to the next as a row that session claims on start, and
+work left uncommitted in a checkout becomes its own row, so nothing strands
+silently.
+
+`core/models/session_handover.py`, `core/models/unshipped_work_record.py`
+
+### Posting under your identity without losing track of what was posted
+
+Letting an agent send Slack DMs, PR comments, approvals and Notion writes brings
+the dread of learning tomorrow that something went to the wrong place. The
+agent's own claim about what it posted is the part needing checking.
+
+Every on-behalf write records an `OutboundClaim`, then re-reads the target —
+Slack permalink, GitLab note, Notion block — and compares it to the claim. Drift
+means the post landed wrong, was edited, or never arrived, and surfaces as an
+actionable row. An approval gate sits in front, so nothing colleague-facing
+ships without an explicit opt-in for that overlay.
+
+`core/models/outbound_claim.py`, `core/models/on_behalf_approval.py`
 
 ### A chat-only operating model that does not block on a TTY
 
-The author carries a laptop around and answers questions from a phone. Most
-agent harnesses assume a TTY: when the agent has a question, the run blocks
-until someone is in front of a terminal to answer. That makes long autonomous
-sessions impossible — every clarifying question becomes a hard stop.
+The author answers questions from a phone. Most harnesses assume a TTY: the run
+blocks until someone is at a terminal, which rules out long autonomous sessions.
 
-Teatree resolves one operating mode whose posture says whether the user is
-reachable. Under a deferring posture, structured questions become durable
-`DeferredQuestion` rows instead of blocking; the user answers them later from
-Slack, via `t3 teatree questions answer`. The agent keeps working on whatever it can in the meantime. Replies
-and prompts the user receives all happen in Slack DMs; no shared dashboard,
-no shared SaaS, no DevOps onboarding.
+An operating mode carries a posture saying whether the owner is reachable. Under
+a deferring posture a question becomes a durable `DeferredQuestion` row instead
+of a block — answered later from Slack via `t3 teatree questions answer` — while
+the agent continues on what it can. Everything the owner sees arrives as a Slack
+DM: no dashboard, no shared SaaS, no onboarding.
+
+`core/models/deferred_question.py`
 
 ### Multi-repo, multi-overlay worktree provisioning
 
-The author's typical ticket is not "edit one file"; it is "change the backend,
-the frontend, the translations bundle, and the CI config, all at once." Each
-repo needs its own isolated worktree, its own database, its own ports, so two
-tickets in flight do not collide on the same dev server.
+A ticket here is rarely "edit one file"; it is backend, frontend, translations
+and CI config at once, and two tickets in flight must not collide on one dev
+server.
 
-`t3 <overlay> workspace ticket <url>` reads the ticket, decides which repos
-are affected, creates one git worktree per repo under a single ticket
-directory, allocates ports, provisions DBs, generates env files, and starts
-the services. Each ticket runs in isolation; multiple tickets in flight share
-no infrastructure. Overlay packages carry the project-specific glue
-(which repos, which CI, which probes); the core stays generic.
+`t3 <overlay> workspace ticket <url>` decides which repos are affected, creates a
+worktree per repo under one ticket directory, allocates ports, provisions
+databases, writes env files and starts the services. Overlay packages carry the
+project-specific glue; the core stays generic.
 
 ### A long-running loop that turns signals into actions
 
-The author kept noticing the agent only works while someone is actively
-prompting it. PRs sit waiting for review nudges, CI failures go unreviewed,
-ticket changes pile up in the inbox until someone glances at them.
+An agent only works while someone prompts it, so PRs sit waiting for a nudge and
+CI failures go unread.
 
-A singleton `t3 worker` owns the tick cadence — every ~12 minutes by default,
-with no Claude session needed. Each tick fans out to scanners that watch assigned issues, open PRs,
-PRs assigned for review, Slack mentions, the Notion bridge, and the local
-task queue. Findings render to a statusline file the Claude Code statusline
-hook reads in under 10ms, so live status sits at the top of every session
-without polling. Lease-gated dispatch turns scanner findings into agent
-actions when there is something to do, and keeps quiet when there is not.
+A singleton `t3 worker` owns the tick — roughly every 12 minutes, no Claude
+session needed — fanning out to scanners over assigned issues, open PRs, review
+requests, Slack mentions, the Notion bridge and the task queue; findings render
+to a statusline file the hook reads in under 10ms. Before admitting work the
+loop reads real load and free memory, with hysteresis on both watermarks, so
+throughput degrades instead of thrashing.
 
-### What the machinery actually does
+`core/admission_governor.py`
 
-Each line names a mechanism and what it buys, with the code that implements it:
+### Running against a subscription rather than a credit balance
 
-- Tracks the provider's own 5-hour and 7-day quota windows and picks an account with headroom, so an exhausted subscription window does not halt a run (`llm/anthropic_limits.py`, `core/models/usage_window_state.py`, `core/models/anthropic_active_pick.py`).
-- Separates exhaustion causes that look alike — API credit, 5-hour session limit, weekly limit, transient rate limit — because each needs a different remedy (`llm/anthropic_limits.py`).
-- Hands one session's durable state to the next as a database row the next session claims on start, so a handover needs no copy-paste (`core/models/session_handover.py`).
-- Binds a merge verdict to a specific commit SHA and re-checks it against the live head at merge time, so a later push voids the approval rather than inheriting it (`core/models/merge_clear.py`).
-- Reads real machine load and available memory, with hysteresis on both watermarks, before admitting new work, so throughput degrades instead of thrashing (`core/admission_governor.py`).
-- Repairs its own red CI behind an anti-cheat gate that refuses to touch the scenarios or the grader, so a "fix" cannot be a test weakened until it passes (`core/gates/eval_heal_anticheat_gate.py`).
-- Records work left uncommitted in a checkout as a durable row, so an interrupted session strands nothing silently (`core/models/unshipped_work_record.py`).
-- Requires the owner to ratify a typed mechanism sketch before a plain-English directive changes behaviour (`core/models/mechanism_sketch.py`, `core/models/ratification.py`).
-- Gives each ticket its own worktree, ports, and database, so two tickets in flight share no infrastructure.
+A run can stop because API credit ran out, a 5-hour window closed, a weekly
+window closed, or a transient rate limit hit. They look alike in the error and
+each needs a different remedy.
+
+Teatree tracks the provider's own 5-hour and 7-day windows, tells those causes
+apart, and picks an account with headroom, so one spent window does not halt a
+run.
+
+`llm/anthropic_limits.py`, `core/models/usage_window_state.py`,
+`core/models/anthropic_active_pick.py`
+
+### Guards on what an agent could quietly weaken
+
+Red CI gets repaired behind an anti-cheat gate that refuses to touch the
+scenarios or the grader, so a "fix" cannot be a test weakened until it passes.
+And a plain-English directive changes nothing until the owner ratifies a typed
+mechanism sketch of it, so an instruction cannot drift into config by paraphrase.
+
+`core/gates/eval_heal_anticheat_gate.py`, `core/models/mechanism_sketch.py`,
+`core/models/ratification.py`
 
 ## What teatree is NOT
 
