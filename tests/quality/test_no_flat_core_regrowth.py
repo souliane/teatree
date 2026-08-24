@@ -242,7 +242,17 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # intake/ cannot own it without factory/ reaching across, and factory/ cannot own it
 # without intake/ doing the same. Same shape as claim_liveness.py (#4164) above — a small
 # ORM-free derivation two subpackages consult, so it belongs to neither.
-PINNED_FLAT_CORE_MODULES = 111
+# 112: +admission_pressure.py (#4508) — the one scalar the admission decision reads, plus the
+# vocabulary it is expressed in (QuotaSignal, MachineSignal, PressureBand, AdmissionPressure).
+# It imports nothing from teatree — math, dataclasses, enum — so it is a pure value-and-predicate
+# layer that could sit anywhere without a cycle; what keeps it at the root is its readership.
+# Two flat siblings consult it (admission_governor.py derives the verdict, agent_admission.py
+# applies it per lane), factory/operational_health.py reports the band, and cli/doctor reads it
+# to explain a refusal. factory/ cannot own it without both root siblings reaching across, and
+# neither root sibling can own it without the other importing its peer. Same shape as
+# claim_liveness.py (#4164) and overlay_repos.py (#4515) above — a small dependency-free
+# derivation several consumers share, so it belongs to none of them.
+PINNED_FLAT_CORE_MODULES = 112
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

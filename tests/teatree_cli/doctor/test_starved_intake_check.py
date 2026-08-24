@@ -12,7 +12,7 @@ from contextlib import redirect_stdout
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.cli.doctor.checks_loop import _check_starved_intake_candidates
+from teatree.cli.doctor.checks_admission_pressure import _check_starved_intake_candidates
 from teatree.core.models import STARVED_AFTER, UnclaimedIntakeCandidate, WaitingCandidate
 
 STARVED_URL = "https://github.com/souliane/teatree/issues/4188"

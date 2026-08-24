@@ -24,6 +24,7 @@ SETTING_HELP: dict[str, str] = {
     "admin_autologin_enabled": "log the loopback operator into Django admin without a password prompt",
     "adaptive_intake_concurrency_enabled": "let the resource loop set intake concurrency from observed headroom",
     "admission_governor_enabled": "let the governor refuse new work when the box is already saturated",
+    "admission_pressure_shed_at": "pressure at which expensive agents are refused while review and ship keep draining",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
     "agent_compaction_keep_recent": "per-phase count of recent messages a compacted history keeps",
     "agent_harness": "which agent CLI teatree drives (claude, codex, ...)",

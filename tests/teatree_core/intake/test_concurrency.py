@@ -44,7 +44,7 @@ def _adapt(*, per_agent_gb: float = _PER_AGENT_GB, **kwargs: object) -> int | No
     base: dict[str, object] = {
         "available_gb": 20.0,
         "factory_in_flight": 2,
-        "box_load_headroom": 1.0,
+        "admission_headroom": 1.0,
         "previous": 2,
     }
     sizing = BoxSizing(cores=_CORES, reserve_gb=_RESERVE_GB, per_agent_gb=per_agent_gb)
@@ -120,7 +120,7 @@ class TestWholeBoxOccupancy(TestCase):
 
     def _at_load(self, load1: float, **kwargs: object) -> int:
         headroom = box_load_headroom(load1=load1, cores=_CORES)
-        return _adapted(box_load_headroom=headroom, **{**_ROOMY, **kwargs})
+        return _adapted(admission_headroom=headroom, **{**_ROOMY, **kwargs})
 
     def test_load_the_factory_did_not_start_lowers_the_limit_memory_alone_would_allow(self) -> None:
         assert self._at_load(30.0) < self._at_load(0.0)
@@ -132,7 +132,7 @@ class TestWholeBoxOccupancy(TestCase):
         assert self._at_load(53.0) == MIN_CONCURRENCY
 
     def test_an_unreadable_load_leaves_the_memory_answer_standing(self) -> None:
-        assert _adapted(box_load_headroom=None, **_ROOMY) == _HARD_CAP
+        assert _adapted(admission_headroom=None, **_ROOMY) == _HARD_CAP
 
 
 class TestBounds(TestCase):

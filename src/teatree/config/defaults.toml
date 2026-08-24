@@ -315,6 +315,7 @@ ticket_transition_prune_disabled = false # bool — stop pruning old ticket tran
 
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
+admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
 cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve

@@ -23,11 +23,19 @@ whole-box: an orchestrating session's harness sub-agents never claim a ``Task``,
 are invisible to every count the factory keeps, but they consume the same cores. Counts
 — ``claimed_agent_count``, the intake in-flight budget — are lane-local by construction
 and named so at each call site. The deliberate split is that foreign occupancy BRAKES the
-producer and only REPORTS on the rest: :func:`box_load_headroom` bounds intake, because
+producer and only REPORTS on the rest: the admission-pressure scalar bounds intake, because
 slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
 pile, while the agent lanes keep only the binary watermark brake below — scaling their
 already-small ``floor(cores * WRITE_CONCURRENCY_PER_CORE)`` ceiling by the same headroom
 would leave a 4-core box ONE expensive slot and starve the drain.
+
+**The brakes are ONE scalar, not six ``if``s (#4508).** Every watermark below normalises
+to ``1.0`` in :mod:`teatree.core.admission_pressure`, so :func:`decide_admission` refuses
+on a single :data:`~teatree.core.admission_pressure.PressureBand.HALT` verdict that
+reproduces the pre-#4508 brake set exactly — and the range beneath it, which six separate
+``if``s could not express, is what the cheap/expensive shed and the intake term now read.
+The signal dataclasses live there for the same reason: they are the scalar's inputs, so
+the dependency runs this way only.
 
 Ships behind the default-ON ``admission_governor_enabled`` setting; setting it false is
 the kill-switch and the rollback lever (see :func:`governor_enabled`).
@@ -39,11 +47,26 @@ import math
 import os
 from dataclasses import dataclass
 
+from teatree.core.admission_pressure import (
+    BRAKE_LOAD_PER_CORE,
+    RAM_BRAKE_FLOOR_GB,
+    RAM_RESUME_FLOOR_GB,
+    SHED_AT_DEFAULT,
+    UNBRAKED,
+    AdmissionPressure,
+    MachineBrake,
+    MachineSignal,
+    PressureBand,
+    QuotaSignal,
+    admission_pressure,
+    box_load_headroom,
+    ram_headroom,
+    resolve_shed_at,
+    weekly_pace,
+)
 from teatree.utils import ram_scope
 
 logger = logging.getLogger(__name__)
-
-WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
 
 _MIB_PER_GB = 1024.0
 
@@ -76,35 +99,6 @@ TOTAL_TEST_WORKERS_PER_CORE = 2
 #: enough agents to reach load 58 on 8 cores).
 HOST_AGENT_POPULATION_PER_CORE = 1.0
 
-#: Load watermarks, as multiples of the core count. Above ``BRAKE`` new admissions are
-#: denied; a braked governor only re-admits once load falls back under ``RESUME``. The
-#: gap is the hysteresis that stops it flapping around one threshold.
-BRAKE_LOAD_PER_CORE = 5.0
-RESUME_LOAD_PER_CORE = 3.0
-
-#: Memory watermarks in GB, the same shape as the load pair above: below ``RAM_BRAKE``
-#: new admissions are denied, and a braked governor re-admits only above ``RAM_RESUME``.
-#: Absolute rather than per-core because a pytest worker's footprint is a property of the
-#: suite, not of the box that runs it.
-#:
-#: ``4.0`` is the headroom one p90 worker (1.24 GB) plus the OS and page cache need to
-#: survive the burst a fresh admission creates; it matches ``intake_ram_reserve_gb``,
-#: which reserves the same margin for the same reason one layer up. ``6.0`` is one more
-#: worker's worth above it — the gap is the hysteresis, so a box hovering at the floor
-#: cannot flap admissions on and off.
-RAM_BRAKE_FLOOR_GB = 4.0
-RAM_RESUME_FLOOR_GB = 6.0
-
-#: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
-SHORT_WINDOW_BRAKE = 0.95
-#: Weekly headroom below this is spent — nothing left to admit against.
-WEEKLY_WINDOW_BRAKE = 0.99
-
-#: Pace = weekly headroom / weekly runway. Below 1 the burn outruns the window, so the
-#: ceiling is scaled down to land AT the reset instead of sprinting to zero. Below
-#: ``PACE_DENY`` there is not enough left to start anything new.
-PACE_DENY = 0.1
-
 #: Yield-per-token: high burn producing nothing is the waste that matters. Below this
 #: completion ratio the marginal token buys zero, so the governor STOPS admitting rather
 #: than throttling slightly. Fewer than ``YIELD_MIN_SAMPLES`` terminal tasks is unknown,
@@ -119,35 +113,6 @@ MERGE_STALL_MIN_OPEN_PRS = 3
 #: Consecutive merge-sweep refusals before a PR counts as STUCK rather than merely
 #: waiting. Matches the aged-skip surfacing threshold, so the two agree on the word.
 MERGE_STUCK_AFTER_TICKS = 3
-
-
-@dataclass(frozen=True)
-class QuotaSignal:
-    """Live model-quota headroom — the PRIMARY admission signal.
-
-    ``fresh`` is False when no account's headroom is known; the decision then drops the
-    weekly-pace scaling — the only part that needs this signal — rather than trusting a
-    guess, and bounds the lane on the machine signal alone.
-    Utilizations are the BEST (lowest) across usable accounts: the account selector
-    already falls through to a non-exhausted account, so the governor asks what the
-    healthiest remaining account has left, and ``all_accounts_exhausted`` is the
-    separate signal that the fallthrough has nowhere left to go.
-    """
-
-    fresh: bool
-    all_accounts_exhausted: bool
-    weekly_utilization: float
-    short_utilization: float
-    seconds_to_weekly_reset: float | None
-
-
-@dataclass(frozen=True)
-class MachineSignal:
-    """Box pressure — the SECONDARY brake. ``ram_available_gb`` is ``None`` when unread."""
-
-    cores: int
-    load1: float
-    ram_available_gb: float | None
 
 
 @dataclass(frozen=True)
@@ -166,30 +131,6 @@ class YieldSignal:
         if self.samples < YIELD_MIN_SAMPLES:
             return False
         return self.completed / self.samples < YIELD_COLLAPSE_RATIO
-
-
-@dataclass(frozen=True)
-class MachineBrake:
-    """The caller's two inputs to the LOAD brake, as one value.
-
-    ``braked`` is the previous decision's brake state and supplies the hysteresis — a
-    braked governor is held to the lower watermark so it cannot flap.
-
-    ``applies`` is the cheap-phase exemption (#4098): the read-only phases that RETIRE
-    work were being refused on the very load their expensive siblings created, which
-    removed the only relief available and held the brake on. ``False`` skips the LOAD
-    brake for that class alone — never the token brakes, which are a claim about budget
-    rather than pressure and so refuse a cheap phase exactly as they refuse an expensive
-    one. The caller supplies the exemption's own bound; :func:`decide_admission` never
-    widens a lane on its own.
-    """
-
-    applies: bool = True
-    braked: bool = False
-
-
-#: The default: the brake applies, with no prior brake state to hold it to the low watermark.
-UNBRAKED = MachineBrake()
 
 
 @dataclass(frozen=True)
@@ -253,22 +194,6 @@ def governor_enabled() -> bool:
     return bool(get_effective_settings().admission_governor_enabled)
 
 
-def weekly_pace(quota: QuotaSignal) -> float:
-    """Weekly headroom divided by weekly runway — 1.0 is exactly on pace.
-
-    Above 1 the window is being under-spent (there is room to raise admissions); below 1
-    the burn outruns the reset and admissions are paced down to land at it. An unknown
-    reset is treated as a FULL window remaining, the conservative reading: it makes the
-    runway look long, so the pace looks tight, so the ceiling tightens.
-    """
-    headroom = max(0.0, 1.0 - quota.weekly_utilization)
-    seconds = WEEKLY_WINDOW_SECONDS if quota.seconds_to_weekly_reset is None else quota.seconds_to_weekly_reset
-    runway = min(1.0, max(seconds, 0.0) / WEEKLY_WINDOW_SECONDS)
-    if runway <= 0:
-        return 1.0
-    return headroom / runway
-
-
 def per_agent_test_workers(
     *,
     cores: int,
@@ -309,82 +234,45 @@ def per_agent_test_workers(
     return max(1, total // max(1, int(active_agents)))
 
 
-def _quota_brake(quota: QuotaSignal) -> str:
-    if quota.all_accounts_exhausted:
-        return "every account is quota-exhausted — retrying into a rate limit is pure burn"
-    if quota.weekly_utilization >= WEEKLY_WINDOW_BRAKE:
-        return f"weekly window spent ({quota.weekly_utilization:.0%}) — no budget left to admit against"
-    if quota.short_utilization >= SHORT_WINDOW_BRAKE:
-        return f"5h window spent ({quota.short_utilization:.0%}) — a hard rate limit is imminent"
-    if weekly_pace(quota) < PACE_DENY:
-        return f"weekly burn outruns the reset (pace {weekly_pace(quota):.2f}) — pacing to the window"
-    return ""
-
-
-def _machine_brake(machine: MachineSignal, *, braked: bool) -> str:
-    """Load and memory watermarks, both riding the *braked* hysteresis and the exemption.
-
-    Memory sits HERE rather than in the ceiling because ``_adaptive_ceiling`` already owns
-    "how many agents fit", and two unsynchronised readers of one quantity drift (#4125). A
-    brake answers a different question — "is the box in trouble right now?" — so it
-    inherits the load brake's hysteresis and cheap-lane exemption for free. An unread
-    reading is not a brake: unknown never denies.
-    """
-    cores = max(1, machine.cores)
-    watermark = (RESUME_LOAD_PER_CORE if braked else BRAKE_LOAD_PER_CORE) * cores
-    if machine.load1 >= watermark:
-        return f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)"
-    ram_floor = RAM_RESUME_FLOOR_GB if braked else RAM_BRAKE_FLOOR_GB
-    if machine.ram_available_gb is not None and machine.ram_available_gb <= ram_floor:
-        return f"{machine.ram_available_gb:.1f} GB available at/under the {ram_floor:.0f} GB watermark"
-    return ""
-
-
 def _machine_ceiling(machine: MachineSignal) -> int:
     """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
     return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
 
 
-def box_load_headroom(*, load1: float | None, cores: int) -> float:
-    """The fraction of the box's load budget still free — ``1.0`` idle, ``0.0`` saturated.
-
-    The ONE whole-box occupancy reading, so every surface that asks "how much of this box
-    is already busy?" gets the same answer against the same :data:`BRAKE_LOAD_PER_CORE`
-    watermark the brake denies at. Two unsynchronised readers of one quantity drift
-    (#4125), and this quantity has two consumers: :func:`resume_agent_ceiling` and the
-    intake sizing in :mod:`teatree.core.intake.concurrency`.
-
-    Load is whole-box by construction, which is the point of consuming it: a harness
-    sub-agent an orchestrating session dispatched claims no ``Task`` and appears in no
-    factory count, yet it runs a test suite on the same cores. A bound derived only from
-    what the factory itself is running reads healthy on a box at load 53 (#4407).
-
-    ``None`` (nothing readable) is ``1.0`` for the reason every unknown here is: a probe
-    that cannot answer must not be able to lower a ceiling.
-    """
-    if load1 is None:
-        return 1.0
-    watermark = BRAKE_LOAD_PER_CORE * max(1, cores)
-    return min(1.0, max(0.0, watermark - load1) / watermark)
-
-
-def _ram_headroom(ram_available_gb: float | None) -> float:
-    """The fraction of the agent population the live memory reading still supports.
-
-    ``1.0`` at or above :data:`RAM_RESUME_FLOOR_GB` (inert on a healthy box), ramping to
-    ``0.0`` at :data:`RAM_BRAKE_FLOOR_GB`, which is where the brake refuses outright.
-    ``None`` is ``1.0`` for the reason every unknown here is: a probe that cannot answer
-    must not be able to lower a ceiling.
-    """
-    if ram_available_gb is None:
-        return 1.0
-    span = RAM_RESUME_FLOOR_GB - RAM_BRAKE_FLOOR_GB
-    return min(1.0, max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / span)
-
-
 def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
     """The live ceiling: the core-derived WRITE default, scaled by weekly pace, floored at 1."""
     return max(1, math.floor(_machine_ceiling(machine) * min(1.0, weekly_pace(quota))))
+
+
+def _shed_at() -> float:
+    """The operator's SHED threshold, clamped; an unreadable setting keeps the shipped default."""
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
+
+    try:
+        configured = float(get_effective_settings().admission_pressure_shed_at)
+    except Exception:
+        logger.exception("admission_pressure_shed_at unreadable — keeping the shipped default")
+        return SHED_AT_DEFAULT
+    return resolve_shed_at(configured)
+
+
+def pressure_for(
+    *, quota: QuotaSignal, machine: MachineSignal, load_brake: MachineBrake = UNBRAKED
+) -> AdmissionPressure:
+    """The live scalar for these signals, carrying the operator's SHED threshold.
+
+    The ONE seam every consumer of the band reads, so the threshold is resolved in one
+    place and a lane cannot end up judging its own band against a different one. The
+    pure arithmetic stays config-free in :mod:`teatree.core.admission_pressure`; this
+    wrapper is only the config half plus the :class:`MachineBrake` translation.
+    """
+    return admission_pressure(
+        quota=quota,
+        machine=machine,
+        braked=load_brake.braked,
+        machine_applies=load_brake.applies,
+        shed_at=_shed_at(),
+    )
 
 
 def decide_admission(
@@ -414,16 +302,21 @@ def decide_admission(
     concurrency than knowing it is healthy. Only the weekly-pace scaling on top of that
     base genuinely needs a fresh quota, and that is exactly what is dropped. The load
     brake reads its own signal and still applies either way.
+
+    The refusal is ONE ``HALT`` test rather than six, and reproduces the pre-#4508 brake
+    set exactly — ``1.0`` is each dimension's own watermark (#4508). Only ``HALT`` is
+    read here: this decision is class-BLIND, so the ``SHED`` band that refuses the
+    expensive class alone is resolved by
+    :func:`~teatree.core.agent_admission.agent_admission_verdict`, the seam that already
+    owns the cheap/expensive split.
     """
     ceiling = _adaptive_ceiling(quota, machine) if quota.fresh else _machine_ceiling(machine)
     if static_ceiling is not None:
         ceiling = max(1, min(ceiling, static_ceiling))
 
-    quota_brake = _quota_brake(quota) if quota.fresh else ""
-    machine_brake = _machine_brake(machine, braked=load_brake.braked) if load_brake.applies else ""
-    for brake in (quota_brake, machine_brake):
-        if brake:
-            return AdmissionDecision(admit=False, reason=brake, ceiling=ceiling, braked=True)
+    pressure = pressure_for(quota=quota, machine=machine, load_brake=load_brake)
+    if pressure.band is PressureBand.HALT:
+        return AdmissionDecision(admit=False, reason=pressure.reason, ceiling=ceiling, braked=True)
 
     if yield_signal is not None and yield_signal.collapsed:
         reason = (
@@ -455,13 +348,17 @@ def resume_agent_ceiling(machine: MachineSignal) -> int:
     upper one, so it lowers the ceiling only on a box that is genuinely tight; an unread
     reading leaves the ceiling load-derived, never lower.
 
+    Deliberately NOT the whole #4508 scalar: its consumer ``hooks/scripts/resume_admission.py``
+    reads Django-free on the ``SessionStart`` hot path, and the quota half needs the ORM. So
+    this path keeps the two machine terms, which are exactly ``1 - `` their components.
+
     The floor of 1 keeps this an admission ceiling rather than a kill switch: a wedged box
     still gets to carry the one agent that might unwedge it.
     """
     base = max(1, math.floor(max(1, machine.cores) * HOST_AGENT_POPULATION_PER_CORE))
     headroom = min(
         box_load_headroom(load1=machine.load1, cores=machine.cores),
-        _ram_headroom(machine.ram_available_gb),
+        ram_headroom(machine.ram_available_gb),
     )
     return max(1, math.floor(base * headroom))
 
@@ -619,19 +516,27 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     )
 
 
+#: Re-exported from :mod:`teatree.core.admission_pressure`, which owns the signals and the
+#: watermarks they normalise against: this stays the one import site every caller already
+#: uses, so the #4508 split moved no consumer.
 __all__ = [
+    "BRAKE_LOAD_PER_CORE",
     "RAM_BRAKE_FLOOR_GB",
     "RAM_RESUME_FLOOR_GB",
     "UNBRAKED",
     "AdmissionDecision",
+    "AdmissionPressure",
     "MachineBrake",
     "MachineSignal",
+    "PressureBand",
     "QuotaSignal",
     "YieldSignal",
     "box_load_headroom",
     "decide_admission",
     "governor_enabled",
     "per_agent_test_workers",
+    "pressure_for",
+    "ram_headroom",
     "read_machine_signal",
     "read_quota_signal",
     "resume_agent_ceiling",
