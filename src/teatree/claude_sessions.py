@@ -10,6 +10,7 @@ import operator
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict, Unpack
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,10 +145,25 @@ class SessionQuery:
     limit: int = 20
 
 
-def list_sessions(query: SessionQuery | None = None, /, **kwargs: object) -> list[SessionInfo]:
+class _SessionQueryKwargs(TypedDict, total=False):
+    """The keyword form of :class:`SessionQuery`'s fields (PEP 692).
+
+    Types the ``**kwargs`` passthrough precisely, so the ``SessionQuery(**kwargs)``
+    construction below is checkable instead of suppressed.
+    """
+
+    projects_dir: Path | None
+    history_file: Path | None
+    cwd: str
+    project_filter: str
+    all_projects: bool
+    limit: int
+
+
+def list_sessions(query: SessionQuery | None = None, /, **kwargs: Unpack[_SessionQueryKwargs]) -> list[SessionInfo]:
     """Return a list of session info sorted by most recent first."""
     if query is None:
-        query = SessionQuery(**kwargs)  # type: ignore[arg-type]
+        query = SessionQuery(**kwargs)
 
     claude_home = Path.home() / ".claude"
     projects_dir = query.projects_dir or claude_home / "projects"

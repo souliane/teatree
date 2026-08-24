@@ -1,12 +1,11 @@
-"""Backlog-sweep mini-loop — daily backlog-triage cadence anchor.
+"""Backlog-sweep mini-loop — daily backlog-grouping cadence anchor.
 
-Global (non-overlay) loop like ``news`` / ``eval_local``, default-OFF: the
-:func:`teatree.loop.global_scanner_factories._backlog_sweep_scanner` builder
-returns ``None`` while ``backlog_sweep_disabled`` (default *true*) holds, so this
-mini-loop contributes nothing until the operator opts in (#22). The sweep is
-destructive-capable (it proposes closing stale issues) and keeps its
-``ask_before_backlog_sweep_closes`` gate, so unlike the always-on news/eval
-scanners its kill switch ships ON.
+Global (non-overlay) loop like ``news`` / ``eval_local``. ``backlog_sweep_disabled``
+ships *open* (#4344), so this row is the single switch an operator flips — it seeds
+``enabled = false`` and contributes nothing until they turn it on, the shape
+``issue_implementer`` / ``triage_assessor`` / ``directive_loop`` already use. The sweep
+groups aggressively and closes nothing for real, and keeps its
+``ask_before_backlog_sweep_closes`` gate over every row retirement.
 """
 
 from typing import TYPE_CHECKING

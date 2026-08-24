@@ -543,12 +543,26 @@ def check_as_json(run_checks: Callable[[], bool]) -> bool:
     *run_checks* is a zero-arg callable that already carries the resolved
     ``repair`` value, so the JSON path never re-invokes with repair implicitly
     enabled (#3313).
+
+    A RAISING check emits the JSON anyway, with the exception as a FAIL finding.
+    The line is written only after ``run_checks()`` RETURNS, so a check that dies
+    on an import — an undeclared ``packaging`` in the tool env, reached eagerly
+    through ``teatree.utils.dep_skew`` — produced ZERO BYTES. The watchdog's
+    no-verdict branch then DMs once a day naming no cause, which is how 72
+    consecutive passes ran without anyone learning the word ``packaging``. The
+    crash is turned into the one thing a silent outage never gives you: a red
+    verdict that names itself. Findings echoed before the crash are kept, so the
+    checks that DID run are not lost with the one that failed.
     """
     import contextlib  # noqa: PLC0415 — deferred: loaded only on the --json path
     import io  # noqa: PLC0415 — deferred: loaded only on the --json path
 
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        ok = run_checks()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            ok = run_checks()
+    except Exception as exc:  # noqa: BLE001 — a crashed doctor must still emit a verdict naming its cause
+        ok = False
+        buffer.write(f"FAIL  doctor crashed: {type(exc).__name__}: {exc}\n")
     typer.echo(json.dumps({"ok": ok, "findings": _Probe.parse_findings(buffer.getvalue())}))
     return ok

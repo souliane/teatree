@@ -468,6 +468,31 @@ class RunAllAndJsonTest(TestCase):
         assert "FAIL" in levels
         assert any(f["message"] == "the worker is down" for f in payload["findings"])
 
+    def test_a_crashing_check_still_emits_a_verdict_naming_the_cause(self) -> None:
+        # The doctor plane went dark for 72 watchdog passes because `packaging` was an
+        # undeclared runtime dep: the eager import raised, `run_checks()` never returned,
+        # and the JSON line — emitted only AFTER it returns — was never written at all.
+        # Zero bytes is the one verdict the watchdog cannot name a cause for, so a crash
+        # must degrade to a RED verdict that carries its own exception text.
+        boom = ModuleNotFoundError("No module named 'packaging'")
+
+        def crashing_check() -> bool:
+            print("OK    the checks that ran before the crash")  # noqa: T201 — the doctor echo the JSON surface parses
+            raise boom
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ok = check_as_json(crashing_check)
+
+        payload = _json.loads(buf.getvalue())
+        assert ok is False
+        assert payload["ok"] is False
+        crash = [f for f in payload["findings"] if f["level"] == "FAIL" and "packaging" in f["message"]]
+        assert crash, payload["findings"]
+        assert "ModuleNotFoundError" in crash[0]["message"]
+        # The echoes the run DID produce before dying survive alongside the crash line.
+        assert any(f["message"] == "the checks that ran before the crash" for f in payload["findings"])
+
 
 class DoctorJsonSurfaceTest(TestCase):
     """`--json` routes to the JSON surface; a subcommand-only call never does."""

@@ -213,4 +213,4 @@ def test_dataclass_is_frozen() -> None:
     setting = COLD_HOOK_SETTINGS["deny_circuit_breaker_enabled"]
     assert isinstance(setting, ColdHookSetting)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        setting.default = False  # type: ignore[misc]
+        setting.default = False  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.

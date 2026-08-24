@@ -23,7 +23,7 @@ from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
-pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # the zero-token test guard.
 
 
 def _run(agent: Agent[None, str], prompt: str) -> AgentRunResult[Any]:

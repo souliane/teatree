@@ -130,7 +130,7 @@ def _extract_text(obj: TranscriptLine) -> str:
     """
     message = obj.get("message")
     if isinstance(message, dict):
-        return _content_preview(cast("TranscriptLine", message).get("content"))
+        return _content_preview(message.get("content"))
     return _content_preview(obj.get("content"))
 
 

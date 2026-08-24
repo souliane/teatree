@@ -9,6 +9,7 @@ per-tick cap, the per-head-SHA memo, and the refusal to guess.
 
 import pytest
 
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher, reset_ci_memo
 
 _URL = "https://gitlab.example.com/group/repo/-/merge_requests/7"
@@ -47,6 +48,22 @@ class TestVerdictTranslation:
         enricher = BoundedCiEnricher(resolve=_RecordingQuery("something-new"))
 
         assert enricher.status_for(url=_URL, head_sha=_SHA) == ""
+
+    def test_an_unreadable_forge_is_not_a_red_merge_request(self) -> None:
+        """An unreadable pipeline must not route the MR to the debug agent.
+
+        The merge gate refuses on ``unreadable`` exactly as it refuses on ``failed``
+        — but a forge nobody could read is not a broken MR, and dispatching a
+        debugger at one spends an agent on a pipeline that was never seen. The
+        empty status is the same "nobody looked yet" an unread MR already gets.
+        """
+        enricher = BoundedCiEnricher(resolve=_RecordingQuery(CHECKS_UNREADABLE))
+
+        assert enricher.status_for(url=_URL, head_sha=_SHA) == ""
+
+    def test_a_genuinely_failing_pipeline_is_still_dispatched(self) -> None:
+        # The over-correction guard beside it: a real red still reaches the lane.
+        assert BoundedCiEnricher(resolve=_RecordingQuery("failed")).status_for(url=_URL, head_sha=_SHA) == "failed"
 
     def test_a_read_failure_leaves_the_status_unknown(self) -> None:
         def _boom(_url: str) -> str:

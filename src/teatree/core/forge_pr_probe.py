@@ -30,8 +30,8 @@ from enum import Enum, auto
 from pathlib import Path
 
 from teatree.core.forge_push import resolve_forge_credential
-from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
+from teatree.utils.git_run import run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -129,10 +129,20 @@ def find_open_pr_for_branch(repo_dir: str | Path, branch: str) -> PrProbe:
     is :attr:`~PrProbeOutcome.UNKNOWN` — there is nothing to probe, and a
     fail-closed caller must not read that as "no PR". Any CLI failure (missing
     binary, non-zero exit, unparsable JSON) is :attr:`~PrProbeOutcome.UNKNOWN`.
+
+    The remote read itself must tell "unreadable repo" apart from "readable repo,
+    unrecognised host": ``git remote get-url`` failing (not a git repo, no
+    ``origin``, a corrupted ``.git``) is :attr:`~PrProbeOutcome.UNKNOWN` — there is
+    a PR to protect and no way to ask — never :attr:`~PrProbeOutcome.NONE`, which
+    would tell a fail-closed teardown gate "nothing to protect" on a repo it
+    simply could not read.
     """
     if not branch:
         return PrProbe.unknown()
-    kind = forge_from_remote(git.remote_url(repo=str(repo_dir)))
+    remote = run_with_status(repo=str(repo_dir), args=["remote", "get-url", "origin"])
+    if remote.returncode != 0:
+        return PrProbe.unknown()
+    kind = forge_from_remote(remote.stdout.strip())
     if kind == "github":
         return probe_github_open_pr(repo_dir, branch)
     if kind == "gitlab":

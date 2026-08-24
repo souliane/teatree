@@ -13,6 +13,8 @@ import logging
 import os
 from pathlib import Path
 
+from teatree.loop.admit_budget import load_meta, meta_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -170,31 +172,32 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: loaded at tick time, not import
     from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    meta_path = (target or default_path()).with_name("tick-meta.json")
+    path = meta_path(target or default_path())
     # #744: the skip path writes tick-meta directly without the
     # render() that side-effect-creates the dir on the normal path —
     # ensure the parent exists so an observability write never crashes
     # the tick (or the skipped-tick freshness touch).
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     # #1036: share the slot's cadence resolver so the displayed next-tick
     # countdown can never diverge from the real loop cadence.
     cadence = cadence_seconds()
-    next_epoch = int(started_at.timestamp()) + cadence
-    freshness = _collect_repo_freshness()
+    # LOAD-MERGE, never a whole-file write: the freshness header is one of THREE
+    # writers into this sidecar. The others — the admission governor's brake state
+    # and the orchestrate admit budget — are read by a DIFFERENT process, so
+    # overwriting the file leaves a braked governor re-admitting at the high
+    # watermark (the hysteresis inert) and the claimer reading UNCLAMPED.
+    payload = load_meta(path)
     # ``rendered_at`` is the render-age source the statusline freshness gate
     # (teatree.loop.statusline_staleness + the shell hook) reads to surface a
     # STALE banner when a dead/stopped loop leaves the file frozen. It is the
     # tick's own start epoch — the moment this statusline was produced.
-    meta_path.write_text(
-        json.dumps(
-            {
-                "next_epoch": next_epoch,
-                "cadence": cadence,
-                "rendered_at": int(started_at.timestamp()),
-                "freshness": freshness,
-                "segments": _statusline_segments(),
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    payload.update(
+        {
+            "next_epoch": int(started_at.timestamp()) + cadence,
+            "cadence": cadence,
+            "rendered_at": int(started_at.timestamp()),
+            "freshness": _collect_repo_freshness(),
+            "segments": _statusline_segments(),
+        }
     )
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")

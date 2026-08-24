@@ -23,7 +23,7 @@ the migrated table stays empty (the ``ConfigSetting`` empty-table doctrine).
 """
 
 from datetime import datetime
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 from django.utils import timezone
@@ -106,6 +106,11 @@ class DirectiveManager(models.Manager["Directive"]):
 
 class Directive(models.Model):
     """One directive: raw text → typed sketch → human ratification → admission."""
+
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Annotation-only; never evaluated at runtime.
+        ratify_question_id: int | None
 
     class State(models.TextChoices):
         CAPTURED = "captured", "Captured"

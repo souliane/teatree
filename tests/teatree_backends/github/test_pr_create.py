@@ -19,6 +19,7 @@ from teatree.backends.github import pr_create as pr_create_module
 from teatree.backends.github.pr_create import create_pr
 from teatree.core.backend_protocols import PullRequestSpec
 from teatree.core.forge_pr_probe import PrProbe
+from teatree.core.review.mr_metadata import auto_created_description
 from teatree.utils.run import CommandFailedError
 
 
@@ -165,11 +166,9 @@ class TestCreatePrAdoptsAnAlreadyExistingPr:
 
 _ADOPTED_URL = "https://github.com/o/r/pull/42"
 
-_PLACEHOLDER_BODY = (
-    "fix(x): thing\n\n## What\n- thing\n\n## Why\n"
-    "TODO — opened automatically by the no-orphan pre-push hook, which sees only "
-    "the commit. Replace this line with the rationale before requesting review."
-)
+#: Built from the real generator, never a copy of its output: a hand-transcribed body
+#: keeps passing after the generator's wording moves, testing a shape nothing emits.
+_PLACEHOLDER_BODY = auto_created_description("fix(x): thing", "- thing", branch="x-thing")
 
 
 class _GhPrStub:

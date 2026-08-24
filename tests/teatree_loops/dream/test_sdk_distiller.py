@@ -498,7 +498,7 @@ class SdkDistillerWatchdogTestCase(SimpleTestCase):
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch.object(sdk_distiller, "_DISTILL_WATCHDOG_SECONDS", 0.5),
+            patch.object(sdk_distiller, "DISTILL_WATCHDOG_SECONDS", 0.5),
             patch.object(claude_agent_sdk, "ClaudeSDKClient", _HangOnConnectClient),
         ):
             thread = threading.Thread(target=_run, daemon=True)

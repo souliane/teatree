@@ -29,7 +29,7 @@ class Command(TyperCommand):
                     self.stderr.write(f"Tool '{name}' has no command defined.")
                     raise SystemExit(1)
                 argv = [*shlex.split(mgmt_cmd), *extra]
-                env = {**os.environ}
+                env: dict[str, str] = {**os.environ}
                 env.pop("VIRTUAL_ENV", None)
                 run_streamed(argv, env=env)
                 return f"Tool '{name}' completed."

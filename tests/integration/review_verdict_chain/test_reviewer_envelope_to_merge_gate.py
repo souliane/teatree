@@ -15,6 +15,7 @@ over a no-op review.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -251,7 +252,7 @@ class TestReviewingBriefTeachesTheEnvelopeVocabulary:
         assert "review_verdict" in check_evidence({"decisions": ["ok"]}, "reviewing")
 
     def test_schema_allowed_values_match_the_recorder_vocabulary(self) -> None:
-        properties = RESULT_JSON_SCHEMA["properties"]
-        verdict_schema = properties["review_verdict"]["properties"]["verdict"]  # type: ignore[index]
+        properties = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
+        verdict_schema = properties["review_verdict"]["properties"]["verdict"]
         assert verdict_schema["enum"] == ["merge_safe", "hold"]
         assert {choice.value for choice in ReviewVerdict.Verdict} == set(verdict_schema["enum"])

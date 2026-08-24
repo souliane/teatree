@@ -9,6 +9,7 @@ import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -63,7 +64,7 @@ class _SpyingRun:
         self._inner = inner
         self.commands: list[list[str]] = []
 
-    def __call__(self, cmd: list[str], **kwargs: object) -> CompletedProcess[str]:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> CompletedProcess[str]:
         self.commands.append(list(cmd))
         return self._inner(cmd, **kwargs)
 
@@ -279,7 +280,9 @@ class TestPushBranch:
         assert FAKE_TOKEN not in outcome.detail
 
     def test_timeout_is_bounded(self) -> None:
-        assert 0 < PUSH_TIMEOUT_SECONDS <= 600
+        # The bound covers the pre-push hook chain, not just the network (#4484) —
+        # generous, but never unbounded (see the mutation tests below).
+        assert 900 < PUSH_TIMEOUT_SECONDS <= 3600
 
     def test_a_push_that_timed_out_is_a_transport_refusal(self, clone_with_origin: Path) -> None:
         with patch(
@@ -291,6 +294,54 @@ class TestPushBranch:
         assert not outcome.ok
         assert outcome.failure is PushFailure.TRANSPORT
         assert "timed out" in outcome.detail
+
+
+class TestPushTimeoutCoversTheHookChainNotJustTransport:
+    """PUSH_TIMEOUT_SECONDS must bound hooks-plus-transport, and still be finite (#4484)."""
+
+    #: Longer than the OLD 300s bound (the #4484 regression), shorter than the current
+    #: one — a hook chain that takes this long must still succeed under the fix.
+    _SIMULATED_HOOK_PHASE_SECONDS = 400.0
+
+    def test_a_hook_phase_past_the_old_bound_still_succeeds_under_the_current_one(
+        self, clone_with_origin: Path
+    ) -> None:
+        """MUTATION: restore ``PUSH_TIMEOUT_SECONDS = 300.0`` → red."""
+        real_run = forge_push.run_allowed_to_fail  # captured BEFORE patching, so the fake can still delegate
+
+        def clock_gated_run(cmd: list[str], *, timeout: float | None = None, **kwargs: Any) -> CompletedProcess[str]:
+            """A fake clock: refuses the call if its budget is too small, else runs for real.
+
+            No wall-clock sleep — the *requested timeout* stands in for "how long
+            this push would need", so a too-small budget reproduces exactly what a
+            real ``subprocess.run(timeout=...)`` would do without actually waiting.
+            """
+            if timeout is not None and timeout < self._SIMULATED_HOOK_PHASE_SECONDS:
+                raise TimeoutExpired(cmd, timeout)
+            return real_run(cmd, timeout=timeout, **kwargs)
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=clock_gated_run):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.ok, outcome.detail
+
+    def test_a_genuine_transport_hang_is_still_bounded_not_infinite(self, clone_with_origin: Path) -> None:
+        """MUTATION: pass ``timeout=None`` (drop the bound entirely) → red."""
+        captured: dict[str, float | None] = {}
+
+        def hangs_forever(cmd: list[str], *, timeout: float | None = None, **_: object) -> CompletedProcess[str]:
+            captured["timeout"] = timeout
+            raise TimeoutExpired(cmd, timeout)
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=hangs_forever):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.TRANSPORT
+        # A real hang must still be caught by SOME finite bound — never `None` (an
+        # unbounded wait) and never a value so large it is unbounded in practice.
+        assert captured["timeout"] is not None
+        assert 0 < captured["timeout"] < 4 * 3600
 
 
 class TestPushOutcome:
@@ -341,7 +392,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
     def test_a_verification_that_times_out_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
         timed_out = TimeoutExpired("git", 1.0)
 
-        def time_out_only_on_the_remote_read(*, repo: str, args: list[str], **kwargs: object) -> CompletedProcess[str]:
+        def time_out_only_on_the_remote_read(*, repo: str, args: list[str], **kwargs: Any) -> CompletedProcess[str]:
             if args[0] == "ls-remote":
                 raise timed_out
             return run_with_status(repo=repo, args=args, **kwargs)
@@ -358,8 +409,8 @@ class TestTheRemoteSettlesWhetherThePushLanded:
     def test_a_commit_landing_during_the_push_does_not_falsify_it(self, clone_with_origin: Path) -> None:
         """The tip is what was ASKED to be pushed, read before the attempt — not after."""
 
-        def push_then_commit_locally(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            done = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))  # type: ignore[arg-type]
+        def push_then_commit_locally(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            done = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))
             (clone_with_origin / "later.txt").write_text("later\n")
             run_git(clone_with_origin, "add", "later.txt")
             run_git(clone_with_origin, "commit", "-q", "-m", "later")

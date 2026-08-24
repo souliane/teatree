@@ -11,13 +11,19 @@ remainder to the next pass instead of dropping it.
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.loops.dream import distill
 from teatree.loops.dream.engine import DistilledCluster, DistillEmptyReason, Distiller, DistillResult
+from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, build_extract
+from teatree.loops.dream.sdk_distiller import DISTILL_WATCHDOG_SECONDS
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _CITATION = "the agent force-pushed to main and lost the branch"
 
@@ -238,3 +244,146 @@ class ABrokenPassHoldsTheCursorTestCase(TestCase):
 
         assert outcome.broken_batches == 0
         assert outcome.next_cursor is not None
+
+
+class _FakeClock:
+    """A monotonic clock a test advances by hand, so a wall-clock bound needs no sleep."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _budget(clock: _FakeClock, *, total: float = 1800.0, tail_reserve: float = 480.0) -> PassBudget:
+    return PassBudget.start(total=total, tail_reserve=tail_reserve, clock=clock)
+
+
+class TheWallClockBudgetStopsLaunchingBatchesTestCase(TestCase):
+    """The distil phase must end by DECISION, leaving the pass's tail its reserve.
+
+    A count cap cannot bound wall clock: 24 batches against the distiller's own 300s
+    per-call watchdog is up to two hours of metered work inside a 30-minute pass. With
+    nothing reading a clock the pass only ever ended by the driver's SIGKILL, always
+    mid-distil — so compliance, the acceptance gates, phases 4-6 and the marker were
+    unreachable. Measured on the live deploy 2026-08-20: 17 consecutive dream ticks
+    SIGKILLed at exactly 1800s, and the tail's own ``DreamRunMarker.last_attempted_at``
+    six days stale behind them.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # Ten prompt-ceilings of corpus: far more batches than the budget can afford,
+        # so the clock — not the corpus — is what ends the walk.
+        self.extract = build_extract(_memory_members(self.tmp, 10 * ConsolidationExtract.CHAR_CEILING // 4000))
+
+    def _burning_distiller(
+        self, clock: _FakeClock, *, cost: float
+    ) -> "tuple[Callable[[ConsolidationExtract], list[DistilledCluster]], list[int]]":
+        launched: list[int] = []
+
+        def _burn(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            launched.append(len(batch.snippets))
+            clock.advance(cost)
+            return []
+
+        return _burn, launched
+
+    def test_a_pass_that_would_overrun_stops_launching_new_batches(self) -> None:
+        clock = _FakeClock()
+        distiller, launched = self._burning_distiller(clock, cost=200.0)
+        outcome = distill.distill_in_batches(self.extract, distiller=distiller, budget=_budget(clock))
+
+        assert launched, "the budget must not refuse the FIRST batch — that is a pass that never works"
+        assert outcome.budget_stopped_batches > 0, "the clock never bound; this corpus cannot prove the stop"
+        # Every launched call left room for its own worst case AND the tail's reserve.
+        assert clock.now <= 1800.0 - 480.0, "a call was launched that could eat the tail's reserve"
+
+    def test_it_stops_before_a_call_could_eat_the_tail_reserve(self) -> None:
+        # 300s per call — the distiller's real watchdog, i.e. the worst case the budget
+        # must reserve against rather than an average it may hope for.
+        clock = _FakeClock()
+        distiller, _launched = self._burning_distiller(clock, cost=DISTILL_WATCHDOG_SECONDS)
+        budget = _budget(clock)
+        distill.distill_in_batches(self.extract, distiller=distiller, budget=budget)
+
+        assert budget.remaining >= budget.tail_reserve, (
+            "the distil phase spent into the tail's reserve — the tail is what the reserve exists for"
+        )
+
+    def test_no_budget_means_the_unbounded_walk_is_unchanged(self) -> None:
+        clock = _FakeClock()
+        distiller, launched = self._burning_distiller(clock, cost=600.0)
+        outcome = distill.distill_in_batches(self.extract, distiller=distiller, budget=None)
+
+        assert outcome.budget_stopped_batches == 0
+        assert outcome.deferred_members == 0
+        assert len(launched) > 1
+
+    def test_a_pass_that_finishes_inside_its_budget_defers_nothing(self) -> None:
+        """Guards the over-correction: a cheap pass must still consolidate the whole corpus."""
+        clock = _FakeClock()
+        distiller, launched = self._burning_distiller(clock, cost=0.0)
+        outcome = distill.distill_in_batches(self.extract, distiller=distiller, budget=_budget(clock))
+
+        assert outcome.budget_stopped_batches == 0
+        assert outcome.deferred_members == 0
+        assert sum(launched) == len(self.extract.snippets)
+
+
+class TheClockStoppedRemainderIsDeferredNotDroppedTestCase(TestCase):
+    """A clock-truncated pass resumes where it stopped — the cursor carries the rest.
+
+    This is what makes stopping SAFE rather than lossy: the same rotation cursor that
+    already carried the count cap's leftovers carries the clock's, so "the clock stopped
+    us" and "the cap stopped us" leave the corpus in the same recoverable state.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.extract = build_extract(_memory_members(self.tmp, 10 * ConsolidationExtract.CHAR_CEILING // 4000))
+
+    def _stopped_pass(self) -> tuple[list[str], distill.BatchDistillOutcome]:
+        """One clock-bounded pass, then the caller's half of the contract: commit the cursor."""
+        clock = _FakeClock()
+        seen: list[str] = []
+
+        def _burn(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            seen.extend(str(snippet.path) for snippet in batch.snippets)
+            clock.advance(200.0)
+            return []
+
+        outcome = distill.distill_in_batches(self.extract, distiller=_burn, budget=_budget(clock))
+        if outcome.next_cursor is not None:
+            distill.commit_distill_cursor(outcome.next_cursor)
+        return seen, outcome
+
+    def test_the_unreached_region_is_reported_as_deferred(self) -> None:
+        _seen, outcome = self._stopped_pass()
+        assert outcome.budget_stopped_batches > 0
+        assert outcome.deferred_members > 0
+
+    def test_the_next_pass_picks_up_where_the_clock_stopped_it(self) -> None:
+        first, _ = self._stopped_pass()
+        second, _ = self._stopped_pass()
+        assert set(second) - set(first), (
+            "the second pass re-distilled only the first pass's members — the deferred "
+            "region was dropped, not carried, so the corpus's tail is never consolidated"
+        )
+
+    def test_a_dry_run_stopped_by_the_clock_consumes_nothing(self) -> None:
+        clock = _FakeClock()
+
+        def _burn(_batch: ConsolidationExtract) -> list[DistilledCluster]:
+            clock.advance(200.0)
+            return []
+
+        before = distill._read_cursor()
+        outcome = distill.distill_in_batches(self.extract, distiller=_burn, dry_run=True, budget=_budget(clock))
+        assert outcome.budget_stopped_batches > 0
+        assert outcome.next_cursor is None
+        assert distill._read_cursor() == before

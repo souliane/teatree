@@ -48,6 +48,7 @@ import os
 import platform
 import shutil
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -55,6 +56,9 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.ram_probe import linux_mem_available_kb
 from teatree.utils.ram_scope import cgroup_headroom_mib
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 
 logger = logging.getLogger(__name__)
 
@@ -233,15 +237,15 @@ def _ram_probe_inert_signal() -> ScanSignal:
     )
 
 
-def _track_consecutive_critical(*, marker: object, ram_crit: bool) -> None:
+def _track_consecutive_critical(*, marker: "ResourcePressureMarker", ram_crit: bool) -> None:
     """Increment (on CRITICAL RAM) or reset the sustained-CRITICAL counter."""
     current = getattr(marker, "consecutive_critical", 0) or 0
     new_value = current + 1 if ram_crit else 0
     if new_value == current:
         return
     try:
-        marker.consecutive_critical = new_value  # type: ignore[attr-defined]
-        marker.save(update_fields=["consecutive_critical"])  # type: ignore[attr-defined]
+        marker.consecutive_critical = new_value
+        marker.save(update_fields=["consecutive_critical"])
     except Exception:
         logger.exception("resource_pressure: failed to update consecutive_critical")
 
@@ -305,7 +309,7 @@ class ResourcePressureScanner:
         elapsed_minutes = (timezone.now() - last_run).total_seconds() / 60.0
         return elapsed_minutes < self.cadence_minutes
 
-    def _classify(self, *, reading: ResourceReading, marker: object) -> list[ScanSignal]:
+    def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
         inert = [_ram_probe_inert_signal()] if reading.ram_probe_inert else []
         disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb

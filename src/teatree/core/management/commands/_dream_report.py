@@ -26,6 +26,7 @@ class _ResultFragments:
     rejected: str
     deferred: str
     broken: str
+    budget_stopped: str
 
     @classmethod
     def of(cls, result: "DreamRunResult") -> "_ResultFragments":
@@ -46,6 +47,12 @@ class _ResultFragments:
             broken=(
                 f"; FAILED {result.broken_batches} broken + {result.failed_batches} raised batch(es)"
                 if result.distillation_broken
+                else ""
+            ),
+            budget_stopped=(
+                f"; STOPPED distilling on the pass budget with {result.budget_stopped_batches} "
+                "selected batch(es) unreached"
+                if result.budget_stopped_batches
                 else ""
             ),
         )

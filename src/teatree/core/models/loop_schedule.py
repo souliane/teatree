@@ -12,7 +12,7 @@ itself lives in :mod:`teatree.loop.preset_resolution`; this module is the durabl
 shape only, referencing presets **by name** so a deleted preset fails open.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 from django.utils import timezone as django_timezone
@@ -20,6 +20,12 @@ from django.utils import timezone as django_timezone
 
 class ModeSchedule(models.Model):
     """A named weekly calendar whose slots pick the active preset by day and time."""
+
+    if TYPE_CHECKING:
+        # Reverse accessor Django synthesises at class-prep time from the
+        # ``related_name`` on ``ModeScheduleSlot.schedule`` — invisible to a static checker.
+        # Annotation-only; never evaluated at runtime.
+        slots: "models.Manager[ModeScheduleSlot]"
 
     name = models.SlugField(max_length=64, unique=True)
     description = models.TextField(blank=True, default="")
@@ -55,6 +61,11 @@ class ModeScheduleSlot(models.Model):
     local wall-clock time in the owning schedule's ``timezone``.
     """
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow at class-prep time — invisible to a
+        # static checker. Annotation-only; never evaluated at runtime.
+        schedule_id: int
+
     schedule = models.ForeignKey(ModeSchedule, on_delete=models.CASCADE, related_name="slots")
     days = models.JSONField()
     start_time = models.TimeField()
@@ -65,7 +76,7 @@ class ModeScheduleSlot(models.Model):
         ordering: ClassVar = ["start_time"]
 
     def __str__(self) -> str:
-        return f"loop-schedule-slot<{self.schedule_id} {self.days}@{self.start_time} -> {self.preset_name}>"  # ty: ignore[unresolved-attribute]
+        return f"loop-schedule-slot<{self.schedule_id} {self.days}@{self.start_time} -> {self.preset_name}>"
 
     @property
     def weekdays(self) -> set[int]:

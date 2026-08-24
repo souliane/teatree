@@ -191,8 +191,13 @@ _drain_undelivered_pages() {
   printf '%s' "$kept" >"$UNDELIVERED_STATE" 2>/dev/null ||
     log "could not rewrite the undelivered-page ledger at $UNDELIVERED_STATE"
   [ "$delivered" -eq 0 ] || log "delivered $delivered owner page(s) parked by an earlier pass"
-  remaining="$(grep -c . "$UNDELIVERED_STATE" 2>/dev/null || printf 0)"
-  [ "$remaining" -eq 0 ] || log "$remaining owner page(s) STILL UNDELIVERED — see $UNDELIVERED_STATE"
+  # `grep -c .` always prints a count, even 0 — but it also exits 1 when that
+  # count is 0 (no matching lines), so a trailing `|| printf 0` fires TOO and
+  # appends a second "0", making `remaining` a two-line "0\n0". `[ ... -eq 0 ]`
+  # then errors "integer expression expected" on the embedded newline, and its
+  # own `||` branch logs a false "STILL UNDELIVERED" right after a clean drain.
+  remaining="$(grep -c . "$UNDELIVERED_STATE" 2>/dev/null || true)"
+  [ "${remaining:-0}" = 0 ] || log "$remaining owner page(s) STILL UNDELIVERED — see $UNDELIVERED_STATE"
 }
 
 # Send the owner DM (body on stdin). Never aborts the watchdog: an unwired Slack box

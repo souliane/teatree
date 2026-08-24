@@ -1337,6 +1337,10 @@ class TestWorkspaceStartTeardownExitCodes(TestCase):
             failing = MagicMock()
             failing.run.return_value = RunnerResult(ok=False, detail="git worktree remove failed")
             with (
+                # This fixture's worktree dir is a plain mkdir, not a git checkout —
+                # the PR probe correctly reads that as unknown and refuses. Not this
+                # test's concern, which is the runner failure's exit code.
+                patch.object(workspace_mod, "check_no_open_prs"),
                 patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=failing),
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -1634,6 +1638,10 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
             with (
                 patch.dict(os.environ, env_without_overlay, clear=True),
+                # This fixture's worktree dir is a plain mkdir, not a git checkout —
+                # the PR probe correctly reads that as unknown and refuses. Not this
+                # test's concern, which is overlay resolution.
+                patch.object(workspace_mod, "check_no_open_prs"),
                 patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=ok),
             ):
                 call_command("workspace", "teardown", path=str(wt_dir))

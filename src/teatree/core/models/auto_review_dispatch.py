@@ -27,6 +27,33 @@ ledger rather than re-armed forever. ``mark_resolved`` is the terminal, fired
 when a :class:`~teatree.core.models.review_verdict.ReviewVerdict` lands for the
 head.
 
+``mark_refused`` is the OTHER terminal (#4522, #4530). A reviewer can return a
+verdict the recorder refuses outright — a ``merge_safe`` judgement over required
+checks the SAME reviewer reported RED
+(:class:`~teatree.core.models.review_verdict.ChecksContradictionError`). Nothing
+lands, so the head keeps no verdict, so the post-``deadline`` re-acquire below arms
+another reviewer. That burn was always BOUNDED by :data:`MAX_DISPATCH_ATTEMPTS`
+like any other failing dispatch, and the retries are not waste: 6 of the 9 heads
+that ever hit this refusal recorded a verdict at that SAME head afterwards. So the
+latch fires only AT the bound, where nothing is left to spend. What it buys is not
+saved runs but a named cause — a claim that stops at ``refused`` says the last
+reviewer contradicted its own checks report, where one that stops saturated says
+only that three attempts ran out, which is what a crashed reviewer looks like too.
+
+A REFUSED row is terminal exactly like a RESOLVED one and is never re-acquired —
+but it is a DISTINCT state because no verdict covers this tree, and reading it as
+"reviewed" would be a lie to every consumer that asks. The safety valve is that the
+claim is keyed per HEAD: a push mints a new ``head_sha``, which has no row, so it
+arms a fresh review normally. A refusal latches one tree, never a pull request.
+
+The twin :class:`~teatree.core.models.codex_review_marker.CodexReviewMarker` carries
+an identical terminal through the same
+:func:`~teatree.core.modelkit.expiring_claim.retire_head_claim` write. Identical is
+the point: a refusal is RUN-scoped, so it retires only the claim that armed the run
+(:attr:`~teatree.core.models.review_target.ReviewTarget.armed_by`) and frees no lock
+on either path. Only :func:`~teatree.core.models.review_verdict.resolve_head_claims`
+reaches both tables, because a recorded verdict is a fact about the TREE.
+
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent claim keyed on ``(pr_url, head_sha)``).
 
@@ -44,7 +71,7 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q
+from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 
@@ -112,11 +139,15 @@ class AutoReviewDispatch(models.Model):
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
         RESOLVED = "resolved", "Resolved"
+        REFUSED = "refused", "Refused"
 
     #: In-flight: acquirable again only once ``deadline`` has passed.
     _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.DISPATCHED})
-    #: Empty on purpose — unlike the per-MR lock, a RESOLVED per-head claim is
-    #: terminal: a verdict already covers that exact tree.
+    #: Empty on purpose — unlike the per-MR lock, a terminal per-head claim stays
+    #: terminal. RESOLVED means a verdict already covers that exact tree; REFUSED
+    #: means a verdict for that exact tree is structurally unrecordable and a human
+    #: has been paged. Neither is re-armable, for opposite reasons, and both are
+    #: escaped the same way — by a new head (#4522).
     _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
 
     slug = models.CharField(max_length=255)
@@ -179,10 +210,46 @@ class AutoReviewDispatch(models.Model):
         merge_safe or hold, either way the review concluded. Resolving an
         unclaimed head is a legitimate no-op, never an error.
         """
-        return bool(
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower())
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.RESOLVED,
+        )
+
+    @classmethod
+    def mark_refused(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        """Terminal for a head whose retry budget ran out on an unrecordable verdict (#4522, #4530).
+
+        Returns ``True`` iff a row transitioned. Called when the recorder refuses a returned
+        verdict with a
+        :class:`~teatree.core.models.review_verdict.ChecksContradictionError`. Unlike
+        :meth:`mark_resolved` this asserts NO verdict — it renames an already-spent claim
+        from "the retries ran out" to "the last reviewer contradicted its own checks
+        report", which is the difference between a cause the owner can act on and a count.
+
+        Latches ONLY at :data:`MAX_DISPATCH_ATTEMPTS`, never on the first refusal, and that
+        bound is the whole safety property (#4530). The contradiction is between two fields
+        one reviewer wrote in one envelope, not a fact about the tree: 6 of the 9 heads that
+        ever hit it went on to record a verdict at that SAME head, three of them a ``hold``
+        over checks that really were red. Latching early would spend those recoveries to
+        save runs that are how the recoveries happened. At the bound there is nothing left
+        to spend — :meth:`_reclaim` already refuses — so the latch takes nothing away.
+
+        Frees NO :class:`~teatree.core.models.mr_review_lock.MRReviewLock`, deliberately and
+        unlike :meth:`ReviewVerdict.record`. A recorded verdict releases the lock because a
+        merge guard is about to consume it and a held lock would block the merge that verdict
+        just authorised. A refusal authorises nothing, so releasing would only remove a guard
+        while some other reviewer may still be running against this MR; the lock's own
+        ``deadline`` and ``reconcile_stale`` handle a holder that never came back.
+        """
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES, attempts__gte=MAX_DISPATCH_ATTEMPTS),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.REFUSED,
         )
 
     @classmethod
@@ -202,9 +269,11 @@ class AutoReviewDispatch(models.Model):
         ``(slug, pr_id, head_sha)``, and re-armed when an existing claim has
         EXPIRED without producing a verdict and has retry budget left — the
         dispatched reviewer died, so the head is un-reviewed and must not stay
-        un-armable (#3920). ``None`` covers the three refusals: a live claim
+        un-armable (#3920). ``None`` covers the four refusals: a live claim
         (a review really is in flight), a RESOLVED claim (a verdict already
-        covers this exact tree), and a saturated one
+        covers this exact tree), a REFUSED one (a verdict for this exact tree is
+        structurally unrecordable and a human has been paged — see
+        :meth:`mark_refused`), and a saturated one
         (:data:`MAX_DISPATCH_ATTEMPTS` reviews died — see :meth:`saturated`).
 
         ``None`` also when the per-MR

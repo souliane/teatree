@@ -161,6 +161,10 @@ def _clear_overlay() -> Iterator[None]:
 
 
 class TestLifecycleProvision(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def setUp(self) -> None:
         super().setUp()
         mock_sp = MagicMock()
@@ -377,9 +381,10 @@ class TestLifecycleProvision(TestCase):
             reset_called = True
 
         original_overlay.provisioning = type(original_overlay.provisioning)()
-        original_overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
-            name="reset-passwords",
-            callable=_track_reset,
+        self._monkeypatch.setattr(
+            original_overlay.provisioning,
+            "reset_passwords_command",
+            lambda wt: ProvisionStep(name="reset-passwords", callable=_track_reset),
         )
         with (
             patch(

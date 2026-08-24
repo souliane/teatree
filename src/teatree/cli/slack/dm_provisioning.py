@@ -30,10 +30,13 @@ clean ``conversations.open ok:false`` produces a single
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.utils.secrets import read_pass
+
+if TYPE_CHECKING:
+    from teatree.core.models.config_setting import ConfigValue
 
 SLACK_DM_CHANNEL_KEY = "slack_dm_channel_id"
 SLACK_USER_ID_PASS_KEY = "slack/user-id"  # noqa: S105 — pass key name, not a secret
@@ -92,7 +95,7 @@ def _load_overlays_registry() -> dict[str, dict]:
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stored = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
-    return stored if isinstance(stored, dict) else {}
+    return cast("dict[str, dict]", stored) if isinstance(stored, dict) else {}
 
 
 def _persist_dm_channel(overlay_name: str, channel_id: str) -> None:
@@ -104,7 +107,7 @@ def _persist_dm_channel(overlay_name: str, channel_id: str) -> None:
     if not isinstance(block, dict):
         return
     block[SLACK_DM_CHANNEL_KEY] = channel_id
-    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, registry)
+    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, cast("ConfigValue", registry))
 
 
 def provision_overlay_dm_channel(*, overlay_name: str) -> ProvisionResult:

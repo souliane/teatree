@@ -157,7 +157,7 @@ class TestConcreteSpecs:
     def test_credential_spec_is_frozen(self) -> None:
         spec = CredentialSpec(env_var="X", pass_path="a/x", conflicting_vars=())
         with pytest.raises(AttributeError):
-            spec.env_var = "Y"  # type: ignore[misc]
+            spec.env_var = "Y"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestDefaultSources:

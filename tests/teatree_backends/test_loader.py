@@ -54,17 +54,41 @@ def teardown_function() -> None:
 
 def _build_overlay(**config_kwargs: object) -> OverlayBase:
     overlay = MagicMock(spec=OverlayBase)
-    config = OverlayConfig()
+    config = _StubTokenConfig()
     for key, value in config_kwargs.items():
         setattr(config, key, value)
     overlay.config = config
     return cast("OverlayBase", overlay)
 
 
+class _StubTokenConfig(OverlayConfig):
+    """An ``OverlayConfig`` whose token reads are settable.
+
+    A real subclass overriding the three readers, not a rebound bound method, so
+    the double is type-checked like production code. ``_build_overlay`` always
+    creates this class, so ``_stub_token`` mutates the SAME config instance the
+    caller's ``config_kwargs`` were applied to rather than replacing it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._github = self._gitlab = self._slack = ""
+
+    def set_tokens(self, *, github: str = "", gitlab: str = "", slack: str = "") -> None:
+        self._github, self._gitlab, self._slack = github, gitlab, slack
+
+    def get_github_token(self) -> str:
+        return self._github
+
+    def get_gitlab_token(self) -> str:
+        return self._gitlab
+
+    def get_slack_token(self) -> str:
+        return self._slack
+
+
 def _stub_token(overlay: OverlayBase, *, github: str = "", gitlab: str = "", slack: str = "") -> None:
-    overlay.config.get_github_token = lambda: github  # type: ignore[method-assign]
-    overlay.config.get_gitlab_token = lambda: gitlab  # type: ignore[method-assign]
-    overlay.config.get_slack_token = lambda: slack  # type: ignore[method-assign]
+    cast("_StubTokenConfig", overlay.config).set_tokens(github=github, gitlab=gitlab, slack=slack)
 
 
 def test_get_code_host_returns_none_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:

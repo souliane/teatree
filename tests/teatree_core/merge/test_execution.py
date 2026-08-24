@@ -4,15 +4,32 @@ F2.8: the §15 sibling-CLEAR supersede matches the slug case-INSENSITIVELY. A
 forge slug is case-insensitive, so a sibling CLEAR recorded with a
 differently-cased ``owner/Repo`` must be consumed alongside the primary — a
 case-mismatched orphan must not survive to keep ratcheting the S4 hard-red gate.
+
+``TestUnreadableForgeStillRefuses`` pins the property that makes it SAFE for the
+rollup classifier to report an unreadable forge as ``"unreadable"`` instead of
+``"failed"``: every merge gate refuses on the new word exactly as it refused on
+the old one. A gate that had been left comparing ``== "failed"`` would let a forge
+nobody could read merge a PR — strictly worse than the mis-wording being fixed.
 """
 
+from unittest.mock import patch
+
+import pytest
 from django.test import TestCase
 
 from teatree.core.merge import execution
+from teatree.core.merge.ci_rollup import CodeHostQuery
+from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.execution import assert_ci_not_failed
 from teatree.core.merge.post_hook import record_merge_and_advance
 from teatree.core.models import MergeClear, PullRequest, Ticket
+from teatree.utils.pr_ref import PrRef
 
 _SHA = "a" * 40
+_SLUG = "souliane/teatree"
+_PR_ID = 4512
+_GH_RUNNER = "teatree.backends.forge_merge_rpc.gh_runner"
+_REQUIRED_CHECKS_STATUS = "teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status"
 
 
 def test_execution_does_not_reexport_is_transient_merge_response() -> None:
@@ -218,3 +235,58 @@ class TestKeystoneReportsAnUnresolvableTicket(TestCase):
             state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
 
         assert state == Ticket.State.MERGED
+
+
+class _RollupUnreadableRunner:
+    """A ``gh`` that answers reads but 503s the rollup — one endpoint down, not the PR.
+
+    The shape of the incident: the pull request is fine, unchanged, and already
+    judged ``merge_safe``; GitHub simply will not serve its checks for a minute.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
+        self.calls.append(argv)
+        if "statusCheckRollup" in " ".join(argv):
+            return (1, "", "HTTP 503: Service Unavailable (https://api.github.com)")
+        return (0, _SHA, "")
+
+
+class TestUnreadableForgeStillRefuses(TestCase):
+    """The fail-CLOSED posture survives the vocabulary change — this is the whole point."""
+
+    @staticmethod
+    def _query() -> CodeHostQuery:
+        return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID))
+
+    def test_the_rollup_classifier_reports_an_unreadable_forge_as_unreadable(self) -> None:
+        with patch(_GH_RUNNER, return_value=_RollupUnreadableRunner()):
+            assert self._query().required_checks_status() == "unreadable"
+
+    def test_an_unreadable_rollup_still_refuses_the_bound_merge(self) -> None:
+        """The chokepoint floor gate must refuse on the PRODUCER's real ``unreadable``.
+
+        Deliberately end-to-end over the classifier rather than patching
+        ``required_checks_status`` to a literal: the safety property is that the
+        producer's new value REACHES this gate and is refused there, which a patched
+        constant would assert about the test rather than about the code.
+        """
+        with (
+            patch(_GH_RUNNER, return_value=_RollupUnreadableRunner()),
+            pytest.raises(MergePreconditionError, match="are unreadable"),
+        ):
+            assert_ci_not_failed(self._query())
+
+    def test_a_genuinely_failing_check_still_reports_failed_and_still_refuses(self) -> None:
+        """The over-correction guard: a real red must not be laundered into ``unreadable``.
+
+        Without it, "stop saying failed" is satisfiable by never saying it — and a
+        genuinely red PR would read as a forge hiccup worth retrying.
+        """
+        with (
+            patch(_REQUIRED_CHECKS_STATUS, return_value="failed"),
+            pytest.raises(MergePreconditionError, match="are failed"),
+        ):
+            assert_ci_not_failed(self._query())

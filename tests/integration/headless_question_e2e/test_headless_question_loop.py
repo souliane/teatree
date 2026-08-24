@@ -21,9 +21,10 @@ import teatree.agents.runner as runner_mod
 from teatree.agents._runner_options import _get_resume_session_id
 from teatree.agents.runner import run_agent
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, DeferredQuestion, PendingChatInjection, Session, Task, Ticket
+from teatree.core.models import BotPing, DeferredQuestion, DmContext, PendingChatInjection, Session, Task
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
 
@@ -68,7 +69,7 @@ class FakeBackend:
 
 class TestHeadlessQuestionLoop:
     def _run_parked_headless_task(self) -> Task:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         task = Task.objects.create(
             ticket=ticket,
@@ -115,7 +116,12 @@ class TestHeadlessQuestionLoop:
         ).exists()
 
         # 3. Inbound reply binds → HEADLESS resume carrying the answer + the captured session.
-        PendingChatInjection.record(channel=_CHANNEL, slack_ts=_REPLY_TS, text="use postgres-1", user_id="U_ME")
+        PendingChatInjection.record(
+            channel=_CHANNEL,
+            slack_ts=_REPLY_TS,
+            text="use postgres-1",
+            context=DmContext(user_id="U_ME"),
+        )
         AskUserQuestionReplyScanner(backend=backend, overlay="").scan()
 
         question.refresh_from_db()

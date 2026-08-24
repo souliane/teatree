@@ -19,6 +19,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
+from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
 from teatree.utils import git
 
@@ -147,10 +148,10 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     """
     invoking = str(extra.get("ship_invoking_branch") or "")
     if invoking:
-        matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        matched = ticket.worktrees.filter(branch=invoking).first()
         if matched is not None:
             return matched
-    return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    return ticket.worktrees.first()
 
 
 def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
@@ -250,9 +251,16 @@ class ShipExecutor(RunnerBase):
             return RunnerResult(ok=True, detail=recorded_url)
 
         # #776: a ticket can span multiple PRs (one branch per workstream).
-        # Refuse to re-open a PR for a branch already merged into base —
-        # that is the stale-row symptom (a junk duplicate of merged work).
-        if git.branch_merged(repo=repo_path, branch=branch):
+        # Refuse to re-open a PR for a branch already landed on base — that is
+        # the stale-row symptom (a junk duplicate of merged work). #4070: judged
+        # by the three-layer CONTENT classifier, not the ancestor test alone; a
+        # squash-merge rewrites the branch's shas, so the branch is no ancestor
+        # of base and the ancestor test let the duplicate through. Inconclusive
+        # stays NOT-landed and ship proceeds — a wrongly-refused PR strands
+        # work, while a wrongly-opened one is a visible duplicate. Same reason
+        # the content must still be PRESENT on base: a revert, or a re-edit of
+        # the same region, ships rather than refuses.
+        if branch_is_landed(repo_path, branch):
             self._clear_invoking_branch(ticket, extra)
             return RunnerResult(
                 ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"

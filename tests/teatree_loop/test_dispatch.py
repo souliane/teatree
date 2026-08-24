@@ -411,6 +411,16 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert actions[0].kind == "statusline"
         assert actions[0].zone == "in_flight"
 
+    def test_a_blocked_signal_reaches_the_statusline(self) -> None:
+        # A persistent refusal (``keystone_refused`` and every other reason that
+        # rides ``decision="blocked"``) is a flag-level outcome the scanner
+        # deliberately did NOT act on. Without the PR_SWEEP_FLAG_KINDS entry the
+        # "pr_sweep." drop prefix swallows it and the refusal is invisible.
+        action = self._action("pr_sweep.blocked", "keystone_refused")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
     def test_diagnostic_pr_sweep_outcomes_still_dropped(self) -> None:
         # Anti-vacuous: the exemption is flag-only — a normal merged/skip
         # outcome stays diagnostic noise off the statusline.

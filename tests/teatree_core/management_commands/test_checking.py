@@ -22,6 +22,8 @@ from django.utils import timezone
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import BotPing
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
@@ -270,12 +272,20 @@ def _notify_backend() -> MagicMock:
 
 
 class TestCheckingNotify:
-    """``--notify`` DMs the recap as a native Block Kit table + fence fallback (#2966)."""
+    """``--notify`` routes the recap through the real ``notify_user`` egress.
 
-    def test_notify_emits_table_block_through_the_real_notify_path(self, checkpoint_file: Path) -> None:
-        # Anti-vacuity: the DM must be produced by the real ``notify_user`` egress
-        # (mocked Slack backend), not a direct formatter call — the ``table`` block
-        # and the monospace fence must both reach ``post_message``.
+    The recap is an ``OWNER_DELIVERY`` status signal, so since #4524 it reaches
+    Slack only if its key is registered as worth a push — unregistered, it is
+    recorded on the pulled surface instead (never DM'd). ``checking_recap`` is
+    not registered (it is exactly the "status the owner can read on demand"
+    class #4524 exists to keep off the DM), so these tests assert against the
+    pulled ``BotPing`` row rather than a live Slack post.
+    """
+
+    def test_notify_records_the_table_and_fence_on_the_pulled_surface(self, checkpoint_file: Path) -> None:
+        # Anti-vacuity: the pulled row must be produced by the real ``notify_user``
+        # egress (mocked Slack backend), not a direct formatter call — the
+        # rendered fence must reach the ``BotPing`` row, and no Slack post fires.
         _merged_ticket()
         backend = _notify_backend()
         with (
@@ -283,11 +293,13 @@ class TestCheckingNotify:
             patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
         ):
             _call("checking", "show", "--this-overlay", "--notify")
-        backend.post_message.assert_called_once()
-        call_kwargs = backend.post_message.call_args.kwargs
-        assert "table" in [block["type"] for block in call_kwargs["blocks"]]
-        assert "```" in call_kwargs["text"]
-        assert "acme/widgets#7" in call_kwargs["text"]
+        backend.open_dm.assert_not_called()
+        backend.post_message.assert_not_called()
+        row = BotPing.objects.get(idempotency_key__startswith="checking_recap:acme:")
+        assert row.status == BotPing.Status.PULLED
+        assert row.audience == NotifyAudience.OWNER_DELIVERY.value
+        assert "```" in row.text
+        assert "acme/widgets#7" in row.text
 
     def test_notify_skipped_when_nothing_to_report(self, checkpoint_file: Path) -> None:
         backend = _notify_backend()
@@ -298,7 +310,7 @@ class TestCheckingNotify:
             _call("checking", "show", "--this-overlay", "--notify")
         backend.post_message.assert_not_called()
 
-    def test_unchanged_recap_deduped_to_one_dm(self, checkpoint_file: Path) -> None:
+    def test_unchanged_recap_deduped_to_one_pulled_row(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         backend = _notify_backend()
         with (
@@ -307,7 +319,8 @@ class TestCheckingNotify:
         ):
             _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
             _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
-        backend.post_message.assert_called_once()
+        backend.post_message.assert_not_called()
+        assert BotPing.objects.filter(idempotency_key__startswith="checking_recap:acme:").count() == 1
 
 
 class TestCheckingShowAllOverlays:

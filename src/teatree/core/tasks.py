@@ -93,7 +93,8 @@ class TaskRunResult(TypedDict, total=False):
     """What one :func:`execute_task` run reports — an admission skip, a refusal, or an attempt."""
 
     skipped: str
-    exit_code: int | str
+    #: ``None`` while an attempt is recorded but unfinished — the column is nullable.
+    exit_code: int | str | None
     unknown_overlay: str
     attempt_id: int
     result: RawAPIDict

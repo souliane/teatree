@@ -146,9 +146,32 @@ It uses `git worktree move` (never a raw `mv` — git's worktree admin must upda
 
 That policy is the SAME one `t3 doctor check`'s split-namespace WARN consults: it prescribes `workspace relocate` only for the rows relocate would actually move, and NAMES each refused row with its reason instead of counting it. A count that includes an un-relocatable row prescribes a remedy that provably cannot discharge the finding, so the WARN recurs at that number on every run forever.
 
+## Is this branch landed? One canonical answer
+
+Never hand-roll it. `git cherry origin/main HEAD`, `git branch --merged`, `git merge-base --is-ancestor` and `git log … --not origin/main` all answer by SHA or ancestry, and a squash-merge rewrites the branch's commits into a new SHA on the default branch — so every one of them reports already-landed work as unmerged. That misread once escalated three merged branches to the owner as false completions and dispatched a shipper to push them.
+
+```bash
+t3 <overlay> workspace branch-verdict <branch> [<branch> …] [--repo <path>] [--json]
+```
+
+Read-only, works on any local branch (no `Worktree` row needed), and the sweep across N worktrees is ONE call. It serializes the three-layer content classifier: `redundant` + the deciding `source` (`cherry-zero-unique` / `synthetic-squash` / `branch-merged`), plus `forge_merged`, `merged_with_post_merge_work` and `unique_shas` **together** — a branch the forge calls merged whose tip still carries unique commits is reported NOT redundant with those SHAs named, so "merged" is never readable on its own as "safe to delete". An inconclusive probe answers NOT landed, so an uncertain branch is kept.
+
+A fourth field, `content_present_on_target`, is the present-tense question the other three structurally cannot ask: `git cherry` reads a patch's PRIOR appearance on the target, and a REVERT there does not erase it, so a squash-merged-then-reverted branch reads `redundant` on every patch-id layer. The report carries both, and the human line says so; the boolean `branch_is_landed` (what `ship`'s duplicate-PR refusal consumes) requires BOTH, so a reverted branch ships a fresh PR instead of being refused one. Post-merge drift on unrelated files stays LANDED; drift that re-edits the same region reads NOT LANDED — an unmergeable region is not proof of presence, and a needless PR is the cheap direction to be wrong in.
+
+`workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory (`t3 <overlay> gate merged-detect`) nudges a hand-rolled probe back here.
+
 ## Cleanup Patterns
 
 `t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal with a patch-id `git cherry` fallback — a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree (only projects teatree itself provisioned — those named `<repo>-wt<ticket-pk>`; the deploy stack and unrelated user projects are never candidates), reaps the auto-isolated worktree env roots **whose own stamp names a checkout this venue can see is gone** (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` — never one holding a `.git` checkout, never an unstamped one), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), REPORTS **unresolvable checkouts** as UNKNOWN and removes none (#3912 — a dir that CARRIES a `.git` entry yet fails `git rev-parse` is either a corrupted worktree or a perfectly healthy one created in another execution context, and no venue can tell those apart; a dir with NO `.git` was never a checkout and belongs to the auto-isolated env-dir reaper above), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+
+**Every reaping pass captures a checkout's unshipped work first, and `restore` reads it back (#4435).** Ahead of any disposition, `core/cleanup/unshipped_work.py` writes a salvage bundle — the staged + unstaged + untracked delta, plus a patch per unpushed commit — and an `UnshippedWorkRecord` row pointing at it. Two properties make it recoverable rather than merely present: the patches are captured VERBATIM (a stripped patch is one `git apply` rejects as `corrupt patch`), and a read this venue could not complete writes its cause to a distinct `.unreadable` key instead of overwriting a good capture with zero bytes. Apply one back with:
+
+```bash
+t3 <overlay> workspace restore <checkout-path-or-bundle-prefix> --into <checkout> --dry-run   # report only
+t3 <overlay> workspace restore <checkout-path-or-bundle-prefix> --into <checkout>             # apply
+```
+
+`--into` is never inferred, the commits patch applies before the uncommitted one (the latter is the delta on top), and each part is reported on its own line — `git apply` is all-or-nothing per invocation, so a part that fails leaves the target exactly as it was. `t3 doctor check` names the recorded checkouts to restore.
 
 **The judgment layer is a separate skill.** `clean-all` is the mechanical reaper — it auto-deletes the provably-redundant and EMITs every item it could not auto-decide (`t3 <overlay> workspace emit` → a JSON array). Deciding what to DO with each emitted item — salvage unmerged work to a fresh PR (`workspace salvage`), delete a shipped/superseded item, push post-merge commits to a new PR, skip a colleague's or a live item, or keep an uncertain one — is the **`/t3:sweeping-worktrees`** skill. Load it when sweeping stale/lost worktrees, branches, or stashes, or triaging `workspace emit`.
 

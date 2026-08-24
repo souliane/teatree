@@ -37,7 +37,7 @@ def _unstarted_tasks(ticket: Ticket, phase: str) -> "QuerySet[Task]":
     ``PENDING`` only: a claimed task is being worked right now, and treating it as a
     blocker would leave an operator unable to re-queue a phase whose worker died.
     """
-    return ticket.tasks.filter(phase=phase, status=Task.Status.PENDING).order_by("pk")  # ty: ignore[unresolved-attribute]
+    return ticket.tasks.filter(phase=phase, status=Task.Status.PENDING).order_by("pk")
 
 
 def enqueue_phase_task(

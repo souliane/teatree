@@ -329,7 +329,7 @@ class TestExpediteMergeTime(TestCase):
         # required checks is STILL refused — no MergeAudit, FSM stays IN_REVIEW.
         ticket = _expedited_ticket()
         clear = _issue_expedite_clear(ticket, pr_id=300)
-        with pytest.raises(MergePreconditionError, match="FAILED required check"):
+        with pytest.raises(MergePreconditionError, match="FAILED or UNREADABLE required check"):
             _run(clear, _failed_stub(), expedite_authorized="owner-x")
         ticket.refresh_from_db()
         clear.refresh_from_db()

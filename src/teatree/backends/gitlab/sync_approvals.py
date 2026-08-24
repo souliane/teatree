@@ -89,11 +89,11 @@ def _iter_approval_events(discussions: list[RawAPIDict]) -> list[tuple[str, str,
 def _note_as_event(note: object) -> tuple[str, str, str] | None:
     if not isinstance(note, dict):
         return None
-    if not note.get("system"):  # ty: ignore[invalid-argument-type]
+    if not note.get("system"):
         return None
-    body = str(note.get("body", ""))  # ty: ignore[no-matching-overload]
-    created_at = str(note.get("created_at", ""))  # ty: ignore[no-matching-overload]
-    author = note.get("author", {})  # ty: ignore[no-matching-overload]
+    body = str(note.get("body", ""))
+    created_at = str(note.get("created_at", ""))
+    author = note.get("author", {})
     username = str(author.get("username", "")) if isinstance(author, dict) else ""
     if _DISMISSED_BODY_RE.search(body):
         return (created_at, "dismissed", username)

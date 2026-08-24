@@ -41,49 +41,53 @@ _TICKET_KEYED_PREFIXES = ("repair-stall:", "repair-cap:")
 _TICKET_KEYED_FIELDS = 3
 
 
-def repair_marker_subject_states(marker: str, halt_subject_states: dict[str, list[str]]) -> list[str] | None:
-    """The FSM state of every ticket that raised *marker*, or ``None`` if undeterminable.
+def repair_marker_subject_tickets(markers: set[str]) -> dict[str, list[int]]:
+    """Map each ``repair-`` marker in *markers* to the pks of the tickets that raised it.
 
     A ticket-keyed ``repair-stall``/``repair-cap`` marker carries its subject pk; a
-    fingerprint-keyed ``repair-halt`` marker's subjects come from the pre-computed
-    parked-task map. ``None`` (undeterminable) is treated as "keep" by the caller —
-    the conservative default that never drops a question on a guess.
+    fingerprint-keyed ``repair-halt`` marker's subjects come from the parked tasks that
+    share it. A marker absent from the result is undeterminable, which the caller treats
+    as "keep" — the conservative default that never drops a question on a guess.
+
+    Resolved for the whole sweep in one pass, and in ticket PKs rather than FSM states,
+    so a caller can read anything the subject ticket carries — its state, or the pull
+    requests recorded against it — without a per-row query.
     """
-    if marker.startswith(_TICKET_KEYED_PREFIXES):
-        return _ticket_keyed_states(marker)
-    if marker.startswith(_HALT_PREFIX):
-        return halt_subject_states.get(marker)
-    return None
+    resolved = halt_marker_subject_tickets({m for m in markers if m.startswith(_HALT_PREFIX)})
+    keyed = {marker: pk for marker in markers if (pk := _ticket_keyed_pk(marker)) is not None}
+    if keyed:
+        live = set(Ticket.objects.filter(pk__in=set(keyed.values())).values_list("pk", flat=True))
+        resolved.update({marker: [pk] for marker, pk in keyed.items() if pk in live})
+    return resolved
 
 
-def _ticket_keyed_states(marker: str) -> list[str] | None:
-    """The single subject ticket's state for a ``repair-stall:<pk>:<phase>`` marker, else ``None``."""
+def _ticket_keyed_pk(marker: str) -> int | None:
+    """The subject ticket pk a ``repair-stall:<pk>:<phase>`` marker names, else ``None``."""
+    if not marker.startswith(_TICKET_KEYED_PREFIXES):
+        return None
     parts = marker.split(":", _TICKET_KEYED_FIELDS - 1)
     if len(parts) < _TICKET_KEYED_FIELDS or not parts[1].isdigit():
         return None
-    state = Ticket.objects.filter(pk=int(parts[1])).values_list("state", flat=True).first()
-    return [state] if state is not None else None
+    return int(parts[1])
 
 
-def halt_marker_subject_states(markers: set[str]) -> dict[str, list[str]]:
-    """Map each ``repair-halt`` marker in *markers* to the states of the tickets that raised it.
+def halt_marker_subject_tickets(markers: set[str]) -> dict[str, list[int]]:
+    """Map each ``repair-halt`` marker in *markers* to the pks of the tickets that raised it.
 
     One pass over the parked (:data:`HALT_STAMP`) FAILED tasks — the durable record
     of which tickets a fingerprint-keyed marker collapsed — re-deriving each task's
-    :func:`escalation_marker` and grouping ticket states by it. A marker with no
+    :func:`escalation_marker` and grouping ticket pks by it. A marker with no
     surviving parked task is absent from the map, so the caller keeps its question
     (the subject cannot be proven terminal).
     """
     if not markers:
         return {}
-    by_marker: dict[str, list[str]] = defaultdict(list)
-    parked = (
-        Task.objects.filter(status=Task.Status.FAILED, execution_reason__contains=HALT_STAMP)
-        .select_related("ticket")
-        .prefetch_related("attempts")
+    by_marker: dict[str, list[int]] = defaultdict(list)
+    parked = Task.objects.filter(status=Task.Status.FAILED, execution_reason__contains=HALT_STAMP).prefetch_related(
+        "attempts"
     )
     for task in parked:
         marker = escalation_marker(task)
         if marker in markers:
-            by_marker[marker].append(task.ticket.state)
+            by_marker[marker].append(task.ticket_id)
     return dict(by_marker)

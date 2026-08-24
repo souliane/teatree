@@ -112,6 +112,82 @@ class TestTickMetaCadence(django.test.TestCase):
         assert data["next_epoch"] == int(started.timestamp()) + 300
 
 
+class TestTickMetaPreservesItsCoTenants(django.test.TestCase):
+    """``_write_tick_meta`` shares ``tick-meta.json`` with the governor and the claimer.
+
+    The freshness header is one of THREE writers into that sidecar. A whole-file
+    write erases ``admission_governor_braked`` — so a braked governor re-admits at
+    the high watermark and the #3644 hysteresis is inert — and erases
+    ``orchestrate_admit_budget``, which the live claimer reads as UNCLAMPED.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path) -> None:
+        self.statusline = tmp_path / "statusline.txt"
+        self.meta = tmp_path / "tick-meta.json"
+
+    def _seed(self) -> None:
+        from teatree.loop.admission import write_braked  # noqa: PLC0415 — deferred: app-registry read
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 — deferred: same
+
+        write_braked(braked=True, statusline_path=self.statusline)
+        write_admit_budget(4, statusline_path=self.statusline)
+
+    def _survivors(self) -> tuple[bool, int | None]:
+        from teatree.loop.admission import read_braked  # noqa: PLC0415 — deferred: app-registry read
+        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415 — deferred: same
+
+        return (
+            read_braked(statusline_path=self.statusline),
+            read_admit_budget(statusline_path=self.statusline, cadence_seconds=720),
+        )
+
+    def test_an_idle_tick_preserves_the_braked_flag_and_the_admit_budget(self) -> None:
+        # The idle tick is where a concurrent claimer's budget reliably died: the
+        # LAST write of the phase, unconditional, and ``_orchestrate`` never runs
+        # on it to put the budget back.
+        self._seed()
+
+        run_tick(TickRequest(scanners=[]), statusline_path=self.statusline)
+
+        assert self._survivors() == (True, 4)
+
+    def test_an_active_tick_preserves_the_braked_flag(self) -> None:
+        # The budget is NOT asserted here: ``_orchestrate`` runs on the active
+        # path and deliberately clears it while the claim toggle is off.
+        self._seed()
+
+        run_tick(
+            TickRequest(scanners=[_FixedScanner(name="a", out=[ScanSignal(kind="my_pr.open", summary="A1")])]),
+            statusline_path=self.statusline,
+        )
+
+        assert self._survivors()[0] is True
+
+    def test_an_explicit_target_write_preserves_both_keys(self) -> None:
+        # The ``loops_tick`` management command's shape.
+        from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: app-registry read
+
+        self._seed()
+
+        _write_tick_meta(dt.datetime(2026, 5, 6, tzinfo=dt.UTC), target=self.statusline)
+
+        assert self._survivors() == (True, 4)
+        assert json.loads(self.meta.read_text(encoding="utf-8"))["cadence"] > 0
+
+    def test_a_targetless_write_preserves_both_keys(self) -> None:
+        # The ``statusline_refresh`` chain's shape — no target, so the path comes
+        # from ``default_path()``.
+        from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: app-registry read
+
+        self._seed()
+
+        with patch("teatree.loop.statusline.default_path", return_value=self.statusline):
+            _write_tick_meta(dt.datetime(2026, 5, 6, tzinfo=dt.UTC))
+
+        assert self._survivors() == (True, 4)
+
+
 def test_repo_freshness_on_real_git_repo(tmp_path: Path) -> None:
     repo = make_git_repo(tmp_path / "repo")
     info = _repo_freshness(repo)

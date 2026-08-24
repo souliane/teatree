@@ -8,7 +8,7 @@ stays under the module-health LOC cap.
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
@@ -48,7 +48,7 @@ def dispatch_worktree_path(ticket: "Ticket") -> str:
     gone, so the caller falls back to the ambient cwd. Lives here (not on
     ``Ticket``) so ``ticket.py`` stays under its module-health LOC cap.
     """
-    worktree_model = apps.get_model("core", "Worktree")
+    worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
     for worktree in worktree_model.objects.filter(ticket=ticket).order_by("pk"):
         path = worktree.worktree_path
         if path and Path(path).is_dir():
@@ -141,7 +141,7 @@ def collect_dirty_worktree_paths(ticket: "Ticket") -> list[str]:
     legitimately leaves scratch files around — only a tracked modification
     is the refusal trigger, via :func:`worktree_tracked_dirty_path`.
     """
-    worktree_model = apps.get_model("core", "Worktree")
+    worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
     return [
         path
         for wt in worktree_model.objects.filter(ticket=ticket)

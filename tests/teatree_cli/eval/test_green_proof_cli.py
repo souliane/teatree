@@ -8,6 +8,7 @@ missing / empty artifact — the JSON is the enforced proof.
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -24,7 +25,7 @@ def _write(tmp_path: Path, payload: dict[str, object]) -> Path:
     return out
 
 
-def _green_payload() -> dict[str, object]:
+def _green_payload() -> dict[str, Any]:
     return {
         "head_sha": _SHA,
         "totals": {"total": 2, "passed": 2, "failed": 0, "skipped": 0},
@@ -61,8 +62,8 @@ class TestGreenProofCli:
     def test_a_red_run_exits_nonzero(self, tmp_path: Path) -> None:
         payload = _green_payload()
         payload["totals"] = {"total": 2, "passed": 1, "failed": 1, "skipped": 0}
-        payload["scenarios"][1]["verdict"] = "fail"  # type: ignore[index]
-        payload["scenarios"][1]["triage_class"] = "behavioral"  # type: ignore[index]
+        payload["scenarios"][1]["verdict"] = "fail"
+        payload["scenarios"][1]["triage_class"] = "behavioral"
         path = _write(tmp_path, payload)
         with _catalog_of(2):
             result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])

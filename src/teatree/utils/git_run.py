@@ -25,6 +25,20 @@ def run_strict(*, repo: str = ".", args: list[str]) -> str:
     return result.stdout.strip()
 
 
+def run_strict_verbatim(*, repo: str = ".", args: list[str]) -> str:
+    """Like :func:`run_strict`, but stdout byte-for-byte — for output whose whitespace is semantic.
+
+    A patch is the load-bearing case (#4435): ``git apply`` rejects one missing
+    its trailing newline as ``corrupt patch``, and because ``.strip()`` eats ALL
+    trailing whitespace, a patch whose last line is a blank CONTEXT line (a lone
+    space) loses that line outright — its hunk header then counts one line too
+    many, so re-appending a newline yields a differently corrupt patch rather
+    than the original. ``-z`` porcelain is the other case: its records are
+    column-fixed, so a leading strip shifts every path by one character.
+    """
+    return run_checked(["git", "-C", repo, *args]).stdout
+
+
 def check(*, repo: str = ".", args: list[str]) -> bool:
     return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None).returncode == 0
 

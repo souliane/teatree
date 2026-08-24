@@ -83,6 +83,7 @@ from teatree.loops.dream.replay import ConsolidationExtract, build_extract, enum
 
 if TYPE_CHECKING:
     from teatree.loops.dream.eval_proposer import EvalProposalRequest
+    from teatree.loops.dream.pass_config import PassBudget
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,22 @@ class WriteOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class DistillPolicy:
+    """How ONE pass runs its distil phase: WHICH distiller, and under WHAT wall clock.
+
+    The two travel together because they answer the same question — how the metered
+    half of a pass is bounded. ``distiller=None`` selects the real SDK distiller;
+    ``budget=None`` leaves the walk unbounded (the manual and test path).
+    """
+
+    distiller: "Distiller | None" = None
+    budget: "PassBudget | None" = None
+
+
+_DEFAULT_DISTILL = DistillPolicy()
+
+
+@dataclass(frozen=True, slots=True)
 class DreamRunResult:
     clusters_recorded: int
     members_replayed: int
@@ -195,6 +212,10 @@ class DreamRunResult:
     #: via the distill cursor, never dropped; a non-zero count is WARNED so a pass that
     #: saw only part of the corpus says so.
     deferred_members: int = 0
+    #: Selected batches the pass's wall-clock budget turned away, told apart from the
+    #: ones the count cap never selected. Reported so a pass that stopped on the CLOCK
+    #: never reads like one that finished the corpus.
+    budget_stopped_batches: int = 0
     #: The ranked extract this pass built, so the command can reuse it for the
     #: compliance-measurement and automatable-ask phases instead of re-enumerating +
     #: re-reading every member a second time. ``None`` only on a pass that built none.
@@ -335,20 +356,27 @@ def run_consolidation(
     overlay: str,
     since: datetime | None,
     dry_run: bool,
-    distiller: Distiller | None = None,
     eval_proposals: "EvalProposalRequest | None" = None,
+    distill: DistillPolicy = _DEFAULT_DISTILL,
 ) -> DreamRunResult:
     """Run one consolidation pass: replay → extract → distill → write to ledger.
 
-    *distiller* defaults to the real SDK distiller; tests inject a fake so the
-    engine runs without an LLM. A distiller failure propagates to the caller
-    (the command marks the pass attempted-not-succeeded), never swallowed.
+    *distill* carries the distil phase's two bounds. Its ``distiller`` defaults to the
+    real SDK distiller; tests inject a fake so the engine runs without an LLM. A
+    distiller failure propagates to the caller (the command marks the pass
+    attempted-not-succeeded), never swallowed.
 
     *eval_proposals* is OFF by default (``None``): an unflagged pass is
     byte-identical to before. When a request is supplied, the sibling
     :mod:`teatree.loops.dream.eval_proposer` derives inert eval candidates from the
     grounded clusters and appends them to the review queue — only candidate
     descriptors, never a scenario file or fixture.
+
+    Its ``budget`` is the pass's wall clock, forwarded to
+    :func:`~teatree.loops.dream.distill.distill_in_batches`. It bounds only how many
+    NEW distiller calls are launched; everything after the distiller runs regardless,
+    which is the point — the whole tail used to be unreachable because the pass ended
+    by SIGKILL rather than by a decision. ``None`` keeps the unbounded walk.
     """
     from teatree.loops.dream.distill import (  # noqa: PLC0415 — deferred: import cycle
         commit_distill_cursor,
@@ -358,8 +386,9 @@ def run_consolidation(
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
-    distill = distiller or sdk_distill
-    outcome = distill_in_batches(extract, distiller=distill, dry_run=dry_run)
+    outcome = distill_in_batches(
+        extract, distiller=distill.distiller or sdk_distill, dry_run=dry_run, budget=distill.budget
+    )
     if outcome.deferred_members:
         logger.warning(
             "dream pass DEFERRED %d of %d snippet(s) — the per-pass batch cap bound; "
@@ -399,12 +428,14 @@ def run_consolidation(
         broken_batches=outcome.broken_batches,
         distill_diagnostics=outcome.diagnostics,
         deferred_members=outcome.deferred_members,
+        budget_stopped_batches=outcome.budget_stopped_batches,
         extract=extract,
     )
 
 
 __all__ = [
     "DistillEmptyReason",
+    "DistillPolicy",
     "DistillResult",
     "DistilledCluster",
     "Distiller",

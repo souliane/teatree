@@ -12,6 +12,7 @@ from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
 if TYPE_CHECKING:
+    from teatree.core.managers import TaskQuerySet
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
@@ -25,6 +26,11 @@ def _auto_ship_enabled() -> bool:
 
 class TicketSchedulingModel(TicketFacet):
     """Fresh-session phase-task scheduling, orphan-task consumption, and the dirty-worktree preflight."""
+
+    if TYPE_CHECKING:
+        # Reverse accessor for ``Task.ticket``'s ``related_name="tasks"`` — Django
+        # synthesises it at class-prep time, invisible to a static checker.
+        tasks: "TaskQuerySet"
 
     class Meta:
         abstract = True

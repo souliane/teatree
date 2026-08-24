@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
@@ -40,6 +41,10 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_sl
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.utils.throttled_log import warn_throttled
+
+if TYPE_CHECKING:
+    from teatree.core.models.loop_lease import LoopLease
+    from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +202,7 @@ def _stale_tick_signals() -> SignalCollection:
         from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
 
         now = timezone.now()
-        lease_model = apps.get_model("core", "LoopLease")
+        lease_model = cast("type[LoopLease]", apps.get_model("core", "LoopLease"))
         rows = lease_model.objects.filter(
             lease_expires_at__gt=now,
             acquired_at__isnull=False,
@@ -235,7 +240,7 @@ def _failed_task_signals() -> SignalCollection:
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
 
-        task_model = apps.get_model("core", "Task")
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
         cutoff = timezone.now() - _FAILED_TASK_WINDOW
         count = task_model.objects.filter(status="failed", created_at__gte=cutoff).count()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip

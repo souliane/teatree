@@ -21,7 +21,7 @@ maker≠checker + full-SHA primitives from ``merge_clear`` so a self-attested or
 tree-unbound artifact can never advance a gate.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -105,6 +105,12 @@ class ReviewEvidence(models.Model):
         db_table = "teatree_review_evidence"
         ordering: ClassVar = ["-recorded_at"]
         indexes: ClassVar = [models.Index(fields=["ticket", "kind", "recorded_at"])]
+
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
 
     def __str__(self) -> str:
         return f"review-evidence<ticket:{self.ticket_id} {self.kind}@{self.head_sha[:8]}>"  # type: ignore[attr-defined]

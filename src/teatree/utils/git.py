@@ -41,7 +41,14 @@ from teatree.utils.git_commit import (
     unsynced_commits,
 )
 from teatree.utils.git_remote_ops import config_value, remote_slug, remote_url
-from teatree.utils.git_run import check, git_env_hermetic, git_env_without_overrides, run, run_strict
+from teatree.utils.git_run import (
+    check,
+    git_env_hermetic,
+    git_env_without_overrides,
+    run,
+    run_strict,
+    run_strict_verbatim,
+)
 from teatree.utils.git_status import (
     full_worktree_diff,
     status_porcelain,
@@ -107,6 +114,7 @@ __all__ = [
     "rev_count",
     "run",
     "run_strict",
+    "run_strict_verbatim",
     "soft_reset",
     "status_porcelain",
     "status_porcelain_strict",

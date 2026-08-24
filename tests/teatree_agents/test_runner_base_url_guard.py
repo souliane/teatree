@@ -24,8 +24,9 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.runner import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task
 from teatree.llm.credentials import CredentialError
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 # Spelled as literals, NOT imported from the module under test: these names are the
@@ -117,7 +118,7 @@ class TestDispatchRecordsTheRefusalRatherThanRunning(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_run_agent_records_a_failed_attempt_naming_the_variable(self) -> None:
         spawned: list[object] = []

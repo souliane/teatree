@@ -94,7 +94,7 @@ class StaleTicketsScanner:
 
     @staticmethod
     def _last_activity(ticket: "Ticket") -> datetime | None:
-        last_attempt = ticket.tasks.aggregate(  # ty: ignore[unresolved-attribute]
+        last_attempt = ticket.tasks.aggregate(
             ts=Max("attempts__started_at"),
         )["ts"]
         if last_attempt is not None:

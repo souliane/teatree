@@ -60,7 +60,7 @@ from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 from tests.test_hook_router_classifier_relax_wire import run_hook_router
 
-pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # the zero-token test guard.
 
 # Lane-A Bash-shaped deny matchers, imported from the cold PreToolUse guards — the
 # implementations the Lane-B leaves must agree with. raw-merge, raw-pid-kill AND
@@ -110,7 +110,7 @@ def _streaming_model(*, tool_command: str) -> FunctionModel:
     """
     state = {"n": 0}
 
-    def stream_fn(messages: object, info: object) -> object:
+    def stream_fn(messages: list[ModelMessage], info: object) -> object:
         state["n"] += 1
         turn = state["n"]
 
@@ -202,9 +202,9 @@ def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
     stand-in for that wire-level check.
     """
 
-    def stream_fn(messages: object, info: object) -> object:
+    def stream_fn(messages: list[ModelMessage], info: object) -> object:
         call_ids: set[str] = set()
-        for message in messages:  # type: ignore[attr-defined]
+        for message in messages:
             if isinstance(message, ModelResponse):
                 call_ids.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
             elif isinstance(message, ModelRequest):

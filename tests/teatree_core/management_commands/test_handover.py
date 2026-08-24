@@ -13,10 +13,10 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover import claim_handovers, render_claimed_payload
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.models import LoopLease, SessionHandover, Ticket
+from teatree.core.push.fast_push import FastPushOutcome, LeakFinding
 
 _SECTION_HEADER = "## Sub-agent wrap-up"
 

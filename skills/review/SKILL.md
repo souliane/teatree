@@ -28,7 +28,7 @@ Both self-review and external review cycles.
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
-- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
+- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `overlay.config.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
   **Do this — never skip it (imperative, the prose above is the WHY):** reviewing ANY overlay repo, the FIRST actions — before reading the diff, fetching ticket context, or asking for an MR URL — are to derive the declared set (`get_review_companion_skills()` = `[pr_review_companion, *companion_skills]`) and load every skill in it via the `Skill` tool, in order — never proceed to the diff with only the generic `/t3:review`:
 
@@ -107,6 +107,18 @@ It extracts the merge result to a **plain directory** and git-inits it with the 
 3. **Never a clone whose `origin` is a local path.** `resolved_repo_slug` (`src/teatree/core/merge/pr_slug_resolution.py`) returns `""` for an unresolvable origin, silently defeating every repo-scoped match downstream — a test then fails on the branch and passes on `main` for reasons that have nothing to do with the diff.
 
 **Before filing a finding whose evidence is a difference between two trees, enumerate what differs between them besides the diff.** Origin URL, presence of `.git`, working directory, data dir, installed venv, and ambient credentials have each produced a false result here. "Fails on the branch, passes on main" is a claim about a *difference*; the diff is only one candidate for it.
+
+**A recorded HOLD is READ, never re-derived (#4476).** Findings are persisted on the verdict and rendered by two surfaces, so an author fixes what the reviewer actually found and a later reviewer CHECKS the findings were addressed rather than reaching a fresh judgment:
+
+```bash
+t3 <overlay> review findings <pr-url>            # the findings, rendered; --json for the machine shape, --sha to pin a tree
+t3 <overlay> review status <pr-url> --json       # the full status record, findings included
+t3 <overlay> review publish-findings <pr-url>    # post them to the PR (idempotent) — `review record` already tries
+```
+
+`review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: on the shipped `draft_or_ask` it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
+
+Discharging a hold needs no new state: verdicts are newest-wins, so a later `merge_safe` recorded at the same head supersedes the HOLD.
 
 **Mechanically enforced (#4251):** a blocking finding (`blocker`/`major`/`high`/`critical`) citing a file outside the PR's own changed-file set is REFUSED at record time — by `t3 <overlay> review record` and by the headless orchestrator that records a returned `review_verdict` alike. Re-measure on the merge result, then re-record with `--merge-result-retake` (CLI) or `"merge_result_retake": true` (envelope) if the finding survives. The gate declines to judge when the changed-file set cannot be read: an unread diff proves nothing. The check is also the cheapest one available to you by hand — a finding that asserts the PR changes no `src/` file *and* reports a `src/` regression refutes itself, and `git log origin/main -- <cited-file>` names the PR actually responsible.
 

@@ -116,10 +116,9 @@ class _StubAPI:
 
 
 def _service_with_stub() -> tuple[ReviewService, _StubAPI]:
-    service = ReviewService(token="t")
     stub = _StubAPI()
+    service = ReviewService(token="t", api=stub)
     # Replace the lazy API factory so no real GitLab call is attempted.
-    service._get_api = lambda: stub  # type: ignore[method-assign]
     return service, stub
 
 

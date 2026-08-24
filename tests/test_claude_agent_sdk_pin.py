@@ -49,7 +49,7 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.128"
+_PINNED_VERSION = "0.2.139"
 _PACKAGE = "claude-agent-sdk"
 _SDK_MODULE = "claude_agent_sdk"
 
@@ -159,7 +159,10 @@ def _overrides_file_requirements() -> list[Requirement]:
     return [Requirement(line.strip()) for line in lines if line.strip() and not line.lstrip().startswith("#")]
 
 
-def _automated_uv_tool_installs() -> list[tuple[str, str]]:
+def _automated_uv_tool_installs(
+    command_flag: str = "--overrides",
+    env_var: str = "UV_OVERRIDE",
+) -> list[tuple[str, str]]:
     """``(repo-relative path, command)`` for every ``uv tool install`` of teatree run UNATTENDED.
 
     Scoped to the build/deploy/CI surfaces, where a missing override is not advice a human
@@ -167,6 +170,17 @@ def _automated_uv_tool_installs() -> list[tuple[str, str]]:
     ``--editable <path>`` or ``--from git+…`` — which is what separates an invocation from
     prose mentioning one. Backslash continuations are joined first, so a flag on the next
     line still belongs to the same command.
+
+    *command_flag* / *env_var* are the two ways one setting can reach an install — on the
+    command, or ambiently through the image ENV. They are parameters because the override
+    is no longer the only setting every unattended install must carry: the LOCKFILE
+    constraint is the second, and it is the same sweep over the same surfaces.
+
+    The env arm requires an ASSIGNMENT (``UV_OVERRIDE=``), never a bare mention: a comment
+    explaining why the ambient setting matters is the most likely thing to be written next
+    to an install, and it would satisfy a substring check while setting nothing. Observed —
+    a first spelling of the constraint sweep passed with ``--constraints`` deleted from
+    ``entrypoint.sh``, on the strength of the comment above the line.
     """
     installs: list[tuple[str, str]] = []
     for root in _AUTOMATED_INSTALL_ROOTS:
@@ -181,7 +195,7 @@ def _automated_uv_tool_installs() -> list[tuple[str, str]]:
                 continue
             joined = text.replace("\\\n", " ")
             for match in _RUNNABLE_UV_TOOL_INSTALL.finditer(joined):
-                flagged = "--overrides" in match.group(0) or "UV_OVERRIDE" in joined
+                flagged = command_flag in match.group(0) or f"{env_var}=" in joined
                 installs.append((path.relative_to(_REPO_ROOT).as_posix(), "flagged" if flagged else match.group(0)))
     return installs
 
@@ -341,6 +355,51 @@ class TestTheOverrideReachesEveryInstallSurface:
         assert "uv tool install --editable" in entrypoint, (
             "the entrypoint no longer reinstalls editable; re-check that UV_OVERRIDE still covers whatever replaced it."
         )
+
+    def test_every_unattended_install_is_lockfile_constrained(self) -> None:
+        # `uv tool install --reinstall` RE-RESOLVES from the index and reads no lockfile, so
+        # the deployed container ran a dependency graph nothing in CI had ever resolved. It
+        # picked up a gunicorn release that had dropped its `packaging` dependency;
+        # `teatree.utils.dep_skew` imports `packaging` on the `t3 doctor` path, and the doctor
+        # plane was down for 72 consecutive watchdog passes. Every unattended install must be
+        # bounded by the lockfile the suite actually ran against — via `--constraints` on the
+        # command or an ambient `UV_CONSTRAINT`.
+        unconstrained = sorted(
+            f"{path}: {command}"
+            for path, command in _automated_uv_tool_installs("--constraints", "UV_CONSTRAINT")
+            if command != "flagged"
+        )
+        assert not unconstrained, (
+            "every unattended `uv tool install` of teatree must resolve against the lockfile — "
+            "via `--constraints <exported lock>` on the command or an ambient `UV_CONSTRAINT`. "
+            "Without it the container re-resolves from the index and can install a graph no CI "
+            f"lane has ever run. Missing it: {unconstrained}"
+        )
+
+    def test_the_constraint_sweep_sees_the_surface_it_is_meant_to_guard(self) -> None:
+        # The control for the assertion above: a sweep matching nothing would pass it.
+        paths = {path for path, _ in _automated_uv_tool_installs("--constraints", "UV_CONSTRAINT")}
+        assert {"deploy/Dockerfile", "deploy/entrypoint.sh"} <= paths
+
+    def test_the_constraints_export_excludes_the_dev_groups(self) -> None:
+        # Boot-safety, proven the hard way: an export carrying the DEFAULT groups pins `prek`,
+        # and the entrypoint's own `uv tool install prek==<pin>` then dies with "you require
+        # prek==<pin> and prek==<other>, we can conclude that your requirements are
+        # unsatisfiable" under an ambient UV_CONSTRAINT — killing every container boot, which
+        # is strictly worse than the bug being fixed. `--no-default-groups` keeps the
+        # constraint set to what is actually installed; `--all-extras` keeps the `[slack]`
+        # extra the entrypoint installs inside it.
+        for surface in ("deploy/Dockerfile", "deploy/entrypoint.sh"):
+            joined = (_REPO_ROOT / surface).read_text(encoding="utf-8").replace("\\\n", " ")
+            assert "uv-constraints.txt" in joined, f"{surface} must name the constraints file it resolves against"
+            export = [line for line in joined.splitlines() if "uv export" in line]
+            assert export, f"{surface} must generate its constraints file from the lockfile with `uv export`"
+            flags = " ".join(export)
+            assert "--frozen" in flags, f"{surface}: the export must read the committed lock, never re-resolve it"
+            assert "--no-default-groups" in flags, (
+                f"{surface}: exporting the default groups pins `prek` and makes the entrypoint's "
+                "own `uv tool install prek==<pin>` unresolvable — the boot dies before the loop starts."
+            )
 
     def test_the_argv_builder_points_at_the_committed_file(self) -> None:
         assert uv_overrides_args(_REPO_ROOT) == ["--overrides", str(_REPO_ROOT / UV_OVERRIDES_FILENAME)]

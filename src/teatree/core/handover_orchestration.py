@@ -4,9 +4,10 @@ When a session hands off (or the orchestrator shuts down), a sub-agent still
 holding unpushed work would otherwise be killed with that work stranded on a
 volatile worktree. This module is the coupling the directive asks for: the
 orchestrator enumerates the clone's sub-agent worktrees that still carry pending
-work and runs the leak-gated :class:`~teatree.core.fast_push.FastPusher` on each,
+work and runs the leak-gated :class:`~teatree.core.push.fast_push.FastPusher` on each,
 so the work is committed, pushed, and PR-upserted FIRST — "everybody follows the
 command" before anyone is terminated.
+
 
 Best-effort and idempotent: a clean (synced) worktree is skipped, the
 orchestrator's own worktree is excluded, and a push failure on one worktree is
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from teatree.core.fast_push import FastPusher, FastPushOutcome
+from teatree.core.push.fast_push import FastPusher, FastPushOutcome
 from teatree.utils.git import WorktreeRecord, default_branch, list_worktrees, log_oneline, run, status_porcelain
 
 logger = logging.getLogger(__name__)

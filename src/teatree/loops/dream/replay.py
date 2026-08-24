@@ -6,7 +6,8 @@ ledger). Two jobs, and the vocabulary they produce:
 
 *   :func:`enumerate_members` lists what exists — the curated memory files, re-read
     regardless of age, plus the recency-gated session / sub-agent / task-output
-    transcripts.
+    transcripts, plus the non-filesystem sources registered in
+    :data:`_EXTRA_MEMBER_SOURCES` (today: the owner's Slack DMs).
 *   :func:`build_extract` reads them, weights each by the shared ladder, keeps only the
     high-signal transcript lines, and truncates to a bounded
     :class:`ConsolidationExtract` in rank order.
@@ -17,14 +18,16 @@ and the freshest user corrections are never what is dropped. The weight ladder i
 KIND-AWARE, so a transcript that merely QUOTES a BINDING rule can never outrank the
 curated memory that owns it.
 
-Nothing here touches the DB or an LLM, and every root is resolved from an explicit
-argument or ``Path.home()``, so the whole phase is exercisable from a tmp fixture.
+No LLM runs here, and every filesystem root is resolved from an explicit argument or
+``Path.home()``, so the glob half of the phase stays exercisable from a tmp fixture. The
+registered non-filesystem sources DO read the DB; each is called behind its own guard, so
+an unavailable DB costs that source's members and never the pass.
 """
 
 import logging
 import os
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -71,6 +74,12 @@ class TranscriptMember:
     #: sort key would crash the whole pass if a transcript (a /tmp session .jsonl)
     #: is reaped between enumeration and sort; capturing it up front is race-safe.
     mtime: float = 0.0
+    #: A RENDERED member's body, carried inline. Non-empty only for a member that has
+    #: no file behind it (the Slack DM source, whose rows live in the DB): its ``path``
+    #: is a synthetic identity for the prompt header and the cluster key, never
+    #: something to open. Rendering to a real file instead would put a second plaintext
+    #: copy of the owner's DMs on disk for no gain, so the body rides on the member.
+    text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +152,26 @@ def _recent_file_mtime(path: Path, cutoff_ts: float) -> float | None:
     return mtime if mtime is not None and mtime >= cutoff_ts else None
 
 
+def _slack_dm_members(cutoff: datetime) -> list[TranscriptMember]:
+    """The owner's Slack DMs since *cutoff*, rendered as USER-turn transcript members."""
+    from teatree.loops.dream.slack_corpus import owner_slack_members  # noqa: PLC0415 — deferred: ORM + import cycle
+
+    return owner_slack_members(since=cutoff)
+
+
+#: Member sources that are NOT a filesystem glob, as ``(name, source)`` — run after the
+#: globs and gated by the same recency cutoff. The name is carried rather than read off
+#: the callable so a skipped source logs a stable identity. One entry today: the owner's
+#: Slack DMs (#2663), the channel the corpus was blind to for its whole existence — every
+#: correction the owner typed there reached no detector, because ``~/.claude/projects``
+#: was the only place this function looked. Registering a source here is all it takes;
+#: everything downstream reads a :class:`TranscriptMember` and cannot tell where it came
+#: from.
+_EXTRA_MEMBER_SOURCES: tuple[tuple[str, Callable[[datetime], list[TranscriptMember]]], ...] = (
+    ("slack_dm", _slack_dm_members),
+)
+
+
 def enumerate_members(
     *,
     since: datetime | None = None,
@@ -184,6 +213,14 @@ def enumerate_members(
             for p in task_root.glob("*/*/tasks/*.output")
             if (mt := _recent_file_mtime(p, cutoff_ts)) is not None
         )
+
+    for name, source in _EXTRA_MEMBER_SOURCES:
+        try:
+            members.extend(source(cutoff))
+        except Exception:
+            # One source must never take the whole pass down: an unreachable DB costs
+            # that source's members, and the pass still distils everything else.
+            logger.warning("dream replay: member source %r failed; skipping it", name, exc_info=True)
 
     members.sort(key=lambda m: m.mtime, reverse=True)
     return members
@@ -232,6 +269,11 @@ def _has_user_correction(text: str) -> bool:
 
 
 def _read_member_text(member: TranscriptMember) -> str:
+    if member.text:
+        # A rendered member is transcript JSONL by construction, so it takes the SAME
+        # high-signal filter and the same per-session cap as a file-backed transcript —
+        # matching the existing contract rather than inventing a second one for it.
+        return high_signal_lines(member.text)[:_PER_SESSION_CHARS]
     try:
         raw = member.path.read_text(errors="replace")
     except OSError:

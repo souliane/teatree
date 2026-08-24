@@ -14,10 +14,14 @@ never breaks the CLI turn that just succeeded.
 from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import httpx
 
 from teatree.cli.review.approval import identity_in_approved_by
+
+if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabAPI
 
 
 class ReviewArtifactNotVerifiedError(RuntimeError):
@@ -63,7 +67,7 @@ def _gitlab_issue_url(base_url: str, repo: str, issue_iid: int) -> str:
     return f"{web_root}/{repo}/-/issues/{issue_iid}"
 
 
-def verify_note_landed(api: object, encoded: str, mr: int, artifact_id: object, *, endpoint: str) -> None:
+def verify_note_landed(api: "GitLabAPI", encoded: str, mr: int, artifact_id: object, *, endpoint: str) -> None:
     """Read back one posted note/draft note by id; raise if GitLab says it is gone (#2081).
 
     The inline twin of ``gitlab_note_verifier_for_overlay``: GET
@@ -79,7 +83,7 @@ def verify_note_landed(api: object, encoded: str, mr: int, artifact_id: object, 
         return
     sub = "draft_notes" if "draft_notes" in endpoint else "notes"
     try:
-        result = api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{aid}")  # type: ignore[attr-defined]
+        result = api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{aid}")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == HTTPStatus.NOT_FOUND:
             msg = f"GitLab {sub[:-1].replace('_', ' ')} {aid} not found on !{mr} after post — not reporting as posted"
@@ -90,7 +94,7 @@ def verify_note_landed(api: object, encoded: str, mr: int, artifact_id: object, 
         raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_note_deleted(api: object, encoded: str, mr: int, note_id: object) -> None:
+def verify_note_deleted(api: "GitLabAPI", encoded: str, mr: int, note_id: object) -> None:
     """Confirm a deleted note is actually gone (#2081) — the inverse of :func:`verify_note_landed`.
 
     GET the note: a 404 confirms the delete took. A 200 (note still present)
@@ -101,7 +105,7 @@ def verify_note_deleted(api: object, encoded: str, mr: int, note_id: object) -> 
     if not aid.isdigit():
         return
     try:
-        api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes/{aid}")  # type: ignore[attr-defined]
+        api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes/{aid}")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == HTTPStatus.NOT_FOUND:
             return
@@ -110,7 +114,7 @@ def verify_note_deleted(api: object, encoded: str, mr: int, note_id: object) -> 
     raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_issue_note_deleted(api: object, encoded: str, issue_iid: int, note_id: object) -> None:
+def verify_issue_note_deleted(api: "GitLabAPI", encoded: str, issue_iid: int, note_id: object) -> None:
     """Confirm a deleted ISSUE/work-item note is actually gone — the issue twin of :func:`verify_note_deleted`.
 
     GET the note: a 404 confirms the delete took. A 200 (note still present)
@@ -121,7 +125,7 @@ def verify_issue_note_deleted(api: object, encoded: str, issue_iid: int, note_id
     if not aid.isdigit():
         return
     try:
-        api.get_json(f"projects/{encoded}/issues/{issue_iid}/notes/{aid}")  # type: ignore[attr-defined]
+        api.get_json(f"projects/{encoded}/issues/{issue_iid}/notes/{aid}")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == HTTPStatus.NOT_FOUND:
             return
@@ -130,7 +134,7 @@ def verify_issue_note_deleted(api: object, encoded: str, issue_iid: int, note_id
     raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_bulk_publish(api: object, encoded: str, mr: int) -> None:
+def verify_bulk_publish(api: "GitLabAPI", encoded: str, mr: int) -> None:
     """Confirm a bulk-publish actually flushed the drafts (#2081 incident's missed signal).
 
     The incident: ``draft_notes/bulk_publish`` returned 200 yet ZERO notes
@@ -140,17 +144,17 @@ def verify_bulk_publish(api: object, encoded: str, mr: int) -> None:
     did not take; raise :class:`ReviewArtifactNotVerifiedError`. Transport
     errors propagate unchanged (transient, not a failed post).
     """
-    drafts = api.get_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes")  # type: ignore[attr-defined]
+    drafts = api.get_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes")
     if isinstance(drafts, list) and drafts:
         msg = f"bulk publish reported OK but {len(drafts)} draft note(s) remain on !{mr} — not reporting as published"
         raise ReviewArtifactNotVerifiedError(msg)
-    notes = api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes")  # type: ignore[attr-defined]
+    notes = api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes")
     if not (isinstance(notes, list) and notes):
         msg = f"bulk publish reported OK but no authored notes are present on !{mr} — not reporting as published"
         raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_discussion_resolved(api: object, encoded: str, mr: int, discussion_id: str, *, resolved: bool) -> None:
+def verify_discussion_resolved(api: "GitLabAPI", encoded: str, mr: int, discussion_id: str, *, resolved: bool) -> None:
     """Read back a discussion after a resolve flip; raise if the state did not take (#2081).
 
     GET ``projects/{enc}/merge_requests/{mr}/discussions/{id}`` and confirm its
@@ -159,7 +163,7 @@ def verify_discussion_resolved(api: object, encoded: str, mr: int, discussion_id
     other transport error re-raises unchanged (transient, not a failed flip).
     """
     try:
-        discussion = api.get_json(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}")  # type: ignore[attr-defined]
+        discussion = api.get_json(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == HTTPStatus.NOT_FOUND:
             msg = f"discussion {discussion_id} not found on !{mr} after resolve flip — not reporting as resolved"
@@ -173,7 +177,7 @@ def verify_discussion_resolved(api: object, encoded: str, mr: int, discussion_id
     raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_approval_landed(api: object, encoded: str, mr: int) -> None:
+def verify_approval_landed(api: "GitLabAPI", encoded: str, mr: int) -> None:
     """Confirm the posting identity is in the MR's ``approved_by`` after an approve (#2081).
 
     Reuses :func:`identity_in_approved_by` (same GET shape as
@@ -187,7 +191,7 @@ def verify_approval_landed(api: object, encoded: str, mr: int) -> None:
         raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_unapproval_landed(api: object, encoded: str, mr: int) -> None:
+def verify_unapproval_landed(api: "GitLabAPI", encoded: str, mr: int) -> None:
     """Confirm the posting identity is NOT in ``approved_by`` after an unapprove (#2081).
 
     The inverse of :func:`verify_approval_landed` — mirrors the

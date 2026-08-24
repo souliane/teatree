@@ -647,6 +647,10 @@
           "name": "send"
         },
         {
+          "help": "Read the status signals the classifier kept off the DM channel (#4524)",
+          "name": "digest"
+        },
+        {
           "help": "Post to a destination, token chosen by it: self-DM\u2192bot, colleague/channel\u2192xoxp (exit 0 on ``ok``)",
           "name": "post"
         },
@@ -900,8 +904,16 @@
           "name": "status"
         },
         {
+          "help": "Print the recorded findings for *mr_url* \u2014 the surface a HOLD is acted on through",
+          "name": "findings"
+        },
+        {
           "help": "Record a PR-08 review-evidence artifact for a ticket",
           "name": "record-evidence"
+        },
+        {
+          "help": "Post a recorded verdict's findings to its PR, so the author sees them where the work is",
+          "name": "publish-findings"
         },
         {
           "help": "Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405)",
@@ -1119,6 +1131,10 @@
           "name": "attachments"
         },
         {
+          "help": "Merge a member ticket's body into its host's, verbatim (#4344)",
+          "name": "fold"
+        },
+        {
           "help": "Durable per-ticket knowledge store (#627, repo-namespaced key #2293)",
           "name": "context"
         },
@@ -1169,6 +1185,10 @@
         {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
           "name": "bulk-close"
+        },
+        {
+          "help": "Prove a host body still carries the folded member's substance (#4344)",
+          "name": "fold-check"
         },
         {
           "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
@@ -1317,6 +1337,10 @@
           "name": "salvage"
         },
         {
+          "help": "Apply a captured salvage bundle back into a checkout (#4435)",
+          "name": "restore"
+        },
+        {
           "help": "Tear down every done worktree (analyze-then-wipe) on demand",
           "name": "clean-merged"
         },
@@ -1327,6 +1351,10 @@
         {
           "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace",
           "name": "list-orphans"
+        },
+        {
+          "help": "Is this branch's work already on the default branch? The canonical answer (#4070)",
+          "name": "branch-verdict"
         },
         {
           "help": "Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207)",

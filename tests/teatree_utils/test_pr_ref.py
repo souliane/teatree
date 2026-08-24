@@ -22,7 +22,7 @@ class TestPrRefValueObject:
     def test_is_frozen(self) -> None:
         ref = PrRef(slug="owner/repo", pr_id=7)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            ref.pr_id = 8  # type: ignore[misc]
+            ref.pr_id = 8  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
     def test_is_slotted_no_instance_dict(self) -> None:
         # ``slots=True`` — the object carries no ``__dict__``, so a typo'd attribute

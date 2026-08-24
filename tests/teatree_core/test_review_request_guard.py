@@ -33,6 +33,7 @@ from teatree.core.gates.review_request_guard import (
     should_post_review_request,
 )
 from teatree.core.models import PullRequest, ReviewRequestPost, Ticket
+from teatree.core.overlay import OverlayConfig
 
 if TYPE_CHECKING:
     from tests.teatree_core.conftest import CommandOverlay
@@ -362,14 +363,30 @@ def _bare_overlay() -> "CommandOverlay":
     return overlay
 
 
+class _ChannelConfig(OverlayConfig):
+    """An ``OverlayConfig`` with a fixed review channel and Slack token.
+
+    A real subclass, so the double is type-checked like production code.
+    """
+
+    def get_review_channel(self) -> tuple[str, str]:
+        return (_CHANNEL_NAME, _CHANNEL_ID)
+
+    def get_slack_token(self) -> str:
+        return "xoxb-sync"
+
+
 def _overlay_with_channel() -> "CommandOverlay":
     overlay = _bare_overlay()
-    overlay.config.get_review_channel = lambda: (_CHANNEL_NAME, _CHANNEL_ID)  # type: ignore[method-assign]
-    overlay.config.get_slack_token = lambda: "xoxb-sync"  # type: ignore[method-assign]
+    overlay.config = _ChannelConfig()
     return overlay
 
 
 class TestResolveGuardTarget(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_returns_none_when_no_overlay(self) -> None:
         from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
@@ -475,8 +492,8 @@ class TestResolveGuardTarget(TestCase):
 
     def test_returns_none_when_no_token(self) -> None:
         overlay = _bare_overlay()
-        overlay.config.get_review_channel = lambda: (_CHANNEL_NAME, _CHANNEL_ID)  # type: ignore[method-assign]
-        overlay.config.get_slack_token = lambda: ""  # type: ignore[method-assign]
+        self._monkeypatch.setattr(overlay.config, "get_review_channel", lambda: (_CHANNEL_NAME, _CHANNEL_ID))
+        self._monkeypatch.setattr(overlay.config, "get_slack_token", lambda: "")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),

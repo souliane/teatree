@@ -47,6 +47,7 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
+from teatree.core.models.external_outcome_snapshot import ExternalOutcomeSnapshot, ExternalOutcomeSnapshotManager
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import (
@@ -86,7 +87,7 @@ from teatree.core.models.outer_loop_experiment import (
     ProposalSpec,
 )
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
-from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
 from teatree.core.models.pending_pull_request import PendingPullRequest, PendingPullRequestManager
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
@@ -106,7 +107,13 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
+from teatree.core.models.review_verdict import (
+    ChecksContradictionError,
+    Finding,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Severity,
+)
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
@@ -164,6 +171,7 @@ __all__ = [
     "BotPing",
     "BranchUpdateAttempt",
     "BroadcastObservation",
+    "ChecksContradictionError",
     "CiEvalHealSession",
     "CiEvalHealSessionManager",
     "ClearIssuanceError",
@@ -196,6 +204,7 @@ __all__ = [
     "DirectiveError",
     "DirectiveManager",
     "DirtyWorktreeError",
+    "DmContext",
     "DreamQaProbe",
     "DreamRunMarker",
     "E2EBypassApproval",
@@ -206,6 +215,8 @@ __all__ = [
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
+    "ExternalOutcomeSnapshot",
+    "ExternalOutcomeSnapshotManager",
     "FactoryScoreSnapshot",
     "FactoryScoreSnapshotManager",
     "Finding",

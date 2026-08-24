@@ -87,7 +87,9 @@ class IntakeBudget:
     @property
     def longest_held(self) -> HeldSlot | None:
         """The slot claimed earliest — the one that has had the most time to show something."""
-        return min(self.holders, key=lambda slot: slot.dispatched_at, default=None)
+        if not self.holders:
+            return None
+        return min(self.holders, key=lambda slot: slot.dispatched_at)
 
     def report(self) -> str:
         """The one-line reason a tick claimed nothing, naming every slot and its holder."""

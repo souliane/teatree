@@ -21,6 +21,7 @@ from collections.abc import Mapping
 
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResult, required_evidence_for_phase
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 
 CONTRACT_HEADING = "# Result Envelope — REQUIRED OUTPUT CONTRACT"
 
@@ -111,6 +112,19 @@ def _evidence_lines(phase: str) -> tuple[str, ...]:
     )
 
 
+def _verdict_consistency_lines(phase: str) -> tuple[str, ...]:
+    """The checks-vs-verdict consistency clause, on the phases that return a verdict.
+
+    Only those phases: a coding brief that recites a reviewer rule spends context teaching
+    a contract it can never breach. Keyed on the phase's own required evidence rather than
+    on a second hand-listed set of review phases, so a phase that starts returning a
+    verdict inherits the clause instead of quietly going without it.
+    """
+    if "review_verdict" not in required_evidence_for_phase(phase):
+        return ()
+    return ("", f"- {VERDICT_CHECKS_RULE}")
+
+
 def final_output_reminder_line(phase: str) -> str:
     """The one-line restatement of the contract, placed last in the work prompt.
 
@@ -146,6 +160,7 @@ def envelope_contract_lines(phase: str) -> tuple[str, ...]:
         "- `needs_user_input` is a boolean; when true, also set `user_input_reason` (string)",
         "  and stop rather than guessing.",
         *_evidence_lines(phase),
+        *_verdict_consistency_lines(phase),
         "- Use ONLY these keys — any other key is rejected outright:",
         f"  {', '.join(allowed_keys())}",
         "",

@@ -573,7 +573,7 @@ class PrSweepScanner:
 
 
 def _skip(pr: PrSummary, *, reason: str) -> MergeAttempt:
-    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason)
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)
 
 
 def _precondition_skip_reason(pr: PrSummary) -> str | None:

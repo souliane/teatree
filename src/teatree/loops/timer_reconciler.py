@@ -375,6 +375,7 @@ def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
             "answered_simple": report.answered_simple,
             "dispatched": report.dispatched,
             "covered": report.covered,
+            "answered_question": report.answered_question,
             "errors": report.errors,
         }
     finally:

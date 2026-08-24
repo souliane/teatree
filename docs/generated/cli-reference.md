@@ -356,7 +356,7 @@ Usage: t3 admin [OPTIONS]
 ### `t3 info`
 
 ```
-Usage: t3 info [OPTIONS] COMMAND [ARGS]...
+Usage: t3 info [OPTIONS] [COMMAND] [ARGS]...
 
  Installation info (bare) and read-only per-ticket artifact discovery.
 
@@ -1587,7 +1587,7 @@ Usage: t3 review-request post [OPTIONS]
 ### `t3 eval`
 
 ```
-Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
+Usage: t3 eval [OPTIONS] [COMMAND] [ARGS]...
 
  Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands
  target one lane.
@@ -3162,7 +3162,7 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ### `t3 doctor`
 
 ```
-Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
+Usage: t3 doctor [OPTIONS] [COMMAND] [ARGS]...
 
  Smoke-test hooks, imports, services.
 
@@ -4017,7 +4017,7 @@ Usage: t3 hook run [OPTIONS] NAME
 ### `t3 setup`
 
 ```
-Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
+Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 
  First-time setup and global skill management.
 
@@ -4122,7 +4122,7 @@ Usage: t3 setup recover-account-switch [OPTIONS]
 ### `t3 update`
 
 ```
-Usage: t3 update [OPTIONS] COMMAND [ARGS]...
+Usage: t3 update [OPTIONS] [COMMAND] [ARGS]...
 
  Sync teatree core and registered overlays to their default branch.
 
@@ -5326,7 +5326,7 @@ Usage: t3 goal list [OPTIONS]
 ### `t3 worker`
 
 ```
-Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
+Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 
  The singleton loop-timer worker (#1796 / PR-28). Bare `t3 worker` runs it (the
  cadence owner, default ON via `loop_runner_enabled`). `status` reports the
@@ -6171,8 +6171,16 @@ Usage: t3 slack check [OPTIONS]
  Reads the JSONL queue written by ``t3 slack listen``, filters for
  user messages (ignoring bot posts), reacts with ``eyes`` on each
  to signal the bot has seen it, then prints each as a JSON line.
- Returns exit code 0 when messages were found, 1 when the queue
+ Returns exit code 0 when messages were found, 2 when the queue
  was empty. Designed to be called from a fast cron (every 30s).
+
+ Exit code 2 (not 1) for the empty-queue case is deliberate: a crashing
+ drain (Django boot failure, a DB error) also exits 1 with empty stdout —
+ byte-identical to the old "empty queue" signal — so a caller polling on
+ "rc=1 and no stdout" could not tell a healthy quiet box from a crash. 2
+ is unambiguous, and preferred over an ``EMPTY`` stdout sentinel: stdout
+ is already the message channel, and a sentinel would need filtering by
+ every future consumer.
 
  A singleton guard serialises the drain: the 30s cron can double-fire and
  two concurrent drains would ack the same mentions twice, so a second drain
@@ -6275,7 +6283,7 @@ Usage: t3 task cancel [OPTIONS]
 ### `t3 recover`
 
 ```
-Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
+Usage: t3 recover [OPTIONS] [COMMAND] [ARGS]...
 
  Find (and optionally recover) work stranded by a network-outage death (#1764).
 
@@ -6292,7 +6300,7 @@ Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
 ### `t3 dogfood`
 
 ```
-Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
+Usage: t3 dogfood [OPTIONS] [COMMAND] [ARGS]...
 
  Overlay-smoke commands — exercise CLI paths so bugs surface in the loop, not
  in E2E.
@@ -6741,7 +6749,7 @@ Usage: t3 directive history [OPTIONS]
 ### `t3 teatree`
 
 ```
-Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
+Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 
  Commands for the t3-teatree overlay.
 
@@ -6991,6 +6999,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ verbatim-paste     Verbatim operator-paste publish gate kill-switch          │
 │                    (self-rescue).                                            │
+│ merged-detect      Hand-rolled merged-branch-detection advisory (WARN-only)  │
+│                    kill-switch (self-rescue).                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7883,6 +7893,60 @@ Usage: t3 teatree gate verbatim-paste enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree gate merged-detect`
+
+```
+Usage: t3 teatree gate merged-detect [OPTIONS] COMMAND [ARGS]...
+
+ Hand-rolled merged-branch-detection advisory (WARN-only) kill-switch
+ (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect status`
+
+```
+Usage: t3 teatree gate merged-detect status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect disable`
+
+```
+Usage: t3 teatree gate merged-detect disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect enable`
+
+```
+Usage: t3 teatree gate merged-detect enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree wip`
 
 ```
@@ -8266,6 +8330,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                          PR).                                                │
 │ landscape                Survey in-flight PRs/MRs and local unsynced work    │
 │                          before planning (read-only).                        │
+│ branch-verdict           Is this branch's work already on the default        │
+│                          branch? The canonical answer.                       │
 │ reap-stale               Tear down ABANDONED docker stacks no live worktree  │
 │                          owns (age-guarded).                                 │
 │ reclaim-disk             Reclaim disk via zero-data-loss docker prunes       │
@@ -8282,6 +8348,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                          worktree (the judgment skill's input).              │
 │ salvage                  Capture a branch's unique content to a PR, verify   │
 │                          it landed, then delete the branch.                  │
+│ restore                  Apply a captured salvage bundle back into a         │
+│                          checkout (--into, --dry-run).                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8503,6 +8571,32 @@ Usage: t3 teatree workspace landscape [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree workspace branch-verdict`
+
+```
+Usage: t3 teatree workspace branch-verdict [OPTIONS] BRANCHES...
+
+ Is this branch's work already on the default branch? The canonical answer
+ (#4070).
+
+ Read-only. Serializes the three-layer content classifier, INCLUDING the forge
+ signal beside the post-merge delta — a branch the forge calls merged whose tip
+ still carries unique commits is reported NOT redundant, with those shas named,
+ so
+ "merged" is never readable on its own as "safe to delete".
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    branches      BRANCHES...  Branch name(s) to judge — the sweep is one   │
+│                                 call.                                        │
+│                                 [required]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repo/worktree path holding the branches. [default: .]    │
+│ --json              Emit the verdicts as JSON on stdout.                     │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree workspace reap-stale`
 
 ```
@@ -8638,6 +8732,26 @@ Usage: t3 teatree workspace salvage [OPTIONS] SOURCE_REF
 │                                                cleaned the content).         │
 │                                                [default: no-allow-banned]    │
 │ --help                                         Show this message and exit.   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace restore`
+
+```
+Usage: t3 teatree workspace restore [OPTIONS] REFERENCE
+
+ Apply a captured salvage bundle back into a checkout (#4435).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    reference      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --into                       TEXT  Checkout to apply the bundle into         │
+│                                    (required — never inferred).              │
+│ --dry-run    --no-dry-run          Report whether each part applies; write   │
+│                                    nothing.                                  │
+│                                    [default: no-dry-run]                     │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10847,6 +10961,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
+│ fold                         Merge a member ticket's body into its host's,   │
+│                              verbatim (#4344).                               │
+│ fold-check                   Prove a host body still carries the folded      │
+│                              member's substance (#4344).                     │
 │ sync-completions             Reconcile the ticket board against forge truth  │
 │                              and advance what has landed.                    │
 │ reconcile-overlay            Backfill `overlay` for rows whose attribution   │
@@ -11297,6 +11415,49 @@ Usage: t3 teatree ticket bulk-close [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket fold`
+
+```
+Usage: t3 teatree ticket fold [OPTIONS]
+
+ Merge a member ticket's body into its host's, verbatim (#4344).
+
+ The sweep groups aggressively and closes nothing for real, so a member row is
+ retired only after this has moved its substance into an existing host. The
+ copy
+ is verbatim and idempotent per ``--member-ref``, which is what makes the
+ ``fold-check`` re-read afterwards a real proof rather than a formality.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host-body           TEXT  Path to the host ticket's current body.          │
+│ --member-body         TEXT  Path to the folded member's body.                │
+│ --member-ref          TEXT  The member's ref, e.g. `#4247`.                  │
+│ --member-title        TEXT  The member's title.                              │
+│ --out                 TEXT  Where to write the merged host body.             │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket fold-check`
+
+```
+Usage: t3 teatree ticket fold-check [OPTIONS]
+
+ Prove a host body still carries the folded member's substance (#4344).
+
+ Run it against the host body re-read off the forge, before retiring the
+ member's
+ row: a host that summarised instead of moving the body fails here, so the
+ close
+ that would have discarded the idea never happens. Exits non-zero on a loss.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host-body          TEXT  Path to the host body to prove.                   │
+│ --member-body        TEXT  Path to the folded member's body.                 │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket sync-completions`
 
 ```
@@ -11634,6 +11795,9 @@ Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
 │ record-evidence   Record a review-evidence artifact for a ticket.            │
 │ status            Report whether an MR is safe to approve at its current     │
 │                   head (read-only).                                          │
+│ findings          Print a recorded verdict's findings, so a HOLD can be read │
+│                   and acted on.                                              │
+│ publish-findings  Post a recorded verdict's findings to its PR.              │
 │ lock-acquire      Acquire the per-MR review-dispatch lock before a manual    │
 │                   review.                                                    │
 │ lock-status       Report the current MRReviewLock state for an MR            │
@@ -11698,6 +11862,8 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                                       not the branch checkout alone. Without │
 │                                       it such a finding cannot carry         │
 │                                       blocking severity (#4251).             │
+│ --json                                Emit the record result as JSON on      │
+│                                       stdout.                                │
 │ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11726,6 +11892,7 @@ Usage: t3 teatree review record-evidence [OPTIONS] TICKET_ID
 │ --head-sha        TEXT  Full 40-char hex commit id of the reviewed tree.     │
 │ --repos           TEXT  Comma-separated repos covered (≥2 required for       │
 │                         integration_review).                                 │
+│ --json                  Emit the evidence record as JSON.                    │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11738,16 +11905,68 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
  Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
 
  Parses the PR/MR URL, fetches the live head SHA, looks up the latest
- recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
- (head moved — re-review needed), or ``no recorded verdict``. The point
- is to avoid re-deriving a full cold review when a fresh verdict already
- vouches for the current tree.
+ recorded verdict, and reports one of: ``safe-to-approve``, ``stale``
+ (head moved — re-review needed), ``head unreadable`` / ``checks
+ unreadable`` (the forge did not answer; the recorded verdict stands, so
+ retry the READ), or ``no recorded verdict``. The point is to avoid
+ re-deriving a full cold review when a fresh verdict already vouches for
+ the current tree. The record carries the verdict's ``findings`` so a
+ HOLD can be read and acted on, not just counted.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the full status record as JSON.                         │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review findings`
+
+```
+Usage: t3 teatree review findings [OPTIONS] MR_URL
+
+ Print the recorded findings for *mr_url* — the surface a HOLD is acted on
+ through.
+
+ A HOLD asserts that N things are wrong; this is where the author, a
+ later reviewer, or an operator reads WHAT they are. A findings payload
+ that cannot be rendered is a loud refusal, never a count with nothing
+ behind it.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --sha         TEXT  Read the verdict recorded at this exact SHA (default:    │
+│                     the latest verdict).                                     │
+│ --json              Emit the findings record as JSON.                        │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review publish-findings`
+
+```
+Usage: t3 teatree review publish-findings [OPTIONS] MR_URL
+
+ Post a recorded verdict's findings to its PR, so the author sees them where
+ the work is.
+
+ ``review record`` already attempts this; run it here to retry after an
+ on-behalf approval lands, or to backfill a verdict recorded before the
+ publish path existed. Idempotent — a re-run finds its own comment and
+ skips rather than posting a duplicate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --sha         TEXT  Publish the verdict recorded at this exact SHA (default: │
+│                     the latest).                                             │
+│ --json              Emit the publish result as JSON.                         │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12605,12 +12824,14 @@ Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ send   DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct        │
-│        notify).                                                              │
-│ post   Post, token routed by destination (self-DM→bot,                       │
-│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
-│ react  React, token routed by destination (self-DM→bot,                      │
-│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
+│ send    DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct       │
+│         notify).                                                             │
+│ digest  Read the status signals the push/pull classifier kept off the DM     │
+│         channel.                                                             │
+│ post    Post, token routed by destination (self-DM→bot,                      │
+│         colleague/channel→xoxp); exit 0 on ``ok``.                           │
+│ react   React, token routed by destination (self-DM→bot,                     │
+│         colleague/channel→xoxp); exit 0 on ``ok``.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12635,6 +12856,23 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify digest`
+
+```
+Usage: t3 teatree notify digest [OPTIONS]
+
+ Read the status signals the classifier kept off the DM channel (#4524).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since-hours        INTEGER  How far back to read the pulled status         │
+│                               signals.                                       │
+│                               [default: 24]                                  │
+│ --overlay            TEXT     Set T3_OVERLAY_NAME for the call (per-overlay  │
+│                               bot routing).                                  │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

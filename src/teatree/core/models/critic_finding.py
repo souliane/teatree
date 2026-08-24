@@ -65,8 +65,14 @@ class CriticFinding(models.Model):
             ),
         ]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
+
     def __str__(self) -> str:
-        return f"critic-finding<ticket:{self.ticket_id} {self.transition}/{self.rubric_item} {self.status}>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"critic-finding<ticket:{self.ticket_id} {self.transition}/{self.rubric_item} {self.status}>"
 
     @classmethod
     def record(cls, *, ticket: "Ticket", transition: str, spec: "CriticFindingSpec") -> "CriticFinding":

@@ -19,16 +19,17 @@ from django.utils import timezone
 from teatree.core.management.commands.tasks_session_view import render_tasks_table
 from teatree.core.modelkit.task_failure_taxonomy import (
     FailureKind,
+    RecoveryStrategy,
     classify_failure,
     is_causeless,
     is_environmental,
+    recovery_strategy,
     stall_fingerprints,
     stall_kinds,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.dash.selectors import build_kanban_columns
-from teatree.failure_signatures import is_transient_failure
 
 if TYPE_CHECKING:
     from teatree.core.management.commands.tasks_session_view import TaskRow
@@ -149,7 +150,7 @@ class TestClassifier(TestCase):
             "Unable to connect to API",
         ]
         for reason in transient_reasons:
-            assert is_transient_failure(reason), reason
+            assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY, reason
             assert is_environmental(classify_failure(reason)), reason
 
 
@@ -276,7 +277,7 @@ class TestNoFailurePathRecordsNothing(TestCase):
         """The structural guarantee: a new failure path CANNOT record nothing."""
         task = _task(status=Task.Status.CLAIMED)
         with pytest.raises(TypeError):
-            task.fail()  # type: ignore[call-arg]
+            task.fail()  # ty: ignore[missing-argument] — the missing argument IS the assertion: `pytest.raises(TypeError)`.
 
     def test_lease_reaper_records_why_each_row_was_failed(self) -> None:
         """``reap_stale_claims`` bulk-UPDATEd rows to FAILED, recording no attempt and no reason."""

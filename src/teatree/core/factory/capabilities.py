@@ -89,6 +89,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="always JSON: the machine-readable clean-all handoff",
     ),
     Capability(
+        "teatree workspace branch-verdict",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-branch landed-ness verdict, forge_merged beside the post-merge delta; read-only (#4070)",
+    ),
+    Capability(
         "teatree workspace stamp-owners",
         json_output=True,
         exit_codes=("0",),
@@ -129,6 +135,36 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0",),
         note="--json emits the CLEARs consumed because their PR already settled; --dry-run to preview",
+    ),
+    Capability(
+        "teatree review record",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the recorded verdict plus whether its findings reached the PR (#4476)",
+    ),
+    Capability(
+        "teatree review record-evidence",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the recorded review-evidence artifact",
+    ),
+    Capability(
+        "teatree review status",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the full status record INCLUDING the verdict's findings (#4476)",
+    ),
+    Capability(
+        "teatree review findings",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits a verdict's findings; --sha pins one reviewed tree. An unrenderable payload exits non-zero",
+    ),
+    Capability(
+        "teatree review publish-findings",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json reports whether the findings were posted, skipped as already-present, or withheld by the gate",
     ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),

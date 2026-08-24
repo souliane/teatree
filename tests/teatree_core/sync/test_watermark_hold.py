@@ -18,13 +18,13 @@ from django.test import TestCase
 from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.core.models import Ticket
 from teatree.core.sync import sync_followup
-from teatree.types import LAST_SYNC_CACHE_KEY, SyncResult
+from teatree.types import LAST_SYNC_CACHE_KEY, RawAPIDict, SyncResult
 from tests.teatree_core.sync._overlays import SyncOverlay, _make_mock_client, _patch_overlay
 
 _WATERMARK = "2020-01-01T00:00:00+00:00"
 _MERGED_INSIDE_WINDOW = "2020-01-01T01:00:00+00:00"
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/42"
-_MERGED_MR = {"web_url": _MR_URL, "iid": 42, "project_id": 123}
+_MERGED_MR: RawAPIDict = {"web_url": _MR_URL, "iid": 42, "project_id": 123}
 
 
 class _WindowedMergedFetcher:

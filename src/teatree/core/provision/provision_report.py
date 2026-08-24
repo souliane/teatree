@@ -85,7 +85,9 @@ class ProvisionReport:
 
     @property
     def slowest_step(self) -> StepResult | None:
-        return max(self.steps, key=lambda s: s.duration, default=None)
+        if not self.steps:
+            return None
+        return max(self.steps, key=lambda s: s.duration)
 
     @property
     def failed_step(self) -> str | None:

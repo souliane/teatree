@@ -195,26 +195,33 @@ class TestWipSetBootstrapsDjangoInRealProcess:
     _REPO_ROOT = Path(__file__).resolve().parents[1]
     _SRC_ROOT = _REPO_ROOT / "src"
 
-    def _clean_env(self, data_home: Path) -> dict[str, str]:
+    @classmethod
+    def _clean_env(cls, data_home: Path) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
         env["XDG_DATA_HOME"] = str(data_home)
-        env["PYTHONPATH"] = os.pathsep.join([str(self._SRC_ROOT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        env["PYTHONPATH"] = os.pathsep.join([str(cls._SRC_ROOT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
         return env
 
-    def _wip(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    @classmethod
+    def _wip(cls, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
         """Invoke the ``wip`` typer subgroup in an UNbootstrapped subprocess."""
         return subprocess.run(
             [sys.executable, "-c", _UNBOOTSTRAPPED_CLI_DRIVER, "wip", *args],
-            cwd=str(self._REPO_ROOT),
+            cwd=str(cls._REPO_ROOT),
             env=env,
             capture_output=True,
             text=True,
             check=False,
         )
 
+    # pytest 9.1 deprecates a class-scoped fixture defined as an INSTANCE method
+    # (each test gets a fresh instance while the fixture runs once per class), and
+    # filterwarnings promotes that to an error. This one returns a value rather than
+    # setting instance state, so @classmethod is a faithful conversion.
     @pytest.fixture(scope="class")
+    @classmethod
     def shared_env_after_set(
-        self,
+        cls,
         tmp_path_factory: pytest.TempPathFactory,
         django_db_blocker: pytest.FixtureRequest,
     ) -> SharedEnvAfterSet:
@@ -243,8 +250,8 @@ class TestWipSetBootstrapsDjangoInRealProcess:
         finally:
             teardown_sqlite_alias(alias)
 
-        env = self._clean_env(data_home)
-        return SharedEnvAfterSet(env=env, set_result=self._wip(env, "set", "boost"))
+        env = cls._clean_env(data_home)
+        return SharedEnvAfterSet(env=env, set_result=cls._wip(env, "set", "boost"))
 
     def test_set_persists_without_improperly_configured(self, shared_env_after_set: SharedEnvAfterSet) -> None:
         result = shared_env_after_set.set_result

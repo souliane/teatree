@@ -21,10 +21,13 @@ Mirrors the durable-gate family already in core —
 transitions, custom manager).
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class BindingFeedbackError(Exception):
@@ -156,7 +159,7 @@ class ConsolidatedMemory(models.Model):
         *,
         cluster_key: str,
         rule: str,
-        source_files: list[object],
+        source_files: "Sequence[object]",
         member_count: int,
         max_member_weight: int,
         is_binding: bool,

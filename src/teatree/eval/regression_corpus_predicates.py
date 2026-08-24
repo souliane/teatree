@@ -19,6 +19,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from teatree.eval.regression_corpus_fixtures import (
     StubBackend,
@@ -29,6 +30,9 @@ from teatree.eval.regression_corpus_fixtures import (
     without_git_overrides,
 )
 from teatree.eval.regression_corpus_fixtures import git as _git
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
@@ -273,8 +277,16 @@ def _check_account_switch_detect_and_recover() -> bool:
     def _fake_reset() -> None:
         reset_calls["n"] += 1
 
-    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [StubBackend(ok=True)])
-    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [StubBackend(ok=False)])
+    def _reachable_backends() -> "list[MessagingBackend]":
+        # `AccountSwitchRecovery` only ever calls `.auth_test()`/`.name`; the stub
+        # implements exactly that slice, not the whole MessagingBackend surface.
+        return cast("list[MessagingBackend]", [StubBackend(ok=True)])
+
+    def _unreachable_backends() -> "list[MessagingBackend]":
+        return cast("list[MessagingBackend]", [StubBackend(ok=False)])
+
+    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=_reachable_backends)
+    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=_unreachable_backends)
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)

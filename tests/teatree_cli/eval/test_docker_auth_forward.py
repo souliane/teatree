@@ -11,6 +11,7 @@ forwards more than one Anthropic credential var.
 """
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from teatree.cli.eval.docker import _auth_passthrough_flags, run_eval_in_docker
@@ -51,7 +52,7 @@ class TestApiLaneForwardsExactlyOneCredentialVar:
         seen: dict[str, tuple[str, ...]] = {}
 
         def _capture(_root: Path, _args: list[str], **kwargs: object) -> int:
-            seen["vars"] = kwargs.get("auth_env_vars", ())  # type: ignore[assignment]
+            seen["vars"] = cast("tuple[str, ...]", kwargs.get("auth_env_vars", ()))
             return 0
 
         with (
@@ -93,7 +94,7 @@ class TestNonApiLaneForwardsNothing:
         seen: dict[str, tuple[str, ...]] = {}
 
         def _capture(_root: Path, _args: list[str], **kwargs: object) -> int:
-            seen["vars"] = kwargs.get("auth_env_vars", ())  # type: ignore[assignment]
+            seen["vars"] = cast("tuple[str, ...]", kwargs.get("auth_env_vars", ()))
             return 0
 
         with (

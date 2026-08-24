@@ -20,7 +20,7 @@ fetched_at}`` — ``kind`` is one of ``gitlab-upload`` / ``notion`` / ``slack``,
 """
 
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -52,8 +52,14 @@ class AttachmentManifest(models.Model):
         db_table = "teatree_attachment_manifest"
         ordering: ClassVar = ["-recorded_at"]
 
+    if TYPE_CHECKING:
+        # Django synthesises the ``<fk>_id`` shadow attribute at class-prep time —
+        # invisible to a static checker. Declared here (annotation-only, never
+        # evaluated at runtime) so ``__str__`` reads the id without a relation query.
+        ticket_id: int
+
     def __str__(self) -> str:
-        return f"attachment-manifest<ticket:{self.ticket_id}:{len(self.entries or [])} entries>"  # type: ignore[attr-defined]  # Django FK accessor
+        return f"attachment-manifest<ticket:{self.ticket_id}:{len(self.entries or [])} entries>"
 
     @classmethod
     def latest_for(cls, ticket: "models.Model") -> "AttachmentManifest | None":

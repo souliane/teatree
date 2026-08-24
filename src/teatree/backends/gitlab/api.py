@@ -289,6 +289,7 @@ class GitLabAPI(GitLabHTTPClient):
         if cached is not None:
             return cached
         data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/pipelines?per_page=1")
+        result: dict[str, str | None]
         if isinstance(data, list) and data:
             pipeline = data[0]
             result = {
@@ -324,7 +325,7 @@ class GitLabAPI(GitLabHTTPClient):
             left = data.get("approvals_left")
             result_val = {
                 "count": count,
-                "required": int(data.get("approvals_required", 1)),  # type: ignore[arg-type]
+                "required": _as_int(data.get("approvals_required", 1)),
                 "approved_by": names,
                 "approvals_left": left if isinstance(left, int) and not isinstance(left, bool) else -1,
             }

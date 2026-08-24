@@ -176,7 +176,7 @@ class OverlayConfig(BaseModel):
     # ``overlays`` registry row; a JSON list of service names validates against
     # the ``Service`` enum and fails loud on an unknown one. Empty default =
     # an undeclared overlay wraps nothing (fail-closed).
-    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset)
+    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset[Service])
     sentry_org: str = ""
     sentry_url: str = "https://sentry.io"
     # #36 settings promoted to an overlay code default: genuinely-constant, public

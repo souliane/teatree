@@ -48,7 +48,21 @@ def window_parked(task: "Task", now: datetime | None = None) -> bool:
     auto-enqueue, the lost-claim diagnosis below). Kept as one expression both spellings
     share so "is there work" and "may this be re-dispatched" can never disagree.
     """
-    return task.not_before is not None and task.not_before > (now or timezone.now())
+    return parked_until(task, now) is not None
+
+
+def parked_until(task: "Task", now: datetime | None = None) -> datetime | None:
+    """The UNELAPSED park deadline, or ``None`` when *task* is not parked.
+
+    The value-returning form of :func:`window_parked`, which delegates to it — so
+    the two can never disagree (the single-expression property that function's
+    docstring names), while a caller that must RENDER the deadline gets it without
+    re-reading a nullable field the boolean already proved non-null.
+    """
+    deadline = task.not_before
+    if deadline is not None and deadline > (now or timezone.now()):
+        return deadline
+    return None
 
 
 @contextmanager
@@ -148,8 +162,9 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         if task.status in status.terminal():
             msg = "Task already finished"
             raise InvalidTransitionError(msg)
-        if task.status == status.PENDING and window_parked(task, now):
-            msg = f"Task parked until {task.not_before.isoformat()}"
+        deadline = parked_until(task, now)
+        if task.status == status.PENDING and deadline is not None:
+            msg = f"Task parked until {deadline.isoformat()}"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"
         raise InvalidTransitionError(msg)

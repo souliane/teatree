@@ -108,6 +108,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
             ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
+            ("branch-verdict", "Is this branch's work already on the default branch? The canonical answer."),
             ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
             (
                 "reclaim-disk",
@@ -128,6 +129,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
+            ("restore", "Apply a captured salvage bundle back into a checkout (--into, --dry-run)."),
         ],
     ),
     "run": DjangoGroup(
@@ -359,6 +361,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
+            ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
+            ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),
             ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("reconcile-overlay", "Backfill `overlay` for rows whose attribution disagrees with inference."),
             ("comment", "Post a comment to an issue or work item by its URL."),
@@ -379,6 +383,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
             ("record-evidence", "Record a review-evidence artifact for a ticket."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
+            ("findings", "Print a recorded verdict's findings, so a HOLD can be read and acted on."),
+            ("publish-findings", "Post a recorded verdict's findings to its PR."),
             ("lock-acquire", "Acquire the per-MR review-dispatch lock before a manual review."),
             ("lock-status", "Report the current MRReviewLock state for an MR (read-only)."),
             ("rebind-clearance", "Re-bind a CLEAR to a conflict-only merge commit."),
@@ -449,6 +455,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Slack egress from the shell (#1030, #1750).",
         [
             ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
+            ("digest", "Read the status signals the push/pull classifier kept off the DM channel."),
             ("post", "Post, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
             ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
         ],

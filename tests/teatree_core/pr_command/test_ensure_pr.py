@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import _pr_control_db
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import (
+    EMPTY_DELTA_SKIP,
     PR_UNKNOWN_DEFERRAL,
     create_or_defer_pr,
     defer_unreadable_pr_state,
@@ -79,6 +81,38 @@ class TestEnsurePr(TestCase):
 
         assert "synced" in str(result["skipped"])
         host.create_pr.assert_not_called()
+
+    def test_no_op_when_the_branch_could_only_open_an_empty_pull_request(self) -> None:
+        """#4429: a re-opened PR on already-squash-merged content costs a whole review cycle."""
+        host = MagicMock()
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-e"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-e",
+                    status=BranchStatus.EMPTY_DELTA,
+                    ahead_count=2,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert result["skipped"] == EMPTY_DELTA_SKIP
+        host.create_pr.assert_not_called()
+
+    def test_an_empty_delta_discharges_the_obligation_instead_of_renewing_it(self) -> None:
+        """No ``owed`` key: the drain retires the row rather than re-attempting forever."""
+        report = BranchReport(repo=".", branch="feat-e", status=BranchStatus.EMPTY_DELTA, ahead_count=2)
+
+        answer = skip_for_classified(report, ".", "feat-e")
+
+        assert answer == {"skipped": EMPTY_DELTA_SKIP, "branch": "feat-e"}
 
     def test_defers_when_branch_not_on_remote(self) -> None:
         host = MagicMock()
@@ -536,18 +570,44 @@ class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
 
         assert validation["errors"] == []
 
-    def test_why_section_asks_the_author_instead_of_inventing_a_rationale(self) -> None:
+    def test_why_section_states_provenance_instead_of_inventing_a_rationale(self) -> None:
         spec = cast("PullRequestSpec", self._created_spec())
 
         why = spec.description.split("## Why", 1)[1].strip()
-        assert why.startswith("TODO")
         assert "no-orphan" in why
+        assert "No author-written rationale exists" in why
+
+    def test_why_section_issues_no_instruction_nobody_will_follow(self) -> None:
+        """#4424: an ask-the-author TODO is addressed to the author who did not open this PR."""
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        why = spec.description.split("## Why", 1)[1]
+        assert "TODO" not in why
+        assert "Replace this line" not in why
+
+    def test_why_section_names_the_branch_the_hook_rescued(self) -> None:
+        """#4424: the branch is a fact the hook has — a body assembled from it beats a placeholder."""
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        assert "`1534-fix-the-real-work`" in spec.description.split("## Why", 1)[1]
 
     def test_what_section_carries_the_branch_commit(self) -> None:
         spec = cast("PullRequestSpec", self._created_spec())
 
         what = spec.description.split("## What", 1)[1].split("## Why", 1)[0]
         assert "fix(y): the real work" in what
+
+    def test_why_section_tracks_the_branch_owning_ticket_without_closing_it(self) -> None:
+        """#4424: the branch's ``Worktree`` row names the ticket — a reference, never a closing keyword."""
+        issue_url = "https://github.com/souliane/teatree/issues/1534"
+        ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.IN_REVIEW)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="1534-fix-the-real-work")
+
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        why = spec.description.split("## Why", 1)[1]
+        assert f"Tracks {issue_url}." in why
+        assert not re.search(r"\b(closes|fixes|resolves)\b", why, re.IGNORECASE)
 
 
 class TestEnsurePrResolutionError:

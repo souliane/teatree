@@ -58,7 +58,7 @@ class AdminSuperuserTestCase(TestCase):
         assert user.check_password("s3cret-pw")
 
     def test_reuses_existing_superuser_without_resetting_password(self) -> None:
-        get_user_model().objects.create_superuser(username="existing", password="already-set")
+        get_user_model().objects.create_superuser(username="existing", email="", password="already-set")
         result, _run_server, _browser = _invoke("--no-browser")
         assert result.exit_code == 0
         assert "using existing superuser 'existing'" in result.output

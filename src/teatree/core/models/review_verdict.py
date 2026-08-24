@@ -27,12 +27,13 @@ this same verdict just vouched for (or held).
 
 import enum
 from dataclasses import dataclass
-from typing import ClassVar, TypedDict
+from typing import TYPE_CHECKING, ClassVar, Final, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.diff_scope import ChangedFileSet, out_of_scope_refusal
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, head_sha_unreadable
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
@@ -44,9 +45,41 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.models.ticket import Ticket
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 class ReviewVerdictError(ValueError):
     """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
+
+
+class ChecksContradictionError(ReviewVerdictError):
+    """A reviewer's verdict contradicted its OWN checks report (#4522, #4530).
+
+    A ``merge_safe`` verdict carrying ``gh_verify_result=failed`` is refused outright by
+    §17.8 clause 3, and that refusal is right. What it is NOT is a statement about the
+    tree. ``gh_verify_result`` is self-asserted — :func:`_assert_checks_admit_merge_safe`
+    reads the string the reviewer put in its own envelope and this module makes no network
+    call — so the contradiction is between two fields ONE reviewer wrote in ONE envelope.
+
+    An earlier revision of this docstring claimed the head itself made a recordable verdict
+    impossible. The control DB refutes it: of the 9 heads that ever raised this, 6 recorded
+    a verdict at that SAME head afterwards, and 3 of those were a ``hold`` over checks that
+    genuinely were red — which is exactly the recordable outcome
+    :data:`~teatree.core.modelkit.review_contract.VERDICT_CHECKS_RULE` asks reviewers for.
+    A red head does not make a verdict impossible; it makes ``merge_safe`` impossible.
+
+    So this class does NOT short-circuit the retry. It is typed rather than string-matched
+    only so the claim's TERMINAL
+    (:meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`) can
+    tell an exhausted budget spent on this from an exhausted budget spent on crashed
+    reviewers — a distinction the operator needs and a saturated row cannot make. Every
+    attempt before the bound is left alone.
+
+    The PENDING branch of :func:`_assert_checks_admit_merge_safe` deliberately does not
+    raise this: a queued check is not a red one, and both an expedite waiver and the checks
+    simply finishing make that same head recordable.
+    """
 
 
 class HeadVerdictState(enum.Enum):
@@ -102,7 +135,7 @@ class Finding:
         return {"severity": self.severity, "summary": self.summary, "file": self.file, "line": self.line}
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "Finding":
+    def from_dict(cls, raw: "Mapping[str, object]") -> "Finding":
         return cls(
             severity=str(raw.get("severity", "")),
             summary=str(raw.get("summary", "")),
@@ -142,7 +175,7 @@ def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) 
             f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
             f"a failed CLEAR)"
         )
-        raise ReviewVerdictError(msg)
+        raise ChecksContradictionError(msg)
     if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
         msg = (
             f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
@@ -151,6 +184,31 @@ def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) 
             f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
         )
         raise ReviewVerdictError(msg)
+
+
+#: Every per-HEAD review claim a RECORDED verdict retires. Both, because a verdict is a
+#: fact about the TREE — it covers that exact head however the review was armed, so every
+#: claim on the head is spent and re-arming either would be churn. Held here because this
+#: is the only module that already imports both.
+#:
+#: Deliberately NOT reused by the refusal terminal (#4530). A refusal is a fact about ONE
+#: RUN — a reviewer whose verdict and checks report contradicted each other — so it may
+#: retire only the claim that armed that run
+#: (:attr:`~teatree.core.models.review_target.ReviewTarget.armed_by`). Walking this list
+#: there let a codex-path refusal latch a dispatch claim whose reviewer had not run yet and
+#: free the review lock it held; 328 of 444 dispatch rows share a head with a marker row,
+#: so that reach-across was the common case, not the corner.
+_PER_HEAD_REVIEW_CLAIMS: Final = (AutoReviewDispatch, CodexReviewMarker)
+
+
+def resolve_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
+    """Retire every per-head claim a RECORDED verdict concludes.
+
+    Called inside :meth:`ReviewVerdict.record`'s transaction: the verdict covers this
+    exact tree, so re-arming either claim would be review churn.
+    """
+    for claim in _PER_HEAD_REVIEW_CLAIMS:
+        claim.mark_resolved(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
 def _validated_reviewer(reviewer_identity: str) -> str:
@@ -249,7 +307,9 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         """
         head = head_sha.strip().lower()
         passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
-        return max(passes, key=lambda verdict: verdict.recorded_at, default=None)
+        if not passes:
+            return None
+        return max(passes, key=lambda verdict: verdict.recorded_at)
 
     def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
         """The non-stale ``merge_safe`` row the newest-wins verdict rests on, else ``None``.
@@ -453,8 +513,7 @@ class ReviewVerdict(models.Model):
             # dispatcher's identity, not a claim of holding nothing, and still
             # releases — a concluded review may never strand a lock (#3920). See
             # MRReviewLock.resolve for the full asymmetry.
-            AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
-            CodexReviewMarker.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+            resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded
 
@@ -493,13 +552,34 @@ class ReviewVerdict(models.Model):
     def is_merge_safe(self) -> bool:
         return self.verdict == self.Verdict.MERGE_SAFE
 
+    @staticmethod
+    def is_head_unreadable(current_head_sha: str) -> bool:
+        """True iff the forge named no head at all, so no staleness question can be answered.
+
+        The guard a REPORTING caller owes its reader before it reaches for
+        :meth:`is_stale_at`: a verdict on an unchanged tree is not invalidated by a
+        failed read OF that tree, and calling one stale on a forge hiccup spends a
+        full cold re-review on a pull request nobody touched.
+        """
+        return head_sha_unreadable(current_head_sha)
+
     def is_stale_at(self, current_head_sha: str) -> bool:
         """True iff the PR's live head has moved off the reviewed tree.
 
         A stale verdict reviewed a tree the PR no longer points at — its
         judgment cannot vouch for the current head, so ``review status``
         reports it as needing a re-review.
+
+        The explicit UNREADABLE sentinel is REFUSED rather than answered: it is a
+        non-answer about the head, and quietly returning True for it is precisely
+        the "unchanged PR reported stale" defect. Ask :meth:`is_head_unreadable`
+        first. A merely EMPTY head still answers True — every gate caller
+        (:meth:`ReviewVerdictQuerySet.effective_state_at` and its siblings) rests on
+        that fail-CLOSED reading, and a scanner tick must not learn to raise.
         """
+        if current_head_sha == HEAD_SHA_UNREADABLE:
+            msg = "is_stale_at cannot answer for an UNREADABLE head — ask is_head_unreadable first"
+            raise ReviewVerdictError(msg)
         return self.reviewed_sha != current_head_sha.strip().lower()
 
     def is_safe_to_approve_at(self, current_head_sha: str, *, live_checks_status: str) -> bool:

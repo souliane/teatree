@@ -196,3 +196,28 @@ class TestRunningEnvDetection:
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
         with patch("teatree.utils.dep_drift.running_prefix", return_value=pyenv_prefix):
             assert running_env_is_uv_tool() is False
+
+
+class TestRuntimeImportsAreDeclared:
+    """A module imported on a RUNTIME command path must be in ``[project] dependencies``.
+
+    ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
+    (``src/teatree/utils/dep_skew.py:22``), and ``t3 doctor``'s MCP skew check reaches
+    it on every run. ``packaging`` was never declared: it arrived transitively via
+    ``gunicorn``, so ``uv.lock`` carried it and every CI and dev venue stayed green.
+    ``deploy/entrypoint.sh`` installs with ``uv tool install --editable --reinstall``,
+    which RE-RESOLVES without the lockfile; it picked up a gunicorn release that had
+    dropped the ``packaging`` dependency, and the doctor plane died on import for 72
+    consecutive watchdog passes. A transitive arrival is not a declaration.
+    """
+
+    def test_packaging_is_a_declared_runtime_dependency(self) -> None:
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        declared = declared_dependency_names(pyproject)
+        assert "packaging" in declared, (
+            "teatree.utils.dep_skew imports `packaging.requirements` at module scope on the "
+            "`t3 doctor` path, so `packaging` must be declared in [project] dependencies. It "
+            "was reaching the tool env only through gunicorn's own requirements; the release "
+            "that dropped that edge took the doctor plane down with it. Declared: "
+            f"{sorted(declared)}"
+        )

@@ -135,7 +135,7 @@ class TestPersistenceIsAtomic:
         assert _STORE.refresh_key in str(exc_info.value)
         assert "re-minted" in str(exc_info.value)
 
-    def test_a_write_that_cannot_be_read_back_is_a_failure(self) -> None:
+    def test_a_write_that_cannot_be_read_back_is_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A `pass insert` reporting success while storing nothing must not pass for persistence.
 
         Asserted directly against :meth:`ConfigTokenStore.persist`, because the
@@ -145,7 +145,7 @@ class TestPersistenceIsAtomic:
         degrades in the window between the probe and the write.
         """
         store = _seeded(issued_at=None)
-        store.write = lambda key, value: True  # type: ignore[method-assign] — accepts, stores nothing
+        monkeypatch.setattr(store, "write", lambda key, value: True)
 
         with (
             patch("teatree.cli.slack.config_token.read_pass", side_effect=store.read),

@@ -43,14 +43,14 @@ _RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.128"
+_PINNED_SDK_VERSION = "0.2.139"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.220 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.220"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.233 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.233"
 
 #: The deployed runtime's pin: the version the factory host runs today.
-_RUNTIME_CLI_VERSION = "2.1.220"
+_RUNTIME_CLI_VERSION = "2.1.233"
 
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
