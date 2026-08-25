@@ -32,16 +32,9 @@ def _rows(entries: Baseline) -> list[tuple[str, str, str]]:
     return [(name, path, ref) for name in RATCHETS for path, ref in sorted(entries[name])]
 
 
-def _render(title: str, rows: list[tuple[str, str, str]], hint: str) -> str:
+def _render(title: str, rows: list[tuple[str, str, str]], hint: str = "") -> str:
     body = "\n".join(f"  {name:<13} {path}  {ref}" for name, path, ref in rows)
-    return f"{title}\n{body}\n{hint}"
-
-
-def _render_stale_write(rows: list[tuple[str, str, str]]) -> str:
-    if not rows:
-        return "ratchet-prune: no stale pins — known_unresolved_refs.yaml is unchanged."
-    body = "\n".join(f"  {name:<13} {path}  {ref}" for name, path, ref in rows)
-    return f"Deleted {len(rows)} stale pin(s) from known_unresolved_refs.yaml:\n{body}"
+    return f"{title}\n{body}\n{hint}".rstrip()
 
 
 def ratchet_prune(
@@ -64,20 +57,18 @@ def ratchet_prune(
             "new": [{"ratchet": r, "path": p, "ref": f} for r, p, f in new_rows],
         }
         typer.echo(json.dumps(payload, indent=2))
-    elif write:
-        typer.echo(_render_stale_write(stale_rows))
-        if new_rows:
-            typer.echo(
-                _render(f"{len(new_rows)} unresolved reference(s) no pin covers:", new_rows, _NEW_HINT), err=True
-            )
     else:
-        if stale_rows:
+        if write and stale_rows:
+            typer.echo(_render(f"Deleted {len(stale_rows)} stale pin(s) from known_unresolved_refs.yaml:", stale_rows))
+        elif write:
+            typer.echo("ratchet-prune: no stale pins — known_unresolved_refs.yaml is unchanged.")
+        elif stale_rows:
             typer.echo(_render(f"{len(stale_rows)} stale pin(s):", stale_rows, _STALE_HINT), err=True)
         if new_rows:
             typer.echo(
                 _render(f"{len(new_rows)} unresolved reference(s) no pin covers:", new_rows, _NEW_HINT), err=True
             )
-        if not stale_rows and not new_rows:
+        if not write and not stale_rows and not new_rows:
             typer.echo("ratchet-prune: both reference ratchets are clean.")
 
     # --write already repaired the stale half, so only the un-repairable half still fails.
