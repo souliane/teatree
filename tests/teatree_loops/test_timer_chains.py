@@ -14,6 +14,7 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
+from teatree.core.task_contract import TaskOutcomeError
 from teatree.loops import timer_chains
 
 
@@ -22,9 +23,12 @@ def _fire(name: str, *, task_id: uuid.UUID | None = None) -> dict:
 
     The body reads only ``context.task_result.id`` (the id-tiebreak self-dedup); a
     ``SimpleNamespace`` supplies it without a real queue-claimed ``TaskContext``.
+
+    ``__wrapped__`` is the body beneath the #4528 outcome contract: these cases assert what
+    the body DID (successor flooring, escalation dedup) on a tick the contract fails.
     """
     ctx = types.SimpleNamespace(task_result=types.SimpleNamespace(id=task_id or uuid.uuid4()))
-    return timer_chains.loop_timer.func(ctx, name)
+    return timer_chains.loop_timer.func.__wrapped__(ctx, name)
 
 
 #: The production DB backend so an ``enqueue`` lands a real ``django_tasks_db`` row
@@ -222,6 +226,22 @@ class TestLoopTimerBody(django.test.TestCase):
             assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
             _fire("inbox")  # a second timeout must NOT spawn a second OPEN question
         assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
+
+    def test_a_timed_out_tick_fails_the_fire(self) -> None:
+        # #4528: the body still floors the successor and escalates, but the JOB must not
+        # read SUCCESSFUL over a tick that was SIGKILLed at its deadline.
+        self._enable_inbox(last_run_at=timezone.now() - dt.timedelta(seconds=120))
+        ctx = types.SimpleNamespace(task_result=types.SimpleNamespace(id=uuid.uuid4()))
+
+        def _timed_out(name: str, *, deadline: float) -> dict[str, object]:
+            return {"timed_out": True, "returncode": None}
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", _timed_out)
+            with pytest.raises(TaskOutcomeError, match="tick timed out"):
+                timer_chains.loop_timer.func(ctx, "inbox")
+
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1
 
     def test_tick_timeout_escalation_dedups_only_open_questions(self) -> None:
         # F6.12: the escalation dedups only OPEN (unanswered) questions. Two timeouts

@@ -15,10 +15,12 @@ from pathlib import Path
 from unittest import mock
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core.models import LoopLease
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.task_contract import TaskOutcomeError
 from teatree.loop.statusline_staleness import FLOOR_SECONDS
 from teatree.loops import statusline_refresh, timer_reconciler
 from teatree.loops.statusline_refresh import (
@@ -163,7 +165,7 @@ class TestChain(django.test.TestCase):
     def test_fire_self_dedups(self) -> None:
         render_statusline.using(run_after=timezone.now()).enqueue()
         result = render_statusline.func()
-        assert result == {"action": "deduped"}
+        assert result == {"ok": True, "action": "deduped"}
 
     def test_ensure_seeds_head_once_and_is_idempotent(self) -> None:
         ensure_statusline_refresh_chain()
@@ -177,3 +179,38 @@ class TestChain(django.test.TestCase):
         timer_reconciler.ensure_maintenance_chains()
         assert self._pending() == 1
         assert statusline_refresh.render_statusline.module_path  # sanity: the task is importable
+
+
+class TestASwallowedRenderErrorIsDistinguishable(_RefreshCase):
+    """A render that raised reported ``"fresh"`` — the value a healthy dormant chain returns (#4528)."""
+
+    _BROKEN_RENDER = "teatree.loops.statusline_refresh._refresh_statusline"
+
+    def _stale(self) -> object:
+        now = timezone.now()
+        self._write_meta(rendered_at=now.timestamp() - (REFRESH_AGE_SECONDS + 30))
+        return now
+
+    def test_a_raising_render_reports_error_not_fresh(self) -> None:
+        _set_autoload(on=True)
+        now = self._stale()
+
+        with mock.patch(self._BROKEN_RENDER, side_effect=RuntimeError("render blew up")):
+            assert refresh_statusline_if_due(now) == "error"
+
+    def test_a_render_error_fails_the_fire(self) -> None:
+        _set_autoload(on=True)
+        self._stale()
+
+        with (
+            mock.patch(self._BROKEN_RENDER, side_effect=RuntimeError("render blew up")),
+            pytest.raises(TaskOutcomeError),
+        ):
+            render_statusline.func()
+
+    def test_the_body_still_reports_the_branch_it_took(self) -> None:
+        _set_autoload(on=True)
+        self._stale()
+
+        with mock.patch(self._BROKEN_RENDER, side_effect=RuntimeError("render blew up")):
+            assert render_statusline.func.__wrapped__() == {"ok": False, "action": "error"}

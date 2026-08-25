@@ -9,12 +9,15 @@ subprocess runner stubbed so no real tick is spawned.
 """
 
 import unittest.mock
+from typing import ClassVar
 
 import django.test
+import pytest
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
+from teatree.core.task_contract import TaskOutcomeError
 from teatree.loops import off_live_tick_driver
 from teatree.loops.deadlined_tick import TickOutcome, run_deadlined_argv
 from teatree.loops.dream.loop import DREAM_OFF_TICK_DEADLINE_SECONDS
@@ -84,7 +87,7 @@ class TestOffLiveTickDriver(django.test.TestCase):
         off_live_tick_driver.drive_off_live_tick_loops.using(run_after=timezone.now()).enqueue()
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record):
             result = off_live_tick_driver.drive_off_live_tick_loops.func()
-        assert result == {"deduped": 1}
+        assert result == {"ok": True, "deduped": 1}
         assert self._ran == []
 
     def test_kill_switch_off_halts_the_chain_without_driving_anything(self) -> None:
@@ -94,7 +97,7 @@ class TestOffLiveTickDriver(django.test.TestCase):
         ):
             result = off_live_tick_driver.drive_off_live_tick_loops.func()
 
-        assert result == {"halted": 1}
+        assert result == {"ok": True, "halted": 1}
         assert self._ran == []
         assert not DBTaskResult.objects.filter(
             task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path, status=TaskResultStatus.READY
@@ -105,9 +108,9 @@ class TestOffLiveTickDriver(django.test.TestCase):
             return {"timed_out": True, "returncode": None}
 
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _timeout):
-            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+            result = off_live_tick_driver.drive_off_live_tick_loops.func.__wrapped__()
 
-        assert result == {"driven": 3, "timed_out": 3}
+        assert result == {"ok": False, "detail": "3 off-live-tick loop(s) timed out", "driven": 3, "timed_out": 3}
 
     def test_the_driver_is_the_real_deadlined_subprocess_runner(self) -> None:
         # The production seam, unstubbed: the driver calls the shared deadlined runner.
@@ -149,3 +152,23 @@ class TestEnsureChain(django.test.TestCase):
         ensure_off_live_tick_driver_chain()
         ensure_off_live_tick_driver_chain()
         assert DBTaskResult.objects.filter(task_path=drive_off_live_tick_loops.module_path).count() == 1
+
+
+class TestATimedOutSubLoopIsReadable(django.test.TestCase):
+    """A timed-out off-live-tick command was invisible in the counts, so the job read SUCCESSFUL (#4528)."""
+
+    _ONE_COMMAND: ClassVar[list[tuple[str, list[str], float]]] = [("dream", ["x"], 1.0)]
+
+    def _drive(self, outcome: dict[str, object]) -> dict[str, object]:
+        with (
+            unittest.mock.patch.object(off_live_tick_driver, "off_live_tick_commands", return_value=self._ONE_COMMAND),
+            unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", return_value=outcome),
+        ):
+            return off_live_tick_driver.drive_off_live_tick_loops.func()
+
+    def test_a_timed_out_command_fails_the_fire(self) -> None:
+        with pytest.raises(TaskOutcomeError, match=r"1 off-live-tick loop\(s\) timed out"):
+            self._drive({"timed_out": True, "returncode": None})
+
+    def test_a_clean_drive_returns_normally(self) -> None:
+        assert self._drive({"timed_out": False, "returncode": 0}) == {"ok": True, "driven": 1, "timed_out": 0}

@@ -252,7 +252,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # neither root sibling can own it without the other importing its peer. Same shape as
 # claim_liveness.py (#4164) and overlay_repos.py (#4515) above — a small dependency-free
 # derivation several consumers share, so it belongs to none of them.
-PINNED_FLAT_CORE_MODULES = 112
+# 113: +task_contract.py (#4528) — the declared ``@task`` outcome contract (the policy enum,
+# the classifier, and the ``task`` decorator every worker routes through). A genuine shared
+# root leaf: both core/tasks.py and core/worktree/worktree_tasks.py AND the teatree.loops.*
+# timer chains decorate through it, so no core subpackage can own it without the loops layer
+# reaching into that subpackage; it imports only django.tasks + stdlib, so it adds no cycle.
+PINNED_FLAT_CORE_MODULES = 113
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

@@ -62,9 +62,9 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, TypedDict
 
-from django.tasks import task
 from django.utils import timezone
 
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loops.deadlined_tick import run_deadlined_tick
 
 if TYPE_CHECKING:
@@ -318,7 +318,7 @@ def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UU
     return any(normalize_uuid(row.id) < me for row in running)
 
 
-@task(queue_name=LOOPS_QUEUE, takes_context=True)
+@task(outcome=TaskOutcome.TICK, queue_name=LOOPS_QUEUE, takes_context=True)
 def loop_timer(context: object, name: str) -> TimerResult:
     """One self-rescheduling loop-timer fire — the five-step tick body (#1796).
 

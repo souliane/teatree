@@ -40,10 +40,10 @@ import datetime as dt
 import logging
 import os
 
-from django.tasks import task
 from django.utils import timezone
 
 from teatree.core.claim_liveness import ClaimOwner, owner_is_executing
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
@@ -144,7 +144,7 @@ def _pending_for_path(path: str) -> bool:
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def reconcile_timers() -> dict[str, int]:
     """Re-schedule this reconciler ~5 minutes out, THEN reconcile the chains.
 
@@ -165,7 +165,7 @@ def reconcile_timers() -> dict[str, int]:
         return {"error": 1}
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def prune_task_results() -> dict[str, int]:
     """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
 
@@ -195,7 +195,7 @@ def prune_task_results() -> dict[str, int]:
     return {"pruned": deleted}
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def expire_stale_jobs() -> dict[str, int]:
     """Expire the stale ``default``-queue backlog, then re-schedule this chain ~1h out.
 
@@ -316,7 +316,7 @@ def reap_stuck_runs() -> dict[str, int]:
     return counts
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def drain_chain() -> dict[str, int]:
     """Re-schedule ~5min out, THEN reap dead headless runs and drain the pending backlog.
 
@@ -382,7 +382,7 @@ def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
         LoopLease.objects.release(SLACK_ANSWER_LEASE, owner=owner)
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def run_slack_answer() -> dict[str, int]:
     """Re-schedule at its cadence, THEN run one reactive Slack-answer cycle headless.
 
@@ -411,7 +411,7 @@ def run_slack_answer() -> dict[str, int]:
         return {"error": 1}
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def wake_slack_answer() -> dict[str, int]:
     """Run ONE Slack-answer cycle immediately, triggered by an inbound Slack event.
 

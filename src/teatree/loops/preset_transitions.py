@@ -22,7 +22,6 @@ import datetime as dt
 import logging
 from typing import Any
 
-from django.tasks import task
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
@@ -31,6 +30,7 @@ from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import ConfigSetting, ModeOverride
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
@@ -137,7 +137,7 @@ def _pending() -> bool:
     return DBTaskResult.objects.filter(task_path=preset_transitions.module_path, status=TaskResultStatus.READY).exists()
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.OK_FLAG, queue_name=LOOPS_QUEUE)
 def preset_transitions() -> dict[str, Any]:
     """One transition fire: apply side-effects for any switch, then re-schedule this chain.
 
@@ -146,13 +146,15 @@ def preset_transitions() -> dict[str, Any]:
     one. Always re-schedules, so the chain keeps polling for the next boundary.
     """
     if _pending():
-        return {"deduped": 1}
+        return {"ok": True, "deduped": 1}
     now = timezone.now()
     try:
         outcome = apply_preset_transition(now)
-    except Exception:
+    except Exception as exc:
         logger.warning("preset transition pass failed — will retry next fire", exc_info=True)
-        outcome = {"error": 1}
+        outcome = {"ok": False, "detail": str(exc)}
+    else:
+        outcome["ok"] = True
     preset_transitions.using(run_after=timezone.now() + dt.timedelta(seconds=TRANSITION_POLL_SECONDS)).enqueue()
     return outcome
 

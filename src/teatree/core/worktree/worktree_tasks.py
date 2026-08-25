@@ -19,7 +19,6 @@ import logging
 from typing import TypedDict
 
 from django.db import transaction
-from django.tasks import task
 
 from teatree.core.models import Worktree
 from teatree.core.runners import (
@@ -29,6 +28,7 @@ from teatree.core.runners import (
     WorktreeVerifyRunner,
 )
 from teatree.core.runners.worktree_start import docker_compose_down
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.core.worktree.worktree_env import compose_project
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ def _unknown_overlay_reason(worktree: Worktree, *, verb: str) -> str | None:
     return None
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     """Run heavy provisioning side-effects for a single worktree.
 
@@ -127,7 +127,7 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
     """Boot docker compose for a single worktree.
 
@@ -159,7 +159,7 @@ def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
     """Bring the WHOLE compose project down for one worktree (reversible).
 
@@ -208,7 +208,7 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
     return {"worktree_id": worktree_id, "ok": True, "detail": f"stopped compose project {project}"}
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
     """Run overlay health checks for a single worktree.
 
@@ -238,7 +238,7 @@ def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_worktree_teardown(worktree_id: int) -> WorktreeTransitionResult:
     """Tear down a single worktree (docker down + DB drop + git worktree remove).
 

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
+from django_tasks.base import TaskResultStatus
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
@@ -197,7 +198,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = execute_task.func(task.pk, task.phase)
+            result = execute_task.func.__wrapped__(task.pk, task.phase)
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -257,7 +258,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            execute_task.func(task.pk, task.phase)
+            execute_task.func.__wrapped__(task.pk, task.phase)
             result = drain_queue.enqueue()
 
         assert task.pk not in result.return_value["enqueued"]
@@ -304,7 +305,7 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         with (
             patch.object(agent_runner_mod, "get_agent_runner", return_value=runner),
         ):
-            result = execute_task.func(task.pk, task.phase)
+            result = execute_task.func.__wrapped__(task.pk, task.phase)
 
         runner.assert_not_called()
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
@@ -321,7 +322,7 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         with (
             patch.object(agent_runner_mod, "get_agent_runner", return_value=runner),
         ):
-            result = execute_task.func(task.pk, task.phase)
+            result = execute_task.func.__wrapped__(task.pk, task.phase)
 
         runner.assert_not_called()
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
@@ -450,11 +451,8 @@ class TestExecuteTeardown(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
-        assert result.return_value == {
-            "ticket_id": ticket.pk,
-            "ok": False,
-            "detail": "repo-0: branch ahead",
-        }
+        assert result.status == TaskResultStatus.FAILED
+        assert "repo-0: branch ahead" in result.errors[-1].traceback
 
 
 def _run_git(*args: str, cwd: Path) -> None:
@@ -565,9 +563,9 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         with self._patched_clone_root():
             result = execute_teardown.enqueue(ticket.pk)
 
-        assert result.return_value["ok"] is False
-        assert self.branch in result.return_value["detail"]
-        assert "salvage" in result.return_value["detail"]
+        assert result.status == TaskResultStatus.FAILED
+        assert self.branch in result.errors[-1].traceback
+        assert "salvage" in result.errors[-1].traceback
         assert self.wt_path.exists(), "#706 guard breached: worktree with unpushed commits was destroyed"
         assert Worktree.objects.filter(branch=self.branch).exists()
 
@@ -587,9 +585,9 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         with self._patched_clone_root():
             result = execute_teardown.enqueue(ticket.pk)
 
-        assert result.return_value["ok"] is False
-        assert "uncommitted" in result.return_value["detail"]
-        assert "salvage" in result.return_value["detail"]
+        assert result.status == TaskResultStatus.FAILED
+        assert "uncommitted" in result.errors[-1].traceback
+        assert "salvage" in result.errors[-1].traceback
         assert self.wt_path.exists(), "#706 guard breached: worktree with uncommitted changes was destroyed"
         assert Worktree.objects.filter(branch=self.branch).exists()
 
@@ -822,7 +820,8 @@ class TestExecuteProvision(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
-        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
+        assert result.status == TaskResultStatus.FAILED
+        assert "repo missing" in result.errors[-1].traceback
 
 
 class TestExecuteShip(TestCase):
@@ -876,7 +875,8 @@ class TestExecuteShip(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
-        assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
+        assert result.status == TaskResultStatus.FAILED
+        assert "push rejected" in result.errors[-1].traceback
 
 
 class TestExecuteShipOrphanPrWindow(TestCase):

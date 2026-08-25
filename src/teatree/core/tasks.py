@@ -3,7 +3,6 @@ import logging
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.db import transaction
-from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
 from teatree.core.backend_factory import code_host_from_overlay
@@ -17,6 +16,7 @@ from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 from teatree.types import RawAPIDict
 
@@ -100,7 +100,7 @@ class TaskRunResult(TypedDict, total=False):
     result: RawAPIDict
 
 
-@task()
+@task(outcome=TaskOutcome.EXIT_CODE)
 def execute_task(task_id: int, phase: str) -> TaskRunResult:
     import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
@@ -218,13 +218,13 @@ def drain_queue_body() -> dict[str, list[int]]:
     return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
 
 
-@task()
+@task(outcome=TaskOutcome.REPORT)
 def drain_queue() -> dict[str, list[int]]:
     """The default-queue ``@task`` wrapper around :func:`drain_queue_body`."""
     return drain_queue_body()
 
 
-@task()
+@task(outcome=TaskOutcome.REPORT)
 def sync_followup() -> dict[str, int | list[str] | list[dict[str, int | str]]]:
     from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -238,7 +238,7 @@ def sync_followup() -> dict[str, int | list[str] | list[dict[str, int | str]]]:
     }
 
 
-@task()
+@task(outcome=TaskOutcome.REPORT)
 def refresh_followup_snapshot() -> dict[str, int]:
     return {
         "tickets": Ticket.objects.count(),
@@ -247,7 +247,7 @@ def refresh_followup_snapshot() -> dict[str, int]:
     }
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_retrospect(ticket_id: int) -> TransitionResult:
     """Stamp the retro-phase marker for a ticket in the RETROSPECTED state.
 
@@ -320,7 +320,7 @@ def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
         logger.warning("critic block finding re-record failed for ticket %s: %s", ticket_id, recording_error)
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_teardown(ticket_id: int) -> TransitionResult:
     """Tear down worktrees for a terminal-state ticket via the analyze-then-wipe reaper.
 
@@ -476,7 +476,7 @@ class TeardownDispatch:
         return [int(ticket_id) for ticket_id in ticket_ids if TeardownDispatch.enqueue_once(int(ticket_id))]
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_provision(ticket_id: int) -> TransitionResult:
     """Provision worktrees for a STARTED ticket and schedule the planning task.
 
@@ -570,7 +570,7 @@ def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:
     DeferredQuestion.record(question, dedupe_marker=f"attachment-hold:{ticket.pk}")
 
 
-@task()
+@task(outcome=TaskOutcome.OK_FLAG)
 def execute_ship(ticket_id: int) -> TransitionResult:
     """Push the worktree branch and open the pull request for a SHIPPED ticket.
 

@@ -33,10 +33,11 @@ that declares no ``off_tick_command`` — the state this module exists to make i
 import datetime as dt
 import logging
 import sys
+from typing import TypedDict
 
-from django.tasks import task
 from django.utils import timezone
 
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loops.deadlined_tick import run_deadlined_argv
 from teatree.loops.timer_chains import DAILY_TICK_DEADLINE_SECONDS, LOOPS_QUEUE, loop_runner_enabled
 
@@ -91,8 +92,19 @@ def _pending_drive() -> bool:
     ).exists()
 
 
-@task(queue_name=LOOPS_QUEUE)
-def drive_off_live_tick_loops() -> dict[str, int]:
+class DriveResult(TypedDict, total=False):
+    """One driver fire: the branch taken, plus per-command counts when it drove any."""
+
+    ok: bool
+    detail: str
+    halted: int
+    deduped: int
+    driven: int
+    timed_out: int
+
+
+@task(outcome=TaskOutcome.OK_FLAG, queue_name=LOOPS_QUEUE)
+def drive_off_live_tick_loops() -> DriveResult:
     """Re-schedule at its cadence, THEN run each off-live-tick loop's own tick command.
 
     Step 0 is the kill-switch: a fire while the loop runner is OFF terminates the chain
@@ -103,9 +115,9 @@ def drive_off_live_tick_loops() -> dict[str, int]:
     remaining loops.
     """
     if not loop_runner_enabled():
-        return {"halted": 1}
+        return {"ok": True, "halted": 1}
     if _pending_drive():
-        return {"deduped": 1}
+        return {"ok": True, "deduped": 1}
     drive_off_live_tick_loops.using(run_after=timezone.now() + dt.timedelta(seconds=DRIVE_INTERVAL_SECONDS)).enqueue()
 
     counts = {"driven": 0, "timed_out": 0}
@@ -121,7 +133,10 @@ def drive_off_live_tick_loops() -> dict[str, int]:
             continue
         counts["driven"] += 1
         counts["timed_out"] += int(outcome["timed_out"])
-    return counts
+    timed_out = counts["timed_out"]
+    if timed_out:
+        return {"ok": False, "detail": f"{timed_out} off-live-tick loop(s) timed out", **counts}
+    return {"ok": True, **counts}
 
 
 def ensure_off_live_tick_driver_chain() -> None:

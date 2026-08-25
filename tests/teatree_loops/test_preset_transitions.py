@@ -8,10 +8,12 @@ import datetime as dt
 from unittest.mock import patch
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core.mode_resolution import DEFAULT_MODE_SETTING
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
+from teatree.core.task_contract import TaskOutcomeError
 from teatree.loops.preset_transitions import apply_preset_transition
 
 _STAMP_KEY = "loop_preset_transition_stamp"
@@ -123,3 +125,35 @@ class TestTransitionReconcilesTheChains(django.test.TestCase):
         ):
             outcome = apply_preset_transition(timezone.now())
         assert outcome["switched"] == "away"
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestASwallowedPassFailureIsReadable(django.test.TestCase):
+    """The pass stays fail-soft, but a failed pass fails the JOB instead of reading SUCCESSFUL (#4528)."""
+
+    _BROKEN_PASS = "teatree.loops.preset_transitions.apply_preset_transition"
+
+    def test_a_failed_pass_fails_the_fire_with_the_cause(self) -> None:
+        from teatree.loops.preset_transitions import preset_transitions  # noqa: PLC0415 — deferred: needs the registry
+
+        with (
+            patch(self._BROKEN_PASS, side_effect=RuntimeError("stamp write failed")),
+            pytest.raises(TaskOutcomeError, match="stamp write failed"),
+        ):
+            preset_transitions.func()
+
+    def test_the_body_reports_the_cause_and_still_re_arms(self) -> None:
+        """The raise happens AFTER the body returns, so the successor it queued survives."""
+        from teatree.loops.preset_transitions import preset_transitions  # noqa: PLC0415 — deferred: needs the registry
+
+        with patch(self._BROKEN_PASS, side_effect=RuntimeError("stamp write failed")):
+            outcome = preset_transitions.func.__wrapped__()
+
+        assert outcome["ok"] is False
+        assert "stamp write failed" in outcome["detail"]
+
+    def test_a_clean_pass_returns_normally(self) -> None:
+        from teatree.loops.preset_transitions import preset_transitions  # noqa: PLC0415 — deferred: needs the registry
+
+        with patch(self._BROKEN_PASS, return_value={"unchanged": 1}):
+            assert preset_transitions.func() == {"unchanged": 1, "ok": True}

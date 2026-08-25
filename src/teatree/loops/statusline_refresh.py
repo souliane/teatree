@@ -36,10 +36,11 @@ self-perpetuating after that, so a worker restart / deploy re-arms it.
 import datetime as dt
 import logging
 import os
+from typing import TypedDict
 
-from django.tasks import task
 from django.utils import timezone
 
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,10 @@ def refresh_statusline_if_due(now: dt.datetime) -> str:
     The pure body of one chain fire (no re-scheduling), split out so a test drives the
     decision without the queue. Returns ``"gated"`` (autoload OFF — the #256 colleague
     guarantee), ``"contended"`` (another render holds the lease), ``"fresh"`` (a recent
-    render already keeps the file young — this chain stays dormant), or ``"rendered"``.
-    Fully fail-open: any render error is swallowed so a broken render can never wedge the
-    chain or crash the worker.
+    render already keeps the file young — this chain stays dormant), ``"rendered"``, or
+    ``"error"``. Fully fail-open: a render error is swallowed so a broken render can never
+    wedge the chain or crash the worker — but it reports as ``"error"``, never as the
+    ``"fresh"`` a healthy dormant chain returns (#4528).
     """
     if not _autoload_enabled():
         return "gated"
@@ -163,14 +165,21 @@ def refresh_statusline_if_due(now: dt.datetime) -> str:
         _refresh_statusline(now)
     except Exception:
         logger.exception("statusline refresh render failed — the chain re-arms and retries next poll")
-        return "fresh"
+        return "error"
     finally:
         LoopLease.objects.release(STATUSLINE_RENDER_LEASE, owner=owner)
     return "rendered"
 
 
-@task(queue_name=LOOPS_QUEUE)
-def render_statusline() -> dict[str, str]:
+class RenderResult(TypedDict):
+    """One ``render_statusline`` fire: the branch taken, and whether the render itself held."""
+
+    ok: bool
+    action: str
+
+
+@task(outcome=TaskOutcome.OK_FLAG, queue_name=LOOPS_QUEUE)
+def render_statusline() -> RenderResult:
     """One render-refresh fire: re-render the statusline if stale, then re-schedule the chain.
 
     Self-dedups first (another pending render carries the chain), mirroring the
@@ -180,10 +189,10 @@ def render_statusline() -> dict[str, str]:
     quiet is picked up without a worker restart.
     """
     if _pending_render():
-        return {"action": "deduped"}
+        return {"ok": True, "action": "deduped"}
     outcome = refresh_statusline_if_due(timezone.now())
     render_statusline.using(run_after=timezone.now() + dt.timedelta(seconds=RENDER_POLL_SECONDS)).enqueue()
-    return {"action": outcome}
+    return {"ok": outcome != "error", "action": outcome}
 
 
 def ensure_statusline_refresh_chain() -> None:

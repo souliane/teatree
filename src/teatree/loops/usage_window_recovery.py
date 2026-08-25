@@ -28,9 +28,9 @@ import logging
 from dataclasses import dataclass, field
 
 from django.db.models import F
-from django.tasks import task
 from django.utils import timezone
 
+from teatree.core.task_contract import TaskOutcome, task
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ def _next_fire(now: dt.datetime) -> dt.datetime:
     return now + dt.timedelta(seconds=cadence)
 
 
-@task(queue_name=LOOPS_QUEUE)
+@task(outcome=TaskOutcome.REPORT, queue_name=LOOPS_QUEUE)
 def usage_window_recovery() -> dict[str, int]:
     """One recovery fire: clear due windows, then re-schedule this chain.
 
