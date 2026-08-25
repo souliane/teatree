@@ -16,7 +16,8 @@ The command ALSO returns ``payload`` unchanged so ``call_command`` consumers kee
 getting the typed object; set ``print_result = False`` on the ``TyperCommand`` so
 django-typer does not additionally repr the return onto stdout after the handler
 already emitted through this seam. Subclass :class:`MachineOutputCommand` so that
-pin survives the ``call_command(..., stdout=...)`` path too.
+pin survives the ``call_command(..., stdout=...)`` path too, and call a child command
+through :func:`call_command_streamed` so the wrapper survives from the CALLER's side.
 """
 
 import dataclasses
@@ -26,7 +27,41 @@ import json
 from collections.abc import Callable
 from typing import IO, TextIO, cast
 
+from django.core.management import call_command, get_commands, load_command_class
+from django.core.management.base import BaseCommand
 from django_typer.management import OutputWrapper, TyperCommand
+
+
+def _install_stream_wrappers(command: BaseCommand, **streams: IO[str] | None) -> None:
+    """Put django-typer's disable-capable wrapper on *command*'s named streams.
+
+    Django's own wrapper has no ``disable`` flag and never casts, so it both defeats
+    ``print_result = False`` and raises ``AttributeError`` on a non-``str`` return.
+
+    django-stubs narrows the wrapper's ``out`` to ``TextIO``; ``IO[str]`` is what every
+    caller here actually holds, and is what Django itself accepts.
+    """
+    for name, stream in streams.items():
+        if stream is None:
+            continue
+        wrapper = OutputWrapper(cast("TextIO", stream))
+        wrapper.style_func = getattr(command, name).style_func
+        setattr(command, name, wrapper)
+
+
+def call_command_streamed(command: str | BaseCommand, *args: str, stream: IO[str]) -> object:
+    """``call_command``, both of the child's channels captured to *stream*.
+
+    Passing ``stdout=``/``stderr=`` instead makes ``BaseCommand.execute`` swap in
+    Django's wrapper, which then calls ``.endswith`` on the child's typed return —
+    so capturing a child's output crashed the caller on any non-``str`` it handed
+    back (souliane/teatree#4467). Install the wrapper on the command and withhold the
+    options Django would clobber it with. ``command`` takes a registered name or an
+    instance, mirroring ``call_command`` itself.
+    """
+    resolved = command if isinstance(command, BaseCommand) else load_command_class(get_commands()[command], command)
+    _install_stream_wrappers(resolved, stdout=stream, stderr=stream)
+    return call_command(resolved, *args)
 
 
 class MachineOutputCommand(TyperCommand):
@@ -47,12 +82,11 @@ class MachineOutputCommand(TyperCommand):
     """
 
     def execute(self, *args: object, **options: object) -> object:
-        for name in ("stdout", "stderr"):
-            stream = options.pop(name, None)
-            if stream is not None:
-                wrapper = OutputWrapper(cast("TextIO", stream))
-                wrapper.style_func = getattr(self, name).style_func
-                setattr(self, name, wrapper)
+        _install_stream_wrappers(
+            self,
+            stdout=cast("IO[str] | None", options.pop("stdout", None)),
+            stderr=cast("IO[str] | None", options.pop("stderr", None)),
+        )
         return super().execute(*args, **options)
 
 
@@ -111,4 +145,4 @@ def emit(
     human(err)
 
 
-__all__ = ["MachineOutputCommand", "emit", "to_jsonable"]
+__all__ = ["MachineOutputCommand", "call_command_streamed", "emit", "to_jsonable"]

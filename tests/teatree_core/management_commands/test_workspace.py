@@ -252,10 +252,10 @@ class TestWorkspaceTicketInputValidation(TestCase):
 
     def test_unresolvable_bare_number_is_refused_and_creates_no_ticket(self) -> None:
         out = StringIO()
-        with patch.object(FullOverlay, "resolve_issue_token", return_value=None):
-            rc = call_command("workspace", "ticket", "3274", stderr=out)
+        with patch.object(FullOverlay, "resolve_issue_token", return_value=None), pytest.raises(SystemExit) as exc:
+            call_command("workspace", "ticket", "3274", stderr=out)
 
-        assert rc == 0
+        assert exc.value.code == 1
         assert "Refused" in out.getvalue()
         assert Ticket.objects.filter(issue_url="3274").count() == 0
         assert Ticket.objects.count() == 0
@@ -382,9 +382,10 @@ class TestWorkspaceTicketAdopt(TestCase):
         git_mod.run_strict(repo=str(worktree), args=["checkout", "-q", "--detach"])
         self._enter_adopt_patches(worktree)
 
-        rc = call_command("workspace", "ticket", "https://example.com/issues/2275", adopt=True)
+        with pytest.raises(SystemExit) as exc:
+            call_command("workspace", "ticket", "https://example.com/issues/2275", adopt=True)
 
-        assert rc == 0
+        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/2275").exists()
 
     def _patch_issue_host(self, host: MagicMock) -> None:
@@ -401,9 +402,10 @@ class TestWorkspaceTicketAdopt(TestCase):
         host.get_issue.return_value = {"state": "closed", "title": "An unrelated closed PR"}
         self._patch_issue_host(host)
 
-        rc = call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/89", adopt=True)
+        with pytest.raises(SystemExit) as exc:
+            call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/89", adopt=True)
 
-        assert rc == 0
+        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://github.com/souliane/teatree/issues/89").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -416,9 +418,10 @@ class TestWorkspaceTicketAdopt(TestCase):
         host.get_issue.side_effect = IssueNotFoundError(url)
         self._patch_issue_host(host)
 
-        rc = call_command("workspace", "ticket", url, adopt=True)
+        with pytest.raises(SystemExit) as exc:
+            call_command("workspace", "ticket", url, adopt=True)
 
-        assert rc == 0
+        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url=url).exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -555,9 +558,12 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
-            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
-                rc = call_command("workspace", "ticket", "https://example.com/issues/42")
-        assert rc == 0
+            with (
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                pytest.raises(SystemExit) as exc,
+            ):
+                call_command("workspace", "ticket", "https://example.com/issues/42")
+        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -658,10 +664,11 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_unknown_kind_is_refused_without_creating_a_ticket(self) -> None:
-        rc = call_command(
-            "workspace", "ticket", "https://example.com/issues/174", description="Add a thing", kind="bugfix"
-        )
-        assert rc == 0
+        with pytest.raises(SystemExit) as exc:
+            call_command(
+                "workspace", "ticket", "https://example.com/issues/174", description="Add a thing", kind="bugfix"
+            )
+        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/174").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -964,10 +971,11 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
+                pytest.raises(SystemExit) as exc,
             ):
-                result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
+                call_command("workspace", "ticket", "https://example.com/issues/83")
 
-            assert result == 0
+            assert exc.value.code == 1
             assert Ticket.objects.filter(issue_url="https://example.com/issues/83").count() == 0
             assert Worktree.objects.count() == 0
 
