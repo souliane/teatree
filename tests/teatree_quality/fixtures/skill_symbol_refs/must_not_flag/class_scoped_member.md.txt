@@ -1,0 +1,10 @@
+# Class-scoped members resolve through their module
+
+The ticket DB copy is `teatree.utils.django_db.importer._copy_ref_to_ticket`, and the
+leak scan it feeds is reached as `fast_push._banned_terms`.
+
+A type the citing module imports only under a `TYPE_CHECKING` guard is a live
+reference too: `teatree.cli.worker.DrainProgress`.
+
+An inherited setting field resolves from the base that declares it:
+`teatree.config.UserSettings.regulated_path_model_allowlist`.

@@ -9,7 +9,10 @@ test-path-mirror gate (`src/teatree/quality/test_path_mirror.py`) enforces this
 mapping.
 
 Do not put whole-tree/cross-cutting gates here — those go in `tests/quality`
-(with a `# test-path: cross-cutting` pragma). The two directories read similarly
+(with a `# test-path: cross-cutting` pragma). A mirror test here may still READ
+the whole tree, because the module it mirrors scans it — which is why this dir is
+one of the affected-lane's `FLOOR_DIRS` (`teatree.quality.affected_tests`): an
+import graph cannot decide such a test unaffected by any diff. The two directories read similarly
 but answer different questions:
 
 | Test shape | Directory |

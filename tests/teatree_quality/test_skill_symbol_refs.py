@@ -57,6 +57,7 @@ from teatree.quality.skill_symbol_refs import (
     scan_source,
     scan_tree,
 )
+from tests.teatree_quality.conftest import Planter
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILLS_ROOT = _REPO_ROOT / "skills"
@@ -204,7 +205,6 @@ _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
         ("src/teatree/agents/harness_registry.py", "teatree.harnesses"),
         ("src/teatree/agents/harness_registry.py", "teatree.overlays"),
         ("src/teatree/agents/pydantic_ai_session.py", "models._get_final_result_event"),
-        ("src/teatree/agents/regulated_path.py", "teatree.config.UserSettings.regulated_path_model_allowlist"),
         ("src/teatree/agents/runner_usage.py", "agents/runner.py"),
         ("src/teatree/backends/forge_merge_rpc.py", "github._run_gh"),
         ("src/teatree/backends/gitlab/sync_terminal.py", "hooks/check_module_health.py"),
@@ -265,7 +265,6 @@ _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
         ("src/teatree/self_update.py", "teatree.overlays"),
         ("src/teatree/settings.py", "teatree.overlays"),
         ("src/teatree/utils/coverage_exclusions.py", "src/myvenv_helper.py"),
-        ("src/teatree/utils/django_db/testdb_clone.py", "importer._copy_ref_to_ticket"),
         ("src/teatree/utils/editable_pth.py", "teatree.overlays"),
         ("src/teatree/utils/git_branch.py", "teatree.targetBranch"),
     },
@@ -490,3 +489,53 @@ class TestGoldenCorpus:
         findings = scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT)
         unresolved = _unresolved(findings)
         assert not unresolved, f"{fixture.name} must not be flagged: {[f.ref for f in unresolved]}"
+
+
+class TestModuleScopeFallbacks:
+    """#4448: three scopes whose CORRECT citations the runtime-``getattr`` walk called rot.
+
+    Each positive names a symbol the tree really carries. The negative controls are what
+    keep the widening honest: a fallback that vouched for these would stop catching the
+    moved-symbol rot the whole guard exists for.
+    """
+
+    def test_a_class_scoped_method_resolves_through_its_module(self) -> None:
+        assert resolve_dotted("teatree.utils.django_db.importer._copy_ref_to_ticket") is None
+
+    def test_a_type_checking_only_import_resolves_at_its_real_home(self) -> None:
+        assert resolve_dotted("teatree.cli.worker.DrainProgress") is None
+
+    def test_an_inherited_dataclass_field_resolves(self) -> None:
+        # `field(default_factory=...)` leaves no class attribute, and the annotation is on a
+        # base, so neither `hasattr` nor the citing class's own `__annotations__` sees it.
+        assert resolve_dotted("teatree.config.UserSettings.regulated_path_model_allowlist") is None
+
+    def test_a_class_scoped_staticmethod_resolves_through_the_bare_shape(self) -> None:
+        assert resolve_module_local("fast_push._banned_terms", build_repo_index(_REPO_ROOT)) is None
+
+    def test_a_member_of_a_sibling_class_stays_unresolved(self) -> None:
+        # `record_forge_merge` is on PullRequestQuerySet. The fallback fires only at the
+        # MODULE hop, so a class that resolved cannot borrow a sibling's member.
+        assert resolve_dotted("teatree.core.models.pull_request.PullRequest.record_forge_merge") is not None
+
+    def test_a_symbol_living_in_another_module_stays_unresolved(self) -> None:
+        assert resolve_dotted("teatree.core.models.merge_clear.REVIEWER_ROLE_COMPONENTS") is not None
+
+    def test_a_module_function_cited_on_the_wrong_module_stays_unresolved(self) -> None:
+        assert resolve_module_local("hook_router._newest_task_agent_id", build_repo_index(_REPO_ROOT)) is not None
+
+    def test_an_imported_class_does_not_vouch_for_its_members(self, planted: Planter) -> None:
+        planted(
+            "t3probe_home",
+            "class Carrier:\n    def carried(self) -> None:\n        return None\n",
+        )
+        planted("t3probe_importer", "from t3probe_home import Carrier\n\n__all__ = ['Carrier']\n")
+        assert resolve_dotted("t3probe_importer.carried") is not None
+
+    def test_a_type_checking_import_of_an_absent_symbol_stays_unresolved(self, planted: Planter) -> None:
+        planted("t3probe_origin", "REAL = 1\n")
+        planted(
+            "t3probe_citer",
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from t3probe_origin import Gone\n",
+        )
+        assert resolve_dotted("t3probe_citer.Gone") is not None

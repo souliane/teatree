@@ -1,0 +1,5 @@
+# A member of a sibling class is not a member of the class named
+
+`record_forge_merge` lives on the queryset, so naming it on the model is rot the
+module-hop fallback must not vouch for:
+`teatree.core.models.pull_request.PullRequest.record_forge_merge`.

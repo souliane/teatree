@@ -54,6 +54,13 @@ implicit namespace package, so a retired module's leftover directory — even on
 holding nothing but ``__pycache__`` — would otherwise vouch for the citation that
 outlived it, silently and differently in every clone.
 
+Runtime ``getattr`` alone cannot see three scopes a correct citation may name, so a
+module-hop miss falls back to :mod:`teatree.quality.symbol_scopes`: a member of a class
+the module DEFINES, a ``TYPE_CHECKING``-only import (resolved at its real home, never
+accepted on sight), and an inherited annotation. The fallback fires at the module hop
+alone — a citation naming the wrong owner class stays unresolved, which is the rot the
+guard exists to catch.
+
 The remedy for a fictional illustration is a placeholder namespace the walk does
 not recognise as teatree-shaped (``src/acme/...``), not a pragma: a name outside
 the tree cannot be misread as a work item in the first place.
@@ -65,6 +72,9 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
+
+from teatree.quality.symbol_scopes import annotated_in_mro, source_bound_object
 
 PRAGMA = re.compile(r"skill-symbol-ref:\s*\S")
 _FENCE = re.compile(r"^\s*(?:```|~~~)")
@@ -213,16 +223,29 @@ def resolve_dotted(dotted: str) -> str | None:
     return f"no importable module in {dotted!r}"
 
 
-def _walk_attributes(module: object, parts: list[str], depth: int) -> str | None:
-    obj = module
+def _walk_attributes(module: ModuleType, parts: list[str], depth: int) -> str | None:
+    obj: object = module
     for index in range(depth, len(parts)):
         name = parts[index]
-        if name in getattr(obj, "__annotations__", {}):
+        if _annotates(obj, name):
             return None
         if not hasattr(obj, name):
-            return f"{'.'.join(parts[:index])} has no attribute {name!r}"
+            # The source-derived fallback fires at the MODULE hop only, so a class that
+            # already resolved can never borrow a sibling class's member (#4448).
+            found = source_bound_object(module, name) if index == depth else None
+            if found is None:
+                return f"{'.'.join(parts[:index])} has no attribute {name!r}"
+            obj = found
+            continue
         obj = getattr(obj, name)
     return None
+
+
+def _annotates(obj: object, name: str) -> bool:
+    """A class's own ``__annotations__`` shadows every base's, so a class is asked its MRO."""
+    if isinstance(obj, type):
+        return annotated_in_mro(obj, name)
+    return name in getattr(obj, "__annotations__", {})
 
 
 def _exempt_lines(source: str) -> set[int]:

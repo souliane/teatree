@@ -200,6 +200,11 @@ EXEMPT: dict[str, str] = {
         "the same live _REPO_ROOT and no test mutates src/teatree or hooks/ during a run, so "
         "resetting it would only re-walk an identical tree — it isolates no test state"
     ),
+    "teatree.quality.symbol_scopes:_parse_type_checking_bindings": (
+        "@lru_cache keyed by (source path, its mtime_ns); a path rewritten in place re-parses on the "
+        "new stamp rather than serving the previous file, so resetting it would only re-parse identical "
+        "bytes — it isolates no test state"
+    ),
 }
 
 

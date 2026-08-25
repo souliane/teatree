@@ -63,7 +63,17 @@ FORCE_KEEP_PLUGIN = "teatree.quality.force_keep_plugin"
 
 #: Cross-cutting, subprocess-heavy suites an import graph cannot fully model — force-keep
 #: them on EVERY scoped selection so their blind spot is a constant cost, not a skip.
-FLOOR_DIRS: tuple[str, ...] = ("tests/quality", "tests/integration", "tests/conformance")
+#: ``tests/teatree_quality`` is here despite being a path-mirror dir (#4448): a dozen of its
+#: tests mirror modules that SCAN the tree, so their input is the whole tree and no import
+#: graph can decide them unaffected — a docstring-only diff deselected the prose-reference
+#: guards outright and they could red only in full CI. Measured 701 tests in 13.8s at 4
+#: workers — the same argument that keeps ``tests/conformance`` unscoped.
+FLOOR_DIRS: tuple[str, ...] = (
+    "tests/quality",
+    "tests/integration",
+    "tests/conformance",
+    "tests/teatree_quality",
+)
 
 #: The lane's own selection machinery. A diff that edits any of these changes WHICH tests
 #: this lane picks, so the lane cannot be trusted to validate its own change: the verdict

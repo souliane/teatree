@@ -164,6 +164,13 @@ class TestForceKeepOverSelectsNeverUnder:
         for floor in FLOOR_DIRS:
             assert floor in keep.paths
 
+    def test_the_prose_ratchet_dir_is_force_kept_on_a_docstring_only_change(self) -> None:
+        # #4448: a docstring-only diff deselected tests/teatree_quality, so the prose-reference
+        # ratchets could only red in full CI. Named literally — the loop above reads FLOOR_DIRS,
+        # so it is satisfied by whatever the tuple happens to hold and can never fail.
+        keep = _force_keep(_changed(("M", "src/teatree/agents/harness.py")))
+        assert "tests/teatree_quality" in keep.paths
+
     def test_changed_test_file_is_force_kept(self) -> None:
         # Acceptance: a test file at a NON-mirrored path is still caught — it is a
         # changed test, so the force-keep layer runs it even if tach would deselect.
@@ -434,7 +441,10 @@ class TestVcsConfigChangeIsScopedNotFull:
     """
 
     _GITIGNORE_READERS: ClassVar[dict[str, tuple[str, ...]]] = {
-        ".gitignore": ("tests/teatree_quality/test_provisioned_worktree_is_selection_clean.py",)
+        ".gitignore": (
+            "tests/teatree_quality/test_provisioned_worktree_is_selection_clean.py",
+            "tests/teatree_off/nowhere/test_names_gitignore.py",
+        )
     }
 
     @pytest.mark.parametrize("path", sorted(mod.NON_EXECUTABLE_CONFIG_PATHS))
@@ -445,9 +455,12 @@ class TestVcsConfigChangeIsScopedNotFull:
 
     def test_vcs_config_edit_force_keeps_the_tests_that_name_it(self) -> None:
         keep = _force_keep(_changed(("M", ".gitignore")), reference_readers=self._GITIGNORE_READERS)
-        reader = "tests/teatree_quality/test_provisioned_worktree_is_selection_clean.py"
+        reader = "tests/teatree_off/nowhere/test_names_gitignore.py"
         assert reader in keep.paths
         assert [r.kind for r in keep.reasons if r.test == reader] == ["reference-read"]
+        # The real on-disk reader is under a floor dir since #4448, so it is subsumed by that
+        # floor entry rather than listed again — force-kept either way, never dropped.
+        assert "tests/teatree_quality" in keep.paths
 
     def test_every_allowlisted_path_exists_on_disk(self) -> None:
         # Membership is by EXACT path: a rename would leave a stale entry that narrows
