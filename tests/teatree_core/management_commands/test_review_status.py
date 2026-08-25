@@ -29,7 +29,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.modelkit.diff_scope import ChangedFileSet
-from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChecksRead, LiveHeadRead
 from teatree.core.models import MergeClear, ReviewVerdict
 from tests.factories import TicketFactory
 
@@ -128,9 +128,16 @@ class TestRecordCommand(TestCase):
 
     def test_record_merge_safe_on_red_checks_is_refused(self) -> None:
         # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result (even expedited).
-        result = _record(gh_verify_result="failed")
+        # #4554: the CLI path reads CI live too, so the refusal names what the forge said.
+        with patch(
+            "teatree.core.management.commands._review_impl.live_checks_at",
+            return_value=LiveChecksRead(status="failed", detail="failing workflow run(s): test (3.13)"),
+        ):
+            result = _record(gh_verify_result="failed")
+
         assert not result["recorded"]
         assert "never carry gh_verify_result=failed" in cast("str", result["error"])
+        assert "CONFIRMS red" in cast("str", result["error"])
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_invalid_findings_json_is_refused(self) -> None:
