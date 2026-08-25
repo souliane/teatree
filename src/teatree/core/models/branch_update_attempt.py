@@ -2,7 +2,11 @@
 
 ``PrSweepScanner`` merge-updates a PR whose required checks are red at a STALE
 base — the branch is BEHIND its base, so the red verdict judged a base the fix
-may already have landed on. ONE attempt per head SHA is the bound the whole
+may already have landed on. Behind-ness is COMPUTED from the base and head
+commits (``Ref.compare`` behind-by, #4526), not read off ``mergeStateStatus``:
+that field names one highest-precedence blocker, so a behind-AND-red PR reports
+``BLOCKED`` and this ledger stayed permanently empty while it was the source.
+ONE attempt per head SHA is the bound the whole
 remedy rests on: a successful update mints a new head, so the next tick judges
 a fresh verdict at the current base; a FAILED update (conflict, revoked
 permission, API error) is never retried at the same head, so a genuinely broken

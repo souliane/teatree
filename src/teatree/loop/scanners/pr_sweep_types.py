@@ -17,10 +17,12 @@ REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
 
 # GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
-# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
-# but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
+# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict. ``UNKNOWN`` /
 # empty is GitHub still computing mergeability — never flagged, to avoid a
-# false conflict alarm on a freshly-pushed head.
+# false conflict alarm on a freshly-pushed head. Behind-ness is NOT readable
+# here: ``mergeStateStatus`` reports one highest-precedence blocker, so a
+# behind branch reads ``BLOCKED``/``DIRTY``/``CLEAN`` far more often than
+# ``BEHIND`` (#4526) — ``pr_behind_base`` answers that question instead.
 GH_CONFLICT_MERGEABLE = "CONFLICTING"
 GH_CONFLICT_MERGE_STATE = "DIRTY"
 
@@ -83,6 +85,10 @@ class PrSummary:
     title: str = ""
     is_conflicted: bool = False
     behind_main: bool = False
+    # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is
+    # canonically fork-qualified (``owner:branch``) — see ``head_compare_ref``.
+    base_ref: str = ""
+    compare_head_ref: str = ""
     author: str = ""
     # Tri-state head-branch provenance (#3244): True = same-repo branch (trusted),
     # False = fork / cross-repo (holds for human approval), None = the forge did not

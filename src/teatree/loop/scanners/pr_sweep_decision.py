@@ -122,12 +122,17 @@ def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) 
     )
 
 
-def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:
+def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool, conflicted: bool) -> bool:
     """True iff ≥1 REQUIRED check is failing against a base that has MOVED (#4063).
 
     *failing_required* is the branch-protection-required set that is currently
-    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main* is
-    GitHub's ``mergeStateStatus == "BEHIND"``.
+    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main*
+    comes from the ``Ref.compare`` behind-by read (#4526), so it is true for a
+    behind branch whatever else is also wrong with it.
+
+    *conflicted* is why that widening is safe: a conflicted branch is behind too,
+    and it needs a human resolution, not a merge-update — so it is refused here
+    rather than relying on the upstream conflict flag to keep it away.
 
     What makes a red verdict unreliable is not WHICH check failed but that the run
     judged a base the branch has since fallen behind — so this generalises the
@@ -139,7 +144,7 @@ def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool)
     IS its own verdict: it stays a bare ``ci_red`` skip, which is what stops a
     genuinely broken PR from being update-looped.
     """
-    return bool(failing_required) and behind_main
+    return bool(failing_required) and behind_main and not conflicted
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
