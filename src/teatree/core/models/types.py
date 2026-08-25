@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
@@ -165,6 +165,13 @@ class TicketExtra(TypedDict, total=False):
     # escape hatch (a ``reason`` for an AC-less ticket).
     spec_coverage: "SpecCoverageManifest"
     spec_coverage_override: "SpecCoverageOverride"
+    # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
+    # ``kind=fix``; written from the agent result envelope by
+    # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
+    # hatch. Undeclared they are stripped by every ``_extra()`` write-back — the
+    # coding-phase write would not survive ``Ticket.test()`` (see ``FixRecord``).
+    fix_record: "FixRecord"
+    fix_record_override: "FixRecordOverride"
     # PR-08 audited escape hatch for the cross-repo integration-review gate: a
     # ``reason`` for a ≥2-repo ticket exempt from the combined-changeset review;
     # read by ``integration_review_gate`` at ``mark_delivered``.
@@ -422,6 +429,61 @@ class SpecCoverageOverride(TypedDict, total=False):
     """
 
     reason: str
+
+
+class FixRecord(TypedDict, total=False):
+    """A fix-ticket's Definition-of-Done record (#1661), carried on ``Ticket.extra['fix_record']``.
+
+    Produced by the fixing agent in its result envelope, validated and written by
+    ``teatree.agents.fix_record_recorder``, read by ``core.gates.fix_dod_gate`` at
+    ``mark_delivered``. Every field is required and non-blank — a manifestation patch
+    with no stated root cause is exactly the case the gate exists to catch, so there
+    is no partial credit.
+
+    Declared here rather than beside the gate because this declaration is
+    load-bearing twice over: it is what ``validated_ticket_extra`` keeps (an
+    undeclared key is stripped by every ``_extra()`` write-back, so a record written
+    at the coding phase would not survive ``Ticket.test()``), and
+    :data:`FIX_RECORD_FIELDS` derived from it is the ONE definition the gate, the
+    recorder, the envelope schema and the agent brief all read.
+    """
+
+    root_cause: str
+    evidence: str
+    regression_test: str
+    observed_red: str
+    recurrence_fingerprint: str
+
+
+class FixRecordOverride(TypedDict, total=False):
+    """Audited escape hatch for a fix-ticket the FixRecord heuristic mis-classifies (#1661).
+
+    ``Ticket.extra['fix_record_override']`` with a non-empty ``reason`` makes the
+    gate pass-and-log. Deliberately weaker than the forced-repro gate's
+    human-authorized ``ReproWaiver`` — this one is self-authored, which is why it is
+    the exception rather than the route (the envelope is the route).
+    """
+
+    reason: str
+
+
+#: The FixRecord fields, in declaration order — THE definition. The gate's required
+#: set, the envelope JSON schema, the recorder's validator and the agent brief all
+#: derive from this tuple, so a field added to :class:`FixRecord` reaches every one
+#: of them and none can drift into a second hand-typed list.
+FIX_RECORD_FIELDS: Final[tuple[str, ...]] = tuple(FixRecord.__annotations__)
+
+
+def fix_record_missing_fields(record: object) -> list[str]:
+    """The :data:`FIX_RECORD_FIELDS` *record* leaves absent or blank, in declaration order.
+
+    The one parse shared by the gate that READS the stored record and the recorder
+    that VALIDATES the returned one, so producer and consumer cannot drift. A
+    non-mapping (or absent) record yields every field — there is no partial credit.
+    """
+    if not isinstance(record, dict):
+        return list(FIX_RECORD_FIELDS)
+    return [field for field in FIX_RECORD_FIELDS if not str(record.get(field, "")).strip()]
 
 
 class IntegrationReviewOverride(TypedDict, total=False):
