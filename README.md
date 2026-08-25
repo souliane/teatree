@@ -617,7 +617,7 @@ auto-engage every session.
 [Fork the repo](https://github.com/souliane/teatree/fork), then:
 
 ```bash
-git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
+git clone https://github.com/YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
 uv tool install --editable . --overrides uv-overrides.txt   # global `t3`, live-reloaded from this clone
 t3 setup                       # installs skills globally, respects local symlinks

@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_claude_settings_drift,
     _check_gh_token_permissions,
     _check_git_hooks_installed,
+    _check_github_remotes_are_https,
     _check_provision_concurrency_from_host,
     _resolve_projects_config,
     _slug_from_repo_url,
@@ -270,3 +272,124 @@ class TestClaudeSettingsDrift:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "home"))
         with patch("teatree.cli.doctor.checks_bootstrap._teatree_repo_root", return_value=repo):
             assert _check_claude_settings_drift() is True
+
+
+class TestGithubRemotesAreHttps:
+    """#4447 — the live-gitconfig half of "GitHub is HTTPS + `gh`, never SSH".
+
+    The ambient global gitconfig is nulled for the probe so the verdict comes from the
+    fixture repo alone; the production check reads the real global on purpose, since an
+    `insteadOf` there is exactly the untracked failure this exists to catch.
+    """
+
+    @staticmethod
+    def _checkout(path: Path, origin: str) -> Path:
+        repo = make_git_repo(path)
+        run_git(repo, "remote", "add", "origin", origin)
+        return repo
+
+    @staticmethod
+    def _run(*checkouts: Path) -> bool:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        with (
+            patch("teatree.core.gates.git_checkouts.discover_checkouts", return_value=list(checkouts)),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            return _check_github_remotes_are_https()
+
+    def test_an_ssh_github_origin_fails_and_names_the_repoint(self, tmp_path: Path, capsys) -> None:
+        repo = self._checkout(tmp_path / "repo", "git@github.com:souliane/teatree.git")
+
+        ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is False
+        assert "FAIL" in out
+        assert str(repo) in out
+        assert "https://github.com/souliane/teatree.git" in out
+
+    def test_an_https_github_origin_passes(self, tmp_path: Path) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        assert self._run(repo) is True
+
+    def test_an_ssh_host_alias_for_github_fails(self, tmp_path: Path) -> None:
+        repo = self._checkout(tmp_path / "repo", "git@github.com-work:souliane/teatree.git")
+        assert self._run(repo) is False
+
+    def test_an_ssh_scheme_github_pushurl_fails(self, tmp_path: Path) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        pushurl = "ssh://git@github.com/souliane/teatree.git"  # privacy-scan:allow
+        run_git(repo, "config", "remote.origin.pushurl", pushurl)
+        assert self._run(repo) is False
+
+    def test_an_ssh_gitlab_origin_passes(self, tmp_path: Path) -> None:
+        """Narrowness: the GitLab credential helper is a separate, legitimate path."""
+        repo = self._checkout(tmp_path / "repo", "git@gitlab.com:group/project.git")
+        assert self._run(repo) is True
+
+    def test_an_instead_of_rewrite_to_github_fails(self, tmp_path: Path, capsys) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "url.git@github.com:.insteadOf", "https://github.com/")  # privacy-scan:allow
+
+        ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is False
+        assert "FAIL" in out
+        assert "insteadof" in out.lower()
+
+    def test_an_instead_of_rewrite_to_gitlab_passes(self, tmp_path: Path) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "url.git@gitlab.com:.insteadOf", "https://gitlab.com/")  # privacy-scan:allow
+        assert self._run(repo) is True
+
+    def test_a_missing_credential_helper_warns_without_failing(self, tmp_path: Path, capsys) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+
+        ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is True
+        assert "WARN" in out
+        assert "gh auth setup-git" in out
+
+    def test_a_configured_credential_helper_is_silent(self, tmp_path: Path, capsys) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "credential.https://github.com.helper", "!gh auth git-credential")
+
+        assert self._run(repo) is True
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_a_host_agnostic_credential_helper_is_silent(self, tmp_path: Path, capsys) -> None:
+        """A global `credential.helper` serves github too — nudging for `gh` would be noise."""
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "credential.helper", "store")
+
+        assert self._run(repo) is True
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_an_unreadable_config_warns_and_passes(self, tmp_path: Path, capsys) -> None:
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+
+        with patch(
+            "teatree.cli.doctor.checks_bootstrap._git_config_pairs",
+            side_effect=OSError("no git binary"),
+        ):
+            ok = self._run(repo)
+
+        out = capsys.readouterr().out
+        assert ok is True
+        assert "WARN" in out
+        assert "no git binary" in out
+
+    def test_a_failed_discovery_warns_and_passes(self, capsys) -> None:
+        with patch(
+            "teatree.core.gates.git_checkouts.discover_checkouts",
+            side_effect=RuntimeError("boom"),
+        ):
+            ok = _check_github_remotes_are_https()
+
+        out = capsys.readouterr().out
+        assert ok is True
+        assert "WARN" in out
+        assert "boom" in out

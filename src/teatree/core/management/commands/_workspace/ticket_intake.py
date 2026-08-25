@@ -48,7 +48,7 @@ class ForeignIssueWorktreeRefusedError(Exception):
     """Rolls back the ticket transaction when the #2217 foreign-dir guard refuses.
 
     Raised inside :func:`build_ticket`'s ``transaction.atomic()`` so a refusal
-    leaves no ticket row behind; the ``ticket`` command catches it and returns 0
+    leaves no ticket row behind; the ``ticket`` command catches it and exits 1
     (the refusal message was already written to stderr).
     """
 
