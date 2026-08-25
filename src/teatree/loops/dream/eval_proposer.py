@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict
 
-from teatree.loops.dream.engine import DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.engine import DistilledCluster, check_grounding, normalize_ws
 from teatree.loops.dream.replay import ConsolidationExtract, default_projects_dir
 
 
@@ -77,7 +77,7 @@ def _eval_scenario_name(cluster_key: str) -> str:
 def default_eval_proposer(clusters: Sequence[DistilledCluster], extract: ConsolidationExtract) -> list[ProposedEval]:
     """Map each GROUNDED cluster to one inert eval candidate (no LLM, no file write).
 
-    Reuses :func:`teatree.loops.dream.engine.cluster_is_grounded` — the same guard
+    Reuses :func:`teatree.loops.dream.engine.check_grounding` — the same guard
     ``write_clusters`` applies — so a proposal is emitted ONLY for a cluster citing
     a real mistake present in the extract. The cited mistake becomes
     ``seed_citation``: the seed of the eventual ``_fail`` fixture. A cluster with
@@ -87,14 +87,15 @@ def default_eval_proposer(clusters: Sequence[DistilledCluster], extract: Consoli
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     proposals: list[ProposedEval] = []
     for cluster in clusters:
-        if not cluster_is_grounded(cluster, snippet_texts):
+        verdict = check_grounding(cluster, snippet_texts)
+        if verdict.reason is not None:
             continue
         proposals.append(
             ProposedEval(
                 scenario_name=_eval_scenario_name(cluster.cluster_key),
                 drift_rule=cluster.rule,
                 seed_citation=cluster.verified_citation,
-                source_files=[str(path) for path in cluster.source_files],
+                source_files=[str(path) for path in verdict.cluster.source_files],
                 suggested_destination=cluster.durable_destination,
             )
         )
