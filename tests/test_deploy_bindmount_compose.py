@@ -97,6 +97,9 @@ CLONE_ROOT_VOLUME = "teatree_clones"
 CLONE_ROOT_TARGET = f"{CONTAINER_HOME}/workspace"
 KEPT_NAMED_VOLUMES = {DEFAULT_SOURCE_VOLUME, "teatree_uv", "teatree_control_db", CLONE_ROOT_VOLUME}
 REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
+#: Declared top-level but mounted by ONE service, so absent from the shared anchor above.
+SERVICE_SCOPED_NAMED_VOLUMES = {"teatree_watchdog_state"}
+DECLARED_NAMED_VOLUMES = KEPT_NAMED_VOLUMES | SERVICE_SCOPED_NAMED_VOLUMES
 
 
 def _compose() -> dict:
@@ -325,7 +328,7 @@ class TestContainerOwnedCloneRoot:
 class TestTopLevelVolumeDeclarations:
     def test_unused_named_volume_declarations_removed(self) -> None:
         declared = set(_compose().get("volumes") or {})
-        assert declared == KEPT_NAMED_VOLUMES
+        assert declared == DECLARED_NAMED_VOLUMES
         assert declared.isdisjoint(REMOVED_NAMED_VOLUMES)
 
 

@@ -881,7 +881,7 @@ service is down — exactly the outage it exists to repair.
    re-reads it after, and DMs the owner naming every service it had to bring back —
    with how long it had been gone, carried in the `<service> <last-seen-running>`
    liveness ledger (`TEATREE_WATCHDOG_LIVENESS_STATE`, default
-   `/var/tmp/teatree-watchdog-liveness.state`). A silent auto-heal is
+   `$TEATREE_WATCHDOG_STATE_DIR/teatree-watchdog-liveness.state`). A silent auto-heal is
    indistinguishable from a healthy idle factory, which is how a 4-hour worker
    outage reached the owner only because they happened to open the dashboard
    ([#3901](https://github.com/souliane/teatree/issues/3901)). A service that did
@@ -909,14 +909,33 @@ service is down — exactly the outage it exists to repair.
    the finding set so an ongoing outage does not re-spam every pass. A page the
    transport cannot carry is **parked**, not lost: body and idempotency key go into
    the undelivered ledger (`TEATREE_WATCHDOG_UNDELIVERED_STATE`, default
-   `/var/tmp/teatree-watchdog-undelivered.state`, newest `TEATREE_WATCHDOG_UNDELIVERED_MAX`
-   kept), every pass re-sends it and reports the depth while any remain, and the
-   original key means a re-send that races a recovered channel is deduped rather
-   than doubled ([#4339](https://github.com/souliane/teatree/issues/4339) — the one
-   channel that would have surfaced an outage was itself down, so the detection was
-   as silent as no detection at all). Until you wire a Slack credential the DM step
-   parks every page; the findings are also visible in the watchdog's own container
-   logs and `t3 doctor check`. Three of those findings are **deploy-gated** — see below.
+   `$TEATREE_WATCHDOG_STATE_DIR/teatree-watchdog-undelivered.state`, oldest
+   `TEATREE_WATCHDOG_UNDELIVERED_MAX` kept), and the original key means a re-send that
+   races a recovered channel is deduped rather than doubled
+   ([#4339](https://github.com/souliane/teatree/issues/4339) — the one channel that
+   would have surfaced an outage was itself down, so the detection was as silent as
+   no detection at all). Parking **dedups on that key**, so an unchanged outage costs
+   one row rather than one per pass, and the cap keeps the OLDEST rows — the first
+   page of an outage is the one that names what broke. Until you wire a Slack
+   credential the DM step parks every page; the findings are also visible in the
+   watchdog's own container logs and `t3 doctor check`. Three of those findings are
+   **deploy-gated** — see below.
+5. **Then**, and only then, the secondary work: re-deliver the parked pages and trim
+   stale temp. Both run on every path — including the failed `up -d` above, which used
+   to `return` ahead of the drain — and the drain is **bounded**: at most
+   `TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX` rows (default 5) inside
+   `TEATREE_WATCHDOG_UNDELIVERED_DRAIN_BUDGET` seconds (default 45), each exec capped at
+   `TEATREE_WATCHDOG_NOTIFY_EXEC_TIMEOUT` (default 20). It reports what it deferred and
+   the remaining depth. Unbounded and ahead of the doctor, ~7 parked rows at the measured
+   17–28 s per exec exceeded the pass timeout, so a broken transport silently converted
+   the watchdog into a blind supervisor
+   ([#4458](https://github.com/souliane/teatree/issues/4458)).
+
+Every ledger the watchdog carries across passes lives under
+`TEATREE_WATCHDOG_STATE_DIR` (`/var/lib/teatree-watchdog` on the box), a **named
+volume**. In the container's writable layer they were discarded by any recreation —
+including the deploy that finally wires the transport, which is exactly when a parked
+backlog matters.
 
 The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
@@ -1021,7 +1040,8 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
 | the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
 | the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
-| the alerting channel is down when a page is raised | ✅ | the page is parked in the undelivered ledger and re-sent every pass until it lands; the depth is logged meanwhile |
+| the alerting channel is down when a page is raised | ✅ | the page is parked in the undelivered ledger (a named volume, so a recreation does not discard it) and re-sent on a BOUNDED schedule until it lands; the depth and anything deferred are logged meanwhile |
+| a standing backlog of parked pages | ✅ | parking dedups on the idempotency key and the drain is capped per pass, so re-delivery can never consume the pass the doctor needs |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
@@ -1050,7 +1070,12 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
-| `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
+| `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `$TEATREE_WATCHDOG_STATE_DIR/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
+| `TEATREE_WATCHDOG_STATE_DIR` | `/var/lib/teatree-watchdog` (compose), else `/var/tmp` | root of every cross-pass ledger; a named volume so a container recreation cannot discard a parked page |
+| `TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX` | `5` | parked pages the drain may attempt per pass — re-delivery must never consume the pass the doctor needs |
+| `TEATREE_WATCHDOG_UNDELIVERED_DRAIN_BUDGET` | `45` | seconds the drain may spend before deferring the rest to the next pass |
+| `TEATREE_WATCHDOG_NOTIFY_EXEC_TIMEOUT` | `20` | ceiling on one `notify send` exec (measured 17–28 s on the box) |
+| `TEATREE_WATCHDOG_TEMP_TRIM_EXEC_TIMEOUT` | `30` | ceiling on one stale-temp trim exec |
 | `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target (path identity) for the watchdog's read-only mount and the app services' read-write one, the clone `workspace ticket` cuts worktrees from (#4120), and the root the watchdog execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` <!-- privacy-scan:allow — the box's public, documented deploy home --> |
 | `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/deploy.sh` and `deploy/t3` |
 

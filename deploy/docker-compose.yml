@@ -438,6 +438,10 @@ services:
     environment:
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"
+      # The cross-pass ledgers' root, on the named volume mounted below. In the writable
+      # layer they were discarded by any recreation — including the deploy that wires the
+      # transport, i.e. exactly when the parked page backlog matters (#4458).
+      TEATREE_WATCHDOG_STATE_DIR: /var/lib/teatree-watchdog
       # Where deploy.sh's single-convergence flock lands inside THIS container — the
       # deploy-in-flight probe that keeps a rolling deploy from paging as an outage
       # (#3732). The host path is /tmp/teatree-deploy.lock; see the /host-tmp mount.
@@ -475,6 +479,8 @@ services:
     volumes:
       # The daemon control channel — the watchdog's only mutating capability.
       - /var/run/docker.sock:/var/run/docker.sock
+      # The ledgers TEATREE_WATCHDOG_STATE_DIR above names.
+      - teatree_watchdog_state:/var/lib/teatree-watchdog
       # This checkout, READ-ONLY, at PATH IDENTITY (source == target). Path
       # identity keeps the inner `docker compose ... up -d` config hash identical
       # to the host's, so the watchdog never recreates itself or the app services.
@@ -535,3 +541,6 @@ volumes:
   # The control DB's directory — db.sqlite3 plus whatever journal sidecars the
   # engine keeps beside it. Deliberately NOT reachable from the host.
   teatree_control_db:
+  # The watchdog's cross-pass ledgers (undelivered pages, re-surface, liveness,
+  # deploy-sensitive). A VOLUME because a recreation must not discard a parked owner page.
+  teatree_watchdog_state:

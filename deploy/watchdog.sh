@@ -36,6 +36,11 @@
 #      the transport cannot carry is PARKED and re-tried, never lost to a log line:
 #      the alerting channel needs a fallback of its own, or a detected outage is a
 #      silent one.
+#   5. Only THEN the secondary work — re-deliver parked pages and trim stale temp.
+#      Both run on every path, and the drain is bounded (rows, wall clock, per exec):
+#      unbounded and ahead of the doctor, a broken transport plus a handful of parked
+#      pages killed the pass at the timeout, so a broken alerting channel silently
+#      turned the supervisor blind (#4458).
 #
 # Safe by construction: the ONLY mutating docker op is `up -d --no-recreate`
 # (idempotent, never destructive, never recreates a running container). The
@@ -74,6 +79,12 @@ TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-admin teatree
 TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
 TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 
+# Where every cross-pass ledger below lives — a NAMED VOLUME on the box (see
+# docker-compose.yml). They are the watchdog's only memory, and the container's writable
+# layer discards them on any recreation, including the deploy that wires the transport.
+WATCHDOG_STATE_DIR="${TEATREE_WATCHDOG_STATE_DIR:-/var/tmp}"
+mkdir -p "$WATCHDOG_STATE_DIR" 2>/dev/null || true
+
 # Deploy-awareness (#3732). deploy.sh holds this host flock for the whole
 # convergence (path-identity mounted read-only into this container, see
 # docker-compose.yml); the recreate window is the grace after a container was
@@ -81,7 +92,7 @@ TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 # two-strikes ledger across passes.
 DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}}"
 DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
-DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
+DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-$WATCHDOG_STATE_DIR/teatree-watchdog-deploy-sensitive.state}"
 # How long deploy.sh's own in-progress record (written into the lock FILE, see
 # deploy_marker_fresh) counts as a live holder. A convergence takes minutes; past the
 # ceiling the record is a hard-killed deploy's leftover, not a holder.
@@ -90,16 +101,24 @@ DEPLOY_MARKER_MAX_AGE="${TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE:-1800}"
 # Re-surface ledger: "<episode> <digest>" of the LAST observed red finding set. The
 # episode counts green→red transitions, so a finding set that CLEARS and later returns
 # is a new incident rather than a repeat of its own pre-clear key.
-RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
+RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-$WATCHDOG_STATE_DIR/teatree-watchdog-red.state}"
 
 # Liveness ledger: "<service> <epoch-last-seen-running>" per line. It exists so "inactive
 # since when" is answerable from the DM itself rather than from `docker inspect` after
 # the fact.
-LIVENESS_STATE="${TEATREE_WATCHDOG_LIVENESS_STATE:-/var/tmp/teatree-watchdog-liveness.state}"
+LIVENESS_STATE="${TEATREE_WATCHDOG_LIVENESS_STATE:-$WATCHDOG_STATE_DIR/teatree-watchdog-liveness.state}"
 
 # Undelivered-page ledger: "<epoch> <key> <base64-body>" per line, newest last, capped.
-UNDELIVERED_STATE="${TEATREE_WATCHDOG_UNDELIVERED_STATE:-/var/tmp/teatree-watchdog-undelivered.state}"
+UNDELIVERED_STATE="${TEATREE_WATCHDOG_UNDELIVERED_STATE:-$WATCHDOG_STATE_DIR/teatree-watchdog-undelivered.state}"
 UNDELIVERED_MAX="${TEATREE_WATCHDOG_UNDELIVERED_MAX:-50}"
+# Re-delivery is SECONDARY work sharing one pass with the doctor, so it runs under a hard
+# ceiling: at most this many rows, inside this many seconds, each exec itself capped. Worst
+# case is the budget plus one row's services times the per-exec ceiling.
+UNDELIVERED_DRAIN_MAX="${TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX:-5}"
+UNDELIVERED_DRAIN_BUDGET="${TEATREE_WATCHDOG_UNDELIVERED_DRAIN_BUDGET:-45}"
+# One `notify send` exec measured 17-28s on the box; an unbounded one can consume the pass.
+NOTIFY_EXEC_TIMEOUT="${TEATREE_WATCHDOG_NOTIFY_EXEC_TIMEOUT:-20}"
+TEMP_TRIM_EXEC_TIMEOUT="${TEATREE_WATCHDOG_TEMP_TRIM_EXEC_TIMEOUT:-30}"
 
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
@@ -108,6 +127,18 @@ log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 day_bucket() { printf '%s' "${TEATREE_WATCHDOG_DAY_BUCKET:-$(date -u +%Y%m%d)}"; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
+
+# `compose` under a hard wall-clock ceiling — an exec blocks for as long as the command inside
+# takes. Degrades to an uncapped call where `timeout` is absent (a bare host sourcing this file).
+compose_bounded() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+  else
+    compose "$@"
+  fi
+}
 
 # Echo the init service's compose state as "<State> <ExitCode>" (e.g. "exited 0"),
 # or empty when it cannot be determined (never created, docker unreachable, jq
@@ -147,7 +178,8 @@ restart_down_services() {
 _deliver_owner_page() {
   local key="$1" body="$2" svc
   for svc in $EXEC_SERVICES; do
-    if printf '%s' "$body" | compose exec -T "$svc" t3 "$OVERLAY" notify send - --idempotency-key "$key" >/dev/null; then
+    if printf '%s' "$body" |
+      compose_bounded "$NOTIFY_EXEC_TIMEOUT" exec -T "$svc" t3 "$OVERLAY" notify send - --idempotency-key "$key" >/dev/null; then
       return 0
     fi
   done
@@ -158,7 +190,13 @@ _deliver_owner_page() {
 # code stopped at scrolls away, so the detection was as silent as no detection at all;
 # the body and its idempotency key are kept for _drain_undelivered_pages to re-send.
 _park_undelivered_page() {
-  local key="$1" encoded trimmed
+  local key="$1" encoded
+  # Without this, an unchanged outage parked a row on EVERY pass, so ledger depth tracked
+  # uptime rather than the number of distinct outages — the accrual that starved the pass.
+  if _page_already_parked "$key"; then
+    log "OWNER PAGE UNDELIVERED (key=$key) — already parked, not duplicated; the alerting channel is DOWN"
+    return 0
+  fi
   encoded="$(printf '%s' "$2" | base64 -w0 2>/dev/null)" || encoded=""
   if [ -z "$encoded" ]; then
     log "OWNER PAGE UNDELIVERED (key=$key) and could not be encoded — it is lost"
@@ -168,21 +206,52 @@ _park_undelivered_page() {
     log "OWNER PAGE UNDELIVERED (key=$key) and could not be persisted at $UNDELIVERED_STATE — it is lost"
     return 0
   fi
-  trimmed="$(tail -n "$UNDELIVERED_MAX" "$UNDELIVERED_STATE" 2>/dev/null)"
-  [ -z "$trimmed" ] || printf '%s\n' "$trimmed" >"$UNDELIVERED_STATE" 2>/dev/null || true
+  _trim_undelivered_ledger
   log "OWNER PAGE UNDELIVERED (key=$key) — parked at $UNDELIVERED_STATE for retry; the alerting channel is DOWN"
 }
 
-# Re-send every parked page and keep the ones that still fail, reporting the depth so a
-# standing backlog cannot go unnoticed. Each keeps its original idempotency key, so a
-# re-send that races a recovered channel is deduped rather than doubled.
+_page_already_parked() {
+  awk -v k="$1" '$2 == k { found = 1 } END { exit found ? 0 : 1 }' "$UNDELIVERED_STATE" 2>/dev/null
+}
+
+# Enforce the cap by keeping the OLDEST rows: the first page of an outage names what broke, so
+# the previous `tail -n` discarded precisely the one worth keeping. Dropped keys are named —
+# a lost alarm must never be silent.
+_trim_undelivered_ledger() {
+  local kept dropped
+  kept="$(head -n "$UNDELIVERED_MAX" "$UNDELIVERED_STATE" 2>/dev/null)"
+  dropped="$(tail -n "+$((UNDELIVERED_MAX + 1))" "$UNDELIVERED_STATE" 2>/dev/null | awk '{ print $2 }' | tr '\n' ' ')"
+  [ -z "${dropped// /}" ] || log "OWNER PAGE DROPPED — ledger at cap ($UNDELIVERED_MAX): $dropped"
+  [ -z "$kept" ] || printf '%s\n' "$kept" >"$UNDELIVERED_STATE" 2>/dev/null || true
+}
+
+# Re-send parked pages OLDEST first under a hard per-pass bound, keeping every row it did not
+# reach, and reporting the depth so a standing backlog cannot go unnoticed. Each keeps its
+# original idempotency key, so a re-send that races a recovered channel is deduped rather than
+# doubled. Unbounded, this consumed the whole pass and the doctor never ran (#4458).
 _drain_undelivered_pages() {
-  local kept="" stamp key encoded body delivered=0 remaining
+  local kept="" stamp key encoded body seen="" delivered=0 attempts=0 deferred=0 deadline now remaining
   [ -s "$UNDELIVERED_STATE" ] || return 0
+  now="$(date -u +%s 2>/dev/null || printf 0)"
+  deadline=$((now + UNDELIVERED_DRAIN_BUDGET))
   while read -r stamp key encoded; do
     [ -n "${encoded:-}" ] || continue
+    # Collapse rows a pre-dedup pass left behind, keeping the oldest of each key.
+    case "$seen" in *"|$key|"*) continue ;; esac
+    seen="$seen|$key|"
+    now="$(date -u +%s 2>/dev/null || printf '%s' "$deadline")"
+    if [ "$attempts" -ge "$UNDELIVERED_DRAIN_MAX" ] || [ "$now" -ge "$deadline" ]; then
+      deferred=$((deferred + 1))
+      kept="$kept$stamp $key $encoded"$'\n'
+      continue
+    fi
     body="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || body=""
-    if [ -n "$body" ] && _deliver_owner_page "$key" "$body"; then
+    if [ -z "$body" ]; then
+      log "parked page (key=$key) has an undecodable body — DROPPED, it can never be delivered"
+      continue
+    fi
+    attempts=$((attempts + 1))
+    if _deliver_owner_page "$key" "$body"; then
       delivered=$((delivered + 1))
       continue
     fi
@@ -191,6 +260,8 @@ _drain_undelivered_pages() {
   printf '%s' "$kept" >"$UNDELIVERED_STATE" 2>/dev/null ||
     log "could not rewrite the undelivered-page ledger at $UNDELIVERED_STATE"
   [ "$delivered" -eq 0 ] || log "delivered $delivered owner page(s) parked by an earlier pass"
+  [ "$deferred" -eq 0 ] ||
+    log "drain bounded at ${UNDELIVERED_DRAIN_MAX} row(s)/${UNDELIVERED_DRAIN_BUDGET}s — $deferred page(s) deferred to the next pass"
   # `grep -c .` always prints a count, even 0 — but it also exits 1 when that
   # count is 0 (no matching lines), so a trailing `|| printf 0` fires TOO and
   # appends a second "0", making `remaining` a two-line "0\n0". `[ ... -eq 0 ]`
@@ -383,7 +454,7 @@ trim_stale_temp() {
   local svc root
   for svc in $TEMP_TRIM_SERVICES; do
     for root in $TEMP_TRIM_ROOTS; do
-      compose exec -T "$svc" bash -lc \
+      compose_bounded "$TEMP_TRIM_EXEC_TIMEOUT" exec -T "$svc" bash -lc \
         "find '$root' -mindepth 1 -maxdepth 1 \\( -name 'pytest-*' -o -name 'uv-*' -o -name 'claude-*' \\) -mmin +$TEMP_TRIM_MIN_AGE_MIN -exec rm -rf {} + 2>/dev/null" \
         >/dev/null 2>&1 || true
     done
@@ -591,26 +662,30 @@ run_pass() {
   down="$(down_app_services)"
 
   log "restarting any down services (gated on init state)"
-  if ! restart_down_services; then
+  if restart_down_services; then
+    # Announce BEFORE stamping: the durations come from the pre-restart ledger, and
+    # stamping first would report a just-recovered service as down ~0 min.
+    still_down="$(down_app_services)"
+    announce_repaired_services "$down" "$still_down" "$now"
+    _record_liveness "$now" "$still_down"
+    run_health_stage || log "health stage exited non-zero — continuing to the secondary work"
+  else
     # The stack could not even be brought up — the strongest outage signal.
     printf 'teatree watchdog: `docker compose up -d` FAILED on the box — the stack is DOWN and could not be restarted. SSH in and inspect `docker compose -p %s logs`.' "$PROJECT" \
       | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d)"
-    return 0
   fi
 
-  # Announce BEFORE stamping: the durations come from the pre-restart ledger, and
-  # stamping first would report a just-recovered service as down ~0 min.
-  still_down="$(down_app_services)"
-  announce_repaired_services "$down" "$still_down" "$now"
-  _record_liveness "$now" "$still_down"
-
-  # An outage nobody was told about is a silent one: a page parked while the transport
-  # was down reaches the owner as soon as the just-restarted stack can carry it.
+  # Secondary work, AFTER the doctor and on every path. An outage nobody was told about is a
+  # silent one, and this used to be skipped on the very failure that raises the loudest page.
   _drain_undelivered_pages
 
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp
+}
 
+# Read the factory health and page on a red verdict — the watchdog's PRIMARY job, so it runs
+# before the secondary re-delivery work rather than after it.
+run_health_stage() {
   local doctor_rc
   run_doctor && doctor_rc=0 || doctor_rc=$?
   if [ "$doctor_rc" -eq 126 ]; then

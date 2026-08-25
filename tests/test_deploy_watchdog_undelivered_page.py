@@ -149,6 +149,73 @@ class TestAnUndeliverablePageIsParked:
 
         assert len(_ledger(tmp_path).splitlines()) <= 10
 
+    def test_the_cap_keeps_the_oldest_pages(self, tmp_path: Path) -> None:
+        # `tail -n` kept the NEWEST, so the first page of an outage — the one naming what
+        # actually broke — was the one the cap discarded.
+        ledger = tmp_path / "undelivered.state"
+        ledger.write_text("".join(f"1 old-key-{n} Ym9keQ==\n" for n in range(80)), encoding="utf-8")
+
+        _run_pass(
+            tmp_path,
+            STUB_NOTIFY_RC="1",
+            TEATREE_WATCHDOG_UNDELIVERED_MAX="10",
+            TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX="0",
+        )
+
+        kept = _ledger(tmp_path)
+        assert "old-key-0 " in kept, "the first page of the outage must survive the cap"
+        assert "old-key-79 " not in kept, "the cap drops the newest overflow, not the oldest"
+
+    def test_a_dropped_page_is_reported_never_silent(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "undelivered.state"
+        ledger.write_text("".join(f"1 old-key-{n} Ym9keQ==\n" for n in range(80)), encoding="utf-8")
+
+        _dms, log = _run_pass(
+            tmp_path,
+            STUB_NOTIFY_RC="1",
+            TEATREE_WATCHDOG_UNDELIVERED_MAX="10",
+            TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX="0",
+        )
+
+        assert "DROPPED" in log, "a page the cap discards is a lost alarm — say so"
+
+
+class TestParkingDedupsOnTheIdempotencyKey:
+    def test_an_unchanged_outage_parks_one_row_not_one_per_pass(self, tmp_path: Path) -> None:
+        # Three passes of the same unchanged outage produced three identical rows, so ledger
+        # depth tracked UPTIME rather than the number of distinct outages.
+        for _ in range(3):
+            _run_pass(tmp_path, STUB_NOTIFY_RC="1", TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX="0")
+
+        rows = _ledger(tmp_path).splitlines()
+        assert len(rows) == 1, f"one outage, one parked row — got {len(rows)}"
+
+    def test_a_distinct_outage_still_parks_its_own_row(self, tmp_path: Path) -> None:
+        # The anti-vacuous control: dedup must key on the page, not swallow every later one.
+        other = '{"ok": false, "findings": [{"level": "FAIL", "message": "Compose service teatree-admin is exited"}]}'
+
+        _run_pass(tmp_path, STUB_NOTIFY_RC="1", TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX="0")
+        _run_pass(
+            tmp_path,
+            STUB_NOTIFY_RC="1",
+            STUB_DOCTOR_JSON=other,
+            TEATREE_WATCHDOG_UNDELIVERED_DRAIN_MAX="0",
+        )
+
+        assert len(_ledger(tmp_path).splitlines()) == 2
+
+
+class TestAnUndeliverableRowIsNotKeptForever:
+    def test_a_body_that_cannot_be_decoded_is_dropped(self, tmp_path: Path) -> None:
+        # It can never be delivered, so keeping it only consumes the drain's budget forever.
+        ledger = tmp_path / "undelivered.state"
+        ledger.write_text("1 broken-key !!!not-base64!!!\n", encoding="utf-8")
+
+        _dms, log = _run_pass(tmp_path, STUB_DOCTOR_JSON=_GREEN)
+
+        assert _ledger(tmp_path) == "", "an undecodable row must leave the ledger"
+        assert "broken-key" in log, "dropping a page is never silent"
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
