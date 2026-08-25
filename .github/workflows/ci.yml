@@ -654,7 +654,8 @@ jobs:
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
-    timeout-minutes: 15
+    # Stopgap headroom for the 2.3x shard imbalance; #4603 rebalances the split.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     permissions:
       contents: read
