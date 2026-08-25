@@ -1,11 +1,13 @@
-"""``ticket show`` + ``ticket expedite`` — read/set a ticket's state (#2009, PR-07).
+"""``ticket show`` / ``expedite`` / ``dead-rows`` — read or set a ticket's state (#2009).
 
 Split out of ``ticket.py`` as a :class:`TicketShowCommands` mixin (the same MRO
 split as ``RubricCommands``) so the already-cap-bound command god-module does not
 grow. Holds ``show`` (per-phase ``attempt N/max`` budget over the ticket's
-``TaskAttempt`` rows) and ``expedite`` (the release-blocker flag).
+``TaskAttempt`` rows), ``expedite`` (the release-blocker flag), and ``dead-rows``
+(the rows no forge query can reach, #4527).
 """
 
+import json
 from typing import Annotated, TypedDict
 
 import typer
@@ -31,6 +33,13 @@ class TicketShowResult(TypedDict):
     issue_url: str
     expedited: bool
     phases: list[PhaseBudgetRow]
+
+
+class DeadRowResult(TypedDict):
+    ticket_id: int
+    state: str
+    overlay: str
+    held_text: str
 
 
 class ExpediteResult(TypedDict, total=False):
@@ -120,6 +129,38 @@ class TicketShowCommands(TyperCommand):
         }
         self.stdout.write(render_ticket_show(result))
         return result
+
+    @command(name="dead-rows")
+    def dead_rows(
+        self,
+        *,
+        as_json: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
+    ) -> list[DeadRowResult]:
+        """List every non-terminal ticket intake can never find, oldest lane first (#4527).
+
+        The enumeration behind the doctor's dead-ticket WARN, which names only the
+        first few. Read-only: each row records a request someone was told is tracked,
+        so whether to re-file it or let it go is the operator's call, never this
+        command's.
+        """
+        rows: list[DeadRowResult] = [
+            {
+                "ticket_id": int(ticket.pk),
+                "state": ticket.state,
+                "overlay": ticket.overlay,
+                "held_text": ticket.recorded_request(),
+            }
+            for ticket in Ticket.objects.unfindable()
+        ]
+        if as_json:
+            self.stdout.write(json.dumps(rows, indent=2))
+            return rows
+        if not rows:
+            self.stdout.write("  no unfindable ticket rows")
+            return rows
+        for row in rows:
+            self.stdout.write(f"  ticket {row['ticket_id']} ({row['state']}): {row['held_text']}")
+        return rows
 
     @command()
     def expedite(

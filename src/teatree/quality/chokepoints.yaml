@@ -110,6 +110,7 @@
   allowed_modules:
     - teatree.backends.github.client
     - teatree.backends.gitlab.client
+    - teatree.core.answering.work_item_filing
     - teatree.core.reply_transport
     - teatree.core.review.review_findings
     - teatree.core.review.verdict_findings_publish

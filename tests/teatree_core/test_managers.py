@@ -24,6 +24,25 @@ class TestTicketQuerySet(TestCase):
 
         assert list(Ticket.objects.in_flight()) == [active]
 
+    def test_unfindable_returns_only_rows_intake_can_never_reach(self) -> None:
+        unreachable = Ticket.objects.create(state=Ticket.State.STARTED, short_description="a lost request")
+        Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            issue_url="https://github.com/souliane/teatree/issues/4527",
+            short_description="a real backlog item",
+        )
+
+        assert Ticket.objects.unfindable() == [unreachable]
+
+    def test_unfindable_sorts_the_row_with_no_task_at_all_first(self) -> None:
+        """No task is the most provably dead shape, so it must not sort last by accident."""
+        never_dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="never ran")
+        dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="ran once")
+        session = Session.objects.create(ticket=dispatched, agent_id="answering")
+        Task.objects.create(ticket=dispatched, session=session, phase="answering", subject="s")
+
+        assert Ticket.objects.unfindable() == [never_dispatched, dispatched]
+
 
 class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_delivered_and_ignored_tickets(self) -> None:

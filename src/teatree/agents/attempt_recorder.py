@@ -281,7 +281,7 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
-    evidence_error = check_evidence(result, phase or task.phase)
+    evidence_error = check_evidence(result, phase or task.phase) or _answering_work_item_error(task, result, phase)
     if evidence_error:
         salvaged = _salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
@@ -289,6 +289,15 @@ def _check_before_recording(
         result = salvaged
 
     return _PreRecordCheck(landing_verification_error(task, phase=phase), result)
+
+
+def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:
+    """The answering phase's task-conditional evidence check — empty on every other phase."""
+    from teatree.core.answering.work_intent import missing_work_item_error  # noqa: PLC0415 — deferred: ORM import
+
+    if normalize_phase(phase or task.phase) != "answering":
+        return ""
+    return missing_work_item_error(task, dict(result))
 
 
 def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:

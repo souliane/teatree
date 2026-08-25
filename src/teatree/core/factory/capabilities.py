@@ -125,6 +125,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json reports whether the deferred-PR obligation was found and dropped",
     ),
     Capability(
+        "teatree ticket dead-rows",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits every non-terminal ticket intake can never find, with the request text "
+        "it is the only surviving record of; read-only (#4527)",
+    ),
+    Capability(
         "teatree ticket backfill-clears",
         json_output=True,
         exit_codes=("0",),

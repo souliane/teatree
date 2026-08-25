@@ -8,6 +8,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 if TYPE_CHECKING:
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
@@ -121,6 +122,33 @@ class TicketIntrospectionModel(TicketFacet):
         this property keeps the pk fallback for rows carrying no forge number.
         """
         return derive_issue_number(self.issue_url) or str(self.pk)
+
+    def is_admissible(self) -> bool:
+        """Whether intake could ever find this row — a real forge issue with a name (#4527).
+
+        Intake discovers candidates from forge queries, so a row whose ``issue_url``
+        is blank, a synthetic ``auto:``/loop anchor, or whose remote is gone can
+        never be admitted, claimed, or found again. This is the single predicate a
+        surface consults before promising the owner that a ticket tracks their
+        request: announcing an inadmissible row converts a dropped request into one
+        the owner believes is tracked, which is strictly worse than no row at all.
+        """
+        url = self.issue_url
+        if not url or url.startswith("auto:") or is_synthetic_loop_umbrella_url(url):
+            return False
+        return bool(self.short_description) and not self.remote_missing
+
+    def recorded_request(self) -> str:
+        """All an unfindable row still holds — the request text, else its card label (#4527).
+
+        A row intake cannot reach is the only surviving record of what someone asked
+        for, so every surface that reports one has to show that text or the report
+        names a number nobody can act on.
+        """
+        extra = self.extra if isinstance(self.extra, dict) else {}
+        origin = extra.get("slack_answer")
+        recorded = str(origin.get("question") or "") if isinstance(origin, dict) else ""
+        return recorded or self.short_description or "(no recorded text)"
 
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.

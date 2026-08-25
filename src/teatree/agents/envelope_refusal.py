@@ -25,7 +25,7 @@ The refusal itself stays: a success you cannot parse is not evidence of success.
 What this module makes possible is a BOUNDED, satisfiable correction of it.
 """
 
-from teatree.agents.result_schema import required_evidence_for_phase
+from teatree.agents.result_schema import conditional_evidence_for_phase, required_evidence_for_phase
 
 #: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
@@ -81,7 +81,12 @@ def required_keys_phrase(phase: str) -> str:
     required = required_evidence_for_phase(phase)
     if not required:
         return "`summary`"
-    return "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        phrase += f" (plus {also} when the request implies work)"
+    return phrase
 
 
 def corrective_instruction(phase: str) -> str:

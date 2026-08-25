@@ -10,6 +10,7 @@ refused a summary-only run, so each channel field is present and non-empty here.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import cast
 
 from django.utils import timezone
@@ -26,6 +27,7 @@ from teatree.agents.result_schema import (
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task
+from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.news_digest import DigestItem, render_digest
 from teatree.core.notify import NotifyKind, notify_user
 
@@ -46,10 +48,14 @@ def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str
 
     Each helper self-gates on the phase, so this dispatches to all three and the
     non-matching ones are no-ops — one call site in ``record_result_envelope``.
+
+    The work item is filed BEFORE the answer is delivered so the reply the owner
+    reads can name the issue that tracks their request (#4527) — a promise and the
+    admissible row backing it land together, or neither does.
     """
     _maybe_record_article_suggestions(task, result, phase=phase)
     _maybe_record_triage_recommendations(task, result, phase=phase)
-    _maybe_record_answer_draft(task, result, phase=phase)
+    _maybe_record_answer_draft(task, result, phase=phase, work_item=_maybe_file_work_item(task, result, phase=phase))
 
 
 def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, phase: str) -> None:
@@ -190,7 +196,66 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
     )
 
 
-def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) -> "WorkItemOutcome | None":
+    """File what the answering agent said the request becomes; ``None`` when it said nothing (#4527).
+
+    A filing that cannot happen — no code host, no declared repo, a body the leak gate
+    refused — degrades to a STATED reason carried into the thread, never a swallowed
+    failure: the draft already exists, and telling the owner "I could not file this,
+    here is why" beats posting a reply that silently promises nothing.
+    """
+    from teatree.core.answering.work_item_filing import (  # noqa: PLC0415 — deferred: ORM + backend imports
+        NoCodeHostError,
+        WorkItemFilingError,
+        file_work_item,
+        filing_repo,
+    )
+    from teatree.core.backend_factory import code_host_from_overlay  # noqa: PLC0415 — deferred: call-time import
+
+    if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
+        return None
+    envelope = result.get("work_item")
+    if not isinstance(envelope, dict) or not envelope:
+        return None
+    overlay = task.ticket.overlay
+    host = code_host_from_overlay(overlay or None)
+    try:
+        if host is None:
+            raise NoCodeHostError(overlay)
+        filed = file_work_item(task.ticket, dict(envelope), host=host, repo=filing_repo(overlay))
+    except WorkItemFilingError as exc:
+        logger.warning("Work-item filing failed for task %s: %s", task.pk, exc)
+        return WorkItemOutcome(url="", failure=str(exc))
+    if filed is None:
+        return None
+    if filed.withheld:
+        return WorkItemOutcome(url="", failure=filed.withheld_reason)
+    return WorkItemOutcome(url=filed.url)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkItemOutcome:
+    """Where an answering run's work item landed, or why it did not."""
+
+    url: str
+    failure: str = ""
+
+    def thread_note(self) -> str:
+        """The line appended to the owner's reply — a clickable ref, or the stated failure."""
+        if self.failure:
+            return f"Could not file a tracking issue for this: {self.failure}"
+        number = derive_issue_number(self.url)
+        label = f"#{number}" if number else "the tracking issue"
+        return f"Tracking as <{self.url}|{label}>."
+
+
+def _maybe_record_answer_draft(
+    task: Task,
+    result: AgentResultBlob,
+    *,
+    phase: str,
+    work_item: "WorkItemOutcome | None" = None,
+) -> None:
     """Deliver an answering agent's returned ``answer`` draft (corr-11, #9).
 
     A reply to the OWNER's own inbound DM (an answering task the reactive
@@ -214,6 +279,8 @@ def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: st
     text = answer_text(raw_answer)
     if not text:
         return
+    if work_item is not None:
+        text = f"{text}\n{work_item.thread_note()}"
     if _post_owner_dm_reply(task, text):
         return
     answer = cast("AnswerEnvelope", raw_answer)

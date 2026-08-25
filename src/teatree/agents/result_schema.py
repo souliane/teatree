@@ -69,6 +69,20 @@ class AnswerEnvelope(TypedDict, total=False):
     thread_ref: str
 
 
+class WorkItemEnvelope(TypedDict, total=False):
+    """What a shell-denied answering agent decided the owner's request BECOMES (#4527).
+
+    Exactly one of the three shapes: attach to ``existing_issue_url`` (reuse before
+    file), file ``title``/``body``, or declare ``no_work_reason``. An absent channel on
+    a work-implying request is the silent drop the phase gate refuses.
+    """
+
+    title: str
+    body: str
+    existing_issue_url: str
+    no_work_reason: str
+
+
 class ReviewVerdictEnvelope(TypedDict, total=False):
     """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
 
@@ -133,6 +147,7 @@ class AgentResult(TypedDict, total=False):
     article_suggestions: list[ArticleSuggestion]
     triage_recommendations: list[TriageRecommendation]
     answer: AnswerEnvelope
+    work_item: WorkItemEnvelope
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -364,6 +379,19 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             },
             "required": ["text"],
         },
+        "work_item": {
+            "type": "object",
+            "description": (
+                "What the owner's request becomes: an existing issue to attach to, a new issue to file, "
+                "or a stated reason no work is needed."
+            ),
+            "properties": {
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "existing_issue_url": {"type": "string"},
+                "no_work_reason": {"type": "string"},
+            },
+        },
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
         "next_steps": {
@@ -432,6 +460,23 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "triage_assessing": ("triage_recommendations",),
     "answering": ("answer",),
 }
+
+
+#: Evidence a phase requires only when the TASK's own context demands it (#4527).
+#: ``answering`` returns an ``answer`` on every run, but a run that was dispatched
+#: because the owner's message implied WORK must also say what that work becomes —
+#: otherwise the reply is posted, the request is dropped, and the two are
+#: indistinguishable. The task-scoped predicate lives in
+#: :mod:`teatree.core.answering.work_intent`; this map is what the brief and the
+#: corrective re-dispatch instruction read, so both teach the same contract.
+PHASE_CONDITIONAL_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "answering": ("work_item",),
+}
+
+
+def conditional_evidence_for_phase(phase: str) -> tuple[str, ...]:
+    """Return the evidence fields *phase* can additionally require of a given task."""
+    return PHASE_CONDITIONAL_EVIDENCE.get(normalize_phase(phase), ())
 
 
 def required_evidence_for_phase(phase: str) -> tuple[str, ...]:
