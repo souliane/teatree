@@ -152,7 +152,7 @@ class TestCharterDocs:
         stale = _known_charter_refs() - _unresolved_charter_refs()
         assert stale == set(), (
             "Pinned charter reference(s) the scanner no longer reports as unresolved — "
-            f"delete them from the charter ratchet in known_unresolved_refs.yaml: {sorted(stale)}"
+            f"run `t3 tool ratchet-prune --write` to delete exactly these: {sorted(stale)}"
         )
 
     def test_the_charter_documents_are_actually_walked(self) -> None:
@@ -202,7 +202,7 @@ class TestPythonProse:
         stale = _known_python_prose_refs() - _unresolved_python_prose_refs()
         assert stale == set(), (
             "Pinned Python-prose reference(s) the scanner no longer reports as unresolved — "
-            f"delete them so the ratchet stays tight: {sorted(stale)}"
+            f"run `t3 tool ratchet-prune --write` to delete exactly these: {sorted(stale)}"
         )
 
     def test_the_python_tree_is_actually_walked(self) -> None:
