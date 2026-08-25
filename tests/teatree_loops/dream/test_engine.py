@@ -21,7 +21,7 @@ from teatree.loops.dream.engine import (
     DistillResult,
     DreamRunResult,
     WriteOutcome,
-    cluster_is_grounded,
+    check_grounding,
     normalize_ws,
     run_consolidation,
     write_clusters,
@@ -755,14 +755,135 @@ class GroundingPunctuationFoldTestCase(TestCase):
         )
 
     def test_smart_quote_citation_grounds_against_straight_quote_snippet(self) -> None:
-        assert cluster_is_grounded(self._cluster("do not ship the “beta” build"), self._SNIPPET)
+        assert check_grounding(self._cluster("do not ship the “beta” build"), self._SNIPPET).reason is None
 
     def test_em_dash_citation_grounds_against_hyphen_snippet(self) -> None:
         snippet = {"/s.jsonl": normalize_ws('{"role": "user"} stop - do not build a new banner')}
-        assert cluster_is_grounded(self._cluster("stop — do not build a new banner"), snippet)
+        assert check_grounding(self._cluster("stop — do not build a new banner"), snippet).reason is None
 
     def test_invented_citation_still_rejected_after_fold(self) -> None:
-        assert not cluster_is_grounded(self._cluster("ship the “release” build now"), self._SNIPPET)
+        assert check_grounding(self._cluster("ship the “release” build now"), self._SNIPPET).reason is not None
+
+
+class GroundingRejectionReasonTestCase(TestCase):
+    """Each rejection cause logs its OWN reason, naming the offending value (#4610).
+
+    Every falsy grounding return logged the citation message, so three of the four
+    causes sent the reader looking at a citation that was never the problem.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.member = _write_member(self.tmp)
+
+    def _reject(self, cluster: DistilledCluster) -> str:
+        with self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs:
+            outcome = write_clusters([cluster], _extract_of(self.member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
+        return "\n".join(logs.output)
+
+    def test_empty_source_files_names_the_missing_sources(self) -> None:
+        line = self._reject(
+            DistilledCluster(
+                cluster_key="bad",
+                rule="r",
+                source_files=[],
+                is_binding=False,
+                verified_citation=_CITATION,
+                durable_destination="",
+            )
+        )
+        assert "no source file" in line
+        assert "verified_citation" not in line
+
+    def test_uncited_path_names_the_path_and_the_extract(self) -> None:
+        line = self._reject(
+            DistilledCluster(
+                cluster_key="bad",
+                rule="r",
+                source_files=["/nope/not-a-member.md"],
+                is_binding=False,
+                verified_citation=_CITATION,
+                durable_destination="",
+            )
+        )
+        assert "/nope/not-a-member.md" in line
+        assert "not among the extract" in line
+
+    def test_empty_citation_says_the_citation_is_empty(self) -> None:
+        line = self._reject(
+            DistilledCluster(
+                cluster_key="bad",
+                rule="r",
+                source_files=[str(self.member.path)],
+                is_binding=False,
+                verified_citation="   ",
+                durable_destination="",
+            )
+        )
+        assert "verified_citation is empty" in line
+
+    def test_absent_citation_quotes_what_it_could_not_find(self) -> None:
+        line = self._reject(
+            DistilledCluster(
+                cluster_key="bad",
+                rule="r",
+                source_files=[str(self.member.path)],
+                is_binding=False,
+                verified_citation="a quote that never appears in the snippet text",
+                durable_destination="",
+            )
+        )
+        assert "a quote that never appears in the snippet text" in line
+        assert "not present in a cited snippet" in line
+
+
+class BareFilenameCitationTestCase(TestCase):
+    """A cited bare filename is resolved against the extract's own snippet paths (#4610).
+
+    The snippet index is keyed by absolute path; the distiller returns both forms in
+    one batch, so the bare form was read as a path the extract never carried.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _cluster(self, source: str, *, citation: str = _CITATION) -> DistilledCluster:
+        return DistilledCluster(
+            cluster_key="bare",
+            rule="Run the gate before pushing.",
+            source_files=[source],
+            is_binding=False,
+            verified_citation=citation,
+            durable_destination="",
+        )
+
+    def test_bare_filename_matching_a_snippet_is_recorded(self) -> None:
+        member = _write_member(self.tmp, name="box-capacity-empirical-limits.md")
+        outcome = write_clusters([self._cluster(member.path.name)], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=0)
+        row = ConsolidatedMemory.objects.get(cluster_key="bare")
+        assert row.source_files == [str(member.path)]
+        assert row.max_member_weight > 0
+
+    def test_bare_filename_absent_from_the_extract_is_still_rejected(self) -> None:
+        member = _write_member(self.tmp, name="box-capacity-empirical-limits.md")
+        outcome = write_clusters([self._cluster("never-enumerated.md")], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
+
+    def test_bare_filename_with_an_invented_quote_is_still_rejected(self) -> None:
+        member = _write_member(self.tmp, name="box-capacity-empirical-limits.md")
+        cluster = self._cluster(member.path.name, citation="a quote the snippet never carried")
+        outcome = write_clusters([cluster], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
+
+    def test_ambiguous_bare_filename_is_not_guessed(self) -> None:
+        one, two = (self.tmp / "a", self.tmp / "b")
+        one.mkdir()
+        two.mkdir()
+        members = [_write_member(one, name="notes.md"), _write_member(two, name="notes.md")]
+        outcome = write_clusters([self._cluster("notes.md")], _extract_of(*members), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
 
 
 class WeightedSnippetTestCase(TestCase):

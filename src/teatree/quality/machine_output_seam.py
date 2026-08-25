@@ -14,10 +14,17 @@ module detects both by walking the ``TyperCommand`` handlers' ASTs:
     django-typer additionally ``str()``-es the return onto stdout: Python repr
     (single quotes, ``True``/``None``), which ``json.loads`` rejects.
 
-A handler that returns a bare ``str``/``int`` and declares no ``--json`` flag is
-NOT reported: django-typer writes that return through unchanged, there is no
-machine mode to protect, and adding one is a per-command product decision rather
-than a mechanical conversion.
+``NON_STR_SCALAR_RETURN_UNPINNED``
+    A handler returns a bare non-``str`` scalar without that pin. django-typer's own
+    wrapper casts it, but ``call_command(..., stdout=)`` swaps in Django's, which
+    calls ``.endswith`` on the raw value — so the return crashes whoever captured the
+    output (souliane/teatree#4467). Only the pin makes that structurally impossible;
+    the annotation is checked, so a value computed in a helper is caught too.
+
+A handler that returns a bare ``str`` and declares no ``--json`` flag is NOT
+reported: both wrappers write that return through unchanged, there is no machine
+mode to protect, and adding one is a per-command product decision rather than a
+mechanical conversion.
 
 Detection follows delegation (bounded depth) so a handler whose whole body is
 ``_report(self, name, json_output=json_output)`` counts as routed when that
@@ -35,12 +42,14 @@ from pathlib import Path
 
 _HANDLER_DECORATORS = frozenset({"command", "initialize", "group"})
 _SCALAR_RETURNS = frozenset({"str", "int", "bool", "float"})
+_NON_STR_SCALARS = _SCALAR_RETURNS - {"str"}
 _DELEGATION_DEPTH = 3
 
 
 class DefectKind(StrEnum):
     JSON_FLAG_BYPASSES_SEAM = "json-flag-bypasses-seam"
     TYPED_RETURN_UNPINNED = "typed-return-unpinned"
+    NON_STR_SCALAR_RETURN_UNPINNED = "non-str-scalar-return-unpinned"
 
 
 @dataclass(frozen=True, order=True)
@@ -134,6 +143,14 @@ def _returns_structured(fn: ast.FunctionDef) -> bool:
     if not concrete:
         return False
     return not all(isinstance(m, ast.Name) and m.id in _SCALAR_RETURNS for m in concrete)
+
+
+def _returns_non_str_scalar(fn: ast.FunctionDef) -> bool:
+    """True when the annotation admits a non-``str`` scalar Django's wrapper would choke on."""
+    if fn.returns is None:
+        return False
+    concrete = [m for m in _union_members(fn.returns) if ast.unparse(m) != "None"]
+    return any(isinstance(m, ast.Name) and m.id in _NON_STR_SCALARS for m in concrete)
 
 
 def _union_members(node: ast.expr) -> list[ast.expr]:
@@ -239,8 +256,11 @@ def _iter_defects(
                 if _declares_json_flag(fn) and not routed:
                     yield SeamDefect(path.stem, cls.name, fn.name, DefectKind.JSON_FLAG_BYPASSES_SEAM)
                 pinned = pinned_by_class or index.reaches(fn, predicate_name="print_result")
-                if _returns_structured(fn) and not pinned:
-                    yield SeamDefect(path.stem, cls.name, fn.name, DefectKind.TYPED_RETURN_UNPINNED)
+                if _returns_structured(fn):
+                    if not pinned:
+                        yield SeamDefect(path.stem, cls.name, fn.name, DefectKind.TYPED_RETURN_UNPINNED)
+                elif _returns_non_str_scalar(fn) and not pinned:
+                    yield SeamDefect(path.stem, cls.name, fn.name, DefectKind.NON_STR_SCALAR_RETURN_UNPINNED)
 
 
 __all__ = ["DefectKind", "SeamDefect", "scan_defects"]

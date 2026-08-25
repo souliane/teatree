@@ -18,10 +18,13 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+import teatree.core.management.commands._workspace.ticket_intake as workspace_intake_mod
 from teatree.core.lifecycle_pipeline import PIPELINE, LifecycleStep
 from teatree.core.management.commands import do as do_mod
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.errors import DirtyWorktreeError
+from teatree.core.runners import RunnerResult
+from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, _patch_overlays
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -235,30 +238,81 @@ class DoChokepointSeamTest(TestCase):
         assert do_mod._result_error_detail("not-a-mapping") == ""
 
     def test_invoke_chokepoint_normalises_a_returned_error_mapping(self) -> None:
-        with mock.patch.object(do_mod, "call_command", return_value={"error": "no commits ahead"}):
+        with mock.patch.object(do_mod, "call_command_streamed", return_value={"error": "no commits ahead"}):
             detail = do_mod._invoke_chokepoint(_ship_step(), ref="42", ticket_id=7, err=io.StringIO())
         assert detail == "no commits ahead"
 
     def test_invoke_chokepoint_normalises_a_string_systemexit(self) -> None:
-        with mock.patch.object(do_mod, "call_command", side_effect=SystemExit("  Stopped: db down")):
+        with mock.patch.object(do_mod, "call_command_streamed", side_effect=SystemExit("  Stopped: db down")):
             detail = do_mod._invoke_chokepoint(_ship_step(), ref="42", ticket_id=7, err=io.StringIO())
         assert detail == "  Stopped: db down"
 
     def test_invoke_chokepoint_normalises_a_numeric_systemexit(self) -> None:
-        with mock.patch.object(do_mod, "call_command", side_effect=SystemExit(1)):
+        with mock.patch.object(do_mod, "call_command_streamed", side_effect=SystemExit(1)):
             detail = do_mod._invoke_chokepoint(_ship_step(), ref="42", ticket_id=7, err=io.StringIO())
         assert detail == "the ship chokepoint refused"
 
     def test_invoke_chokepoint_normalises_an_fsm_refusal(self) -> None:
-        with mock.patch.object(do_mod, "call_command", side_effect=DirtyWorktreeError("uncommitted changes")):
+        with mock.patch.object(do_mod, "call_command_streamed", side_effect=DirtyWorktreeError("uncommitted changes")):
             detail = do_mod._invoke_chokepoint(_ship_step(), ref="42", ticket_id=7, err=io.StringIO())
         assert detail == "uncommitted changes"
 
     def test_invoke_chokepoint_clean_run_has_no_detail(self) -> None:
-        with mock.patch.object(do_mod, "call_command", return_value=7):
+        with mock.patch.object(do_mod, "call_command_streamed", return_value=7):
             detail = do_mod._invoke_chokepoint(_step("intake"), ref="42", ticket_id=None, err=io.StringIO())
         assert detail == ""
 
 
 def _step(name: str) -> LifecycleStep:
     return next(step for step in PIPELINE if step.name == name)
+
+
+class _ProvisionsWorktrees:
+    """Stands in for ``WorktreeProvisioner``: materialises the row, no git, no docker."""
+
+    def __init__(self, ticket: Ticket) -> None:
+        self._ticket = ticket
+
+    def run(self) -> RunnerResult:
+        Worktree.objects.get_or_create(
+            ticket=self._ticket,
+            overlay=self._ticket.overlay,
+            repo_path="souliane/teatree",
+            defaults={"branch": "4467-do", "state": Worktree.State.PROVISIONED},
+        )
+        return RunnerResult(ok=True, detail="provisioned")
+
+
+class DoLiveIntakeTest(TestCase):
+    """The intake step through the REAL chokepoint — only the provisioner is stubbed.
+
+    Every other test here stubs ``_invoke_chokepoint``, so Django's own printer never
+    sees the child's return. That is exactly how souliane/teatree#4467 reached a user:
+    ``workspace ticket`` hands back the new ticket pk, and the stream options ``do``
+    passed swapped in a wrapper that calls ``.endswith`` on it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(mock.patch.object(workspace_intake_mod, "WorktreeProvisioner", _ProvisionsWorktrees))
+
+    @_patch_overlays(FULL_OVERLAY)
+    def test_intake_runs_the_real_chokepoint_and_admits_the_ticket(self) -> None:
+        url = "https://example.com/issues/4467"
+
+        payload = _run(url)
+
+        assert _status_by_name(payload)["intake"] == "ran"
+        ticket = Ticket.objects.get(issue_url=url)
+        assert payload["ticket_id"] == ticket.pk
+
+    @_patch_overlays(FULL_OVERLAY)
+    def test_the_human_report_names_the_admitted_ticket(self) -> None:
+        url = "https://example.com/issues/4468"
+        out, err = io.StringIO(), io.StringIO()
+
+        call_command("do", url, stdout=out, stderr=err)
+
+        ticket = Ticket.objects.get(issue_url=url)
+        assert f"ticket {ticket.pk}" in err.getvalue()
+        assert out.getvalue() == ""
