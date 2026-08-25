@@ -12,6 +12,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -42,12 +43,19 @@ class _TicketHandoutCase(TestCase):
         call_command("workspace", "ticket", "https://example.com/issues/42", *extra, stderr=err)
         return err.getvalue()
 
+    def run_refused_ticket(self) -> str:
+        err = StringIO()
+        with pytest.raises(SystemExit) as exc:
+            call_command("workspace", "ticket", "https://example.com/issues/42", stderr=err)
+        assert exc.value.code == 1
+        return err.getvalue()
+
 
 class OccupiedHandoutTests(_TicketHandoutCase):
     def test_an_occupied_checkout_is_refused_naming_the_holder(self) -> None:
         acquire(self.worktree, holder="task:7", holder_session="factory-lane")
 
-        err = self.run_ticket()
+        err = self.run_refused_ticket()
 
         assert "task:7" in err
         assert "factory-lane" in err
@@ -56,7 +64,7 @@ class OccupiedHandoutTests(_TicketHandoutCase):
     def test_the_refusal_happens_before_provisioning(self) -> None:
         acquire(self.worktree, holder="task:7", holder_session="factory-lane")
 
-        self.run_ticket()
+        self.run_refused_ticket()
 
         self.finalize.assert_not_called()
 

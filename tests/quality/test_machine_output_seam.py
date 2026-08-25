@@ -15,8 +15,8 @@ turns this red — the regression class this gate exists to foreclose. A CONVERT
 handler still listed in the ledger also turns it red, so every conversion removes
 its line in the same commit and the ledger can only shrink.
 
-Nothing may be added to :data:`UNCONVERTED`. A new command routes through
-``emit`` from the start.
+Nothing may be added to :data:`UNCONVERTED` or :data:`UNPINNED_SCALAR_RETURNS`. A new
+command routes through ``emit`` from the start, and pins its typed return.
 """
 
 # test-path: cross-cutting — a whole-tree quality gate over every management command.
@@ -107,6 +107,24 @@ UNCONVERTED: frozenset[str] = frozenset(
     }
 )
 
+# Handlers returning a bare non-``str`` scalar with no ``print_result = False``, so a
+# caller that captures their output is handed the raw value to ``.endswith``
+# (souliane/teatree#4467). Shrink-only, same contract as UNCONVERTED above.
+UNPINNED_SCALAR_RETURNS: frozenset[str] = frozenset(
+    {
+        "env:Command.check_drift:non-str-scalar-return-unpinned",
+        "env:Command.migrate_secrets:non-str-scalar-return-unpinned",
+        "env:Command.overrides:non-str-scalar-return-unpinned",
+        "env:Command.set_var:non-str-scalar-return-unpinned",
+        "env:Command.show:non-str-scalar-return-unpinned",
+        "env:Command.unset:non-str-scalar-return-unpinned",
+        "tasks:Command.claim:non-str-scalar-return-unpinned",
+        "worktree:Command.provision:non-str-scalar-return-unpinned",
+    }
+)
+
+LEDGER: frozenset[str] = UNCONVERTED | UNPINNED_SCALAR_RETURNS
+
 
 @pytest.fixture(scope="module")
 def defects() -> tuple[SeamDefect, ...]:
@@ -115,7 +133,7 @@ def defects() -> tuple[SeamDefect, ...]:
 
 class TestSeamRatchet:
     def test_no_unlisted_bypass(self, defects: tuple[SeamDefect, ...]) -> None:
-        unlisted = sorted(d.key for d in defects if d.key not in UNCONVERTED)
+        unlisted = sorted(d.key for d in defects if d.key not in LEDGER)
         assert not unlisted, (
             "management command handler(s) bypass the machine-output seam:\n"
             + "\n".join(f"  {key}" for key in unlisted)
@@ -126,17 +144,20 @@ class TestSeamRatchet:
 
     def test_ledger_carries_no_converted_handler(self, defects: tuple[SeamDefect, ...]) -> None:
         live = {d.key for d in defects}
-        stale = sorted(UNCONVERTED - live)
+        stale = sorted(LEDGER - live)
         assert not stale, (
-            "UNCONVERTED lists handler(s) that no longer bypass the seam:\n"
+            "The ledger lists handler(s) that no longer bypass the seam:\n"
             + "\n".join(f"  {key}" for key in stale)
             + "\n\nDelete each line in the same commit as its conversion."
         )
 
-    def test_ledger_holds_only_the_repr_class(self) -> None:
-        """Every ``--json`` handler is converted, so only the repr class may remain."""
-        kinds = {key.rsplit(":", 1)[-1] for key in UNCONVERTED}
-        assert kinds == {DefectKind.TYPED_RETURN_UNPINNED.value}
+    def test_ledger_holds_only_the_unpinned_return_classes(self) -> None:
+        """Every ``--json`` handler is converted, so only the unpinned-return classes remain."""
+        kinds = {key.rsplit(":", 1)[-1] for key in LEDGER}
+        assert kinds == {
+            DefectKind.TYPED_RETURN_UNPINNED.value,
+            DefectKind.NON_STR_SCALAR_RETURN_UNPINNED.value,
+        }
 
 
 class TestDetectorBites:
@@ -156,6 +177,38 @@ class TestDetectorBites:
             "        return {'a': 1}\n",
         )
         assert [d.kind for d in scan_defects(root)] == [DefectKind.TYPED_RETURN_UNPINNED]
+
+    def test_non_str_scalar_return_without_pin_is_a_defect(self, tmp_path: Path) -> None:
+        root = self._write(
+            tmp_path,
+            "from django_typer.management import TyperCommand\n"
+            "class Command(TyperCommand):\n"
+            "    def handle(self) -> int:\n"
+            "        return 1091\n",
+        )
+        assert [d.kind for d in scan_defects(root)] == [DefectKind.NON_STR_SCALAR_RETURN_UNPINNED]
+
+    def test_a_pinned_scalar_return_is_clean(self, tmp_path: Path) -> None:
+        root = self._write(
+            tmp_path,
+            "from django_typer.management import TyperCommand\n"
+            "class Command(TyperCommand):\n"
+            "    def handle(self) -> int:\n"
+            "        self.print_result = False\n"
+            "        return 1091\n",
+        )
+        assert scan_defects(root) == []
+
+    def test_a_bare_str_return_stays_exempt(self, tmp_path: Path) -> None:
+        """Both wrappers write a ``str`` through unchanged — there is nothing to crash."""
+        root = self._write(
+            tmp_path,
+            "from django_typer.management import TyperCommand\n"
+            "class Command(TyperCommand):\n"
+            "    def handle(self) -> str:\n"
+            "        return 'ok'\n",
+        )
+        assert scan_defects(root) == []
 
     def test_json_flag_without_emit_is_a_defect(self, tmp_path: Path) -> None:
         root = self._write(
