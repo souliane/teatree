@@ -245,13 +245,17 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
 
 
 def _handle_orchestrator(action: DispatchAction) -> Task | None:
-    """Auto-start assigned issue → Ticket(role=author) + Task(phase=coding).
+    """Auto-start assigned issue → Ticket(role=author) + Task(phase=planning).
 
-    Only fires for ``issue_intake.admitted``
-    signals that carry ``auto_start=True`` (the dispatcher already filtered).
-    The scheduled coding task is then dispatched per-phase by the loop —
-    ``pending_task`` signals route directly to the phase's own agent, not
+    Only fires for ``issue_intake.admitted`` signals that carry ``auto_start=True`` (the
+    dispatcher already filtered). The scheduled planning task is then dispatched per-phase
+    by the loop — ``pending_task`` signals route directly to the phase's own agent, not
     through ``t3:orchestrator``.
+
+    PLANNING, not coding (souliane/teatree#4578): the plan-before-dispatch gate refuses
+    ``t3:coder`` on a ticket with no ``PlanArtifact``, so intake's coding task failed
+    ``plan_missing`` hourly and nothing scheduled the planning that would satisfy it.
+    ``Ticket.plan()`` schedules the coding one rung later, where the gate is satisfied.
     """
     payload = action.payload
     if payload.get("auto_start") is not True:
@@ -273,21 +277,14 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
     # reconcile real work instead of fail-closing on "no session".
     ticket.ensure_session()
     if ticket.role != Ticket.Role.AUTHOR:
-        logger.debug(
-            "Ticket %s for %s has role=%s; not scheduling coding",
-            ticket.pk,
-            issue_url,
-            ticket.role,
-        )
+        logger.debug("Ticket %s for %s has role=%s; not scheduling planning", ticket.pk, issue_url, ticket.role)
         return None
     if has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
-    # Mark the plan-skipped direct-coding path BEFORE scheduling coding, so the
-    # coding-completion transition (``Task._apply_phase_transition`` ->
-    # ``Ticket.code_direct``) can advance this NOT_STARTED ticket instead of
-    # silently no-opping the way it did for tickets 35/36 (#10).
+    # Kept as the fallback edge: ``code_direct`` is conditioned on this marker and is the
+    # only transition advancing a coding completion that lands before PLANNED (#10).
     mark_auto_implement(ticket)
-    return ticket.schedule_coding()
+    return ticket.begin_planning()
 
 
 def _link_claimed_marker(ticket: Ticket, issue_url: str) -> None:
@@ -601,7 +598,8 @@ _ZONE_HANDLERS = {
 _HANDLER_TARGET_PHASES: frozenset[tuple[str, str]] = frozenset(
     {
         ("reviewer", "reviewing"),  # _handle_reviewer
-        ("author", "coding"),  # _handle_orchestrator / _handle_red_card / _handle_skill_drift
+        ("author", "planning"),  # _handle_orchestrator
+        ("author", "coding"),  # _handle_red_card / _handle_skill_drift
         ("author", "debugging"),  # _handle_debug
         ("author", "e2e"),  # _handle_e2e_fix
         ("author", "answering"),  # _handle_answerer

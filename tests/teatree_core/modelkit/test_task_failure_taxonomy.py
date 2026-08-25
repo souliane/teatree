@@ -10,6 +10,7 @@ string resolves to is the one the deleted text predicate produced.
 
 import pytest
 
+from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
     RECOVERY,
     FailureKind,
@@ -175,3 +176,20 @@ class TestCorrectableFailures:
         assert classify_failure("review verdict recording refused: reviewer identity is a maker role") == (
             FailureKind.RECORDING_REFUSED
         )
+
+
+class TestThePlanGateRefusalIsNamed:
+    """#4578: the refusal was ``unclassified``, so no recovery mechanism could see it."""
+
+    def test_the_gates_own_prefix_classifies_as_plan_missing(self) -> None:
+        """The drift detector: ``_MATCHERS`` spells the prefix literally, like its siblings."""
+        assert classify_failure(f"{PLAN_MISSING_PREFIX}refusing to dispatch t3:coder for ticket 7 (coding)") == (
+            FailureKind.PLAN_MISSING
+        )
+
+    def test_it_is_never_auto_reopened(self) -> None:
+        """Re-running the SAME implementing phase reproduces it; the remedy is a different phase."""
+        assert recovery_strategy(FailureKind.PLAN_MISSING) is RecoveryStrategy.HALT
+
+    def test_it_is_not_environmental(self) -> None:
+        assert is_environmental(FailureKind.PLAN_MISSING) is False
