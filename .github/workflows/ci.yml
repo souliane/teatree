@@ -735,6 +735,19 @@ jobs:
       # plugin records each test's seconds against the ceiling that applied to it, and
       # `scripts/ci/report_timeout_headroom.py` prints the suite-wide worst to the run
       # summary below. `tests/test_ci_timeout_ceilings.py` pins the raise to this job.
+      #
+      # `--durations-path dev/.test_durations` is RELATIVE deliberately, unlike the
+      # absolute `--shard-stats-out` below: the image is `dev/Dockerfile.test --target
+      # base` (WORKDIR `/app`) and `-v "$PWD":/app` makes that cwd the runner workspace,
+      # so the recording lands on the runner and outlives `--rm`. `dev/ci-shard.sh`
+      # mirrors the same relative arg on the host, where `/app` does not exist — do not
+      # make it absolute to match. Swapping the image (`deploy/Dockerfile`'s own WORKDIR
+      # sits outside the mount), retargeting the build stage, moving the mount or a `-w`
+      # each redirects the recording into the container's own layer for `--rm` to
+      # destroy, while the upload step still finds the COMMITTED file on the runner and
+      # republishes month-old timings as freshly measured — green at every step. #4483
+      # reported that coupling backwards as the live cause; it was not (the real one was
+      # the dotfile drop, #4584). `tests/test_ci_shard_durations_path_contract.py` pins it.
       - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
         run: >
           docker run --rm
