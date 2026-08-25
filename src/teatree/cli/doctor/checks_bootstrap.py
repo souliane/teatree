@@ -1,6 +1,6 @@
 """Fresh-box bootstrap-hardening doctor checks (umbrella #3404).
 
-Four gates that turn silent late failures on a freshly-provisioned or migrated
+Five gates that turn silent late failures on a freshly-provisioned or migrated
 box into loud, up-front ones:
 
 - :func:`_check_gh_token_permissions` (#3405/#3477) — a missing REQUIRED permission
@@ -9,6 +9,10 @@ box into loud, up-front ones:
 - :func:`_check_git_hooks_installed` — a checkout whose git hooks were never
     installed pushes with the whole local gate layer absent. A hard FAIL naming the
     missing hooks; a deliberate ``core.hooksPath`` override only WARNs.
+- :func:`_check_github_remotes_are_https` (#4447) — a checkout reaching GitHub over SSH,
+    or a ``url`` … ``insteadOf`` rewrite pointing github.com at one. Both defeat the token-based
+    ``gh`` credential helper and live in gitconfig, where the tracked-tree conformance scan
+    cannot see them. A hard FAIL naming the repoint; GitLab is deliberately out of scope.
 - :func:`_check_provision_concurrency_from_host` (#3409/#3434) — a stale small-box
     ``provision_max_concurrency`` pin throttling a more capable host. It only
     auto-clears a pin the ENTRYPOINT seeded (never an operator's deliberate one),
@@ -21,11 +25,22 @@ diagnostic never aborts the whole doctor run.
 """
 
 import os
+import re
 from pathlib import Path
 
 import typer
 
+from teatree.utils.git_remote import slug_from_remote
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+
+#: An ssh-transport remote — the ``ssh://`` scheme or the scp-like ``user@host:path``. An
+#: ``https://user@host/…`` URL has no ``@`` before its first ``:``, so it never matches.
+_SSH_REMOTE_RE = re.compile(r"^(?:ssh://|[^/:]+@[^/:]+:)")
+
+
+def _helper_host(key: str) -> str:
+    """The URL a ``credential.<url>.helper`` key scopes its helper to."""
+    return key.removeprefix("credential.").removesuffix(".helper")
 
 
 def _teatree_repo_root() -> Path | None:
@@ -159,6 +174,88 @@ def _check_git_hooks_installed() -> bool:
     return ok
 
 
+def _git_config_pairs(checkout: Path, pattern: str) -> list[tuple[str, str]]:
+    """``git config --get-regexp <pattern>`` as ``(key, value)``, spanning local+global+system.
+
+    ``--get-regexp`` exits 1 for "nothing matched", which is an ordinary answer here rather
+    than a failure — hence the empty list rather than a raise.
+    """
+    result = run_allowed_to_fail(["git", "-C", str(checkout), "config", "--get-regexp", pattern], expected_codes=None)
+    if result.returncode != 0:
+        return []
+    return [(key, value.strip()) for key, _, value in (line.partition(" ") for line in result.stdout.splitlines())]
+
+
+def _check_github_remotes_are_https() -> bool:
+    """FAIL when a checkout reaches GitHub over SSH instead of https + ``gh`` (#4447).
+
+    teatree authenticates to GitHub with a TOKEN through ``gh auth git-credential`` (the helper
+    ``deploy/entrypoint.sh`` installs), so there is no key to distribute, mount or rotate. An
+    ssh remote — or a ``url`` … ``insteadOf`` rewrite pointing github.com at one — is a second,
+    undocumented credential path that the ``gh`` helper cannot serve and that works on one box
+    and not another. Both live in gitconfig rather than the tracked tree, which is exactly why
+    the sibling conformance scan cannot see them.
+
+    Narrow on purpose: GitLab remotes and rewrites are a separate legitimate credential path,
+    and a bare ``~/.ssh`` is not load-bearing until a remote or a rewrite references it — so
+    neither is judged here. Crash-proof like every bootstrap check: an unreadable config WARNs
+    and passes rather than aborting the doctor run.
+    """
+    from teatree.core.gates.git_checkouts import discover_checkouts  # noqa: PLC0415 — deferred (ORM)
+    from teatree.core.public_identity import is_github_host  # noqa: PLC0415 — deferred import
+
+    try:
+        checkouts = discover_checkouts()
+    except Exception as exc:  # noqa: BLE001 — a discovery failure warns and passes, never blocks doctor
+        typer.echo(f"WARN  Could not discover the checkouts to probe for ssh GitHub remotes: {exc!r}")
+        return True
+
+    ok = True
+    helperless: list[Path] = []
+    for checkout in checkouts:
+        try:
+            remotes = _git_config_pairs(checkout, r"^remote\..*\.(url|pushurl)$")
+            rewrites = _git_config_pairs(checkout, r"^url\..*\.insteadof$")
+            helpers = _git_config_pairs(checkout, r"^credential\..*helper$")
+        except OSError as exc:
+            typer.echo(f"WARN  {checkout}: could not read the git config: {exc!r}")
+            continue
+
+        for key, url in remotes:
+            if not (_SSH_REMOTE_RE.match(url) and is_github_host(url)):
+                continue
+            name = key.removeprefix("remote.").rsplit(".", 1)[0]
+            push = " --push" if key.endswith(".pushurl") else ""
+            typer.echo(
+                f"FAIL  {checkout}: {key} reaches GitHub over SSH ({url}). teatree authenticates to GitHub "
+                f"with a token through `gh auth git-credential`, which cannot serve an ssh remote — repoint "
+                f"it: git remote set-url{push} {name} https://github.com/{slug_from_remote(url)}.git"
+            )
+            ok = False
+
+        for key, value in rewrites:
+            if not (is_github_host(key.removeprefix("url.").removesuffix(".insteadof")) or is_github_host(value)):
+                continue
+            typer.echo(
+                f"FAIL  {checkout}: `{key} = {value}` rewrites GitHub URLs behind git's back, defeating the "
+                f"`gh` credential helper — remove it: git config --unset {key}"
+            )
+            ok = False
+
+        has_helper = any(key == "credential.helper" or is_github_host(_helper_host(key)) for key, _ in helpers)
+        serves_github_over_https = any(not _SSH_REMOTE_RE.match(url) and is_github_host(url) for _, url in remotes)
+        if serves_github_over_https and not has_helper:
+            helperless.append(checkout)
+
+    if helperless:
+        typer.echo(
+            f"WARN  {len(helperless)} checkout(s) carry https GitHub remotes with no credential helper "
+            f"(first: {helperless[0]}) — git prompts for a password instead of using the token. "
+            f"Wire it up: gh auth setup-git"
+        )
+    return ok
+
+
 def _check_provision_concurrency_from_host(*, repair: bool = False) -> bool:
     """Surface — and under ``--repair`` clear — a stale entrypoint-seeded concurrency pin (#3409/#3434).
 
@@ -258,25 +355,27 @@ def _check_claude_settings_drift() -> bool:
 def run_bootstrap_checks(*, repair: bool = False) -> bool:
     """Run every bootstrap-hardening check; return ``False`` iff a hard gate fails.
 
-    Only the token-permission gate (#3405) and the git-hooks gate affect the
-    verdict — the concurrency autofix (#3409/#3434) and the settings-drift check
-    (#3410) are surfacing-only and always pass. Every check runs before the verdict
-    is returned, so one failure never masks another's output. Runs
+    Only the token-permission gate (#3405), the git-hooks gate and the GitHub-transport
+    gate (#4447) affect the verdict — the concurrency autofix (#3409/#3434) and the
+    settings-drift check (#3410) are surfacing-only and always pass. Every check runs
+    before the verdict is returned, so one failure never masks another's output. Runs
     post-``ensure_django`` (the concurrency autofix reads the
     ORM). ``repair`` gates the concurrency autofix's one mutation: a plain
     ``t3 doctor`` (``repair=False``) inspects and WARNs but NEVER writes.
     """
     ok = _check_gh_token_permissions()
     hooks_ok = _check_git_hooks_installed()
+    transport_ok = _check_github_remotes_are_https()
     _check_provision_concurrency_from_host(repair=repair)
     _check_claude_settings_drift()
-    return ok and hooks_ok
+    return ok and hooks_ok and transport_ok
 
 
 __all__ = [
     "_check_claude_settings_drift",
     "_check_gh_token_permissions",
     "_check_git_hooks_installed",
+    "_check_github_remotes_are_https",
     "_check_provision_concurrency_from_host",
     "run_bootstrap_checks",
 ]
