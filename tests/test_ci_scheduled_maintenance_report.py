@@ -110,11 +110,22 @@ class TestSkippedIsReportedAsSkipped:
             "adds a failure that names no new cause."
         )
 
-    @pytest.mark.parametrize("refresh", ["skipped", "failure", "success"])
-    def test_a_shard_failure_is_the_cause_and_is_not_reported_twice(self, refresh: str, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("refresh", ["failure", "success"])
+    def test_a_shard_failure_does_not_excuse_a_maintenance_job_that_ran(self, refresh: str, tmp_path: Path) -> None:
         result = _run_reporter(shards="failure", refresh=refresh, tmp_path=tmp_path)
         assert result.returncode == 0, (
-            "the maintenance job is gated on the shards passing, so a shard failure already explains "
-            "and reds this run — the reporter must not attribute it to the maintenance job."
+            "the maintenance job ran; its own result is the honest report. A failed shard lane reds "
+            "this run on its own and must not be attributed to the maintenance job as well."
         )
         assert "::error::" not in result.stderr
+
+    @pytest.mark.parametrize("shards", ["failure", "cancelled"])
+    def test_a_red_lane_no_longer_excuses_a_maintenance_job_that_did_not_run(self, shards: str, tmp_path: Path) -> None:
+        # #4603: `refresh-durations` no longer waits for a green lane, so "the shards failed" stopped
+        # being a reason it was skipped and became the signal the gate drifted back to requiring one.
+        result = _run_reporter(shards=shards, refresh="skipped", tmp_path=tmp_path)
+        assert result.returncode != 0, (
+            "a red shard lane is exactly when the durations are most stale, so a skipped refresh "
+            "there must red the run rather than be excused by the shard result."
+        )
+        assert _MAINTENANCE_JOB in result.stderr
