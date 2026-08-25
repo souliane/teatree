@@ -3269,6 +3269,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      by side for MR evidence.                                │
 │ push-gate            Plan (or ``--run``) the incremental push gate: scoped   │
 │                      doctest + ast-grep, FULL-fallback.                      │
+│ ratchet-prune        Report the reference ratchets' drift; with --write,     │
+│                      delete the stale pins.                                  │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -3813,6 +3815,23 @@ Usage: t3 tool push-gate [OPTIONS]
 │ --run                   Execute the two scoped sweeps and exit non-zero on   │
 │                         failure.                                             │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool ratchet-prune`
+
+```
+Usage: t3 tool ratchet-prune [OPTIONS]
+
+ Report the reference ratchets' drift; with --write, delete the stale pins.
+
+ Exits non-zero when either ratchet is dirty in either direction, matching the
+ assertions in ``tests/teatree_quality/test_skill_symbol_refs.py``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --write          Delete the stale pins (the only auto-repairable direction). │
+│ --json           Emit machine-readable JSON.                                 │
+│ --help           Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
