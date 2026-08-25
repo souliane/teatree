@@ -71,10 +71,11 @@ lossy / delete-only / no-op consolidation is caught rather than stamped success.
 """
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
 from django.db import transaction
@@ -238,10 +239,11 @@ def write_clusters(
 
     A cluster is rejected (counted, LOGGED at WARNING, never written) when its
     ``source_files`` is empty, cites a path not present in *extract*, or its
-    ``verified_citation`` does not appear (whitespace-normalized substring) in a
-    cited snippet's text — these are the hallucinated-rule shapes the ledger must
-    never persist, including a real-path-but-invented-quote citation. Each rejection
-    is logged so an ungrounded distiller batch is surfaced, not swallowed. A valid
+    ``verified_citation`` is blank or does not appear (whitespace-normalized
+    substring) in a cited snippet's text — these are the hallucinated-rule shapes the
+    ledger must never persist, including a real-path-but-invented-quote citation.
+    :func:`check_grounding` names WHICH of the four failed, and the WARNING carries
+    that reason, so an ungrounded distiller batch is surfaced, not swallowed. A valid
     cluster is upserted by ``cluster_key`` through the manager factory, so a
     re-run that re-clusters the same members updates the row in place instead of
     duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
@@ -262,18 +264,20 @@ def write_clusters(
     written = 0
     rejected = 0
     for cluster in clusters:
-        if not cluster_is_grounded(cluster, snippet_texts):
+        verdict = check_grounding(cluster, snippet_texts)
+        if verdict.reason is not None:
             rejected += 1
             logger.warning(
-                "dream ledger REJECTED an ungrounded cluster (rule=%r, source_files=%s): "
-                "its verified_citation is not present in a cited snippet — not recording it.",
+                "dream ledger REJECTED an ungrounded cluster (rule=%r, source_files=%s): %s — not recording it.",
                 cluster.rule[:120],
                 cluster.source_files,
+                verdict.reason,
             )
             continue
         written += 1
         if not dry_run:
-            _upsert(cluster, max_member_weight=_cited_max_weight(cluster, snippet_weights), overlay=overlay)
+            grounded = verdict.cluster
+            _upsert(grounded, max_member_weight=_cited_max_weight(grounded, snippet_weights), overlay=overlay)
     return WriteOutcome(written=written, rejected=rejected)
 
 
@@ -306,14 +310,53 @@ def normalize_ws(text: str) -> str:
     return " ".join(text.translate(_PUNCT_FOLD).split())
 
 
-def cluster_is_grounded(cluster: DistilledCluster, snippet_texts: dict[str, str]) -> bool:
-    sources = [str(path) for path in cluster.source_files if str(path).strip()]
-    if not sources or any(source not in snippet_texts for source in sources):
-        return False
+@dataclass(frozen=True, slots=True)
+class GroundingVerdict:
+    """One cluster judged against an extract's snippets.
+
+    ``cluster`` carries the cited sources canonicalised up to the extract's own
+    snippet keys, so the ledger row, the weight lookup and the citation test all
+    read the same form. ``reason`` is ``None`` exactly when the cluster is grounded.
+    """
+
+    cluster: DistilledCluster
+    reason: str | None
+
+
+def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str]) -> GroundingVerdict:
+    """Canonicalise *cluster*'s cited paths, then say WHY it is not grounded.
+
+    The four causes are reported apart because only the last is a citation problem;
+    one shared message sent every investigation to the citation (#4610).
+    """
+    sources = [_resolve_cited_path(str(path), snippet_texts) for path in cluster.source_files if str(path).strip()]
+    resolved = replace(cluster, source_files=sources)
+    if not sources:
+        return GroundingVerdict(resolved, "it cites no source file")
+    uncited = [source for source in sources if source not in snippet_texts]
+    if uncited:
+        return GroundingVerdict(resolved, f"its cited path {uncited[0]!r} is not among the extract's snippets")
     citation = normalize_ws(cluster.verified_citation)
     if not citation:
-        return False
-    return any(citation in snippet_texts[source] for source in sources)
+        return GroundingVerdict(resolved, "its verified_citation is empty")
+    if not any(citation in snippet_texts[source] for source in sources):
+        return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
+    return GroundingVerdict(resolved, None)
+
+
+def _resolve_cited_path(source: str, snippet_texts: Mapping[str, str]) -> str:
+    """Canonicalise one cited source up to the snippet key naming the same file.
+
+    The index is keyed by the absolute path :func:`build_extract` enumerated, while
+    the distiller cites both that form and a bare filename in one batch. Matching is
+    by whole trailing path components and only when EXACTLY one snippet matches, so a
+    path the extract never carried stays unresolved and is still rejected.
+    """
+    if source in snippet_texts:
+        return source
+    cited = PurePosixPath(source).parts
+    matches = [key for key in snippet_texts if PurePosixPath(key).parts[-len(cited) :] == cited]
+    return matches[0] if len(matches) == 1 else source
 
 
 def _cited_max_weight(cluster: DistilledCluster, snippet_weights: dict[str, int]) -> int:
@@ -440,8 +483,9 @@ __all__ = [
     "DistilledCluster",
     "Distiller",
     "DreamRunResult",
+    "GroundingVerdict",
     "WriteOutcome",
-    "cluster_is_grounded",
+    "check_grounding",
     "normalize_ws",
     "run_consolidation",
     "write_clusters",
