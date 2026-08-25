@@ -981,4 +981,4 @@ depends_on = []
 [[modules]]
 path = "teatree.quality"
 layer = "foundation"
-depends_on = ["teatree.utils"]
+depends_on = ["teatree.paths", "teatree.utils"]

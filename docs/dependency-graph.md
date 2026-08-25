@@ -407,6 +407,7 @@ graph TD
     teatree.url_title_fetcher --> teatree.utils
     teatree.url_title_fetcher --> teatree.config
     teatree.url_classify --> teatree.utils
+    teatree.quality --> teatree.paths
     teatree.quality --> teatree.utils
     teatree.paths
     teatree.request_cache

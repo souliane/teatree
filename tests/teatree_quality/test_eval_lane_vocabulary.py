@@ -1,12 +1,16 @@
 """The eval surfaces never call a lane "free" — it is a false cost claim."""
 
-from teatree.quality.eval_lane_vocabulary import repo_root, scan, scan_text, scanned_paths
+from pathlib import Path
+from unittest.mock import patch
+
+from teatree.paths import teatree_source_root
+from teatree.quality.eval_lane_vocabulary import scan, scan_text, scanned_paths
 
 
 class TestShippedSurfacesAreClean:
     def test_the_scan_set_resolves_inside_the_repo(self) -> None:
-        assert (repo_root() / "pyproject.toml").is_file()
-        assert all(path.is_relative_to(repo_root()) for path in scanned_paths())
+        assert (teatree_source_root() / "pyproject.toml").is_file()
+        assert all(path.is_relative_to(teatree_source_root()) for path in scanned_paths())
 
     def test_no_eval_surface_calls_a_lane_free(self) -> None:
         violations = scan()
@@ -36,3 +40,11 @@ class TestScannerIsAntiVacuous:
 
     def test_the_absence_sense_is_not_a_cost_claim(self) -> None:
         assert list(scan_text("transcripts must stay free of personal content\n", path="x.md")) == []
+
+
+class TestRepoRootHasOneHome:
+    """The scan root resolves through the shared core helper, not a per-module literal."""
+
+    def test_the_scanned_set_follows_the_shared_helper(self, tmp_path: Path) -> None:
+        with patch("teatree.quality.eval_lane_vocabulary.teatree_source_root", return_value=tmp_path):
+            assert scanned_paths() == []
