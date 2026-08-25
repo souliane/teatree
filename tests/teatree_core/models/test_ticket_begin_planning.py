@@ -12,6 +12,7 @@ from django.test import TestCase
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip, mark_trivial_plan_skip
 
 
 def _author(state: str = Ticket.State.NOT_STARTED) -> Ticket:
@@ -90,3 +91,29 @@ class TestIdempotenceAndRefusals(TestCase):
         ticket = _author()
 
         assert ticket.begin_planning(parent_task=parent).parent_task_id == parent.pk
+
+
+class TestAStaleCandidateCannotClobberTheRow(TestCase):
+    """The drain materialises its candidate list, so the instance reaching here is a snapshot.
+
+    Both cases are invisible without a locked re-read: the row moved on, and the
+    in-memory ``extra`` the full-row save would write back no longer describes it.
+    """
+
+    def test_a_concurrently_advanced_ticket_is_refused_not_walked_back(self) -> None:
+        ticket = _author()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.PLANNED)
+
+        with pytest.raises(InvalidTransitionError):
+            ticket.begin_planning()
+
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.PLANNED
+
+    def test_a_concurrently_written_extra_key_survives_the_walk(self) -> None:
+        ticket = _author()
+        mark_trivial_plan_skip(Ticket.objects.get(pk=ticket.pk), reason="one-line constant bump")
+
+        ticket.begin_planning()
+
+        assert is_trivial_plan_skip(Ticket.objects.get(pk=ticket.pk))
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.STARTED

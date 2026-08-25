@@ -49,6 +49,14 @@ _STATE_ORDER: dict[str, int] = {
 _ABSENT_ORDER = -1  # the ticket does not exist yet (intake has not run)
 _STARTED_ORDER = _STATE_ORDER[Ticket.State.STARTED]
 
+#: The two steps that share the STARTED target, so neither is scored off state alone.
+#: An intake ticket carries no repos, so ``execute_provision`` returns "no repos on
+#: ticket" and leaves it STARTED with nothing provisioned — a state ``order`` cannot
+#: tell from a finished intake. Scoring intake DONE there skipped ``workspace ticket
+#: <ref>``, the only automated step that populates repos and the branch, and with it
+#: the operator's whole repair path (souliane/teatree#4578).
+_SHARED_STARTED_TARGET_STEPS = frozenset({"intake", "provision"})
+
 
 class StepKind(enum.Enum):
     AUTO = "auto"  # a deterministic chokepoint ``do`` invokes itself
@@ -130,9 +138,7 @@ class DoReport:
 def _step_done(step: LifecycleStep, snapshot: TicketSnapshot) -> bool:
     """Whether *step*'s target has already been reached (so ``do`` skips it)."""
     order = snapshot.order
-    if step.name == "provision":
-        # intake and provision share the STARTED target; provision is done only
-        # once worktrees are actually provisioned (or the ticket is past STARTED).
+    if step.name in _SHARED_STARTED_TARGET_STEPS:
         return order > _STARTED_ORDER or (order == _STARTED_ORDER and snapshot.provisioned)
     return order >= step.target_order
 

@@ -129,6 +129,7 @@ class TestClassifier(TestCase):
             "no_result_envelope: agent produced no JSON result envelope",
             "missing required evidence for phase 'reviewing'",
             "review verdict recording refused: merge_safe needs a reviewed sha",
+            "plan_missing: refusing to dispatch t3:coder for ticket 7 (coding)",
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",
             "agent_abandoned: agent failed the task without giving a reason",

@@ -70,12 +70,18 @@ class TestResolvePlan:
         plan = _status_by_name(list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.NOT_STARTED)))))
         assert plan["intake"] is StepStatus.RUN
 
-    def test_started_unprovisioned_runs_provision(self) -> None:
+    def test_started_unprovisioned_runs_intake(self) -> None:
+        """STARTED with no worktree is exactly where an intake ticket lands with ``repos=[]``.
+
+        ``workspace ticket <ref>`` is the only automated step that populates them, so
+        scoring intake DONE off the shared STARTED target skips the operator's whole
+        repair path (souliane/teatree#4578).
+        """
         plan = _status_by_name(
             list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.STARTED, provisioned=False))))
         )
-        assert plan["intake"] is StepStatus.DONE
-        assert plan["provision"] is StepStatus.RUN
+        assert plan["intake"] is StepStatus.RUN
+        assert plan["provision"] is StepStatus.WAITING
         assert plan["plan"] is StepStatus.WAITING
 
     def test_started_provisioned_is_pending_on_the_plan_agent(self) -> None:
@@ -157,17 +163,25 @@ class TestDrive:
         assert report.stopped_reason == "pending"
         assert world.calls == ["intake"]  # never invokes an agent step's chokepoint
 
-    def test_started_unprovisioned_runs_provision_then_stops_pending(self) -> None:
+    def test_started_unprovisioned_reruns_intake_then_stops_pending(self) -> None:
         world = _FakeWorld(_snapshot(Ticket.State.STARTED, provisioned=False)).when(
-            "provision",
+            "intake",
             becomes=_snapshot(Ticket.State.STARTED, provisioned=True),
         )
         report = world.drive()
         statuses = _status_by_name(report.steps)
-        assert statuses["intake"] is StepStatus.DONE
-        assert statuses["provision"] is StepStatus.RAN
+        assert statuses["intake"] is StepStatus.RAN
+        assert statuses["provision"] is StepStatus.DONE
         assert statuses["plan"] is StepStatus.PENDING
-        assert world.calls == ["provision"]
+        assert world.calls == ["intake"]
+
+    def test_intake_that_leaves_the_ticket_unprovisioned_is_blocked_not_done(self) -> None:
+        """The repos-population wall (souliane/teatree#4602) must READ as blocked, not as done."""
+        world = _FakeWorld(_snapshot(Ticket.State.STARTED, provisioned=False))
+        report = world.drive()
+        intake = next(r for r in report.steps if r.step.name == "intake")
+        assert intake.status is StepStatus.BLOCKED
+        assert report.stopped_at == "intake"
 
     def test_reviewed_ships_and_completes(self) -> None:
         world = _FakeWorld(_snapshot(Ticket.State.REVIEWED)).when(

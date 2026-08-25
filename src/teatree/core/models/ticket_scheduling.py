@@ -41,7 +41,7 @@ class TicketSchedulingModel(TicketFacet):
             "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
         )
 
-    def begin_planning(self, *, parent_task: "Task | None" = None) -> "Task":
+    def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
         """Walk an early-state author ticket up to STARTED and schedule its planning task.
 
         The transitions are load-bearing, not decoration: ``Ticket.plan``'s FSM source is
@@ -56,19 +56,27 @@ class TicketSchedulingModel(TicketFacet):
         already past PLANNED has no planning left to begin and is refused, so a
         mis-routed caller fails loudly rather than minting a phase task the FSM will
         never consume.
+
+        The guard, the walk and the mint all read the ``select_for_update`` re-read
+        (#883/#804 discipline, as ``Task._apply_phase_transition``): the drain
+        materialises its candidate list first, so ``self`` is a snapshot by the time it
+        arrives here. Guarding on the snapshot's state walks a concurrently-advanced
+        ticket back down the ladder, and persisting through a full-row ``save`` writes
+        the snapshot's ``extra`` back over a key another writer has since recorded —
+        hence ``merge_extra``, whose own locked re-read carries the state.
         """
         early = (self.State.NOT_STARTED, self.State.SCOPED, self.State.STARTED)
-        if self.state not in early:
-            msg = f"begin_planning requires an early state {early!r} (got state={self.state!r})"
-            raise InvalidTransitionError(msg)
         with transaction.atomic():
-            if self.state == self.State.NOT_STARTED:
-                self.scope()
-                self.save()
-            if self.state == self.State.SCOPED:
-                self.start()
-                self.save()
-            return self.schedule_planning(parent_task=parent_task)
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            if locked.state not in early:
+                msg = f"begin_planning requires an early state {early!r} (got state={locked.state!r})"
+                raise InvalidTransitionError(msg)
+            if locked.state == self.State.NOT_STARTED:
+                locked.scope()
+            if locked.state == self.State.SCOPED:
+                locked.start()
+            locked.merge_extra(also_set={"state": locked.state})
+            return locked.schedule_planning(parent_task=parent_task)
 
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after planning completes.
