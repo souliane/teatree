@@ -46,6 +46,25 @@ Amplifies CLAUDE.md "No stale references". When a change retires or renames a fu
 
 `t3 teatree workspace ticket <url>` is idempotent on `issue_url` (one ticket per issue) and does **not** clear the ticket's aggregated phase ledger — `Ticket.aggregate_phase_records()` unions `visited_phases` across ALL the ticket's sessions. A prior workstream's `testing/reviewing` therefore aggregates into the next workstream's view of the ledger; the structural guard is the `Ticket.reopen()` FSM transition (#1286), which retires every session's `visited_phases`/`phase_visits`/`repos_modified`/`repos_tested` so the next workstream re-earns its attestations from scratch. `reopen()` is the FSM-internal workstream-boundary call; the sanctioned `lifecycle clear-ledger --confirm` CLI is the operator-driven equivalent when a reuse path bypasses `reopen()` (e.g. an in-state reuse off SHIPPED without an explicit reopen). Even with the ledger-retire, the coordinator integrity guarantee for multi-workstream / reused-ticket work stays the same defense-in-depth chain: **(a) coordinator-orchestrated independent cold review of THIS workstream's exact diff by a freshly-spawned reviewer sub-agent that has not seen the implementation (the spawn boundary is the independence, not a stored identity), (b) coordinator verification, (c) explicit per-workstream coordinator CLEAR to the review-loop** — recorded as the durable attestation receipt. Never chain attest→pr-create→merge on a pre-review gate-pass; STOP-for-review at pr-create and let the coordinator orchestrate review→CLEAR.
 
+### GitHub access is HTTPS + `gh` credential helper, never SSH (Non-Negotiable)
+
+Every GitHub remote is `https://github.com/<slug>.git`, and git delegates its authentication to `gh auth git-credential` — the helper `deploy/entrypoint.sh` installs with `gh auth setup-git`. The reason, in one line: auth is **token**-based through `gh`, so there is no key to distribute, mount or rotate. An SSH path is a second, undocumented credential that works on one box and not another, and the `gh` helper cannot serve it.
+
+Three things are forbidden, because each one silently makes key material load-bearing:
+
+```bash
+git remote set-url origin git@github.com:owner/repo.git                  # github-ssh:allow doc example — FORBIDDEN
+git config --global url."git@github.com:".insteadOf https://github.com/  # github-ssh:allow privacy-scan:allow doc example — FORBIDDEN
+```
+
+- an ssh-form GitHub remote — either spelling shown above, or an ssh Host alias resolving to github.com;
+- a `url` … `insteadOf` rewrite pointing github.com at one, in any gitconfig scope;
+- a mounted `~/.ssh` that becomes load-bearing for GitHub through either of the above.
+
+When a git operation fails to authenticate, the answer is the **token**, never a key: `t3 push` resolves it, and `gh auth setup-git` rewires the helper. Two things stay explicitly untouched — the GitLab credential helper (a separate, legitimate path), and the remote *parsers* that accept ssh forms for arbitrary third-party repos (`utils/git_remote.py`, `core/public_identity.py`, `core/fleet/wire.py`, `entrypoint.sh`'s `gh_repo_slug`).
+
+Two checks assert it: `tests/conformance/test_github_access_is_https.py` scans the tracked tree for a provisioning path that SETS one, and `t3 doctor`'s `_check_github_remotes_are_https` reads the live gitconfig of every discovered checkout — the untracked half no static scan can see. If SSH is ever genuinely wanted, it arrives as a deliberate planned change that edits both, never as an incidental config edit ([#4447](https://github.com/souliane/teatree/issues/4447)).
+
 ## Issue Creation (Non-Negotiable)
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
