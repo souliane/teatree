@@ -18,7 +18,7 @@ Bucket A (``EXISTING_GAP`` — an existing loop/skill SHOULD have handled this;
 :data:`AUTOMATION_CATALOG`) or Bucket B (``NEW_WORKFLOW`` — no automation exists;
 prescribe a new loop/skill/gate, canonical example a hotfix lane). PROMOTE routes each
 GROUNDED automatable-ask gap (the verbatim cited snippet must appear in the transcript
-— :func:`teatree.loops.dream.engine.cluster_is_grounded`, mirroring the cluster
+— :func:`teatree.loops.dream.engine.check_grounding`, mirroring the cluster
 grounding) through :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a deduped
 umbrella checkbox under the standing umbrella issue + a scheduled coding fix, carrying
 the Bucket-A/B framing in the title. RETIRE reuses Part C's
@@ -37,7 +37,7 @@ from enum import Enum
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream.engine import DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.engine import DistilledCluster, check_grounding, normalize_ws
 from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract
 from teatree.loops.dream.transcript_extract import _ASK_CUES
@@ -175,7 +175,7 @@ def detect_automatable_asks(
     """Detect + classify every GROUNDED automatable-ask cluster in one pass.
 
     Reuses the cluster grounding guard
-    (:func:`teatree.loops.dream.engine.cluster_is_grounded`): a cluster whose
+    (:func:`teatree.loops.dream.engine.check_grounding`): a cluster whose
     ``verified_citation`` does not appear verbatim in a cited extract snippet — or
     whose cited path is absent from the extract — is dropped, exactly like the cluster
     grounding the ledger enforces. Each surviving cluster is classified into a typed
@@ -184,7 +184,7 @@ def detect_automatable_asks(
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     findings: list[AutomationAskFinding] = []
     for cluster in clusters:
-        if not cluster_is_grounded(cluster, snippet_texts):
+        if check_grounding(cluster, snippet_texts).reason is not None:
             continue
         findings.append(classify_ask_cluster(cluster, classifier=classifier))
     return findings
