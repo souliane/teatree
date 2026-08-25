@@ -1,0 +1,155 @@
+# Pinned unresolved references for the two shrink-only ratchets asserted in
+# tests/teatree_quality/test_skill_symbol_refs.py. Source of truth: this file.
+#
+# Each entry is a (file, reference) pair the scanner reports as unresolved today.
+# The set may only ever SHRINK. Fixing a citation means deleting its entry here in
+# the SAME commit — the staleness half fires on "no longer reported", so a fix
+# without the deletion reds main.
+#
+# Run `t3 tool ratchet-prune --check` to see which entries went stale, and
+# `t3 tool ratchet-prune --write` to delete exactly those. The tool never adds an
+# entry: a genuinely new unresolved reference is a citation to fix or a
+# `skill-symbol-ref:` pragma to add, never a pin to bank.
+charter:
+  AGENTS.md:
+  - teatree.overlays
+  BLUEPRINT.md:
+  - teatree.harnesses
+  - teatree.overlays
+  - teatree.teams
+  - teatree.utils.django_db.refresh_reference_snapshot
+  CLAUDE.md:
+  - teatree.overlays
+  docs/blueprint/configuration.md:
+  - teatree.Gates.Quality
+  - teatree.log
+  docs/blueprint/loop-topology.md:
+  - teatree.loops.master.build_loop_table_jobs
+python_prose:
+  hooks/scripts/session_start_skills.py:
+  - scripts/lib/skill_loader.suggest_skills
+  hooks/scripts/worker_supervisor.py:
+  - teatree.config.settings._parse_env_bool
+  src/teatree/_overlay_api.py:
+  - teatree.overlays
+  src/teatree/agents/attempt_recorder.py:
+  - prompt._REVIEW_VERDICT_RETURN_LINES
+  src/teatree/agents/envelope_refusal.py:
+  - agents/prompt.py
+  src/teatree/agents/harness_registry.py:
+  - teatree.harnesses
+  - teatree.overlays
+  src/teatree/agents/pydantic_ai_session.py:
+  - models._get_final_result_event
+  src/teatree/agents/regulated_path.py:
+  - teatree.config.UserSettings.regulated_path_model_allowlist
+  src/teatree/agents/runner_usage.py:
+  - agents/runner.py
+  src/teatree/backends/forge_merge_rpc.py:
+  - github._run_gh
+  src/teatree/backends/gitlab/sync_terminal.py:
+  - hooks/check_module_health.py
+  src/teatree/cli/doctor/app.py:
+  - teatree.cli.doctor._x
+  src/teatree/cli/doctor/checks_environment.py:
+  - teatree.overlays
+  src/teatree/cli/enforcement_tools.py:
+  - teatree.targetBranch
+  src/teatree/cli/overlay_dev.py:
+  - teatree.overlays
+  src/teatree/cli/review/evidence_gate.py:
+  - src/teatree/cli/foo.py
+  src/teatree/cli/review/on_behalf.py:
+  - hooks/scripts/check_module_health.py
+  src/teatree/cli/update.py:
+  - teatree.overlays
+  src/teatree/config/agent_enums.py:
+  - teatree.harnesses
+  src/teatree/config/discovery.py:
+  - teatree.overlays
+  src/teatree/config/fleet_policy.py:
+  - deploy/teatree.env
+  - teatree.env
+  src/teatree/config/loader.py:
+  - settings.T3_WORKSPACE_DIR
+  - teatree.log
+  src/teatree/config/overlay_code_defaults.py:
+  - teatree.overlays
+  src/teatree/config/reviewer_identities.py:
+  - teatree.core.models.merge_clear.REVIEWER_ROLE_COMPONENTS
+  src/teatree/core/cleanup/cleanup_emit.py:
+  - src/gate.py
+  src/teatree/core/code_tokens.py:
+  - teatree.core.tasks.claim
+  src/teatree/core/gates/review_request_guard.py:
+  - slack._iter_review_matches
+  src/teatree/core/harness_todos.py:
+  - hooks/scripts/hook_router._newest_task_agent_id
+  src/teatree/core/management/commands/run.py:
+  - src/foo.py
+  src/teatree/core/management/commands/ticket_short_describe.py:
+  - teatree.core.ticket_short_description
+  src/teatree/core/merge/clear_reconcile.py:
+  - teatree.core.models.pull_request.PullRequest.record_forge_merge
+  src/teatree/core/merge/merge_response.py:
+  - execution._is_transient_merge_response
+  src/teatree/core/modelkit/diff_scope.py:
+  - src/other_paths.py
+  - src/paths.py
+  src/teatree/core/models/merge_clear.py:
+  - src/teatree/core/merger/
+  src/teatree/core/models/review_verdict.py:
+  - teatree.core.review.diff_scope_gate
+  src/teatree/core/review/diff_scope_probe.py:
+  - teatree.core.review.diff_scope_gate
+  src/teatree/core/views/github_webhook.py:
+  - settings.TEATREE_GITHUB_WEBHOOK_SECRET
+  src/teatree/core/views/gitlab_webhook.py:
+  - settings.TEATREE_GITLAB_WEBHOOK_TOKEN
+  src/teatree/eval/corpus_models.py:
+  - teatree.eval.scenarios
+  src/teatree/eval/git_fixture.py:
+  - src/teatree/util/money.py
+  - teatree.util.money
+  src/teatree/eval/models.py:
+  - teatree.eval.api_runner.resolve_max_turns_override
+  src/teatree/eval/pydantic_ai_runner.py:
+  - teatree.agents.harness._X_LANE_HEADER
+  src/teatree/hooks/publish_destination.py:
+  - public_visibility._destination_visibility
+  src/teatree/hooks/quote_scanner.py:
+  - hook_router._agent_prompt_skip_token
+  src/teatree/loop/rendering.py:
+  - teatree.loop.rendering.X
+  src/teatree/loop/scanners/issue_disposition.py:
+  - src/teatree/foo.py
+  src/teatree/loop/transient_requeue.py:
+  - teatree.loop.config_self_repair.SELF_REPAIR_STAMP
+  src/teatree/loops/dream/recall.py:
+  - hook_router._AMBIENT_CONTEXT_RE
+  src/teatree/overlay_sdk/factory.py:
+  - teatree.agents._
+  src/teatree/quality/affected_tests.py:
+  - src/teatree/foo/bar.py
+  - teatree.foo.bar
+  src/teatree/quality/full_suite_invocation.py:
+  - tests/foo.py
+  src/teatree/quality/mutation_run.py:
+  - src/teatree/x.py
+  - teatree.x
+  src/teatree/quality/skill_symbol_refs.py:
+  - phase_tools.PHASE_TOOLS
+  src/teatree/quality/snapshot_baseline.py:
+  - e2e/foo.spec.ts-snapshots/
+  src/teatree/self_update.py:
+  - teatree.overlays
+  src/teatree/settings.py:
+  - teatree.overlays
+  src/teatree/utils/coverage_exclusions.py:
+  - src/myvenv_helper.py
+  src/teatree/utils/django_db/testdb_clone.py:
+  - importer._copy_ref_to_ticket
+  src/teatree/utils/editable_pth.py:
+  - teatree.overlays
+  src/teatree/utils/git_branch.py:
+  - teatree.targetBranch
