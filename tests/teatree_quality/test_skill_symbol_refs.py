@@ -250,8 +250,6 @@ _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
         ("src/teatree/hooks/quote_scanner.py", "hook_router._agent_prompt_skip_token"),
         ("src/teatree/loop/rendering.py", "teatree.loop.rendering.X"),
         ("src/teatree/loop/scanners/issue_disposition.py", "src/teatree/foo.py"),
-        ("src/teatree/loop/scanners/self_update_ci.py", "teatree.loop.scanners.pr_sweep.GhPrApiClient"),
-        ("src/teatree/loop/substrate_pinger.py", "teatree.loop.scanners.pr_sweep.SubstratePinger"),
         ("src/teatree/loop/transient_requeue.py", "teatree.loop.config_self_repair.SELF_REPAIR_STAMP"),
         ("src/teatree/loops/dream/recall.py", "hook_router._AMBIENT_CONTEXT_RE"),
         ("src/teatree/overlay_sdk/factory.py", "teatree.agents._"),
