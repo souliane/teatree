@@ -1,4 +1,4 @@
-"""Overlay inspection: ``t3 <overlay> overlay config [--key KEY]``."""
+"""Overlay inspection: the ``overlay config [--key KEY]`` management command."""
 
 from pathlib import Path
 

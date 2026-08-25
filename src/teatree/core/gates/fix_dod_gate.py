@@ -127,8 +127,8 @@ def check_fix_record_dod(ticket: "Ticket") -> None:
         f"A merged manifestation patch with no stated root cause is not done. Record "
         f"the root cause, the evidence it is the cause, a RED-first regression test "
         f"observed failing against the pre-fix code, and a recurrence fingerprint. If "
-        f"this is genuinely trivial or mis-classified, record an override: "
-        f"`t3 <overlay> ticket fix-record-override <id> --reason '<why>'`."
+        f"this is genuinely trivial or mis-classified, record an audited override by "
+        f"setting a non-empty `reason` under `ticket.extra['fix_record_override']`."
     )
     raise FixRecordDodError(msg)
 

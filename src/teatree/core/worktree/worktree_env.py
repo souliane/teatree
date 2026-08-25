@@ -40,7 +40,7 @@ CACHE_FILENAME = ".t3-env.cache"
 
 _HEADER = (
     "# GENERATED — regenerated on every `t3 <overlay> worktree start`.\n"
-    "# Edit the database via `t3 <overlay> env set` instead.  This file is chmod 444.\n"
+    "# Edit the database via `t3 <overlay> env set-var` instead.  This file is chmod 444.\n"
     "# Source of truth: the Django DB (Ticket, Worktree, WorktreeEnvOverride).\n"
     "# Drift detection: `t3 <overlay> worktree start` refuses if file != DB render.\n"
     "#\n"

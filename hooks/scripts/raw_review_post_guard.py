@@ -3,7 +3,7 @@
 Sub-agents have repeatedly posted MR/PR review comments by shelling out to a raw
 forge REST POST — ``glab api projects/.../merge_requests/<n>/discussions -X POST``
 (or ``.../notes``, or the GitHub ``.../pulls/<n>/comments``) — bypassing the
-sanctioned ``t3 <overlay> review post-comment`` / ``post-draft-note`` path that
+sanctioned ``t3 review post-comment`` / ``post-draft-note`` path that
 enforces draft-default (#1207), dedup, and on-behalf approval (#960). RED-CARD,
 5x recurrence. This gate closes the bypass at the Bash boundary: a WRITE to a
 review discussion/notes/comments endpoint is denied; plain GET reads pass through.
@@ -61,19 +61,19 @@ ISSUE_NOTE_ENDPOINT_RE = re.compile(r"issues/\d+/(?:notes|comments)\b")
 _MR_REVIEW_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to a merge-request/pull-request "
     "discussion/notes/comments endpoint bypasses the sanctioned review-post CLI. "
-    "To CREATE a note use `t3 <overlay> review post-comment` (draft by default, #1207) "
-    "or `post-draft-note`; to EDIT use `t3 <overlay> review update-note`; to REMOVE use "
-    "`t3 <overlay> review delete-discussion` — the CLI enforces draft-default, dedup, and "
+    "To CREATE a note use `t3 review post-comment` (draft by default, #1207) "
+    "or `post-draft-note`; to EDIT use `t3 review update-note`; to REMOVE use "
+    "`t3 review delete-discussion` — the CLI enforces draft-default, dedup, and "
     "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
 )
 _ISSUE_NOTE_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to an issue/work-item notes endpoint bypasses "
     "the sanctioned issue-note CLI. To CREATE a note use "
     "`t3 <overlay> ticket comment <issue-url> --body '<text>'` (or `--body-file <path>`); "
-    "to REMOVE use `t3 <overlay> review delete-issue-note <repo> <issue-iid> <note-id>` — "
+    "to REMOVE use `t3 review delete-issue-note <repo> <issue-iid> <note-id>` — "
     "the CLI routes the body through the public-repo leak gate and the send-proxy "
     "audit/allowlist/redaction seam, which a direct REST write skips. "
-    "`t3 <overlay> review post-comment` takes an integer MR IID and cannot address an "
+    "`t3 review post-comment` takes an integer MR IID and cannot address an "
     "issue; the forge exposes no draft-note API for issues, so there is no draft path here. "
     "Read-only GETs are unaffected."
 )
@@ -135,7 +135,7 @@ def review_post_deny_reason(command: str) -> str | None:
 def handle_block_raw_review_post(data: dict) -> bool:
     """Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
 
-    Forces the sanctioned ``t3 <overlay> review post-comment`` / ``post-draft-note``
+    Forces the sanctioned ``t3 review post-comment`` / ``post-draft-note``
     path (draft-default + dedup + on-behalf approval), which a direct REST write
     skips. Conservative: a command is denied only when its effective HTTP method
     (last ``-X``/``--method`` wins; default POST when a body flag is present) is

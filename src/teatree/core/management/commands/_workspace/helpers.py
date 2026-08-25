@@ -160,7 +160,7 @@ def reject_variant_mismatch(write_err: Callable[[str], None], ticket: Ticket, va
         write_err(
             f"  ticket #{ticket.ticket_number} already exists with variant {ticket.variant!r}; "
             f"refusing to rebind to variant {variant!r}. "
-            f"Use `t3 <overlay> ticket switch` or create a new ticket scope."
+            f"Create a new ticket scope for the other variant."
         )
         raise SystemExit(2)
 

@@ -167,7 +167,7 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\b(?:createdb|dropdb)\b"),
-        "BLOCKED: `createdb`/`dropdb` — use `t3 <overlay> db reset` instead.",
+        "BLOCKED: `createdb`/`dropdb` — use `t3 <overlay> db refresh` instead.",
     ),
     (
         re.compile(r"\b(?:npx\s+)?playwright\s+test\b"),

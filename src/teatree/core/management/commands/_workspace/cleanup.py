@@ -1,4 +1,4 @@
-"""Branch / stash / orphan-DB cleanup helpers used by ``t3 workspace clean-all``.
+"""Branch / stash / orphan-DB cleanup helpers used by ``t3 <overlay> workspace clean-all``.
 
 Lives in its own module so :mod:`teatree.core.management.commands.workspace`
 stays under the module-health LOC cap. Functions are kept private (``_``
@@ -524,7 +524,7 @@ def _fix_drift(drift: "Drift") -> list[str]:
     """Apply reconciler fixes for one ticket's drift.
 
     Each fix uses :func:`run_checked` so failures surface — no silent
-    swallow.  Called from ``t3 workspace doctor --fix``.
+    swallow.  Called from ``t3 <overlay> workspace doctor --fix``.
     """
     fixes: list[str] = []
 

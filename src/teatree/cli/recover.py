@@ -48,7 +48,7 @@ def recover(
         typer.Option("--overlay", help="Which overlay's manage.py runs the report (default: active overlay)."),
     ] = "",
 ) -> None:
-    """Forward `t3 recover [--requeue] [--json]` to `t3 <overlay> recover`.
+    """Forward `t3 recover [--requeue] [--json]` to `t3 recover`.
 
     The flags are declared explicitly (not a raw ``ctx.args`` passthrough) so
     Typer's group parser does not mis-read a leading ``--requeue`` as a

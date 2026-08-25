@@ -1,8 +1,8 @@
-"""``t3 <overlay> pending-chat`` — manage the inbound Slack-DM queue (#1063).
+"""``t3 <overlay> pending_chat`` — manage the inbound Slack-DM queue (#1063).
 
-Subcommands. ``t3 <overlay> pending-chat list`` prints rows from the
+Subcommands. ``t3 <overlay> pending_chat list`` prints rows from the
 last hour (or all pending if ``--all``), oldest first.
-``t3 <overlay> pending-chat mark-answered <slack_ts>`` stamps
+``t3 <overlay> pending_chat mark-answered <slack_ts>`` stamps
 ``answered_at`` on the row(s) matching ``slack_ts``; the agent calls
 this once per direct reply to a queued user question, so the Stop hook
 stops nagging on already-answered rows. The stamp keys on ``slack_ts``
@@ -44,7 +44,7 @@ def _format_row(row: PendingChatInjection) -> str:
 class Command(TyperCommand):
     @initialize()
     def init(self) -> None:
-        """``t3 <overlay> pending-chat`` group root."""
+        """``t3 <overlay> pending_chat`` group root."""
 
     @command(name="list")
     def list_rows(

@@ -72,7 +72,7 @@ _DENY_REASON = (
     "`t3` CLI instead: DM the user with `t3 teatree notify send -` (bot token); post to "
     "a colleague channel with `t3 <overlay> notify post --channel <id> --text <body>` "
     "(on-behalf gated); react with `t3 slack react`; comment on an MR/PR with "
-    "`t3 <overlay> review post-comment`. Recognised Slack MCP READS "
+    "`t3 review post-comment`. Recognised Slack MCP READS "
     "(get/list/search/history/info/read/view/fetch/replies/members) are unaffected; a "
     "Slack MCP tool this gate does not recognise is treated as a WRITE, so a genuine "
     "read it has not seen lands here too. One-off escape: put `[slack-mcp-ok: <reason>]` "

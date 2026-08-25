@@ -48,10 +48,14 @@ EXCLUDED_DOC_PREFIXES: tuple[str, ...] = ("docs/generated/",)
 _T3_IN_BACKTICKS = re.compile(r"`(t3 [^`]+)`")
 
 # Tokens that terminate the command path: an ASCII/unicode ellipsis (a generic
-# CLI mention, not a specific command), an angle/brace placeholder, a shell var,
-# an option/flag, a redirect/pipe, or a quoted arg value. A token matching this
-# is where the concrete command path ends — anything after it is an arg/flag.
-_PLACEHOLDER = re.compile(r"^(\.\.\.|…|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\|.*|>.*|\".*|'.*)$")
+# CLI mention, not a specific command), an angle/brace/bracket placeholder, a
+# shell var, an option/flag, a redirect/pipe, a `#` comment marker, or a quoted
+# arg value. A token matching this is where the concrete command path ends —
+# anything after it is an arg/flag. The bracket and `#` forms only ever appear in
+# the source-embedded corpus (#4565), where a backtick span can straddle a usage
+# form or a comment; neither can name a command, so terminating there is correct
+# for the doc corpus too.
+_PLACEHOLDER = re.compile(r"^(\.\.\.|…|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\[.*|#.*|\|.*|>.*|\".*|'.*)$")
 
 # A command-path segment: the shape a real typer command name takes. A first
 # token that is neither this nor a placeholder is not an invocation at all (the
@@ -89,6 +93,11 @@ ALLOWED_NON_RESOLVING: dict[str, str] = {
     "t3 overlay contract-check --compose <paths>": (
         "a real management command with no overlay proxy leaf, so the introspected "
         "tree cannot see it; exempted identically by tests/test_cli_command_literals_resolve.py"
+    ),
+    "t3 <overlay> tool": (
+        "the per-overlay `tool` group is registered dynamically from the overlay's "
+        "own */hook-config/tool-commands.json, so it is absent from a registry built "
+        "for an overlay that ships none; the parent of the `tool run` entry below"
     ),
     "t3 <overlay> tool run": (
         "the per-overlay `tool` group is registered dynamically from the overlay's "

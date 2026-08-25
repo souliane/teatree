@@ -19,8 +19,9 @@ matter how a gate's detection misbehaves:
     skill-loading, config-overwrite, main-clone, and out-of-band
     raw-merge kill-switches (#1474, #2836) — each must reach its own disable
     even if its gate misdetects.
-- The fail-open toggle (``t3 <overlay> gate fail-open enable``): the master
-    switch that flips every over-deny gate to fail-open at once.
+- The fail-open toggle (``t3 review gate fail-open enable``): the master
+    switch that flips every over-deny gate to fail-open at once. The
+    overlay-scoped spelling is matched too, so a wrong guess still rescues.
 
 :func:`is_self_rescue` is pure detection over EVERY shell segment of the
 command (lexed via the shared :mod:`teatree.hooks._shell_lexer`, the same
@@ -54,7 +55,7 @@ prefix (and, for the ``manage.py`` entry only, a single leading
     "any ``--``-prefixed token" catch-all.
 
 So ``t3 acme gate disable`` and ``t3 acme gate disable --yes`` match, but
-``t3 acme git push gate disable`` (positional ``git push`` between the
+``t3`` + ``acme git push gate disable`` (positional ``git push`` between the
 overlay and the verb) and ``t3 acme gate disable git push`` (trailing
 positional) do NOT. The ``env`` command is NOT a rescue — only a bare
 unquoted ``KEY=val`` assignment is stripped.
@@ -113,6 +114,7 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "gate", "add-all", "disable"),
     ("t3", OVERLAY, "gate", "raw-merge", "disable"),
     ("t3", OVERLAY, "gate", "fail-open", "enable"),
+    ("t3", "review", "gate", "fail-open", "enable"),
     ("manage.py", "migrate"),
 )
 

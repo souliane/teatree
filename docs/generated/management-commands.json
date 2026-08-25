@@ -709,7 +709,7 @@
       ]
     },
     {
-      "help": "``t3 <overlay> pending-chat`` group root.",
+      "help": "``t3 <overlay> pending_chat`` group root.",
       "name": "pending_chat",
       "subcommands": [
         {

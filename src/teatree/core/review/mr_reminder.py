@@ -7,7 +7,7 @@ repo→channel map (:class:`~teatree.config.mr_reminder.MrReminderConfig`),
 and assemble one mrkdwn message per channel.
 
 This module is the pure domain core — it builds the per-channel messages
-and never touches Slack. The thin ``t3 <overlay> mr-reminder`` management
+and never touches Slack. The thin ``t3 <overlay> mr_reminder`` management
 command owns the only external boundary: posting each assembled message
 through the messaging backend. Splitting assembly from egress keeps the
 routing + rendering testable with no Slack mock at all (the routing is

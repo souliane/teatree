@@ -364,7 +364,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 
 ## `pending_chat`
 
-``t3 <overlay> pending-chat`` group root.
+``t3 <overlay> pending_chat`` group root.
 
 | Subcommand | Description |
 | --- | --- |

@@ -8,7 +8,7 @@ refuse the SAME set — a raw REST WRITE to a ``.../discussions``/``.../notes``/
 plain GET read is allowed.
 
 The refusal is surface-aware, because the two surfaces have different sanctioned
-CLIs: a merge-request note goes to ``t3 <overlay> review post-comment`` (draft-default,
+CLIs: a merge-request note goes to ``t3 review post-comment`` (draft-default,
 dedup, on-behalf approval), while an issue/work-item note goes to
 ``t3 <overlay> ticket comment`` — the ``t3 review`` create seam is merge-request-shaped
 and cannot address an issue at all. Naming one remedy for both blocked the caller and
@@ -34,9 +34,9 @@ _BODY_FLAG_RE = re.compile(r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--d
 MR_REVIEW_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to a merge-request/pull-request "
     "discussion/notes/comments endpoint bypasses the sanctioned review-post CLI. "
-    "To CREATE a note use `t3 <overlay> review post-comment` (draft by default, #1207) "
-    "or `post-draft-note`; to EDIT use `t3 <overlay> review update-note`; to REMOVE use "
-    "`t3 <overlay> review delete-discussion` — the CLI enforces draft-default, dedup, and "
+    "To CREATE a note use `t3 review post-comment` (draft by default, #1207) "
+    "or `post-draft-note`; to EDIT use `t3 review update-note`; to REMOVE use "
+    "`t3 review delete-discussion` — the CLI enforces draft-default, dedup, and "
     "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
 )
 
@@ -44,10 +44,10 @@ ISSUE_NOTE_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to an issue/work-item notes endpoint bypasses "
     "the sanctioned issue-note CLI. To CREATE a note use "
     "`t3 <overlay> ticket comment <issue-url> --body '<text>'` (or `--body-file <path>`); "
-    "to REMOVE use `t3 <overlay> review delete-issue-note <repo> <issue-iid> <note-id>` — "
+    "to REMOVE use `t3 review delete-issue-note <repo> <issue-iid> <note-id>` — "
     "the CLI routes the body through the public-repo leak gate and the send-proxy "
     "audit/allowlist/redaction seam, which a direct REST write skips. "
-    "`t3 <overlay> review post-comment` takes an integer MR IID and cannot address an "
+    "`t3 review post-comment` takes an integer MR IID and cannot address an "
     "issue; the forge exposes no draft-note API for issues, so there is no draft path here. "
     "Read-only GETs are unaffected."
 )

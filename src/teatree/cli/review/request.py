@@ -42,7 +42,7 @@ def _overlay_name_for_mr(mr_url: str) -> str:
     The MR URL is the authoritative ownership signal, so resolution is:
 
     1.  An explicit ``T3_OVERLAY_NAME`` env override — a deliberate operator
-        scoping (``t3 <overlay> review-request …``) — always wins.
+        scoping (``t3 review-request …``) — always wins.
     2.  Otherwise, the URL owner inferred via :func:`infer_overlay_for_url`,
         which now sees path-only TOML overlays too (a path-only external-forge
         overlay owns its foreign-forge MRs as a path-only entry; #2231).

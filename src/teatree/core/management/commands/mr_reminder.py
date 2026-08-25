@@ -1,4 +1,4 @@
-"""``t3 <overlay> mr-reminder`` — cross-repo "my open MRs" Slack reminder (TODO-276).
+"""``t3 <overlay> mr_reminder`` — cross-repo "my open MRs" Slack reminder (TODO-276).
 
 Generalises a personal one-off reminder into a reusable command. ``preview``
 assembles the per-channel reminder read-only (no Slack touch); ``send``

@@ -361,6 +361,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
+            ("reconcile-clears", "Consume every standing merge authorisation whose PR already merged or closed."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),

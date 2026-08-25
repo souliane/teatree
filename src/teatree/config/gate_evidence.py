@@ -17,8 +17,8 @@ second question is the one an arming decision needs. Ten gates sat UNDECIDED for
 against a report that named no next action (#4375), so every entry also declares a
 ``satisfier``: the command that writes the observable, or, for a refusal-only gate, the state
 that satisfies the refusal. It is a declared field rather than rationale prose because prose
-drifts silently — the first version of this registry sent operators at ``t3 <overlay> repro
-record``, which is not a command — and ``tests/conformance/test_gate_evidence_declared.py``
+drifts silently — the first version of this registry sent operators at a ``repro record``
+subcommand that does not exist — and ``tests/conformance/test_gate_evidence_declared.py``
 resolves every ``t3 …`` citation in it against the live CLI registry.
 
 ``NONE`` is a real answer, not a placeholder: a refusal-only gate (``require_debt_delta``,

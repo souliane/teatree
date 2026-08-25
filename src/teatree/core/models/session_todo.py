@@ -11,7 +11,7 @@ loop dispatches, a different concern from a session's own scratch list. So this
 is a third thing: a working list keyed on ``Session``, which is already
 harness-agnostic by construction (``agent_id`` is a plain string, ``overlay`` a
 name, no Claude field anywhere on it). Any harness reads and writes the same
-rows through ``t3 <overlay> session todo …``.
+rows through ``t3 <overlay> session todo-add`` / ``todo-list`` / ``todo-set``.
 """
 
 from typing import ClassVar

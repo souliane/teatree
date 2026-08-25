@@ -11013,6 +11013,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
 │                              issued without --ticket-id.                     │
+│ reconcile-clears             Consume every standing merge authorisation      │
+│                              whose PR already merged or closed.              │
 │ merge                        Execute the IN_REVIEW → MERGED keystone         │
 │                              transition (BLUEPRINT §17.4).                   │
 │ list                         List tickets, optionally filtered by state      │
@@ -11376,6 +11378,32 @@ Usage: t3 teatree ticket backfill-clears [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      Show what would be linked without persisting. │
+│                                [default: no-dry-run]                         │
+│ --json                         Emit the report rows as JSON.                 │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket reconcile-clears`
+
+```
+Usage: t3 teatree ticket reconcile-clears [OPTIONS]
+
+ Consume every standing merge authorisation whose PR already merged or closed.
+
+ A merge that lands outside the keystone (a lost post-hook, a hand-run merge)
+ leaves the ``MergeClear`` unconsumed forever, so the backlog alarms on PRs
+ that
+ already landed. This asks the forge about each standing row and spends the
+ ones
+ it reports settled; a PR still open, or one whose state cannot be read, is
+ left
+ exactly as it was. No ``MergeAudit`` is written — that would claim keystone
+ provenance for a merge the keystone did not execute.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      Show what would be consumed without           │
+│                                persisting.                                   │
 │                                [default: no-dry-run]                         │
 │ --json                         Emit the report rows as JSON.                 │
 │ --help                         Show this message and exit.                   │
