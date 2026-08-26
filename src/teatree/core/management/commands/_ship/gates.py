@@ -84,8 +84,9 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
     diffs a pull request on.
 
     Blocks **only on a confirmed zero** — ``rev_count(base..branch) == 0``, or a
-    delta git proved empty — naming the branch and the base it was compared
-    against. If git introspection cannot be performed (no real repo, base
+    delta git proved empty — naming the branch, the base it was compared against,
+    and a remedy. A three-dot probe measures that the delta is empty, never WHY,
+    so neither arm names a cause. If git introspection cannot be performed (no real repo, base
     undetectable, git error) the state is *unverifiable* — distinct from the
     confirmed-zero bug — so the prior behaviour (proceed) is preserved rather
     than blocking on an unknown, which is also what an unreadable three-dot
@@ -118,8 +119,9 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
         return NoCommitsAheadError(
             error=(
                 f"Refusing to ship: branch {branch!r} carries no changes over {base} — "
-                f"its pull request would be empty, so the work it holds has already landed "
-                f"(a squash-merge, then a merge back). Nothing to ship."
+                f"its pull request would carry zero files. If work is missing, commit it on "
+                f"{branch!r} and retry `pr create`; if it already landed, tear the worktree "
+                f"down instead of shipping."
             ),
             branch=branch,
             base=base,

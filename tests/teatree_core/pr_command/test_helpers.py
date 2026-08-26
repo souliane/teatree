@@ -264,6 +264,9 @@ class TestAssertCommitsAheadOfBase(TestCase):
         assert result is not None, "a branch whose pull request would be empty MUST block"
         assert result["branch"] == "feat-squashed"
         assert "carries no changes" in result["error"]
+        # #4551: a three-dot probe measures an empty delta, never its cause.
+        assert "retry `pr create`" in result["error"], "the refusal must name a remedy, not only a cause"
+        assert "squash-merge" not in result["error"]
 
     def test_unverifiable_git_error_returns_none_proceeds(self) -> None:
         """No-block-on-unknown safety contract (#788's make-or-break fail-direction).
