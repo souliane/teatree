@@ -42,7 +42,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ review          Code review helpers.                                         │
 │ review-request  Batch review requests.                                       │
 │ eval            Behavioral eval harness — bare `t3 eval` runs the whole      │
-│                 suite; subcommands target one lane.                          │
+│                 suite; subcommands target one lane. Also mounted as `t3      │
+│                 evals`, the spelling to use from a sub-agent.                │
+│ evals           Behavioral eval harness — bare `t3 eval` runs the whole      │
+│                 suite; subcommands target one lane. Also mounted as `t3      │
+│                 evals`, the spelling to use from a sub-agent.                │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
 │ hook            Run teatree's portable repo-quality hooks in any repo        │
@@ -1590,7 +1594,8 @@ Usage: t3 review-request post [OPTIONS]
 Usage: t3 eval [OPTIONS] [COMMAND] [ARGS]...
 
  Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands
- target one lane.
+ target one lane. Also mounted as `t3 evals`, the spelling to use from a
+ sub-agent.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
@@ -3156,6 +3161,116 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 evals`
+
+```
+Usage: t3 evals [OPTIONS] [COMMAND] [ARGS]...
+
+ Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands
+ target one lane. Also mounted as `t3 evals`, the spelling to use from a
+ sub-agent.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
+│                                  suite: 'transcript' (default — REUSE        │
+│                                  already-recorded in-session transcripts, $0 │
+│                                  extra), 'api' (RUN the Claude model fresh   │
+│                                  in-process via the Agent SDK, on the        │
+│                                  credential agent_harness_provider selects — │
+│                                  default subscription OAuth, or the metered  │
+│                                  API key; the explicit opt-in),              │
+│                                  'anthropic_api' (RUN the same Claude model  │
+│                                  fresh through the Anthropic Messages API    │
+│                                  DIRECTLY, no `claude` CLI child — the       │
+│                                  CLI-free lane, metered on                   │
+│                                  ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a │
+│                                  non-Claude model through the                │
+│                                  provider-agnostic harness seam, the         │
+│                                  OpenAI-compatible backend).                 │
+│                                  [default: transcript]                       │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
+│                                  for the AI lane (default: cwd).             │
+│ --model-free                     Run only the model-free deterministic lanes │
+│                                  (drop the AI lane) — the fast pre-push      │
+│                                  gate.                                       │
+│ --strict                         Exit non-zero when a lane was SKIPPED for   │
+│                                  setup reasons (the AI behavioural lane with │
+│                                  no transcripts / no key) — for CI, where    │
+│                                  'not yet validated' must fail. Default      │
+│                                  leaves a setup-skip green (the caveat is in │
+│                                  the verdict text, not a confusing           │
+│                                  non-zero).                                  │
+│ --docker                         Run inside the exact CI image               │
+│                                  (dev/Dockerfile.test) for parity; host-run  │
+│                                  is the default.                             │
+│ --parallel              INTEGER  Run this many AI-lane scenarios             │
+│                                  concurrently (wall-clock; default 1 =       │
+│                                  sequential).                                │
+│                                  [default: 1]                                │
+│ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ negative-control          Self-test the harness: plant a known violation and │
+│                           assert it is caught (token-free).                  │
+│ benchmark                 Benchmark cost AND pass-rate of model@effort       │
+│                           variants against the eval suite.                   │
+│ capture-subagent          Copy the freshest in-session sub-agent JSONL to a  │
+│                           scenario's transcript path.                        │
+│ transcript-replay         Replay a real session transcript against teatree   │
+│                           behavioural invariants.                            │
+│ coverage                  Report per-skill behavioral-eval coverage: every   │
+│                           skill is covered or eval_exempt.                   │
+│ pinned-regressions        Run the deterministic regression corpus over the   │
+│                           real gate/checker code paths.                      │
+│ skill-command-validity    Validate every backticked ``t3 …`` in the repo     │
+│                           docs against the live CLI registry.                │
+│ reachability              Report scenario/fixture ``t3 …`` invocations that  │
+│                           name no live CLI command.                          │
+│ skill-prose-judge         Score each skill's prose for clarity/actionability │
+│                           via the LLM judge (ADVISORY).                      │
+│ audit                     Audit captured sessions into the durable ledger    │
+│                           and print per-session verdicts.                    │
+│ changed-scenarios         Print the scenario names a PR's STDIN diff         │
+│                           touched; exit --skip-code when none.               │
+│ ci-trigger                Dispatch ``eval-ci-heal.yml`` for a PR branch and  │
+│                           print the head SHA it keys on.                     │
+│ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
+│                           failure, its triaged reds).                        │
+│ green-proof               Assert the merged eval-heal JSON proves a          │
+│                           full-suite green (whole catalog, 0 reds).          │
+│ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
+│                           --skip-code (non-list payload exits 2).            │
+│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
+│                           shard or not backed by metered spend.              │
+│ merge-summaries           Merge per-shard summary markdown into one          │
+│                           dashboard (to --out or stdout).                    │
+│ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
+│                           §2.4 JSON (to --out or stdout).                    │
+│ prepare-transcript        Emit the per-scenario prompts for a LOCAL          │
+│                           transcript-backend eval run.                       │
+│ set-baseline              Regenerate the ``baseline`` preset file from a     │
+│                           model-matrix JSON run.                             │
+│ ladder                    Generate the cheapest-green baseline via a tier    │
+│                           escalation ladder (no full matrix).                │
+│ history                   Show recent eval runs and per-scenario pass-rate   │
+│                           over time.                                         │
+│ list                      List discovered eval scenarios as a table (Name,   │
+│                           Scenario, Agent, File, Asserts).                   │
+│ run                       Run one scenario by name, or all scenarios when no │
+│                           name is given.                                     │
+│ ci-heal                   Operator control of the CI-eval self-healing loop  │
+│                           (open sessions, list, dry-run advance).            │
+│ ci-account                Inspect / switch the Anthropic account CI's OAuth  │
+│                           secret holds.                                      │
+│ corpus                    Ground-truth corpus curation: list, inspect, and   │
+│                           grade captured sessions.                           │
+│ label                     Corpus-label curation: list nominations, scaffold  │
+│                           a label, review the corpus.                        │
+│ quarantine                The known-red quarantine: scenarios the bounded PR │
+│                           lane does not select.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

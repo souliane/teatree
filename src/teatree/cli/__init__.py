@@ -188,6 +188,9 @@ app.add_typer(codex_app, name="codex")
 app.add_typer(review_app, name="review")
 app.add_typer(review_request_app, name="review-request")
 app.add_typer(eval_app, name="eval")
+# Second mount, not a forwarding shim: an agent bash-permission layer refuses a
+# bare `eval` token as the shell builtin, so no sub-agent can run the suite (#3838).
+app.add_typer(eval_app, name="evals")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
 app.add_typer(hook_app, name="hook")

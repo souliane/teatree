@@ -126,10 +126,10 @@ nothing. The `api` lane never runs silently; it runs only when passed explicitly
 ## How to run
 
 ```bash
-t3 eval --model-free   # fast pre-push gate: model-free deterministic lanes only
-t3 eval                # whole suite: model-free lanes + grade recorded transcripts
-t3 eval list           # discovered scenarios
-t3 eval coverage       # per-skill covered / exempt / gap (a gap exits non-zero)
+t3 evals --model-free  # fast pre-push gate: model-free deterministic lanes only
+t3 evals               # whole suite: model-free lanes + grade recorded transcripts
+t3 evals list          # discovered scenarios
+t3 evals coverage      # per-skill covered / exempt / gap (a gap exits non-zero)
 ```
 
 The AI lane can't be a pure CLI — a standalone process has no in-session `Agent`
@@ -140,7 +140,7 @@ to spend subscription tokens. Use `/t3:running-evals`, which chains
 To RUN the model fresh yourself (metered, opt-in — the same path CI runs weekly):
 
 ```bash
-t3 eval run --backend api --require-executed
+t3 evals run --backend api --require-executed
 ```
 
 `--require-executed` makes an all-skipped run exit non-zero, so it can never pass
@@ -155,7 +155,7 @@ second axis answers that: `validated` is true only when every check ran, the tex
 says `NOT a validated green` otherwise, `render_json` emits it beside `ok`, and:
 
 ```bash
-t3 eval pinned-regressions --strict   # non-zero unless every check actually ran
+t3 evals pinned-regressions --strict  # non-zero unless every check actually ran
 ```
 
 The default stays lenient for the host pre-push hook; `--strict` (like the suite's own

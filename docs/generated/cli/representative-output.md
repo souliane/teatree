@@ -45,7 +45,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ review          Code review helpers.                                         │
 │ review-request  Batch review requests.                                       │
 │ eval            Behavioral eval harness — bare `t3 eval` runs the whole      │
-│                 suite; subcommands target one lane.                          │
+│                 suite; subcommands target one lane. Also mounted as `t3      │
+│                 evals`, the spelling to use from a sub-agent.                │
+│ evals           Behavioral eval harness — bare `t3 eval` runs the whole      │
+│                 suite; subcommands target one lane. Also mounted as `t3      │
+│                 evals`, the spelling to use from a sub-agent.                │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
 │ hook            Run teatree's portable repo-quality hooks in any repo        │

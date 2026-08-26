@@ -12,6 +12,7 @@ See: souliane/teatree#67, souliane/teatree#550.
 """
 
 from teatree.cli.command_tree import (
+    COMMAND_GROUP_ALIASES,
     build_cli_reference_from_app,
     command_groups,
     command_paths,
@@ -19,6 +20,7 @@ from teatree.cli.command_tree import (
 )
 
 __all__ = [
+    "COMMAND_GROUP_ALIASES",
     "build_cli_reference_from_app",
     "command_groups",
     "command_paths",

@@ -43,7 +43,10 @@ METERED_DEFAULT_EFFORT = resolve_metered_effort()
 
 eval_app = typer.Typer(
     no_args_is_help=False,
-    help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
+    help=(
+        "Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane. "
+        "Also mounted as `t3 evals`, the spelling to use from a sub-agent."
+    ),
 )
 register_imported_commands(eval_app)
 

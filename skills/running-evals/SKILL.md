@@ -1,6 +1,6 @@
 ---
 name: running-evals
-description: Single in-session entrypoint that auto-orchestrates the whole eval picture — model-free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing recorded transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
+description: Single in-session entrypoint that auto-orchestrates the whole eval picture — model-free deterministic lanes (the eval-coverage gate `t3 evals coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing recorded transcripts, or deciding between `t3 evals run` (AI evals) and `t3 teatree run tests` (deterministic tests).
 eval_exempt: in-session driver for the eval harness itself; its commands are covered by the eval CLI tests, not by a self-referential behavioural eval
 compatibility: any
 metadata:
@@ -13,6 +13,13 @@ requires:
 
 Running the full eval picture by hand takes several easy-to-forget commands, and the AI/trajectory lane **cannot** be a pure CLI: a standalone process has no in-session `Agent` and cannot spend subscription tokens, so only an in-session driver can produce the transcripts the grader reads. This skill is that driver. Bare `/t3:running-evals` runs the full default suite.
 
+## Run it as `t3 evals` from a sub-agent
+
+- Agent bash-permission layers read a bare `eval` token as the shell builtin and **refuse the command before it runs** — `t3 eval list`, and even `ls src/teatree/eval/`, are rejected at dispatch. The refusal is not a run failure, so it surfaces as an eval failure nowhere: an agent asked to make evals green can only read code and reason, never measure.
+- `t3 evals` is the SAME group under a non-colliding name — every subcommand, flag and exit code identical. Use it in sub-agent briefs and dispatch prompts.
+- `t3 eval` is unchanged and stays canonical; both spellings resolve.
+- `src/teatree/eval/` carries the token too. The tree IS there — reach it with `Glob`/`Read`/`Grep`, never `ls`.
+
 ## test vs eval — two sides of one coin
 
 | term | what it is | command | determinism |
@@ -20,7 +27,7 @@ Running the full eval picture by hand takes several easy-to-forget commands, and
 | **test** | unit / integration code test | `t3 teatree run tests` | deterministic, model-free |
 | **eval** | AI / trajectory eval (agent behaviour) | `t3 eval run` | non-deterministic (model) |
 
-The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t3 teatree run tests` (a future top-level "t3 test run" form is owned by the separate CLI-simplification audit), AI evals are `t3 eval run`. There is intentionally no "t3 run evals" group — `t3 eval run` is canonical. When in doubt: "eval" grades what the agent *did* on a prompt; "test" asserts what a function *returns*.
+The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t3 teatree run tests` (a future top-level "t3 test run" form is owned by the separate CLI-simplification audit), AI evals are `t3 eval run`. There is intentionally no "t3 run evals" group — `t3 eval run` is canonical, with `t3 evals run` its alias mount (above), not a second surface. When in doubt: "eval" grades what the agent *did* on a prompt; "test" asserts what a function *returns*.
 
 ## Cost split (never silently meter)
 
@@ -37,54 +44,54 @@ The default backend is `transcript` — it REUSES an already-recorded run by gra
 
 In ONE invocation, without the human running `prepare-transcript` or `capture-subagent` by hand:
 
-1. `t3 eval prepare-transcript` → the per-scenario agent definition, prompt, and the transcript path the `transcript` backend will read.
+1. `t3 evals prepare-transcript` → the per-scenario agent definition, prompt, and the transcript path the `transcript` backend will read.
 2. For each scenario, dispatch an in-session `Agent` sub-agent that runs the prompt. Claude Code writes that sub-agent's trajectory to `~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl` — NOT to the grader's path.
-3. `t3 eval capture-subagent <scenario> --since <epoch>` copies the freshest sub-agent JSONL to the transcript path the grader reads. Record the epoch BEFORE each dispatch and pass it as `--since` so back-to-back scenarios never grab a prior sub-agent's file.
-4. `t3 eval run --backend transcript` to grade the captured transcripts.
+3. `t3 evals capture-subagent <scenario> --since <epoch>` copies the freshest sub-agent JSONL to the transcript path the grader reads. Record the epoch BEFORE each dispatch and pass it as `--since` so back-to-back scenarios never grab a prior sub-agent's file.
+4. `t3 evals run --backend transcript` to grade the captured transcripts.
 5. Print ONE unified results table.
 
-The model-free deterministic lane (`t3 eval pinned-regressions`) — deterministic tests, no model — runs alongside. Only steps 2–3 — producing and capturing the recorded transcripts — need this in-session skill; bare `t3 eval` (below) folds in everything else.
+The model-free deterministic lane (`t3 evals pinned-regressions`) — deterministic tests, no model — runs alongside. Only steps 2–3 — producing and capturing the recorded transcripts — need this in-session skill; bare `t3 evals` (below) folds in everything else.
 
 The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `transcript` backend auto-detects it and grades on matchers identically to a stream-json transcript — capture and grade read on-disk files only, so the lane runs no model.
 
-## Bare `t3 eval` — the whole suite, one summary
+## Bare `t3 evals` — the whole suite, one summary
 
 ```bash
-# THE DEFAULT: bare `t3 eval` (no subcommand, no args) runs the WHOLE suite —
+# THE DEFAULT: bare `t3 evals` (no subcommand, no args) runs the WHOLE suite —
 # model-free deterministic lanes + AI lane — in one unified summary table.
 # Grades recorded transcripts when present in the transcript dir;
 # with none, emits the manifest + this skill's recipe — never runs a model.
-t3 eval
-t3 eval --transcript-dir ./transcripts
+t3 evals
+t3 evals --transcript-dir ./transcripts
 
 # Explicit fresh-run opt-in (CI; on the agent_harness_provider credential, default subscription OAuth).
-t3 eval --backend api
+t3 evals --backend api
 ```
 
-Bare `t3 eval` runs the MODEL-FREE lanes, then for the AI lane grades recorded transcripts when they exist ($0 extra), otherwise emits the transcript manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to running a model. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.
+Bare `t3 evals` runs the MODEL-FREE lanes, then for the AI lane grades recorded transcripts when they exist ($0 extra), otherwise emits the transcript manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to running a model. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.
 
 ## CLI surface
 
 ```bash
 # Model-free deterministic lanes (no model spend).
-t3 eval coverage          # per-skill eval coverage: covered / eval_exempt / gap (a gap exits 1)
-t3 eval pinned-regressions
+t3 evals coverage         # per-skill eval coverage: covered / eval_exempt / gap (a gap exits 1)
+t3 evals pinned-regressions
 
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
-t3 eval list
+t3 evals list
 
 # Transcript AI path ($0 extra): prepare → produce in-session → capture → grade.
-t3 eval prepare-transcript --transcript-dir ./transcripts
-t3 eval capture-subagent <scenario> --transcript-dir ./transcripts --since <epoch>
-t3 eval run --backend transcript --transcript-dir ./transcripts
+t3 evals prepare-transcript --transcript-dir ./transcripts
+t3 evals capture-subagent <scenario> --transcript-dir ./transcripts --since <epoch>
+t3 evals run --backend transcript --transcript-dir ./transcripts
 
-# Whole picture in one command (the bare-`t3 eval` default suite).
-t3 eval
+# Whole picture in one command (the bare-`t3 evals` default suite).
+t3 evals
 ```
 
 ## Authoring evals
 
-A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap and exits non-zero.
+A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 evals coverage` reports it as a gap and exits non-zero.
 
 ## Measuring the shipped hook system (`production_hooks`)
 

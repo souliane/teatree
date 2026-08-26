@@ -35,6 +35,15 @@ from teatree.mcp.command_catalogue import CommandRecord
 # narrow CI runner and a wide local terminal, and no inherited tty / COLUMNS.
 _RENDER_WIDTH = 80
 
+#: Top-level group aliases — alias name -> canonical name. An alias is a SECOND
+#: mount of the same Typer group: both spellings resolve identically, so skill
+#: prose may cite either. ``evals`` exists because an agent bash-permission layer
+#: refuses a bare ``eval`` token as the shell builtin (souliane/teatree#3838).
+COMMAND_GROUP_ALIASES: dict[str, str] = {"evals": "eval"}
+
+#: ``[base_name, <group>]`` — an alias is only ever mounted top-level.
+_ALIAS_PATH_DEPTH = 2
+
 
 def build_cli_reference_from_app(app: typer.Typer, *, base_name: str = "t3") -> str:
     """Walk *app* and return a CLI reference in markdown."""
@@ -49,7 +58,7 @@ def _build_cli_reference_from_command(click_app: click.Command, *, base_name: st
         f"Generated from `{base_name}` command tree.",
         "",
     ]
-    for parts, cmd, ctx in _iter_command_tree(click_app, base_name=base_name):
+    for parts, cmd, ctx in _iter_command_tree(click_app, base_name=base_name, collapse_aliases=True):
         help_text = _get_help_text(cmd, ctx)
         name = " ".join(parts)
         heading = "#" * min(len(parts) + 1, 6)
@@ -58,7 +67,7 @@ def _build_cli_reference_from_command(click_app: click.Command, *, base_name: st
 
 
 def _iter_command_tree(
-    root: click.Command, *, base_name: str = "t3"
+    root: click.Command, *, base_name: str = "t3", collapse_aliases: bool = False
 ) -> Iterator[tuple[list[str], click.Command, click.Context]]:
     """Pre-order walk of *root*'s command tree, resolving overlay proxies.
 
@@ -70,18 +79,29 @@ def _iter_command_tree(
     program name. The four public projections — :func:`command_paths`,
     :func:`command_groups`, :func:`command_catalogue`, and the markdown walker —
     each filter or shape this one traversal rather than re-implementing it.
+
+    *collapse_aliases* yields a :data:`COMMAND_GROUP_ALIASES` group without
+    descending into it — the markdown reference wants the alias named once, not
+    the canonical subtree rendered twice. The registry projections leave it off,
+    because resolving BOTH spellings is what lets a doc cite the alias.
     """
     real = _resolve_proxy_leaf(root)
     if real is not None:
         root = real
-    yield from _iter_resolved_subtree(root, [base_name], parent_ctx=None)
+    yield from _iter_resolved_subtree(root, [base_name], parent_ctx=None, collapse_aliases=collapse_aliases)
 
 
 def _iter_resolved_subtree(
-    cmd: click.Command, parts: list[str], parent_ctx: click.Context | None
+    cmd: click.Command,
+    parts: list[str],
+    parent_ctx: click.Context | None,
+    *,
+    collapse_aliases: bool = False,
 ) -> Iterator[tuple[list[str], click.Command, click.Context]]:
     ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
     yield parts, cmd, ctx
+    if collapse_aliases and len(parts) == _ALIAS_PATH_DEPTH and parts[1] in COMMAND_GROUP_ALIASES:
+        return
     if isinstance(cmd, click.Group):
         for sub_name in cmd.list_commands(ctx):
             sub_cmd = cmd.get_command(ctx, sub_name)
@@ -90,7 +110,9 @@ def _iter_resolved_subtree(
             real = _resolve_proxy_leaf(sub_cmd)
             if real is not None:
                 sub_cmd = real
-            yield from _iter_resolved_subtree(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
+            yield from _iter_resolved_subtree(
+                sub_cmd, [*parts, sub_name], parent_ctx=ctx, collapse_aliases=collapse_aliases
+            )
 
 
 @contextlib.contextmanager
