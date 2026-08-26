@@ -237,6 +237,19 @@ RUN for attempt in 1 2 3 4 5; do \
 # did exactly that by moving the data dir to a bind mount while these ENV paths
 # still pointed inside it). These now equal pass/gpg defaults for this HOME; kept
 # explicit for grep-ability and so a mountless standalone run still resolves.
+# UV_PYTHON_INSTALL_DIR here is the TOOL plane, and it stays on the teatree_uv
+# volume. The interpreter the baked `teatree` and `prek` tool venvs record in
+# their pyvenv.cfg is the one this value resolves, so a tool venv is only ever
+# rebuilt where it was built. Nothing outside the container reads this root.
+#
+# The PROJECT interpreter root — the one every worktree venv is built against —
+# is a DIFFERENT plane and is set at runtime by compose, because it must be
+# path-identical on host and container: a pyvenv.cfg records its interpreter's
+# ABSOLUTE path, the worktree tree is bind-mounted path-identically, and while
+# the two venues resolved different roots each judged the other's environment
+# invalid and DELETED it, ~1 GB a flip, until the disk filled (#4642). Keeping
+# the two planes apart is what stops that fix from coupling the container's own
+# toolchain to a host-controlled directory.
 ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     UV_TOOL_DIR=/opt/teatree/uv/tools \
     UV_TOOL_BIN_DIR=/opt/teatree/uv/bin \

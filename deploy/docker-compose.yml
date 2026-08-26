@@ -11,6 +11,23 @@
 # is baked into the image.
 name: teatree
 
+# The PROJECT interpreter root every worktree virtualenv is built against: uv's
+# own default under the container HOME, bind-mounted from the host at path
+# identity (see the interpreter-plane bind below). A pyvenv.cfg records its
+# interpreter's ABSOLUTE path and the worktree tree is already path-identical, so
+# a venv is valid in both venues only when this root is path-identical too; while
+# it was not, each venue judged the other's environment invalid and DELETED it,
+# ~1 GB a flip, until the disk filled (#4642).
+#
+# It is set HERE rather than in the image so the image ENV keeps owning the
+# separate TOOL plane on the teatree_uv volume, where the baked `teatree` and
+# `prek` tool venvs record their interpreter. Two planes, two roots: the fix for
+# the worktree venvs never reaches the container's own toolchain. A standalone
+# `docker run` without this file therefore gets no shared root and falls back to
+# the image's tool-plane value — correct, because without the bind there is no
+# shared root to point at.
+x-uv-project-python-root: &uv-project-python-root /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+
 x-teatree-common: &teatree-common
   # Pull a PUBLISHED self-contained image by setting TEATREE_IMAGE (the publish
   # workflow's lockfile-keyed tag, #3451) in a `.env` next to this file or in the
@@ -132,6 +149,21 @@ x-teatree-common: &teatree-common
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/workspace/t3-workspaces
       target: /home/teatree/workspace/t3-workspaces
+    # Interpreter plane. Same rule as the worktree bind above, for the same
+    # reason: a `.venv/pyvenv.cfg` records its interpreter's ABSOLUTE path, so a
+    # venv under a path-identical tree is valid in both venues only where the
+    # interpreter root is path-identical too. It was not — host `~/.local/share`
+    # vs container `teatree_uv` — so each venue judged the other's environment
+    # invalid and DELETED it, ~1 GB a flip, 37 rebuilds to a 100% full disk
+    # (#4642). rw: `uv python install` provisions this root at runtime.
+    #
+    # Deliberately the narrow `.../uv/python`, not the whole `.../uv`: only
+    # `python/` is named by a recorded `home`, while `uv/tools/` is precisely
+    # what UV_TOOL_DIR keeps container-local on teatree_uv and `uv/credentials/`
+    # has no business crossing the venue boundary.
+    - type: bind
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+      target: /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
     # Credential plane: the host-provisioned pass store + its GPG home, as
     # DEDICATED mounts decoupled from the data dir (a data-dir change must never
     # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
@@ -248,6 +280,7 @@ services:
     # deploy/entrypoint.sh's setup_disk_tmpdir.
     environment:
       TEATREE_ROLE: init
+      UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       # Where core lives INSIDE the source mount. The default is the mount root
@@ -275,6 +308,7 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: worker
+      UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
@@ -356,6 +390,7 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: admin
+      UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
@@ -396,6 +431,7 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: slack-listener
+      UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}

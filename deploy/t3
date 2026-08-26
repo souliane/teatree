@@ -128,8 +128,14 @@ DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/workspace/t3-workspaces"
     "$TEATREE_HOST_HOME/.claude/projects"
 )
+# The shared uv interpreter root (#4642). Its own array, not a DATA_MOUNT_SOURCES
+# member: that array also answers "which host roots may a checkout live under?"
+# for the reachability diagnostic below, and an interpreter root is not one.
+INTERPRETER_MOUNT_SOURCES=(
+    "$TEATREE_HOST_HOME/.local/share/uv/python"
+)
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
-install -d "${DATA_MOUNT_SOURCES[@]}"
+install -d "${DATA_MOUNT_SOURCES[@]}" "${INTERPRETER_MOUNT_SOURCES[@]}"
 
 # Run the WORKING TREE the wrapper was invoked from when teatree is installed
 # BENEATH a host project — the `<host>/vendor/teatree/deploy/t3` layout. The tree

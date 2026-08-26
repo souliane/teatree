@@ -66,6 +66,14 @@ CREDENTIAL_PLANE = {
 SESSION_PLANE = {
     f"{CONTAINER_HOME}/.claude/projects",
 }
+# The interpreter plane: the ONE uv python root both venues name identically
+# (#4642). A pyvenv.cfg records an ABSOLUTE interpreter path, so a venv under the
+# path-identical worktree bind is valid in both venues only where its interpreter
+# root is path-identical too — otherwise each venue deletes and rebuilds the
+# other's environment, ~1 GB a flip. The TOOL plane stays on `teatree_uv`.
+INTERPRETER_PLANE = {
+    f"{CONTAINER_HOME}/.local/share/uv/python",
+}
 # The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
 # A PAIR by construction: the open-file guard is read from a process table, so the
 # temp root and the table describing its holders must name the same namespace.
@@ -75,7 +83,7 @@ HOST_NAMESPACE = {HOST_SCRATCH_TARGET, HOST_PROC_TARGET}
 # Every host bind mount the shared list must carry, by canonical container target.
 # The host-namespace pair is listed separately: it is not a container path rebased
 # onto the host home, so the state-plane source rule below does not apply to it.
-ALL_BIND_TARGETS = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
+ALL_BIND_TARGETS = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE | INTERPRETER_PLANE
 # The deploy checkout: the clone `workspace ticket` cuts worktrees from (#4120).
 # A different KIND of bind from the state planes above — it is not a container
 # path rebased onto the host home but the SAME path on both sides, so the

@@ -59,7 +59,8 @@ source == target (path identity).
 | GPG home | `/home/teatree/.gnupg` | `$TEATREE_HOST_HOME/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
 | GPG runtime home | `/home/teatree/.gnupg-run` | — | `tmpfs` | the container-local GPG home, when the bind mount above cannot host a socket (see below) |
 | session plane | `/home/teatree/.claude/projects` | `$TEATREE_HOST_HOME/.claude/projects` | **host bind mount** | Claude session transcripts + the per-project memory corpus (the dream pass's input and product) |
-| `teatree_uv` | `/opt/teatree/uv` | — | named volume | the runtime teatree Python + venv + `t3` shims |
+| interpreter plane | `/home/teatree/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** | the uv-managed CPython interpreters every worktree venv is built against <!-- privacy-scan:allow — the box's public, documented deploy home --> |
+| `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
 
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
 `$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the
@@ -217,6 +218,48 @@ Django-free Claude Code hooks consult now that they cannot open the database
 `teatree_uv` stays a Docker-managed named volume. `teatree_src` is the **default**
 for the source tree; see [Running a host working tree](#running-a-host-working-tree)
 for the bind-mount mode.
+
+### The interpreter plane: one uv python root, both venues (#4642)
+
+A `.venv/pyvenv.cfg` records the **absolute** path of the interpreter it was built
+against. The workspaces bind above is path-identical, so host and container read
+the same `.venv` — and while their interpreter roots differed (`teatree_uv`'s
+`/opt/teatree/uv/python` in the container, uv's `~/.local/share/uv/python` default
+on the host), each venue found the recorded interpreter missing, judged the
+environment invalid and **deleted and rebuilt it**: about a gigabyte per flip,
+silently. 37 such environments took the box to 100% full.
+
+There are therefore **two** interpreter roots, and keeping them apart is the point:
+
+- the **project** root — uv's own default under the container HOME, bound from the
+  host at path identity, and the one every *worktree* venv is built against. It is
+  set at runtime by `docker-compose.yml` (the `x-uv-project-python-root` anchor) on
+  each app service. Read-write, because `uv python install` provisions it at runtime
+  (`deploy/entrypoint.sh`'s init role, which also refuses to boot naming the remedy
+  when the shared root holds no interpreter at all).
+- the **tool** plane — `/opt/teatree/uv/python` on the `teatree_uv` volume, which the
+  image ENV owns and where the baked `teatree` and `prek` tool venvs record their
+  `home`. The entrypoint's runtime `uv tool install` calls pin it explicitly, so a
+  tool venv is only ever rebuilt where it was baked.
+
+Setting the project root in the image instead would collapse the two: the image's own
+`uv python install` runs after that ENV, so the baked tool venvs would record a
+host-controlled directory that the bind then shadows at runtime — the container's own
+`t3` and `prek` would depend on whatever the host happens to keep there.
+
+The trade: a standalone `docker run` without this compose file gets no project root
+and falls back to the image's tool-plane value. That is the correct fallback rather
+than a gap — without the bind there is no shared root to point at.
+
+The bind is the narrow `.../uv/python`, not the whole `.../uv`: only `python/` is
+named by a recorded `home`, whereas `uv/tools/` is exactly what `UV_TOOL_DIR`
+deliberately keeps container-local on `teatree_uv`, and `uv/credentials/` has no
+business crossing the venue boundary. `PATH`, `UV_TOOL_DIR` and `UV_TOOL_BIN_DIR`
+are unchanged and still resolve into `teatree_uv`.
+
+`t3 doctor check` reports any residual mismatch (`_check_interpreter_plane`), and
+`dev/probe-venue-venv-thrash.sh` is the operator reproducer that proves a flip
+leaves an environment intact.
 
 ### The host namespace the scratch sweep reads: `/host-tmp` + `/host-proc`
 
