@@ -41,6 +41,7 @@ from teatree.core.review.mr_metadata import auto_created_description, ensure_sta
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.utils import git, git_remote
+from teatree.utils.disposable_checkout import is_disposable_checkout
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
@@ -73,6 +74,9 @@ class DischargeResult(TypedDict, total=False):
 
 #: Not a deferral: nothing is owed, so it discharges rather than renewing the obligation.
 EMPTY_DELTA_SKIP = "branch carries no changes over the default branch — its pull request would be empty"
+#: Also not a deferral: a scratch clone is deleted when its review ends, so an obligation
+#: against it could only ever retry until someone discharged it by hand (#4577).
+DISPOSABLE_CHECKOUT_SKIP = "checkout is disposable (under a temp root) — its pull request could never be opened"
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
 PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
@@ -103,6 +107,9 @@ def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestS
     from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
 
     resolved_path = str(Path(repo_path).resolve())
+    if is_disposable_checkout(resolved_path):
+        logger.info("ensure-pr owes nothing for %s: %s is disposable", branch_name, resolved_path)
+        return EnsurePrResult(skipped=DISPOSABLE_CHECKOUT_SKIP, branch=branch_name, owed=False)
     try:
         retry_on_locked(
             lambda: PendingPullRequest.objects.owe(
