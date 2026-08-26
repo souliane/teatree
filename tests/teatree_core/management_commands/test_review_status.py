@@ -31,6 +31,7 @@ from django.test import TestCase
 from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear, ReviewVerdict
+from teatree.core.review.verdict_findings import FindingsRenderError
 from tests.factories import TicketFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -314,3 +315,68 @@ class TestUnreadableForgeIsNotAVerdict(TestCase):
         _status(head=HEAD_SHA_UNREADABLE)
         assert _status(head=_REVIEWED, checks="green")["state"] == "safe_to_approve"
         assert ReviewVerdict.objects.count() == 1
+
+
+class TestStatusDegradesOnUnrenderableFindings(TestCase):
+    """`review status` answers; `review findings` still refuses (#4575).
+
+    Whether a finding RENDERS is unrelated to whether the head is SAFE TO APPROVE, so an
+    unrenderable display row must not turn a read-only gate into a blocked decision. Both
+    rows below were reproduced live during a cold review; they are written past the guarded
+    factory because that is how legacy rows reached the column.
+    """
+
+    def _record_findings(self, findings: object) -> None:
+        _record()
+        ReviewVerdict.objects.filter(reviewed_sha=_REVIEWED).update(findings=findings)
+
+    def test_status_returns_its_verdict_when_a_findings_row_is_a_non_dict(self) -> None:
+        self._record_findings([{"severity": "nit", "summary": "ok"}, "just a string"])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings"] == []
+        assert result["findings_count"] == 2
+        assert "finding 1 is str" in cast("str", result["findings_error"])
+
+    def test_status_returns_its_verdict_when_a_findings_row_has_an_empty_summary(self) -> None:
+        self._record_findings([{"severity": "blocker", "summary": "   ", "file": "a.py", "line": 1}])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 1
+        assert "empty summary" in cast("str", result["findings_error"])
+
+    def test_status_returns_its_verdict_when_findings_is_not_a_list(self) -> None:
+        self._record_findings({"severity": "nit", "summary": "x"})
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 0
+        assert result["findings_error"]
+
+    def test_a_hold_over_unrenderable_findings_still_reports_not_safe(self) -> None:
+        _record(verdict="hold", gh_verify_result="failed")
+        ReviewVerdict.objects.filter(reviewed_sha=_REVIEWED).update(findings=["just a string"])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "not_safe"
+        assert result["verdict"] == ReviewVerdict.Verdict.HOLD
+
+    def test_a_well_formed_findings_row_is_unchanged(self) -> None:
+        _record(findings_json='[{"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9}]')
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 1
+        assert cast("list[dict[str, object]]", result["findings"])[0]["summary"] == "rename x"
+        assert "findings_error" not in result
+
+    def _assert_findings_refuses(self, findings: object, expected: str) -> None:
+        self._record_findings(findings)
+        with pytest.raises(FindingsRenderError) as exc:
+            call_command("review", "findings", _URL)
+        assert expected in str(exc.value)
+
+    def test_review_findings_still_raises_on_a_non_dict_row(self) -> None:
+        self._assert_findings_refuses([{"severity": "nit", "summary": "ok"}, "just a string"], "finding 1 is str")
+
+    def test_review_findings_still_raises_on_an_empty_summary_row(self) -> None:
+        self._assert_findings_refuses(
+            [{"severity": "blocker", "summary": "  ", "file": "a.py", "line": 1}], "empty summary"
+        )
