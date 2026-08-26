@@ -70,7 +70,12 @@ class TestCheckInterpreterPlane:
         assert str(root) in message, "the message must name this venue's own root"
         assert str(checkout) in message, "the message must name the checkout that would be rebuilt"
 
-    def test_fails_when_this_venues_root_cannot_supply_the_projects_python(self, tmp_path: Path) -> None:
+    def test_warns_but_passes_when_the_managed_root_is_empty(self, tmp_path: Path) -> None:
+        # uv resolves interpreters it does not manage, so an empty MANAGED root is
+        # not evidence of a broken venue: the GitHub runner points
+        # UV_PYTHON_INSTALL_DIR at an empty dir and runs this whole suite under it.
+        # Failing here took `t3 doctor check` to exit 1 and turned every
+        # unpatched doctor integration test red.
         empty_root = tmp_path / "uv" / "python"
         empty_root.mkdir(parents=True)
         worktree_root = tmp_path / "t3-workspaces"
@@ -78,7 +83,8 @@ class TestCheckInterpreterPlane:
 
         ok, message = _run(empty_root, worktree_root)
 
-        assert ok is False
-        assert "FAIL" in message
+        assert ok is True, "an empty managed root must not fail the doctor run"
+        assert "FAIL" not in message
+        assert "WARN" in message
         assert str(empty_root) in message
         assert FLOOR in message, "the message must name the version that is missing"

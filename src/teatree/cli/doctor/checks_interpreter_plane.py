@@ -7,10 +7,17 @@ differed, each judged the other's environment invalid and DELETED it. The rebuil
 is silent, costs about a gigabyte, and repeats on every flip.
 
 The deploy fix removes the trigger by giving both venues one root at one absolute
-path. This probe covers the residue: a root that cannot supply the project's
-Python, and a checkout whose recorded ``home`` names a root this venue does not
-have. Both are reported, never repaired — deleting or rebuilding an environment
-is the very cost this issue is about.
+path. This probe covers the residue, and the two arms carry different weight.
+
+A checkout whose recorded ``home`` does not exist here is evidence: running uv
+there WILL delete and rebuild that environment, so it FAILS. A managed root
+holding no suitable cpython is only a hint — uv resolves interpreters it does not
+manage, so an empty managed root is routine on a CI runner and for anyone whose
+uv uses a system interpreter. That arm WARNS. The hard guarantee lives where it
+can act, in the deploy entrypoint's boot refusal.
+
+Nothing here repairs anything — deleting or rebuilding an environment is the very
+cost this issue is about.
 """
 
 import re
@@ -66,13 +73,14 @@ def _checkout_pyvenv_cfgs(worktree_root: Path) -> list[Path]:
     return sorted({*worktree_root.glob("*/.venv/pyvenv.cfg"), *worktree_root.glob("*/*/.venv/pyvenv.cfg")})
 
 
-def _root_supply_failure(root: Path, floor: tuple[int, int]) -> str | None:
+def _root_supply_warning(root: Path, floor: tuple[int, int]) -> str | None:
     if any(version >= floor for version in _installed_versions(root)):
         return None
     return (
-        f"FAIL  This venue's uv interpreter root {root} holds no cpython >= "
-        f"{floor[0]}.{floor[1]}. Every `uv run` here will build against an interpreter "
-        f"the other venue cannot resolve. Run `uv python install {floor[0]}.{floor[1]}`."
+        f"WARN  This venue's uv MANAGED interpreter root {root} holds no cpython >= "
+        f"{floor[0]}.{floor[1]}. uv also resolves interpreters it does not manage, so this is "
+        f"not on its own evidence of a broken venue. If environments here are being rebuilt, "
+        f"`uv python install {floor[0]}.{floor[1]}` puts a managed one in the shared root."
     )
 
 
@@ -91,20 +99,24 @@ def _venue_mismatch_failures(worktree_root: Path, root: Path) -> list[str]:
 
 
 def _check_interpreter_plane() -> bool:
-    """FAIL when this venue cannot supply, or cannot resolve, a checkout's interpreter.
+    """FAIL only when a checkout records an interpreter this venue does not have.
 
-    Crash-proof like its siblings: any resolution error degrades to a WARN so a
-    doctor run never aborts here.
+    An empty MANAGED root warns rather than fails: uv resolves non-managed
+    interpreters too, so emptiness there is not evidence. Crash-proof like its
+    siblings: any resolution error degrades to a WARN so a doctor run never
+    aborts here.
     """
     from teatree import config  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     try:
         root = _interpreter_root()
-        failures = [failure for failure in (_root_supply_failure(root, _required_python_floor()),) if failure]
-        failures.extend(_venue_mismatch_failures(config.worktree_root(), root))
+        warning = _root_supply_warning(root, _required_python_floor())
+        failures = _venue_mismatch_failures(config.worktree_root(), root)
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Interpreter-plane check crashed: {exc.__class__.__name__}: {exc}")
         return True
+    if warning:
+        typer.echo(warning)
     for failure in failures:
         typer.echo(failure)
     return not failures

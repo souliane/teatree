@@ -17,9 +17,10 @@ install`` runs after the image ``ENV``, so an image-level project root would mak
 the baked ``teatree`` and ``prek`` tool venvs record a host-controlled directory
 that the bind then shadows — coupling the container's own toolchain to whatever
 the host keeps there. So the TOOL plane keeps its own root on ``teatree_uv``,
-owned by the image ``ENV`` and pinned explicitly on the entrypoint's runtime tool
-installs. :class:`TestToolPlaneStaysOnTheNamedVolume` asserts that separation
-holds by construction — it is a second half of the fix, not a bystander guard.
+owned by the image ``ENV`` and pinned explicitly on the entrypoint's two SHELL
+tool installs. :class:`TestToolPlaneStaysOnTheNamedVolume` asserts exactly those
+two things and nothing wider — the PYTHON-side installs inherit the ambient root
+and are not covered here. It is a second half of the fix, not a bystander guard.
 """
 
 import re
@@ -223,7 +224,12 @@ class TestToolPlaneStaysOnTheNamedVolume:
         variables = _shell_assignments(ENTRYPOINT.read_text(encoding="utf-8"))
         # Anchored to a COMMAND position: the same three words appear in the
         # comments explaining each call, and a prose match has no prefix to judge.
-        installs = re.findall(r"(?:^|&&|;|\|)[ \t]*(\S+=\S+)?[ \t]*uv tool install\b", text, re.MULTILINE)
+        installs = re.findall(
+            r"(?:^|&&|;|\||\$\()[ \t]*(?:(?:if|then|else|elif|while|until|do|!)[ \t]+)*"
+            r"(\S+=\S+)?[ \t]*uv tool install\b",
+            text,
+            re.MULTILINE,
+        )
         assert len(installs) == 2, f"expected the editable + prek installs, found {len(installs)}"
         for prefix in installs:
             resolved = _expand(prefix or "", variables).replace('"', "").replace("'", "")
