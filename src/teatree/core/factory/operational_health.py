@@ -40,6 +40,7 @@ from django.utils import timezone
 from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.models.known_issue import KnownIssue
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.utils.throttled_log import warn_throttled
 
@@ -413,7 +414,6 @@ def _reclaim_stall_signals() -> SignalCollection:
     running — leaving the streak frozen — still resolves the row.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred to keep the module cold-import cheap
-    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
     try:
         marker = ResourcePressureMarker.load()
