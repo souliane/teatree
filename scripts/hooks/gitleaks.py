@@ -10,8 +10,10 @@
 # proxy chain it replaces, because the digest is recorded here rather than fetched at
 # install time.
 #
-# Bump procedure: change GITLEAKS_VERSION, then replace every digest below from
+# Bump procedure: change GITLEAKS_VERSION, replace every ARCHIVE_SHA256 digest from
 # https://github.com/gitleaks/gitleaks/releases/download/v<version>/gitleaks_<version>_checksums.txt
+# then regenerate BINARY_SHA256 — for each slug, sha256 the `gitleaks` member of the
+# verified archive (upstream publishes archive digests only, not member ones).
 
 import hashlib
 import os
@@ -31,6 +33,18 @@ ARCHIVE_SHA256 = {
     "darwin_x64": "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
     "linux_arm64": "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
     "linux_x64": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+}
+
+# The digest of the `gitleaks` member INSIDE each archive. The archive digest alone
+# cannot vouch for a cached binary: whoever can write the cache writes every file in it,
+# so a digest recorded beside the binary certifies the impostor that wrote it. Recording
+# the expected bytes HERE is what makes a pre-filled cache — under any root, XDG
+# redirected or not — re-download rather than become the scanner.
+BINARY_SHA256 = {
+    "darwin_arm64": "ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f",
+    "darwin_x64": "cee01fea7173f1b779dff188e1c26ecbcb4027d394acc573b23aaf0be260e291",
+    "linux_arm64": "00e91bbe655bd7c47753e8cfe61cb76ea1a5d7e7702fe161ee40102b46b3823b",
+    "linux_x64": "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509",
 }
 
 DOWNLOAD_TIMEOUT = 120
@@ -60,27 +74,22 @@ class PinnedGitleaks:
     def path(self) -> Path:
         return self.cache_root / f"{self.version}-{self.platform_slug}" / "gitleaks"
 
-    @cached_property
-    def digest_path(self) -> Path:
-        return self.path.with_suffix(".sha256")
-
     def install(self) -> Path:
         if not self._cached_binary_is_intact():
             self._extract(self._download_verified_archive())
         return self.path
 
     def _cached_binary_is_intact(self) -> bool:
-        """Whether the cached binary is byte-for-byte the one this code last wrote.
+        """Whether the cached binary is byte-for-byte the release pinned in this file.
 
         Existence is not the question. ``main`` ``execv``s whatever comes back and
         gitleaks' exit code IS the gate's verdict, so a truncated, half-written or
         swapped file at that path silently becomes the scanner. Re-derive the digest
         every run and re-install on any mismatch; the download is once per version.
         """
-        if not self.path.exists() or not self.digest_path.exists():
+        if not self.path.exists():
             return False
-        recorded = self.digest_path.read_text(encoding="utf-8").strip()
-        return bool(recorded) and hashlib.sha256(self.path.read_bytes()).hexdigest() == recorded
+        return hashlib.sha256(self.path.read_bytes()).hexdigest() == BINARY_SHA256[self.platform_slug]
 
     def _download_verified_archive(self) -> bytes:
         url = self.release_url.format(version=self.version, archive=self.archive_name)
@@ -115,21 +124,23 @@ class PinnedGitleaks:
                 unpacked = Path(staging) / "gitleaks"
                 unpacked.write_bytes(member.read())
 
+            expected = BINARY_SHA256[self.platform_slug]
+            digest = hashlib.sha256(unpacked.read_bytes()).hexdigest()
+            if digest != expected:
+                message = f"{self.archive_name}: gitleaks sha256 {digest} does not match pinned {expected}"
+                raise SystemExit(message)
+
             unpacked.chmod(unpacked.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            # The digest lands BEFORE the binary: a crash between the two leaves a
-            # digest naming bytes that were never written, which reads as absent and
-            # re-installs. The reverse order would leave a binary nothing vouches for.
-            self.digest_path.write_text(hashlib.sha256(unpacked.read_bytes()).hexdigest(), encoding="utf-8")
             # An atomic rename, so two hooks racing on a cold cache can never observe a
             # half-written binary; the loser's copy dies with its staging directory.
             unpacked.replace(self.path)
 
 
 def build_pinned_gitleaks() -> PinnedGitleaks:
-    # No gate-specific cache override: a root the caller names is a root the caller
-    # can pre-fill with an `exit 0` impostor, which is a one-variable disable of the
-    # only secret gate this repo has. XDG is the ordinary cache convention every
-    # other tool here already shares.
+    # No gate-specific cache override, and no need for one: BINARY_SHA256 decides what
+    # `install()` may return, so pre-filling any root — XDG redirected or not — buys an
+    # attacker a re-download, not an `exit 0` scanner. XDG is the ordinary cache
+    # convention every other tool here already shares.
     xdg = os.environ.get("XDG_CACHE_HOME")
     cache_home = Path(xdg) if xdg else Path.home() / ".cache"
     return PinnedGitleaks(GITLEAKS_VERSION, cache_home / "gitleaks")
