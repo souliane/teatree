@@ -16,7 +16,7 @@ from teatree.core.runners.ship import ShipWorktreeAmbiguousError, resolve_ship_w
 
 class TestResolveShipWorktree(TestCase):
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay="test", issue_url="https://example.test/-/issues/8680")
+        return Ticket.objects.create(overlay="test", issue_url="https://example.test/-/issues/7311")
 
     def _row(self, ticket: Ticket, repo: str, branch: str) -> Worktree:
         return Worktree.objects.create(
@@ -30,7 +30,7 @@ class TestResolveShipWorktree(TestCase):
     def test_multi_repo_ticket_with_no_invoking_branch_refuses_and_names_the_repos(self) -> None:
         ticket = self._ticket()
         self._row(ticket, "backend", "feat/stale-earlier-workstream")
-        self._row(ticket, "frontend", "8680-feat-thing")
+        self._row(ticket, "frontend", "7311-feat-thing")
 
         with pytest.raises(ShipWorktreeAmbiguousError) as excinfo:
             resolve_ship_worktree(ticket, {})
@@ -44,20 +44,20 @@ class TestResolveShipWorktree(TestCase):
     def test_invoking_branch_selects_its_own_row_on_a_multi_repo_ticket(self) -> None:
         ticket = self._ticket()
         self._row(ticket, "backend", "feat/stale-earlier-workstream")
-        wanted = self._row(ticket, "frontend", "8680-feat-thing")
+        wanted = self._row(ticket, "frontend", "7311-feat-thing")
 
-        assert resolve_ship_worktree(ticket, {"ship_invoking_branch": "8680-feat-thing"}) == wanted
+        assert resolve_ship_worktree(ticket, {"ship_invoking_branch": "7311-feat-thing"}) == wanted
 
     def test_single_repo_ticket_still_resolves_without_an_invoking_branch(self) -> None:
         ticket = self._ticket()
-        only = self._row(ticket, "backend", "8680-ticket")
+        only = self._row(ticket, "backend", "7311-ticket")
 
         assert resolve_ship_worktree(ticket, {}) == only
 
     def test_several_rows_in_one_repo_are_not_ambiguous(self) -> None:
         ticket = self._ticket()
-        first = self._row(ticket, "backend", "8680-ticket")
-        self._row(ticket, "backend", "8680-followup")
+        first = self._row(ticket, "backend", "7311-ticket")
+        self._row(ticket, "backend", "7311-followup")
 
         assert resolve_ship_worktree(ticket, {}) == first
 

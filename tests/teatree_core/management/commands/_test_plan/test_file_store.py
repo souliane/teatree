@@ -21,7 +21,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
-_ISSUE_URL = "https://gitlab.com/org/client/-/work_items/8680"
+_ISSUE_URL = "https://gitlab.com/org/client/-/work_items/7311"
 _E2E_REPO = "client-workspace"
 
 
@@ -67,7 +67,7 @@ class _PlanFileTestBase(TestCase):
             ticket=self.ticket,
             overlay="test",
             repo_path=repo,
-            branch="8680-feat-thing",
+            branch="7311-feat-thing",
             extra={"worktree_path": str(path)} if path is not None else {},
         )
 
@@ -84,16 +84,16 @@ class TestPlanPath(_PlanFileTestBase):
 
     def test_lands_in_test_plans_beside_e2e_named_after_the_gitlab_ticket(self) -> None:
         self._worktree(_E2E_REPO, self.checkout)
-        assert self._resolve() == self.checkout / "test-plans" / "client-8680.md"
+        assert self._resolve() == self.checkout / "test-plans" / "client-7311.md"
 
     def test_ignores_worktrees_of_other_repos(self) -> None:
         self._worktree("product", self.checkout / "backend")
         self._worktree(_E2E_REPO, self.checkout)
-        assert self._resolve() == self.checkout / "test-plans" / "client-8680.md"
+        assert self._resolve() == self.checkout / "test-plans" / "client-7311.md"
 
     def test_nested_e2e_dir_puts_test_plans_beside_it(self) -> None:
         self._worktree(_E2E_REPO, self.checkout)
-        assert self._resolve(_NestedE2eOverlay()) == self.checkout / "tests" / "test-plans" / "client-8680.md"
+        assert self._resolve(_NestedE2eOverlay()) == self.checkout / "tests" / "test-plans" / "client-7311.md"
 
 
 class TestPlanPathFailsLoud(_PlanFileTestBase):
@@ -114,7 +114,7 @@ class TestPlanPathFailsLoud(_PlanFileTestBase):
 
 
 def _local_state(*, ran_at: str = "2026-08-13T09:00:00Z") -> PlanState:
-    state = empty_state(ticket="8680", title="My feature")
+    state = empty_state(ticket="7311", title="My feature")
     state["local"] = {"commits": {"client": "aabb"}, "workflows": {}, "env": "local", "ran_at": ran_at}
     return state
 
@@ -125,7 +125,7 @@ class TestReadWriteRoundTrip(TestCase):
     def setUp(self) -> None:
         super().setUp()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.path = root / "test-plans" / "client-8680.md"
+        self.path = root / "test-plans" / "client-7311.md"
 
     def test_write_creates_the_file_and_its_parent_directory(self) -> None:
         file_store.write_plan(self.path, render_body(_local_state()))
@@ -138,7 +138,7 @@ class TestReadWriteRoundTrip(TestCase):
 
         recovered = file_store.read_plan_state(self.path)
 
-        assert recovered["ticket"] == "8680"
+        assert recovered["ticket"] == "7311"
         assert recovered["local"]["commits"] == {"client": "aabb"}
         assert recovered["local"]["ran_at"] == "2026-08-13T09:00:00Z"
 
@@ -156,7 +156,7 @@ class TestSecondRunUpdatesInPlace(TestCase):
     def _manifest(env: str, sha: str, ran_at: str) -> str:
         return json.dumps(
             {
-                "ticket": "8680",
+                "ticket": "7311",
                 "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
                 env: {"commits": {"client": sha}, "ran_at": ran_at},
                 "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
@@ -165,13 +165,13 @@ class TestSecondRunUpdatesInPlace(TestCase):
 
     def test_one_file_carrying_both_sides_and_one_heading(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        path = root / "test-plans" / "client-8680.md"
+        path = root / "test-plans" / "client-7311.md"
 
         for env, sha, ran_at in (("local", "aabb", "2026-08-13T09:00:00Z"), ("dev", "ccdd", "2026-08-14T11:30:00Z")):
             prior = file_store.read_plan_state(path)
             manifest = parse_manifest(self._manifest(env, sha, ran_at))
             state = merge_state(prior, manifest=manifest, title="My feature", embeds={"dev": {}, "local": {}})
-            state["ticket"] = "8680"
+            state["ticket"] = "7311"
             file_store.write_plan(path, render_body(state))
 
         body = path.read_text(encoding="utf-8")
@@ -205,7 +205,7 @@ class TestLegacyUnprefixedPlanIsUpdatedInPlace(_PlanFileTestBase):
 
     def test_the_prefixed_name_wins_once_that_file_exists(self) -> None:
         file_store.write_plan(self.legacy, render_body(_local_state()))
-        prefixed = self.plan_dir / "client-8680.md"
+        prefixed = self.plan_dir / "client-7311.md"
         file_store.write_plan(prefixed, render_body(_local_state()))
 
         assert self._resolve() == prefixed
@@ -216,7 +216,7 @@ class TestEvidenceTriple(TestCase):
 
     _MANIFEST = json.dumps(
         {
-            "ticket": "8680",
+            "ticket": "7311",
             "local": {"commits": {"client": "aabb"}, "ran_at": "2026-08-13T09:00:00Z"},
             "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
         }
@@ -224,7 +224,7 @@ class TestEvidenceTriple(TestCase):
 
     def _merged(self, manifest_json: str = _MANIFEST) -> PlanState:
         return merge_state(
-            empty_state(ticket="8680", title="t"),
+            empty_state(ticket="7311", title="t"),
             manifest=parse_manifest(manifest_json),
             title="t",
             embeds={"dev": {}, "local": {}},
@@ -247,7 +247,7 @@ class TestEvidenceTriple(TestCase):
         manifest = parse_manifest(
             json.dumps(
                 {
-                    "ticket": "8680",
+                    "ticket": "7311",
                     "local": {"commits": {"client": "aabb"}},
                     "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
                 }
@@ -258,7 +258,7 @@ class TestEvidenceTriple(TestCase):
 
     def test_the_rendered_body_states_the_triple(self) -> None:
         state = self._merged()
-        state["ticket"] = "8680"
+        state["ticket"] = "7311"
 
         body = render_body(state)
 

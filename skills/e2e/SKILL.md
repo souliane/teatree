@@ -298,7 +298,7 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
 
 ## Where the Plan Lives
 
-**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so `8680.md` alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
+**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so `7311.md` alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
 
 The file carries a hidden state blob, so a run recovers the prior state, merges its own env over it, and rewrites the file. Each env's evidence carries three fields — `env`, `commits`, `ran_at` — so a reader never has to infer where a run happened, against which commit, or when.
 
