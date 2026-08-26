@@ -40,9 +40,10 @@ from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
+from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.pass_config import PromotionBudget
-from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL, points_at_core_fix
+from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
 
@@ -312,9 +313,8 @@ def _recurring_rule_slugs() -> set[str]:
 def _is_memory_only(destination: str) -> bool:
     """A destination is MEMORY_ONLY when it is not a teatree-core fix path.
 
-    Delegates to the shared :func:`~teatree.loops.dream.promote_memory.points_at_core_fix`
-    classifier so the "is this a core-fix path?" rule has ONE home, not a copy here
-    and another inline in Pass-2 triage.
+    Delegates to :func:`~teatree.loops.dream.destination.points_at_core_fix` so the
+    "is this a core-fix path?" rule has ONE home, not a copy per caller.
     """
     return not points_at_core_fix(destination)
 

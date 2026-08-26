@@ -540,6 +540,19 @@ class PathHelpers:
     """Module-level helpers grouped so the module keeps a readable public surface."""
 
     @staticmethod
+    def core_repo_root(*, root: Path | None = None) -> Path | None:
+        """*root* (default :func:`teatree_source_root`) when it is a core checkout, else ``None``.
+
+        A non-editable install resolves the arithmetic onto a site-packages tree
+        carrying neither marker, so a caller can tell "the destination is absent from
+        the tree" from "there is no tree to read" and degrade loudly instead of
+        classifying every core path as absent.
+        """
+        base = root if root is not None else teatree_source_root()
+        markers = (base / "src" / "teatree" / "__init__.py", base / "pyproject.toml")
+        return base if all(marker.exists() for marker in markers) else None
+
+    @staticmethod
     def get_data_dir(namespace: str) -> Path:
         data_dir = DATA_DIR / namespace
         data_dir.mkdir(parents=True, exist_ok=True)
