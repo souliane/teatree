@@ -37,6 +37,7 @@ from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged
+from teatree.core.worktree.review_worktree_reaper import reap_stale_review_worktrees
 from teatree.core.worktree.venue_safe_registry import prune_worktrees
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
@@ -138,6 +139,12 @@ def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list
     The pass is resilient: a clone whose worktree registry cannot be read (corrupt
     / origin-less) is skipped with a warning rather than aborting the run.
 
+    Teatree's own ephemeral ``t3-review-*`` checkouts are swept first
+    (:func:`~teatree.core.worktree.review_worktree_reaper.reap_stale_review_worktrees`),
+    per-entry and on their own evidence, so they never reach the classification below —
+    and clearing them releases the clone-wide ``git worktree prune`` their unvouchable
+    registrations were withholding.
+
     Before classifying ANY orphan in a clone, that clone's remote-tracking refs
     are refreshed (:func:`teatree.utils.git.fetch_all_prune`) so the
     absent-from-all-remotes probe cannot be fooled by a ref left stale by an
@@ -149,6 +156,10 @@ def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list
     tracked = _db_tracked_paths()
     cleaned: list[str] = []
     for repo in sorted(candidate_clones(workspace)):
+        # Ahead of classification: an absent review checkout's probes run in a
+        # directory that is gone, so the fail-closed guard below reads rc=128 as
+        # unpushed work and KEEPS the corpse forever (#4576).
+        cleaned.extend(reap_stale_review_worktrees(repo, dry_run=dry_run))
         try:
             worktrees = raw_worktree_paths(repo)
         except CommandFailedError as exc:

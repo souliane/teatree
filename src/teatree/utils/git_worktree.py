@@ -100,6 +100,16 @@ def worktree_remove(repo: str = ".", path: str = "") -> bool:
     return check(repo=repo, args=["worktree", "remove", "--force", path])
 
 
+def worktree_unlock(repo: str = ".", path: str = "") -> bool:
+    """``git worktree unlock`` — the prerequisite ``remove --force`` refuses without.
+
+    git answers a locked worktree's removal with rc 128 and points at ``-f -f``;
+    unlocking explicitly leaves the two steps auditable instead of collapsing them
+    into one force that also overrides whatever else a future git guards (#4576).
+    """
+    return check(repo=repo, args=["worktree", "unlock", path])
+
+
 def worktree_move(repo: str, src: str, dst: str) -> None:
     """``git worktree move <src> <dst>`` run from *repo* (the source clone).
 

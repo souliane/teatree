@@ -11,14 +11,26 @@ A dir this venue merely cannot resolve is neither: it WARNs as unverified and
 names no destructive remedy, because the same evidence is produced by a healthy
 checkout whose admin dir was recorded in another execution context.
 
+A third decay is one no ``Worktree`` row can see: a REGISTRATION git still holds
+for a directory that is gone. Those are what make ``git worktree list`` count
+phantoms, so anyone reasoning about capacity or "what is still checked out" reads
+an inflated number (#4576).
+
 Neither finding names a remedy that cannot run: the split-namespace WARN asks the
 relocate policy which rows ``workspace relocate`` would actually move, and
 prescribes it only for those (#4368).
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from teatree.utils.git import WorktreeRecord
+
+# Enough phantoms to recognise the class without turning one WARN into a wall.
+_NAMED_IN_WARN = 5
 
 
 def _check_registered_worktrees_are_checkouts() -> bool:
@@ -122,6 +134,81 @@ def _check_one_worktree_root() -> bool:
     return True
 
 
+def _stranded_reason(record: "WorktreeRecord", canonical: Path) -> str | None:
+    """Why ``clean-all`` cannot clear this phantom, or ``None`` when it can.
+
+    Two mechanisms discharge one: the per-entry review sweep, which needs nothing
+    from the venue beyond the directory's absence, and the clone-wide prune, which
+    needs the registration to be unlocked and to lie under the root this venue
+    provisions into. A phantom neither can reach is NAMED with its reason rather
+    than counted, so the WARN cannot prescribe a command that provably will not
+    discharge it — the recurring-forever failure #4368 fixed for the sibling check.
+    """
+    from teatree.core.worktree.review_worktree_reaper import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        is_review_checkout,
+    )
+    from teatree.core.worktree.venue_safe_registry import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        venue_may_call_absent_dead,
+    )
+
+    if is_review_checkout(record):
+        if record.lock_reason:
+            return f"a review checkout locked with a reason ({record.lock_reason!r}), which the sweep honours"
+        return None
+    if record.locked:
+        return "locked, and `git worktree prune` skips a lock by design — `git worktree unlock` it first"
+    if not venue_may_call_absent_dead(record.path):
+        return f"outside {canonical}, so the venue-safe prune withholds it — prune from the venue that owns it"
+    return None
+
+
+def _check_phantom_registrations() -> bool:
+    """WARN when a clone's registry counts checkouts whose directories are gone.
+
+    Advisory: a registration is dropped only on this venue's own evidence, and a
+    directory it merely cannot reach is deliberately not counted here — that is the
+    ``UNOBSERVABLE`` case the reapers keep.
+    """
+    from teatree.core.cleanup.checkout_registry import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        candidate_clones,
+    )
+    from teatree.core.worktree.venue import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        VenueObservation,
+        observe,
+    )
+    from teatree.core.worktree.worktree_roots import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        canonical_worktree_root,
+    )
+    from teatree.utils import git  # noqa: PLC0415 — deferred: matches the sibling checks import shape
+
+    canonical = canonical_worktree_root()
+    for repo in sorted(candidate_clones(canonical)):
+        clearable: list[Path] = []
+        stranded: list[tuple[Path, str]] = []
+        for record in git.list_worktrees(repo):
+            if observe(record.path) is not VenueObservation.ABSENT:
+                continue
+            reason = _stranded_reason(record, canonical)
+            if reason is None:
+                clearable.append(record.path)
+            else:
+                stranded.append((record.path, reason))
+        if clearable:
+            named = ", ".join(str(path) for path in clearable[:_NAMED_IN_WARN])
+            rest = f" and {len(clearable) - _NAMED_IN_WARN} more" if len(clearable) > _NAMED_IN_WARN else ""
+            typer.echo(
+                f"WARN  {len(clearable)} registration(s) in {repo} name directories that are gone, so "
+                f"`git worktree list` counts phantoms: {named}{rest}. Fix: t3 <overlay> workspace clean-all."
+            )
+        if stranded:
+            detail = "; ".join(f"{path}: {reason}" for path, reason in stranded)
+            typer.echo(
+                f"WARN  {len(stranded)} phantom registration(s) in {repo} that clean-all cannot clear, so it "
+                f"can never discharge them: {detail}."
+            )
+    return True
+
+
 def _check_occupied_checkouts() -> bool:
     """Report every checkout a live agent holds (#3952) — informational, never a failure.
 
@@ -152,7 +239,12 @@ def check_worktree_health() -> bool:
     """
     try:
         return all(
-            (_check_registered_worktrees_are_checkouts(), _check_one_worktree_root(), _check_occupied_checkouts())
+            (
+                _check_registered_worktrees_are_checkouts(),
+                _check_one_worktree_root(),
+                _check_phantom_registrations(),
+                _check_occupied_checkouts(),
+            )
         )
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Worktree health UNVERIFIED: the worktree registry could not be read ({exc}).")

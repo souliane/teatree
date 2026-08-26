@@ -14,9 +14,15 @@ head.
 """
 
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from teatree.utils.git import head_sha, worktree_remove
 from teatree.utils.run import run_checked
+
+#: The mkdtemp prefix every review checkout carries. The reaper (#4576) matches on
+#: it, so creator and reaper can never disagree about which registrations are ours.
+REVIEW_WORKTREE_PREFIX = "t3-review-"
 
 
 class StaleReviewCheckoutError(RuntimeError):
@@ -50,11 +56,12 @@ def add_review_worktree_at_head(
     bad worktree first. It never returns a tree it could not prove is the
     reviewed head.
 
-    Returns the absolute path of the worktree to review. The caller removes it
-    with :func:`teatree.utils.git.worktree_remove` when the review is done.
+    Returns the absolute path of the worktree to review. An IN-PROCESS caller
+    should prefer :func:`review_worktree_at_head`, which removes it unconditionally;
+    an out-of-process one releases it with ``t3 review release <path>``.
     """
     run_checked(["git", "-C", repo, "fetch", remote, ref])
-    worktree_dir = tempfile.mkdtemp(prefix="t3-review-", dir=base_dir)
+    worktree_dir = tempfile.mkdtemp(prefix=REVIEW_WORKTREE_PREFIX, dir=base_dir)
     run_checked(["git", "-C", repo, "worktree", "add", "--detach", worktree_dir, "FETCH_HEAD"])
     actual_sha = head_sha(worktree_dir)
     if actual_sha != expected_sha:
@@ -65,3 +72,28 @@ def add_review_worktree_at_head(
         )
         raise StaleReviewCheckoutError(message)
     return worktree_dir
+
+
+@contextmanager
+def review_worktree_at_head(
+    repo: str,
+    *,
+    ref: str,
+    expected_sha: str,
+    remote: str = "origin",
+    base_dir: str | None = None,
+) -> Iterator[str]:
+    """:func:`add_review_worktree_at_head` whose worktree is removed on every exit (#4576).
+
+    An in-process caller cannot leak a registration through this seam: a review that
+    raises, returns early, or is cancelled still deregisters. The out-of-process
+    ``t3 review checkout`` cannot use it — it exits before the review begins — which
+    is why the sweep in
+    :mod:`teatree.core.worktree.review_worktree_reaper` is the guarantee and this is
+    only the fast path.
+    """
+    worktree = add_review_worktree_at_head(repo, ref=ref, expected_sha=expected_sha, remote=remote, base_dir=base_dir)
+    try:
+        yield worktree
+    finally:
+        worktree_remove(repo=repo, path=worktree)

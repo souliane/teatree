@@ -11,7 +11,10 @@ to a PR stays a separate explicit action; what the pass does add is a read-only
 capture of whatever the orphan holds, so a kept one is observable.
 """
 
+import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +26,9 @@ from teatree.core.cleanup.checkout_registry import raw_worktree_paths
 from teatree.core.cleanup.unshipped_work import bundle_path
 from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
+from teatree.core.worktree.review_worktree_reaper import REVIEW_REGISTRATION_TTL
+from teatree.core.worktree.venue_safe_registry import prune_refusal
+from teatree.utils.review_checkout import REVIEW_WORKTREE_PREFIX
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -338,3 +344,40 @@ class TestCapturesUnshippedWorkBeforeDisposition(_OrphanWorktreeFixture):
         assert kept.exists(), "the keep disposition must survive an uncapturable checkout"
         assert not reapable.exists(), "one uncapturable checkout must not abort the rest of the sweep"
         assert any("KEPT orphan" in line for line in results), results
+
+
+class TestReviewCheckoutsAreSweptBeforeClassification(_OrphanWorktreeFixture):
+    """An absent review checkout's probes run in a directory that is gone (#4576).
+
+    Every one of them exits 128, and the #706 guard reads that as unpushed work, so
+    the corpse is KEPT forever. The per-entry sweep must clear it before the
+    classifier ever sees it — and must leave a NON-review absent registration to the
+    classifier exactly as before.
+    """
+
+    def _abandoned_review_checkout(self) -> Path:
+        path = self.workspace / f"{REVIEW_WORKTREE_PREFIX}abandoned"
+        _run_git("worktree", "add", "-q", "--detach", str(path), "HEAD", cwd=self.repo_main)
+        for entry in (self.repo_main / ".git" / "worktrees").iterdir():
+            gitdir = entry / "gitdir"
+            if Path(gitdir.read_text().strip()).parent == path:
+                stamp = time.time() - REVIEW_REGISTRATION_TTL.total_seconds() * 2
+                os.utime(gitdir, (stamp, stamp))
+        shutil.rmtree(path)
+        return path
+
+    def test_an_abandoned_review_registration_is_deregistered_not_kept_as_unpushed_work(self) -> None:
+        path = self._abandoned_review_checkout()
+
+        cleaned = self._reap()
+
+        assert str(path) not in self._registered_paths()
+        assert not any("unpushed work" in line and str(path) in line for line in cleaned)
+
+    def test_clearing_it_releases_the_clone_wide_prune_it_was_withholding(self) -> None:
+        path = self._abandoned_review_checkout()
+        assert str(path) in prune_refusal(str(self.repo_main))
+
+        self._reap()
+
+        assert prune_refusal(str(self.repo_main)) == ""

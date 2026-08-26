@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.loop.tick_recovery import _reap_stale_task_claims
+from teatree.loop.tick_recovery import _reap_stale_task_claims, sweep_review_worktrees
 
 
 class TestReapStaleTaskClaims(TestCase):
@@ -89,3 +89,36 @@ class TestReapStaleTaskClaims(TestCase):
         transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
         TicketTransition.objects.filter(pk=transition.pk).update(created_at=timezone.now() - timedelta(hours=48))
         return ticket
+
+
+class TestReviewWorktreeSweepIsWiredIntoTheTick(TestCase):
+    """The reviewer that would release its checkout has already exited (#4576)."""
+
+    def test_the_tick_sweeps_every_candidate_clone(self) -> None:
+        with (
+            patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={"/clone-a", "/clone-b"}),
+            patch("teatree.core.worktree.review_worktree_reaper.reap_stale_review_worktrees") as reaper,
+        ):
+            _reap_stale_task_claims()
+
+        assert sorted(call.args[0] for call in reaper.call_args_list) == ["/clone-a", "/clone-b"]
+
+    def test_a_failing_sweep_is_recorded_not_swallowed(self) -> None:
+        errors: dict[str, str] = {}
+
+        with patch(
+            "teatree.loop.tick_recovery.sweep_review_worktrees",
+            side_effect=RuntimeError("registry unreadable"),
+        ):
+            _reap_stale_task_claims(errors)
+
+        assert "registry unreadable" in errors["recovery:review_worktrees"]
+
+    def test_the_sweep_is_callable_on_its_own_for_t3_recover(self) -> None:
+        with (
+            patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value=set()),
+            patch("teatree.core.worktree.review_worktree_reaper.reap_stale_review_worktrees") as reaper,
+        ):
+            sweep_review_worktrees()
+
+        reaper.assert_not_called()

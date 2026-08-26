@@ -64,6 +64,7 @@ from teatree.utils.git_worktree import (
     worktree_add_at_ref,
     worktree_move,
     worktree_remove,
+    worktree_unlock,
 )
 from teatree.utils.git_worktree_query import (
     WorktreeRecord,
@@ -125,6 +126,7 @@ __all__ = [
     "worktree_for_branch",
     "worktree_move",
     "worktree_remove",
+    "worktree_unlock",
 ]
 
 
@@ -168,6 +170,9 @@ class GitRepo:
 
     def worktree_remove(self, path: str = "") -> bool:
         return worktree_remove(self.path, path)
+
+    def worktree_unlock(self, path: str = "") -> bool:
+        return worktree_unlock(self.path, path)
 
     def branch_delete(self, branch: str = "") -> bool:
         return branch_delete(self.path, branch)

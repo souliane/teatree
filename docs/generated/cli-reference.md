@@ -765,6 +765,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ unapprove            Revoke your approval on a GitLab MR.                    │
 │ checkout             Materialise a detached review worktree at the exact     │
 │                      reviewed head.                                          │
+│ release              Deregister a review worktree once its review is done.   │
 │ merge-tree           Extract the merge result of --base and --head into a    │
 │                      plain directory.                                        │
 │ run                  Run the review-shape audit for a GitLab MR or GitHub PR │
@@ -1104,6 +1105,29 @@ Usage: t3 review checkout [OPTIONS] URL
 │                            [default: origin]                                 │
 │    --base-dir        TEXT  Parent directory for the temp worktree.           │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review release`
+
+```
+Usage: t3 review release [OPTIONS] WORKTREE
+
+ Deregister a review worktree once its review is done.
+
+ The counterpart ``checkout`` has no way to run itself: it exits before the
+ review begins, so the removal belongs to a later process and this is that
+ process's ``t3`` command. Forgetting it is survivable — the sweep in
+ ``teatree.core.worktree.review_worktree_reaper`` clears an abandoned
+ registration on its own evidence — but leaving one behind withholds the
+ clone-wide ``git worktree prune`` until it does.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    worktree      TEXT  Review worktree path to deregister. [required]      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Clone the review worktree was added from. [default: .]   │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -114,3 +114,33 @@ class TestReviewCheckoutRefusesBadInput:
 
         assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
         assert json.loads(result.output.strip())["error"] == "checkout_failed"
+
+
+class TestReviewRelease:
+    """``t3 review release`` — the counterpart ``checkout`` structurally cannot run (#4576)."""
+
+    def test_release_deregisters_the_review_worktree(
+        self, clone_with_pushed_head: tuple[Path, str], tmp_path: Path
+    ) -> None:
+        clone, pushed_head = clone_with_pushed_head
+        review_root = tmp_path / "review-root"
+        review_root.mkdir()
+        checkout = CliRunner().invoke(
+            review_app,
+            ["checkout", PR_URL, "--sha", pushed_head, "--repo", str(clone), "--base-dir", str(review_root)],
+        )
+        worktree = json.loads(checkout.output.strip())["worktree"]
+
+        result = CliRunner().invoke(review_app, ["release", worktree, "--repo", str(clone)])
+
+        assert result.exit_code == 0, f"output={result.output!r} exc={result.exception!r}"
+        assert json.loads(result.output.strip())["released"] == worktree
+        assert worktree not in run_git(clone, "worktree", "list", "--porcelain")
+
+    def test_release_of_an_unregistered_path_exits_one(self, tmp_path: Path) -> None:
+        clone = make_git_repo(tmp_path / "clone")
+
+        result = CliRunner().invoke(review_app, ["release", str(tmp_path / "nope"), "--repo", str(clone)])
+
+        assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
+        assert json.loads(result.output.strip())["error"] == "release_failed"

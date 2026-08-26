@@ -26,6 +26,7 @@ import typer
 
 from teatree.cli.review.service import review_app
 from teatree.url_classify import Forge, forge_of, repo_and_iid
+from teatree.utils import git
 from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
 from teatree.utils.run import CommandFailedError
 
@@ -82,3 +83,23 @@ def checkout(
         typer.echo(json.dumps({"error": "checkout_failed", "url": url, "detail": str(exc)}, sort_keys=True))
         raise typer.Exit(code=1) from None
     typer.echo(json.dumps({"ref": ref, "sha": sha, "url": url, "worktree": worktree}, sort_keys=True))
+
+
+@review_app.command(name="release")
+def release(
+    worktree: str = typer.Argument(help="Review worktree path to deregister."),
+    repo: str = typer.Option(".", "--repo", help="Clone the review worktree was added from."),
+) -> None:
+    """Deregister a review worktree once its review is done.
+
+    The counterpart ``checkout`` has no way to run itself: it exits before the
+    review begins, so the removal belongs to a later process and this is that
+    process's ``t3`` command. Forgetting it is survivable — the sweep in
+    ``teatree.core.worktree.review_worktree_reaper`` clears an abandoned
+    registration on its own evidence — but leaving one behind withholds the
+    clone-wide ``git worktree prune`` until it does.
+    """
+    if not git.worktree_remove(repo, worktree):
+        typer.echo(json.dumps({"error": "release_failed", "worktree": worktree}, sort_keys=True))
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps({"released": worktree}, sort_keys=True))

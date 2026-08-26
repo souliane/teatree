@@ -18,6 +18,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def sweep_review_worktrees() -> None:
+    """Deregister every clone's abandoned cold-review checkouts (#4576).
+
+    Clone-wide because a review checkout is registered in whichever clone the
+    reviewer was pointed at, and no ``Worktree`` row records that choice.
+    """
+    from teatree.core.cleanup.checkout_registry import candidate_clones  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.worktree.review_worktree_reaper import (  # noqa: PLC0415 — deferred: loaded at tick time
+        reap_stale_review_worktrees,
+    )
+    from teatree.core.worktree.worktree_roots import (  # noqa: PLC0415 — deferred: loaded at tick time
+        canonical_worktree_root,
+    )
+
+    for repo in sorted(candidate_clones(canonical_worktree_root())):
+        reap_stale_review_worktrees(repo)
+
+
 def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     """Run every recovery sweep INDEPENDENTLY, recording each failure — never silently.
 
@@ -61,6 +79,9 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         ("recovery:unplanned_redispatch", unplanned_ticket_redispatch.redispatch_unplanned_tickets),
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
+        # The reviewer that would release its own review checkout is a process that
+        # already exited, so the tick is the only thing that reliably outlives it.
+        ("recovery:review_worktrees", sweep_review_worktrees),
     )
     for label, sweep in sweeps:
         try:

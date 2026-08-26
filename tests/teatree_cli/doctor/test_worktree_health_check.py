@@ -6,6 +6,7 @@ against the same registry the reaper reads.
 """
 
 import io
+import shutil
 import tempfile
 from collections.abc import Callable
 from contextlib import redirect_stdout
@@ -17,11 +18,13 @@ from django.test import TestCase
 from teatree.cli.doctor.checks_worktree_health import (
     _check_occupied_checkouts,
     _check_one_worktree_root,
+    _check_phantom_registrations,
     _check_registered_worktrees_are_checkouts,
     check_worktree_health,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.occupancy import acquire
+from teatree.utils.review_checkout import REVIEW_WORKTREE_PREFIX
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -277,3 +280,79 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
 
         assert ok is True
         assert "UNVERIFIED" in out
+
+
+class PhantomRegistrationTest(_TmpTestCase):
+    """Registrations outliving their directories are what inflate `git worktree list` (#4576)."""
+
+    def _clone(self) -> Path:
+        clone = make_git_repo(self.tmp / "clone")
+        (clone / "README").write_text("x", encoding="utf-8")
+        run_git(clone, "add", "-A")
+        run_git(clone, "commit", "-q", "-m", "initial")
+        return clone
+
+    def _abandon(self, clone: Path, name: str, *, lock_reason: str | None = None, lock: bool = False) -> Path:
+        path = self.tmp / "checkouts" / name
+        run_git(clone, "worktree", "add", "-q", "--detach", str(path), "HEAD")
+        shutil.rmtree(path)
+        if lock_reason is not None:
+            run_git(clone, "worktree", "lock", "--reason", lock_reason, str(path))
+        elif lock:
+            run_git(clone, "worktree", "lock", str(path))
+        return path
+
+    def _live(self, clone: Path, name: str) -> Path:
+        path = self.tmp / "checkouts" / name
+        run_git(clone, "worktree", "add", "-q", "--detach", str(path), "HEAD")
+        return path
+
+    def _check_against(self, clone: Path) -> tuple[bool, str]:
+        with mock.patch("teatree.core.cleanup.checkout_registry.candidate_clones", return_value={str(clone)}):
+            return _echoes(_check_phantom_registrations)
+
+    def test_a_registry_with_no_phantoms_is_silent(self) -> None:
+        clone = self._clone()
+        self._live(clone, "live0")
+        self._live(clone, "live1")
+
+        ok, out = self._check_against(clone)
+
+        assert ok is True
+        assert out == ""
+
+    def test_clearable_phantoms_are_counted_and_named_with_the_remedy(self) -> None:
+        clone = self._clone()
+        gone = self._abandon(clone, f"{REVIEW_WORKTREE_PREFIX}gone")
+        self._live(clone, "live")
+
+        ok, out = self._check_against(clone)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "1 registration(s)" in out
+        assert str(gone) in out
+        assert "clean-all" in out
+
+    def test_a_lock_with_a_reason_is_reported_as_stranded_not_as_clearable(self) -> None:
+        """clean-all honours a deliberate claim, so prescribing it would never discharge this."""
+        clone = self._clone()
+        claimed = self._abandon(clone, f"{REVIEW_WORKTREE_PREFIX}claimed", lock_reason="in-flight PR for #4387")
+
+        ok, out = self._check_against(clone)
+
+        assert ok is True
+        assert "cannot clear" in out
+        assert "in-flight PR for #4387" in out
+        assert str(claimed) in out
+
+    def test_a_locked_non_review_phantom_is_reported_as_stranded(self) -> None:
+        clone = self._clone()
+        stuck = self._abandon(clone, "some-other-checkout", lock=True)
+
+        ok, out = self._check_against(clone)
+
+        assert ok is True
+        assert "cannot clear" in out
+        assert "prune` skips a lock" in out
+        assert str(stuck) in out

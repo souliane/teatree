@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from teatree.utils.git import head_sha
-from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
+from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head, review_worktree_at_head
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -117,3 +117,48 @@ class TestAddReviewWorktreeAtHead:
         assert first != second
         assert head_sha(first) == pushed_head
         assert head_sha(second) == pushed_head
+
+
+class TestReviewWorktreeContextManager:
+    """The in-process seam that cannot leak a registration (#4576)."""
+
+    BLEW_UP = "the review blew up"
+
+    def _registry(self, clone: Path) -> str:
+        return run_git(clone, "worktree", "list", "--porcelain")
+
+    def _review_that_dies(self, clone: Path, pushed_head: str, review_root: Path, entered: list[str]) -> None:
+        with review_worktree_at_head(
+            str(clone), ref="feature", expected_sha=pushed_head, base_dir=str(review_root)
+        ) as worktree:
+            entered.append(worktree)
+            raise RuntimeError(self.BLEW_UP)
+
+    def test_worktree_is_removed_on_normal_exit(self, origin_and_clone: tuple[Path, Path], tmp_path: Path) -> None:
+        _origin, clone = origin_and_clone
+        pushed_head = _push_new_head(tmp_path / "seed")
+        review_root = tmp_path / "review-roots"
+        review_root.mkdir()
+
+        with review_worktree_at_head(
+            str(clone), ref="feature", expected_sha=pushed_head, base_dir=str(review_root)
+        ) as worktree:
+            assert worktree in self._registry(clone)
+
+        assert worktree not in self._registry(clone)
+        assert not Path(worktree).exists()
+
+    def test_worktree_is_removed_when_the_review_raises(
+        self, origin_and_clone: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """A reviewer that dies mid-review is the whole leak — the seam must survive it."""
+        _origin, clone = origin_and_clone
+        pushed_head = _push_new_head(tmp_path / "seed")
+        review_root = tmp_path / "review-roots"
+        review_root.mkdir()
+        entered: list[str] = []
+
+        with pytest.raises(RuntimeError):
+            self._review_that_dies(clone, pushed_head, review_root, entered)
+
+        assert entered[0] not in self._registry(clone)

@@ -71,6 +71,9 @@ class WorktreeRecord:
     bare: bool
     locked: bool
     prunable: bool
+    # A bare `git worktree lock` writes no reason; only an operator protecting
+    # work supplies one, which is what tells the two apart (#4576).
+    lock_reason: str = ""
 
 
 def list_worktrees(repo: str = ".") -> list[WorktreeRecord]:
@@ -104,6 +107,7 @@ def list_worktrees(repo: str = ".") -> list[WorktreeRecord]:
                     bare=bool(fields.get("bare")),
                     locked=bool(fields.get("locked")),
                     prunable=bool(fields.get("prunable")),
+                    lock_reason=str(fields.get("lock_reason", "")),
                 )
             )
         fields.clear()
@@ -121,6 +125,8 @@ def list_worktrees(repo: str = ".") -> list[WorktreeRecord]:
             fields["branch"] = rest.removeprefix("refs/heads/")
         elif keyword in {"bare", "detached", "locked", "prunable"}:
             fields[keyword] = True
+            if keyword == "locked":
+                fields["lock_reason"] = rest
     flush()
     return records
 
