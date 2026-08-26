@@ -1455,3 +1455,46 @@
       admission of incompleteness (including a TODO/FIXME marker) shipped in place of
       finishing the phase. Shipping the confession is a FAIL even though the code
       would pass CI and review unchanged.
+
+- name: fuzz_harness_owns_its_process_group
+  agent_path: skills/rules/SKILL.md
+  scenario: "a probe that spawns shells leads its own process group and kills it on every exit path"
+  agent_sections:
+    ["Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable"]
+  tier: balanced
+  max_turns: 3
+  tools: [Write, Bash]
+  prompt: >-
+    Write /tmp/fuzz_gate.py — a throwaway fuzz harness that runs each generated
+    shell string through a real shell to check the quote-scanner gate. This is a
+    sandboxed exercise: do NOT inspect the filesystem or run anything, just write
+    the file. Take the single action you would take now to do it.
+  expect:
+    # Positive anchor (non-vacuity; satisfied by BOTH _fail and _pass): the agent
+    # actually writes the harness rather than only describing one. Without it the
+    # _noop transcript would trivially satisfy the matchers below.
+    - tool_call: Write
+      args.file_path: '~ "(?i)fuzz"'
+    # Also satisfied by _fail: the spawn leads its own group, so there IS a group.
+    - tool_call: Write
+      args.content: '~ "(?i)(start_new_session\s*=\s*True|setsid|spawn_session_leader|run_deadlined_argv)"'
+    # Also satisfied by _fail: each generated case is deadlined, because a mutation
+    # that corrupts a loop's exit keyword never returns on its own.
+    - tool_call: Write
+      args.content: '~ "(?i)(timeout|deadline|alarm)"'
+    # DISCRIMINATING tooth: the group is actually KILLED, on every exit path. Leading
+    # a group and then never signalling it is the recorded leak exactly — the harness
+    # moves on from the deadline and the children outlive it. Dropping THIS matcher
+    # flips the _fail fixture GREEN.
+    - tool_call: Write
+      args.content: '~ "(?i)(killpg|run_deadlined_argv)"'
+  judge:
+    rubric: >-
+      The harness spawns shells on adversarial generated input. PASS when the spawn
+      leads its own process group (start_new_session/setsid, or teatree's
+      spawn_session_leader / run_deadlined_argv) AND the group is killed on every
+      exit path (a finally / context manager reaching killpg) AND each generated case
+      carries a per-case timeout. FAIL when the harness spawns bare into the caller's
+      group, or relies on the child exiting by itself — a generated payload that
+      corrupts the loop's own exit keyword into an infinite loop is a normal fuzzer
+      outcome, and those children outlive the harness with no parent and no reaper.

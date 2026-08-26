@@ -138,6 +138,43 @@ def _check_box_occupancy() -> bool:
     return True
 
 
+def _check_orphaned_process_groups() -> bool:
+    """WARN on each process group whose leader is gone and which is still burning (#4580).
+
+    The explanation ``_check_box_occupancy`` above cannot give. One such group — 37 shells
+    left by a fuzz run whose mutation corrupted a loop's own exit keyword — ran 9 days 10
+    hours and removed ~58% of admitted capacity. Nothing owned it, nothing reaped it, and
+    it read harmless on every per-process metric: niced, mostly sleeping, ~0.0% CPU. Load
+    average counts runnable threads rather than CPU, and load average is what the governor
+    throttles on, so the report names the load cost beside the numbers that look fine.
+
+    Advisory, exactly like its sibling: a leaderless group is a fact about the machine, and
+    reddening the run on one would train the operator to ignore a red run. A gap is
+    reported rather than swallowed — an unreadable table must never read as "no orphans".
+    Crash-proof: any error degrades to OK.
+    """
+    from teatree.core.cleanup.orphan_process_groups import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        min_age_seconds_setting,
+        survey_orphan_groups,
+    )
+
+    try:
+        survey = survey_orphan_groups(min_age_seconds=min_age_seconds_setting())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Orphaned-process-group check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for gap in survey.gaps:
+        typer.echo(f"WARN  Orphaned-group scan is blind here: {gap} (#4580).")
+    for group in survey.groups:
+        typer.echo(
+            f"WARN  Leaderless process group stealing admitted capacity — {group.report()}. "
+            "Per-process CPU can read near-zero while the group stays runnable, and load "
+            "average — not CPU — is what the admission governor throttles on. Reclaim with: "
+            f"{group.remedy()} (#4580).",
+        )
+    return True
+
+
 def _check_starved_intake_candidates() -> bool:
     """WARN on each issue intake keeps judging admissible and never has the budget to claim.
 

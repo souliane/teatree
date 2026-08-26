@@ -283,6 +283,7 @@ class TeatreeSettingsSchema(BaseSettings):
     openai_compatible_model: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
     orchestrate_claim_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     orchestrator_bash_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    orphan_group_min_age_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     outer_loop_max_per_week: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_measure_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

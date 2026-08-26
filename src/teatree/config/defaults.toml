@@ -224,6 +224,7 @@ mr_conflict_scan_enabled = false # bool — scan open merge requests for conflic
 mr_state_questions_max_per_tick = 2 # int — merge-request state questions that may be raised in one tick
 mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+" # str — regex a pull request title must match
 orchestrator_bash_gate_enabled = true # bool — refuse heavy shell commands run directly by the orchestrator
+orphan_group_min_age_hours = 6 # int — hours a leaderless process group must have run before it is reported
 pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
 pull_main_clone_disabled = false # bool — stop pulling the main clones on a cadence
 require_work_group_batch = false # bool — refuse to broadcast one work-group member while a sibling is not review-ready

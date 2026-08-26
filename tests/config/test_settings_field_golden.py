@@ -140,6 +140,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "orchestrate_claim_enabled",
         "worker_quiescing",
         "orchestrator_bash_gate_enabled",
+        "orphan_group_min_age_hours",
         "outer_loop_enabled",
         "outer_loop_max_per_week",
         "outer_loop_measure_days",

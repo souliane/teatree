@@ -112,6 +112,17 @@ def _pid_dirs(root: Path) -> list[Path]:
         return []
 
 
+def venue_proc_root() -> Path | None:
+    """THIS namespace's own table — the only pids a caller here may signal by number.
+
+    A pid read from :data:`_HOST_PROC_ROOT` is numbered in the host's namespace, so
+    signalling it from a container reaches whichever local process happens to hold that
+    number. Anything that acts on a pid asks here; anything that merely reports asks
+    :func:`host_proc_root`.
+    """
+    return _OWN_PROC_ROOT if _pid_dirs(_OWN_PROC_ROOT) else None
+
+
 def host_proc_root() -> tuple[Path | None, str]:
     """The table to read and why — ``(None, reason)`` when no source covers the host."""
     if _pid_dirs(_HOST_PROC_ROOT):
@@ -161,4 +172,10 @@ def _placements(pid_dir: Path) -> set[Path]:
     return placements
 
 
-__all__ = ["ProcessTable", "host_proc_root", "read_process_table", "running_in_a_container"]
+__all__ = [
+    "ProcessTable",
+    "host_proc_root",
+    "read_process_table",
+    "running_in_a_container",
+    "venue_proc_root",
+]

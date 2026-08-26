@@ -188,6 +188,7 @@ SETTING_HELP: dict[str, str] = {
     "orchestrator_investigation_gate_enabled": "refuse an orchestrator investigation that should be dispatched",
     "orchestrator_turn_budget": "output-token budget for one orchestrator turn",
     "orchestrator_turn_wall_clock_seconds": "seconds one orchestrator turn may take",
+    "orphan_group_min_age_hours": "hours a leaderless process group must have run before it is reported",
     "out_of_band_merge_gate_enabled": "refuse a merge that skipped the recorded review path",
     "outer_loop_enabled": "run the outer loop that measures and improves the factory itself",
     "outer_loop_max_per_week": "outer-loop runs allowed per week",

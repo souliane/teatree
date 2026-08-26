@@ -282,6 +282,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # (toml fallback for the cold self-rescue). Its former carve-out siblings
     # ``privacy`` / ``timezone`` were retired reader-less (#4203).
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
+    "orphan_group_min_age_hours": _parse_strict_int,
     # DB-home cutover: ``handover_mirror_path``. The pre-Django reader
     # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
     # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the

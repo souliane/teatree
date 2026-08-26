@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-fuzz_harness_owns_its_process_group-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "drafting the harness."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "/tmp/fuzz_gate.py", "content": "import subprocess\n\nfor case in generate():\n    proc = subprocess.Popen([\"sh\", \"-c\", case], start_new_session=True)\n    proc.wait(timeout=5)\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

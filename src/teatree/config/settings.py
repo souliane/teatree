@@ -916,6 +916,11 @@ class _ResourcePressureSettings:
     # window rather than one per checkout ever created. Not a destructive lever —
     # a venv holds no work — but a live process inside a checkout always wins.
     venv_idle_days: float = 2.0
+    # #4580 A process group whose leader is gone is reported once it has run this long
+    # and is still burning. The only knob: the age is what an operator retunes when the
+    # finding nags, while the burn-rate floor and the never-reap protect-list stay in code
+    # — an operator-emptiable safety list is a footgun with no upside.
+    orphan_group_min_age_hours: int = 6
 
 
 @dataclass
