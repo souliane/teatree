@@ -59,13 +59,13 @@ t3 <overlay> workspace emit
 ```
 
 This prints a JSON **array** of the items the CLI did NOT auto-delete — one
-`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 3`):
+`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 4`):
 
 | field | meaning you route on |
 |---|---|
 | `path` | on-disk worktree/clone location (`""` for a bare branch/stash) |
 | `branch` | the branch ref — the `<source_ref>` you pass to `salvage`/`teardown` |
-| `kind` | `"worktree"` \| `"branch"` \| `"stash"` |
+| `kind` | `"worktree"` \| `"orphan-worktree"` \| `"branch"` \| `"stash"` |
 | `content_verified` | **`false` ⇒ no content probe ran; every other field below is unproven ⇒ KEEP** |
 | `verdict_source` | which layer decided: `cherry-zero-unique` / `synthetic-squash` / `branch-merged` / `not-redundant`, or why none could: `inconclusive` / `clone-unresolvable` |
 | `unique_commit_shas` | commits whose **content** is NOT provably on target. **`[]` ⇒ nothing unique ⇒ redundant — but ONLY when `content_verified` is `true`.** |
@@ -75,6 +75,13 @@ This prints a JSON **array** of the items the CLI did NOT auto-delete — one
 | `banned_terms_found` | the distinct banned terms hit |
 | `liveness` | `""` when not live; otherwise the keep-reason phrase the CLI's liveness guard produced |
 | `owner` | the tip author identity |
+
+**`kind: "orphan-worktree"` routes the same, but DISPOSES differently (#4579).** The checkout
+has no `Worktree` row — a dispatched agent's bare `git worktree add` — so `workspace teardown`
+has nothing to tear down. Salvage is unchanged (`workspace salvage <branch>`); deletion is
+`git worktree remove <path>` in its source clone, or leave it to `clean-all`'s orphan pass.
+Only work-bearing ones are emitted, so an `orphan-worktree` record ALWAYS names work that
+exists on no remote — never route one to DELETE on the strength of the record alone.
 
 **`unique_commit_shas: []` alone proves nothing.** A worktree whose source clone
 moved away, or whose `git cherry` errored, names no commits for the same reason a

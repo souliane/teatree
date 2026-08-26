@@ -39,6 +39,7 @@ import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
+from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.management.commands._workspace.helpers import branch_prefix
@@ -1659,7 +1660,10 @@ class TestWorkspaceEmitAndSalvage(TestCase):
     """The ``workspace emit`` (structured handoff) and ``workspace salvage`` CLI entries (#2763)."""
 
     def test_emit_prints_json_array(self) -> None:
-        with patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")):
+        with (
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")),
+            patch.object(ws_salvage_mod, "collect_orphan_emit_records", return_value=[]),
+        ):
             rendered = cast("str", call_command("workspace", "emit"))
         assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
 
@@ -1670,12 +1674,28 @@ class TestWorkspaceEmitAndSalvage(TestCase):
         with (
             patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")),
             patch.object(ws_salvage_mod, "collect_emit_records", return_value=[record]),
+            patch.object(ws_salvage_mod, "collect_orphan_emit_records", return_value=[]),
         ):
             data = json.loads(cast("str", call_command("workspace", "emit")))
         assert data[0]["branch"] == "feat"
         assert data[0]["unique_commit_shas"] == ["abc"]
-        assert data[0]["schema_version"] == 3
+        assert data[0]["schema_version"] == 4
         assert data[0]["content_verified"] is False, "the skill must read an unproven record as unproven"
+
+    def test_emit_unions_the_ledger_with_the_checkouts_no_row_tracks(self) -> None:
+        """#4579: a dispatched agent's worktree reached no surface, and the ledger must not regress."""
+        ledger = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree")
+        orphan = CleanupEmitRecord(path="/ws/agent-x", branch="agent-x", kind="orphan-worktree")
+        with (
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")),
+            patch.object(ws_salvage_mod, "collect_emit_records", return_value=[ledger]),
+            patch.object(ws_salvage_mod, "collect_orphan_emit_records", return_value=[orphan]),
+        ):
+            data = json.loads(cast("str", call_command("workspace", "emit")))
+        assert [(row["path"], row["kind"]) for row in data] == [
+            ("/ws/feat", "worktree"),
+            ("/ws/agent-x", "orphan-worktree"),
+        ]
 
     def test_salvage_builds_request_and_reports_outcome(self) -> None:
         from teatree.core.cleanup.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415

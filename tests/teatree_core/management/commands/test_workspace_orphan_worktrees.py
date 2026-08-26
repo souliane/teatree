@@ -11,83 +11,20 @@ to a PR stays a separate explicit action; what the pass does add is a read-only
 capture of whatever the orphan holds, so a kept one is observable.
 """
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from django.db import OperationalError
-from django.test import TestCase
 
 from teatree.core.cleanup.checkout_registry import raw_worktree_paths
+from teatree.core.cleanup.orphan_checkouts import db_tracked_worktree_paths
 from teatree.core.cleanup.unshipped_work import bundle_path
-from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
-from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
+from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
 
 
-class _OrphanWorktreeFixture(TestCase):
-    """A main clone + a bare ``origin`` it can push to, under ``tmp_path``."""
-
-    @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path) -> None:
-        self.workspace = tmp_path / "workspace"
-        self.workspace.mkdir()
-        self.captures = tmp_path / "captures"
-        self.origin = tmp_path / "origin.git"
-        self.origin.mkdir()
-        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.origin)
-        self.repo_main = self.workspace / "myrepo"
-        self.repo_main.mkdir()
-        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
-        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
-        _run_git("config", "user.name", "t", cwd=self.repo_main)
-        _run_git("remote", "add", "origin", str(self.origin), cwd=self.repo_main)
-        (self.repo_main / "README").write_text("x")
-        _run_git("add", "-A", cwd=self.repo_main)
-        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
-        _run_git("push", "-q", "-u", "origin", "main", cwd=self.repo_main)
-
-    def _add_orphan(self, branch: str, *, files: dict[str, str] | None = None, detach: bool = False) -> Path:
-        """Create a raw ``git worktree`` (no DB row) on ``branch`` with optional commits."""
-        wt_path = self.workspace / branch / "myrepo"
-        if detach:
-            _run_git("worktree", "add", "-q", "--detach", str(wt_path), "HEAD", cwd=self.repo_main)
-        else:
-            _run_git("worktree", "add", "-q", "-b", branch, str(wt_path), cwd=self.repo_main)
-        for name, content in (files or {}).items():
-            (wt_path / name).write_text(content)
-            _run_git("add", "-A", cwd=wt_path)
-            _run_git("commit", "-q", "-m", f"add {name}", cwd=wt_path)
-        return wt_path
-
-    def _registered_paths(self) -> str:
-        return subprocess.run(
-            [_GIT, "-C", str(self.repo_main), "worktree", "list"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout
-
-    def _reap(self, *, dry_run: bool = False, clean_ignored: bool = False) -> list[str]:
-        # Force cwd-based clone discovery onto the tmp main clone, and keep the
-        # pre-reap capture's bundles inside tmp_path instead of the real data dir.
-        with (
-            patch(
-                "teatree.core.management.commands._workspace.orphan_worktrees.is_clean_ignored",
-                return_value=clean_ignored,
-            ),
-            patch(
-                "teatree.core.management.commands._workspace.orphan_worktrees.Path.cwd",
-                return_value=self.repo_main,
-            ),
-            patch("teatree.core.cleanup.unshipped_work.get_data_dir", return_value=self.captures),
-        ):
-            return reap_orphan_raw_worktrees(self.workspace, dry_run=dry_run)
-
-
-class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
+class TestRawWorktreeDiscovery(OrphanWorktreeFixture):
     def test_lists_linked_worktrees_excluding_the_main_checkout(self) -> None:
         wt_path = self._add_orphan("feat-a")
         worktrees = raw_worktree_paths(str(self.repo_main))
@@ -109,10 +46,10 @@ class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
             branch="tracked",
             extra={"worktree_path": str(self.workspace / "tracked" / "myrepo")},
         )
-        assert str((self.workspace / "tracked" / "myrepo").resolve()) in _db_tracked_paths()
+        assert str((self.workspace / "tracked" / "myrepo").resolve()) in db_tracked_worktree_paths()
 
 
-class TestReapsMergedOrphan(_OrphanWorktreeFixture):
+class TestReapsMergedOrphan(OrphanWorktreeFixture):
     def test_orphan_whose_work_is_on_remote_is_reaped(self) -> None:
         """A branch fully pushed to origin has no unique work — safe to reap."""
         wt_path = self._add_orphan("synced-feat", files={"f.txt": "hi"})
@@ -142,7 +79,7 @@ class TestReapsMergedOrphan(_OrphanWorktreeFixture):
         assert any(line.startswith("WOULD Reap orphan worktree") and "synced-preview" in line for line in results)
 
 
-class TestKeepsUnpushedOrphan(_OrphanWorktreeFixture):
+class TestKeepsUnpushedOrphan(OrphanWorktreeFixture):
     def test_unpushed_orphan_is_kept_by_default(self) -> None:
         """The 183-accumulation case: unpushed unique work is KEPT (data-loss guard), never snapshot."""
         wt_path = self._add_orphan("unpushed-feat", files={"new.txt": "secret work"})
@@ -164,7 +101,7 @@ class TestKeepsUnpushedOrphan(_OrphanWorktreeFixture):
         assert any("uncommitted changes" in line for line in results)
 
 
-class TestReapsSquashMergedOrphan(_OrphanWorktreeFixture):
+class TestReapsSquashMergedOrphan(OrphanWorktreeFixture):
     def test_squash_merged_orphan_with_deleted_remote_branch_is_reaped_under_keep(self) -> None:
         """A single-commit branch squash-merged into main, its remote branch deleted on merge.
 
@@ -188,7 +125,7 @@ class TestReapsSquashMergedOrphan(_OrphanWorktreeFixture):
         assert any("Reaped orphan worktree (work already on remote)" in line for line in results), results
 
 
-class TestTrackedWorktreeNeverReapedAsOrphan(_OrphanWorktreeFixture):
+class TestTrackedWorktreeNeverReapedAsOrphan(OrphanWorktreeFixture):
     def test_db_tracked_worktree_is_excluded_from_orphan_reaping(self) -> None:
         """A worktree WITH a DB row is not an orphan — the row-driven reaper owns it."""
         wt_path = self._add_orphan("tracked-feat", files={"t.txt": "tracked work"})
@@ -207,7 +144,7 @@ class TestTrackedWorktreeNeverReapedAsOrphan(_OrphanWorktreeFixture):
         assert not any("tracked-feat" in line for line in results)
 
 
-class TestStaleRemoteTrackingRefNeverReaped(_OrphanWorktreeFixture):
+class TestStaleRemoteTrackingRefNeverReaped(OrphanWorktreeFixture):
     """The reaper must not read a stale tracking ref as proof the work is pushed.
 
     ``commits_absent_from_all_remotes`` is a local graph query over
@@ -264,7 +201,7 @@ class TestStaleRemoteTrackingRefNeverReaped(_OrphanWorktreeFixture):
         assert any("could not refresh remote refs" in line for line in results), results
 
 
-class TestCapturesUnshippedWorkBeforeDisposition(_OrphanWorktreeFixture):
+class TestCapturesUnshippedWorkBeforeDisposition(OrphanWorktreeFixture):
     """A kept orphan is now OBSERVED — it used to be indistinguishable from a busy one."""
 
     def _record(self, wt_path: Path) -> UnshippedWorkRecord | None:
