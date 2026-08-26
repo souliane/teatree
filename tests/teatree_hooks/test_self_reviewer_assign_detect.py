@@ -201,3 +201,53 @@ class TestAQuotedMethodIsNotAMethod:
     )
     def test_a_real_read_is_still_allowed(self, command: str) -> None:
         assert bash_assigns_reviewer(command) is False
+
+
+class TestAnUnparseableCommandIsAWrite:
+    """A command the shell cannot tokenise proves nothing, so it may not read as a GET.
+
+    The gate returned "no method" on a ``shlex`` failure and fell back to the body-flag
+    heuristic, which a quoted query string carries no flag for: appending an apostrophe
+    (``# don't``) to a blocked reviewer write turned the BLOCK into an ALLOW.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api -X PUT 'projects/1/merge_requests/2?reviewer_ids=42'  # don't",
+            'gh api -X POST "repos/o/x/pulls/7/requested_reviewers?reviewers=bob" --jq \'.[0]',
+        ],
+    )
+    def test_an_unbalanced_quote_does_not_open_the_gate(self, command: str) -> None:
+        assert bash_assigns_reviewer(command) is True
+        assert reviewer_assign_deny_reason(command) is not None
+
+
+class TestAMethodFlagIsNotAnyTokenStartingWithDashX:
+    """``-X`` is the method flag; a token that merely BEGINS with it is a flag's value.
+
+    ``token.startswith("-X")`` matched the VALUE of any other option, so
+    ``-A '-X GET'`` — or ``-A '-XGET'`` — downgraded a real reviewer write to a read.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d 'reviewer_ids=42' -A '-X GET'",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d 'reviewer_ids=42' -A '-XGET'",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d 'reviewer_ids=42' -A '-X=GET'",
+        ],
+    )
+    def test_a_read_method_in_an_option_value_does_not_downgrade_the_write(self, command: str) -> None:
+        assert bash_assigns_reviewer(command) is True
+        assert reviewer_assign_deny_reason(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -sSL -X GET https://gitlab.com/api/v4/projects/1/merge_requests/2/reviewers",
+            "gh api -XGET repos/o/x/pulls/7/requested_reviewers",
+        ],
+    )
+    def test_a_real_read_is_still_allowed(self, command: str) -> None:
+        assert bash_assigns_reviewer(command) is False

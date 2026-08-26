@@ -316,3 +316,25 @@ class TestTheGeneralFormsStayBlockedAlongsideIt:
         deny = _parse_deny(capsys)
         assert deny is not None
         assert "apply-reviewer-policy" in deny["permissionDecisionReason"]
+
+
+class TestTheGateFailsClosedOnWhatItCannotRead:
+    """Two ways a reviewer write read as a GET, both fixed at the hook copy too (#4641).
+
+    An unbalanced quote (``# don't``) made ``shlex`` refuse the command and the gate
+    called it a read; and ``token.startswith("-X")`` matched the VALUE of any other
+    option, so ``-A '-X GET'`` downgraded the write the caller was actually sending.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api -X PUT 'projects/1/merge_requests/2?reviewer_ids=42'  # don't",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d 'reviewer_ids=42' -A '-X GET'",
+        ],
+    )
+    def test_the_write_is_still_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"

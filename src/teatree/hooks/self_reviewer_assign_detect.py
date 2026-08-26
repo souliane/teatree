@@ -106,29 +106,30 @@ def _body_flag_pattern(skeleton: str) -> re.Pattern[str] | None:
 #: curl's own accepted form, so it is matched on the token itself.
 _SHORT_METHOD_FLAG = "-X"
 _METHOD_FLAGS = (_SHORT_METHOD_FLAG, "--method", "--request")
+#: The separator-less and ``=`` spellings. A method is a bare word, so a token carrying
+#: anything else (``-A '-X GET'``) is a flag's VALUE, never a method flag.
+_ATTACHED_METHOD_RE = re.compile(r"^-X(?P<method>[A-Za-z]+)$")
+_ASSIGNED_METHOD_RE = re.compile(r"^(?:-X|--method|--request)=(?P<method>[A-Za-z]+)$")
 
 
-def _effective_method(command: str) -> str | None:
-    """The method the shell would actually PASS, or ``None`` when no token is one.
+def _effective_method(argv: list[str]) -> str | None:
+    """The method the client would actually SEND, or ``None`` when no token is one.
 
-    Resolved over the tokenised argv, not the raw string: ``-X GET`` inside a quoted
-    field value is part of one value token, and reading it as a flag let any reviewer
-    write past this gate by appending it. An uparseable command yields ``None``, which
-    leaves the caller on its body-flag heuristic rather than on an attacker's token.
+    Only a token in OPTION position counts: one whose predecessor is another option is
+    that option's VALUE, and honouring any token merely BEGINNING with ``-X`` let a
+    caller downgrade a real write to a read by appending ``-A '-X GET'``. Last-wins
+    among the rest, matching pflag and curl, where a repeated flag overwrites.
     """
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return None
     methods: list[str] = []
     for index, token in enumerate(argv):
+        previous = argv[index - 1] if index else ""
+        if previous.startswith("-") and previous not in _METHOD_FLAGS:
+            continue
         if token in _METHOD_FLAGS:
             if index + 1 < len(argv):
                 methods.append(argv[index + 1])
-        elif token.startswith(_SHORT_METHOD_FLAG):
-            methods.append(token.removeprefix(_SHORT_METHOD_FLAG))
-        else:
-            methods.extend(token[len(flag) + 1 :] for flag in _METHOD_FLAGS if token.startswith(f"{flag}="))
+        elif match := (_ATTACHED_METHOD_RE.match(token) or _ASSIGNED_METHOD_RE.match(token)):
+            methods.append(match["method"])
     return methods[-1].upper() if methods else None
 
 
@@ -139,11 +140,17 @@ def _rest_call_writes_reviewer(skeleton: str, command: str) -> bool:
     syntax, so a quoted mention must not fire the gate); the reviewer FIELD is read off
     the raw ``command``, because it is an argument value a shell quotes routinely. The
     method comes from the tokenised argv, last-wins as pflag resolves a repeated flag.
+    A command the shell cannot tokenise at all is a WRITE: an unbalanced quote makes
+    every read signal unreadable, and returning a read there opened the gate.
     """
     body_flags = _body_flag_pattern(skeleton)
     if body_flags is None or not _API_REVIEWER_FIELD_RE.search(command):
         return False
-    method = _effective_method(command)
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return True
+    method = _effective_method(argv)
     if method is not None:
         return method in _API_WRITE_METHODS
     return bool(body_flags.search(skeleton))
