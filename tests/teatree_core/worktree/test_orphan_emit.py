@@ -14,10 +14,29 @@ to DELETE.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.worktree.orphan_emit import collect_orphan_emit_records
+from teatree.utils import git as git_mod
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _run_git, corrupt_index
 from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
+
+_real_run_strict = git_mod.run_strict
+
+
+def _fail_the_two_ref_log_diff_probe(*, repo: str, args: list[str]) -> str:
+    """Delegates to the real ``run_strict`` for every call except the log/diff pair.
+
+    Patching ``run_strict`` replaces the attribute on the shared ``teatree.utils.git``
+    module object, so an unfiltered ``side_effect`` would also break discovery's own
+    ``git worktree list`` call. The two-ref form (``target..ref``) is unique to
+    :func:`~teatree.core.worktree.orphan_emit._build_record`'s content probe.
+    """
+    if args[:1] and args[0] in {"log", "diff"} and len(args) > 1 and ".." in args[1]:
+        raise CommandFailedError(["git", *args], 128, "", "boom")
+    return _real_run_strict(repo=repo, args=args)
 
 
 class _OrphanEmitFixture(OrphanWorktreeFixture):
@@ -108,3 +127,43 @@ class TestReaperParity(_OrphanEmitFixture):
         }
 
         assert emitted == kept == {str(dirty), str(unpushed)}
+
+
+class TestUnreadableCloneDuringCollection(_OrphanEmitFixture):
+    @pytest.fixture(autouse=True)
+    def _capture_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        self.caplog = caplog
+
+    def test_every_clone_unreadable_returns_empty_and_logs_the_gap(self) -> None:
+        """No candidate clone resolves — the empty-orphans early return, with the gap logged."""
+        unreadable = self.workspace / "not-a-clone"
+        unreadable.mkdir()
+
+        with (
+            patch("teatree.core.cleanup.orphan_checkouts.candidate_clones", return_value={str(unreadable)}),
+            self.caplog.at_level("WARNING"),
+        ):
+            records = collect_orphan_emit_records(self.workspace)
+
+        assert records == []
+        assert any("could not enumerate a clone" in message for message in self.caplog.messages)
+
+
+class TestUnreadableContentProbeReportsUnscanned(_OrphanEmitFixture):
+    def test_a_failing_log_diff_probe_still_emits_the_record_as_unscanned(self) -> None:
+        """The record is built either way — an unreadable diff is ``unknown``, never a crash."""
+        wt_path = self._add_orphan("agent-4579-unscanned")
+        (wt_path / "wip.py").write_text("GATE = True\n", encoding="utf-8")
+
+        with (
+            patch("teatree.core.worktree.orphan_emit.git.run_strict", side_effect=_fail_the_two_ref_log_diff_probe),
+            patch("teatree.core.worktree.clone_paths.Path.cwd", return_value=self.repo_main),
+            patch("teatree.core.worktree.orphan_emit.is_clean_ignored", return_value=False),
+        ):
+            records = collect_orphan_emit_records(self.workspace)
+
+        matches = [record for record in records if record.path == str(wt_path)]
+        assert matches, "a failing content probe must not drop the record"
+        record = matches[0]
+        assert record.banned_terms_status == "unknown"
+        assert record.banned_terms_found == []
