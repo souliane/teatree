@@ -468,6 +468,22 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert "pre-push" in outcome.detail
         assert "Run the gate directly" in outcome.detail
 
+    def test_a_gate_that_died_without_output_reports_the_worker_bound_it_ran_under(
+        self, clone_with_origin: Path
+    ) -> None:
+        """The helper's breadcrumb turns "an OOM cap probably killed it" into the numbers (#4589)."""
+        _install_pre_push_hook(clone_with_origin, "exit 137\n")
+        gitdir = Path(run_git(clone_with_origin, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+        (gitdir / "t3-xdist-bound").write_text(
+            "workers=3 cap_mib=2048 reserve_mib=512 per_worker_mib=512\n", encoding="utf-8"
+        )
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_REFUSED
+        assert "workers=3" in outcome.detail
+        assert "cap_mib=2048" in outcome.detail
+
     def test_a_non_fast_forward_is_not_blamed_on_the_gate(self, clone_with_origin: Path, tmp_path: Path) -> None:
         run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
         other = make_git_repo(tmp_path / "other", initial_commit=False)
