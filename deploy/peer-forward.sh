@@ -12,7 +12,7 @@
 # Usage: peer-forward.sh <plan-file>
 #   line 1  action=up|down|status
 #   line 2  wait_seconds=<float>
-#   rows    <peer>\t<port>\t<command>          (command LAST — it is a whole command line)
+#   rows    <peer>\t<port>\t<arg>...           (argv LAST — it is variable-length)
 set -uo pipefail
 
 POLL_INTERVAL=0.5
@@ -106,14 +106,16 @@ wait_until_free() {
 }
 
 forward_up() {
-    local peer="$1" port="$2" cmd="$3" holder pid
+    local peer="$1" port="$2" holder pid
+    shift 2
+    local -a cmd=("$@")
     if answers "$port"; then
         if owner_pid "$peer" >/dev/null; then
             echo "$peer: already up on 127.0.0.1:$port — teatree opened it, leaving it alone."
             return 0
         fi
         holder="$(holder_of "$port")"
-        if [ -n "$holder" ] && is_tunnel "$holder" "$cmd"; then
+        if [ -n "$holder" ] && is_tunnel "$holder" "${cmd[0]:-}"; then
             echo "$peer: already up on 127.0.0.1:$port (held by $holder) — reusing it."
             return 0
         fi
@@ -128,13 +130,21 @@ forward_up() {
         return 1
     fi
     mkdir -p "$STATE_DIR"
-    # `sh -c` because the command is joined for a human to paste, so a `~` in a key path is
-    # the shell's to expand; nohup because the forward has to outlive this wrapper.
+    # Executed as ARGV, never through `sh -c`: `host` and `options` arrive verbatim from the
+    # peer_instances row and this runs on the operator's own machine, so a shell here turns a
+    # config string into arbitrary code. A leading `~/` is expanded per token — the one thing
+    # the old shell was relied on for — and nothing else is interpreted.
     #
     # `</dev/null` because this runs inside the loop that READS the plan file on stdin: a
     # transport that reads stdin (gcloud prompts) otherwise swallows the rows after its own,
     # and the peers below it are skipped silently while the run exits naming only the first.
-    nohup sh -c "$cmd" >>"$(log_for "$peer")" 2>&1 </dev/null &
+    local index
+    for index in "${!cmd[@]}"; do
+        case "${cmd[index]}" in
+        "~/"*) cmd[index]="$HOME/${cmd[index]#\~/}" ;;
+        esac
+    done
+    nohup "${cmd[@]}" >>"$(log_for "$peer")" 2>&1 </dev/null &
     pid=$!
     echo "$pid" >"$(marker_for "$peer")"
     if wait_for "$port" "$WAIT_SECONDS"; then
@@ -181,7 +191,8 @@ forward_status() {
 }
 
 run_plan() {
-    local plan="$1" line peer port cmd action="" rc=0
+    local plan="$1" line action="" rc=0
+    local -a fields
     WAIT_SECONDS=25
     STATE_DIR="$(dirname "$plan")/peer-forwards"
     while IFS= read -r line || [ -n "$line" ]; do
@@ -196,11 +207,11 @@ run_plan() {
             ;;
         "") continue ;;
         esac
-        IFS=$'\t' read -r peer port cmd <<<"$line"
+        IFS=$'\t' read -r -a fields <<<"$line"
         case "$action" in
-        up) forward_up "$peer" "$port" "$cmd" || rc=1 ;;
-        down) forward_down "$peer" "$port" || rc=1 ;;
-        status) forward_status "$peer" "$port" || rc=1 ;;
+        up) forward_up "${fields[0]}" "${fields[1]}" "${fields[@]:2}" || rc=1 ;;
+        down) forward_down "${fields[0]}" "${fields[1]}" || rc=1 ;;
+        status) forward_status "${fields[0]}" "${fields[1]}" || rc=1 ;;
         *)
             echo "peer-forward: the plan names no action I know ($action)." >&2
             return 64

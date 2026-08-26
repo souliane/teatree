@@ -175,6 +175,29 @@ class TestQuotedFieldsAndLastWinsMethod:
         assert _parse_deny(capsys) is None
 
 
+class TestAQuotedMethodIsNotAMethod:
+    """Last-wins applies to flags the SHELL passes, not to text inside a value (#4641).
+
+    Read off the raw string, an appended `-X GET` inside any quoted field value
+    downgraded a real write to a read and opened the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api -X POST repos/souliane/teatree/pulls/12/requested_reviewers -f 'reviewers[]=octocat -X GET'",
+            "glab api -X PUT projects/1/merge_requests/7 -f 'reviewer_ids=42 --method GET'",
+        ],
+    )
+    def test_a_read_method_hidden_in_a_value_still_blocks(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+
 class TestRawCurlIsNotABypass:
     """``curl`` reaches the same REST field the ``gh``/``glab api`` branch guards.
 

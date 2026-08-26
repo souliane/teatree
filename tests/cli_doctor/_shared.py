@@ -51,15 +51,27 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
         judged the developer's own ``dev/.test_durations`` and failed on its real
         coverage. Both checks run for REAL against the staged tree — stubbing the
         measurements out instead is how a check quietly stops being exercised here.
+    - Points ``T3_CONTROL_DB_DIR`` at a staged readable directory. The control-DB
+        check reads the venue otherwise: inside a container it treats the default
+        volume path as in use, so a test runner with no volume mounted turns a whole
+        `doctor check` red on a fact about the runner. Staged, the check still runs
+        for real — against a directory this test owns.
     """
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_REPO", str(_stage_healthy_shard_durations(tmp_path)))
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(_stage_control_db_dir(tmp_path)))
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)
     monkeypatch.chdir(neutral)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
     return tmp_path
+
+
+def _stage_control_db_dir(tmp_path: Path) -> Path:
+    directory = tmp_path / "_staged_control_db"
+    directory.mkdir(exist_ok=True)
+    return directory
 
 
 #: One recorded test, comfortably inside the lane ceiling: full file coverage, no

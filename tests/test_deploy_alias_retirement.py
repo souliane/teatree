@@ -46,14 +46,14 @@ farewell() {
 _BLOCK = f'{ALIAS_MARKER_BEGIN}\nalias t3="/somewhere/deploy/t3"\n{ALIAS_MARKER_END}\n'
 
 
-def _retire(home: Path) -> None:
+def _retire(home: Path) -> subprocess.CompletedProcess[str]:
     """Run the wrapper's own retirement function against rc files under *home*."""
     block = RETIREMENT_BLOCK.search(WRAPPER.read_text(encoding="utf-8"))
     assert block is not None, f"{WRAPPER} no longer declares retire_managed_alias_block"
     script = (
         f"set -euo pipefail\nTEATREE_HOST_HOME={shlex.quote(str(home))}\n{block.group(0)}\nretire_managed_alias_block"
     )
-    subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=True, timeout=30)
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=True, timeout=30)
 
 
 @pytest.fixture
@@ -130,3 +130,38 @@ class TestRetirementIsScopedToSetup:
         # Every `t3` call would otherwise rewrite the operator's rc files.
         wrapper = WRAPPER.read_text(encoding="utf-8")
         assert 'if [ "${1:-}" = setup ]; then\n    retire_managed_alias_block\nfi' in wrapper
+
+
+class TestAnUnterminatedBlockIsRefusedNotTruncated:
+    """An rc file is the operator's own, and this is the only code that rewrites it.
+
+    A BEGIN whose END is missing — a half-applied edit, a truncated write, a
+    hand-deleted closing line — used to drop every line from the marker to EOF, in
+    place, with nothing to recover from.
+    """
+
+    @pytest.fixture
+    def home_with_unterminated_block(self, tmp_path: Path) -> Path:
+        home = tmp_path / "rc-home"
+        home.mkdir()
+        for name in (".bashrc", ".zshrc"):
+            (home / name).write_text(
+                _ABOVE + f'{ALIAS_MARKER_BEGIN}\nalias t3="/somewhere/deploy/t3"\n' + _BELOW, encoding="utf-8"
+            )
+        return home
+
+    def test_the_file_is_left_exactly_as_it_was(self, home_with_unterminated_block: Path) -> None:
+        before = {
+            name: (home_with_unterminated_block / name).read_text(encoding="utf-8") for name in (".bashrc", ".zshrc")
+        }
+
+        _retire(home_with_unterminated_block)
+
+        for name, content in before.items():
+            assert (home_with_unterminated_block / name).read_text(encoding="utf-8") == content
+
+    def test_the_operator_is_told_which_file_to_repair(self, home_with_unterminated_block: Path) -> None:
+        result = _retire(home_with_unterminated_block)
+
+        assert ".bashrc" in result.stderr
+        assert ALIAS_MARKER_END in result.stderr

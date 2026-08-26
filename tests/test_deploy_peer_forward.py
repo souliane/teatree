@@ -230,3 +230,40 @@ class TestTheWrapperHandsTheForwardVerbsToTheHost:
 
     def test_the_wrapper_runs_the_runner_the_cli_names(self, wrapper: str) -> None:
         assert Path(RUNNER).name in wrapper
+
+
+class TestARegistryStringIsAnArgumentNeverACommand:
+    """`host` and `options` come verbatim from `peer_instances` and this runs on the HOST.
+
+    Joined into one string for `sh -c`, a host of `box; touch …` executed as the operator,
+    outside the container — reached from a config row, with no code change and no review.
+    """
+
+    def _open(self, port: int, sentinel: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+        passed = " ".join(repr(argument) for argument in argv)
+        script = textwrap.dedent(f"""
+            source {_RUNNER}
+            STATE_DIR=$(mktemp -d)
+            WAIT_SECONDS=1
+            holder_of() {{ echo ''; }}
+            answers() {{ return 1; }}
+            forward_up 'box-b' {port!r} {passed}
+        """)
+        result = subprocess.run([_BASH, "-c", script], capture_output=True, text=True, check=False)
+        assert not sentinel.exists(), f"the injected token executed: {sentinel} was created"
+        return result
+
+    def test_a_shell_separator_in_the_host_runs_nothing(self, tmp_path: Path) -> None:
+        sentinel = tmp_path / "pwned"
+
+        self._open(65500, sentinel, "ssh", "-N", "-L", "65500:127.0.0.1:8000", f"box; touch {sentinel}")
+
+    def test_a_command_substitution_in_an_option_runs_nothing(self, tmp_path: Path) -> None:
+        sentinel = tmp_path / "pwned"
+
+        self._open(65501, sentinel, "ssh", f"-o$(touch {sentinel})", "-N", "-L", "65501:127.0.0.1:8000", "box")
+
+    def test_a_backgrounded_pipeline_in_the_host_runs_nothing(self, tmp_path: Path) -> None:
+        sentinel = tmp_path / "pwned"
+
+        self._open(65502, sentinel, "ssh", "-N", "-L", "65502:127.0.0.1:8000", f"box | touch {sentinel}")

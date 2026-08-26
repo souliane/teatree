@@ -150,7 +150,7 @@ ALIAS_MARKER_BEGIN='# >>> teatree docker t3 alias >>>'
 ALIAS_MARKER_END='# <<< teatree docker t3 alias <<<'
 
 retire_managed_alias_block() {
-    local rc line out drop
+    local rc line out drop closed
     for rc in "$TEATREE_HOST_HOME/.bashrc" "$TEATREE_HOST_HOME/.zshrc"; do
         [ -f "$rc" ] || continue
         case "$(<"$rc")" in
@@ -159,19 +159,31 @@ retire_managed_alias_block() {
         esac
         out=""
         drop=0
+        closed=1
         while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in
             "$ALIAS_MARKER_BEGIN")
                 drop=1
+                closed=0
                 continue
                 ;;
             "$ALIAS_MARKER_END")
                 drop=0
+                closed=1
                 continue
                 ;;
             esac
             [ "$drop" = 1 ] || out="$out$line"$'\n'
         done <"$rc"
+        # An unclosed BEGIN leaves `drop` set to end-of-file, so writing `out` would
+        # delete every line the operator wrote after it. Their rc file is not ours to
+        # guess at: report it and change nothing.
+        if [ "$closed" = 0 ]; then
+            echo "deploy/t3: $rc opens a managed t3 alias block that is never closed by '$ALIAS_MARKER_END'." >&2
+            echo "          Leaving it untouched — removing to end-of-file would take your own lines with it." >&2
+            echo "          Close the block or delete it by hand, then re-run \`t3 setup\`." >&2
+            continue
+        fi
         # Written THROUGH the path, never renamed over it: an rc file is commonly a
         # symlink into a dotfiles repo, and a rename would replace the link itself.
         printf '%s' "$out" >"$rc"

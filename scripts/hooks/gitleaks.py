@@ -60,10 +60,27 @@ class PinnedGitleaks:
     def path(self) -> Path:
         return self.cache_root / f"{self.version}-{self.platform_slug}" / "gitleaks"
 
+    @cached_property
+    def digest_path(self) -> Path:
+        return self.path.with_suffix(".sha256")
+
     def install(self) -> Path:
-        if not self.path.exists():
+        if not self._cached_binary_is_intact():
             self._extract(self._download_verified_archive())
         return self.path
+
+    def _cached_binary_is_intact(self) -> bool:
+        """Whether the cached binary is byte-for-byte the one this code last wrote.
+
+        Existence is not the question. ``main`` ``execv``s whatever comes back and
+        gitleaks' exit code IS the gate's verdict, so a truncated, half-written or
+        swapped file at that path silently becomes the scanner. Re-derive the digest
+        every run and re-install on any mismatch; the download is once per version.
+        """
+        if not self.path.exists() or not self.digest_path.exists():
+            return False
+        recorded = self.digest_path.read_text(encoding="utf-8").strip()
+        return bool(recorded) and hashlib.sha256(self.path.read_bytes()).hexdigest() == recorded
 
     def _download_verified_archive(self) -> bytes:
         url = self.release_url.format(version=self.version, archive=self.archive_name)
@@ -99,14 +116,20 @@ class PinnedGitleaks:
                 unpacked.write_bytes(member.read())
 
             unpacked.chmod(unpacked.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            # The digest lands BEFORE the binary: a crash between the two leaves a
+            # digest naming bytes that are not there yet, which reads as absent and
+            # re-installs. The reverse order would leave a binary nothing vouches for.
+            self.digest_path.write_text(hashlib.sha256(unpacked.read_bytes()).hexdigest(), encoding="utf-8")
             # An atomic rename, so two hooks racing on a cold cache can never observe a
             # half-written binary; the loser's copy dies with its staging directory.
             unpacked.replace(self.path)
 
 
 def build_pinned_gitleaks() -> PinnedGitleaks:
-    if override := os.environ.get("GITLEAKS_CACHE_DIR"):
-        return PinnedGitleaks(GITLEAKS_VERSION, Path(override))
+    # No gate-specific cache override: a root the caller names is a root the caller
+    # can pre-fill with an `exit 0` impostor, which is a one-variable disable of the
+    # only secret gate this repo has. XDG is the ordinary cache convention every
+    # other tool here already shares.
     xdg = os.environ.get("XDG_CACHE_HOME")
     cache_home = Path(xdg) if xdg else Path.home() / ".cache"
     return PinnedGitleaks(GITLEAKS_VERSION, cache_home / "gitleaks")

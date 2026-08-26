@@ -68,11 +68,13 @@ class PeerTunnel:
     #: ``--project``/``--zone`` for gcloud.
     options: tuple[str, ...] = ()
 
-    def command(self, local_port: int) -> str:
-        """The command that opens *local_port* onto this peer's dashboard.
+    def argv(self, local_port: int) -> tuple[str, ...]:
+        """The argv that opens *local_port* onto this peer's dashboard — the executed form.
 
-        Joined plainly rather than shell-quoted: this string is shown for an operator to paste,
-        and quoting would turn a ``~/.ssh/...`` option into a literal nobody's shell expands.
+        ``host`` and ``options`` come verbatim out of the ``peer_instances`` row, and the
+        runner executes this on the operator's own machine, outside the container. As one
+        joined STRING handed to ``sh -c`` a host of ``box; curl … | sh`` ran as the operator;
+        as argv it is one token that names no host and nothing else.
 
         No ``-f``: the forward stays in the foreground so the process that opened it is the one
         the runner tracks, and can therefore close.
@@ -80,8 +82,16 @@ class PeerTunnel:
         forward = [*FORWARD_ARGUMENTS, "-L", f"{local_port}:{REMOTE_BIND}:{self.remote_port}"]
         if self.transport is PeerTransport.GCLOUD_IAP:
             head = ["gcloud", "compute", "ssh", self.host, *self.options, "--tunnel-through-iap", "--"]
-            return " ".join([*head, *forward])
-        return " ".join(["ssh", *self.options, *forward, self.host])
+            return (*head, *forward)
+        return ("ssh", *self.options, *forward, self.host)
+
+    def command(self, local_port: int) -> str:
+        """:meth:`argv` rendered for a human to read or paste — never for execution.
+
+        Joined plainly rather than shell-quoted so a ``~/.ssh/...`` option stays something the
+        operator's own shell expands. That is safe HERE and only here: nothing runs this.
+        """
+        return " ".join(self.argv(local_port))
 
 
 @dataclass(frozen=True, slots=True)

@@ -52,17 +52,26 @@ class ForwardAction(StrEnum):
     STATUS = "status"
 
 
+#: The plan file is TAB-delimited and the argv runs LAST, so a token carrying a TAB or a
+#: newline would forge extra fields — or a whole extra row — out of a registry string.
+_FIELD_SEPARATORS = ("\t", "\n", "\r")
+
+
 @dataclass(frozen=True, slots=True)
 class ForwardPlan:
-    """One peer's forward: the port it lands on, and the command that opens it."""
+    """One peer's forward: the port it lands on, and the argv that opens it."""
 
     peer: str
     port: int
-    command: str
+    argv: tuple[str, ...]
 
     def as_row(self) -> str:
-        """The runner's row. ``command`` is LAST because it is a whole command line."""
-        return f"{self.peer}\t{self.port}\t{self.command}"
+        """The runner's row. The argv runs LAST because it is variable-length."""
+        for token in self.argv:
+            if any(separator in token for separator in _FIELD_SEPARATORS):
+                message = f"peer {self.peer!r} has a tunnel argument containing a plan-field separator"
+                raise ValueError(message)
+        return "\t".join([self.peer, str(self.port), *self.argv])
 
 
 def forward_plan(peer: PeerInstance, *, action: ForwardAction = ForwardAction.UP) -> ForwardPlan:
@@ -83,11 +92,11 @@ def forward_plan(peer: PeerInstance, *, action: ForwardAction = ForwardAction.UP
         message = f"peer {peer.name!r} has a url naming no port for its forward to land on"
         raise ValueError(message)
     if action is not ForwardAction.UP:
-        return ForwardPlan(peer=peer.name, port=port, command="")
+        return ForwardPlan(peer=peer.name, port=port, argv=())
     if peer.tunnel is None:
         message = f"peer {peer.name!r} declares no tunnel, so there is no forward to open"
         raise ValueError(message)
-    return ForwardPlan(peer=peer.name, port=port, command=peer.tunnel.command(port))
+    return ForwardPlan(peer=peer.name, port=port, argv=peer.tunnel.argv(port))
 
 
 def plan_path() -> Path:

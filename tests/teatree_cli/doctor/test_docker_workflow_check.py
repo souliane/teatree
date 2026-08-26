@@ -179,6 +179,16 @@ class TestLauncherGateInsideTheContainer:
 
 
 class TestControlDbReachableCheck:
+    def test_a_container_with_no_volume_mounted_is_a_finding(self, tmp_path: Path) -> None:
+        # Why every doctor test stages T3_CONTROL_DB_DIR: a test runner is a container
+        # with no volume, so unstaged this one finding turns a whole `doctor check` red
+        # on a fact about the runner rather than about the tree under test.
+        out = io.StringIO()
+        with patch.object(checks_docker, "is_running_in_container", lambda *_a, **_k: True), redirect_stdout(out):
+            ok = _check_control_db_reachable(env={"T3_CONTROL_DB_DIR": str(tmp_path / "absent")})
+        assert ok is False
+        assert "does not exist" in out.getvalue()
+
     def test_passes_when_the_control_db_directory_is_readable(self, tmp_path: Path) -> None:
         out = io.StringIO()
         with redirect_stdout(out):

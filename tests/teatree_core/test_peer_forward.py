@@ -21,7 +21,7 @@ class TestAPlanIsRenderedFromTheRegistryAlone:
         assert forward_plan(_SSH_PEER).port == 9401
 
     def test_the_command_opens_that_same_port(self) -> None:
-        assert "9401:127.0.0.1:8000" in forward_plan(_SSH_PEER).command
+        assert "9401:127.0.0.1:8000" in forward_plan(_SSH_PEER).argv
 
     def test_the_plan_is_labelled_by_the_registry_key(self) -> None:
         assert forward_plan(_SSH_PEER).peer == "box-b"
@@ -64,8 +64,8 @@ class TestOnlyOpeningAForwardNeedsATunnel:
         assert forward_plan(self._NO_TUNNEL, action=action).port == 9403
 
     @pytest.mark.parametrize("action", [ForwardAction.STATUS, ForwardAction.DOWN])
-    def test_that_plan_carries_no_command_because_neither_verb_reads_one(self, action: ForwardAction) -> None:
-        assert forward_plan(self._NO_TUNNEL, action=action).command == ""
+    def test_that_plan_carries_no_argv_because_neither_verb_reads_one(self, action: ForwardAction) -> None:
+        assert forward_plan(self._NO_TUNNEL, action=action).argv == ()
 
     def test_opening_one_is_still_refused_by_name(self) -> None:
         with pytest.raises(ValueError, match="box-f"):
@@ -81,10 +81,18 @@ class TestOnlyOpeningAForwardNeedsATunnel:
 
 
 class TestThePlanFileIsWhatTheRunnerParses:
-    def test_the_command_is_last_so_its_own_tabs_cannot_shift_a_field(self) -> None:
-        row = ForwardPlan(peer="box-b", port=9401, command="ssh -N -L 9401:127.0.0.1:8000 box-b").as_row()
+    def test_the_argv_is_last_so_its_own_length_cannot_shift_a_field(self) -> None:
+        row = ForwardPlan(peer="box-b", port=9401, argv=("ssh", "-N", "-L", "9401:127.0.0.1:8000", "box-b")).as_row()
 
-        assert row.split("\t", 2)[:2] == ["box-b", "9401"]
+        assert row.split("\t")[:2] == ["box-b", "9401"]
+
+    def test_a_registry_token_carrying_a_tab_is_refused_rather_than_forging_a_field(self) -> None:
+        # The row is TAB-delimited, so a tab inside one token would otherwise let a
+        # peer_instances string invent argv the registry never declared.
+        plan = ForwardPlan(peer="box-b", port=9401, argv=("ssh", "box\textra"))
+
+        with pytest.raises(ValueError, match="box-b"):
+            plan.as_row()
 
     def test_the_action_and_wait_head_the_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.core.peer_forward.data_dir_root", lambda: tmp_path)

@@ -170,3 +170,34 @@ class TestTheGeneralFormsStayBlockedAlongsideIt:
 
         assert reason is not None
         assert "apply-reviewer-policy" in reason
+
+
+class TestAQuotedMethodIsNotAMethod:
+    """The method is what the shell PASSES, not what the string contains (#4641).
+
+    Resolving it last-wins over the raw command let any reviewer write past the gate:
+    append `-X GET` inside a quoted field value and the write reads as a read.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api -X POST repos/o/x/pulls/7/requested_reviewers -f 'reviewers[]=bob -X GET'",
+            'gh api --method POST repos/o/x/pulls/7/requested_reviewers -f "reviewers[]=bob --method GET"',
+            "glab api -X PUT projects/1/merge_requests/2 -f 'reviewer_ids=42 -X GET'",
+            'curl -X POST https://api.github.com/repos/o/x/pulls/7/requested_reviewers -d \'{"reviewers":["-X GET"]}\'',
+        ],
+    )
+    def test_a_read_method_hidden_in_a_quoted_value_does_not_downgrade_the_write(self, command: str) -> None:
+        assert bash_assigns_reviewer(command) is True
+        assert reviewer_assign_deny_reason(command) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api -X GET repos/o/x/pulls/7/requested_reviewers",
+            "glab api --method GET projects/1/merge_requests/2/reviewers",
+        ],
+    )
+    def test_a_real_read_is_still_allowed(self, command: str) -> None:
+        assert bash_assigns_reviewer(command) is False

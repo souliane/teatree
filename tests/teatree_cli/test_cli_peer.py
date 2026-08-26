@@ -70,10 +70,13 @@ class TestUpResolvesEveryCoordinateFromTheRegistry:
         planned = (containerized / PLAN_FILE).read_text().splitlines()[2:]
         assert [row.split("\t", 1)[0] for row in planned] == ["box-b", "box-c"]
 
-    def test_the_planned_command_is_the_one_the_registry_renders(self, registry, containerized: Path) -> None:
+    def test_the_planned_argv_is_the_one_the_registry_renders(self, registry, containerized: Path) -> None:
         runner.invoke(peer_app, ["up", "box-c"])
 
-        assert (containerized / PLAN_FILE).read_text().rstrip().endswith(_PEERS[1].tunnel_command)
+        row = (containerized / PLAN_FILE).read_text().rstrip().splitlines()[-1]
+        tunnel = _PEERS[1].tunnel
+        assert tunnel is not None
+        assert tuple(row.split("\t")[2:]) == tunnel.argv(_PEERS[1].local_port or 0)
 
 
 class TestAnUnknownPeerIsRefusedRatherThanSilentlyDoingNothing:

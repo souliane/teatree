@@ -42,6 +42,7 @@ level, so importing it back at top level here would be a cycle.
 """
 
 import re
+import shlex
 import sys
 
 from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
@@ -88,7 +89,6 @@ _API_REVIEWER_FIELD_RE = re.compile(
 # explicit) is a READ of the reviewer list, not an assignment, and must NOT be
 # blocked (e.g. ``gh api .../requested_reviewers`` lists the requested reviewers).
 # Every spelling is captured and resolved LAST-WINS, matching pflag's semantics.
-_API_WRITE_METHOD_RE = re.compile(r"(?:-X|--method|--request)[\s=]+['\"]?([A-Za-z]+)\b|(?<=-X)([A-Za-z]+)\b")
 _API_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # A body-field flag — ``-f``/``--field``/``--raw-field``/``-F`` — which the
 # GitHub CLI uses to turn a default GET into a POST (implied write).
@@ -162,6 +162,36 @@ def _body_flag_pattern(skeleton: str) -> "re.Pattern[str] | None":
     return _CURL_BODY_FLAG_RE if _CURL_VERB_RE.search(skeleton) else None
 
 
+#: The flags every REST client spells a method with. ``-XPOST`` (no separator) is
+#: curl's own accepted form, so it is matched on the token itself.
+_SHORT_METHOD_FLAG = "-X"
+_METHOD_FLAGS = (_SHORT_METHOD_FLAG, "--method", "--request")
+
+
+def _effective_method(command: str) -> str | None:
+    """The method the shell would actually PASS, or ``None`` when no token is one.
+
+    Resolved over the tokenised argv, not the raw string: ``-X GET`` inside a quoted
+    field value is part of one value token, and reading it as a flag let any reviewer
+    write past this gate by appending it. An uparseable command yields ``None``, which
+    leaves the caller on its body-flag heuristic rather than on an attacker's token.
+    """
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    methods: list[str] = []
+    for index, token in enumerate(argv):
+        if token in _METHOD_FLAGS:
+            if index + 1 < len(argv):
+                methods.append(argv[index + 1])
+        elif token.startswith(_SHORT_METHOD_FLAG):
+            methods.append(token.removeprefix(_SHORT_METHOD_FLAG))
+        else:
+            methods.extend(token[len(flag) + 1 :] for flag in _METHOD_FLAGS if token.startswith(f"{flag}="))
+    return methods[-1].upper() if methods else None
+
+
 def _rest_call_writes_reviewer(skeleton: str, command: str) -> bool:
     """Whether a REST call (``gh``/``glab api`` or ``curl``) is a reviewer WRITE.
 
@@ -173,18 +203,17 @@ def _rest_call_writes_reviewer(skeleton: str, command: str) -> bool:
     body flag. With neither, the call is a GET and is allowed (read-path
     never-lockout).
 
-    The VERB and the body flag are read off the ``skeleton`` — invocation
-    syntax a quoted mention must not fire the gate on. The reviewer FIELD and the
-    method VALUE are read off the raw ``command``, because both are argument
-    values a shell quotes routinely and the skeleton erases them. The effective
-    method is LAST-WINS, as pflag resolves a repeated flag.
+    The VERB and the body flag are read off the ``skeleton`` (they are invocation
+    syntax, so a quoted mention must not fire the gate); the reviewer FIELD is read off
+    the raw ``command``, because it is an argument value a shell quotes routinely. The
+    method comes from the tokenised argv, last-wins as pflag resolves a repeated flag.
     """
     body_flags = _body_flag_pattern(skeleton)
     if body_flags is None or not _API_REVIEWER_FIELD_RE.search(command):
         return False
-    methods = [m.upper() for pair in _API_WRITE_METHOD_RE.findall(command) for m in pair if m]
-    if methods:
-        return methods[-1] in _API_WRITE_METHODS
+    method = _effective_method(command)
+    if method is not None:
+        return method in _API_WRITE_METHODS
     return bool(body_flags.search(skeleton))
 
 
