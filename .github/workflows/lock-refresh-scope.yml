@@ -1,0 +1,80 @@
+# ============================================================
+# LOCK-REFRESH DIFF-SCOPE GATE — merge-time, not creation-time
+# ============================================================
+#
+# `uv-lock-upgrade.yml` arms GitHub-native auto-merge when it opens the weekly refresh PR,
+# hours or weeks before that merge can fire. Nothing re-evaluated whether the arming was
+# still appropriate for what the PR had since BECOME: souliane/teatree#4569 — #4490 was
+# armed as a lockfile bump, then had 108 `src/` and 80 `tests/` files pushed onto its branch
+# to make it green, and self-merged all of them unreviewed the instant CI passed.
+#
+# So this re-asks the confinement question on every push to a refresh PR. On an escape it
+# DISARMS auto-merge (the safety action, taken before anything that can fail), explains itself
+# in an idempotent marker comment, and reds the check — a held PR must not be mistakable for
+# the silent souliane/teatree#4548 stall it superficially resembles.
+#
+# Scoped to `chore/uv-lock-upgrade*` head branches, so an ordinary PR skips the job entirely
+# and gains no new check context. `test (3.13)` remains the only required check.
+# ============================================================
+
+name: Scheduled · Lock-refresh diff-scope gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: lock-refresh-scope-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    if: startsWith(github.head_ref, 'chore/uv-lock-upgrade')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Re-check the refresh diff against the lock/generated allowlist
+        env:
+          # The PAT when present, so the disarm acts as the identity that armed it; the job
+          # token otherwise (`pull-requests: write` covers both calls on a same-repo PR).
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN || github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          FILES="${RUNNER_TEMP}/changed-files.txt"
+          COMMENT="${RUNNER_TEMP}/lock-refresh-hold.md"
+          # --paginate, cross-checked against the PR's own changed_files: a 100-file first
+          # page of generated artifacts reads exactly like a confined diff (#4490 had 191).
+          COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" -q .changed_files)"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" -q '.[].path' > "$FILES"
+          SCOPE_OK=true
+          python scripts/ci/refresh_scope.py \
+            --paths-from "$FILES" \
+            --expected-count "$COUNT" \
+            --comment-out "$COMMENT" \
+            --fail-on-escape || SCOPE_OK=false
+          if [ "$SCOPE_OK" = "true" ]; then
+            exit 0
+          fi
+          # Disarm FIRST: a failure posting the comment must never leave auto-merge armed.
+          gh pr merge "$PR" --disable-auto \
+            || echo "::warning::Could not disable auto-merge on #${PR} — merge protection now rests on this red check alone."
+          IDS="${RUNNER_TEMP}/marker-comment-ids.txt"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            -q '.[] | select(.body | contains("<!-- lock-refresh-scope -->")) | .id' > "$IDS" || true
+          EXISTING="$(head -n1 "$IDS")"
+          if [ -n "$EXISTING" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING}" \
+              -F "body=@${COMMENT}" > /dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+              -F "body=@${COMMENT}" > /dev/null
+          fi
+          exit 1

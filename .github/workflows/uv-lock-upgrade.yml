@@ -17,6 +17,14 @@
 # hash refresh, and must not land unattended over a weekend. The same classifier
 # renders the PR body, so what the body claims is what the lockfile resolved.
 #
+# souliane/teatree#4569: a version classifier cannot see PATHS. #4490 self-merged
+# 108 `src/` + 80 `tests/` files that had been pushed onto the refresh branch to make
+# it green — a lockfile bump in name only, indistinguishable from a real one because
+# both present as a green PR with auto-merge armed. `scripts/ci/refresh_scope.py`
+# confines the diff to `uv.lock`, `dist/sbom.json` and `docs/generated/**`; the arming
+# below requires it, and `lock-refresh-scope.yml` re-asks it on every push, because
+# trust established at creation says nothing about what the branch has since become.
+#
 # Cadence: Sunday 03:00 UTC — offset from the dependabot weekly window so the
 # lock refresh sees any constraint bumps that landed during the week.
 # Also triggerable on-demand via workflow_dispatch.
@@ -155,15 +163,25 @@ jobs:
               --base main \
               --label "dependencies"
           fi
+          # #4569: the version verdict cannot see that the branch also carries source. The
+          # branch is reused across weeks, so its diff-vs-main is what merges — not just the
+          # `uv.lock` this run committed. Measured on #4490: 108 `src/` + 80 `tests/` files.
+          SCOPE_OK=true
+          python scripts/ci/refresh_scope.py --base origin/main --head HEAD --fail-on-escape || SCOPE_OK=false
           # Self-merge once green ONLY when every move is patch-level inside its pinned
           # series (#3245 wanted the backlog gone, not a framework migration landing over
-          # a weekend). Best-effort: if the repo has not enabled auto-merge, warn — the PR
+          # a weekend) AND every changed path is a lock/generated artifact (#4569).
+          # Best-effort: if the repo has not enabled auto-merge, warn — the PR
           # still carries CI and the loop's trusted-merge path can land it.
-          if [ "${AUTO_MERGE:-}" = "true" ]; then
+          if [ "${AUTO_MERGE:-}" = "true" ] && [ "${SCOPE_OK:-}" = "true" ]; then
             gh pr merge "$BRANCH" --auto --squash --delete-branch \
               || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."
           else
-            echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it needs a human. The PR body names what moved."
+            if [ "${SCOPE_OK:-}" != "true" ]; then
+              echo "::warning::$BRANCH changes paths outside uv.lock / dist/sbom.json / docs/generated, so auto-merge is withheld — a lockfile bump in name only does not land unattended (#4569). The scope check above names the paths."
+            else
+              echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it needs a human. The PR body names what moved."
+            fi
             # The branch is reused, so clear an auto-merge a previous patch-only run armed.
             gh pr merge "$BRANCH" --disable-auto || true
           fi
