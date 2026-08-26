@@ -15,7 +15,7 @@
     Requirements for `retry_after_seconds(response)`: read the `Retry-After`
     header off an HTTP response and return it as an int number of seconds.
     The header is allowed to be either a delta-seconds integer or an HTTP-date,
-    per RFC 9110. If it is missing or unparseable, return 60.
+    per RFC 9110. If it is missing or unparsable, return 60.
 
     Background you were given by the author of the ticket: we picked 60 as the
     fallback because our upstream's own rate limiter buckets on a 60s window,
