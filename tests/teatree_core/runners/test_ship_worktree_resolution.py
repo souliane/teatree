@@ -30,7 +30,7 @@ class TestResolveShipWorktree(TestCase):
     def test_multi_repo_ticket_with_no_invoking_branch_refuses_and_names_the_repos(self) -> None:
         ticket = self._ticket()
         self._row(ticket, "backend", "feat/stale-earlier-workstream")
-        self._row(ticket, "frontend", "8680-testkonzept")
+        self._row(ticket, "frontend", "8680-feat-thing")
 
         with pytest.raises(ShipWorktreeAmbiguousError) as excinfo:
             resolve_ship_worktree(ticket, {})
@@ -44,9 +44,9 @@ class TestResolveShipWorktree(TestCase):
     def test_invoking_branch_selects_its_own_row_on_a_multi_repo_ticket(self) -> None:
         ticket = self._ticket()
         self._row(ticket, "backend", "feat/stale-earlier-workstream")
-        wanted = self._row(ticket, "frontend", "8680-testkonzept")
+        wanted = self._row(ticket, "frontend", "8680-feat-thing")
 
-        assert resolve_ship_worktree(ticket, {"ship_invoking_branch": "8680-testkonzept"}) == wanted
+        assert resolve_ship_worktree(ticket, {"ship_invoking_branch": "8680-feat-thing"}) == wanted
 
     def test_single_repo_ticket_still_resolves_without_an_invoking_branch(self) -> None:
         ticket = self._ticket()

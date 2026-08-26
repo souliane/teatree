@@ -56,7 +56,7 @@ class TestInvokingBranchComesFromInvocationCwd(TestCase):
         self._monkeypatch = monkeypatch
 
     def test_records_the_declared_cwd_branch(self) -> None:
-        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-testkonzept")
+        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-feat-thing")
         self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(checkout))
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
@@ -65,7 +65,7 @@ class TestInvokingBranchComesFromInvocationCwd(TestCase):
             ticket=ticket,
             overlay="test",
             repo_path="frontend",
-            branch="8680-testkonzept",
+            branch="8680-feat-thing",
             extra={"worktree_path": str(checkout)},
         )
 
@@ -78,7 +78,7 @@ class TestInvokingBranchComesFromInvocationCwd(TestCase):
             pr_command.Command().create(str(ticket.id))
 
         ticket.refresh_from_db()
-        assert (ticket.extra or {}).get("ship_invoking_branch") == "8680-testkonzept"
+        assert (ticket.extra or {}).get("ship_invoking_branch") == "8680-feat-thing"
 
 
 class TestAdoptWorktreeAttachesTheInvokingOne(TestCase):
@@ -90,7 +90,7 @@ class TestAdoptWorktreeAttachesTheInvokingOne(TestCase):
         self._monkeypatch = monkeypatch
 
     def test_does_not_short_circuit_on_an_unrelated_repos_row(self) -> None:
-        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-testkonzept")
+        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-feat-thing")
         self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(checkout))
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
@@ -107,7 +107,7 @@ class TestAdoptWorktreeAttachesTheInvokingOne(TestCase):
                 ticket=_ticket,
                 overlay="test",
                 repo_path="frontend",
-                branch="8680-testkonzept",
+                branch="8680-feat-thing",
                 extra={"worktree_path": cwd},
             )
         )
@@ -124,7 +124,7 @@ class TestAdoptWorktreeAttachesTheInvokingOne(TestCase):
         assert adopt.call_args.kwargs["cwd"] == str(checkout)
 
     def test_an_already_recorded_invoking_worktree_resolves_without_adopting(self) -> None:
-        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-testkonzept")
+        checkout = _git_repo_on_branch(self._tmp_path / "frontend", "8680-feat-thing")
         self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(checkout))
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
@@ -139,7 +139,7 @@ class TestAdoptWorktreeAttachesTheInvokingOne(TestCase):
             ticket=ticket,
             overlay="test",
             repo_path="frontend",
-            branch="8680-testkonzept",
+            branch="8680-feat-thing",
             extra={"worktree_path": str(checkout)},
         )
 
@@ -268,7 +268,7 @@ class TestMultiRepoTicketRefusalReachesTheOperator(TestCase):
 
     def test_pr_create_returns_the_ambiguity_message(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
-        for repo, branch in (("backend", "feat/stale-earlier-workstream"), ("frontend", "8680-testkonzept")):
+        for repo, branch in (("backend", "feat/stale-earlier-workstream"), ("frontend", "8680-feat-thing")):
             Worktree.objects.create(
                 ticket=ticket,
                 overlay="test",
