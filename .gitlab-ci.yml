@@ -22,20 +22,14 @@
 #
 # AUTH: `agent_harness_provider` selects the eval credential (the GitHub workflow
 # rides the default subscription OAuth token). This GitLab lane EXPLICITLY selects
-# the metered `api_key` via `T3_AGENT_HARNESS_PROVIDER` (below), because its purpose is
-# the PERSISTED `--gate-cost-bounds` cost audit — a per-token-COST gate that is
-# meaningless on the subscription lane (a subscription run bills $0, which
-# `--gate-cost-bounds` treats as a fail-loud "configured scenario recorded no
-# cost"). So the cost-audit lane stays metered while the general behavioral-eval
-# workflow rides the plan. `ANTHROPIC_API_KEY` must be a masked GitLab CI/CD
-# variable. SCHEDULE-VAR CAVEAT: a GitLab pipeline SCHEDULE carries its own
-# variable set — if a schedule overrides `T3_AGENT_HARNESS_PROVIDER` (e.g. to
-# subscription_oauth for a cheap window-friendly run without the cost gate) it must
-# ALSO drop `--gate-cost-bounds` from that run's script, since the two are coupled.
+# the metered `api_key` via `T3_AGENT_HARNESS_PROVIDER` (below): unset resolves to
+# subscription OAuth, which no runner here holds, and the miss surfaces as an opaque
+# auth error mid-suite rather than at the credential gate. `ANTHROPIC_API_KEY` must
+# be a masked GitLab CI/CD variable.
 #
 # The free deterministic lanes (pinned-regressions) gate every
 # push via prek and the regression corpus is asserted every MR via pytest, so
-# this job owns only the metered cost-audit AI suite (one source of truth).
+# this job owns only the metered AI suite (one source of truth).
 
 stages:
   - gate
@@ -77,27 +71,21 @@ variables:
   script:
     # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
-    # `--backend api` runs a fresh model pass; `T3_AGENT_HARNESS_PROVIDER=api_key`
-    # (set in `variables:` above) rides the metered key — this lane's `--gate-cost-bounds`
-    # cost audit needs per-token cost (the GitHub workflow defaults to subscription
-    # OAuth). LOCAL `t3 eval run` defaults to the transcript backend (no spend).
-    # `--local` is intentional here: the cost-bounds gate must persist/read the
-    # runner DB on this host, while the default Docker route is ephemeral and
-    # rejects durable-history gates.
+    # `--backend anthropic_api` runs a fresh model pass on the metered key set in
+    # `variables:` above; LOCAL `t3 eval run` defaults to the transcript backend (no spend).
+    # `--local` keeps the run-history ledger on this runner, which the default
+    # ephemeral Docker route cannot do.
+    # No `--gate-cost-bounds`: this backend drives PydanticAiRunner, which records no
+    # per-scenario cost, so every ceiling would read MISSING and the gate could only ever
+    # go red. `t3 eval run` exits 2 on the pairing rather than running it.
     # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a
     # collected-but-all-skipped run exits non-zero, so the suite can never pass
     # green with zero behavioral coverage (souliane/teatree#1811).
-    # `--gate-cost-bounds` checks each scenario's metered cost against the
-    # CHECKED-IN ceilings in `evals/cost_bounds.yaml` (calibrated bound x
-    # (1 + margin)); a scenario over its ceiling — or a configured scenario that
-    # metered $0 — fails the weekly run loud. It reads the just-persisted run
-    # (no `--docker` here, so the ledger is on the runner), keeping the cost gate
-    # weekly/manual, off the per-MR path.
     # There is NO known-red allowance and NO shrink-only ratchet: every eval lane
     # — clean_room and under_load alike — must be GREEN. A failing under_load
     # behavioural-drift scenario reds the run outright, exactly like any clean_room
     # failure; `run --trials k` exits non-zero on ANY red scenario.
-    - uv run t3 eval run --trials 3 --require any --backend api --local --require-executed --gate-cost-bounds
+    - uv run t3 eval run --trials 3 --require any --backend anthropic_api --local --require-executed
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.

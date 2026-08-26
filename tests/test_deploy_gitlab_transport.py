@@ -30,7 +30,8 @@ class TestImageRewritesSshRemotesToHttps:
     """The image gives git a transport it actually has, for both SSH spellings."""
 
     @pytest.fixture(scope="class")
-    def dockerfile(self) -> str:
+    @classmethod
+    def dockerfile(cls) -> str:
         return DOCKERFILE.read_text(encoding="utf-8")
 
     def test_scp_like_remote_is_rewritten(self, dockerfile: str) -> None:
@@ -55,11 +56,13 @@ class TestExecVenueResolvesTheToken:
     """`compose exec` and the one-off `run --rm` both inherit neither export."""
 
     @pytest.fixture(scope="class")
-    def wrapper(self) -> str:
+    @classmethod
+    def wrapper(cls) -> str:
         return WRAPPER.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def prologue(self, wrapper: str) -> str:
+    @classmethod
+    def prologue(cls, wrapper: str) -> str:
         match = re.search(r"CONTAINER_CREDENTIAL_PROLOGUE='(.*?)'\n", wrapper, re.DOTALL)
         assert match, "the credential prologue must exist and be single-quoted"
         return match.group(1)

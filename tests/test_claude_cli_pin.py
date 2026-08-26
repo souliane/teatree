@@ -64,11 +64,10 @@ _RUNTIME_CLI_VERSION = "2.1.233"
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
 
-#: Fork delta: this fork runs the eval lanes from its own root pipeline, so the vendored
-#: core carries no `.gitlab-ci.yml`. Upstream's copy of this set keeps that entry.
 _EVAL_TEST_SITES = frozenset(
     {
         "dev/Dockerfile.test",
+        ".gitlab-ci.yml",
         ".github/workflows/eval.yml",
         ".github/workflows/eval-pr.yml",
         ".github/workflows/eval-pr-reusable.yml",
