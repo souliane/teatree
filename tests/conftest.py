@@ -19,6 +19,7 @@ from teatree.core.management.commands._e2e_specs_checkout import release_process
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.utils import ram_scope
+from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.work_tree import reset_cwd_cache
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._machine_probe import pinned_ram_headroom
@@ -611,6 +612,11 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("TICKET_DIR", raising=False)
     monkeypatch.delenv("WT_VARIANT", raising=False)
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    # The suite's git fixtures build their "real" checkouts under ``tmp_path``, which sits
+    # under the very temp roots #4577 treats as disposable — so an obligation a test means
+    # to be genuine would be refused. Pin the roots away from it; the tests that exercise
+    # the shipped defaults delete this var themselves.
+    monkeypatch.setenv(DISPOSABLE_ROOTS_ENV, "/nonexistent/t3-no-disposable-root")
     # Loop control is DB-only: ``review_loop_enabled`` reads the DB ``LoopState``
     # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
     # to isolate here (the env-inertness is pinned by

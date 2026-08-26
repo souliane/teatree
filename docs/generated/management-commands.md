@@ -646,8 +646,6 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 
 ## `workspace`
 
-A ``TyperCommand`` whose handlers own stdout through :func:`emit`.
-
 | Subcommand | Description |
 | --- | --- |
 | `ticket` | Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932) |

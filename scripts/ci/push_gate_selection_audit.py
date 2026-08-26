@@ -19,8 +19,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.paths import teatree_source_root
 from teatree.quality.push_gate import PushGatePlan, resolve_plan
-from teatree.quality.regression_catalog import repo_root
 from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
 from teatree.utils.run import run_allowed_to_fail
 
@@ -107,7 +107,7 @@ def _render(misses: list[AuditMiss]) -> str:
 
 def main() -> int:
     base_ref = os.environ.get("BASE_REF", "origin/main")
-    root = repo_root()
+    root = teatree_source_root()
     plan = resolve_plan(base_ref, enabled=True, cwd=root)
     print(plan.report())
     print(f"reason: {plan.reason}")

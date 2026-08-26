@@ -1026,6 +1026,22 @@ class DreamMemoryPromotionWiringTestCase(_DreamTickEnabledMixin, TestCase):
             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
         assert "promoted 1 core-gap fix(es), reconciled 0 merged" in stdout.getvalue()
 
+    def test_a_gap_held_for_an_ungrounded_destination_is_reported_not_only_logged(self) -> None:
+        from teatree.loops.dream.promote_memory import TicketOutcome  # noqa: PLC0415 — lazy command import
+
+        held = [TicketOutcome(cluster_key="k1", filed=False, withheld=True, reason="ungrounded destination: x")]
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=held),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
+        assert "withheld 1" in stdout.getvalue()
+
     def test_promotion_failure_is_warned_not_crashed(self) -> None:
         stdout = StringIO()
         with (

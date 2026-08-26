@@ -578,3 +578,25 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
         # them, which is the same isolation that keeps a worktree off the canonical DB.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
         assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR
+
+
+class TestCoreRepoRoot:
+    """The core checkout the dream destination classifier probes against (#2663)."""
+
+    def test_core_repo_root_resolves_the_running_editable_checkout(self) -> None:
+        # Deliberately non-hermetic: a None here means every core-fix destination
+        # would silently fall back to the prefix predicate in CI.
+        assert paths.PathHelpers.core_repo_root() == paths.teatree_source_root()
+
+    def test_a_tree_without_both_markers_is_not_a_core_checkout(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "teatree").mkdir(parents=True)
+        (tmp_path / "src" / "teatree" / "__init__.py").touch()
+
+        assert paths.PathHelpers.core_repo_root(root=tmp_path) is None
+
+    def test_a_tree_with_both_markers_is_a_core_checkout(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "teatree").mkdir(parents=True)
+        (tmp_path / "src" / "teatree" / "__init__.py").touch()
+        (tmp_path / "pyproject.toml").touch()
+
+        assert paths.PathHelpers.core_repo_root(root=tmp_path) == tmp_path

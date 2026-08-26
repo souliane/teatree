@@ -1305,7 +1305,7 @@
       "subcommands": []
     },
     {
-      "help": "A ``TyperCommand`` whose handlers own stdout through :func:`emit`.\n\n``BaseCommand.execute`` replaces ``self.stdout`` with **Django's**\n``OutputWrapper`` whenever a stream is passed as ``call_command(...,\nstdout=buf)``. That wrapper has no ``disable`` flag, so django-typer's\n``print_result = False`` becomes a silent no-op and the typed return is\nwritten to stdout *after* ``emit`` already wrote the JSON there \u2014 two\ndocuments on the channel a front-end parses. Installing django-typer's\ndisable-capable wrapper here, and withholding the option Django would\nclobber it with, keeps the pin effective on every call path.\n\nThe pin itself stays per-handler (``self.print_result = False``): a sibling\nverb in the same command group may still return a human ``str`` for\ndjango-typer to print, and a class-level pin would silence it.",
+      "help": "",
       "name": "workspace",
       "subcommands": [
         {
