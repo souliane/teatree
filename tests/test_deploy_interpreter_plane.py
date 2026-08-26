@@ -195,15 +195,21 @@ class TestInterpreterRootIsOneSharedPath:
 
 
 class TestToolPlaneStaysOnTheNamedVolume:
-    """The second half of the fix: the tool plane keeps its own root, BY CONSTRUCTION.
+    """The second half of the fix: the tool plane keeps its own root.
 
     The baked ``prek`` and ``teatree`` tool venvs record the interpreter that
-    ``UV_PYTHON_INSTALL_DIR`` resolved when they were built. Two things make that
-    a property of the design rather than of the current image: the image ``ENV``
-    names the tool plane, and the entrypoint's runtime ``uv tool install`` calls —
-    which run under compose's project-root env and would otherwise rebuild the
-    tool venvs against a host-controlled directory — pin the tool plane
-    explicitly. Both are asserted below; neither is absence-satisfied.
+    ``UV_PYTHON_INSTALL_DIR`` resolved when they were built. Two positive things
+    are asserted below: the image ``ENV`` names the tool plane, and the
+    entrypoint's two SHELL ``uv tool install`` calls — which run under compose's
+    project-root env and would otherwise rebuild the tool venvs against a
+    host-controlled directory — pin it explicitly.
+
+    That is the whole coverage, and it is narrower than the runtime. The
+    PYTHON-side installs (``self_update``, ``dep_drift_repair``, and
+    ``editable_pth.install_argv``, reached from ``t3 setup`` and
+    ``doctor --repair``) shell out through ``run_allowed_to_fail``/``run_captured``
+    with ``env=None``, so they inherit the ambient project root and are NOT
+    covered by anything here. The commit body records that gap.
     """
 
     def test_the_image_env_owns_the_tool_plane_python_root(self) -> None:
@@ -217,7 +223,7 @@ class TestToolPlaneStaysOnTheNamedVolume:
         variables = _shell_assignments(ENTRYPOINT.read_text(encoding="utf-8"))
         # Anchored to a COMMAND position: the same three words appear in the
         # comments explaining each call, and a prose match has no prefix to judge.
-        installs = re.findall(r"^[ \t]*(\S+=\S+)?[ \t]*uv tool install\b", text, re.MULTILINE)
+        installs = re.findall(r"(?:^|&&|;|\|)[ \t]*(\S+=\S+)?[ \t]*uv tool install\b", text, re.MULTILINE)
         assert len(installs) == 2, f"expected the editable + prek installs, found {len(installs)}"
         for prefix in installs:
             resolved = _expand(prefix or "", variables).replace('"', "").replace("'", "")

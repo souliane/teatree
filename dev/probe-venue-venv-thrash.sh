@@ -67,21 +67,22 @@ for i in $(seq 1 "$ALTERNATIONS"); do
         case "$direction" in
         host-to-container)
             on_host 'uv venv --quiet'
-            builder=on_host
             reader=in_container
             ;;
         container-to-host)
             in_container 'uv venv --quiet'
-            builder=in_container
             reader=on_host
             ;;
         esac
-        "$builder" 'true'
         sentinel="$PROBE_DIR/.venv/VENUE_PROBE_SENTINEL"
         : >"$sentinel"
         recorded="$(grep '^home' "$PROBE_DIR/.venv/pyvenv.cfg" | cut -d= -f2- | tr -d ' ')"
 
-        "$reader" 'uv run --no-project python -c "pass"' >/dev/null 2>&1 || true
+        # PROJECT-AWARE on purpose: `--no-project` runs in an ephemeral environment
+        # and never validates `$PROBE_DIR/.venv`, so the probe passed whether or not
+        # the roots agreed. The probe's own pyproject.toml declares no dependencies,
+        # so discovery costs nothing beyond the interpreter check being measured.
+        "$reader" 'uv run python -c "pass"' >/dev/null 2>&1 || true
 
         if [ -e "$sentinel" ]; then
             echo "PASS  round $i $direction: environment intact (built against $recorded)"
