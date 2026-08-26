@@ -58,6 +58,7 @@ from django.utils import timezone
 
 from teatree.config import worktree_root
 from teatree.core.cleanup.disk_usage import dir_size_gb
+from teatree.core.cleanup.reclaim_pressure import below_floor, effective_idle_days, reclaim_is_stalled
 from teatree.core.cleanup.venv_eviction import VenvEvictionPlan, evict_venvs, plan_venv_eviction
 from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
@@ -136,6 +137,8 @@ def _free_resources_inner(payload: ActionPayload) -> None:
     marker = ResourcePressureMarker.load()
     _persist_plan(marker, plan)
     _execute_plan(plan, payload, survey)
+    if resource == "disk":
+        _record_reclaim_yield(marker, plan, payload)
     _persist_plan(marker, plan)
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
@@ -148,6 +151,34 @@ def _persist_plan(marker: "ResourcePressureMarker", plan: FreePlan) -> None:
         marker.save(update_fields=["last_plan"])
     except Exception:
         logger.exception("free_resources: failed to persist plan")
+
+
+def _record_reclaim_yield(marker: "ResourcePressureMarker", plan: FreePlan, payload: ActionPayload) -> None:
+    """Count what this pass returned so a run of empty ones stops being invisible (#4644)."""
+    free_gb = _payload_float(payload, "free_gb")
+    crit_gb = _payload_float(payload, "disk_crit_free_gb")
+    try:
+        streak = marker.record_reclaim_pass(
+            freed_gb=plan.reclaimed_gb,
+            under_critical=below_floor(free_gb=free_gb, crit_gb=crit_gb),
+        )
+    except Exception:
+        logger.exception("free_resources: failed to record the reclaim yield")
+        return
+    plan.steps.append(f"YIELD {plan.reclaimed_gb:.2f} GB this pass (zero-yield streak {streak})")
+    _append_reclaim_stall(plan, streak=streak, free_gb=free_gb, crit_gb=crit_gb)
+
+
+def _append_reclaim_stall(plan: FreePlan, *, streak: int, free_gb: float | None, crit_gb: float | None) -> None:
+    """Name a run of passes that freed nothing on a full disk — a silent one is the defect class."""
+    if reclaim_is_stalled(streak=streak, free_gb=free_gb, crit_gb=crit_gb):
+        plan.steps.append(f"STALLED disk reclaim — {streak} consecutive passes freed nothing below the critical floor")
+
+
+def _payload_float(payload: ActionPayload, key: str) -> float | None:
+    """``None`` for a reading this payload does not carry — never a guessed default."""
+    value = payload.get(key)
+    return float(value) if isinstance(value, int | float) else None
 
 
 # ---------------------------------------------------------------------------
@@ -418,10 +449,20 @@ def _surveyed_worktrees(payload: ActionPayload) -> GcSurvey:
 
 def _surveyed_venvs(payload: ActionPayload) -> VenvEvictionPlan:
     try:
-        return plan_venv_eviction(worktree_root(), idle_days=float(payload.get("venv_idle_days", 2)))
+        return plan_venv_eviction(worktree_root(), idle_days=_pressure_idle_days(payload))
     except Exception as exc:
         logger.exception("free_resources: venv survey failed — swallowed")
         return VenvEvictionPlan(refusal=f"the venv survey raised ({exc})")
+
+
+def _pressure_idle_days(payload: ActionPayload) -> float | None:
+    """The dormancy this pass may require, decayed by how full the disk actually is."""
+    return effective_idle_days(
+        free_gb=_payload_float(payload, "free_gb"),
+        warn_gb=_payload_float(payload, "disk_warn_free_gb"),
+        crit_gb=_payload_float(payload, "disk_crit_free_gb"),
+        idle_days=float(payload.get("venv_idle_days", 2)),
+    )
 
 
 # ---------------------------------------------------------------------------

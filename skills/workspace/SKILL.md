@@ -258,6 +258,19 @@ The policy is enforced by the `resource_pressure` loop, not by a human running a
   sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
   the tree, the commits and every uncommitted change live outside the venv. Set the
   retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+- **That retention is a CEILING, decayed by how full the disk is (#4644).** It applies in
+  full at or above `disk_warn_free_gb`, decays linearly between the two disk thresholds
+  (at 17.5 GB free with the shipped 25/10 it is one day, not two), and below
+  `disk_crit_free_gb` age stops gating at all. Without that a checkout some other process
+  rewrites hourly could never age into eligibility — it was immune on every pass, forever,
+  however full the box got. No new setting: the shape is read from the two thresholds the
+  pressure ladder already uses, and an unmeasurable reading never relaxes anything.
+- **A capped pass returns the most bytes.** Eligible venvs are ranked by size before the
+  per-pass cap applies, and the plan names what it deferred.
+- **A reclaim that keeps freeing nothing on a full disk goes RED.** Three consecutive passes
+  below the critical floor that return zero bytes raise the `reclaim-stalled:disk` health
+  signal — a pass that reclaimed nothing and a pass that never ran are otherwise
+  indistinguishable. It resolves itself once the disk recovers.
 - **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
   candidate set; a live process decides. The guard reads the HOST's process table
   (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it

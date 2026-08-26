@@ -50,6 +50,9 @@ Load `/t3:health` when the statusline health chip is yellow or red, or the user 
 - A **stale-tick** issue points at a wedged loop — the evidence is the loop, not this skill; go fix or restart it.
 - A **failed-tasks** issue is the durable "something failed" proxy — triage the failing tasks.
 - An **overlay-declared** issue carries the overlay's own summary + evidence — follow it.
+- A **reclaim-stalled:disk** issue means the freeing pass keeps running below `disk_crit_free_gb` and
+  returning nothing — read `t3 loop status`'s persisted plan for the per-lever yield, and reclaim by
+  hand if the levers are genuinely exhausted. It resolves itself once free space recovers.
 - Something the signals cannot see (a stale DB snapshot, a known-broken external dependency) → `health add` it so it is visible on the chip until resolved.
 - An auto-derived issue you have chosen to live with → `health dismiss <id>`.
 

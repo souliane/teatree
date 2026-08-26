@@ -803,3 +803,68 @@ def _rmtree_safe(path: str) -> None:
     import shutil  # noqa: PLC0415
 
     shutil.rmtree(path, ignore_errors=True)
+
+
+class ReclaimStallTests(TestCase):
+    """A pass that returns nothing on a full disk is counted and named (#4644).
+
+    The disk ladder is the only actor on a CRITICAL disk signal, so a run of
+    passes that free nothing is the whole failure — and it looked exactly like a
+    healthy quiet box until the streak was recorded.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(mkdtemp(prefix="rp_stall_"))
+        self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.uv_prune = _patch_uv_cache_prune(self)
+        empty = mechanical_resources.DiskSurvey(gc=GcSurvey(), venvs=VenvEvictionPlan())
+        patcher = patch.object(mechanical_resources, "_survey_disk", return_value=empty)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pass(self, *, reclaimed_gb: float = 0.0, free_gb: float = 0.2) -> None:
+        with patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=reclaimed_gb):
+            free_resources(
+                {
+                    "resource": "disk",
+                    "disk_cache_allowlist": [],
+                    "free_gb": free_gb,
+                    "disk_warn_free_gb": 25.0,
+                    "disk_crit_free_gb": 10.0,
+                },
+            )
+
+    def test_a_zero_yield_pass_below_the_floor_increments_the_streak_and_names_it_in_the_plan(self) -> None:
+        self._pass()
+        assert ResourcePressureMarker.load().zero_yield_passes == 1
+
+        self._pass()
+        self._pass()
+
+        marker = ResourcePressureMarker.load()
+        assert marker.zero_yield_passes == 3
+        assert "STALLED disk reclaim" in marker.last_plan
+
+    def test_a_pass_that_frees_bytes_resets_the_streak(self) -> None:
+        self._pass()
+        self._pass()
+
+        self._pass(reclaimed_gb=1.0)
+
+        marker = ResourcePressureMarker.load()
+        assert marker.zero_yield_passes == 0
+        assert "STALLED disk reclaim" not in marker.last_plan
+
+    def test_a_zero_yield_pass_with_room_to_spare_is_not_a_stall(self) -> None:
+        self._pass(free_gb=200.0)
+
+        assert ResourcePressureMarker.load().zero_yield_passes == 0
+
+    def test_the_eviction_criterion_is_scaled_by_the_payload_pressure(self) -> None:
+        """The wiring that makes the escalation reachable: below the floor, age must not gate."""
+        with patch.object(mechanical_resources, "plan_venv_eviction", return_value=VenvEvictionPlan()) as planner:
+            mechanical_resources._surveyed_venvs(
+                {"venv_idle_days": 2.0, "free_gb": 0.2, "disk_warn_free_gb": 25.0, "disk_crit_free_gb": 10.0},
+            )
+
+        assert planner.call_args.kwargs["idle_days"] is None
