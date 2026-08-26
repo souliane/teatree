@@ -12,6 +12,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from teatree.cli.doctor import checks_db_integrity
+
 
 def _seed_overlays(tmp_path: Path, monkeypatch, overlays: dict[str, object]) -> Path:
     """Seed the DB-home ``overlays`` registry in a cold sqlite config DB.
@@ -60,7 +62,12 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_REPO", str(_stage_healthy_shard_durations(tmp_path)))
-    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(_stage_control_db_dir(tmp_path)))
+    staged_control_db = _stage_control_db_dir(tmp_path)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(staged_control_db))
+    # The canonical path is frozen at import, so the env alone moves only the EXPECTED
+    # side and the filesystem check then fails on the two snapshots disagreeing rather
+    # than on anything about the database. Pinned together, both name the staged venue.
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", staged_control_db / "db.sqlite3")
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)
     monkeypatch.chdir(neutral)

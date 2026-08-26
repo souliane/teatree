@@ -123,8 +123,11 @@ class Command(TyperCommand):
         """
         from_session = current_session_id()
         if not from_session:
-            msg = "no Claude session id — run inside a Claude Code session to hand off its state"
-            self._refuse(msg, json_output=json_output, code=2)
+            self._refuse(
+                "no Claude session id — run inside a Claude Code session to hand off its state",
+                json_output=json_output,
+                code=2,
+            )
 
         authored = self._read_authored(from_file=from_file, body=body, json_output=json_output)
 

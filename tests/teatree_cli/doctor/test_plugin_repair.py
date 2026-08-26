@@ -15,9 +15,9 @@ import pytest
 
 from teatree.cli.doctor.plugin_repair import (
     _CLAUDE_PLUGIN_ID,
-    _ensure_plugin_registered,
     UnparsableJson,
     _do_ensure_plugin_registered,
+    _ensure_plugin_registered,
     _read_json_safe,
     _repair_enabled_plugins,
 )

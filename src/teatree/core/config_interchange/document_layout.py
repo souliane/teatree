@@ -84,7 +84,9 @@ def import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]
     if overlays_registry:
         candidates.append((GLOBAL_SCOPE, OVERLAYS_TABLE, overlays_registry))
     for key in TABLE_REGISTRY_KEYS:
-        registry = {name: dict(table) for name, table in doc.get(key, {}).items() if isinstance(table, dict)}
+        registry: ConfigValue = {
+            name: dict(table) for name, table in doc.get(key, {}).items() if isinstance(table, dict)
+        }
         if registry:
             candidates.append((GLOBAL_SCOPE, key, registry))
     return candidates

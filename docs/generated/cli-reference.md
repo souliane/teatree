@@ -9129,9 +9129,10 @@ Usage: t3 teatree run build-frontend [OPTIONS]
  building the dev configuration and reporting it as the production one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
-│ --prod              Run the overlay's CI production build.                   │
-│ --help              Show this message and exit.                              │
+│ --path                 TEXT  Worktree path (auto-detects from PWD if empty). │
+│ --prod    --no-prod          Run the overlay's CI production build.          │
+│                              [default: no-prod]                              │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

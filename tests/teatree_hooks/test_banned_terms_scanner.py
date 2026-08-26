@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1477,9 +1478,9 @@ class TestScanTimeoutIsDistinctFromCrash:
         ],
     )
     def test_a_genuine_crash_keeps_the_unavailable_marker(
-        self, config: Path, monkeypatch: pytest.MonkeyPatch, raise_exc: object
+        self, config: Path, monkeypatch: pytest.MonkeyPatch, raise_exc: Callable[[], BaseException]
     ) -> None:
-        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: raise_exc())  # type: ignore[operator]
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: raise_exc())
         assert (
             banned_terms_scanner.scan_text("acmecorp", config_path=config)
             == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER

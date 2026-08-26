@@ -11,7 +11,7 @@ that catches those up. It takes no username and no author — the reviewers come
 it can only ever do the one thing the overlay already configured.
 """
 
-from typing import IO, Annotated, cast
+from typing import IO, TYPE_CHECKING, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -29,15 +29,18 @@ from teatree.core.review.reviewer_policy import (
 from teatree.project import find_project_root
 from teatree.utils import git
 
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
-def _host_for(overlay: object, repo_path: str) -> ReviewerAssignable:
+
+def _host_for(overlay: "OverlayBase", repo_path: str) -> ReviewerAssignable:
     """The repo's own code host, refusing anything that cannot carry the policy.
 
     ``get_code_host_for_repo`` is what picks the repo-scoped credential, so the
     identity this resolves as is the same one that authored the MRs being caught up.
     """
     try:
-        host = get_code_host_for_repo(overlay, repo_path)  # type: ignore[arg-type]
+        host = get_code_host_for_repo(overlay, repo_path)
     except BackendResolutionError as error:
         raise ReviewerPolicyError(str(error)) from error
     if not isinstance(host, ReviewerAssignable):

@@ -103,7 +103,7 @@ def t3_argv(*args: str) -> list[str] | None:
 def run_t3(
     argv: list[str],
     *,
-    timeout: int,
+    timeout: float,
     cwd: str | Path | None = None,
     stdin_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:

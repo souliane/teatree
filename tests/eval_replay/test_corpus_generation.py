@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 
 from scripts.eval.corpus_gen.all_scenarios import ALL_SCENARIOS
-from scripts.eval.corpus_gen.model import Scenario, fixture_stream
+from scripts.eval.corpus_gen.emit import orphaned_generated_files, write_catalog
+from scripts.eval.corpus_gen.model import Scenario, fixture_stream, scenario_yaml
 from scripts.eval.generate_corpus import planned_files
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.loader import load_eval_yaml
@@ -27,8 +28,6 @@ from teatree.eval.report import evaluate
 
 def _grade(scenario: Scenario, variant: str, tmp_path: Path) -> bool:
     spec_path = tmp_path / f"{scenario.name}.yaml"
-    from scripts.eval.corpus_gen.model import scenario_yaml
-
     spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
     spec = load_eval_yaml(spec_path)[0]
     (tmp_path / f"{spec.name}.jsonl").write_text(fixture_stream(scenario, variant), encoding="utf-8")
@@ -58,7 +57,6 @@ def test_scenario_names_are_unique() -> None:
 
 
 def test_committed_tree_carries_no_orphaned_generated_files() -> None:
-    from scripts.eval.corpus_gen.emit import orphaned_generated_files
     from scripts.eval.generate_corpus import (  # noqa: PLC0415 — deferred: import is only needed on this code path
         FIXTURES_DIR,
         SCENARIOS_DIR,
@@ -116,8 +114,6 @@ class TestWriteCatalogPrunesWhatItNoLongerDeclares:
         return scenarios_dir, fixtures_dir
 
     def test_renaming_a_scenario_removes_the_old_yaml_and_fixtures(self, tmp_path: Path) -> None:
-        from scripts.eval.corpus_gen.emit import write_catalog
-
         scenarios_dir, fixtures_dir = self._dirs(tmp_path)
         old = _demo_scenario("old_name", yaml_file="old.yaml")
         write_catalog([old], scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir)
@@ -132,8 +128,6 @@ class TestWriteCatalogPrunesWhatItNoLongerDeclares:
         assert (fixtures_dir / "new_name_pass.stream.jsonl").is_file()
 
     def test_handwritten_scenarios_and_fixtures_are_untouched(self, tmp_path: Path) -> None:
-        from scripts.eval.corpus_gen.emit import write_catalog
-
         scenarios_dir, fixtures_dir = self._dirs(tmp_path)
         handwritten = scenarios_dir / "handwritten.yaml"
         handwritten.write_text("- name: handwritten_scenario\n", encoding="utf-8")
@@ -171,8 +165,6 @@ class TestAgentSectionsEmission:
         )
 
     def test_agent_sections_renders_a_yaml_list_the_loader_accepts(self, tmp_path: Path) -> None:
-        from scripts.eval.corpus_gen.model import scenario_yaml
-
         scenario = self._scenario(agent_sections=("Background Long Operations (Non-Negotiable)",))
         spec_path = tmp_path / "scoped.yaml"
         spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
@@ -180,8 +172,6 @@ class TestAgentSectionsEmission:
         assert spec.agent_sections == ("Background Long Operations (Non-Negotiable)",)
 
     def test_no_agent_sections_omits_the_field(self) -> None:
-        from scripts.eval.corpus_gen.model import scenario_yaml
-
         assert "agent_sections" not in scenario_yaml(self._scenario())
 
 
@@ -201,8 +191,6 @@ class TestDeclarationIsAntiVacuous:
 
 
 def _grade_transcript(scenario: Scenario, transcript: str, tmp_path: Path) -> bool:
-    from scripts.eval.corpus_gen.model import scenario_yaml
-
     spec_path = tmp_path / f"{scenario.name}.yaml"
     spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
     spec = load_eval_yaml(spec_path)[0]

@@ -184,33 +184,29 @@ class TestLintCoverageConfig:
     def test_glob_added_below_an_out_of_context_omit_opener_flagged(self) -> None:
         # A long `omit` array puts its opener outside the hunk's context lines; git's own
         # hunk heading still names it, and discarding that read the entry as unenclosed.
-        diff = "\n".join(
-            [
-                "diff --git a/pyproject.toml b/pyproject.toml",
-                "--- a/pyproject.toml",
-                "+++ b/pyproject.toml",
-                "@@ -40,3 +40,4 @@ omit = [",
-                '     "src/teatree/legacy/a.py",',
-                '+    "src/teatree/hard/*.py",',
-                '     "src/teatree/legacy/b.py",',
-                " ]",
-            ]
+        diff = (
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n"
+            "+++ b/pyproject.toml\n"
+            "@@ -40,3 +40,4 @@ omit = [\n"
+            '     "src/teatree/legacy/a.py",\n'
+            '+    "src/teatree/hard/*.py",\n'
+            '     "src/teatree/legacy/b.py",\n'
+            " ]\n"
         )
-        assert _kinds(scan_relaxation(diff + "\n")) == {"coverage_omit_added"}
+        assert _kinds(scan_relaxation(diff)) == {"coverage_omit_added"}
 
     def test_glob_added_below_an_out_of_context_ruff_exclude_opener_passes(self) -> None:
-        diff = "\n".join(
-            [
-                "diff --git a/pyproject.toml b/pyproject.toml",
-                "--- a/pyproject.toml",
-                "+++ b/pyproject.toml",
-                "@@ -40,3 +40,4 @@ exclude = [",
-                '     "generated/*",',
-                '+    "build/*",',
-                " ]",
-            ]
+        diff = (
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n"
+            "+++ b/pyproject.toml\n"
+            "@@ -40,3 +40,4 @@ exclude = [\n"
+            '     "generated/*",\n'
+            '+    "build/*",\n'
+            " ]\n"
         )
-        assert "coverage_omit_added" not in _kinds(scan_relaxation(diff + "\n"))
+        assert "coverage_omit_added" not in _kinds(scan_relaxation(diff))
 
     def test_ruff_exclude_glob_not_flagged_as_coverage_omit(self) -> None:
         # A `*`-glob added inside a ruff `exclude` array is NOT a coverage omit — the

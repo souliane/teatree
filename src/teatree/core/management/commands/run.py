@@ -114,7 +114,8 @@ class Command(TyperCommand):
     def build_frontend(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
-        prod: bool = typer.Option(False, "--prod", help="Run the overlay's CI production build."),
+        *,
+        prod: bool = typer.Option(default=False, help="Run the overlay's CI production build."),
     ) -> str:
         """Build the frontend app for production/testing.
 

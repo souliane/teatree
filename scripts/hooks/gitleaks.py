@@ -117,7 +117,7 @@ class PinnedGitleaks:
 
             unpacked.chmod(unpacked.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             # The digest lands BEFORE the binary: a crash between the two leaves a
-            # digest naming bytes that are not there yet, which reads as absent and
+            # digest naming bytes that were never written, which reads as absent and
             # re-installs. The reverse order would leave a binary nothing vouches for.
             self.digest_path.write_text(hashlib.sha256(unpacked.read_bytes()).hexdigest(), encoding="utf-8")
             # An atomic rename, so two hooks racing on a cold cache can never observe a

@@ -201,7 +201,7 @@ def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
 
 def _run_router(payload: dict, *, settings: dict[str, object]) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as home:
-        env = {**os.environ, "HOME": home, "USERPROFILE": home}
+        env: dict[str, str] = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("XDG_DATA_HOME", None)
         db = Path(home) / "db.sqlite3"
         _seed_config_db(db, settings)

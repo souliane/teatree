@@ -90,7 +90,7 @@ class _AuthoredStubAPI:
 
 def _service(api: object) -> ReviewService:
     service = ReviewService(token="t", repo=_REPO)
-    service._get_api = lambda: api  # type: ignore[method-assign, return-value]
+    service._get_api = lambda: api  # type: ignore[method-assign, return-value]  # ty: ignore[invalid-assignment]
     return service
 
 

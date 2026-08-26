@@ -103,7 +103,7 @@ class Command(TyperCommand):
             raise SystemExit(1)
 
         existing = list(get_effective_settings().user_identity_aliases)
-        merged = existing + [handle for handle in derived if handle not in existing]
+        merged: list[object] = [*existing, *(handle for handle in derived if handle not in existing)]
         ConfigSetting.objects.set_value("user_identity_aliases", merged)
 
         self.print_result = False

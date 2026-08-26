@@ -208,7 +208,11 @@ class TestSeedProvenance(TestCase):
             ConfigSetting.objects.set_value(key, value)
 
         post_init.connect(pin_it, sender=ConfigSetting)
-        return lambda: post_init.disconnect(pin_it, sender=ConfigSetting)
+
+        def _disconnect() -> None:
+            post_init.disconnect(pin_it, sender=ConfigSetting)
+
+        return _disconnect
 
     def test_an_operator_pin_landing_during_the_seed_read_is_preserved(self) -> None:
         ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)

@@ -360,6 +360,24 @@ def _run_mcp_checks(*, repair: bool = False) -> bool:
     return _check_teatree_mcp_liveness(repair=repair) and ok
 
 
+def _check_schema_freshness() -> bool:
+    """The self-DB's applied schema, and whether a long-running role is behind it.
+
+    Called only after ``ensure_django()``: unconfigured, the schema guard WARNs on
+    ``ImproperlyConfigured`` and masks a stale runtime self-DB that locks out the merge
+    path (#126). The MIRROR reading (#4387/#4390) rides alongside — this process cannot
+    answer freshness about ANOTHER one, since a fresh interpreter's own snapshot is always
+    current, so that check reads what the long-running roles publish. The tuple calls both
+    before ``all`` short-circuits, so neither finding masks the other.
+    """
+    from teatree.core.gates.schema_guard import (  # noqa: PLC0415 — lazy CLI import
+        doctor_check_process_code_freshness,
+        doctor_check_self_db_migrations,
+    )
+
+    return all((doctor_check_self_db_migrations(), doctor_check_process_code_freshness()))
+
+
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
@@ -492,20 +510,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # the ensure_django() above.
     ok = all((check_statusline(), check_statusline_freshness())) and ok
 
-    # Django was configured above (before the editable-sanity check) so the
-    # self-DB schema guard reports the REAL pending-migration state rather than
-    # silently WARNing on ``ImproperlyConfigured`` and masking a stale runtime
-    # self-DB that locks out the merge path (#126).
-    from teatree.core.gates.schema_guard import (  # noqa: PLC0415 — lazy CLI import
-        doctor_check_process_code_freshness,
-        doctor_check_self_db_migrations,
-    )
-
-    ok = doctor_check_self_db_migrations() and ok
-    # The MIRROR reading (#4387/#4390): is a long-running role behind the schema the DB has
-    # applied? This process cannot answer that about another one — a fresh interpreter's own
-    # snapshot is always current — so the check reads what those roles publish.
-    ok = doctor_check_process_code_freshness() and ok
+    ok = _check_schema_freshness() and ok
 
     # Worker-role gates: flock liveness (advisory) + the CRITICAL skills-present
     # and memory-adequate HARD FAILs (role-aware no-ops off the worker). See

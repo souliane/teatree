@@ -82,7 +82,7 @@ class TestTheSingleUseLivePostTokenSurvivesAFailedPost(TestCase):
         OnBehalfApproval.record("org/repo!7", "post_comment", _APPROVER)
         LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
         service = ReviewService(token="t")
-        service._get_api = _FailingPostAPI  # type: ignore[method-assign]
+        service._get_api = _FailingPostAPI  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
         _msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
 
@@ -102,7 +102,7 @@ class TestTheLiveTokenSurvivesAFailedPostUnderImmediateMode(TestCase):
     def test_a_failed_live_post_leaves_the_approval_unconsumed(self) -> None:
         LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
         service = ReviewService(token="t")
-        service._get_api = _FailingPostAPI  # type: ignore[method-assign]
+        service._get_api = _FailingPostAPI  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
         _msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
 

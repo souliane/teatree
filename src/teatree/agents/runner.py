@@ -194,18 +194,10 @@ def _run_agent(
     """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
-    refusal = _pre_harness_refusal(task, phase=phase)
-    if refusal is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
-        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
-
-    stage_skills = _stage_skills_or_refusal(task, phase=phase)
-    if isinstance(stage_skills, TaskAttempt):
-        return stage_skills
-
-    harness = _resolve_backend_or_failure(task, phase=phase)
-    if isinstance(harness, TaskAttempt):
-        return harness
+    preflight = _preflight(task, phase=phase)
+    if isinstance(preflight, TaskAttempt):
+        return preflight
+    stage_skills, harness = preflight.stage_skills, preflight.harness
 
     skills = resolve_skill_bundle(
         phase=phase,
@@ -292,6 +284,32 @@ def _run_agent(
         lane=lane,
         provenance=DispatchProvenance(reasoning_effort=resolve_spawn_effort(phase) or "", skills_loaded=tuple(skills)),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _Preflight:
+    """What the three checks before the harness opens resolve, once none of them refused."""
+
+    stage_skills: list[str]
+    harness: Harness
+
+
+def _preflight(task: Task, *, phase: str) -> _Preflight | TaskAttempt:
+    """The refusals that must all pass before a turn can be billed, as one short-circuit."""
+    refusal = _pre_harness_refusal(task, phase=phase)
+    if refusal is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
+        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
+
+    stage_skills = _stage_skills_or_refusal(task, phase=phase)
+    if isinstance(stage_skills, TaskAttempt):
+        return stage_skills
+
+    harness = _resolve_backend_or_failure(task, phase=phase)
+    if isinstance(harness, TaskAttempt):
+        return harness
+
+    return _Preflight(stage_skills=stage_skills, harness=harness)
 
 
 def _pre_harness_refusal(task: Task, *, phase: str) -> str | None:

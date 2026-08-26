@@ -534,7 +534,7 @@ class TestGitlabTokenIsScopedToTheRemote:
         def scoped(remote: str) -> str:
             return "scoped-token" if privileged_slug in remote else "ordinary-token"
 
-        overlay.config.get_gitlab_token_for_remote = scoped  # type: ignore[method-assign]
+        overlay.config.get_gitlab_token_for_remote = scoped  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         return overlay
 
     def test_repo_resolution_passes_the_origin_remote_through(self, tmp_path: Path) -> None:

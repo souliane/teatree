@@ -86,7 +86,7 @@ def write_plan(path: Path, body: str) -> None:
 
 
 def _checkout_for(ticket: Ticket, *, repo: str) -> Path:
-    worktree = ticket.worktrees.filter(repo_path=repo).order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    worktree = ticket.worktrees.filter(repo_path=repo).order_by("-pk").first()
     if worktree is None:
         msg = (
             f"Ticket {ticket} has no worktree for the e2e repo {repo!r}, so its test plan has nowhere to live. "

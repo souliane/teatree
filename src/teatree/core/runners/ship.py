@@ -236,7 +236,7 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     different repo than the operator is standing in, and shipping it reports "0
     commits ahead" against a branch they never named.
     """
-    rows = list(ticket.worktrees.order_by("pk"))  # ty: ignore[unresolved-attribute]
+    rows = list(ticket.worktrees.order_by("pk"))
     invoking_path = str(extra.get("ship_invoking_path") or "")
     invoking_branch = str(extra.get("ship_invoking_branch") or "")
     matched = _row_at_invoking_path(rows, invoking_path) or _row_on_invoking_branch(rows, invoking_branch)

@@ -364,7 +364,7 @@ class TestClaimIsTakenBeforeTheSideEffect:
             claimed_at_post.append(PendingChatInjection.objects.get(pk=row.pk).loop_replied_at is not None)
             return original_post(channel=channel, ts=ts, text=text)
 
-        backend.post_reply = observing_post  # type: ignore[method-assign]
+        backend.post_reply = observing_post  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         with patch(
             "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
             return_value="overlay=acme\nticket=#1\n",

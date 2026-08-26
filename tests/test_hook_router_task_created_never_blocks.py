@@ -68,7 +68,7 @@ def demanding_session(tmp_path: Path) -> dict[str, str]:
 
 
 def _run_router(event: str, payload: dict, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, **env_extra}
+    env: dict[str, str] = {**os.environ, **env_extra}
     env.pop("XDG_DATA_HOME", None)
     env.pop("T3_CONFIG_DB", None)
     return subprocess.run(

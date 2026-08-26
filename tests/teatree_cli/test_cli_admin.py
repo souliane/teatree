@@ -93,6 +93,8 @@ class AdminCollectStaticTestCase(TestCase):
         with (
             patch("teatree.cli.admin.ensure_django"),
             patch("teatree.cli.admin._ensure_migrated"),
+            patch("teatree.cli.admin.serving_here", return_value=True),
+            patch("teatree.cli.admin.ensure_admin_forward", return_value=ForwardResult()),
             patch("teatree.cli.admin._run_server"),
             patch("teatree.cli.admin.webbrowser.open"),
             patch("teatree.cli.admin._collectstatic") as collectstatic,

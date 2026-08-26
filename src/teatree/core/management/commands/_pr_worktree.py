@@ -80,7 +80,7 @@ def _adopt_invoking_worktree(ticket: Ticket) -> Worktree | WorktreeMissingError:
     """
     declared = declared_invocation_cwd()
     cwd = declared if declared is not None else Path.cwd()
-    recorded = ticket.worktrees.filter(  # ty: ignore[unresolved-attribute]
+    recorded = ticket.worktrees.filter(
         extra__worktree_path__in=_candidate_paths(str(cwd)),
     ).first()
     if recorded is not None:
@@ -107,7 +107,7 @@ def _resolve_or_adopt_worktree(ticket: Ticket, *, adopt_worktree: bool) -> Workt
     """
     if adopt_worktree:
         return _adopt_invoking_worktree(ticket)
-    worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    worktree = ticket.worktrees.first()
     if worktree is not None:
         return worktree
     return _worktree_missing_error(ticket)

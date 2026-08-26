@@ -53,11 +53,11 @@ if TYPE_CHECKING:
         registered_harness_names,
         resolve_harness_spec,
     )
-    from teatree.agents.runner import LoopWatchdog, run_agent
-    from teatree.agents.runner_budget import TicketBudget
     from teatree.agents.lane_b.compaction import CompactionPolicy
     from teatree.agents.lane_b.config import LaneBToolConfig
     from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
+    from teatree.agents.runner import LoopWatchdog, run_agent
+    from teatree.agents.runner_budget import TicketBudget
     from teatree.core.cost import CostBreakdown, CostReport
 
 _EXPORT_SOURCES: dict[str, str] = {

@@ -352,9 +352,11 @@ class TestTheHostProjectionIsCurrent:
 
 
 class TestWriterClassificationIsFalsifiable:
-    """The writers gate is pinned at the OS read in the doctor smoke tests, so the
-    classification it guards is proven here in BOTH directions — a stub that let the
-    wrong answer pass would retire the flake without retiring the defect."""
+    """The writers gate's classification, proven in BOTH directions.
+
+    It is pinned at the OS read in the doctor smoke tests, so a stub that let the
+    wrong answer pass would retire the flake without retiring the defect.
+    """
 
     def test_a_holder_is_reported_and_fails(self, capsys: pytest.CaptureFixture[str]) -> None:
         holders = [(Path("/var/lib/teatree/control-db/db.sqlite3"), "python[5603] (rw)")]

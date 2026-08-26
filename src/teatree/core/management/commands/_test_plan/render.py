@@ -200,9 +200,9 @@ def _ran_at_line(dev: SideState, local: SideState) -> str:
 
 
 def _human_instant(stored: str) -> str:
-    """The stored ISO instant rendered for a reader; unparseable text passes through verbatim."""
+    """The stored ISO instant rendered for a reader; unparsable text passes through verbatim."""
     try:
-        parsed = datetime.fromisoformat(stored.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(stored)
     except ValueError:
         return stored
     return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")

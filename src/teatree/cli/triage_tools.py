@@ -12,7 +12,7 @@ Importing this module has the side effect of registering the commands;
 
 import typer
 
-from teatree.triage import DuplicateFinder, ForgeEnumerationError, LabelSuggester
+from teatree.triage import HIGH_CONFIDENCE, DuplicateFinder, ForgeEnumerationError, LabelSuggester, TriageScanner
 
 
 def _unknown(exc: ForgeEnumerationError) -> typer.Exit:
@@ -92,49 +92,56 @@ def triage_issues(
     ),
 ) -> None:
     """Scan for resolved-but-open and stale issues."""
-    from teatree.triage import HIGH_CONFIDENCE, TriageScanner  # noqa: PLC0415 — deferred: keeps CLI startup light
-
     scanner = TriageScanner(repo)
+    failed = _report_resolved(scanner, close_resolved=close_resolved)
+    _report_stale(scanner, stale_days=stale_days)
+    if failed:
+        raise typer.Exit(code=1)
 
-    failed: list[int] = []
+
+def _report_resolved(scanner: TriageScanner, *, close_resolved: bool) -> list[int]:
+    """Print the resolved-but-open section; return the issues that could not be closed."""
     try:
         resolved = scanner.find_resolved()
     except ForgeEnumerationError as exc:
         raise _unknown(exc) from exc
-    if resolved:
-        typer.echo(f"\n{'=' * 60}\n Resolved-but-open ({len(resolved)} issue(s))\n{'=' * 60}")
-        for r in resolved:
-            typer.echo(f"  #{r.issue_number}  {r.issue_title}")
-            typer.echo(f"    ↳ merged PR #{r.pr_number}: {r.pr_title}  [{r.confidence}]")
-        closable = [r for r in resolved if r.confidence == HIGH_CONFIDENCE]
-        if close_resolved:
-            failed = scanner.close_resolved(resolved)
-            typer.echo(f"Closed {len(closable) - len(failed)} resolved issue(s).")
-            if failed:
-                typer.echo(f"FAILED to close {len(failed)} issue(s): {', '.join(f'#{n}' for n in failed)}")
-        else:
-            typer.echo("\nRe-run with --close-resolved to close these issues.")
-        if len(closable) != len(resolved):
-            skipped = [r.issue_number for r in resolved if r.confidence != HIGH_CONFIDENCE]
-            typer.echo(
-                f"Left open for review — a loose `#N` mention is not a fix: {', '.join(f'#{n}' for n in skipped)}"
-            )
-    else:
+    if not resolved:
         typer.echo("No resolved-but-open issues found.")
+        return []
 
+    typer.echo(f"\n{'=' * 60}\n Resolved-but-open ({len(resolved)} issue(s))\n{'=' * 60}")
+    for r in resolved:
+        typer.echo(f"  #{r.issue_number}  {r.issue_title}")
+        typer.echo(f"    ↳ merged PR #{r.pr_number}: {r.pr_title}  [{r.confidence}]")
+
+    closable = [r for r in resolved if r.confidence == HIGH_CONFIDENCE]
+    failed: list[int] = []
+    if close_resolved:
+        failed = scanner.close_resolved(resolved)
+        typer.echo(f"Closed {len(closable) - len(failed)} resolved issue(s).")
+        if failed:
+            typer.echo(f"FAILED to close {len(failed)} issue(s): {', '.join(f'#{n}' for n in failed)}")
+    else:
+        typer.echo("\nRe-run with --close-resolved to close these issues.")
+
+    if len(closable) != len(resolved):
+        skipped = [r.issue_number for r in resolved if r.confidence != HIGH_CONFIDENCE]
+        typer.echo(f"Left open for review — a loose `#N` mention is not a fix: {', '.join(f'#{n}' for n in skipped)}")
+    return failed
+
+
+def _report_stale(scanner: TriageScanner, *, stale_days: int) -> None:
+    """Print the stale-issue section."""
     try:
         stale = scanner.find_stale(days=stale_days)
     except ForgeEnumerationError as exc:
         raise _unknown(exc) from exc
-    if stale:
-        typer.echo(f"\n{'=' * 60}\n Stale issues — unlabeled, inactive >{stale_days}d ({len(stale)})\n{'=' * 60}")
-        for s in stale:
-            typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
-    else:
+    if not stale:
         typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
-
-    if failed:
-        raise typer.Exit(code=1)
+        return
+    typer.echo(f"\n{'=' * 60}\n Stale issues — unlabeled, inactive >{stale_days}d ({len(stale)})\n{'=' * 60}")
+    for s in stale:
+        typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
 
 
 def register(app: typer.Typer) -> None:

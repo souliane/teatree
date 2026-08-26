@@ -67,7 +67,6 @@ _PYRIGHT_VERSION = "1.1.411"
 _EVAL_TEST_SITES = frozenset(
     {
         "dev/Dockerfile.test",
-        ".gitlab-ci.yml",
         ".github/workflows/eval.yml",
         ".github/workflows/eval-pr.yml",
         ".github/workflows/eval-pr-reusable.yml",

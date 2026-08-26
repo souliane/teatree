@@ -14,8 +14,10 @@
 # all — once invoked, `--require-executed` still makes it FAIL LOUD.
 #
 # NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up):
-#   * The Claude CLI is installed and asserted (`claude --version`) BEFORE the
-#     eval step — a missing binary FAILS the job, it does not skip.
+#   * The eval CREDENTIAL is asserted BEFORE the eval step — an unresolvable one
+#     exits 75, which `allow_failure.exit_codes` scopes to, so the job renders
+#     orange rather than green having run nothing. This lane installs no Claude
+#     CLI: `--backend anthropic_api` spawns no `claude` child.
 #   * `--require-executed` is passed UNCONDITIONALLY (never key-gated), so a
 #     collected-but-all-skipped run exits non-zero. Until ANTHROPIC_API_KEY
 #     is wired the job correctly fails RED — that loud failure is intended.
@@ -48,18 +50,22 @@ variables:
   before_script:
     - pip install --no-cache-dir uv
     - uv sync
-    # Install the Claude CLI the metered api backend shells out to, then ASSERT
-    # it. A missing binary must FAIL the job (the runner would otherwise skip
-    # every scenario and report a decorative green). `claude --version` is the
-    # post-install assertion that turns an install failure into a red job.
-    - apt-get update && apt-get install -y --no-install-recommends nodejs npm
-    # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
-    # runner actually execs (`_find_cli` returns the bundle first; this global install
-    # is only the presence-gate). Matching it stops the two CLIs in one image from
-    # disagreeing. The DEPLOYED runtime is pinned independently, may LEAD this
-    # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
-    - npm install -g @anthropic-ai/claude-code@2.1.233
-    - claude --version
+    # `--backend anthropic_api` calls the Messages API directly and spawns no `claude`
+    # child, so this lane installs no CLI and asserts no `claude --version`: that would
+    # gate a dependency the lane does not have. What CAN be missing is the CREDENTIAL,
+    # and an unauthenticated suite skips every scenario and reports a decorative green.
+    # So the preflight EXITS here instead, on the one code `allow_failure` scopes to —
+    # the job renders orange and can never render green having run nothing.
+    - EVAL_BLOCKED=75
+    - >-
+      if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+        echo "BLOCKED: no eval credential resolves (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN).";
+        exit "$EVAL_BLOCKED";
+      fi
+  # Scoped to the blocked-credential exit ALONE, so a genuinely failed eval still reddens.
+  allow_failure:
+    exit_codes:
+      - 75
   # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
   retry:
     max: 2
@@ -121,7 +127,6 @@ eval-weekly:
   needs: ["eval-gate"]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $RUN_EVAL == "true"'
-  allow_failure: false
 
 # On-demand manual run, the GitLab mirror of the GitHub `workflow_dispatch`
 # trigger. `when: manual` adds a play button so a maintainer can run the full

@@ -337,7 +337,14 @@ class TestOneDeadPeerCostsExactlyOneRow(TestCase):
             PeerInstance(name=cls._DEAD, url=f"http://127.0.0.1:{cls._closed_port()}/"),
             PeerInstance(name=cls._LIVE, url=f"http://127.0.0.1:{cls._serve_snapshot()}/"),
         ]
-        with patch("teatree.dash.settings_peers.load_peer_instances", return_value=peers):
+        with (
+            patch("teatree.dash.settings_peers.load_peer_instances", return_value=peers),
+            # The FETCHING venue, pinned. Under CI this suite runs in a container, where
+            # `fetch_target` rewrites a loopback peer onto the docker host — which cannot
+            # reach a server bound on this container's own loopback, so the live peer would
+            # read as refused. Pinning the venue leaves the transport itself untouched.
+            patch("teatree.dash.settings_peers.host_published_port_host", return_value="127.0.0.1"),
+        ):
             cls.response = Client().get(reverse("dash:settings_compare"), **_LOOPBACK)
         cls.view = cls.response.context["comparison"]
 
