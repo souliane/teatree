@@ -9293,19 +9293,21 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ migrate          Apply pending migrations to the runtime self-DB             │
-│                  (non-destructive self-rescue).                              │
-│ refresh          Re-import the worktree database from dump/DSLR.             │
-│ migrate-app      Apply pending migrations to the worktree's app DB, without  │
-│                  re-importing it.                                            │
-│ approve          Record a single-use DbApproval that satisfies the #777      │
-│                  fresh-dump gate without a TTY (#953).                       │
-│ restore-ci       Restore database from the latest CI dump.                   │
-│ reset-passwords  Reset all user passwords to a known dev value.              │
-│ query            Run a read-only SQL query against the control DB; emit rows │
-│                  as JSON.                                                    │
-│ shell            Drop into a Django shell against the resolved (gate)        │
-│                  control DB.                                                 │
+│ migrate               Apply pending migrations to the runtime self-DB        │
+│                       (non-destructive self-rescue).                         │
+│ reconcile-renumbered  Report (--apply: fake-apply) a migration this DB       │
+│                       applied under its pre-rebase number.                   │
+│ refresh               Re-import the worktree database from dump/DSLR.        │
+│ migrate-app           Apply pending migrations to the worktree's app DB,     │
+│                       without re-importing it.                               │
+│ approve               Record a single-use DbApproval that satisfies the #777 │
+│                       fresh-dump gate without a TTY (#953).                  │
+│ restore-ci            Restore database from the latest CI dump.              │
+│ reset-passwords       Reset all user passwords to a known dev value.         │
+│ query                 Run a read-only SQL query against the control DB; emit │
+│                       rows as JSON.                                          │
+│ shell                 Drop into a Django shell against the resolved (gate)   │
+│                       control DB.                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9338,6 +9340,26 @@ Usage: t3 teatree db migrate [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db reconcile-renumbered`
+
+```
+Usage: t3 teatree db reconcile-renumbered [OPTIONS]
+
+ Reconcile a migration this DB applied under its pre-rebase number.
+
+ Renumber-on-rebase is routine (``django-linear-migrations`` allows one
+ leaf) and the remedy is always the same single fake-apply, which records
+ the new name and changes neither schema nor data. Reporting is the
+ default: a blind ``--fake`` would mask a genuinely unapplied migration
+ whose column happens to exist for an unrelated reason, so nothing is
+ written until ``--apply`` names a pair the detector itself found.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply    --no-apply      Perform the fake-applies. [default: no-apply]     │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

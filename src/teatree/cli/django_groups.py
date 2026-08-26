@@ -173,6 +173,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Database operations.",
         [
             ("migrate", "Apply pending migrations to the runtime self-DB (non-destructive self-rescue)."),
+            (
+                "reconcile-renumbered",
+                "Report (--apply: fake-apply) a migration this DB applied under its pre-rebase number.",
+            ),
             ("refresh", "Re-import the worktree database from dump/DSLR."),
             ("migrate-app", "Apply pending migrations to the worktree's app DB, without re-importing it."),
             ("approve", "Record a single-use DbApproval that satisfies the #777 fresh-dump gate without a TTY (#953)."),
@@ -193,7 +197,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         # reset-passwords) always route through the overlay manage.py for the
         # overlay's db_import strategy.
         core_subcommands=frozenset({"approve"}),
-        overlay_settings_subcommands=frozenset({"migrate"}),
+        overlay_settings_subcommands=frozenset({"migrate", "reconcile-renumbered"}),
     ),
     "pr": DjangoGroup(
         "Pull request helpers.",

@@ -100,6 +100,10 @@
           "name": "shell"
         },
         {
+          "help": "Reconcile a migration this DB applied under its pre-rebase number",
+          "name": "reconcile-renumbered"
+        },
+        {
           "help": "Restore the worktree database from the latest CI dump",
           "name": "restore-ci"
         },

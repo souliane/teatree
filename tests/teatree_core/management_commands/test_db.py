@@ -12,6 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.db as db_mod
+from teatree.core.gates.migration_renumber import RenumberedMigration
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils.approval import ApprovalRefusedError
@@ -564,3 +565,49 @@ class TestDbApproveCommand(TestCase):
             stdout=stdout,
         )
         assert DbApproval.objects.get().consumed_at is not None
+
+
+class TestDbReconcileRenumbered(TestCase):
+    """Renumber-on-rebase is routine and the remedy is one fake-apply (#4591)."""
+
+    PAIR = RenumberedMigration(
+        app="core",
+        applied_name="0054_worktree_occupancy_claim",
+        pending_name="0080_worktree_occupancy_claim",
+        applied_at="2026-08-03",
+    )
+
+    def test_nothing_detected_writes_nothing(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.object(db_mod, "renumbered_migrations", return_value=[]),
+            patch.object(db_mod, "call_command") as migrate,
+        ):
+            call_command("db", "reconcile-renumbered", stdout=out)
+
+        assert "nothing to reconcile" in out.getvalue()
+        migrate.assert_not_called()
+
+    def test_the_default_reports_the_plan_and_writes_nothing(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.object(db_mod, "renumbered_migrations", return_value=[self.PAIR]),
+            patch.object(db_mod, "call_command") as migrate,
+        ):
+            call_command("db", "reconcile-renumbered", stdout=out)
+
+        rendered = out.getvalue()
+        assert "migrate --fake core 0080_worktree_occupancy_claim" in rendered
+        assert "--apply" in rendered
+        migrate.assert_not_called()
+
+    def test_apply_fake_applies_exactly_the_detected_pair(self) -> None:
+        out = io.StringIO()
+        with (
+            patch.object(db_mod, "renumbered_migrations", return_value=[self.PAIR]),
+            patch.object(db_mod, "call_command") as migrate,
+        ):
+            call_command("db", "reconcile-renumbered", apply=True, stdout=out)
+
+        migrate.assert_called_once_with("migrate", "--fake", "core", "0080_worktree_occupancy_claim", verbosity=0)
+        assert "no schema or data changed" in out.getvalue()

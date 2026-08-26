@@ -43,6 +43,7 @@ from django.core.management import call_command
 from django.db import DEFAULT_DB_ALIAS
 from django.db.utils import OperationalError
 
+from teatree.core.gates import migration_renumber
 from teatree.core.process_freshness import published_readings
 from teatree.core.schema_readiness import pending_migrations
 
@@ -96,12 +97,14 @@ def migrate_self_db(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
     try:
         call_command("migrate", "--no-input", database=alias, verbosity=0)
     except Exception as exc:
+        failure = f"{exc.__class__.__name__}: {exc}"
+        hint = migration_renumber.renumber_hint_for(alias, failure)
         msg = (
             f"teatree self-DB migrate failed on alias {alias!r} "
-            f"({len(pending)} pending): {exc.__class__.__name__}: {exc}. "
+            f"({len(pending)} pending): {failure}. "
             f"The DB is left UNMIGRATED; the sanctioned merge path stays fail-closed (#870)."
         )
-        raise SelfDbMigrationError(msg) from exc
+        raise SelfDbMigrationError(f"{msg}\n{hint}" if hint else msg) from exc
     return pending
 
 

@@ -9,6 +9,7 @@ from django.db import DatabaseError, connection, transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval
+from teatree.core.gates.migration_renumber import renumbered_migrations
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
@@ -145,6 +146,38 @@ class Command(TyperCommand):
             self.stdout.write("Self-DB already current — no migrations to apply.")
             return
         self.stdout.write(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
+
+    @command()
+    def reconcile_renumbered(
+        self,
+        *,
+        apply: bool = typer.Option(default=False, help="Perform the fake-applies."),
+    ) -> None:
+        """Reconcile a migration this DB applied under its pre-rebase number.
+
+        Renumber-on-rebase is routine (``django-linear-migrations`` allows one
+        leaf) and the remedy is always the same single fake-apply, which records
+        the new name and changes neither schema nor data. Reporting is the
+        default: a blind ``--fake`` would mask a genuinely unapplied migration
+        whose column happens to exist for an unrelated reason, so nothing is
+        written until ``--apply`` names a pair the detector itself found.
+        """
+        pairs = renumbered_migrations()
+        if not pairs:
+            self.stdout.write("No renumbered migration detected — nothing to reconcile.")
+            return
+        for pair in pairs:
+            self.stdout.write(
+                f"{pair.pending_label} is {pair.applied_label} renumbered "
+                f"(old name recorded {pair.applied_at or 'at an unrecorded date'}, no file carries it): "
+                f"migrate --fake {pair.app} {pair.pending_name}"
+            )
+        if not apply:
+            self.stdout.write(f"{len(pairs)} pair(s) — re-run with --apply to record them.")
+            return
+        for pair in pairs:
+            call_command("migrate", "--fake", pair.app, pair.pending_name, verbosity=0)
+        self.stdout.write(f"Recorded {len(pairs)} renumbered migration(s) as applied; no schema or data changed.")
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions

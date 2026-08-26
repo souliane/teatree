@@ -20,7 +20,8 @@ from django.test import TestCase
 
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
-from teatree.core.forge_push import CredentialSource, PushOutcome
+from teatree.core.forge_push import PushOutcome
+from teatree.core.forge_push_credential import CredentialSource
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner

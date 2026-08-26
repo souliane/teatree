@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 from django.db import OperationalError
 
+from teatree.core.gates.migration_renumber import RenumberedMigration
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
 from teatree.core.models import Ticket
 from tests.teatree_core._migration_graph import core_head_migration
@@ -96,3 +97,66 @@ class TestMigrateSelfDbInProcess:
         ):
             migrate_self_db(alias)
         assert "disk I/O error" in str(exc.value)
+
+
+class TestARenumberedMigrationIsNamedRatherThanLeftAsADuplicateColumn:
+    """A rebase renumber strands every DB that applied the old name (#4591)."""
+
+    pytestmark = pytest.mark.timeout(240)
+
+    def test_a_collision_failure_carries_the_renumber_diagnosis(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        pair = RenumberedMigration(
+            app="core",
+            applied_name="0054_worktree_occupancy_claim",
+            pending_name="0080_worktree_occupancy_claim",
+            applied_at="2026-08-03",
+        )
+        with (
+            patch(
+                "teatree.core.gates.schema_guard.call_command",
+                side_effect=OperationalError("duplicate column name: occupancy_expires_at"),
+            ),
+            patch(
+                "teatree.core.gates.migration_renumber.renumbered_migrations",
+                return_value=[pair],
+            ),
+            pytest.raises(SelfDbMigrationError) as exc,
+        ):
+            migrate_self_db(alias)
+
+        message = str(exc.value)
+        assert "duplicate column name: occupancy_expires_at" in message, "the original failure survives"
+        assert "core.0080_worktree_occupancy_claim" in message
+        assert "core.0054_worktree_occupancy_claim" in message
+        assert "t3 teatree db reconcile-renumbered --apply" in message
+
+    def test_a_non_collision_failure_invents_no_renumber(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        with (
+            patch(
+                "teatree.core.gates.schema_guard.call_command",
+                side_effect=OperationalError("no such table: teatree_merge_clear"),
+            ),
+            pytest.raises(SelfDbMigrationError) as exc,
+        ):
+            migrate_self_db(alias)
+
+        assert "RENUMBERED" not in str(exc.value)
+
+    def test_a_detector_that_raises_never_buries_the_failure(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        with (
+            patch(
+                "teatree.core.gates.schema_guard.call_command",
+                side_effect=OperationalError("duplicate column name: occupancy_expires_at"),
+            ),
+            patch(
+                "teatree.core.gates.migration_renumber.renumbered_migrations",
+                side_effect=OperationalError("no such table: django_migrations"),
+            ),
+            pytest.raises(SelfDbMigrationError) as exc,
+        ):
+            migrate_self_db(alias)
+
+        assert "duplicate column name: occupancy_expires_at" in str(exc.value)

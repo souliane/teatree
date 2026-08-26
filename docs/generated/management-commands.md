@@ -46,6 +46,7 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `approve` | Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126) |
 | `query` | Run a read-only SQL query against the control DB; emit rows as JSON |
 | `shell` | Drop into a Django shell against the resolved (gate) control DB |
+| `reconcile-renumbered` | Reconcile a migration this DB applied under its pre-rebase number |
 | `restore-ci` | Restore the worktree database from the latest CI dump |
 | `migrate-app` | Apply pending migrations to the worktree's APP database, without re-importing it |
 | `reset-passwords` | Reset all user passwords to a known dev value |

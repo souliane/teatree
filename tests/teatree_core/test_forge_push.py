@@ -15,19 +15,8 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core import forge_push
-from teatree.core.forge_push import (
-    PUSH_EXIT_CODES,
-    PUSH_TIMEOUT_SECONDS,
-    CredentialSource,
-    ForgeCredential,
-    PushFailure,
-    PushOutcome,
-    credential_failure_hint,
-    push_branch,
-    remote_url_embeds_credential,
-    resolve_forge_credential,
-    scrub_token,
-)
+from teatree.core.forge_push import PUSH_EXIT_CODES, PUSH_TIMEOUT_SECONDS, PushFailure, PushOutcome, push_branch
+from teatree.core.forge_push_credential import CredentialSource
 from teatree.utils import git_run
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CompletedProcess, TimeoutExpired
@@ -82,89 +71,6 @@ class _RecordingRun:
         self.commands.append(cmd)
         self.envs.append(dict(env or {}))
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-
-class TestResolveForgeCredential:
-    def test_prefers_gh_token_over_teatree_gh_token(self) -> None:
-        with patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN, "TEATREE_GH_TOKEN": "other"}, clear=False):
-            credential = resolve_forge_credential()
-        assert credential.token == FAKE_TOKEN
-        assert credential.source is CredentialSource.GH_TOKEN
-
-    def test_falls_back_to_teatree_gh_token(self) -> None:
-        env = {"TEATREE_GH_TOKEN": FAKE_TOKEN}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            credential = resolve_forge_credential()
-        assert credential.token == FAKE_TOKEN
-        assert credential.source is CredentialSource.TEATREE_GH_TOKEN
-
-    def test_falls_back_to_overlay_pass_store(self) -> None:
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push._overlay_github_token", return_value=FAKE_TOKEN),
-        ):
-            os.environ.pop("GH_TOKEN", None)
-            os.environ.pop("TEATREE_GH_TOKEN", None)
-            credential = resolve_forge_credential()
-        assert credential.token == FAKE_TOKEN
-        assert credential.source is CredentialSource.OVERLAY_PASS_STORE
-
-    def test_no_credential_falls_through_to_ambient_helper(self) -> None:
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push._overlay_github_token", return_value=""),
-        ):
-            os.environ.pop("GH_TOKEN", None)
-            os.environ.pop("TEATREE_GH_TOKEN", None)
-            credential = resolve_forge_credential()
-        assert credential.token == ""
-        assert credential.source is CredentialSource.AMBIENT
-
-
-class TestRemoteUrlEmbedsCredential:
-    def test_flags_a_token_in_the_userinfo(self) -> None:
-        assert remote_url_embeds_credential(f"https://{FAKE_TOKEN}@github.com/acme/app.git")
-
-    def test_flags_a_password_component(self) -> None:
-        url = "https://user:hunter2@github.com/acme/app.git"  # privacy-scan:allow (fake test credential, not PII)
-        assert remote_url_embeds_credential(url)
-
-    def test_leaves_a_plain_https_remote_alone(self) -> None:
-        assert not remote_url_embeds_credential("https://github.com/acme/app.git")
-
-    def test_leaves_an_scp_style_ssh_remote_alone(self) -> None:
-        assert not remote_url_embeds_credential("git@github.com:acme/app.git")
-
-    def test_a_malformed_url_is_not_flagged_and_does_not_raise(self) -> None:
-        url = "https://[oops@github.com/acme/app.git"  # privacy-scan:allow (malformed fixture URL, not PII)
-        assert not remote_url_embeds_credential(url)
-
-
-class TestCredentialFailureHint:
-    def test_names_the_token_sources_when_none_resolved(self) -> None:
-        credential = ForgeCredential(token="", source=CredentialSource.AMBIENT)
-        hint = credential_failure_hint("fatal: could not read Username for 'https://github.com'", credential)
-        assert "TEATREE_GH_TOKEN" in hint
-        assert "pass store" in hint
-
-    def test_names_the_helper_wiring_when_a_token_was_supplied(self) -> None:
-        credential = ForgeCredential(token=FAKE_TOKEN, source=CredentialSource.TEATREE_GH_TOKEN)
-        hint = credential_failure_hint("fatal: Authentication failed for 'https://github.com'", credential)
-        assert "gh auth setup-git" in hint
-        assert FAKE_TOKEN not in hint
-
-    def test_is_silent_for_a_failure_that_is_not_about_credentials(self) -> None:
-        credential = ForgeCredential(token=FAKE_TOKEN, source=CredentialSource.GH_TOKEN)
-        assert credential_failure_hint("! [rejected] feature -> feature (non-fast-forward)", credential) == ""
-
-
-class TestScrubToken:
-    def test_replaces_every_occurrence(self) -> None:
-        assert scrub_token(f"a {FAKE_TOKEN} b {FAKE_TOKEN}", FAKE_TOKEN) == "a <redacted> b <redacted>"
-
-    def test_empty_token_is_a_no_op(self) -> None:
-        assert scrub_token("nothing to hide", "") == "nothing to hide"
 
 
 class TestPushBranch:
@@ -457,8 +363,27 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert "push-gate: FULL sweep escalated, killed" in outcome.detail
         assert "failed to push some refs" not in outcome.detail
 
-    def test_a_gate_that_died_without_output_is_still_named_as_the_refuser(self, clone_with_origin: Path) -> None:
-        """An OOM-killed gate leaves no words, so the seam must supply them."""
+    def test_a_gate_that_printed_only_to_stdout_still_has_its_words_kept(self, clone_with_origin: Path) -> None:
+        """Git leaves a hook's stdout on `git push`'s stdout, and prek writes its whole diagnostic there."""
+        _install_pre_push_hook(clone_with_origin, 'echo "eval-pinned-regressions...Failed"\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.GATE_REFUSED
+        assert "eval-pinned-regressions...Failed" in outcome.detail
+        assert "failed to push some refs" not in outcome.detail
+
+    def test_a_gate_writing_to_both_streams_keeps_both(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(clone_with_origin, 'echo "on-stdout"\necho "on-stderr" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert "on-stdout" in outcome.detail
+        assert "on-stderr" in outcome.detail
+
+    def test_a_gate_that_died_without_output_names_no_cause_it_did_not_measure(self, clone_with_origin: Path) -> None:
+        """A confident wrong diagnosis stops the reader looking; an unmeasured cause is never named."""
         _install_pre_push_hook(clone_with_origin, "exit 137\n")
 
         outcome = push_branch(repo=clone_with_origin)
@@ -466,7 +391,8 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert not outcome.ok
         assert outcome.failure is PushFailure.GATE_REFUSED
         assert "pre-push" in outcome.detail
-        assert "Run the gate directly" in outcome.detail
+        assert "OOM" not in outcome.detail
+        assert "prek run --hook-stage pre-push" in outcome.detail
 
     def test_a_non_fast_forward_is_not_blamed_on_the_gate(self, clone_with_origin: Path, tmp_path: Path) -> None:
         run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")

@@ -65,3 +65,15 @@ class TestMigrateSelfDbSeam(TestCase):
             pytest.raises(SelfDbMigrationError),
         ):
             migrate_self_db()
+
+
+class TestTheRenumberDiagnosisReachesTheLaneThatRed(TestCase):
+    """`eval-pinned-regressions` is the pre-push lane a renumber actually reds (#4591)."""
+
+    def test_the_hint_is_carried_on_the_check_result(self) -> None:
+        failure = SelfDbMigrationError("duplicate column name: x\n0080_x appears to be 0054_x RENUMBERED")
+        with patch("teatree.core.gates.schema_guard.migrate_self_db", side_effect=failure):
+            result = schema_preflight_result()
+
+        assert result.ok is False
+        assert "RENUMBERED" in result.detail
