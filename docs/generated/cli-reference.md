@@ -11969,7 +11969,10 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
  retry the READ), or ``no recorded verdict``. The point is to avoid
  re-deriving a full cold review when a fresh verdict already vouches for
  the current tree. The record carries the verdict's ``findings`` so a
- HOLD can be read and acted on, not just counted.
+ HOLD can be read and acted on, not just counted. An unrenderable
+ findings row degrades that portion and names the reason in
+ ``findings_error`` rather than blocking the verdict; ``review
+ findings`` stays the strict read.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │

@@ -262,7 +262,10 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         retry the READ), or ``no recorded verdict``. The point is to avoid
         re-deriving a full cold review when a fresh verdict already vouches for
         the current tree. The record carries the verdict's ``findings`` so a
-        HOLD can be read and acted on, not just counted.
+        HOLD can be read and acted on, not just counted. An unrenderable
+        findings row degrades that portion and names the reason in
+        ``findings_error`` rather than blocking the verdict; ``review
+        findings`` stays the strict read.
         """
         result, human = _review_impl.status_result(self, mr_url)
         self._emit(result, human, json_output=json_output)
