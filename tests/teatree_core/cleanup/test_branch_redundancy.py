@@ -65,7 +65,17 @@ def _no_forge() -> AbstractContextManager[object]:
 
 
 def _forge_merged() -> AbstractContextManager[object]:
-    return patch.object(bc, "probe_host_cli", return_value="42")
+    """A forge reporting a MERGED PR and no open one.
+
+    Answering every probe alike would also answer the open-PR veto `branch_redundancy`
+    consults, vetoing the very verdict these cases are about.
+    """
+
+    def fake(cmd: list[str], repo: str, extract: object, *, timeout: float = 30.0) -> str:
+        del repo, extract, timeout
+        return "42" if "merged" in " ".join(cmd) else ""
+
+    return patch.object(bc, "probe_host_cli", side_effect=fake)
 
 
 def test_squash_merged_via_b_when_forge_absent_is_redundant(tmp_path: Path) -> None:
@@ -287,3 +297,30 @@ def test_open_pr_vetoes_is_squash_merged(tmp_path: Path) -> None:
 
     with forge_reporting(open_pr=True):
         assert bc.is_squash_merged(str(work), "feature", "main") is False
+
+
+def test_open_pr_vetoes_branch_redundancy_itself(tmp_path: Path) -> None:
+    """The veto is the VERDICT's, not one boolean wrapper's (#3093).
+
+    Four callers — worktree_done, both workspace cleanup passes and core cleanup — read
+    `branch_redundancy` directly, so a veto living in `is_squash_merged` left an open
+    PR's branch reaching `cleanup_worktree(force=True)` on a landed content layer.
+    """
+    work = init_pushed_main(tmp_path)
+    _run_git("checkout", "-q", "-b", "feature", "main", cwd=work)
+    (work / "f.txt").write_text("work\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "feat: work", cwd=work)
+    _run_git("checkout", "-q", "main", cwd=work)
+    _run_git("merge", "-q", "--ff", "feature", cwd=work)
+    _run_git("push", "-q", "origin", "main", cwd=work)
+    _run_git("fetch", "-q", "origin", cwd=work)
+
+    with forge_reporting(open_pr=True):
+        vetoed = bc.branch_redundancy(str(work), "feature")
+    with _no_forge():
+        landed = bc.branch_redundancy(str(work), "feature")
+
+    assert landed.redundant is True, "the content layers must prove the tip captured, or this pins nothing"
+    assert vetoed.redundant is False
+    assert vetoed.source == bc.OPEN_PR_VETO_SOURCE

@@ -36,7 +36,7 @@ import json
 import re
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache, lru_cache
 from typing import Any
 
@@ -48,6 +48,10 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 # The one RedundancyVerdict.source that means no content layer decided anything.
 # Named so every consumer of the verdict's provenance reads the same token.
 INCONCLUSIVE_SOURCE = "inconclusive"
+# The source a landed verdict is DOWNGRADED to when the forge still has the branch's
+# PR open (#3093). It sits on `branch_redundancy` itself, so no caller can reach a
+# `redundant=True` that an open PR should have vetoed.
+OPEN_PR_VETO_SOURCE = "open-pr-veto"
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
@@ -106,7 +110,7 @@ class RedundancyVerdict:
     branch is kept. ``source`` names the deciding layer:
     ``cherry-zero-unique`` / ``synthetic-squash`` / ``branch-merged`` /
     ``content-landed`` / ``forge-merged-tip`` / ``not-redundant`` /
-    ``inconclusive``.
+    ``inconclusive`` / ``open-pr-veto`` (a landed tip whose PR is still open).
     """
 
     redundant: bool
@@ -553,7 +557,12 @@ def _tree_delta_captured(repo: str, ref: str, target: str) -> bool:
 
 
 def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> RedundancyVerdict:
-    """The canonical layered verdict: is ``branch``'s CURRENT tip provably on ``target``?
+    """The canonical verdict: is ``branch``'s CURRENT tip provably on ``target`` AND done?
+
+    A landed verdict is vetoed while the forge reports an OPEN PR (#3093): a content
+    layer can prove a live PR's tip captured, and deleting under one destroys work
+    nobody merged. It sits HERE because four callers read the verdict directly, and is
+    fail-safe — an unreachable forge skips the veto, never manufactures one.
 
     Four CONTENT layers decide ``redundant`` (see the module docstring):
     cherry-zero (:func:`content_equivalence_blockers` empty), synthetic-squash
@@ -573,6 +582,14 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
     squash/merged layers and returns NOT-redundant, so an uncertain branch is
     kept, never deleted.
     """
+    verdict = _content_redundancy(repo, branch, target)
+    if not verdict.redundant or not _branch_has_open_pr(repo, branch):
+        return verdict
+    return replace(verdict, redundant=False, source=OPEN_PR_VETO_SOURCE)
+
+
+def _content_redundancy(repo: str, branch: str, target: str) -> RedundancyVerdict:
+    """The layered CONTENT verdict, before the open-PR veto :func:`branch_redundancy` applies."""
     forge_merged = _branch_pr_is_merged(repo, branch)
     blockers = content_equivalence_blockers(repo, branch, target)
     unique_shas = [b for b in blockers if not b.startswith("(")]
@@ -608,23 +625,12 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
 def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     """Whether ``branch``'s current tip is PROVABLY fully captured on ``origin/<default>``.
 
-    The boolean view of :func:`branch_redundancy` the reaper and branch-prune
-    pass share: ``True`` only when a landed rung (cherry-zero / synthetic-squash
-    / branch-merged / content-landed / forge-merged-tip) proved the tip
-    redundant AND the forge reports no OPEN PR for the branch. The open-PR veto
-    (#3093, applied at this chokepoint so every destructive caller inherits it)
-    exists because a content layer can prove a still-open PR's tip captured —
-    e.g. a branch resembling the default — and deleting under an open PR
-    destroys live work; the veto is fail-safe (an unreachable forge only ever
-    skips the veto, never manufactures one). A bare forge "merged" signal NEVER
-    alone returns ``True`` — a forge-merged branch with unique current-tip
-    content is kept for salvage, not deleted (the #2763 invariant). Survives a
-    deleted local branch ref: the layers read the branch NAME, and the
-    data-loss guards downstream keep an uncertain branch.
+    The boolean view of :func:`branch_redundancy` the reaper and branch-prune pass
+    share — every rung, the #2763 forge-alone invariant and the open-PR veto are its,
+    not this wrapper's. Survives a deleted local branch ref: the layers read the branch
+    NAME, and the data-loss guards downstream keep an uncertain branch.
     """
-    if not branch_redundancy(repo, branch, f"origin/{default}").redundant:
-        return False
-    return not _branch_has_open_pr(repo, branch)
+    return branch_redundancy(repo, branch, f"origin/{default}").redundant
 
 
 def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
