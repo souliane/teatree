@@ -1,6 +1,8 @@
-FROM mcr.microsoft.com/playwright/python:v1.58.0-noble AS base
-# `patch` is needed by the `patchy` Python package (used in e2e/conftest.py
-# to relax pytest-playwright-visual's strict pixel comparator).
+# Browser binaries here must match the `playwright` client `uv.lock` resolves, or every
+# run dies at browser launch before any test body executes. Pinned by
+# `tests/test_playwright_image_pin.py`, which reds when the two drift.
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble AS base
+# `patch` is the binary the `patchy` dependency shells out to at import time.
 RUN apt-get update -qq && \
     apt-get install -y -qq direnv jq patch && \
     rm -rf /var/lib/apt/lists/*
