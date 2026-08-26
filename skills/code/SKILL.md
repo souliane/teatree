@@ -193,9 +193,10 @@ The acceptance scenarios are **planned up front** — the `/plan` phase emits an
 
 Author the failing browser-level spec from the planned scenario first (§ 5 above); switch to `/t3:e2e` to run it red→green and post evidence via the visual QA gate once the implementation it gates is committed.
 
-**Mandatory-E2E gate — attest after posting evidence.** For a change that could impact what is displayed to the customer, the E2E run is a mandatory FSM step before `pr create` / CLEAR. After a green local run AND posting its evidence on the ticket, record the attestation so the gate passes:
+**Mandatory-E2E gate — attest after posting evidence.** For a change that could impact what is displayed to the customer, the E2E run is a mandatory FSM step before `pr create` / CLEAR. After a green local run AND posting its evidence on the ticket, record the attestation so the gate passes. Prefer the `mcp__teatree__record_e2e_run` MCP tool — it writes the same attestation row through the same gate seam; fall back to the CLI when the MCP server isn't connected:
 
 ```bash
+# CLI fallback (MCP server not connected)
 t3 <overlay> lifecycle record-e2e-run <ticket-id> \
   --spec <e2e/spec/path> --result green \
   --head-sha <full-40-char-sha> --posted-url <evidence-url>
@@ -205,9 +206,10 @@ A green run recorded **without** `--posted-url` does NOT satisfy the gate — th
 
 **The gate only fires for display-impacting changes — never force a spurious bypass on a change that can't reach the customer.** When the diff touches **only** a test file (`tests/...`, `*/test_*.py`), a fixture, a doc, or other code that cannot change what the customer sees — no serializer, view, template, or frontend — the E2E gate does **not** apply, so there is nothing to attest and nothing to bypass. Do X, never Y:
 
-1. **Do** delegate PR creation to the overlay — it evaluates the gate against the actual diff and lets a non-display change through cleanly:
+1. **Do** delegate PR creation to the overlay — it evaluates the gate against the actual diff and lets a non-display change through cleanly. Prefer the `mcp__teatree__pr_create` MCP tool — it runs the same ship gate and returns the PR URL; fall back to the CLI when the MCP server isn't connected:
 
    ```bash
+   # CLI fallback (MCP server not connected)
    t3 <overlay> pr create <ticket-id>
    ```
 

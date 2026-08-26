@@ -346,6 +346,75 @@ class TestRowIsolation:
         _ = bad
 
 
+class TestClaimIsTakenBeforeTheSideEffect:
+    """The unit's CAS is claimed BEFORE any post/dispatch, and released on any failure.
+
+    The claim is what removes a row from ``loop_unreplied()``, so a claim held over a
+    side effect that never happened retires the owner's message silently and forever;
+    a side effect fired before the claim lets a rival cycle fire it a second time.
+    """
+
+    def test_simple_answer_claims_the_unit_before_posting_it(self) -> None:
+        row = _row("what's the status?")
+        backend = RecordingBackend()
+        claimed_at_post: list[bool] = []
+        original_post = backend.post_reply
+
+        def observing_post(*, channel: str, ts: str, text: str) -> RawAPIDict:
+            claimed_at_post.append(PendingChatInjection.objects.get(pk=row.pk).loop_replied_at is not None)
+            return original_post(channel=channel, ts=ts, text=text)
+
+        backend.post_reply = observing_post  # type: ignore[method-assign]
+        with patch(
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert claimed_at_post == [True]
+
+    def test_a_rival_cycles_claim_stops_this_one_posting_a_second_answer(self) -> None:
+        row = _row("what's the status?")
+        backend = RecordingBackend()
+        row.mark_loop_replied(PendingChatInjection.AnswerKind.SIMPLE)
+
+        with patch(
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert backend.replies == []
+
+    def test_a_dispatch_that_raises_releases_the_claim_for_the_next_cycle(self) -> None:
+        row = _row("fix the failing pipeline")
+        backend = RecordingBackend()
+
+        with patch(
+            "teatree.loop.slack_answer.cycle.dispatch_work",
+            side_effect=RuntimeError("worktree provisioning died"),
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.errors == 1
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
+        assert PendingChatInjection.loop_unreplied().filter(pk=row.pk).exists()
+
+    def test_a_coverage_lookup_that_raises_releases_the_claim(self) -> None:
+        row = _row("fix the failing pipeline")
+        backend = RecordingBackend()
+
+        with patch(
+            "teatree.loop.slack_answer.cycle.find_coverage",
+            side_effect=RuntimeError("control-plane read failed"),
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
+
+
 class TestBoundedBatch:
     def test_at_most_ten_rows_per_cycle(self) -> None:
         for i in range(12):

@@ -61,6 +61,7 @@ cron/headless run. `t3 notion` is the replacement: the public Notion API under a
 else `pass show notion/integration-token`). Agents call `t3`, never the API directly.
 
 ```bash
+t3 notion setup --page <url>           # mint, store and verify the token; then report each page's sharing
 t3 notion whoami                       # verify the token; print the integration pages must be shared with
 t3 notion doctor <page>                # triage one page: token present? valid? shared? still LIVE?
 t3 notion fetch <page> --comments      # page as Markdown, plus its open discussions (--json for raw blocks)
@@ -150,12 +151,12 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 
 | Facet | Methods |
 |---|---|
-| `provisioning` | `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
+| `provisioning` | `repo_clone_url(repo_name)`, `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
 | `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
 | `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
-| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()` |
+| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()`, `mcp_tool_group()` |
 
 There is no `get_gitlab_url()` anywhere: the URL is a pydantic field on `OverlayConfig`, not a
 method. Reaching for one is the reliable sign a doc predates the facet split.

@@ -13,11 +13,11 @@ See: souliane/teatree#12
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import fsm_diagram_specs
+import generated_doc_staging
 
 
 def _write_if_changed(path: Path, content: str, *, stage: bool) -> None:
@@ -26,7 +26,7 @@ def _write_if_changed(path: Path, content: str, *, stage: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     if stage:
-        subprocess.run(["git", "add", str(path)], check=False)
+        generated_doc_staging.stage(path)
         print(f"Updated {path}")
 
 

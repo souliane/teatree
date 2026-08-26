@@ -30,7 +30,7 @@ from teatree.cli.doctor.checks_cold_hooks import (
 )
 from teatree.cli.doctor.checks_config_drift import _check_config_rows_shadowing_shipped_defaults
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
-from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
+from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
     _check_control_db_agreement,
@@ -43,8 +43,10 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_path_t3,
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
+    _check_venv_interpreter_is_this_host,
 )
 from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
+from teatree.cli.doctor.checks_identity_wiring import check_identity_wiring
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
@@ -69,6 +71,8 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
+from teatree.cli.doctor.checks_notion import _check_notion_credentials
+from teatree.cli.doctor.checks_overlay_claims import _check_repos_claimed_by_disagreeing_overlays
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
@@ -100,6 +104,7 @@ from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_ski
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
+from teatree.cli.doctor.checks_sweep_forge import _check_sweep_repos_resolve_a_forge
 from teatree.cli.doctor.checks_test_durations import (
     check_test_durations_coverage,
     check_test_durations_freshness,
@@ -138,7 +143,6 @@ def _optional_tooling_advisories() -> None:
     """
     _check_ttyd_for_dashboard()
     _check_chrome_devtools_mcp_suggestion()
-    _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
     _check_tmp_tmpfs_sizing()
     _check_scratch_sweep_probe()
@@ -204,6 +208,9 @@ def _run_loop_intent_gates() -> bool:
     unheld, and nothing else reads it. ``_check_unconsumed_merge_clears`` (#4250) is the
     merge-side twin: an authorisation to merge a reviewed diff that nothing executed,
     standing while the age signal, the sweep log and ``MergeAudit`` all read healthy.
+    ``_check_sweep_repos_resolve_a_forge`` (#72) is the sweep-side twin of that shape: a
+    swept repo whose forge no ``owned_repos`` declaration names is refused every tick
+    while the tick report reads clean.
     """
     _check_loop_presets()
     _check_loop_classification_drift()
@@ -218,7 +225,10 @@ def _run_loop_intent_gates() -> bool:
     scheduled_ok = _check_loop_schedule_liveness()
     master_ok = _check_t3_master_unheld_while_loops_tick()
     clears_ok = _check_unconsumed_merge_clears()
-    return _check_intent_freshness() and intake_ok and pass_ok and scheduled_ok and master_ok and clears_ok
+    routable_ok = _check_sweep_repos_resolve_a_forge()
+    return (
+        _check_intent_freshness() and intake_ok and pass_ok and scheduled_ok and master_ok and clears_ok and routable_ok
+    )
 
 
 def _check_claude_session_posture() -> bool:
@@ -255,13 +265,18 @@ def _check_enabled_but_unprovisioned() -> bool:
     source clone an installed skill was copied from (a copy cannot announce that a
     merged fix moved past it). Both read overlay config, so they too run after
     ``ensure_django``.
+
+    The Notion gate is the same shape over a CREDENTIAL: an overlay declaring a
+    ``notion_token_pass_key`` has enabled Notion, and until this ran a box with no
+    token reported healthy right up to the first read that failed at point of use.
     """
     declared = _check_declared_dependencies_provisioned()
     review_skills = _check_configured_review_skills()
     pyright_lsp = _check_pyright_lsp_plugin()
     dispatched_skills = _check_dispatched_overlay_skills()
     skill_drift = _check_skill_source_drift()
-    return declared and review_skills and pyright_lsp and dispatched_skills and skill_drift
+    notion = _check_notion_credentials()
+    return declared and review_skills and pyright_lsp and dispatched_skills and skill_drift and notion
 
 
 def _run_daily_advisories() -> None:
@@ -302,6 +317,7 @@ def _run_config_posture_advisories() -> None:
     """
     _check_mode_override_staleness()
     _check_config_rows_shadowing_shipped_defaults()
+    _check_repos_claimed_by_disagreeing_overlays()
     _check_gates_shipped_inert()
 
 
@@ -445,8 +461,8 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     )
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
-    ok = _check_stale_uv_venv() and ok
-    ok = _check_stale_path_t3() and ok
+    ok = all([_check_stale_uv_venv(), _check_venv_interpreter_is_this_host(), ok])
+    ok = all([_check_stale_path_t3(), _check_t3_launcher_managed(), _check_control_db_reachable()]) and ok
     ok = _check_agent_session_pins() and ok
     # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
     # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
@@ -457,6 +473,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # before ``all`` short-circuits, so an unreadable-store FAIL never masks a degraded-tier
     # FAIL — they are different faults with different remedies.
     ok = all((_check_cold_hook_settings_readable(), _check_config_override_tier_healthy())) and ok
+    # The same shape one layer up: the settings READ fine and say the deployment knows neither
+    # who may review its merges nor whose credential opens its MRs. Both are invisible until a
+    # merge is refused or an MR's author is read by hand, so this one hard-FAILs.
+    ok = check_identity_wiring() and ok
     # The other half of the same blind spot: a flag that READS back correctly still
     # buys nothing if the engagement it drives never materialises. Walks the live hook
     # path end to end and FAILs when a stored `autoload = true` engages no platform

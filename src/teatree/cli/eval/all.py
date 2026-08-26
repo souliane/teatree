@@ -47,7 +47,12 @@ from teatree.eval.negative_control import NegativeControlOutcome, run_negative_c
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.skip_guard import UnmeteredApiRunError, assert_api_run_was_metered
+from teatree.eval.skip_guard import (
+    EmptyFreshRunError,
+    UnmeteredApiRunError,
+    assert_api_run_was_metered,
+    assert_fresh_run_produced_output,
+)
 from teatree.eval.surface import is_advisory
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.llm.anthropic_limits import CreditExhaustedError
@@ -416,15 +421,17 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         # never fails the suite.
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
     Console().print(build_summary_table(lanes))
-    # The fresh-run (`--backend api`) AI lane: an api run that executed scenarios
-    # but recorded $0 never actually executed (the `--bare` OAuth bug — the model
-    # authenticated as nothing, made zero tool calls, recorded nothing). Mirror the
-    # `eval run` boundary's RunGuards.api_metered: fail loud rather than read the
-    # green AI lane as validated. The transcript backend runs no model by design,
-    # so the guard short-circuits there (`backend != "api"`). Run it BEFORE the
+    # The fresh-run AI lane must not report a decorative green. Mirror BOTH halves of
+    # the `eval run` boundary's RunGuards.api_metered, because which half can see a
+    # given backend depends on whether it meters: `api` records cost, so an
+    # executed-but-$0 run is its vacuous-green signal (the `--bare` OAuth bug — the
+    # model authenticated as nothing and recorded nothing); `anthropic_api` and
+    # `pydantic_ai` record none, so an EMPTY trajectory is theirs. Running only the
+    # cost half left every unmetered fresh lane unguarded here. The transcript backend
+    # runs no model by design and short-circuits out of both. Run this BEFORE the
     # verdict so the closing line can never print "✅ ALL GOOD" a beat before the
-    # process exits 1 on an unmetered lane.
-    _assert_metered_api_ai_lane(backend=backend, results=ai_results)
+    # process exits 1 on a vacuous lane.
+    _assert_ai_lane_not_vacuous(backend=backend, results=ai_results)
     # A hooked scenario that captured zero hook events measured the RAW MODEL, not the
     # system under test — a HARNESS failure with no verdict for the surface exemption to
     # weigh, so it gates here whatever the scenario's surface (#3922).
@@ -447,15 +454,22 @@ def _suite_should_fail(lanes: list[LaneResult], *, strict: bool, metered: bool) 
     return real_failure or strict_failure
 
 
-def _assert_metered_api_ai_lane(*, backend: str, results: list[ScenarioResult]) -> None:
-    """Turn an executed-but-$0 api AI lane RED — the suite mirror of ``RunGuards.api_metered``."""
+def _assert_ai_lane_not_vacuous(*, backend: str, results: list[ScenarioResult]) -> None:
+    """Turn a vacuous fresh-run AI lane RED — the suite mirror of ``RunGuards.api_metered``.
+
+    Both guards run: the $0-cost one for the metering ``api`` lane, the
+    empty-trajectory one for the fresh lanes that meter nothing. Each is a no-op for
+    the backends it cannot speak to, so the pair covers every fresh backend.
+    """
     executed = sum(1 for r in results if not r.skipped)
+    produced = sum(1 for r in results if not r.skipped and (r.run.tool_calls or r.run.text_blocks))
     try:
         assert_api_run_was_metered(
             backend=backend,
             executed=executed,
             total_cost_usd=sum(r.run.cost_usd for r in results),
         )
-    except UnmeteredApiRunError as exc:
+        assert_fresh_run_produced_output(backend=backend, executed=executed, produced=produced)
+    except (UnmeteredApiRunError, EmptyFreshRunError) as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)

@@ -3,9 +3,11 @@
 The harness-recorded seam behind the forced-repro gate. The agent supplies only
 the repro *command string*; the harness supplies the exit code and the SHAs — it
 stamps ``git rev-parse HEAD`` and runs the command itself, so a fabricated exit
-code or SHA cannot enter the record. There is deliberately NO ``--exit-code`` /
-``--head-sha`` override on record-red / record-green: letting the agent supply
-those would defeat the whole anti-fabrication point.
+code or SHA cannot enter the record. There is deliberately NO ``--exit-code``,
+``--head-sha`` or ``--cwd`` override on record-red / record-green: naming the
+tree is naming the SHA and the exit code, so a caller-chosen directory defeats
+the anti-fabrication point exactly as a caller-supplied SHA would. The run
+always happens in the ticket's own dispatch worktree.
 
 *   ``record-red``   — stamp HEAD, run the command in the ticket's worktree,
     record the FAILING result (the factory refuses exit 0).
@@ -37,7 +39,6 @@ class ReproRecordResult(TypedDict, total=False):
     """Result of ``repro record-red`` / ``record-green``."""
 
     recorded: bool
-    error: str
     ticket_id: int
     head_sha: str
     exit_code: int
@@ -48,16 +49,20 @@ class ReproWaiveResult(TypedDict, total=False):
     """Result of ``repro waive``."""
 
     waived: bool
-    error: str
     ticket_id: int
     approver_id: str
 
 
-def _resolve_cwd(ticket: Ticket, cwd: str) -> str:
-    explicit = cwd.strip()
-    if explicit:
-        return explicit
-    return dispatch_worktree_path(ticket) or "."
+class ReproWorkdirMissingError(RuntimeError):
+    """Raised when the ticket has no dispatch worktree to run its repro in."""
+
+
+def _resolve_cwd(ticket: Ticket) -> str:
+    workdir = dispatch_worktree_path(ticket)
+    if not workdir:
+        msg = f"ticket {ticket.pk} has no dispatch worktree — repro evidence must come from the ticket's own checkout"
+        raise ReproWorkdirMissingError(msg)
+    return workdir
 
 
 def _run_repro(command: str, cwd: str, head_sha: str) -> HarnessRun:
@@ -81,26 +86,29 @@ class Command(RefusalExitTyperCommand):
     def init(self) -> None:
         """Group root — forces sub-commands to be addressed by name."""
 
+    def _workdir(self, ticket: Ticket) -> str:
+        try:
+            return _resolve_cwd(ticket)
+        except ReproWorkdirMissingError as exc:
+            self.stderr.write(f"  repro refused: {exc}")
+            raise SystemExit(1) from exc
+
     @command(name="record-red")
     def record_red(
         self,
         ticket_id: str,
         *,
         command: Annotated[str, typer.Option("--command", help="The repro command to run (must FAIL pre-fix).")],
-        cwd: Annotated[
-            str,
-            typer.Option("--cwd", help="Worktree dir to run in (default: the ticket's dispatch worktree)."),
-        ] = "",
     ) -> "ReproRecordResult":
         """Record the harness-run FAILING RED reproduction for a FIX ticket (#118)."""
         ticket = Ticket.objects.resolve(ticket_id)
-        workdir = _resolve_cwd(ticket, cwd)
+        workdir = self._workdir(ticket)
         run = _run_repro(command, workdir, git.head_sha(repo=workdir))
         try:
             row = ReproEvidence.record_red(ticket=ticket, command=command, run=run)
         except ReproEvidenceError as exc:
             self.stderr.write(f"  repro record-red refused: {exc}")
-            return {"recorded": False, "error": str(exc)}
+            raise SystemExit(1) from exc
         self.stdout.write(
             f"  recorded RED repro for ticket {ticket.pk} @ {row.red_head_sha[:8]} (exit {row.red_exit_code})"
         )
@@ -118,10 +126,6 @@ class Command(RefusalExitTyperCommand):
         ticket_id: str,
         *,
         command: Annotated[str, typer.Option("--command", help="The repro command to run (must PASS post-fix).")],
-        cwd: Annotated[
-            str,
-            typer.Option("--cwd", help="Worktree dir to run in (default: the ticket's dispatch worktree)."),
-        ] = "",
     ) -> "ReproRecordResult":
         """Record the harness-run PASSING GREEN and freeze the provenance verdict (#118).
 
@@ -131,7 +135,7 @@ class Command(RefusalExitTyperCommand):
         bypass) or when ``red == green``.
         """
         ticket = Ticket.objects.resolve(ticket_id)
-        workdir = _resolve_cwd(ticket, cwd)
+        workdir = self._workdir(ticket)
         green_sha = git.head_sha(repo=workdir)
         run = _run_repro(command, workdir, green_sha)
         red_sha = ReproEvidence.objects.red_sha_for(ticket, command)
@@ -142,7 +146,7 @@ class Command(RefusalExitTyperCommand):
             row = ReproEvidence.record_green(ticket=ticket, command=command, run=run, red_is_ancestor=red_is_ancestor)
         except ReproEvidenceError as exc:
             self.stderr.write(f"  repro record-green refused: {exc}")
-            return {"recorded": False, "error": str(exc)}
+            raise SystemExit(1) from exc
         self.stdout.write(
             f"  recorded GREEN repro for ticket {ticket.pk} @ {row.green_head_sha[:8]} "
             f"(exit 0, provenance_ok={row.provenance_ok})"
@@ -169,7 +173,7 @@ class Command(RefusalExitTyperCommand):
             waiver = ReproWaiver.record(ticket=ticket, approver_id=approver, reason=reason)
         except ReproWaiverError as exc:
             self.stderr.write(f"  repro waive refused: {exc}")
-            return {"waived": False, "error": str(exc)}
+            raise SystemExit(1) from exc
         self.stdout.write(f"  recorded repro waiver for ticket {ticket.pk} by {waiver.approver_id}")
         return {"waived": True, "ticket_id": int(ticket.pk), "approver_id": waiver.approver_id}
 

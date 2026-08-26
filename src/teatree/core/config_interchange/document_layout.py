@@ -16,6 +16,7 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.registries import REGISTRY_KEYS
 from teatree.core.config_interchange.registry_rows import overlay_table_split
 from teatree.core.models.config_setting import ConfigValue
 
@@ -23,6 +24,14 @@ GLOBAL_SCOPE = ""
 TEATREE_TABLE = "teatree"
 OVERLAYS_TABLE = "overlays"
 E2E_REPOS_TABLE = "e2e_repos"
+
+#: Every registry key EXCEPT ``overlays``, each rendered as its own ``[<key>.<name>]`` tables.
+#: Derived from ``REGISTRY_KEYS`` rather than listed, so a registry key added to the schema
+#: rides the interchange from that edit alone — a hand-kept list here silently DROPPED it from
+#: every export (the key is excluded from ``[teatree]`` and nothing else claimed it).
+#: ``overlays`` is the one exception, because its tables merge the registry definitions with
+#: each overlay's own setting-scope rows rather than dumping the registry entry alone.
+TABLE_REGISTRY_KEYS: tuple[str, ...] = tuple(key for key in REGISTRY_KEYS if key != OVERLAYS_TABLE)
 
 
 def sorted_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
@@ -50,8 +59,8 @@ def import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]
     ``[overlays.<name>]`` table splits — through the export's own join predicate,
     :func:`~teatree.core.config_interchange.registry_rows.overlay_table_split` — into per-overlay
     SETTING rows and overlay-DEFINITION keys (``path`` / ``class`` / …, folded back into
-    the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table rebuilds the
-    ``e2e_repos`` registry row.
+    the ``overlays`` registry row); every other registry key's ``[<key>.<name>]`` tables
+    rebuild that key's registry row.
 
     A rebuilt registry value is a candidate, not the row: it describes only what the file
     could say, and the import MERGES it onto the stored row rather than replacing it (see
@@ -74,9 +83,10 @@ def import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]
             overlays_registry[name] = definitions
     if overlays_registry:
         candidates.append((GLOBAL_SCOPE, OVERLAYS_TABLE, overlays_registry))
-    e2e_registry: dict[str, Any] = {n: dict(t) for n, t in doc.get(E2E_REPOS_TABLE, {}).items() if isinstance(t, dict)}
-    if e2e_registry:
-        candidates.append((GLOBAL_SCOPE, E2E_REPOS_TABLE, e2e_registry))
+    for key in TABLE_REGISTRY_KEYS:
+        registry = {name: dict(table) for name, table in doc.get(key, {}).items() if isinstance(table, dict)}
+        if registry:
+            candidates.append((GLOBAL_SCOPE, key, registry))
     return candidates
 
 
@@ -84,6 +94,7 @@ __all__ = [
     "E2E_REPOS_TABLE",
     "GLOBAL_SCOPE",
     "OVERLAYS_TABLE",
+    "TABLE_REGISTRY_KEYS",
     "TEATREE_TABLE",
     "import_candidates",
     "registry_value",

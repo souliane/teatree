@@ -29,6 +29,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.utils import work_tree
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # The list lives under "### 17.1 Invariants" and ends at the next "### "
 # heading (the next subsection — e.g. "### 17.2 The flywheel"). Each
 # invariant is a top-level numbered list item: ``N. **Title.**``.
@@ -52,7 +56,7 @@ class CrossPrResult:
 
 
 def _blueprint_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "BLUEPRINT.md"
+    return _REPO_ROOT / "BLUEPRINT.md"
 
 
 def extract_invariant_numbers(blueprint_text: str) -> list[int]:
@@ -177,6 +181,18 @@ def check_numbering_against_base(
     )
 
 
+class BlueprintScopeError(RuntimeError):
+    """`git diff` could not answer whether the change touches BLUEPRINT.md."""
+
+
+def _changed_names(argv: list[str]) -> list[str]:
+    result = subprocess.run(["git", *argv], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        message = f"`git {' '.join(argv)}` failed (exit {result.returncode}): {result.stderr.strip()}"
+        raise BlueprintScopeError(message)
+    return result.stdout.splitlines()
+
+
 def _blueprint_in_commit() -> bool:
     """True when BLUEPRINT.md is part of the staged change.
 
@@ -184,13 +200,11 @@ def _blueprint_in_commit() -> bool:
     merge result) is actually being committed; an unrelated commit must
     not be blocked by pre-existing drift it did not introduce.
     """
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return "BLUEPRINT.md" in result.stdout.splitlines()
+    try:
+        names = work_tree.resolve(_REPO_ROOT).staged_names("--diff-filter=ACMR")
+    except work_tree.WorkTreeError:
+        return True  # unreadable scope — check the tree rather than assume it is untouched
+    return "BLUEPRINT.md" in names
 
 
 def _git_show(repo: Path, ref: str, path: str) -> str | None:
@@ -222,13 +236,7 @@ def _merge_base(repo: Path, base_ref: str) -> str | None:
 
 def _blueprint_in_pr(repo: Path, base_ref: str) -> bool:
     """True when BLUEPRINT.md differs between *base_ref* and HEAD."""
-    result = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--name-only", f"{base_ref}...HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return "BLUEPRINT.md" in result.stdout.splitlines()
+    return "BLUEPRINT.md" in _changed_names(["-C", str(repo), "diff", "--name-only", f"{base_ref}...HEAD"])
 
 
 def main() -> int:
@@ -327,7 +335,11 @@ def ci_main(*, repo: Path, base_ref: str) -> int:
     Returns ``0`` on pass, ``1`` on fail. Prints actionable diagnostics
     to stdout for the CI log.
     """
-    head_text = _head_blueprint_in_scope(repo, base_ref)
+    try:
+        head_text = _head_blueprint_in_scope(repo, base_ref)
+    except BlueprintScopeError as exc:
+        _report_unreadable_scope(exc)
+        return 1
     if head_text is None:
         # BLUEPRINT.md unchanged in the PR, or deleted by it — out of scope.
         return 0
@@ -338,6 +350,20 @@ def ci_main(*, repo: Path, base_ref: str) -> int:
         # nothing to compare against. Defer to the tree-local check.
         return _report_tree_local(head_text)
 
+    return _report_cross_pr(repo, base_ref, head_text=head_text, base_text=base_text)
+
+
+def _report_unreadable_scope(exc: BlueprintScopeError) -> None:
+    print()
+    print("  BLUEPRINT.md §17.1 cross-PR check FAILED: cannot tell whether the PR touches BLUEPRINT.md.")
+    print()
+    print(f"    {exc}")
+    print("    An unreadable diff is not proof the file is untouched, so the gate fails")
+    print("    CLOSED. Ensure the base ref is fetched (CI uses fetch-depth: 0) and re-run.")
+    print()
+
+
+def _report_cross_pr(repo: Path, base_ref: str, *, head_text: str, base_text: str) -> int:
     head_numbers = extract_invariant_numbers(head_text)
     base_numbers = extract_invariant_numbers(base_text)
 

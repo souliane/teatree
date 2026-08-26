@@ -63,7 +63,7 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 #: ``attempt_recorder._REVIEW_VERDICT_PHASES`` — one evidence contract, one seam.
 #: The shell stays load-bearing for the ``codex_*`` variants: the MCP post path
 #: (:class:`teatree.cli.review.service.ReviewService`) is GitLab-only, so on a
-#: GitHub PR the shell (``t3 teatree review record`` / ``t3 teatree review
+#: GitHub PR the shell (``t3 <overlay> review record`` / ``t3 review
 #: post-comment``, bound to a ``git rev-parse HEAD`` sha off a ``git worktree add
 #: --detach`` cold checkout) is how they post findings — a shell-less codex member
 #: reads the diff but never delivers, stalling and leaking an "I have no
@@ -84,7 +84,7 @@ VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
 #: one shared entry: the reviewer skills require the shell to fetch the exact pushed
 #: head (the ``git worktree add --detach`` cold-review checkout), run ``t3 tool
 #: verify-gates`` / ``git`` / ``git log -S`` archaeology, and RECORD the verdict via
-#: ``t3 teatree review record`` / ``t3 teatree review post-comment`` — with NO write/edit (a review
+#: ``t3 <overlay> review record`` / ``t3 review post-comment`` — with NO write/edit (a review
 #: never mutates source), so they stay least-privilege while being ABLE to produce a
 #: merge_safe/hold verdict (F4). The teatree MCP review
 #: tools (``mcp__teatree__github_pr_diff`` / ``review_post_comment`` /

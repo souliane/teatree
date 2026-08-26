@@ -25,6 +25,7 @@ import pytest
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting, OutboundClaim
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -132,10 +133,10 @@ class TestPhantomPostReportsFailure:
         )
         stub = _DraftsStillPresentAPI()
         service = _service(stub)
-        msg, code = service.publish_draft_notes("org/repo", 11)
+        msg, code = service.publish_draft_notes(OWNED_REPO, 11)
         assert code == 1, msg
         assert "all draft notes published" not in msg
-        assert not OutboundClaim.objects.filter(idempotency_key="gitlab_note:org/repo!11:bulk_publish").exists()
+        assert not OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!11:bulk_publish").exists()
         assert dms == [], "no after-receipt DM for an unverified publish"
 
     def test_post_draft_note_phantom_reports_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,17 +150,17 @@ class TestPhantomPostReportsFailure:
         )
         stub = _PhantomAPI(read_back_error=_http_404())
         service = _service(stub)
-        msg, code = service.post_draft_note("org/repo", 7, "lgtm")
+        msg, code = service.post_draft_note(OWNED_REPO, 7, "lgtm")
         assert code == 1, msg
         assert not msg.startswith("OK draft_note_id=")
-        assert not OutboundClaim.objects.filter(idempotency_key="gitlab_note:org/repo!7:42").exists()
+        assert not OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!7:42").exists()
         assert dms == [], "no after-receipt DM for an unverified post"
 
     def test_approve_phantom_reports_failure(self) -> None:
         # approved_by does NOT contain the current user → approve must fail.
         stub = _PhantomAPI(approvers=["someone-else"])
         service = _service(stub)
-        msg, code = service.approve("org/repo", 15)
+        msg, code = service.approve(OWNED_REPO, 15)
         assert code == 1, msg
         assert not msg.startswith("OK approved")
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
@@ -172,13 +173,13 @@ class TestTransientReadbackDoesNotReportFailure:
         stub = _PhantomAPI(read_back_error=_http_503())
         service = _service(stub)
         with pytest.raises(httpx.HTTPStatusError):
-            service.publish_draft_notes("org/repo", 11)
+            service.publish_draft_notes(OWNED_REPO, 11)
 
     def test_approve_transient_readback_propagates(self) -> None:
         stub = _PhantomAPI(read_back_error=_http_503(), approvers=["someone-else"])
         service = _service(stub)
         with pytest.raises(httpx.HTTPStatusError):
-            service.approve("org/repo", 15)
+            service.approve(OWNED_REPO, 15)
 
 
 class TestVerifiedPostStillSucceeds:
@@ -196,9 +197,9 @@ class TestVerifiedPostStillSucceeds:
     def test_post_draft_note_verified_succeeds(self) -> None:
         stub = self._ConfirmingAPI()
         service = _service(stub)
-        msg, code = service.post_draft_note("org/repo", 7, "lgtm")
+        msg, code = service.post_draft_note(OWNED_REPO, 7, "lgtm")
         assert code == 0, msg
-        assert OutboundClaim.objects.filter(idempotency_key="gitlab_note:org/repo!7:42").exists()
+        assert OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!7:42").exists()
 
     def test_publish_draft_notes_verified_succeeds(self) -> None:
         # A bulk publish confirms by listing draft_notes == 0 (all flushed) and
@@ -214,14 +215,14 @@ class TestVerifiedPostStillSucceeds:
 
         stub = _BulkConfirmAPI()
         service = _service(stub)
-        msg, code = service.publish_draft_notes("org/repo", 11)
+        msg, code = service.publish_draft_notes(OWNED_REPO, 11)
         assert code == 0, msg
-        assert OutboundClaim.objects.filter(idempotency_key="gitlab_note:org/repo!11:bulk_publish").exists()
+        assert OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!11:bulk_publish").exists()
 
     def test_approve_verified_succeeds(self) -> None:
         stub = self._ConfirmingAPI(approvers=["souliane"])
         service = _service(stub)
-        msg, code = service.approve("org/repo", 15)
+        msg, code = service.approve(OWNED_REPO, 15)
         assert code == 0, msg
         assert OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
@@ -241,7 +242,9 @@ class TestVerifyFailRollsBackOnBehalfConsume:
         from teatree.core.models import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
 
         ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
-        approval = OnBehalfApproval.record(target="org/repo!11", action="publish_draft_notes", approver_id="souliane")
+        approval = OnBehalfApproval.record(
+            target=f"{OWNED_REPO}!11", action="publish_draft_notes", approver_id="souliane"
+        )
 
         class _DraftsStillPresentAPI(_PhantomAPI):
             def get_json(self, endpoint: str) -> object:
@@ -251,7 +254,7 @@ class TestVerifyFailRollsBackOnBehalfConsume:
                 return []
 
         service = _service(_DraftsStillPresentAPI())
-        msg, code = service.publish_draft_notes("org/repo", 11)
+        msg, code = service.publish_draft_notes(OWNED_REPO, 11)
         assert code == 1, msg
         approval.refresh_from_db()
         assert approval.consumed_at is None, "approval was consumed despite an unverified publish"

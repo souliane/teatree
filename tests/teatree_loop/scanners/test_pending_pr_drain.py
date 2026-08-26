@@ -5,16 +5,13 @@ Real git under ``tmp_path`` throughout: the obligation is created by the real
 state on a real remote, not by a patched classifier.
 """
 
-import shutil
 from pathlib import Path
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.models import PendingPullRequest
-from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.loop.scanners import PendingPrDrainScanner
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -125,57 +122,14 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert [signal.kind for signal in signals] == ["pending_pr.drained"]
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
-    def test_repo_gone_from_disk_retires_the_obligation_rather_than_ageing_it(self) -> None:
-        """Inverts the original #3900 contract, on #4577's evidence.
-
-        Ageing it was the design until sixteen of these reached ~12,000 drains
-        apiece: ``ensure-pr`` cannot run in a directory that is not there, so the
-        row could only ever end at a hand ``discharge-pending``.
-        """
+    def test_repo_gone_from_disk_keeps_the_obligation_rather_than_dropping_it(self) -> None:
         PendingPullRequest.objects.owe(
             repo_path=str(self._tmp_path / "reaped-worktree"),
             branch="feat/vanished",
             reason="branch not on remote yet",
         )
 
-        assert [signal.kind for signal in PendingPrDrainScanner().scan()] == ["pending_pr.retired"]
-
-        assert not PendingPullRequest.objects.filter(branch="feat/vanished").exists()
-
-
-class AnObligationWhoseCheckoutIsGoneRetiresItselfTestCase(TestCase):
-    """The drain had no terminal state for "the checkout this row names is gone" (#4577).
-
-    Sixteen such rows accumulated ~12,000 failed drains and sixteen permanent
-    ``t3 doctor check`` FAILs, crowding out the five real findings underneath.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _inject_fixtures(self, tmp_path: Path) -> None:
-        self._tmp_path = tmp_path
-
-    def test_a_deleted_checkout_retires_its_obligation_and_says_so_once(self) -> None:
-        _origin, repo, branch = _first_push_repo(self._tmp_path)
-        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
-        shutil.rmtree(repo)
-
-        signals = PendingPrDrainScanner().scan()
-
-        assert [signal.kind for signal in signals] == ["pending_pr.retired"]
-        assert signals[0].payload["retired"][0]["branch"] == branch
-        assert not PendingPullRequest.objects.exists()
         assert PendingPrDrainScanner().scan() == []
 
-    def test_a_live_checkout_with_unpushed_work_still_owes_and_still_nags(self) -> None:
-        """The load-bearing case: the invariant exists so real stranded work is never dropped."""
-        _origin, repo, branch = _first_push_repo(self._tmp_path)
-        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
-
-        assert PendingPrDrainScanner().scan() == []
-
-        owed = PendingPullRequest.objects.get(branch=branch)
+        owed = PendingPullRequest.objects.get(branch="feat/vanished")
         assert owed.drain_attempts == 1
-        assert "not on remote yet" in owed.last_error
-
-        PendingPullRequest.objects.filter(pk=owed.pk).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
-        assert check_pending_pull_requests() is False

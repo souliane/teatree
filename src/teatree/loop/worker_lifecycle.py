@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from teatree.config.resolution import worker_is_quiescing
-from teatree.loop.drain import DrainReport, drain_worker, set_worker_quiescing
+from teatree.loop.drain import DrainProgress, DrainReport, drain_worker, set_worker_quiescing
 from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path, flock_is_held, read_pid
 
 #: The default drain grace, mirroring ``t3 worker drain --timeout``.
@@ -130,27 +130,45 @@ def _restore_admission(*, quiescing_before: bool) -> None:
     The trap this closes: a drain turns admission OFF, and on a bare host nothing turns
     it back on (only a container boot's ``deploy/entrypoint.sh`` does). A stop that then
     fails would leave the factory admitting nothing with no indication; a stop that
-    succeeds would hand the next worker a closed gate.
+    succeeds would hand the next worker a closed gate. "Every terminal path" includes a
+    RAISING one — a drain that blows up or an unsignallable holder — so its caller runs
+    it from a ``finally``, not after the last statement that can throw.
     """
     if worker_is_quiescing() != quiescing_before:
         set_worker_quiescing(value=quiescing_before)
 
 
 class WorkerStopper:
-    """Drain, signal the flock holder, verify the exit, and never strand the quiesce gate."""
+    """Drain, signal the flock holder, verify the exit, and never strand the quiesce gate.
 
-    def __init__(self, request: StopRequest | None = None, seams: LifecycleSeams | None = None) -> None:
+    ``on_drain_progress`` is the heartbeat sink the drain wait reports through. Without
+    one the stop is SILENT for the whole ``--timeout`` budget (1800s by default) before
+    it even reaches the signal, which reads as a wedged command rather than a working
+    one — the failure #3983 fixed for ``t3 worker drain`` and that ``stop`` / ``restart``
+    inherited by dropping the sink.
+    """
+
+    def __init__(
+        self,
+        request: StopRequest | None = None,
+        seams: LifecycleSeams | None = None,
+        *,
+        on_drain_progress: Callable[[DrainProgress], None] | None = None,
+    ) -> None:
         self._request = request or StopRequest()
         self._seams = seams or LifecycleSeams()
+        self._on_drain_progress = on_drain_progress
 
     def stop(self) -> StopReport:
         quiescing_before = worker_is_quiescing()
         if not self._seams.flock_held():
             return StopReport(outcome=StopOutcome.NOT_RUNNING, quiescing=quiescing_before)
 
-        drain_report = self._drain() if self._request.drain else None
-        outcome, pid, waited = self._terminate_and_verify()
-        _restore_admission(quiescing_before=quiescing_before)
+        try:
+            drain_report = self._drain() if self._request.drain else None
+            outcome, pid, waited = self._terminate_and_verify()
+        finally:
+            _restore_admission(quiescing_before=quiescing_before)
         return StopReport(
             outcome=outcome,
             holder_pid=pid,
@@ -165,6 +183,7 @@ class WorkerStopper:
             poll_interval=self._request.drain_poll_seconds,
             sleep=self._seams.sleep,
             monotonic=self._seams.monotonic,
+            on_progress=self._on_drain_progress,
         )
 
     def _terminate_and_verify(self) -> tuple[StopOutcome, int | None, float]:

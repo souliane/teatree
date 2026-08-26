@@ -143,6 +143,30 @@ def resolve_max_concurrent_local_stacks() -> int:
     return int(get_effective_settings().max_concurrent_local_stacks)
 
 
+def _stack_holders(candidate: Worktree) -> tuple[str, list[Worktree]]:
+    """*candidate*'s effective overlay, and the OTHER tickets' worktrees holding a stack.
+
+    A pure DB read, so it is safe inside the write transaction that reserves a
+    slot — where the docker reconcile below must never go.
+    """
+    # Scope blockers by the TICKET's overlay, not ``Worktree.overlay``. A row
+    # auto-detected via cwd (``resolve_worktree``) can carry ``Worktree.overlay=''``
+    # while its ticket carries the real overlay; counting by the ticket overlay
+    # holds the cap even for such rows so an empty ``Worktree.overlay`` cannot
+    # smuggle a second stack past the limit (#1397 defense-in-depth).
+    candidate_ticket = candidate.ticket
+    overlay = candidate_ticket.overlay or candidate.overlay
+    rows = list(
+        Worktree.objects.filter(
+            ticket__overlay=overlay,
+            state__in=_BLOCKING_STATES,
+        )
+        .exclude(ticket__pk=candidate_ticket.pk)
+        .order_by("ticket__pk", "pk"),
+    )
+    return overlay, rows
+
+
 def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) -> None:
     """Refuse the impending start when the overlay's cap would be exceeded.
 
@@ -160,21 +184,7 @@ def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) ->
     if effective_limit <= 0:
         return
 
-    # Scope blockers by the TICKET's overlay, not ``Worktree.overlay``. A row
-    # auto-detected via cwd (``resolve_worktree``) can carry ``Worktree.overlay=''``
-    # while its ticket carries the real overlay; counting by the ticket overlay
-    # holds the cap even for such rows so an empty ``Worktree.overlay`` cannot
-    # smuggle a second stack past the limit (#1397 defense-in-depth).
-    candidate_ticket = candidate.ticket
-    overlay = candidate_ticket.overlay or candidate.overlay
-    counted_blockers = list(
-        Worktree.objects.filter(
-            ticket__overlay=overlay,
-            state__in=_BLOCKING_STATES,
-        )
-        .exclude(ticket__pk=candidate_ticket.pk)
-        .order_by("ticket__pk", "pk"),
-    )
+    overlay, counted_blockers = _stack_holders(candidate)
     blockers = [b for b in counted_blockers if not _reconcile_phantom_blocker(b)]
     blocking_tickets = {b.ticket.pk for b in blockers}
     if len(blocking_tickets) < effective_limit:
@@ -191,6 +201,34 @@ def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) ->
         "on one of the above before starting a new stack."
     )
     raise LocalStackLimitExceededError(msg)
+
+
+def start_services_or_enqueue(worktree: Worktree, *, services: list[str], write_out: Callable[[str], object]) -> bool:
+    """Advance *worktree* into ``SERVICES_UP`` under the cap, else enqueue it and return ``False``.
+
+    The recount and the FSM advance share ONE transaction, so the SQLite
+    ``BEGIN IMMEDIATE`` write boundary serializes them against a concurrent
+    admission. :func:`acquire_or_enqueue`'s pre-check alone cannot: it reads the
+    count and returns, and two starts that both read a free slot then both
+    advance breach the cap — the OOM the cap exists to prevent. Docker is
+    deliberately not consulted here; reconciling phantoms would hold the write
+    lock across a subprocess.
+    """
+    limit = resolve_max_concurrent_local_stacks()
+    with transaction.atomic():
+        if limit > 0:
+            _, holders = _stack_holders(worktree)
+            if len({row.ticket_id for row in holders}) >= limit:  # ty: ignore[unresolved-attribute]  # Django FK
+                from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
+
+                LocalStackQueueItem.objects.enqueue(worktree)
+                write_out(
+                    f"  Lost the local-stack slot to a concurrent start — queued {_blocker_label(worktree)} for retry.",
+                )
+                return False
+        worktree.start_services(services=services)
+        worktree.save()
+    return True
 
 
 def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None = None) -> int:

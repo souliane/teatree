@@ -7,12 +7,18 @@ is the canonical override tier (mirrors ``MergeClear`` / ``DbApproval`` —
 returns its stored value.
 """
 
+from typing import TYPE_CHECKING
+
 import pytest
 from django.core.exceptions import ValidationError
+from django.db.models.signals import post_init
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class TestScopeLabel:
@@ -186,6 +192,45 @@ class TestSeedProvenance(TestCase):
         outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
         assert outcome is SeedOutcome.PRESERVED
         assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 70
+
+    def _pin_during_the_seed_read(self, key: str, value: int) -> "Callable[[], None]":
+        """Have an operator ``set_value`` land at the instant ``seed`` reads the row.
+
+        ``post_init`` fires as ``seed``'s lookup materialises the row, which is
+        exactly the window a concurrent operator write occupies.
+        """
+        fired: list[int] = []
+
+        def pin_it(sender: object, instance: ConfigSetting, **kwargs: object) -> None:
+            if fired or instance.key != key:
+                return
+            fired.append(value)
+            ConfigSetting.objects.set_value(key, value)
+
+        post_init.connect(pin_it, sender=ConfigSetting)
+        return lambda: post_init.disconnect(pin_it, sender=ConfigSetting)
+
+    def test_an_operator_pin_landing_during_the_seed_read_is_preserved(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        disconnect = self._pin_during_the_seed_read("provision_ram_ceiling_percent", 90)
+        try:
+            outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        finally:
+            disconnect()
+
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+
+    def test_an_operator_pin_landing_during_the_seed_read_survives_the_default_removal(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        disconnect = self._pin_during_the_seed_read("provision_ram_ceiling_percent", 90)
+        try:
+            outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 85, code_default=85)
+        finally:
+            disconnect()
+
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
 
     def test_set_value_clears_seed_provenance(self) -> None:
         ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)

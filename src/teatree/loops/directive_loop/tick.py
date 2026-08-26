@@ -7,7 +7,7 @@ TRIPLE-OFF no-op property) and is LOGGED at warning level, so a refused
 tick is never indistinguishable from an idle one (#3643). When the chain allows, each
 advanced directive takes exactly one FSM step:
 
-    CAPTURED       → arm the headless interpreter (idempotent dispatch)
+    CAPTURED       → arm the headless interpreter, or park it on the spent attempt budget
     CLARIFYING     → re-interpret once every clarify question is answered, else wait
     INTERPRETED    → ask the human to ratify the sketch
     RATIFY_PENDING → admit on an approved answer / reject on a denial / wait
@@ -43,7 +43,7 @@ from datetime import datetime
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.models import Directive
+from teatree.core.models import Directive, DirectiveDispatch
 from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY
 from teatree.core.models.ticket import Ticket
 from teatree.loops.directive_loop.configure import apply_activation
@@ -267,12 +267,7 @@ def _advance_intake(directive: Directive, *, ratify_slots: int) -> DirectiveTick
     """
     state = Directive.State
     if directive.state == state.CAPTURED:
-        # A ``None`` return is the dedup: this generation's interpreter is still in
-        # flight, so nothing was armed. Reporting that as a dispatch both over-stated
-        # progress and spent a budget slot no work consumed.
-        if dispatch_interpretation(directive) is None:
-            return DirectiveTickResult(action="waiting", reason="interpreter_in_flight", directive_id=directive.pk)
-        return DirectiveTickResult(action="interpret_dispatched", directive_id=directive.pk)
+        return _report_dispatch(directive, dispatch_interpretation(directive), armed="interpret_dispatched")
     if directive.state == state.CLARIFYING:
         return _advance_clarifying(directive)
     if directive.state == state.INTERPRETED:
@@ -303,8 +298,25 @@ def _advance_clarifying(directive: Directive) -> DirectiveTickResult:
     """Re-interpret once every clarify question is answered; else wait on the human."""
     if not clarifications_answered(directive):
         return DirectiveTickResult(action="waiting", reason="awaiting_clarification", directive_id=directive.pk)
-    reinterpret_after_clarification(directive)
-    return DirectiveTickResult(action="reinterpret_dispatched", directive_id=directive.pk)
+    return _report_dispatch(directive, reinterpret_after_clarification(directive), armed="reinterpret_dispatched")
+
+
+def _report_dispatch(directive: Directive, dispatch: DirectiveDispatch | None, *, armed: str) -> DirectiveTickResult:
+    """Classify an interpret dispatch: armed, waiting on a live one, or parked on the budget.
+
+    A ``None`` return is either the dedup — an interpreter is already in flight, so
+    nothing was armed and reporting it as a dispatch would over-state progress and spend
+    a budget slot no work consumed — or the exhausted attempt budget, which PARKS the
+    directive. The resulting state is what tells the two apart.
+    """
+    if dispatch is not None:
+        return DirectiveTickResult(action=armed, directive_id=directive.pk)
+    if not directive.is_terminal:
+        return DirectiveTickResult(action="waiting", reason="interpreter_in_flight", directive_id=directive.pk)
+    logger.warning("directive_loop parked directive=%s: %s", directive.pk, directive.decision_reason)
+    return DirectiveTickResult(
+        action="interpret_exhausted", reason=directive.decision_reason, directive_id=directive.pk
+    )
 
 
 def _advance_admitted(directive: Directive) -> DirectiveTickResult:

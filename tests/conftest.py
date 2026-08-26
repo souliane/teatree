@@ -15,10 +15,13 @@ import pytest
 
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.core.factory import external_outcomes
-from teatree.core.worktree.branch_classification import reset_single_branch_cache
+from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
+from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
-from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
+from teatree.utils import ram_scope
+from teatree.utils.work_tree import reset_cwd_cache
 from tests._db_template import build_or_reuse_template, restore_from_template
+from tests._machine_probe import pinned_ram_headroom
 from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
@@ -172,9 +175,23 @@ def _reset_declaration_caches() -> Iterator[None]:
     """Drop the process-memoised repo declarations so one test's config never answers another's."""
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_forge_probe_cache()
     yield
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_forge_probe_cache()
+
+
+@pytest.fixture(autouse=True)
+def _pin_machine_memory_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the admission governor off THIS box's free memory.
+
+    ``read_machine_signal`` reads the cgroup-aware probe and the governor brakes at/under
+    ``RAM_BRAKE_FLOOR_GB``, so an unpinned suite reds tests that never mention memory
+    whenever the host is under pressure. A test that cares about the reading patches this
+    same seam in its own body, which lands after this fixture and therefore wins.
+    """
+    monkeypatch.setattr(ram_scope, "read_ram_headroom", pinned_ram_headroom)
 
 
 @pytest.fixture(autouse=True)
@@ -270,6 +287,34 @@ def _reset_log_throttle() -> Iterator[None]:
     reset_throttle()
     yield
     reset_throttle()
+
+
+@pytest.fixture(autouse=True)
+def _release_e2e_specs_claims() -> Iterator[None]:
+    """Drop process-lifetime E2E specs checkout claims around every test.
+
+    ``_e2e_specs_checkout._process_locks`` holds OPEN DESCRIPTORS, not values: the
+    kernel releases them when a real CLI run exits, but a test process outlives every
+    "run" it simulates. A leaked claim makes the next test's acquire of the same ref
+    refuse as busy — held by itself — and leaks a descriptor per test.
+    """
+    release_process_locks()
+    yield
+    release_process_locks()
+
+
+@pytest.fixture(autouse=True)
+def _reset_work_tree_cwd_cache() -> Iterator[None]:
+    """Drop the cwd → work-tree memo around every test.
+
+    ``work_tree._tree_for`` memoises ``git rev-parse --show-toplevel`` per directory —
+    correct for a real hook run, which is one process with one cwd. A test process runs
+    many such runs and creates and destroys git repositories between them, so a leaked
+    entry re-roots a later test's staged names against a tree that has since changed.
+    """
+    reset_cwd_cache()
+    yield
+    reset_cwd_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -566,11 +611,6 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("TICKET_DIR", raising=False)
     monkeypatch.delenv("WT_VARIANT", raising=False)
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
-    # The suite's git fixtures build their "real" checkouts under ``tmp_path``, which sits
-    # under the very temp roots #4577 treats as disposable — so an obligation a test means
-    # to be genuine would be refused. Pin the roots away from it; the tests that exercise
-    # the shipped defaults delete this var themselves.
-    monkeypatch.setenv(DISPOSABLE_ROOTS_ENV, "/nonexistent/t3-no-disposable-root")
     # Loop control is DB-only: ``review_loop_enabled`` reads the DB ``LoopState``
     # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
     # to isolate here (the env-inertness is pinned by

@@ -28,6 +28,10 @@ and does not, and for it the kind-level drop is what does the work. That, like t
 deterministic-kinds filter below, is what keeps this module a dependency-free leaf
 with no import of the failure taxonomy.
 
+Re-offer budget — :func:`reoffer_verdict` bounds how often ONE row may be reclaimed
+and re-offered, counted on the row rather than on its attempts, so a unit whose
+outcome nothing ever records still terminates instead of circulating forever.
+
 Named-cause stall (#3958) — a fingerprint compares FREE TEXT, so one deterministic
 defect whose message carries a varying detail (a differing sha, a differing spec
 name) produces two different fingerprints and never trips the check. A caller that
@@ -45,6 +49,9 @@ import re
 from django.conf import settings
 
 DEFAULT_MAX_PHASE_ITERATIONS = 5
+
+# Re-offers one Task row may take before the loop stops handing it out and escalates.
+MAX_REOFFERS = 3
 
 # Two consecutive identical fingerprints on the same phase ⇒ stall.
 STALL_REPEAT_THRESHOLD = 2
@@ -78,6 +85,28 @@ class MaxIterationsExceeded(RepairLoopError):  # noqa: N818 — ticket-mandated 
 
 class IterationStalled(RepairLoopError):  # noqa: N818 — ticket-mandated name (#2009)
     """A ticket-phase failed identically twice in a row — escalate, do not re-queue."""
+
+
+class ReofferBudgetExceeded(RepairLoopError):  # noqa: N818 — sibling of the two names above
+    """One Task row was re-offered too often without ever terminalizing."""
+
+
+def reoffer_verdict(*, ticket_id: int, phase: str, reclaim_count: int) -> None:
+    """Raise if a ROW has spent its re-offer budget; a no-op while it has one left.
+
+    The bound the iteration budget below cannot supply. That budget counts recorded
+    ``TaskAttempt`` rows, so a dispatch that never records its outcome leaves the
+    ledger frozen: the count stays put, the cap is never reached, and the same unit
+    is reclaimed and re-offered forever behind a completed counter that never moves.
+    Counting the RE-OFFERS themselves is independent of the ledger the failure
+    freezes, so it terminates even when nothing is ever recorded.
+    """
+    if reclaim_count >= MAX_REOFFERS:
+        msg = (
+            f"phase {phase!r} on ticket {ticket_id} was re-offered {reclaim_count} time(s) "
+            f"without terminalizing (budget {MAX_REOFFERS})."
+        )
+        raise ReofferBudgetExceeded(msg, ticket_id=ticket_id, phase=phase)
 
 
 def max_phase_iterations() -> int:

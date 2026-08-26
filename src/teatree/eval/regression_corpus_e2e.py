@@ -1,6 +1,6 @@
 """E2E test-plan regression predicates for the pinned-regression corpus.
 
-The two deterministic checks guarding the ``e2e post-test-plan`` media path live
+The two deterministic checks guarding the test-plan note's uploaded media live
 here (split out of :mod:`teatree.eval.regression_corpus` to keep that module
 under the health cap): the embed uses the claimable relative ``/uploads`` ref,
 and artifacts upload to the note's OWN project. Each returns ``True`` when the
@@ -74,15 +74,14 @@ def check_e2e_test_plan_uploads_to_note_project() -> bool:
     project namespace, so uploads on a different project are invisible to the note
     and every image 404s.
 
-    The fix routes the upload target through the backend layer: the command
-    resolves the upload project from ``issue_url`` via
-    :meth:`CodeHostBackend.repo_for_issue_url` (the note's own project), and the
-    backend's ``verify_upload`` cross-project guard rejects any upload whose
-    response landed on a different project than the resolved one. This check
-    exercises both backend invariants (the eval layer may import
+    The fix routes the upload target through the backend layer:
+    :meth:`CodeHostBackend.repo_for_issue_url` resolves the note's own project,
+    and the backend's ``verify_upload`` cross-project guard rejects any upload
+    whose response landed on a different project than the resolved one. This
+    check exercises both backend invariants (the eval layer may import
     ``teatree.backends`` but not the ``teatree.core.management`` command).
     First: ``repo_for_issue_url`` of a GitLab issue/work-item URL is the URL's
-    own project slug — so the command uploads to the note's project. Second:
+    own project slug. Second:
     ``verify_upload`` flags a response that landed on a different project than
     the (note's) project handed to it — the silent-wrong-project guard.
 

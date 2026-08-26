@@ -46,6 +46,18 @@ if TYPE_CHECKING:
     from teatree.cli.review.service import ReviewService
 
 
+def _inline_post_summary(*, anchored: bool, discussion_id: object, target: str, anchor: str) -> str:
+    """The #949 receipt line, worded from the anchor verdict.
+
+    The receipt fires before the verdict is returned (the note is colleague-visible
+    either way), so a fixed "posted inline comment" would DM the user the very false
+    success ``post_comment_impl`` then refuses with ``rc=1``.
+    """
+    if anchored:
+        return f"posted inline comment discussion_id={discussion_id} on {target}"
+    return f"posted MR-LEVEL note discussion_id={discussion_id} on {target} — GitLab dropped the anchor on {anchor}"
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def post_draft_note_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI flag on `review post-draft-note`.
     service: "ReviewService",
@@ -90,9 +102,11 @@ def post_draft_note_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public 
     return (
         f"GitLab refused to anchor the draft on {file}:{line} (line_code came back null). "
         "This usually means the file diff is collapsed because of its size; the draft_notes "
-        "API cannot anchor on collapsed-diff files. Workaround: "
-        f"`t3 review post-comment {repo} {mr} ... --file {file} --line {line}` "
-        "(creates an immediate non-draft inline discussion)."
+        "API cannot anchor on collapsed-diff files. Escape for THIS file only — the live path, "
+        f"which costs one human authorization per post: `t3 review authorize {repo}!{mr} "
+        f"--approver <user-id>` then `t3 review post-comment {repo} {mr} ... --file {file} "
+        f"--line {line} --live`. Keep every other finding on the default draft path; a plain "
+        "post-comment IS that draft path and lands back here."
     ), 1
 
 
@@ -146,6 +160,8 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
     first_note = notes[0] if isinstance(notes, list) and notes else {}
     note_web_url = str(first_note.get("web_url", "")) if isinstance(first_note, dict) else ""
     first_note_id = first_note.get("id") if isinstance(first_note, dict) else None
+    position = first_note.get("position") if isinstance(first_note, dict) else None
+    anchored = isinstance(position, dict) and bool(position.get("new_path"))
     verify_note_landed(api, encoded, mr, first_note_id, endpoint="notes")
     # Record the claim BEFORE the anchor verdict so a retry of a degraded post
     # is a no-op against the ledger, not a double-post — the rc=1 below is what
@@ -157,12 +173,16 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
         mr,
         review_action=ReviewAfterReceipt(
             action="post_comment",
-            summary=f"posted inline comment discussion_id={discussion_id} on {repo}!{mr}",
+            summary=_inline_post_summary(
+                anchored=anchored,
+                discussion_id=discussion_id,
+                target=f"{repo}!{mr}",
+                anchor=f"{file}:{line}",
+            ),
             note_web_url=note_web_url,
         ),
     )
-    position = first_note.get("position") if isinstance(first_note, dict) else None
-    if not (isinstance(position, dict) and position.get("new_path")):
+    if not anchored:
         return (
             f"REFUSED: GitLab silently downgraded the inline post on {file}:{line} to an MR-level "
             f"note (response notes[0].position has no new_path; discussion_id={discussion_id}). The "

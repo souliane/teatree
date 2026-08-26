@@ -151,7 +151,7 @@ class TestShipPathSanitize:
                 return_value=("feat: subject", CLOSING_BODY_HASH),
             ),
             patch("teatree.core.runners.ship.git.config_value", return_value="tester"),
-            patch("teatree.core.runners.ship.get_overlay", return_value=overlay),
+            patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=overlay),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=[]),
         ):
             return ShipExecutor._build_pr_spec(ticket, _FakeHost(), TEST_REPO, "feat-x", {})

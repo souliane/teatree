@@ -11,6 +11,7 @@ pins. ``write_single_trial_reports`` is also exercised directly for its
 transcript-html branch.
 """
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,10 +20,18 @@ from django.test import TestCase
 
 from teatree.cli.eval.app_helpers import write_single_trial_reports
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
-from teatree.eval.api_runner import ApiInProcessRunner
+from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
+from teatree.eval.backends import (
+    ANTHROPIC_API_BACKEND,
+    API_BACKEND,
+    PYDANTIC_AI_BACKEND,
+    TRANSCRIPT_BACKEND,
+    EvalRunner,
+)
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
-from teatree.llm.credentials import AnthropicSubscriptionCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
 
@@ -92,19 +101,31 @@ def _run_with(monkeypatch: pytest.MonkeyPatch, run_for) -> None:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class _Lane:
+    """The two lane knobs whose escalation behaviour these tests vary."""
+
+    backend: str = TRANSCRIPT_BACKEND
+    require_executed: bool = False
+
+
+_DEFAULT_LANE = _Lane()
+
+
 def _call(
     specs: list[EvalSpec],
     *,
     transcript_html: Path | None,
     summary_md: Path | None,
     escalation: EscalationConfig | None = None,
+    lane: _Lane = _DEFAULT_LANE,
 ) -> None:
     run_single_trial(
         specs,
-        backend="transcript",
+        backend=lane.backend,
         max_turns=None,
         transcript_dir=None,
-        require_executed=False,
+        require_executed=lane.require_executed,
         max_budget_usd=1.0,
         effort=None,
         parallel=1,
@@ -172,14 +193,97 @@ def _result(name: str, *, passed: bool) -> ScenarioResult:
     )
 
 
+class _RecordingRunnerFactory:
+    """Stands in for ``make_runner``, recording the backend + params each build asked for."""
+
+    def __init__(self, run_for=_failing_run) -> None:
+        self.calls: list[tuple[str, ApiRunnerParams]] = []
+        self._run_for = run_for
+
+    def __call__(self, backend: str, params: ApiRunnerParams | None = None, **_kwargs) -> EvalRunner:
+        self.calls.append((backend, params or ApiRunnerParams()))
+        return _StubRunner(self._run_for)
+
+
 class TestMakeEscalationRunner(TestCase):
-    def test_builds_a_fresh_run_api_runner_carrying_the_lane_effort(self) -> None:
-        # Escalation always RUNS the model fresh, so it is the api backend regardless
-        # of the initial backend, and it carries the lane effort. It resolves the
-        # default eval credential (subscription OAuth, #2707 reversal).
+    def test_the_cli_free_backend_escalates_on_itself_never_on_the_claude_cli(self) -> None:
+        # The anthropic_api lane exists to run WITHOUT a `claude` child; escalating it
+        # onto the CLI-backed api runner re-introduces the very binary the lane avoids.
+        runner = make_escalation_runner(
+            backend=ANTHROPIC_API_BACKEND, max_budget_usd=2.0, effort="high", require_executed=False
+        )
+        assert isinstance(runner, AnthropicApiRunner)
+        assert not isinstance(runner, ApiInProcessRunner)
+
+    def test_the_transcript_backend_is_the_only_one_that_falls_back_to_api(self) -> None:
+        # A transcript replays a recorded run, so it genuinely cannot produce a fresh
+        # trial — the ONE case where escalation must switch transports. It carries the
+        # lane effort and resolves the default eval credential (subscription OAuth).
         with patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"):
-            runner = make_escalation_runner(max_budget_usd=2.0, effort="high")
+            runner = make_escalation_runner(
+                backend=TRANSCRIPT_BACKEND, max_budget_usd=2.0, effort="high", require_executed=False
+            )
         assert isinstance(runner, ApiInProcessRunner)
+
+    def test_require_executed_makes_an_unrunnable_escalation_fail_loud(self) -> None:
+        # An escalation trial that cannot execute must RAISE, not skip: a silent skip is
+        # the "0/3 escalation trials" symptom that hid a genuine trial-1 failure.
+        runner = make_escalation_runner(
+            backend=ANTHROPIC_API_BACKEND, max_budget_usd=2.0, effort=None, require_executed=True
+        )
+        with (
+            patch.object(AnthropicApiKeyCredential, "resolve", side_effect=CredentialError("no key")),
+            pytest.raises(AnthropicApiKeyMissingError),
+        ):
+            runner.run(_spec("alpha"))
+
+    def test_without_require_executed_the_same_escalation_still_skips(self) -> None:
+        # The contrast that pins the FORWARDING: same unrunnable transport, flag off →
+        # the pre-existing skip. So the loud failure above comes from the forwarded flag.
+        runner = make_escalation_runner(
+            backend=ANTHROPIC_API_BACKEND, max_budget_usd=2.0, effort=None, require_executed=False
+        )
+        with patch.object(AnthropicApiKeyCredential, "resolve", side_effect=CredentialError("no key")):
+            run = runner.run(_spec("alpha"))
+        assert "skipped" in run.terminal_reason
+
+
+class TestEscalationBackendSelectionRule:
+    @pytest.mark.parametrize(
+        ("backend", "escalation_backend"),
+        [
+            (API_BACKEND, API_BACKEND),
+            (ANTHROPIC_API_BACKEND, ANTHROPIC_API_BACKEND),
+            (PYDANTIC_AI_BACKEND, PYDANTIC_AI_BACKEND),
+            (TRANSCRIPT_BACKEND, API_BACKEND),
+        ],
+    )
+    def test_mirrors_every_fresh_backend_and_rewrites_only_transcript(
+        self, monkeypatch: pytest.MonkeyPatch, backend: str, escalation_backend: str
+    ) -> None:
+        factory = _RecordingRunnerFactory()
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_runner", factory)
+        make_escalation_runner(backend=backend, max_budget_usd=2.0, effort=None, require_executed=False)
+        assert [called for called, _ in factory.calls] == [escalation_backend]
+
+    def test_the_escalation_inherits_the_lanes_backend_and_require_executed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # End to end through run_single_trial: a failing anthropic_api trial-1 escalates
+        # on anthropic_api with the lane's --require-executed still armed.
+        factory = _RecordingRunnerFactory()
+        monkeypatch.setattr("teatree.cli.eval.single_trial.make_runner", factory)
+        with pytest.raises(SystemExit):
+            _call(
+                [_spec("alpha")],
+                transcript_html=None,
+                summary_md=tmp_path / "summary.md",
+                escalation=EscalationConfig(escalate_trials=3),
+                lane=_Lane(backend=ANTHROPIC_API_BACKEND, require_executed=True),
+            )
+        escalation_backend, escalation_params = factory.calls[-1]
+        assert escalation_backend == ANTHROPIC_API_BACKEND
+        assert escalation_params.require_executed is True
 
 
 class _EscalationStubRunner:

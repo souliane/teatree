@@ -145,10 +145,10 @@ def _directive_consumer_liveness(
     """Whether the directive queue has a live consumer, and what must change if not.
 
     An unmasked loop row is only half the gate: every directive tick first runs the
-    fail-closed guard chain (the DARK ``directive_loop_enabled`` flag, signal trust, the
-    self-improve budget), and it ships off — so a queue whose loop row is enabled can
-    still have no consumer at all. The remediation names every blocker, so following it
-    cannot silence the finding while directives still never advance.
+    fail-closed guard chain (the ``directive_loop_enabled`` flag, signal trust, the
+    self-improve budget), any arm of which refuses on its own — so a queue whose loop row
+    is enabled can still have no consumer at all. The remediation names every blocker, so
+    following it cannot silence the finding while directives still never advance.
 
     A DRIVER is the third arm, and the one whose absence made this very check degrade to
     an advisory for two weeks: ``directive_loop`` is ``off_live_tick``, so nothing in the
@@ -183,7 +183,7 @@ def _directive_consumer_liveness(
         settings=settings if settings is not None else get_effective_settings(None), seams=seams
     )
     if not verdict.ok:
-        remedies = {FLAG_OFF: "turn on the DARK `directive_loop_enabled` setting"}
+        remedies = {FLAG_OFF: "turn `directive_loop_enabled` back on — it ships ON, so an override put it off"}
         remedy = remedies.get(verdict.reason, f"clear the {verdict.reason.split(':', 1)[0]} refusal")
         blockers.append(f"clear the guard refusal {verdict.reason!r} — {remedy}")
     return not blockers, "To restore the consumer: " + "; ".join(blockers) + "."

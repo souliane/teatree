@@ -36,12 +36,16 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    pr_reviewers_for_remote,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.utils import git, git_remote
-from teatree.utils.disposable_checkout import is_disposable_checkout
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
@@ -74,9 +78,6 @@ class DischargeResult(TypedDict, total=False):
 
 #: Not a deferral: nothing is owed, so it discharges rather than renewing the obligation.
 EMPTY_DELTA_SKIP = "branch carries no changes over the default branch — its pull request would be empty"
-#: Also not a deferral: a scratch clone is deleted when its review ends, so an obligation
-#: against it could only ever retry until someone discharged it by hand (#4577).
-DISPOSABLE_CHECKOUT_SKIP = "checkout is disposable (under a temp root) — its pull request could never be opened"
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
 PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
@@ -107,9 +108,6 @@ def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestS
     from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
 
     resolved_path = str(Path(repo_path).resolve())
-    if is_disposable_checkout(resolved_path):
-        logger.info("ensure-pr owes nothing for %s: %s is disposable", branch_name, resolved_path)
-        return EnsurePrResult(skipped=DISPOSABLE_CHECKOUT_SKIP, branch=branch_name, owed=False)
     try:
         retry_on_locked(
             lambda: PendingPullRequest.objects.owe(
@@ -276,8 +274,10 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
 
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
-    overlay = get_overlay()
+    # A genuinely orphan branch has no owning ticket to scope the overlay by, so
+    # it keeps the ambient default; a branch that HAS one is shipped under it.
     owning_ticket = _ticket_for_branch(branch_name)
+    overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     close_ticket = should_close_ticket(
         _ticket_extra_for_branch(branch_name),
         setting_enabled=overlay.config.mr_close_ticket,
@@ -318,8 +318,9 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         title=title,
         description=description,
         target_branch=resolve_pr_target_branch(owning_ticket, branch=branch_name),
-        labels=overlay_pr_labels(),
+        labels=overlay_pr_labels(overlay),
         assignee=assignee,
+        reviewers=pr_reviewers_for_remote(overlay, remote),
         draft=False,
     )
     try:

@@ -8,7 +8,9 @@ decision the leak gates call lives in :mod:`teatree.hooks.public_visibility`.
 :func:`resolve_publish_destination` / :func:`_destination_from_words` extract
 the target repo/namespace from the COMMAND ITSELF (the ``--repo``/``-R`` flag,
 the ``gh``/``glab api`` URL path, a forge URL positional, ``GH_REPO``, the
-``t3 review`` project positional, or the cwd git remote).
+``t3 review`` project positional, or the git remote of the dir the segment
+publishes FROM -- :func:`_commit_repo_dir.segment_cwds`, which every ``cd`` in
+the chain re-points, else the ambient hook cwd).
 
 Two classifiers over that target, with OPPOSITE fail directions for two
 consumers:
@@ -47,10 +49,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
+from urllib.parse import urlparse
 
 from teatree.config import cold_reader
-from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._gh_glab_hiding import raw_has_live_substitution, token_is_transport_construct
+from teatree.hooks._commit_repo_dir import NAVIGATION_VERBS, segment_cwds
+from teatree.hooks._gh_glab_hiding import command_segments, raw_has_live_substitution, token_is_transport_construct
 from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks._repo_visibility import (
     forge_qualified_slug,
@@ -66,6 +69,7 @@ from teatree.hooks.publish_surface import (
     _segment_is_publish_inert,
     _strip_benign_prefix,
 )
+from teatree.utils.url_slug import project_slug_from_ref
 
 
 @dataclass(frozen=True)
@@ -260,7 +264,11 @@ def _destination_from_api(words: list[str], tool: str) -> Destination | None:
 
 
 def _destination_from_current_repo(cwd: Path | None, forge: str) -> Destination | None:
-    """Resolve a flagless create/comment command's target from the git remote."""
+    """Resolve a flagless create/comment command's target from the git remote.
+
+    ``cwd`` is the SEGMENT's own publish dir (:func:`_commit_repo_dir.segment_cwds`),
+    not the raw ambient one.
+    """
     if cwd is None:
         return None
     slug = slug_for_cwd(cwd)
@@ -412,14 +420,17 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
         -- the project-slug positional (forge pinned to gitlab; ``t3 review`` is
         GitLab-only).
     - ``gh``/``glab`` ``pr``/``issue``/``mr`` ``create``/``comment``/``note``
-        with no ``--repo`` flag -- the CURRENT repo, via the git remote of
-        ``cwd``.
+        with no ``--repo`` flag -- the CURRENT repo, via the git remote of THAT
+        segment's own publish dir (:func:`_commit_repo_dir.segment_cwds`).
     - a ``python3``/``python``-led REST-publish script -- the SAME
         ``repos/``/``projects/`` path shape, resolved from a URL LITERAL in
         the script text (:func:`_destination_from_python_script`) instead of
         a CLI flag/positional.
 
-    Resolves only the FIRST command segment;
+    Resolves the first segment that is not a ``cd``/``pushd`` navigation, against
+    the dir bash would run THAT segment in (:func:`_commit_repo_dir.segment_cwds`)
+    -- reading segment ZERO would read the ``cd`` itself in exactly the case the
+    two dirs differ, making the cwd fallback unreachable where it is needed.
     :func:`public_visibility.gate_skips_for_visibility` is the multi-segment
     predicate. Returns ``None`` when the target cannot be determined (a
     non-publish command, a ``curl``/Slack surface, a flagless API call, or a
@@ -427,7 +438,10 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
     signal for :func:`is_public_destination` (treat as PUBLIC) and the
     fail-open signal for the affirmative-public scope (treat as NON-public).
     """
-    return _destination_from_words(first_segment_words(command), cwd)
+    for words, segment_cwd in zip(command_segments(command), segment_cwds(command, cwd), strict=True):
+        if words[0] not in NAVIGATION_VERBS:
+            return _destination_from_words(words, segment_cwd)
+    return None
 
 
 def _segment_carries_substitution_or_transport(words: list[str], raws: list[str]) -> bool:
@@ -513,12 +527,43 @@ def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
     return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
 
 
+def _host_relative_slug(slug: str) -> str:
+    """Reduce a full forge URL to the host-relative project path the allowlists key on.
+
+    The allowlist matchers key on the host-stripped ``owner/repo`` path
+    (:func:`slug_namespace_matches`), and recognise a host segment only as a
+    LEADING ``/``-segment containing a dot -- so a scheme-qualified
+    ``https://host/ns/repo/...`` leads with ``https:`` and matches nothing,
+    which the fail-closed default then reports as PUBLIC. The bash gates never
+    hit this: their parsers strip the scheme+host before building the
+    :class:`Destination`. The PROGRAMMATIC callers do -- ``t3 ... ticket
+    comment``/``create-sub`` and the on-behalf ``reply_transport`` name their
+    destination by full issue/work-item URL -- so a repo declared in
+    ``private_repos`` / ``internal_publish_namespaces`` was classified PUBLIC and
+    its own internal terms refused. Normalising here (rather than at each
+    caller) is what keeps the two mechanisms answering the same question.
+
+    :func:`teatree.utils.url_slug.project_slug_from_ref` is the one repo-slug
+    extractor, so an issue / work-item / PR / MR URL yields the clean project
+    slug the live visibility probe can also use. A URL it does not recognise
+    falls back to the raw path, which still carries the namespace segments the
+    allowlists match on -- the exact form the bash parsers already produce for
+    the same target. A non-URL slug is returned untouched.
+    """
+    if not slug.startswith(("http://", "https://")):
+        return slug
+    return project_slug_from_ref(slug) or urlparse(slug).path.strip("/")
+
+
 def is_public_destination(dest: Destination | None, *, config_path: Path | None = None) -> bool:
     """Return True iff ``dest`` should be treated as a PUBLIC publish target.
 
     FAIL-CLOSED classification: a destination is PUBLIC (the gate scans and
-    blocks) UNLESS it is PROVABLY internal. A destination is internal when ANY
-    of these resolves its slug to private:
+    blocks) UNLESS it is PROVABLY internal. The slug is first reduced to its
+    host-relative project path (:func:`_host_relative_slug`), so a bash gate's
+    bare/host-qualified slug and a programmatic caller's full issue/work-item URL
+    for the SAME repo classify identically. A destination is internal when ANY
+    of these resolves that slug to private:
 
     - the ``internal_publish_namespaces`` /
         ``T3_INTERNAL_PUBLISH_NAMESPACES`` denylist, as a case-insensitive
@@ -555,6 +600,9 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         return True
     slug = dest.slug.strip().lower()
     if not slug or "$" in slug:
+        return True
+    slug = _host_relative_slug(slug)
+    if not slug:
         return True
     if any(slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
         return False

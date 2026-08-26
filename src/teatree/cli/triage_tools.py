@@ -45,11 +45,14 @@ def label_issues(
     for s in suggestions:
         typer.echo(f"#{s.number} {s.title}  -> {', '.join(s.labels)}")
 
-    if apply:
-        suggester.apply(suggestions)
-        typer.echo(f"Applied labels to {len(suggestions)} issue(s).")
-    else:
+    if not apply:
         typer.echo(f"\n{len(suggestions)} issue(s) to label. Re-run with --apply to apply.")
+        return
+    failed = suggester.apply(suggestions)
+    typer.echo(f"Applied labels to {len(suggestions) - len(failed)} issue(s).")
+    if failed:
+        typer.echo(f"FAILED to label {len(failed)} issue(s): {', '.join(f'#{n}' for n in failed)}")
+        raise typer.Exit(code=1)
 
 
 def find_duplicates(
@@ -89,10 +92,11 @@ def triage_issues(
     ),
 ) -> None:
     """Scan for resolved-but-open and stale issues."""
-    from teatree.triage import TriageScanner  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.triage import HIGH_CONFIDENCE, TriageScanner  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     scanner = TriageScanner(repo)
 
+    failed: list[int] = []
     try:
         resolved = scanner.find_resolved()
     except ForgeEnumerationError as exc:
@@ -102,11 +106,19 @@ def triage_issues(
         for r in resolved:
             typer.echo(f"  #{r.issue_number}  {r.issue_title}")
             typer.echo(f"    ↳ merged PR #{r.pr_number}: {r.pr_title}  [{r.confidence}]")
+        closable = [r for r in resolved if r.confidence == HIGH_CONFIDENCE]
         if close_resolved:
-            scanner.close_resolved(resolved)
-            typer.echo(f"Closed {len(resolved)} resolved issue(s).")
+            failed = scanner.close_resolved(resolved)
+            typer.echo(f"Closed {len(closable) - len(failed)} resolved issue(s).")
+            if failed:
+                typer.echo(f"FAILED to close {len(failed)} issue(s): {', '.join(f'#{n}' for n in failed)}")
         else:
             typer.echo("\nRe-run with --close-resolved to close these issues.")
+        if len(closable) != len(resolved):
+            skipped = [r.issue_number for r in resolved if r.confidence != HIGH_CONFIDENCE]
+            typer.echo(
+                f"Left open for review — a loose `#N` mention is not a fix: {', '.join(f'#{n}' for n in skipped)}"
+            )
     else:
         typer.echo("No resolved-but-open issues found.")
 
@@ -120,6 +132,9 @@ def triage_issues(
             typer.echo(f"  #{s.issue_number}  {s.issue_title}  ({s.days_inactive}d inactive)")
     else:
         typer.echo(f"No stale issues (unlabeled, inactive >{stale_days}d).")
+
+    if failed:
+        raise typer.Exit(code=1)
 
 
 def register(app: typer.Typer) -> None:

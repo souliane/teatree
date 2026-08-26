@@ -46,6 +46,7 @@ class SerializedPrSpec(TypedDict):
     target_branch: str
     labels: list[str]
     assignee: str
+    reviewers: list[str]
     draft: bool
 
 
@@ -93,21 +94,6 @@ class PendingPullRequestManager(models.Manager["PendingPullRequest"]):
 
     def discharge(self, *, repo_path: str, branch: str) -> None:
         self.filter(repo_path=repo_path, branch=branch).delete()
-
-    def retire_absent(self) -> list[tuple[int, str, str]]:
-        """Drop every obligation whose checkout is gone, returning ``(pk, branch, repo_path)`` each.
-
-        Not a relaxation of the no-orphan invariant — a terminal state it was missing.
-        A deleted checkout cannot be pushed from, so ``ensure-pr`` can never discharge
-        the row: it retried ~12,000 times across 16 of these and turned
-        ``t3 doctor check`` into 16 permanent FAILs that buried the five real findings
-        (#4577). Nothing work-bearing goes with it — a branch that WAS pushed stays
-        covered by the orphan-branch guard on the remote, and one that was not is
-        already gone with the directory, row or no row.
-        """
-        gone = [row for row in self.all() if not Path(row.repo_path).exists()]
-        self.filter(pk__in=[row.pk for row in gone]).delete()
-        return [(row.pk, row.branch, row.repo_path) for row in gone]
 
     def overdue(self) -> models.QuerySet["PendingPullRequest"]:
         return self.filter(drain_attempts__gte=MAX_DRAIN_ATTEMPTS)

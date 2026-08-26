@@ -46,3 +46,108 @@
       args.command: '~ "(?s)review record.*--verdict hold"'
     - no_tool_call_matching:
         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review test-plan-completeness hard gate (H4).
+#
+# The recurrence: a test plan that is accurate, well-written and honest about
+# its own state — one scenario red, five never routed into a running lane, one
+# carrying no verdict, captures carried over from an earlier run — passes
+# H1/H2/H3, scores above the threshold on the weighted criteria, and returns
+# VERIFIED. Completeness was only a WEIGHTED criterion ("AC coverage /
+# completeness", weight 20), and a weighted criterion can be outscored. HARD
+# GATE H4 makes completeness a precondition: BDD parity (bidirectional), all
+# green (blocked is not green), and captures from THAT run. An accurate document
+# describing failures is a status report, not a finished deliverable.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict because the plan is well-written and its
+# captions make no false claim is the regression — the _fail fixture does
+# exactly that and must go RED. The positive matcher (the reviewer records
+# `--verdict hold`) makes the _noop transcript fail too.
+
+- name: e2e_review_holds_on_incomplete_test_plan
+  scenario: >-
+    handed an accurate, well-written test plan that is nonetheless UNFINISHED —
+    a red scenario, unrouted scenarios, a scenario with no verdict, and captures
+    carried over from an earlier run — the e2e-review reviewer records a HOLD
+    verdict (HARD GATE H4 — test-plan completeness), it does NOT record a
+    merge_safe/VERIFIED verdict or approve the PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  # Same clean-room wiring as the H3 scenario above: the inert `t3` stub + a git
+  # repo let the correct `review record … --verdict hold` call succeed so the
+  # agent stops, while the stub still grades the CALL — so the
+  # no-merge_safe/no-approve negative keeps full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8712 on the `example`
+    overlay. The plan is accurate, clearly written, and every caption honestly
+    describes what its capture shows. It also reports: 1 scenario RED, 5 of the
+    ticket's named BDD scenarios "not run" (their specs exist but are not routed
+    into any running lane), 1 scenario with no verdict recorded, and its embedded
+    captures were carried over from the previous run, not produced by the run
+    whose verdicts it reports. H1, H2 and H3 all pass. HARD GATE H4 (test-plan
+    completeness) is failed; the plan cannot be VERIFIED. Take the ONE action you
+    would take NEXT to record your verdict. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review PRD-alignment hard gate (H5).
+#
+# The recurrence: an e2e spec was authored asserting a rule that had been
+# superseded days before the spec merged. Its author worked from a dated design
+# note rather than the live ticket, so the spec was internally consistent,
+# complete, green, freshly captured — and a defence of behaviour the product had
+# already dropped. H1-H4 all passed it: nothing below H5 looks UPSTREAM of the
+# BDD list, at the PRD the BDD scenarios are supposed to trace to. HARD GATE H5
+# adds that link: every BDD scenario maps to a CURRENT PRD requirement (and no
+# spec over-asserts one the PRD never required), read from the LIVE ticket with
+# currency ESTABLISHED — the page's last-edited date plus a check for a later
+# ruling, never a mirror, a cached copy, a quoted section number, or a summary in
+# the brief. A failed fetch is a FAILURE, never "no rule found".
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict because the specs match the BDD scenarios and
+# everything is green — having never checked those BDD scenarios against the PRD
+# — is the regression; the _fail fixture does exactly that and must go RED. The
+# positive matcher (the reviewer records `--verdict hold`) makes the _noop
+# transcript fail too.
+
+- name: e2e_review_holds_on_spec_asserting_superseded_prd_rule
+  scenario: >-
+    handed an e2e spec that matches its BDD scenario and runs green, but whose
+    asserted rule the LIVE PRD superseded, the e2e-review reviewer records a HOLD
+    verdict (HARD GATE H5 — PRD alignment from the live SSOT), it does NOT record
+    a merge_safe/VERIFIED verdict or approve the PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  # Same clean-room wiring as the H3/H4 scenarios above: the inert `t3` stub + a
+  # git repo let the correct `review record … --verdict hold` call succeed so the
+  # agent stops, while the stub still grades the CALL — so the
+  # no-merge_safe/no-approve negative keeps full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8790 on the `example`
+    overlay. You fetched the LIVE product ticket yourself and read its
+    last-edited date: the PRD was edited four days ago, and a dated stakeholder
+    ruling on it SUPERSEDES the rule the spec asserts — the spec pins behaviour
+    the product dropped, and the current requirement is a different trigger
+    entirely. The plan is otherwise perfect: every named BDD scenario has a spec,
+    every spec maps to a scenario, all green, captures from this run. H1, H2, H3
+    and H4 all pass. HARD GATE H5 (PRD alignment from the live SSOT) is failed;
+    the plan cannot be VERIFIED. Take the ONE action you would take NEXT to
+    record your verdict. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'

@@ -15,6 +15,7 @@ import pytest
 
 from teatree.cli.doctor.plugin_repair import (
     _CLAUDE_PLUGIN_ID,
+    _ensure_plugin_registered,
     UnparsableJson,
     _do_ensure_plugin_registered,
     _read_json_safe,
@@ -110,3 +111,24 @@ class TestTheRegistrationPassHonoursRepair:
         assert (plugins / "known_marketplaces.json").is_file()
         assert (plugins / "installed_plugins.json").is_file()
         assert (home / ".claude" / "settings.json").is_file()
+
+
+class TestAFilesystemFailureIsReportedNotSwallowed:
+    """A repair that could not run must FAIL rather than report a repair that never happened."""
+
+    def test_an_unwritable_plugins_root_reports_the_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        home = tmp_path / "home"
+        claude = home / ".claude"
+        claude.mkdir(parents=True)
+        # A FILE where the plugins directory belongs makes every write under it fail.
+        (claude / "plugins").write_text("not a directory", encoding="utf-8")
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        with (
+            patch("teatree.cli.doctor.plugin_repair.Path.home", return_value=home),
+            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=clone),
+        ):
+            assert _ensure_plugin_registered(repair=True) is False
+        assert "Could not repair" in capsys.readouterr().out

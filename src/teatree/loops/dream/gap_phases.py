@@ -138,13 +138,9 @@ class GapPromotionPhases:
         except Exception as exc:  # noqa: BLE001 — a memory-promotion failure degrades to a WARN clause
             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
         new_fixes = sum(1 for o in promoted if o.filed)
-        withheld = sum(1 for o in promoted if o.withheld)
         if not promoted and not reconciled:
             return ""
-        summary = f"; promoted {new_fixes} core-gap fix(es), reconciled {len(reconciled)} merged"
-        # A withheld gap shows in neither count, so without its own clause an
-        # ungrounded or leak-scrubbed gap is silently invisible in the pass line.
-        return f"{summary}, withheld {withheld}" if withheld else summary
+        return f"; promoted {new_fixes} core-gap fix(es), reconciled {len(reconciled)} merged"
 
 
 def _umbrella_url() -> str:

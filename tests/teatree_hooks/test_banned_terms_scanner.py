@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.banned_terms import marker as banned_terms_marker
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
 from teatree.hooks._command_parser import (
@@ -34,6 +35,9 @@ from teatree.hooks._command_parser import (
 )
 from teatree.hooks._publish_detection import command_has_opaque_forge_transport
 from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_message
+
+# `handle_banned_terms_pretool` is a router handler, so the router is the only hook that scans.
+_SCANNING_HOOK_SCRIPT = "hook_router.py"
 
 
 def _seed_config_db(tmp_path: Path, *, filename: str = "config.sqlite3", **settings: list[str]) -> Path:
@@ -1336,14 +1340,15 @@ class TestScanTextScannerCrashFailsClosed:
         )
 
     def test_timeout_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A timeout carries its OWN marker (see TestScanTimeoutIsDistinctFromCrash);
+        # what this row pins is that it still BLOCKS — it never resolves to None.
         def _hang(*_args: object, **_kwargs: object) -> None:
             raise banned_terms_scanner.TimeoutExpired(cmd=["check"], timeout=10)
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _hang)
-        assert (
-            banned_terms_scanner.scan_text("acmecorp", config_path=config)
-            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
-        )
+        term = banned_terms_scanner.scan_text("acmecorp", config_path=config)
+        assert term is not None
+        assert banned_terms_scanner.marker_deny_message(term) is not None
 
     def test_exit_one_with_empty_stdout_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # THE precise #1954 import-crash shape: the scanner exits 1 (a Python
@@ -1375,6 +1380,244 @@ class TestScanTextScannerCrashFailsClosed:
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: _HitResult())
         assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
+
+
+class _CleanResult:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+class _HitReportResult:
+    returncode = 1
+    stdout = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp\n"
+    stderr = ""
+
+
+def _capture_scan_timeout(config: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Return the subprocess budget ``scan_text`` actually hands the shell scanner."""
+    seen: dict[str, int] = {}
+
+    def _capture(*_args: object, timeout: int = 0, **_kwargs: object) -> _CleanResult:
+        seen["timeout"] = timeout
+        return _CleanResult()
+
+    monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _capture)
+    banned_terms_scanner.scan_text("an ordinary line", config_path=config)
+    return seen["timeout"]
+
+
+class TestScanTimeoutEnvSeam:
+    """The scan budget is operator-settable, so a slow venue widens it instead of failing closed.
+
+    A fixed budget gave a loaded CI runner no way to say "this box is slower than a
+    dev laptop", so load presented as a broken scanner and blocked clean content.
+    """
+
+    def test_default_budget_applies_when_the_env_is_unset(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, raising=False)
+        assert _capture_scan_timeout(config, monkeypatch) == banned_terms_scanner.SCAN_TIMEOUT_DEFAULT_S
+
+    def test_env_widens_the_budget(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "45")
+        assert _capture_scan_timeout(config, monkeypatch) == 45
+
+    @pytest.mark.parametrize("value", ["", "   ", "abc", "-5", "0", "10.5"])
+    def test_unusable_value_falls_back_to_the_default(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, value)
+        assert _capture_scan_timeout(config, monkeypatch) == banned_terms_scanner.SCAN_TIMEOUT_DEFAULT_S
+
+    def test_default_stays_under_the_harness_hook_ceiling(self) -> None:
+        # The harness SIGKILLs a hook at its `hooks.json` timeout, and a killed hook
+        # emits no verdict at all — so a default at or above that ceiling would lose
+        # the fail-closed marker instead of returning it.
+        hooks_json = json.loads((Path(__file__).resolve().parents[2] / "hooks" / "hooks.json").read_text())
+        # Only the router can reach a scan; a non-router registration's budget bounds it not at all.
+        budgets = [
+            hook["timeout"]
+            for matchers in hooks_json["hooks"].values()
+            for matcher in matchers
+            for hook in matcher["hooks"]
+            if "timeout" in hook and _SCANNING_HOOK_SCRIPT in hook.get("command", "")
+        ]
+        assert budgets, f"no {_SCANNING_HOOK_SCRIPT} registration declares a timeout — the ceiling is unproven"
+        assert min(budgets) > banned_terms_scanner.SCAN_TIMEOUT_DEFAULT_S
+
+
+class TestScanTimeoutIsDistinctFromCrash:
+    """A timeout and a crash need opposite remedies, so they must not share one marker.
+
+    Widen the budget vs repair the install — one undifferentiated string made a burst
+    of load-driven timeouts read as ten broken interpreters across five pipelines.
+    """
+
+    def test_timeout_carries_its_own_marker(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _hang(*_args: object, **_kwargs: object) -> None:
+            raise banned_terms_scanner.TimeoutExpired(cmd=["check"], timeout=10)
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _hang)
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_TIMEOUT_MARKER
+        )
+
+    def test_the_two_markers_are_different(self) -> None:
+        assert banned_terms_scanner.SCANNER_TIMEOUT_MARKER != banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+
+    @pytest.mark.parametrize(
+        "raise_exc",
+        [
+            pytest.param(lambda: (_ for _ in ()).throw(OSError("spawn refused")), id="oserror"),
+            pytest.param(
+                lambda: (_ for _ in ()).throw(banned_terms_scanner.CommandFailedError(["check"], 2, "", "boom")),
+                id="unexpected-exit",
+            ),
+        ],
+    )
+    def test_a_genuine_crash_keeps_the_unavailable_marker(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch, raise_exc: object
+    ) -> None:
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: raise_exc())  # type: ignore[operator]
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+    def test_timeout_message_names_the_budget_and_the_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, raising=False)
+        message = banned_terms_scanner.format_scanner_timeout_message()
+        assert banned_terms_scanner.SCAN_TIMEOUT_ENV in message
+        assert str(banned_terms_scanner.SCAN_TIMEOUT_DEFAULT_S) in message
+        assert banned_terms_scanner.SCANNER_TIMEOUT_MARKER not in message
+
+        # the budget the run was actually killed at, never the shipped default
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "45")
+        assert "45s" in banned_terms_scanner.format_scanner_timeout_message()
+
+    def test_timeout_message_is_not_the_crash_message(self) -> None:
+        assert banned_terms_scanner.format_scanner_timeout_message() != (
+            banned_terms_scanner.format_scanner_unavailable_message()
+        )
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            pytest.param(banned_terms_scanner.TimeoutExpired(cmd=["check"], timeout=10), "timed out", id="timeout"),
+            pytest.param(OSError("spawn refused"), "OSError", id="oserror"),
+            pytest.param(
+                banned_terms_scanner.CommandFailedError(["check"], 2, "", "boom"),
+                "CommandFailedError",
+                id="unexpected-exit",
+            ),
+        ],
+    )
+    def test_each_failure_class_names_itself_on_stderr(
+        self,
+        config: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        exc: Exception,
+        expected: str,
+    ) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise exc
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _raise)
+        banned_terms_scanner.scan_text("acmecorp", config_path=config)
+        assert expected in capsys.readouterr().err
+
+
+class TestScannerFailureStillBlocksEveryDestination:
+    """Anti-vacuity: the seam widens the budget, it must not open the gate.
+
+    Both scanner markers HARD-BLOCK on every surface — unlike the two unreadable-BODY
+    markers, which a local commit downgrades to a warn. The must-flag and must-pass
+    rows are the control: a green here cannot come from a gate that blocks everything,
+    nor from one that was quietly disabled.
+    """
+
+    _PUBLIC_POST = "gh issue create -R souliane/teatree --title t --body-file /tmp/b.md"
+    _LOCAL_COMMIT = "git commit -m 'an ordinary subject'"
+
+    @pytest.mark.parametrize("command", [_PUBLIC_POST, _LOCAL_COMMIT])
+    @pytest.mark.parametrize("marker_name", ["SCANNER_TIMEOUT_MARKER", "SCANNER_UNAVAILABLE_MARKER"])
+    def test_scanner_markers_hard_block(self, marker_name: str, command: str) -> None:
+        verdict = banned_terms_marker.resolve_marker(getattr(banned_terms_scanner, marker_name), command, None)
+        assert verdict.is_marker
+        assert verdict.warning is None
+        assert verdict.deny_message is not None
+
+    def test_a_planted_term_is_still_flagged_under_a_widened_budget(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "45")
+        assert banned_terms_scanner.scan_text("we ship to acmecorp next week", config_path=config) == "acmecorp"
+
+    def test_clean_text_still_passes_under_a_widened_budget(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "45")
+        assert banned_terms_scanner.scan_text("we ship the docs refresh next week", config_path=config) is None
+
+
+class TestTheSeamRescuesASlowScanRatherThanBlocking:
+    """The flap itself: a scan SLOWER than the budget, not a scanner that is broken.
+
+    Attribution is load/timing — the same commit burst across 0/12, 7/12 and 8/12
+    shards on different runs — so the property worth pinning is that the
+    scanner-unavailable path stops being REACHABLE once the venue can state its own
+    budget. Every row below drives the identical simulated scanner; only the budget
+    changes, so a green cannot come from the scanner having been made faster or the
+    gate quieter.
+    """
+
+    @staticmethod
+    def _scanner_needing(seconds: int, result: object) -> object:
+        """A scanner that finishes only when handed a budget of at least *seconds*."""
+
+        def _run(*_args: object, timeout: int = 0, **_kwargs: object) -> object:
+            if timeout < seconds:
+                raise banned_terms_scanner.TimeoutExpired(cmd=["check"], timeout=timeout)
+            return result
+
+        return _run
+
+    def test_the_default_budget_kills_a_slow_scan_and_blocks(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, raising=False)
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", self._scanner_needing(30, _HitReportResult()))
+        assert (
+            banned_terms_scanner.scan_text("ship to acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_TIMEOUT_MARKER
+        )
+
+    def test_the_widened_budget_lets_the_same_scan_report_its_real_verdict(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "30")
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", self._scanner_needing(30, _HitReportResult()))
+        assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
+
+    def test_the_widened_budget_lets_a_slow_clean_scan_pass(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The flap's actual victim: CLEAN content refused because the scan was slow.
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "30")
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", self._scanner_needing(30, _CleanResult()))
+        assert banned_terms_scanner.scan_text("ship the docs refresh", config_path=config) is None
+
+    def test_a_scan_slower_than_even_the_widened_budget_still_blocks(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The seam raises the ceiling; it never removes it. A genuine hang is still refused.
+        monkeypatch.setenv(banned_terms_scanner.SCAN_TIMEOUT_ENV, "30")
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", self._scanner_needing(600, _CleanResult()))
+        term = banned_terms_scanner.scan_text("ship the docs refresh", config_path=config)
+        assert term == banned_terms_scanner.SCANNER_TIMEOUT_MARKER
+        assert banned_terms_scanner.marker_deny_message(term) is not None
 
 
 class TestUnreadableStoreFailsClosedOnThePublishSurface:

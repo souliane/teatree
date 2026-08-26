@@ -15,6 +15,8 @@ import pytest
 import hooks.scripts.hook_router as router
 from teatree.core.account_fingerprint import record_fingerprint
 
+RECOVERY_COMMAND = "t3 setup recover-account-switch"
+
 
 def _write_active_account(home: Path, account_uuid: str) -> None:
     (home / ".claude.json").write_text(
@@ -45,17 +47,30 @@ class TestAccountSwitchAdvisory:
         advisory = router._account_switch_advisory()
         assert advisory is not None
         assert "account switch detected" in advisory.lower()
-        assert "t3 doctor check" in advisory
+        assert RECOVERY_COMMAND in advisory
 
     def test_merge_prepends_advisory_to_session_context(self, staged_home: Path) -> None:
         _write_active_account(staged_home, "uuid-B")
         record_fingerprint("uuid-A", home=staged_home)
         merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
         assert "BASE DIRECTIVE" in merged
-        assert merged.index("t3 doctor check") < merged.index("BASE DIRECTIVE")
+        assert merged.index(RECOVERY_COMMAND) < merged.index("BASE DIRECTIVE")
 
     def test_merge_no_switch_leaves_context_unchanged(self, staged_home: Path) -> None:
         _write_active_account(staged_home, "uuid-A")
         record_fingerprint("uuid-A", home=staged_home)
         merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
         assert "account switch detected" not in merged.lower()
+
+
+class TestDirectiveAgreesWithItsConsumer:
+    """The advisory repeats every session until recovery runs, so both halves must name one."""
+
+    def test_directive_names_the_bounded_recovery(self) -> None:
+        assert RECOVERY_COMMAND in router._ACCOUNT_SWITCH_DIRECTIVE
+
+    def test_consumer_documents_the_same_recovery(self) -> None:
+        assert RECOVERY_COMMAND in (router._account_switch_advisory.__doc__ or "")
+
+    def test_consumer_does_not_still_document_the_doctor_sweep(self) -> None:
+        assert "t3 doctor" not in (router._account_switch_advisory.__doc__ or "")

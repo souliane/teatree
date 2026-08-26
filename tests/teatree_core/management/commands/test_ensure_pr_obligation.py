@@ -24,7 +24,6 @@ from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.models import PendingPullRequest
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
-from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _run_git
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
@@ -270,39 +269,3 @@ class DischargePendingIsTheDoctorFailEscapeHatchTestCase(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._capsys = capsys
-
-
-class ADisposableCheckoutOwesNothingTestCase(TestCase):
-    """A cold review's scratch clone is deleted when the review ends (#4577).
-
-    Sixteen obligations registered against such clones accumulated ~12,000 failed
-    drains and sixteen permanent ``t3 doctor check`` FAILs, because the drain
-    re-runs ``ensure-pr`` against a directory that no longer exists.
-
-    Real git under ``tmp_path`` — which IS under a temp root — so the disposable
-    verdict is reached by the genuine production path, not a patched predicate.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _inject_fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._tmp_path = tmp_path
-        self._monkeypatch = monkeypatch
-
-    def test_a_first_push_from_a_temp_root_clone_owes_no_obligation(self) -> None:
-        self._monkeypatch.delenv(DISPOSABLE_ROOTS_ENV, raising=False)
-        repo, branch = _first_push_repo(self._tmp_path)
-
-        result = cast("dict[str, object]", call_command("pr", "ensure-pr", repo=str(repo), branch=branch))
-
-        assert result["skipped"] == ensure_pr_mod.DISPOSABLE_CHECKOUT_SKIP
-        assert not result["owed"]
-        assert not PendingPullRequest.objects.exists()
-
-    def test_the_same_clone_outside_a_temp_root_still_owes(self) -> None:
-        """The control: without it, a broken fixture would satisfy the test above too."""
-        repo, branch = _first_push_repo(self._tmp_path)
-
-        result = cast("dict[str, object]", call_command("pr", "ensure-pr", repo=str(repo), branch=branch))
-
-        assert result["owed"] is True
-        assert PendingPullRequest.objects.filter(branch=branch).exists()

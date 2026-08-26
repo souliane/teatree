@@ -9,7 +9,7 @@ teatree-core fix path?" — Pass-2 triage and the compliance recurrence redirect
 import pytest
 
 from teatree.loops.dream.compliance import _is_memory_only
-from teatree.loops.dream.destination import points_at_core_fix
+from teatree.loops.dream.promote_memory import points_at_core_fix
 
 
 @pytest.mark.parametrize(

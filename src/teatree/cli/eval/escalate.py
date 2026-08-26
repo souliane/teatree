@@ -11,7 +11,12 @@ trial, each at ``escalate_trials`` higher trials, and classifies the result:
 *   it passes on ANY escalation trial → ``flaky`` — the agent IS capable of the
     right behavior, so trial 1 was noise; this is NOT a hard red;
 *   every escalation trial fails → ``confirmed`` — a real, non-flaky failure; the
-    lane goes RED.
+    lane goes RED;
+*   every escalation trial SKIPS → ``unresolved`` — the re-run never happened, so
+    nothing disambiguated trial 1; the failure stands and the lane goes RED.
+
+Only ``flaky`` clears. "We could not re-run it" is not evidence the agent is
+capable, so an unresolved escalation must never green a lane on an unproven pass.
 
 So the lane is cheap on the common all-green path (no escalation runs at all) and
 only spends extra trials to disambiguate a failure into flaky-vs-real before it
@@ -23,19 +28,23 @@ single-trial path builds.
 """
 
 import dataclasses
+from collections import Counter
 from collections.abc import Callable
 from typing import Literal
 
 from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import CAP_TERMINAL_REASONS, EvalSpec
-from teatree.eval.pass_at_k import run_pass_at_k
+from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.report import ScenarioResult
 from teatree.eval.surface import is_advisory
 
 #: An injected trial runner — maps a spec to one graded :class:`ScenarioResult`.
 TrialRunner = Callable[[EvalSpec], ScenarioResult]
 
-EscalationClass = Literal["flaky", "confirmed"]
+EscalationClass = Literal["flaky", "confirmed", "unresolved"]
+
+#: The ONLY classification that clears a trial-1 failure; every other one reds the lane.
+CLEARING_CLASS: EscalationClass = "flaky"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,9 +52,9 @@ class EscalationConfig:
     """Adaptive escalate-on-fail knobs (the ``--escalate-on-fail`` PR-lane path).
 
     When set, a single-trial FAILURE is not yet a hard red: each failed scenario
-    is re-run at ``escalate_trials`` higher trials. It reds the lane only if every
-    escalation trial also fails (``confirmed``); a scenario that passes on any
-    escalation trial is reported flaky-but-passing (``flaky``), not red. Lives here
+    is re-run at ``escalate_trials`` higher trials. Only a scenario that passes on
+    some escalation trial is cleared (``flaky``, not red); one whose trials all fail
+    (``confirmed``) or all skip (``unresolved``) reds the lane. Lives here
     (the escalation module) so both the single-trial runner and the CLI validator
     import it without a cross-module import cycle.
     """
@@ -58,8 +67,9 @@ class EscalationOutcome:
     """One re-run scenario's escalation verdict.
 
     ``classification`` is ``flaky`` when the scenario passed at least one of its
-    ``trials`` escalation trials (capable agent, trial-1 noise) or ``confirmed``
-    when every escalation trial failed (a real, non-flaky failure).
+    ``trials`` escalation trials (capable agent, trial-1 noise), ``confirmed`` when
+    every escalation trial failed (a real, non-flaky failure), or ``unresolved`` when
+    every escalation trial skipped (the re-run never happened).
 
     ``advisory`` carries the scenario's question SURFACE through to the verdict: an
     ``interactive``-surface scenario is re-run and reported exactly like any other,
@@ -81,22 +91,26 @@ class EscalationOutcome:
 
     @property
     def is_hard_red(self) -> bool:
-        """Only a ``confirmed`` failure on a GATING scenario reds the lane.
+        """Anything but a ``flaky`` clear reds the lane, unless the scenario is advisory.
 
-        A ``flaky`` pass never reds — the agent proved it is capable. Neither does
-        an ``advisory`` (``surface: interactive``) scenario, however solidly
-        confirmed: its verdict rides a bundled claude CLI's ``AskUserQuestion``
+        Phrased as "did not clear" rather than "is confirmed" so the DEFAULT is to
+        gate: only a demonstrated pass retires the trial-1 failure, and a future
+        classification cannot silently green a lane by not being ``confirmed``.
+
+        An ``advisory`` (``surface: interactive``) scenario never reds, however
+        solidly confirmed: its verdict rides a bundled claude CLI's ``AskUserQuestion``
         rendering rather than the question contract teatree owns (#3855).
         """
-        return self.classification == "confirmed" and not self.advisory
+        return self.classification != CLEARING_CLASS and not self.advisory
 
 
 @dataclasses.dataclass(frozen=True)
 class EscalationReport:
     """The aggregate escalation result: the per-scenario outcomes + the lane verdict.
 
-    ``hard_red`` is ``True`` iff at least one escalated scenario was ``confirmed``
-    (every escalation trial failed) — the signal the CLI uses to exit non-zero.
+    ``hard_red`` is ``True`` iff at least one GATING escalated scenario failed to
+    clear — ``confirmed`` (every trial failed) or ``unresolved`` (every trial
+    skipped) — the signal the CLI uses to exit non-zero.
     """
 
     outcomes: list[EscalationOutcome]
@@ -119,9 +133,13 @@ def render_escalation_markdown(report: EscalationReport) -> str:
     # Counted by CLASSIFICATION, not by ``is_hard_red``: an advisory scenario that
     # failed every escalation trial IS confirmed and must read as such — it simply
     # does not gate. Counting it as flaky would hide a real interactive regression.
-    confirmed = sum(1 for outcome in report.outcomes if outcome.classification == "confirmed")
-    flaky = len(report.outcomes) - confirmed
-    header = f"**Escalation** — {confirmed} confirmed, {flaky} flaky (of {len(report.outcomes)} re-run)"
+    # Every class is counted on its own for the same reason — folding ``unresolved``
+    # into a flaky remainder would report a never-re-run failure as a cleared one.
+    counts = Counter(outcome.classification for outcome in report.outcomes)
+    header = (
+        f"**Escalation** — {counts['confirmed']} confirmed, {counts['flaky']} flaky, "
+        f"{counts['unresolved']} unresolved (of {len(report.outcomes)} re-run)"
+    )
     table = [
         "| scenario | escalation trials | classification |",
         "| --- | --- | --- |",
@@ -155,10 +173,9 @@ def escalate_failures(
     Returns the per-scenario :class:`EscalationOutcome` list (empty when nothing
     failed trial 1) and, via :attr:`EscalationReport.hard_red`, whether the lane
     must go RED. A scenario re-runs at ``require="any"`` semantics: passing on any
-    escalation trial is enough to clear it as ``flaky``. An escalation whose every
-    trial SKIPPED produced no evidence at all — a provisioning gate that fell away
-    between trial 1 and the re-runs (an expired key, a vanished binary) — so it
-    clears as ``flaky`` rather than reddening the lane on an absent verdict.
+    escalation trial is enough — and the only thing enough — to clear it as ``flaky``.
+    An escalation whose every trial SKIPPED disambiguated nothing, so it classifies as
+    ``unresolved`` and still reds the lane rather than clearing on an absent verdict.
     """
     if escalate_trials < 2:  # noqa: PLR2004 — one trial is no escalation; the trial-1 result already covers it.
         msg = f"escalate_trials must be >= 2 (got {escalate_trials}); a single trial is not an escalation."
@@ -168,10 +185,7 @@ def escalate_failures(
         if not _failed(result):
             continue
         aggregate = run_pass_at_k(result.spec, runner, k=escalate_trials, require="any")
-        # NOT `aggregate.ok`: that is the weekly gate's verdict and vetoes on cap taint (#2192),
-        # which reds a scenario a majority of whose escalation trials passed cleanly (#4243).
-        cleared = aggregate.skipped or aggregate.passes >= 1
-        classification: EscalationClass = "flaky" if cleared else "confirmed"
+        classification = _classify(aggregate)
         outcomes.append(
             EscalationOutcome(
                 spec_name=result.spec.name,
@@ -185,3 +199,21 @@ def escalate_failures(
             )
         )
     return EscalationReport(outcomes=outcomes)
+
+
+def _classify(aggregate: PassAtKResult) -> EscalationClass:
+    """The escalation verdict for one re-run scenario's aggregate.
+
+    ``PassAtKResult.ok`` is ``True`` for an all-skipped aggregate, which is right for
+    a plain pass@k run (a skip is not a failure) and wrong as a CLEARING rule here:
+    escalation exists to disambiguate a real failure, and a re-run that never happened
+    disambiguates nothing. So an all-skipped aggregate is ``unresolved`` — reported as
+    what it is, and still red — rather than reading as a proven-capable ``flaky``.
+
+    The non-skipped case keys on ``passes``, NOT on ``aggregate.ok``: ``ok`` is the
+    weekly gate's verdict and vetoes on cap taint (#2192), which would red a scenario a
+    majority of whose escalation trials passed cleanly (#4243). One clean pass clears.
+    """
+    if aggregate.skipped:
+        return "unresolved"
+    return CLEARING_CLASS if aggregate.passes >= 1 else "confirmed"

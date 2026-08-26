@@ -145,6 +145,27 @@ class TestRepairPthToCanonical:
         assert "# keep me" in pth.read_text(encoding="utf-8")
 
 
+class TestRepairPublishesAtomically:
+    def test_an_interrupted_write_leaves_the_pth_resolvable(self, tmp_path: Path, monkeypatch) -> None:
+        # A truncating in-place rewrite that dies mid-way takes the whole editable
+        # install down: every later `t3` invocation loses its import root.
+        previous = tmp_path / "previous" / "src"
+        previous.mkdir(parents=True)
+        pth = tmp_path / "teatree.pth"
+        pth.write_text(str(previous) + "\n", encoding="utf-8")
+        canonical = tmp_path / "canonical" / "src"
+        canonical.mkdir(parents=True)
+
+        def truncate_then_die(target: Path, *_args: object, **_kwargs: object) -> int:
+            target.write_bytes(b"")
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "write_text", truncate_then_die)
+        editable_pth.repair_pth_to_canonical(pth, canonical)
+        assert editable_pth.pth_source_dirs(pth) != []
+
+
 class TestEditablePthPrimitives:
     def test_uv_tool_dir_default_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("UV_TOOL_DIR", raising=False)

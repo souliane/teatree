@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -9,6 +10,22 @@ from teatree.backends.slack.pagination import next_cursor
 from teatree.identity import agent_signature_suffix
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
+
+logger = logging.getLogger(__name__)
+
+
+def _webhook_result(response: httpx.Response) -> RawAPIDict:
+    """An incoming webhook answers the literal text ``ok``, not JSON.
+
+    Only a Workflow-Builder webhook answers a JSON body, so JSON is tried first
+    and the plain-text contract is the fallback — parsing ``ok`` as JSON raises
+    and would turn every successful post into a failure.
+    """
+    try:
+        return cast("RawAPIDict", response.json())
+    except ValueError:
+        body = response.text.strip()
+        return {"ok": True} if body == "ok" else {"ok": False, "error": body}
 
 
 def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
@@ -25,7 +42,7 @@ def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") ->
     body = text + agent_signature_suffix(signature)
     response = httpx.post(webhook_url, json={"text": body}, timeout=10.0)
     response.raise_for_status()
-    return cast("RawAPIDict", response.json())
+    return _webhook_result(response)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,8 +148,10 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
     The single implementation behind both :func:`search_review_permalinks` and
     :func:`read_recent_review_matches`; the two differ only in how they report
     read success. Returns ``(matches, read_ok)``: ``read_ok`` is ``False`` when a
-    page came back not-ok (so a caller that needs the distinction can fail safe
-    to suppression), ``True`` for a clean walk that simply found nothing.
+    page came back not-ok, and when the walk ended with history still pending
+    (the page cap was hit, or a page claimed ``has_more`` without a cursor) — an
+    unread page could hold the very message the dedup is looking for, so a
+    truncated walk must not pass for a clean one that simply found nothing.
     """
     if not request.token or not request.channel_id or not request.pr_urls:
         return [], True
@@ -149,18 +168,22 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
     )
 
     cursor: str | None = None
-    for _ in range(request.max_pages):  # pragma: no branch
+    for _ in range(request.max_pages):
         data = _fetch_history_page(client, request.token, request.channel_id, cursor, request.oldest_ts)
         if not data:
             return matches, False
         for msg in _history_messages(data):
             matches.extend(_iter_review_matches(msg, pr_url_set, seen, ctx))
         if seen == pr_url_set or not data.get("has_more"):
-            break
+            return matches, True
         cursor = next_cursor(data)
         if cursor is None:
             break
-    return matches, True
+    logger.warning(
+        "Slack conversations.history walk on %s ended with history still pending; the read is truncated",
+        request.channel_name or request.channel_id,
+    )
+    return matches, False
 
 
 @dataclass(frozen=True, slots=True)

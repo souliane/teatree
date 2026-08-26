@@ -124,10 +124,23 @@ class TestRunCheckLaunchesHeadless:
 
 
 class TestVisualQAReport:
-    def test_empty_report_has_no_errors(self) -> None:
-        report = visual_qa.VisualQAReport(targets=["/"])
+    def test_a_report_with_no_targets_has_no_errors(self) -> None:
+        report = visual_qa.VisualQAReport(targets=[])
         assert report.has_errors is False
         assert report.total_errors == 0
+
+    def test_a_target_the_run_never_reached_is_an_error(self) -> None:
+        # The 60s budget cuts the loop mid-list; a page nobody loaded is not a clean page.
+        page = visual_qa.PageResult(url="http://x/a")
+        report = visual_qa.VisualQAReport(targets=["/a", "/b"], pages=[page], base_url="http://x")
+        assert report.unchecked == ["/b"]
+        assert report.has_errors is True
+        assert "Not checked" in visual_qa.format_report(report)
+
+    def test_a_skipped_report_is_not_reported_incomplete(self) -> None:
+        report = visual_qa.VisualQAReport(targets=["/a"], skipped_reason="playwright is not installed")
+        assert report.unchecked == []
+        assert report.has_errors is False
 
     def test_errors_aggregated(self) -> None:
         page = visual_qa.PageResult(

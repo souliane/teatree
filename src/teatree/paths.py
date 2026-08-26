@@ -187,6 +187,13 @@ def teatree_source_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+#: Where teatree's own root sits inside a fork that VENDORS core, as a path
+#: prefix — ``""`` in a plain clone, this in a fork. A forge reports changed
+#: files relative to the WORKING-TREE root, so any consumer classifying forge
+#: paths against ``src/teatree/…`` literals must strip this first.
+VENDORED_CORE_PREFIX = "vendor/teatree/"
+
+
 def _worktree_isolation_root(home: Path) -> Path:
     """Sibling of the canonical data dir — never recursively scanned by it."""
     return home / ".local" / "share" / "teatree-worktrees"
@@ -412,6 +419,19 @@ def _exclusive_lock(lock_path: Path) -> Iterator[None]:
         os.close(fd)
 
 
+#: The two ``OperationalError`` texts a WAL source whose ``-shm`` cannot be created
+#: raises — one at open, one at the first statement that needs the WAL index.
+_NO_SHARED_MEMORY_SIGNALS = ("unable to open database file", "readonly database")
+
+
+def _backup_into(source: sqlite3.Connection, dst: Path) -> None:
+    dest = sqlite3.connect(dst)
+    try:
+        source.backup(dest)
+    finally:
+        dest.close()
+
+
 def _sqlite_snapshot(src: Path, dst: Path) -> None:
     """Consistent point-in-time copy INCLUDING commits still living in the ``-wal``.
 
@@ -427,11 +447,17 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
 
     ``immutable=1`` stays as the FALLBACK, for the case it was actually added
     for: a cold artifact whose ``-shm`` is absent and cannot be created (a
-    read-only file or directory), where ``mode=ro`` fails with
-    ``OperationalError: unable to open database file``. A cold artifact has no
-    uncheckpointed WAL to lose, so the fallback is lossless exactly where it
-    applies. The probe query is what forces the real open — ``connect`` alone
-    is lazy, so a missing ``-shm`` would otherwise surface later, mid-backup.
+    read-only file or directory). A cold artifact has no uncheckpointed WAL to
+    lose, so the fallback is lossless exactly where it applies.
+
+    What decides the fallback is the SNAPSHOT failing, not a probe: which
+    statement first needs the WAL index is a SQLite-build detail. A probe
+    ``SELECT`` forces the open on some builds and is served without the
+    ``-shm`` on others, where the same source then fails at ``backup`` with
+    ``attempt to write a readonly database`` — past the guard, so the fallback
+    never fired. Both no-``-shm`` signals are caught here and nothing else is:
+    any other ``OperationalError`` propagates rather than being retried into a
+    WAL-dropping ``immutable=1`` copy.
 
     The source is never opened read-write, so this stays legal on a host whose
     control DB the containerized stack owns (:mod:`teatree.db.boundary`).
@@ -442,15 +468,18 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
     source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
     try:
         source.execute("SELECT 1").fetchone()
-    except sqlite3.OperationalError:
+        _backup_into(source, dst)
+    except sqlite3.OperationalError as exc:
+        if not any(signal in str(exc) for signal in _NO_SHARED_MEMORY_SIGNALS):
+            raise
+    else:
+        return
+    finally:
         source.close()
-        source = sqlite3.connect(f"{base_uri}?immutable=1", uri=True)
+
+    source = sqlite3.connect(f"{base_uri}?immutable=1", uri=True)
     try:
-        dest = sqlite3.connect(dst)
-        try:
-            source.backup(dest)
-        finally:
-            dest.close()
+        _backup_into(source, dst)
     finally:
         source.close()
 
@@ -533,24 +562,17 @@ def data_dir_root() -> Path:
 #: real install, and walking it over a bind mount costs 20-115s for files no live
 #: process holds. Both measured offenders sat at the root; the bound keeps a level
 #: of margin at 0.14s.
+# The data dir is shared: teatree's own e2e machinery parks spec-repo checkouts under it,
+# 166k files on the deployed box. Every control DB teatree creates there sits at the
+# root (``resolve_data_dir``) or one namespaced level down (``get_data_dir``,
+# ``find_overlay_db``), so both sweeps stop at that level rather than descending —
+# a ``**`` walk of those checkouts cost 4.4s on the host and 274s in the container.
+_CONTROL_DB_ROOT_GLOBS = ("{name}", "*/{name}")
 _CONTROL_DB_ARTIFACT_GLOBS = ("{name}*", "*/{name}*")
 
 
 class PathHelpers:
     """Module-level helpers grouped so the module keeps a readable public surface."""
-
-    @staticmethod
-    def core_repo_root(*, root: Path | None = None) -> Path | None:
-        """*root* (default :func:`teatree_source_root`) when it is a core checkout, else ``None``.
-
-        A non-editable install resolves the arithmetic onto a site-packages tree
-        carrying neither marker, so a caller can tell "the destination is absent from
-        the tree" from "there is no tree to read" and degrade loudly instead of
-        classifying every core path as absent.
-        """
-        base = root if root is not None else teatree_source_root()
-        markers = (base / "src" / "teatree" / "__init__.py", base / "pyproject.toml")
-        return base if all(marker.exists() for marker in markers) else None
 
     @staticmethod
     def get_data_dir(namespace: str) -> Path:
@@ -585,19 +607,23 @@ class PathHelpers:
     def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
         """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
 
-        Walks recursively under ``data_dir`` so any legacy namespaced layout
-        (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
-        Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
-        root, never under ``data_dir``, so they are structurally excluded here.
-        Used by both the settings warning and the ``t3 doctor`` check.
+        Scoped to where a sibling control DB can actually be: the data dir itself and
+        the legacy namespaced layout one level down (``data_dir/<name>/db.sqlite3``).
+        The canonical path is skipped. Auto-isolated worktree DBs live under the
+        sibling ``teatree-worktrees`` root, never under ``data_dir``, so they are
+        structurally excluded here. Used by both the settings warning and the
+        ``t3 doctor`` check.
         """
         if not data_dir.is_dir():
             return
         canonical = canonical.resolve()
-        for candidate in data_dir.glob("**/db.sqlite3"):
-            if candidate.resolve() == canonical:
-                continue
-            yield candidate
+        seen: set[Path] = set()
+        for pattern in _CONTROL_DB_ROOT_GLOBS:
+            for candidate in sorted(data_dir.glob(pattern.format(name=DB_FILENAME))):
+                if candidate in seen or candidate.resolve() == canonical:
+                    continue
+                seen.add(candidate)
+                yield candidate
 
     @staticmethod
     def find_control_db_artifacts(data_dir: Path, *, canonical: Path) -> Iterator[Path]:

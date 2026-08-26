@@ -12,7 +12,6 @@ than adding to it, so the remedy checks that first and asks for a rebase
 decision from a person instead of printing "open a PR" for the hundredth time.
 """
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
@@ -37,12 +36,6 @@ def _revert_risk(repo_path: str, branch: str) -> RevertRisk:
 
 def _remedy(row: "PendingPullRequest", risk: RevertRisk) -> str:
     """The action an undrainable obligation actually needs, decided from what its PR would do."""
-    if not Path(row.repo_path).exists():
-        return (
-            "The checkout is gone, so no re-run can open this pull request. The next dispatch "
-            f"drain retires this obligation on its own; t3 <overlay> pr discharge-pending {row.pk} "
-            "retires it now."
-        )
     if risk.at_risk:
         paths = ", ".join(risk.conflicted_paths)
         return (

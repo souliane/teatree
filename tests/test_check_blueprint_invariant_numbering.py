@@ -424,6 +424,41 @@ class TestCiCrossPrDetection:
         assert exit_code == 1
 
 
+class TestCiScopeDiffFailClosed:
+    """An unreadable `git diff` is not proof the PR leaves BLUEPRINT.md alone.
+
+    An unfetched or mistyped base ref makes the scope diff exit non-zero with an
+    empty stdout — the exact shape of "BLUEPRINT.md not in the PR" — so the gate
+    silently no-ops on every PR in that repo while reporting success. It is the
+    same fail-closed contract `_resolve_merge_base_numbers` already holds one
+    step later.
+    """
+
+    def _repo_with_blueprint(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git(repo, "init", "-q", "-b", "main")
+        (repo / "BLUEPRINT.md").write_text(_CLEAN, encoding="utf-8")
+        _run_git(repo, "add", "BLUEPRINT.md")
+        _run_git(repo, "commit", "-q", "-m", "seed")
+        return repo
+
+    def test_unresolvable_base_ref_fails_closed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        repo = self._repo_with_blueprint(tmp_path)
+
+        assert ci_main(repo=repo, base_ref="origin/never-fetched") == 1
+        assert "base ref" in capsys.readouterr().out.lower()
+
+    def test_resolvable_base_ref_with_untouched_blueprint_still_no_ops(self, tmp_path: Path) -> None:
+        repo = self._repo_with_blueprint(tmp_path)
+        _run_git(repo, "branch", "-f", "base-ref", "main")
+        (repo / "README.md").write_text("unrelated\n", encoding="utf-8")
+        _run_git(repo, "add", "README.md")
+        _run_git(repo, "commit", "-q", "-m", "unrelated change")
+
+        assert ci_main(repo=repo, base_ref="base-ref") == 0
+
+
 class TestCiMergeBaseFailClosed:
     """Fix #8: BLUEPRINT touched but the merge-base §17.1 snapshot is unobtainable → fail CLOSED.
 

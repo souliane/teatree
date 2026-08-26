@@ -80,6 +80,22 @@ class _FakeBackend:
         return f"https://team.slack.com/archives/{channel}/p{ts.replace('.', '')}"
 
 
+class _BodyReturningBackend:
+    """Slack hands an API-level failure back as a body — it does not raise."""
+
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.posts: list[dict[str, str]] = []
+
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
+        self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
+        return self.response
+
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        _ = (channel, ts)
+        return ""
+
+
 def _run(*extra: str) -> tuple[int, dict[str, object]]:
     """Call the command, capture exit code + the machine-legible dict it prints."""
     buf = io.StringIO()
@@ -884,3 +900,81 @@ class TestReviewRequestPostFinalizesClaim(_DataDirMixin, TestCase):
         # can reclaim the row and post a duplicate.
         is_unposted_orphan = post.done_at is None and not post.slack_thread_ts
         assert not is_unposted_orphan
+
+
+class TestReviewRequestPostSlackApiFailure(_DataDirMixin, TestCase):
+    """A Slack API-level failure is a FAILED post, never an audited success.
+
+    ``post_message`` returns ``{"ok": false, "error": ...}`` instead of raising
+    (``_scope_guarded`` even short-circuits a known-missing scope with no HTTP
+    call at all), and ``require_on_behalf_approval`` rolls back only on a raise.
+    So the approval was burned single-use, an ``OnBehalfAudit`` row asserted a
+    post that never happened, the empty ``ts`` stamped the unposted-orphan shape
+    onto ``ReviewRequestPost``, the user was DM'd that it posted, and the command
+    exited ``0`` with ``action="post"``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self) -> Iterator[None]:
+        with mode_gate_on_cm():
+            yield
+
+    @staticmethod
+    def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
+        ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+        return GuardDecision(action="post")
+
+    def _post_via(self, backend: object) -> tuple[int, dict[str, object]]:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", side_effect=self._real_claim),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            return _run("--title", "fix(scope): thing")
+
+    def test_ok_false_refuses_and_preserves_the_approval(self) -> None:
+        code, payload = self._post_via(_BodyReturningBackend({"ok": False, "error": "missing_scope"}))
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "post_failed"
+        assert OnBehalfAudit.objects.count() == 0
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=True).count() == 1
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_a_missing_ts_is_a_failed_post_too(self) -> None:
+        """The dedup claim is finalized from ``ts`` — no ts means nothing to finalize."""
+        code, payload = self._post_via(_BodyReturningBackend({"ok": True}))
+
+        assert code == 2, payload
+        assert payload["reason"] == "post_failed"
+        assert OnBehalfAudit.objects.count() == 0
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_a_landed_post_still_consumes_audits_and_finalizes(self) -> None:
+        """Anti-vacuous control: the ok+ts happy path is untouched."""
+        code, payload = self._post_via(_FakeBackend())
+
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert OnBehalfAudit.objects.count() == 1
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).slack_thread_ts == "1.23"
+
+    def test_a_registered_noop_backend_suppresses_before_the_gate(self) -> None:
+        """A noop transport drops the post silently, so it must not read as a failure."""
+        from teatree.backends.messaging_noop import NoopMessagingBackend  # noqa: PLC0415 — deferred: backends import
+
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=NoopMessagingBackend()),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert payload["action"] == "suppress"
+        assert payload["reason"] == "no_messaging_backend"
+        assert OnBehalfAudit.objects.count() == 0
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=False).count() == 0

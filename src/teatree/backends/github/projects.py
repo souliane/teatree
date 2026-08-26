@@ -9,6 +9,7 @@ unchanged.
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 
@@ -16,9 +17,15 @@ from teatree.backends.types import dig
 from teatree.types import RawAPIDict
 from teatree.utils.run import run_checked
 
+logger = logging.getLogger(__name__)
+
 # Bound every ``gh api graphql`` subprocess so a stalled read degrades (raises
 # TimeoutExpired) instead of wedging the single-threaded loop.
 _GRAPHQL_TIMEOUT_SECONDS = 60.0
+
+# GitHub's per-connection maximum. An issue carrying more labels than one page
+# is logged rather than silently losing the ones a gate reads (needs-triage).
+_LABEL_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +73,7 @@ _PROJECT_ITEMS_QUERY = """\
                             title
                             url
                             updatedAt
-                            labels(first: 10) {{ nodes {{ name }} }}
+                            labels(first: {label_page_size}) {{ totalCount nodes {{ name }} }}
                         }}
                     }}
                 }}
@@ -92,7 +99,12 @@ def fetch_project_items(
     position = 0
     after = ""
     while True:
-        query = _PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number, after=after)
+        query = _PROJECT_ITEMS_QUERY.format(
+            owner=owner,
+            project_number=project_number,
+            after=after,
+            label_page_size=_LABEL_PAGE_SIZE,
+        )
         data = _gh_graphql(query, token=token)
         # ``dig`` null-guards each hop: GraphQL returns ``null`` (not ``{}``) for
         # a user/project the token cannot see, where a chained ``.get(k, {})``
@@ -125,6 +137,14 @@ def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
     raw_labels = dig(node, "content", "labels", "nodes")
     label_nodes = raw_labels if isinstance(raw_labels, list) else []
     labels = [str(name) for ln in label_nodes if isinstance(name := dig(ln, "name"), str)]
+    total_labels = dig(node, "content", "labels", "totalCount")
+    if isinstance(total_labels, int) and total_labels > len(label_nodes):
+        logger.warning(
+            "Issue #%s carries %d labels but only %d were read; a label past the page is invisible to the sync",
+            number,
+            total_labels,
+            len(label_nodes),
+        )
     return ProjectItem(
         issue_number=number,
         title=str(dig(node, "content", "title") or ""),

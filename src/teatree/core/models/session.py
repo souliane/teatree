@@ -57,6 +57,13 @@ class Session(models.Model):
     def __str__(self) -> str:
         return str(self.agent_id or f"session-{self.pk}")
 
+    def save(self, *args: object, **kwargs: object) -> None:
+        # A blank overlay is indistinguishable from a legacy pre-multi-overlay row, which is
+        # why `overlay_scope_q` had to admit such a session for EVERY overlay to stay visible.
+        if not self.overlay and self.ticket_id:  # ty: ignore[unresolved-attribute]  # Django FK
+            self.overlay = self.ticket.overlay
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
     def recording_identity(self, explicit: str = "") -> str:
         """A guaranteed-non-empty attribution identity for a phase visit.
 

@@ -81,6 +81,11 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
     fall back to the private commit CWD and wrongly vouch for a PUBLIC ``gh api
     repos/<owner>/<public>/...`` POST -- leaking the body to a public repo while
     the gate downgraded to warn (#1213/#1415).
+
+    The CWD each segment falls back to is ITS OWN publish dir
+    (:func:`_commit_repo_dir.segment_cwds`), so a chained ``cd <public-clone> &&
+    gh issue create`` is judged on the clone it navigated into, not on the private
+    repo the command started in.
     """
     from teatree.hooks.publish_surface import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
         _segment_is_raw_rest,
@@ -89,7 +94,8 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
         strip_cd_prefix,
     )
 
-    for words in _gh_glab_hiding.command_segments(command):
+    segments = _gh_glab_hiding.command_segments(command)
+    for words, segment_cwd in zip(segments, _commit_repo_dir.segment_cwds(command, cwd), strict=True):
         if is_git_commit_command(" ".join(words)):
             continue
         if segment_is_publish_inert(words):
@@ -98,7 +104,7 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
         if (
             _gh_glab_hiding.segment_is_pure_gh_glab_post(words)
             and not _segment_is_raw_rest(rest)
-            and segment_target_is_private(rest, cwd, config_path=config_path)
+            and segment_target_is_private(rest, segment_cwd, config_path=config_path)
         ):
             continue
         return False

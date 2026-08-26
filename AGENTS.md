@@ -227,13 +227,16 @@ An overlay is a lightweight Python package that customizes teatree. It:
 
 1. Subclasses `OverlayBase` (from `teatree.core.overlay`)
 2. Implements mandatory hooks: `get_repos()`, `get_provision_steps(worktree)`
-3. Optionally implements: `get_env_extra()`, `get_run_commands()`, `get_db_import_strategy()`, `get_post_db_steps()`, `get_symlinks()`, `get_services_config()`, `can_auto_merge()`, `get_workspace_repos()`. Project metadata hooks (`validate_pr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`) live on the composed `OverlayMetadata` (`overlay.metadata`); credentials/URLs live on `OverlayConfig` (`overlay.config`)
+3. Optionally implements `get_workspace_repos()` on the base, and the rest on the composed **facets**: `overlay.provisioning` (`env_extra`, `db_import_strategy`, `post_db_steps`, `symlinks`, `services_config`), `overlay.runtime` (`run_commands`, `test_command`), `overlay.e2e` (`env_extras`, `preflight`, `scenarios`), `overlay.review` (`can_auto_merge`, `visual_qa_targets`). Project metadata hooks (`validate_pr()`, `get_skill_metadata()`, `get_followup_repos()`, `get_ci_project_path()`, `get_e2e_config()`, `detect_variant()`) live on `OverlayMetadata` (`overlay.metadata`); credentials/URLs on `OverlayConfig` (`overlay.config`). A flat `get_*` on the base is the pre-facet shape — it no longer resolves, so an override written against it is dead code nothing calls
 4. Registers via a `teatree.overlays` entry point in `pyproject.toml` (e.g., `my-overlay = "myapp.overlay:MyOverlay"`)
 5. Gets auto-discovered by the overlay loader from `importlib.metadata.entry_points(group="teatree.overlays")`
+6. Must be **import-safe before `django.setup()`**: entry points load at CLI-assembly time, so no module-level ORM (`teatree.core.models`) imports anywhere in the overlay module's import chain — annotate hooks with `teatree.overlay_sdk.WorktreeLike`/`TicketLike` (or an `if TYPE_CHECKING:` import) and defer runtime ORM access into function bodies (guarded by `tests/teatree_core/test_overlay_ep_import_pre_django.py`)
 
 ### Overlay API version (`teatree.__overlay_api_version__`)
 
 Teatree exports `__overlay_api_version__` (a string) for overlays to assert against at import time. Bump it on every **breaking** change to the overlay-facing surface — `OverlayBase` method signatures, `Worktree`/`Ticket` fields overlays read, the entry-point contract, or runner protocols overlays may implement. Non-breaking additions (new optional hook, new helper) do not bump it.
+
+**Pre-1.0 the counter is frozen at `"1"` and that rule is suspended.** Core and every registered overlay migrate in lockstep, so a bump would only manufacture a mismatch with nothing to detect — it would break each overlay's import-time pin against a core it is already compatible with. Ship the breaking change, migrate the overlays in the same wave, and leave the pin alone; `tests/test_package_smoke.py` fails a re-bump. The rule above takes effect from the first stable release.
 
 Overlays should hard-fail at import (no shim, no deprecation warning) when the runtime teatree exposes a different version than what they were built against. CI catches the rest before merge.
 
@@ -249,7 +252,7 @@ Each external API concern is a `@runtime_checkable Protocol` in `teatree.core.ba
 | `CIService` | Pipeline cancel, errors, failed tests, trigger, quality check |
 | `MessagingBackend` | Mentions, DMs, posts, replies, reactions, user-id resolution |
 
-Backends are auto-configured from overlay methods. For example, `get_gitlab_token()` and `get_gitlab_url()` on the overlay class drive the GitLab backend; `get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed — each overlay carries its own configuration.
+Backends are auto-configured from the overlay's **config facet**. For example, `overlay.config.get_gitlab_token()` drives the GitLab backend (its URL is a pydantic field on `OverlayConfig`, not a method — there is no `get_gitlab_url()`); `overlay.config.get_slack_token()` and `get_review_channel()` drive Slack. No individual `TEATREE_*` Django settings are needed — each overlay carries its own configuration.
 
 ### Overlay Methods That Wrap Platform APIs Belong on a Backend
 

@@ -1,19 +1,23 @@
 """Tests for ``teatree.core.worktree.readiness`` — runtime readiness probes."""
 
 import http.server
+import re
 import socket
 import sqlite3
 import sys
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import ClassVar
+from unittest import mock
 
+import httpx
 import pytest
 from django.db import connection
 from django.test import TestCase
 
+from teatree.backends.http_retry import MAX_BACKOFF_SECONDS
+from teatree.core.worktree import readiness
 from teatree.core.worktree.readiness import (
     CommandProbeSpec,
     HTTPProbeSpec,
@@ -25,6 +29,8 @@ from teatree.core.worktree.readiness import (
     run_probes,
 )
 
+_GATE_TIMEOUT_SECONDS = 30.0
+
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -32,8 +38,17 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _attempts_in(reason: str) -> int:
+    match = re.search(r"after (\d+) attempt", reason)
+    assert match is not None, reason
+    return int(match.group(1))
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Configurable handler. Status, body, and headers come from class attributes.
+
+    ``first_request_gate`` holds the FIRST request open until the test releases it,
+    so a read-timeout retry is witnessed without racing the wall clock.
 
     Pytest captures the stderr access logging the parent emits; we don't override
     ``log_message`` here because matching the parent's ``format`` parameter name
@@ -43,8 +58,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     status: ClassVar[int] = 200
     body: ClassVar[bytes] = b"ok"
     extra_headers: ClassVar[dict[str, str]] = {}
+    request_count: ClassVar[int] = 0
+    first_request_gate: ClassVar[threading.Event | None] = None
 
     def do_GET(self) -> None:
+        cls = type(self)
+        cls.request_count += 1
+        if cls.request_count == 1 and cls.first_request_gate is not None:
+            cls.first_request_gate.wait(_GATE_TIMEOUT_SECONDS)
         self.send_response(self.status)
         for key, value in self.extra_headers.items():
             self.send_header(key, value)
@@ -53,49 +74,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(self.body)
 
 
-@dataclass
-class _BlackHole:
-    """A listener that completes the TCP handshake and never answers — every GET read-times-out."""
-
-    url: str
-    connections: list[socket.socket]
-
-
-@pytest.fixture
-def black_hole_server() -> Iterator[_BlackHole]:
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(32)
-    listener.settimeout(0.05)
-    black_hole = _BlackHole(url=f"http://127.0.0.1:{listener.getsockname()[1]}", connections=[])
-    stop = threading.Event()
-
-    def _accept_and_hold() -> None:
-        while not stop.is_set():
-            try:
-                conn, _ = listener.accept()
-            except OSError:
-                continue
-            black_hole.connections.append(conn)
-
-    thread = threading.Thread(target=_accept_and_hold, daemon=True)
-    thread.start()
-    try:
-        yield black_hole
-    finally:
-        stop.set()
-        thread.join(timeout=5)
-        for conn in black_hole.connections:
-            conn.close()
-        listener.close()
-
-
-@pytest.fixture
-def http_server() -> Iterator[tuple[str, type[_Handler]]]:
+def _serve(server_cls: type[http.server.HTTPServer]) -> Iterator[tuple[str, type[_Handler]]]:
     port = _free_port()
     handler_cls = type("H", (_Handler,), {})  # fresh subclass per test
-    server = http.server.HTTPServer(("127.0.0.1", port), handler_cls)
+    server = server_cls(("127.0.0.1", port), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -103,6 +85,33 @@ def http_server() -> Iterator[tuple[str, type[_Handler]]]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture
+def http_server() -> Iterator[tuple[str, type[_Handler]]]:
+    yield from _serve(http.server.HTTPServer)
+
+
+@pytest.fixture
+def threaded_http_server() -> Iterator[tuple[str, type[_Handler]]]:
+    yield from _serve(http.server.ThreadingHTTPServer)
+
+
+@pytest.fixture
+def silent_endpoint() -> Iterator[str]:
+    """A port the kernel completes the handshake for out of the backlog, and nothing ever answers."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(64)
+        yield f"http://127.0.0.1:{sock.getsockname()[1]}/"
+
+
+@pytest.fixture
+def recorded_sleeps() -> Iterator[list[float]]:
+    """Swap the probe's sleep for a recorder — the backoff schedule at no wall-clock cost."""
+    sleeps: list[float] = []
+    with mock.patch.object(readiness, "_SLEEP", sleeps.append):
+        yield sleeps
 
 
 class TestProbeResult:
@@ -139,7 +148,11 @@ class TestHTTPProbe:
         assert result.passed is True
         assert result.evidence.startswith("GET ")
 
-    def test_fails_on_unexpected_status(self, http_server: tuple[str, type[_Handler]]) -> None:
+    def test_fails_on_unexpected_status(
+        self,
+        http_server: tuple[str, type[_Handler]],
+        recorded_sleeps: list[float],
+    ) -> None:
         url, handler = http_server
         handler.status = 503
         handler.body = b"down"
@@ -147,6 +160,8 @@ class TestHTTPProbe:
         result = probe.check()
         assert result.passed is False
         assert "status 503" in result.reason
+        assert len(recorded_sleeps) == 5
+        assert handler.request_count == 6
 
     def test_fails_when_body_does_not_contain_expected(self, http_server: tuple[str, type[_Handler]]) -> None:
         url, handler = http_server
@@ -179,9 +194,10 @@ class TestHTTPProbe:
         )
         result = probe.check()
         assert result.passed is False
+        assert _attempts_in(result.reason) == 1
         assert any(token in result.reason for token in ("ConnectError", "ConnectionRefused", "OSError"))
 
-    def test_retries_on_connect_error(self) -> None:
+    def test_retries_on_connect_error(self, recorded_sleeps: list[float]) -> None:
         port = _free_port()
         probe = http_probe(
             name="retry",
@@ -190,65 +206,102 @@ class TestHTTPProbe:
                 url=f"http://127.0.0.1:{port}/",
                 timeout_seconds=0.5,
                 retries=2,
-                retry_delay=0.1,
             ),
         )
         result = probe.check()
         assert result.passed is False
         assert "after 3 attempts" in result.reason
+        assert len(recorded_sleeps) == 2
 
-
-class TestHTTPProbeRetryPredicate:
-    """A read timeout is a transport failure and must be retried like a connection error."""
-
-    def test_retries_on_read_timeout(self, black_hole_server: _BlackHole) -> None:
+    def test_read_timeout_on_a_cold_first_attempt_is_retried(
+        self,
+        threaded_http_server: tuple[str, type[_Handler]],
+        recorded_sleeps: list[float],
+    ) -> None:
+        url, handler = threaded_http_server
+        gate = threading.Event()
+        handler.first_request_gate = gate
         probe = http_probe(
-            name="warming",
+            name="cold-boot",
             description="d",
-            spec=HTTPProbeSpec(
-                url=f"{black_hole_server.url}/",
-                timeout_seconds=0.2,
-                retries=2,
-                retry_delay=0.01,
-            ),
+            spec=HTTPProbeSpec(url=f"{url}/", timeout_seconds=0.3, retries=3),
+        )
+        try:
+            result = probe.check()
+        finally:
+            gate.set()
+        assert result.passed is True
+        assert handler.request_count == 2
+        assert len(recorded_sleeps) == 1
+
+    def test_connect_timeout_is_retried(self, recorded_sleeps: list[float]) -> None:
+        attempts = [
+            httpx.ConnectTimeout("connect timed out"),
+            httpx.ConnectTimeout("connect timed out"),
+            httpx.Response(200, text="ok"),
+        ]
+        probe = http_probe(
+            name="cold-connect",
+            description="d",
+            spec=HTTPProbeSpec(url="http://127.0.0.1:9/", retries=3),
+        )
+        with mock.patch("httpx.get", side_effect=attempts):
+            result = probe.check()
+        assert result.passed is True
+        assert len(recorded_sleeps) == 2
+
+    def test_failure_reason_counts_attempts_made_not_retries_configured(
+        self,
+        silent_endpoint: str,
+        recorded_sleeps: list[float],
+    ) -> None:
+        probe = http_probe(
+            name="black-hole",
+            description="d",
+            spec=HTTPProbeSpec(url=silent_endpoint, timeout_seconds=0.2, retries=7),
         )
         result = probe.check()
         assert result.passed is False
-        assert "ReadTimeout" in result.reason
-        assert "after 3 attempts" in result.reason
-        assert len(black_hole_server.connections) == 3
+        assert "after 8 attempts" in result.reason
+        assert "retries" not in result.reason
+        assert len(recorded_sleeps) == 7
 
-    def test_reports_one_attempt_rather_than_the_configured_ceiling(self) -> None:
-        probe = http_probe(
-            name="typo",
-            description="d",
-            spec=HTTPProbeSpec(url="htp://127.0.0.1:1/", retries=20, retry_delay=5.0),
-        )
-        started = time.monotonic()
-        result = probe.check()
-        elapsed = time.monotonic() - started
-        assert result.passed is False
-        assert "after 1 attempt" in result.reason
-        assert "20" not in result.reason
-        assert elapsed < 1.0
-
-    def test_backoff_delay_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        slept: list[float] = []
-        monkeypatch.setattr(time, "sleep", slept.append)
-        port = _free_port()
+    def test_backoff_never_exceeds_the_shared_cap(self, recorded_sleeps: list[float]) -> None:
+        port = _free_port()  # nothing listening on it
         probe = http_probe(
             name="capped",
             description="d",
-            spec=HTTPProbeSpec(
-                url=f"http://127.0.0.1:{port}/",
-                timeout_seconds=0.5,
-                retries=4,
-                retry_delay=1.0,
-                max_retry_delay=2.0,
-            ),
+            spec=HTTPProbeSpec(url=f"http://127.0.0.1:{port}/", timeout_seconds=0.5, retries=20),
         )
         assert probe.check().passed is False
-        assert slept == [1.0, 2.0, 2.0, 2.0]
+        assert len(recorded_sleeps) == 20
+        assert max(recorded_sleeps) <= MAX_BACKOFF_SECONDS
+
+    def test_endpoint_that_never_serves_fails_having_actually_retried(
+        self,
+        silent_endpoint: str,
+        recorded_sleeps: list[float],
+    ) -> None:
+        probe = http_probe(
+            name="never-serves",
+            description="d",
+            spec=HTTPProbeSpec(url=silent_endpoint, timeout_seconds=0.2, retries=3),
+        )
+        result = probe.check()
+        assert result.passed is False
+        assert _attempts_in(result.reason) > 1
+        assert "ReadTimeout" in result.reason
+        assert len(recorded_sleeps) == 3
+
+    def test_non_transient_wrong_status_is_not_retried(self, http_server: tuple[str, type[_Handler]]) -> None:
+        url, handler = http_server
+        handler.status = 403
+        handler.body = b"forbidden"
+        probe = http_probe(name="missing-dist", description="d", spec=HTTPProbeSpec(url=f"{url}/"))
+        result = probe.check()
+        assert result.passed is False
+        assert "got status 403" in result.reason
+        assert handler.request_count == 1
 
     def test_checks_response_header_value(self, http_server: tuple[str, type[_Handler]]) -> None:
         url, handler = http_server

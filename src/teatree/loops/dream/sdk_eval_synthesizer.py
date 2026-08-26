@@ -194,6 +194,12 @@ def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> Synthesized
     a prose empty ``{}`` appearing before the real object no longer wins over it
     (#2861). A missing required key or a non-list ``expect`` raises, so a malformed
     reply DROPS the candidate rather than staging a partial scenario.
+
+    ``scenario_name`` is IDENTITY, not content, so it is taken from the candidate the
+    prompt told the model to copy verbatim rather than from the reply. A model that
+    renamed it split the identity in two: the staged YAML carried the model's name
+    while the derivation outcome, the fixtures and the staging path all key on the
+    candidate's.
     """
     payload = first_content_bearing_object(raw)
     if payload is None:
@@ -213,7 +219,7 @@ def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> Synthesized
     fail_tool_call = _require_tool_call(payload["fail_tool_call"], "fail_tool_call")
     pass_tool_call = _require_tool_call(payload["pass_tool_call"], "pass_tool_call")
     return SynthesizedSpec(
-        scenario_name=str(payload["scenario_name"] or candidate.get("scenario_name") or ""),
+        scenario_name=str(candidate.get("scenario_name") or payload["scenario_name"] or ""),
         scenario_description=str(payload.get("scenario_description") or ""),
         agent_path=str(payload.get("agent_path") or "skills/rules/SKILL.md"),
         context_preamble=str(payload["context_preamble"]),

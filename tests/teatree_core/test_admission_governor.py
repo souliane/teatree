@@ -38,6 +38,7 @@ from teatree.core.admission_governor import (
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
+from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB
 
 _WEEK = 7 * 24 * 3600
 
@@ -783,3 +784,28 @@ class TestResumeAgentPopulation:
         fleet = 6
         assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=0.0)) == ""
         assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=30.0)) != ""
+
+
+class TestSuiteMemoryProbeIsPinned:
+    """The suite's own memory reading is fixed, so no test's verdict rides on the host's free RAM.
+
+    ``read_machine_signal`` reads live memory and ``_machine_brake`` denies at/under
+    ``RAM_BRAKE_FLOOR_GB``. Unpinned, a box under memory pressure therefore reds tests
+    that never mention memory — measured: 20 of 49 ``scanners/test_issue_intake`` cases
+    on a host reporting 2.5 GB available, every one of them green again once the reading
+    was pinned. A test that cares about the reading patches this same seam in its own
+    body, which lands after the autouse fixture and so still wins.
+    """
+
+    def test_the_probe_is_pinned_rather_than_reading_this_host(self) -> None:
+        assert ram_scope.read_ram_headroom().box_watermark_mib == PINNED_AVAILABLE_RAM_MIB
+
+    def test_the_pinned_reading_leaves_no_memory_brake(self) -> None:
+        ram_available_gb = read_machine_signal().ram_available_gb
+        assert ram_available_gb is not None
+        assert ram_available_gb > RAM_RESUME_FLOOR_GB
+
+    def test_a_test_that_cares_still_overrides_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        headroom = RamHeadroom(available_mib=1024, cgroup_limit_mib=None, host_available_mib=1024)
+        monkeypatch.setattr(ram_scope, "read_ram_headroom", lambda: headroom)
+        assert read_machine_signal().ram_available_gb == pytest.approx(1.0)

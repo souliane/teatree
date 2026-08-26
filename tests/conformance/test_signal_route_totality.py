@@ -47,7 +47,6 @@ INTENTIONAL_FALLBACK_KINDS: frozenset[str] = frozenset(
         "incoming_event.dead_letter",
         "notify.redelivered",
         "pending_pr.drained",
-        "pending_pr.retired",
         "pr.approved",
         "waiting.digest",
     }

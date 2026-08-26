@@ -38,6 +38,7 @@ class TestLabelIssues:
         suggestion = type("S", (), {"number": 7, "title": "bug", "labels": ["bug"]})()
         with patch("teatree.cli.triage_tools.LabelSuggester") as suggester_cls:
             suggester_cls.return_value.collect_suggestions.return_value = [suggestion]
+            suggester_cls.return_value.apply.return_value = []
             result = runner.invoke(app, ["tool", "label-issues", "owner/repo", "--apply"])
 
         assert result.exit_code == 0
@@ -67,3 +68,53 @@ class TestFindDuplicates:
         assert result.exit_code == 0
         assert "0.91" in result.output
         assert "#1 A" in result.output
+
+
+class TestFailedMutationsAreReported:
+    """``gh issue edit``/``close`` failures were discarded, so every issue read as changed.
+
+    The operator saw "Applied labels to N issue(s)" over a run where `gh` refused every
+    call — the backlog looked triaged and nothing had moved.
+    """
+
+    def test_label_apply_reports_only_what_landed_and_exits_nonzero(self):
+        suggestion = type("S", (), {"number": 7, "title": "bug", "labels": ["bug"]})()
+        with patch("teatree.cli.triage_tools.LabelSuggester") as suggester_cls:
+            suggester_cls.return_value.collect_suggestions.return_value = [suggestion]
+            suggester_cls.return_value.apply.return_value = [7]
+            result = runner.invoke(app, ["tool", "label-issues", "owner/repo", "--apply"])
+
+        assert result.exit_code == 1
+        assert "Applied labels to 0" in result.output
+        assert "FAILED to label 1 issue(s): #7" in result.output
+
+    def test_close_resolved_reports_only_what_landed_and_exits_nonzero(self):
+        resolved = type(
+            "R",
+            (),
+            {"issue_number": 4, "issue_title": "t", "pr_number": 9, "pr_title": "p", "confidence": "high"},
+        )()
+        with patch("teatree.triage.TriageScanner") as scanner_cls:
+            scanner_cls.return_value.find_resolved.return_value = [resolved]
+            scanner_cls.return_value.close_resolved.return_value = [4]
+            scanner_cls.return_value.find_stale.return_value = []
+            result = runner.invoke(app, ["tool", "triage-issues", "owner/repo", "--close-resolved"])
+
+        assert result.exit_code == 1
+        assert "Closed 0 resolved issue(s)." in result.output
+        assert "FAILED to close 1 issue(s): #4" in result.output
+
+    def test_a_fully_successful_close_still_exits_zero(self):
+        resolved = type(
+            "R",
+            (),
+            {"issue_number": 4, "issue_title": "t", "pr_number": 9, "pr_title": "p", "confidence": "high"},
+        )()
+        with patch("teatree.triage.TriageScanner") as scanner_cls:
+            scanner_cls.return_value.find_resolved.return_value = [resolved]
+            scanner_cls.return_value.close_resolved.return_value = []
+            scanner_cls.return_value.find_stale.return_value = []
+            result = runner.invoke(app, ["tool", "triage-issues", "owner/repo", "--close-resolved"])
+
+        assert result.exit_code == 0, result.output
+        assert "Closed 1 resolved issue(s)." in result.output

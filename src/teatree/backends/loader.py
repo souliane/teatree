@@ -140,16 +140,21 @@ def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
     return hosts
 
 
-def _host_backend(overlay: "OverlayBase", forge: Literal["github", "gitlab"]) -> CodeHostBackend | None:
+def _host_backend(
+    overlay: "OverlayBase",
+    forge: Literal["github", "gitlab"],
+    remote: str,
+) -> CodeHostBackend | None:
     """Build the backend for a resolved *forge*, or ``None`` when unauthenticated.
 
     GitHub falls back to the ambient ``gh`` login when no token is wired (see
     :func:`_github_host`); GitLab's REST transport has no ambient path, so it
-    stays token-gated.
+    stays token-gated. *remote* lets the overlay scope the GitLab credential to
+    the repo being acted on rather than answering with one token everywhere.
     """
     if forge == "github":
         return _github_host(overlay)
-    token = overlay.config.get_gitlab_token()
+    token = overlay.config.get_gitlab_token_for_remote(remote)
     return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
 
 
@@ -163,7 +168,7 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     forge = forge_from_remote(issue_url)
     if not forge:
         return get_code_host(overlay)
-    return _host_backend(overlay, forge)
+    return _host_backend(overlay, forge, issue_url)
 
 
 def pr_open_state(pr_url: str) -> PrOpenState:
@@ -235,7 +240,7 @@ def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBa
         return get_code_host(overlay)
     if forge == "github":
         return _github_host_for_repo(overlay, remote)
-    backend = _host_backend(overlay, forge)
+    backend = _host_backend(overlay, forge, remote)
     if backend is not None:
         return backend
     msg = (

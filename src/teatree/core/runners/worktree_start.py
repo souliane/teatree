@@ -28,8 +28,13 @@ def _compose_files(compose_file: str) -> list[str]:
     return flags
 
 
-def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volumes: bool = False) -> None:
-    """Stop and remove containers for the compose project.
+def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volumes: bool = False) -> str | None:
+    """Stop and remove containers for the compose project; ``None`` when they are down.
+
+    Returns a short reason instead when the containers may still be running, so a
+    caller reporting an outcome can say so rather than assume the stack went away
+    (the ``_ensure_images_built`` idiom). Callers driving a best-effort teardown
+    are free to ignore it.
 
     ``remove_volumes`` adds ``--volumes`` so the project's named/anonymous volumes
     are torn down too — the done-worktree wipe passes it (a reaped worktree owns
@@ -37,22 +42,27 @@ def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volume
     start-time reset leaves it off, so a restart never wipes a volume holding the
     worktree's state.
 
-    Tolerant of an unavailable docker binary (CI sandboxes, hermetic test
-    environments): a ``FileNotFoundError`` / ``PermissionError`` from
-    ``subprocess.run`` is logged and swallowed so cleanup paths that funnel
-    through here (#1306) don't break when there's no docker to talk to.
+    An unavailable docker binary (CI sandboxes, hermetic test environments) is
+    SUCCESS, not a failure: there is no daemon holding containers up, so nothing
+    survives the call (#1306).
     """
     cmd = ["docker", "compose", "-p", project, "down", "--remove-orphans"]
     if remove_volumes:
         cmd.append("--volumes")
     try:
         result = run_allowed_to_fail(cmd, expected_codes=None, timeout=timeout)
-        if result.returncode != 0:
-            logger.warning("docker compose down: %s", result.stderr.strip()[:300])
     except TimeoutExpired:
         logger.warning("docker compose down timed out after %ss", timeout)
+        return f"compose down timed out after {timeout}s"
     except (FileNotFoundError, PermissionError) as exc:
         logger.debug("docker compose down skipped — docker unavailable: %s", exc)
+        return None
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        logger.warning("docker compose down: %s", stderr[:300])
+        tail = stderr.splitlines()[-1] if stderr else "(no stderr)"
+        return f"exit {result.returncode}: {tail}"
+    return None
 
 
 class WorktreeStartRunner(RunnerBase):

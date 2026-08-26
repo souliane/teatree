@@ -20,7 +20,7 @@ Walk every open MR/PR you authored, sequentially, and bring each up to date with
 3. Push.
 4. Watch CI. On red, hand off to the existing `/t3:debug` + `/t3:ship` fix-push-monitor loop.
 5. Re-read the PR's live merge state (Step 7.5) and **skip it if it is already merged** — the user may be merging in parallel.
-6. Depending on the per-repo policy (see § Per-Repo Policy below), either merge the PR via the §17.4 keystone — `t3 <overlay> ticket merge <clear_id>`, Step 8 — before moving on, or stop at "green and up to date".
+6. Depending on the per-repo policy (see § Per-Repo Policy below), either merge the PR via the §17.4 keystone — the `mcp__teatree__pr_merge` MCP tool, or `t3 <overlay> ticket merge <clear_id>` when the MCP server isn't connected, Step 8 — before moving on, or stop at "green and up to date".
 7. After the burst, **health-check `origin/main`** (`makemigrations --check --dry-run`, Step 9) before declaring done.
 
 The goal is to keep stale PRs mergeable without burying review feedback under a force-push, and — for repos the user fully owns — actually drain the queue rather than just refresh it.

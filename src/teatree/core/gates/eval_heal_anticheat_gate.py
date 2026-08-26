@@ -56,12 +56,31 @@ class EvalHealCheatError(InvalidTransitionError):
     """
 
 
+def _under(normalized: str, prefix: str) -> bool:
+    """Whether *normalized* sits under *prefix* at ANY tree depth.
+
+    Matched on a path-SEGMENT boundary rather than anchored at the repo root: a repo that
+    VENDORS this package under a subdirectory reports these very files with a prefix, so a
+    root-anchored match would leave the healer free to rewrite the test there.
+    """
+    return normalized.startswith(prefix) or f"/{prefix}" in normalized
+
+
 def _is_forbidden(path: str) -> bool:
+    """True when *path* is a scenario definition or a red matcher, at ANY tree depth.
+
+    Matched on a path-SEGMENT boundary rather than anchored at the repo root: a
+    repo that VENDORS this package under a subdirectory reports these very files
+    with a prefix, so a root-anchored match would leave the healer free to rewrite
+    the test there — the one thing this gate exists to refuse.
+    """
     normalized = str(PurePosixPath(path)) if path not in {"", "."} else path
     normalized = normalized.removeprefix("./")
-    if normalized.startswith(SCENARIO_DIR_PREFIX):
+    if _under(normalized, SCENARIO_DIR_PREFIX):
         return True
-    return normalized.startswith(EVAL_HARNESS_PREFIX) and normalized not in EVAL_HARNESS_ALLOWED_PATHS
+    return _under(normalized, EVAL_HARNESS_PREFIX) and not any(
+        normalized == allowed or normalized.endswith(f"/{allowed}") for allowed in EVAL_HARNESS_ALLOWED_PATHS
+    )
 
 
 def classify_fix_diff(changed_paths: Iterable[str]) -> tuple[str, ...]:

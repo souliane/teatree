@@ -20,6 +20,7 @@ from pydantic_ai.toolsets.combined import CombinedToolset
 
 from teatree.agents.lane_b import toolsets as toolsets_module
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.gating import HardDenyToolset
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
@@ -133,6 +134,23 @@ class TestMcpHonoursEmptyPhaseAllowance:
         sentinel = self._pin_sentinel_mcp(monkeypatch)
         config = LaneBToolConfig(fs_root=tmp_path, phase="coding")
         assert sentinel in build_lane_b_toolsets(config).toolsets
+
+
+class TestMaxDenialsThreadedFromConfig:
+    """``build_lane_b_toolsets`` wires ``config.max_denials`` into the assembled toolset."""
+
+    def test_exploration_phase_widens_the_assembled_cap(self, tmp_path: Path) -> None:
+        config = LaneBToolConfig(fs_root=tmp_path, phase="architectural_review")
+        gated = build_lane_b_toolsets(config).toolsets[0]
+        assert isinstance(gated, HardDenyToolset)
+        assert gated.max_denials == config.max_denials
+        assert gated.max_denials > 3
+
+    def test_other_phase_keeps_the_tight_assembled_cap(self, tmp_path: Path) -> None:
+        config = LaneBToolConfig(fs_root=tmp_path, phase="coding")
+        gated = build_lane_b_toolsets(config).toolsets[0]
+        assert isinstance(gated, HardDenyToolset)
+        assert gated.max_denials == 3
 
 
 def test_no_model_requests_are_allowed() -> None:

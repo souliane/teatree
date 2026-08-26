@@ -8,6 +8,7 @@ from html import escape
 
 from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.matchers import (
+    ArgPattern,
     CallPattern,
     assert_final_state_contains,
     assert_final_state_matching,
@@ -16,6 +17,7 @@ from teatree.eval.matchers import (
     assert_no_tool_call_matching,
     assert_tool_call_contains,
     assert_tool_call_matching,
+    without_exempt_calls,
 )
 from teatree.eval.models import (
     CAP_TERMINAL_REASONS,
@@ -188,6 +190,9 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
 
 
 def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
+    if matcher.has_exemption:
+        exempt = ArgPattern(matcher.unless_arg_path, _as_regex(matcher.unless_operator, matcher.unless_value))
+        run = without_exempt_calls(run, exempt)
     if matcher.has_order_guard:
         forbidden = CallPattern(tool, matcher.arg_path, _as_regex(matcher.operator, matcher.value))
         guard = CallPattern(

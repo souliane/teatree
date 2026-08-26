@@ -111,7 +111,9 @@ class TestNotifyTierFiresAfterReceiptDm:
         _post("approve")
 
         backend.post_message.assert_called_once()
-        assert BotPing.objects.filter(idempotency_key="on_behalf_post:client/product!42:approve").count() == 1
+        assert (
+            BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:client/product!42:approve").count() == 1
+        )
 
     def test_client_notify_post_comment_fires_exactly_one_dm(self) -> None:
         _stage(self.tmp_path, self.monkeypatch, overlay="t3-client", autonomy="notify")

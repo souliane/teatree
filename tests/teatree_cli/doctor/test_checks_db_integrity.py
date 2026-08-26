@@ -187,6 +187,21 @@ class TestNoHostProcessHoldsTheDatabaseWritable:
 
         assert "hold" in capsys.readouterr().out
 
+    def test_an_unreadable_descriptor_table_reports_unverified_rather_than_ok(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", _sound_db(tmp_path / "db.sqlite3"))
+        monkeypatch.setattr(checks_db_integrity, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr("teatree.db.write_domain._PROC", tmp_path / "no-procfs")
+        monkeypatch.setattr("teatree.db.write_domain._which", lambda _: None)
+
+        assert _check_no_host_process_holds_the_db_writable() is True
+
+        out = capsys.readouterr().out
+        assert "UNVERIFIED" in out
+        assert "no descriptor view" in out
+        assert "OK    Control DB writers" not in out, "an unread table must never certify no writers"
+
 
 class TestNoProcessHoldsAHostCopyOfTheControlDatabase:
     """The half the canonical-only probe could not reach.
@@ -335,17 +350,24 @@ class TestTheHostProjectionIsCurrent:
 
         assert "nothing published" in capsys.readouterr().out
 
-    def test_an_unreadable_source_fails_loud(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        # The fault that makes the source unreadable is the same one that stops the
-        # publisher, so a quiet pass reported the projection current on exactly the
-        # failure this check exists to catch — and emitted no line for the JSON parser.
-        db = self._projectable(_sound_db(tmp_path / "db.sqlite3"), 5)
-        ProjectionPublisher(db, db.parent).publish()
 
-        with (
-            _database_config(db, SQLITE_BOUNDARY_ENGINE),
-            patch.object(ProjectionPublisher, "build", side_effect=sqlite3.OperationalError("database is locked")),
-        ):
-            assert _check_host_projection_is_current() is False
+class TestWriterClassificationIsFalsifiable:
+    """The writers gate is pinned at the OS read in the doctor smoke tests, so the
+    classification it guards is proven here in BOTH directions — a stub that let the
+    wrong answer pass would retire the flake without retiring the defect."""
 
-        assert "could not read the source generation" in capsys.readouterr().out
+    def test_a_holder_is_reported_and_fails(self, capsys: pytest.CaptureFixture[str]) -> None:
+        holders = [(Path("/var/lib/teatree/control-db/db.sqlite3"), "python[5603] (rw)")]
+        with patch.object(checks_db_integrity, "_control_db_writers", return_value=holders):
+            assert _check_no_host_process_holds_the_db_writable() is False
+
+        out = capsys.readouterr().out
+        assert "FAIL" in out
+        assert "python[5603] (rw)" in out
+        assert "1 descriptor(s)" in out
+
+    def test_no_holder_passes_and_says_so(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch.object(checks_db_integrity, "_control_db_writers", return_value=[]):
+            assert _check_no_host_process_holds_the_db_writable() is True
+
+        assert "OK" in capsys.readouterr().out

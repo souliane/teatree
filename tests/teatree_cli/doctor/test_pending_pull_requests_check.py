@@ -15,13 +15,13 @@ from tests.factories import serialized_pr_spec
 
 class PendingPullRequestDoctorCheckTestCase(django.test.TestCase):
     @pytest.fixture(autouse=True)
-    def _inject_fixtures(self, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    def _inject_fixtures(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._capsys = capsys
-        self._tmp_path = tmp_path
 
-    def _owed(self, *, attempts: int) -> PendingPullRequest:
+    @staticmethod
+    def _owed(*, attempts: int) -> PendingPullRequest:
         row = PendingPullRequest.objects.owe(
-            repo_path=str(self._tmp_path),
+            repo_path="/w/clone",
             branch="feat/orphan",
             reason="branch not on remote yet",
             spec=serialized_pr_spec("feat: the feature"),
@@ -149,23 +149,6 @@ class PendingPullRequestBehindABaseRefactorTestCase(django.test.TestCase):
         assert "pr ensure-pr" in self._capsys.readouterr().out
 
     def test_unreadable_repo_keeps_the_plain_remedy_and_never_crashes(self) -> None:
-        """A directory that is present but is no repository — the probe fails, the remedy stands."""
-        unreadable = self._tmp_path / "not-a-repo"
-        unreadable.mkdir()
-        row = PendingPullRequest.objects.owe(
-            repo_path=str(unreadable),
-            branch="feat/stale",
-            reason="branch not on remote yet",
-        )
-        PendingPullRequest.objects.filter(pk=row.pk).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
-
-        assert check_pending_pull_requests() is False
-
-        out = self._capsys.readouterr().out
-        assert "pr ensure-pr" in out
-
-    def test_an_absent_checkout_gets_a_remedy_that_can_terminate(self) -> None:
-        """#4577: "open a PR" is unrunnable once the checkout is gone, so it FAILs forever."""
         row = PendingPullRequest.objects.owe(
             repo_path=str(self._tmp_path / "gone"),
             branch="feat/stale",
@@ -176,6 +159,4 @@ class PendingPullRequestBehindABaseRefactorTestCase(django.test.TestCase):
         assert check_pending_pull_requests() is False
 
         out = self._capsys.readouterr().out
-        assert "checkout is gone" in out
-        assert f"pr discharge-pending {row.pk}" in out
-        assert "pr ensure-pr" not in out
+        assert "pr ensure-pr" in out

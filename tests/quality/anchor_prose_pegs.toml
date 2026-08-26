@@ -31,11 +31,11 @@ radius = 400
 # 2: the task-event table, the optional fields, the ONE-producer fact, and that stopReason
 # sets preventContinuation the task-creation consumer never reads.
 # 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
-"docs/claude-code-internals.md" = ["9abffb84c4d06aef", "592e023064725ca1", "53f5b8c576a81b57"]
+"docs/claude-code-internals.md" = ["9abffb84c4d06aef", "0f305c8269101808", "d024d706d59515b2"]
 # 1: the router's registered event list.
 # 2: do not conflate the sub-agent dispatch tool with the task-LIST tools.
-# 3: TaskCreated is the only non-PreToolUse deny path, with its own schema.
-# 4: the deny reason rides decision:block, and the event has ONE producer.
+# 3: a deny DELETES the already-persisted todo row, and the event has ONE emitter.
+# 4: the envelope is inert; a visible gate writes systemMessage at exit 0.
 # 5: the one surviving arm is the quote scanner; a handler must fail open in-handler.
 # 6: the admission governor is consulted on the PreToolUse dispatch; the second arm is retired.
 # 7: the escape-marker table rows for the quote, admission and brief-anchor tokens —
@@ -43,38 +43,40 @@ radius = 400
 "hooks/CLAUDE.md" = [
   "ee50c7da40c5b2a7",
   "da70d24c3deb479f",
-  "358a6b9e1bd009e3",
-  "00ce882c37c6c8e7",
+  "c3347ea7f8257c9a",
+  "ec5c9a2f7d9da393",
   "f807cf99027303d9",
   "53403ec58ab78f9b",
-  "2c2d867c54bb7151"
+  "1de1a859a0054190"
 ]
 # The TaskCreated event's own hooks.json wiring (no matcher).
 "hooks/hooks.json" = ["9e08240bd68c3563"]
 # There is exactly ONE dispatch interception point, and TaskCreated is not it.
 "hooks/scripts/dispatch_admission_gate.py" = ["a4846901d1d0b751"]
-# 1: the task-list quote gate's default-OFF resolver.
-# 2: the surviving handler's docstring and its never-lockout paragraph.
-# 3: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
-# 4: the Agent matcher is the ONLY interception point a dispatch has.
-# 5: the _HANDLERS registration -- one handler on the event.
-# 6: PreToolUse/TaskCreated denies are honoured only at exit 2.
-# 7: the same exit-code contract, stated at the emit site.
+# 1: the advisory emitter -- systemMessage carries the reason, decision:block never appears.
+# 2: the task-list quote gate's default-OFF resolver.
+# 3: the surviving handler's docstring and its never-lockout paragraph.
+# 4: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
+# 5: the Agent matcher is the ONLY interception point a dispatch has.
+# 6: the _HANDLERS registration -- one handler, the skill-loading arm moved to Agent.
+# 7: _NEVER_BLOCKING_EVENTS -- a block here destroys the row the tool persisted.
+# 8: main()'s exit-code contract, where _NEVER_BLOCKING_EVENTS outranks both arms.
 "hooks/scripts/hook_router.py" = [
+  "e6e88a1a7ce4b21c",
   "29f75d2d6607a867",
   "743caac207b453c5",
   "ea376e6c61b7ad2a",
   "df0584b2e1507beb",
-  "31f41634023b3999",
-  "379359cbc3bdb8c3",
-  "bc70f9e3ebe9732c"
+  "44aa8de702a5e1ea",
+  "fe8cd64ed1fab272",
+  "659bada2c7a94093"
 ]
 # The no-interpreter warning is suppressed on TaskCreated, whose stderr aborts the event.
 "hooks/scripts/run-hook.sh" = ["23aba44d6ec78e7e"]
 # 1: the deny surface exists because the consumer reads one field.
 # 2: decision:block is that field; the deny never writes stderr.
-# 3: the envelope TypedDict, the exit-code contract, and the fail-OPEN emitter.
-"hooks/scripts/task_created_deny.py" = ["9a8f7011ed5657ba", "dbfc220c35ae6007", "411476f07beba95e"]
+# 3: the envelope TypedDict, the exit-code contract, the systemMessage arm, and the fail-OPEN emitter.
+"hooks/scripts/task_created_deny.py" = ["9a8f7011ed5657ba", "dbfc220c35ae6007", "4f883d9d3a27ff2f"]
 # TaskCreated fires on creation only, so it is not the read/write surface /checking needs.
 "skills/checking/SKILL.md" = ["876e9c70a73e280c"]
 # The transcript attachment schema listing hookEvent values.
@@ -89,12 +91,12 @@ radius = 400
 "BLUEPRINT.md" = 811
 "docs/blueprint/configuration.md" = 1622
 "docs/blueprint/factory-architecture.md" = 811
-"docs/claude-code-internals.md" = 3627
-"hooks/CLAUDE.md" = 6193
+"docs/claude-code-internals.md" = 3653
+"hooks/CLAUDE.md" = 6826
 "hooks/hooks.json" = 1028
 "hooks/scripts/dispatch_admission_gate.py" = 811
-"hooks/scripts/hook_router.py" = 7951
+"hooks/scripts/hook_router.py" = 9217
 "hooks/scripts/run-hook.sh" = 811
-"hooks/scripts/task_created_deny.py" = 3924
+"hooks/scripts/task_created_deny.py" = 4156
 "skills/checking/SKILL.md" = 811
 "src/teatree/eval/session_transcript.py" = 811

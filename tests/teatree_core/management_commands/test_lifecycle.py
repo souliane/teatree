@@ -985,8 +985,8 @@ class TestLifecycleSmokeTest(TestCase):
         assert "cli" in result
 
     @override_settings(**SETTINGS)
-    def test_overlay_error(self, mock_subprocess: MagicMock) -> None:
-        """smoke-test reports overlay error when loading fails."""
+    def test_overlay_error_exits_nonzero(self, mock_subprocess: MagicMock) -> None:
+        """A health check that reports an error and still exits 0 is invisible to CI."""
 
         def _broken_discover() -> dict:
             msg = "broken"
@@ -994,13 +994,15 @@ class TestLifecycleSmokeTest(TestCase):
 
         _broken_discover.cache_clear = lambda: None
 
-        with patch.object(overlay_loader_mod, "_discover_overlays", new=_broken_discover):
-            result = cast(
-                "dict[str, dict[str, object]]",
-                call_command("worktree", "smoke-test"),
-            )
+        err = StringIO()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", new=_broken_discover),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("worktree", "smoke-test", stderr=err)
 
-        assert result["overlay"]["status"] == "error"
+        assert exc_info.value.code == 1
+        assert "overlay" in err.getvalue()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1050,18 +1052,21 @@ class TestLifecycleSmokeTest(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_db_error(self, mock_subprocess: MagicMock) -> None:
-        """smoke-test reports DB error when query fails."""
-        with patch.object(
-            Worktree,
-            "objects",
-            MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+    def test_db_error_exits_nonzero(self, mock_subprocess: MagicMock) -> None:
+        """smoke-test reports the DB error AND stops the caller."""
+        err = StringIO()
+        with (
+            patch.object(
+                Worktree,
+                "objects",
+                MagicMock(count=MagicMock(side_effect=RuntimeError("DB down"))),
+            ),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = cast(
-                "dict[str, dict[str, object]]",
-                call_command("worktree", "smoke-test"),
-            )
-        assert result["database"]["status"] == "error"
+            call_command("worktree", "smoke-test", stderr=err)
+
+        assert exc_info.value.code == 1
+        assert "database" in err.getvalue()
 
 
 class TestLifecycleDiagram(TestCase):

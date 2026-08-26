@@ -7,6 +7,8 @@ are left alone (``kill -0`` probe, ``%job``/``$VAR``/``$(…)`` targets, ``pkill
 by name, a ``kill`` token in a comment/string/argument, non-kill commands).
 """
 
+import pytest
+
 from teatree.hooks.safe_kill_detect import detect_raw_pid_kill
 
 
@@ -129,3 +131,78 @@ class TestNotFlagged:
     def test_kill_pid_zero_or_one_not_flagged(self) -> None:
         assert not detect_raw_pid_kill("kill 1").is_raw_pid_kill
         assert not detect_raw_pid_kill("kill 0").is_raw_pid_kill
+
+
+class TestTheProgramWordIsCanonicalised:
+    """The same guessed-pid kill, spelled through a wrapper or a path, is the same kill.
+
+    The detector compared ``words[0]`` verbatim, so every ordinary spelling of the
+    program word — the alias-safe ``command kill`` the house shell rules mandate,
+    an env prefix, a path form, a compound-command keyword — named the pid while
+    passing as "not a kill".
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/bin/kill 4242",
+            "command kill -9 4242",
+            "env kill -TERM 4242",
+            "FOO=1 kill 4242",
+            "if ps -p 4242; then kill -9 4242; fi",
+        ],
+    )
+    def test_a_wrapped_or_path_form_raw_pid_kill_is_detected(self, command: str) -> None:
+        detection = detect_raw_pid_kill(command)
+        assert detection.is_raw_pid_kill is True
+        assert detection.pid == 4242
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/bin/kill -0 4242",  # the no-op liveness probe, whatever the spelling
+            "command grep kill 4242 notes.txt",  # kill is an ARGUMENT, not the program
+            "env pkill -f claude",  # signal by name is a different surface
+        ],
+    )
+    def test_probes_and_non_kill_programs_still_pass(self, command: str) -> None:
+        assert detect_raw_pid_kill(command).is_raw_pid_kill is False
+
+
+class TestSudoElevatedKill:
+    """``sudo`` runs the same guessed-pid kill against a process the agent cannot otherwise reach.
+
+    ``sudo`` is absent from the shared transparent-wrapper set — it changes the
+    privileges the program runs with — so the canonicalised leader stayed ``sudo``
+    and every elevated raw-pid kill passed as "not a kill". That is the shape with
+    the WORST outcome: the wrong live process is one the agent had no permission to
+    signal until it reached for ``sudo``.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sudo kill 4242",
+            "sudo kill -9 4242",
+            "sudo -u root kill -9 4242",
+            "sudo -E kill 4242",
+            "sudo /bin/kill -TERM 4242",
+            "if ps -p 4242; then sudo kill -9 4242; fi",
+        ],
+    )
+    def test_an_elevated_raw_pid_kill_is_detected(self, command: str) -> None:
+        detection = detect_raw_pid_kill(command)
+        assert detection.is_raw_pid_kill is True
+        assert detection.pid == 4242
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sudo kill -0 4242",  # the no-op liveness probe, elevated or not
+            "sudo pkill -f claude",  # signal by name is a different surface
+            "sudo kill $PID",  # not a raw numeric guess
+            "sudo systemctl restart nginx",  # not a kill at all
+        ],
+    )
+    def test_elevated_probes_and_non_kill_programs_still_pass(self, command: str) -> None:
+        assert detect_raw_pid_kill(command).is_raw_pid_kill is False

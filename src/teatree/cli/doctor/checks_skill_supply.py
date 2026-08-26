@@ -27,7 +27,8 @@ from pathlib import Path
 
 import typer
 
-from teatree.provisioning.skill_drift import SkillDrift, SkillSourceClone, measure_skill_drift
+from teatree.core.skill_sources import declared_skill_sources
+from teatree.provisioning.skill_drift import SkillDrift, measure_skill_drift
 
 _MAX_NAMED = 8
 
@@ -89,18 +90,6 @@ def _dispatched_skill_gaps() -> list[str]:
     return gaps
 
 
-def _declared_skill_sources() -> list[SkillSourceClone]:
-    """Every registered overlay's declared skill-source clones, deduped."""
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    sources: dict[tuple[str, tuple[str, ...], str], SkillSourceClone] = {}
-    for overlay in get_all_overlays().values():
-        config = getattr(overlay, "config", None)
-        for clone in getattr(config, "skill_source_clones", []) or []:
-            sources[clone.label, tuple(clone.paths), clone.ref] = clone
-    return list(sources.values())
-
-
 def _drift_lines(drift: SkillDrift) -> list[str]:
     """The doctor lines one source's verdict produces — empty when it is clean."""
     lines: list[str] = []
@@ -154,7 +143,7 @@ def _check_skill_source_drift() -> bool:
         search_dirs = _search_dirs()
         lines = [
             line
-            for clone in _declared_skill_sources()
+            for clone in declared_skill_sources()
             for line in _drift_lines(measure_skill_drift(clone, search_dirs=search_dirs))
         ]
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run

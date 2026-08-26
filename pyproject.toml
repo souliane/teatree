@@ -94,7 +94,13 @@ dependencies = [
   # Anthropic Messages API DIRECTLY (``pydantic_ai.models.anthropic.AnthropicModel``,
   # the ``anthropic`` package) — no ``claude`` CLI child, so a downstream harness
   # that forbids the Claude Code CLI can adopt these eval lanes
-  # ([#3222](https://github.com/souliane/teatree/issues/3222)).
+  # ([#3222](https://github.com/souliane/teatree/issues/3222)). The ``[mcp]``
+  # extra is deliberately ABSENT and cannot be added while ``mcp>=2,<3`` above
+  # holds: it resolves ``fastmcp-slim``, whose client imports ``mcp.McpError``,
+  # which mcp 2.x renamed to ``MCPError``. Installing it yields a ``fastmcp``
+  # module whose client raises on import — so Lane B's MCP toolset stays
+  # unavailable either way, and the probe in ``teatree.agents.lane_b.mcp`` must
+  # answer that by attempting the real import rather than by module presence.
   "pydantic-ai-slim[anthropic,openai]>=2.3,<3",
   # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
   # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
@@ -205,7 +211,9 @@ ui = [
 [tool.ruff]
 target-version = "py313"
 line-length = 120
-fix = true
+# Restates ruff's default: `ruff check` is how agents MEASURE lint, and there is one
+# working tree here, so fixing stays behind an explicit `--fix`.
+fix = false
 lint.select = [ "ALL" ]
 lint.ignore = [
   "CPY001", # missing-copyright-notice — not applicable

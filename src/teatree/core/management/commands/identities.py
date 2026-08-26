@@ -1,4 +1,4 @@
-"""``t3 identities {seed,add,list,remove}`` — manage trusted identities (#1773).
+"""``t3 identities {seed,bootstrap,add,list,remove}`` — manage trusted identities (#1773).
 
 The DB-backed :class:`TrustedIdentity` set is the canonical tier for "who is
 the user" on a PUBLIC repo (BLUEPRINT §17.4). ``seed`` consolidates the
@@ -9,14 +9,17 @@ carries no personal handle — the seed set comes from the operator's own config
 """
 
 import logging
-from typing import Annotated, TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 from rich.console import Console
 from rich.table import Table
 
-from teatree.core.models import TrustedIdentity
+from teatree.core.identity_wiring import derivable_owner_identities
+from teatree.core.machine_output import emit
+from teatree.core.models import ConfigSetting, TrustedIdentity
+from teatree.core.overlay_loader import get_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,61 @@ class Command(TyperCommand):
             created += int(was_created)
         self.stdout.write(f"Seeded {len(aliases)} trusted identities from config ({created} new).")
         return {"seeded": len(aliases), "created": created}
+
+    @command()
+    def bootstrap(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the derived identities as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> None:
+        """Derive ``user_identity_aliases`` from the forge logins this venue authenticates as.
+
+        The keystone's reviewer allowlist is the UNION of ``user_identity_aliases`` and
+        ``independent_reviewer_identities``, so deriving the owner's own handles admits the human
+        who records a CLEAR AND un-degrades the other consumers reading the same list — one
+        derived fact rather than two hand-typed lists that can disagree.
+
+        Refuses rather than writing when every resolvable login is one this deployment declares in
+        ``self_forge_identities``: that is a venue authenticated as its own bot, and writing it
+        would admit a coding agent's identity as an independent reviewer.
+        """
+        from teatree.backends.loader import get_code_hosts  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.config import cold_reader, get_effective_settings  # noqa: PLC0415 — deferred: same
+
+        logins = [host.current_user() for host in get_code_hosts(get_overlay())]
+        declared = cold_reader.mapping_setting("self_forge_identities")
+        self_identities = [
+            entry
+            for logins_for_host in declared.values()
+            if isinstance(logins_for_host, list)
+            for entry in logins_for_host
+            if isinstance(entry, str)
+        ]
+        derived = derivable_owner_identities(forge_logins=logins, self_identities=self_identities)
+        if not derived:
+            self.stderr.write(
+                "Refusing to bootstrap: no forge login resolved that this deployment does not also act as "
+                f"(resolved {sorted(filter(None, logins))!r}, declared as our own {sorted(self_identities)!r}). "
+                "Set the owner's handles by hand with "
+                "`t3 <overlay> config_setting set user_identity_aliases '[\"<handle>\"]'`."
+            )
+            raise SystemExit(1)
+
+        existing = list(get_effective_settings().user_identity_aliases)
+        merged = existing + [handle for handle in derived if handle not in existing]
+        ConfigSetting.objects.set_value("user_identity_aliases", merged)
+
+        self.print_result = False
+        emit(
+            {"derived": list(derived), "user_identity_aliases": merged},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"user_identity_aliases = {merged!r} (derived {list(derived)!r}).",
+        )
 
     @command()
     def add(

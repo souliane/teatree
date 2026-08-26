@@ -12,15 +12,9 @@ silently dropped every non-dict one.
 unrenderable payload rather than dropping it, so a count is always backed by
 content that renders. The two renderers sit on top of it — one for the CLI, one
 for the PR comment the author actually reads.
-
-:func:`readable_findings` is its lenient sibling for the read-only ``review
-status`` gate (#4575). The two are a pair: the strict read is for the surfaces
-whose whole job is to DISPLAY findings, the lenient one for a surface that must
-answer a question findings do not bear on.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import cast
 
 from teatree.core.models.review_verdict import Finding, FindingDict, ReviewVerdict
@@ -68,33 +62,6 @@ def _renderable(verdict: ReviewVerdict, index: int, raw: object) -> Finding:
         msg = f"verdict {verdict.pk} finding {index} has an empty summary — it would render as a blank line"
         raise FindingsRenderError(msg)
     return finding
-
-
-@dataclass(frozen=True, slots=True)
-class ReadableFindings:
-    """What a read-only surface can show, plus why anything is missing."""
-
-    payload: list[FindingDict]
-    error: str
-    recorded_count: int
-
-
-def readable_findings(verdict: ReviewVerdict) -> ReadableFindings:
-    """*verdict*'s findings for a READ-ONLY gate — degraded, never raising (#4575).
-
-    Whether a finding RENDERS is unrelated to whether the head is SAFE TO APPROVE, so an
-    unrenderable row must not turn a display defect into a blocked decision. The reason is
-    carried rather than swallowed, and ``review findings`` stays the strict, loud surface.
-    One bad row degrades the whole set: a partial render would re-open the same count/content
-    disagreement from the other side.
-    """
-    rows = verdict.findings
-    recorded_count = len(rows) if isinstance(rows, list) else 0
-    try:
-        payload = findings_payload(verdict)
-    except FindingsRenderError as exc:
-        return ReadableFindings(payload=[], error=str(exc), recorded_count=recorded_count)
-    return ReadableFindings(payload=payload, error="", recorded_count=recorded_count)
 
 
 def render_findings_text(verdict: ReviewVerdict) -> str:

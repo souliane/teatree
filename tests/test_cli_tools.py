@@ -634,7 +634,9 @@ class TestValidateMrCommand:
                 app,
                 ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
             )
-        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here", require_sections=True)
+        ov.metadata.validate_pr.assert_called_once_with(
+            "feat: a [f] (p#1)", "body here", require_sections=True, repo=""
+        )
 
     # The cold interpreter below imports the whole CLI + Django: 2.9s alone, 56.9s recorded
     # under the 12-shard matrix. 180 is that lane's own `-o timeout=`, so CI is unchanged (#4369).
@@ -673,8 +675,8 @@ class _OverlayMeta(OverlayMetadata):
     def __init__(self, errors: list[str]) -> None:
         self._errors = errors
 
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
-        del title, description, require_sections
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True, repo: str = ""):
+        del title, description, require_sections, repo
         return {"errors": list(self._errors), "warnings": []}
 
 
@@ -800,8 +802,8 @@ class _CrashingOverlay(OverlayBase):
 
 
 class _CrashingMeta(OverlayMetadata):
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
-        del title, description, require_sections
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True, repo: str = ""):
+        del title, description, require_sections, repo
         msg = "validator import boom"
         raise RuntimeError(msg)
 
@@ -1135,9 +1137,9 @@ class TestValidationErrorsAlwaysForwardsKeyword:
     def test_default_path_forwards_require_sections(self) -> None:
         overlay = _RecordingOverlay()
         _validation_errors(overlay, "fix: x", "body", require_sections=True)
-        assert overlay.metadata.kwargs == [{"require_sections": True}]
+        assert overlay.metadata.kwargs == [{"require_sections": True, "repo": ""}]
 
     def test_non_default_path_forwards_false(self) -> None:
         overlay = _RecordingOverlay()
         _validation_errors(overlay, "fix: x", "body", require_sections=False)
-        assert overlay.metadata.kwargs == [{"require_sections": False}]
+        assert overlay.metadata.kwargs == [{"require_sections": False, "repo": ""}]

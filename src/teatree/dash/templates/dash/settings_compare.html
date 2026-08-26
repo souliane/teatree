@@ -1,0 +1,141 @@
+{% extends "dash/base.html" %}
+{% block title %}Compare instances{% endblock %}
+{% block heading %}Compare instances{% endblock %}
+{% block content %}
+  {% comment %}
+  The comparison itself is read-only: nothing on this page writes a setting, and the write STATE
+  beside each row says what an import WOULD do with it rather than offering to do it. The one
+  form posts snapshot FILES to compare against, which builds columns for this response and
+  touches nothing on this box.
+
+  Every configured peer has a row here whether or not it answered, and so does every document
+  the operator handed in. A peer or a file that is silently dropped reads as agreement between
+  the instances that did answer, which is the one wrong answer this page must never give.
+  {% endcomment %}
+  <section class="band">
+    <h2>Instances</h2>
+    <p class="muted">This box beside every peer in the <span class="mono">peer_instances</span> registry, plus every
+      snapshot file loaded below. A peer is fetched over its own loopback tunnel — no instance publishes a port, and
+      the snapshot carries no raw secret: a withheld value travels as its reason plus a digest, which still compares
+      for difference. A loaded column is a RECORD of the moment it was captured, never a live reading, so it says so
+      in its own heading and carries its capture time here.</p>
+    <table class="dash-table">
+      <thead><tr><th>Instance</th><th>Source</th><th>Captured</th><th>State</th></tr></thead>
+      <tbody>
+        {% for instance in comparison.instances %}
+          <tr class="{% if not instance.reachable %}stalled{% endif %}">
+            <td class="mono">{{ instance.label }}{% if instance.note %} <span class="muted">{{ instance.note }}</span>{% endif %}</td>
+            <td class="mono">{{ instance.provenance }}</td>
+            <td class="mono">{{ instance.captured_at|default:"—" }}</td>
+            <td>{% if instance.reachable %}<span class="default-match">&#10003; {% if instance.from_file %}loaded{% else %}answered{% endif %}</span>
+              {% else %}<span class="default-differs">&#9679; {{ instance.error }}</span>
+                {% if instance.tunnel_command %}<br><span class="muted">bring its tunnel up:</span>
+                  <span class="mono">{{ instance.tunnel_command }}</span>{% endif %}
+              {% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="band">
+    <h2>Load a saved snapshot</h2>
+    {% for refusal in refusals %}
+      <p class="banner-red"><span class="mono">{{ refusal.source }}</span> was not loaded: {{ refusal.reason }}</p>
+    {% endfor %}
+    <p class="muted">A snapshot is a record, so a file reaches what a tunnel cannot: a box whose tunnel is not up, a
+      box that is gone, and this box as it stood at an earlier date. Pick one or more snapshot files, or paste the
+      JSON, and each becomes another column in the comparison below under exactly the same rules. Loading writes
+      nothing on this box, and the loaded columns last only for the page they produce.</p>
+    <form method="post" action="{% url 'dash:settings_compare' %}" enctype="multipart/form-data">
+      {% csrf_token %}
+      <p class="toolbar">
+        <input type="file" name="snapshot_files" accept=".json,application/json" multiple
+          aria-label="snapshot files to compare against">
+        <button class="dash-btn" type="submit">Compare against these</button>
+      </p>
+      <p>
+        <textarea name="snapshot_json" rows="4" cols="80" spellcheck="false"
+          aria-label="snapshot JSON to compare against"
+          placeholder="…or paste one snapshot's JSON here"></textarea>
+      </p>
+    </form>
+    <p class="muted"><a href="{% url 'dash:settings_snapshot' %}?download=1">Download this box's snapshot</a> to keep
+      today's capture as a record, or to carry it to a box no tunnel reaches.</p>
+  </section>
+
+  {% if comparison.compat %}
+    <section class="band">
+      <h2>Comparability</h2>
+      <p class="{% if comparison.compat.comparable %}muted{% else %}banner-red{% endif %}">{{ comparison.compat.verdict }}</p>
+      <table class="dash-table">
+        <thead>
+          <tr><th>Signal</th><th>Severity</th>{% for label in comparison.compat.labels %}<th class="mono">{{ label }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+          {% for row in comparison.compat.rows %}
+            <tr class="{% if not row.agrees and row.severity != 'info' %}stalled{% endif %}">
+              <td><span class="setting-help-anchor" title="{{ row.signal.note }}">{{ row.signal.label }}</span></td>
+              <td class="mono">{{ row.severity }}</td>
+              {% for cell in row.cells %}
+                <td class="mono {% if cell.matches %}cell-at-default{% else %}cell-drifted{% endif %}">{{ cell.text|default:"—" }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if comparison.compat.dated %}
+        <p class="muted">A loaded record reading differently from the live boxes is its AGE, not drift: an older
+          capture legitimately declares fewer settings than today's code. Those rows are marked
+          <span class="mono">info</span> and never decide whether the live boxes may be compared.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if comparison.error %}
+    <div class="banner-red">{{ comparison.error }}</div>
+  {% else %}
+    <section class="band">
+      <h2>Differences <span class="muted">({{ comparison.total_rows }})</span></h2>
+      <p class="muted">One row per setting, scope and seed field the instances disagree about. A box that holds no row
+        has no opinion, and every way of having none compares equal — only a stored value differs from silence. A row
+        marked <span class="mono">code-version</span> is a difference in what the code declares, not in configuration.</p>
+      {% if comparison.unreachable %}
+        <p class="banner-red">This comparison covers only the instances that answered. No reading below is from
+          {% for instance in comparison.unreachable %}<span class="mono">{{ instance.label }}</span>{% if not forloop.last %}, {% endif %}{% endfor %}.</p>
+      {% endif %}
+      {% if comparison.truncated %}
+        <p class="banner-red">Showing the first {{ comparison.rows|length }} of {{ comparison.total_rows }} rows.</p>
+      {% endif %}
+      <table class="dash-table">
+        <thead>
+          <tr><th>Row</th><th>Kind</th><th>If imported</th>
+            {% for instance in comparison.compared %}
+              <th class="mono">{{ instance.label }}
+                {% if instance.from_file %}<span class="muted">record of {{ instance.captured_at|default:"an unstated time" }}</span>{% endif %}
+              </th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in comparison.rows %}
+            <tr>
+              <td class="mono setting-name">
+                <span class="setting-help-anchor" title="{{ row.subtitle }}">{{ row.title }}</span>
+                <span class="muted">{{ row.subtitle }}</span>
+                {% if row.stale_on %}<span class="muted">stored on {{ row.stale_on|join:", " }} but not declared there</span>{% endif %}
+              </td>
+              <td>{{ row.kind }}</td>
+              <td><span class="setting-help-anchor" title="{{ row.outcome.reason }}">{{ row.outcome.disposition }}</span></td>
+              {% for cell in row.cells %}
+                <td class="mono {% if cell.present %}cell-drifted{% else %}cell-at-default{% endif %}">{{ cell.text }}</td>
+              {% endfor %}
+            </tr>
+          {% empty %}
+            <tr><td colspan="{{ comparison.labels|length|add:3 }}">No differences.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+{% endblock %}

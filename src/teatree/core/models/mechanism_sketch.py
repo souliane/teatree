@@ -18,6 +18,7 @@ reject the hack in writing before the human ever sees it; an envelope that fails
 validation fails the interpret task, so the loop redispatches rather than record garbage.
 """
 
+import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -154,11 +155,14 @@ def is_core_seam_chokepoint(policy_chokepoint: str) -> bool:
     not the core seam every overlay flows through. Shared by the interpreter recorder here
     AND by ``plan_adequacy.mechanism_conforms`` (the plan-time ``mechanism_placement`` check),
     so both refuse an overlay-package chokepoint by the identical rule.
+
+    The path is collapsed before the prefix test, so ``src/teatree/../overlays/x.py``
+    is judged where it RESOLVES rather than where it starts spelling itself.
     """
     path = chokepoint_path(policy_chokepoint)
     if not path:
         return False
-    normalized = path.replace("\\", "/")
+    normalized = posixpath.normpath(path.replace("\\", "/"))
     return normalized.startswith(_CORE_SEAM_ROOT) and not any(marker in normalized for marker in _OVERLAY_PATH_MARKERS)
 
 

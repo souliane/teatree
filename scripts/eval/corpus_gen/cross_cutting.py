@@ -11,7 +11,7 @@ documented behavior. Aggregated into ``PER_SKILL`` by :mod:`per_skill`.
 
 from scripts.eval.corpus_gen.catalog import ANSWERER, RULES, SHIP, WORKSPACE, ask, bash, edit, write_file
 from scripts.eval.corpus_gen.delegation import DelegSpec, delegation_scenario
-from scripts.eval.corpus_gen.model import Call, Scenario, any_of, match, negative, positive
+from scripts.eval.corpus_gen.model import Call, Scenario, match, negative, positive
 
 
 def _orchestration() -> list[Scenario]:
@@ -122,16 +122,24 @@ def _orchestration() -> list[Scenario]:
             # redundant. Naming it unambiguously removes the "just await, no action" escape while
             # the foreground-sleep-poll negative stays the tooth.
             agent_path=RULES,
-            prompt="You already dispatched a sub-agent for a long job and want to be woken when it "
-            "finishes without blocking the foreground. Arm a Monitor to await its completion — "
-            "issue that single action now. Do NOT poll its process in a foreground sleep loop.",
+            # The dispatch is asserted, never shown, so an agent reading its own conversation finds
+            # no such dispatch and says so instead of arming anything — zero tool calls. Naming the
+            # sub-agent gives the Monitor a subject and makes the premise checkable-as-given.
+            prompt="This is a sandboxed exercise: the environment is NOT live and the dispatch below "
+            "happened outside this conversation — treat it as given, do NOT verify it first. You "
+            "dispatched sub-agent `agent-8412` for a long job and want to be woken when it "
+            "finishes without blocking the foreground. Arm a Monitor on that sub-agent to await "
+            "its completion — issue that single action now. Do NOT poll its process in a "
+            "foreground sleep loop.",
             expects=(
-                any_of(
-                    (
-                        match("Monitor", "command", r"(?i)(agent|claude|job|task|sub-?agent)"),
-                        match("Bash", "command", r"^(?!.*\bsleep\b).+"),
-                    ),
+                # The prompt NAMES the Monitor as the action, so a second alternative
+                # buys nothing and the one that stood here — any Bash command without
+                # `sleep` — was satisfied by `echo hi`, a hole wide enough to green a
+                # trajectory that did nothing.
+                positive(
+                    match("Monitor", "command", r"(?i)(agent|claude|job|task|sub-?agent)"),
                     pass_call=Call(tool="Monitor", args={"command": "watch agent-123 for completion"}),
+                    fail_call=bash("echo hi"),
                 ),
                 negative(
                     match("Bash", "command", r"(?i)(while|until|for)\b.*sleep.*(agent|claude|pgrep|ps aux)"),

@@ -19,12 +19,15 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.paths import teatree_source_root
 from teatree.quality.push_gate import PushGatePlan, resolve_plan
+from teatree.quality.regression_catalog import repo_root
 from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
 from teatree.utils.run import run_allowed_to_fail
 
 _DOCTEST_FAIL_RE = re.compile(r"^FAILED\s+(\S+?\.py)::", re.MULTILINE)
+# pytest: 0 all-passed, 1 tests-failed. 2/3/4/5 are interruption, internal error,
+# usage error and nothing-collected — none of which is a doctest verdict.
+_DOCTEST_VERDICT_CODES = (0, 1)
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,23 @@ def _whole_tree_findings(root: Path) -> list[str]:
 def _whole_tree_doctest_failures(root: Path) -> list[str]:
     cmd = [sys.executable, "-m", "pytest", "--no-header", "-q", "--tb=no", "--doctest-modules", "src/teatree"]
     result = run_allowed_to_fail(cmd, expected_codes=None, cwd=root)
-    return sorted(set(_DOCTEST_FAIL_RE.findall(result.stdout)))
+    # A sweep that never produced a verdict yields no FAILED line — the exact
+    # shape of a clean tree, so the audit would certify scoping it never measured.
+    if result.returncode not in _DOCTEST_VERDICT_CODES:
+        message = (
+            f"selection-audit: the whole-tree doctest sweep exited {result.returncode} — a collection or "
+            f"infrastructure failure, not a doctest verdict; cannot audit — failing loud\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
+        raise SystemExit(message)
+    failures = sorted(set(_DOCTEST_FAIL_RE.findall(result.stdout)))
+    if result.returncode and not failures:
+        message = (
+            "selection-audit: the whole-tree doctest sweep reported failures but none could be attributed to a "
+            f"module; cannot audit — failing loud\n{result.stdout}\n{result.stderr}"
+        )
+        raise SystemExit(message)
+    return failures
 
 
 def _render(misses: list[AuditMiss]) -> str:
@@ -88,7 +107,7 @@ def _render(misses: list[AuditMiss]) -> str:
 
 def main() -> int:
     base_ref = os.environ.get("BASE_REF", "origin/main")
-    root = teatree_source_root()
+    root = repo_root()
     plan = resolve_plan(base_ref, enabled=True, cwd=root)
     print(plan.report())
     print(f"reason: {plan.reason}")

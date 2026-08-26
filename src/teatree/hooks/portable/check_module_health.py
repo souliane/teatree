@@ -15,10 +15,12 @@ third-party/vendored paths are excluded. One shared predicate (``_is_first_party
 gates both the staged-mode and diff-mode file scans so the two never diverge.
 
 Two entry paths share one ratchet predicate. The default (no args) path runs
-per-commit over staged files (``git diff --cached``) — the prek commit hook,
+per-commit over staged files (``git diff --cached``) and measures the INDEX
+blob — the version being committed, which an unstaged edit is not part of —
 where a merge commit is exempt because a merge brings both parents' growth into
 one commit and the per-commit comparison would false-flag it (#1983 exemption).
-The ``--from-ref <base>`` path runs over the PR's whole ``base..HEAD`` range —
+The ``--from-ref <base>`` path runs over the PR's whole ``base..HEAD`` range and
+measures the working tree, which IS the PR head in that context —
 the bypass-proof CI twin (#2010); the range is computed once base-to-head, NOT
 per-commit, so the merge-commit false-positive the staged-mode exemption works
 around never arises and no merge exemption is needed in this mode.
@@ -31,6 +33,7 @@ import ast
 import pathlib
 import re
 
+from teatree.utils import work_tree
 from teatree.utils.run import run_allowed_to_fail
 
 MAX_LOC = 500
@@ -75,12 +78,23 @@ def _is_merge_commit() -> bool:
     return result.returncode == 0
 
 
+def _tree() -> work_tree.WorkTree:
+    """The work tree this project sits in, resolved once per working directory.
+
+    Every path literal in this module (``_FIRST_PARTY_PREFIXES``, the working-tree
+    reads) is relative to the PROJECT root, so the names git hands back must be
+    too. Bare, they are relative to the work-tree TOP, which is a different
+    directory whenever the project is vendored inside a fork — and then
+    ``_is_first_party`` rejects every staged file and the ratchet passes having
+    measured nothing. prek runs each project's hooks from its own root, which is
+    what makes the cwd the right anchor here and in a consumer repo alike.
+    """
+    return work_tree.for_cwd()
+
+
 def _staged_python_files() -> list[str]:
-    result = run_allowed_to_fail(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"],
-        expected_codes=None,
-    )
-    return [f for f in result.stdout.strip().splitlines() if _is_first_party(f)]
+    names = _tree().staged_names("--diff-filter=ACMR", "--", "*.py")
+    return [f for f in names if _is_first_party(f)]
 
 
 def _head_paths() -> dict[str, str]:
@@ -90,12 +104,9 @@ def _head_paths() -> dict[str, str]:
     grandfather/ratchet logic follows the move instead of treating the new
     path as a fresh over-cap file. Non-renamed files map to themselves.
     """
-    result = run_allowed_to_fail(
-        ["git", "diff", "--cached", "--name-status", "-M", "--diff-filter=ACMR", "--", "*.py"],
-        expected_codes=None,
-    )
+    out = _tree().run("diff", "--cached", "--relative", "--name-status", "-M", "--diff-filter=ACMR", "--", "*.py")
     mapping: dict[str, str] = {}
-    for line in result.stdout.strip().splitlines():
+    for line in out.strip().splitlines():
         status, *paths = line.split("\t")
         if status.startswith("R") and len(paths) == _RENAME_FIELDS:
             old_path, new_path = paths
@@ -105,29 +116,41 @@ def _head_paths() -> dict[str, str]:
     return mapping
 
 
-def _count_loc(filepath: str) -> int:
+def _loc_of(source: str) -> int:
+    return sum(1 for line in source.splitlines() if line.strip() and not line.strip().startswith("#"))
+
+
+def _working_tree_source(filepath: str) -> str:
     try:
-        with pathlib.Path(filepath).open(encoding="utf-8") as f:
-            return sum(1 for line in f if line.strip() and not line.strip().startswith("#"))
+        return pathlib.Path(filepath).read_text(encoding="utf-8")
     except OSError:
-        return 0
+        return ""
 
 
 def _show_at_ref(filepath: str, ref: str) -> str | None:
-    result = run_allowed_to_fail(
-        ["git", "show", f"{ref}:{filepath}"],
-        expected_codes=None,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout
+    """The file's content at *ref*, or ``None`` when the ref does not carry it.
+
+    An EMPTY *ref* reads the INDEX (``git show :<path>``) — git's own spelling
+    for "the version being committed".
+    """
+    return _tree().blob(ref, filepath)
+
+
+def _staged_source(filepath: str) -> str:
+    """The version of *filepath* the commit will contain: the INDEX blob.
+
+    The working tree is a DIFFERENT snapshot — an unstaged edit belongs to no
+    commit — so measuring it judged code the commit does not carry while the
+    diff it is compared against (``git diff --cached``) came from the index. The
+    working tree is the fallback only when the blob cannot be read.
+    """
+    staged = _show_at_ref(filepath, "")
+    return staged if staged is not None else _working_tree_source(filepath)
 
 
 def _count_loc_at_ref(filepath: str, ref: str) -> int:
     source = _show_at_ref(filepath, ref)
-    if source is None:
-        return 0
-    return sum(1 for line in source.splitlines() if line.strip() and not line.strip().startswith("#"))
+    return _loc_of(source) if source is not None else 0
 
 
 def _count_module_level_functions_at_ref(filepath: str, ref: str) -> list[str]:
@@ -157,59 +180,46 @@ def _public_module_functions(source: str) -> list[str]:
     ]
 
 
-def _count_module_level_functions(filepath: str) -> list[str]:
-    try:
-        source = pathlib.Path(filepath).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    return _public_module_functions(source)
-
-
 def _added_line_numbers(filepath: str, head_path: str) -> set[int] | None:
     """Return the set of line numbers added/modified in the staged version, or None for new files."""
     paths = [head_path, filepath] if head_path != filepath else [filepath]
-    result = run_allowed_to_fail(
-        ["git", "diff", "--cached", "-U0", "-M", "--", *paths],
-        expected_codes=None,
-    )
-    if not result.stdout:
+    out = _tree().run("diff", "--cached", "-U0", "-M", "--", *paths)
+    if not out:
         return None
     added: set[int] = set()
-    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", result.stdout):
+    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", out):
         start = int(match.group(1))
         count = int(match.group(2)) if match.group(2) else 1
         added.update(range(start, start + count))
     return added
 
 
-def _find_dict_object_annotations(filepath: str) -> list[tuple[int, str]]:
+def _find_dict_object_annotations(source: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
-    try:
-        with pathlib.Path(filepath).open(encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                stripped = line.strip()
-                # Skip type alias definitions — they ARE the fix
-                if stripped.startswith("type ") and "=" in stripped:
-                    continue
-                for pattern in _DICT_OBJECT_PATTERNS:
-                    if pattern in line:
-                        findings.append((line_num, line.strip()))
-                        break
-    except OSError:
-        pass
+    for line_num, line in enumerate(source.splitlines(), 1):
+        stripped = line.strip()
+        # Skip type alias definitions — they ARE the fix
+        if stripped.startswith("type ") and "=" in stripped:
+            continue
+        if any(pattern in line for pattern in _DICT_OBJECT_PATTERNS):
+            findings.append((line_num, stripped))
     return findings
 
 
-def _file_violations(filepath: str, prev_loc: int, prev_funcs: list[str], added_lines: set[int] | None) -> list[str]:
+def _file_violations(
+    filepath: str, source: str, prev_loc: int, prev_funcs: list[str], added_lines: set[int] | None
+) -> list[str]:
     """Apply the shrink ratchet to one file's current vs previous state.
 
     ``prev_loc`` / ``prev_funcs`` are the file's measurements at the comparison
-    baseline (HEAD for staged-mode, the base ref for diff-mode); the current
-    side always reads the working tree, which is the PR head in both contexts.
+    baseline (HEAD for staged-mode, the base ref for diff-mode). ``source`` is
+    the CURRENT side the caller resolved: the INDEX blob in staged mode (the
+    version being committed) and the working tree in diff mode (the PR head).
+    ``filepath`` names the file in the messages only.
     """
     violations: list[str] = []
 
-    loc = _count_loc(filepath)
+    loc = _loc_of(source)
     if loc > MAX_LOC:
         if prev_loc <= MAX_LOC:
             violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
@@ -219,7 +229,7 @@ def _file_violations(filepath: str, prev_loc: int, prev_funcs: list[str], added_
                 f"Over-cap files may only shrink — split by concern or move code out."
             )
 
-    public_functions = _count_module_level_functions(filepath)
+    public_functions = _public_module_functions(source)
     if len(public_functions) > MAX_MODULE_FUNCTIONS:
         names = ", ".join(public_functions[:5])
         if len(prev_funcs) <= MAX_MODULE_FUNCTIONS:
@@ -234,7 +244,7 @@ def _file_violations(filepath: str, prev_loc: int, prev_funcs: list[str], added_
                 f"Over-cap files may only shrink — move a function to a class. Examples: {names}"
             )
 
-    for line_num, _line in _find_dict_object_annotations(filepath):
+    for line_num, _line in _find_dict_object_annotations(source):
         if added_lines is None or line_num in added_lines:
             violations.append(
                 f"  {filepath}:{line_num}: dict[str, {_OBJECT_SUFFIX} — use a dataclass or TypedDict instead"
@@ -253,21 +263,17 @@ def _merge_base(base_ref: str) -> str:
 
 
 def _range_python_files(merge_base: str) -> list[str]:
-    result = run_allowed_to_fail(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py"],
-        expected_codes=None,
-    )
-    return [f for f in result.stdout.strip().splitlines() if _is_first_party(f)]
+    out = _tree().run("diff", "--relative", "--name-only", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py")
+    return [f for f in out.strip().splitlines() if _is_first_party(f)]
 
 
 def _range_paths(merge_base: str) -> dict[str, str]:
     """Map each changed path in ``merge_base..HEAD`` to its pre-change path at the merge-base."""
-    result = run_allowed_to_fail(
-        ["git", "diff", "--name-status", "-M", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py"],
-        expected_codes=None,
+    out = _tree().run(
+        "diff", "--relative", "--name-status", "-M", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py"
     )
     mapping: dict[str, str] = {}
-    for line in result.stdout.strip().splitlines():
+    for line in out.strip().splitlines():
         status, *paths = line.split("\t")
         if status.startswith("R") and len(paths) == _RENAME_FIELDS:
             old_path, new_path = paths
@@ -279,14 +285,11 @@ def _range_paths(merge_base: str) -> dict[str, str]:
 
 def _range_added_line_numbers(filepath: str, base_path: str, merge_base: str) -> set[int] | None:
     paths = [base_path, filepath] if base_path != filepath else [filepath]
-    result = run_allowed_to_fail(
-        ["git", "diff", "-U0", "-M", f"{merge_base}..HEAD", "--", *paths],
-        expected_codes=None,
-    )
-    if not result.stdout:
+    out = _tree().run("diff", "-U0", "-M", f"{merge_base}..HEAD", "--", *paths)
+    if not out:
         return None
     added: set[int] = set()
-    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", result.stdout):
+    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", out):
         start = int(match.group(1))
         count = int(match.group(2)) if match.group(2) else 1
         added.update(range(start, start + count))
@@ -315,6 +318,7 @@ def run_diff_mode(base_ref: str) -> int:
         violations.extend(
             _file_violations(
                 filepath,
+                _working_tree_source(filepath),
                 _count_loc_at_ref(base_path, merge_base),
                 _count_module_level_functions_at_ref(base_path, merge_base),
                 _range_added_line_numbers(filepath, base_path, merge_base),
@@ -338,6 +342,7 @@ def _run_staged() -> int:
         violations.extend(
             _file_violations(
                 filepath,
+                _staged_source(filepath),
                 _count_loc_at_head(head_path),
                 _count_module_level_functions_at_head(head_path),
                 _added_line_numbers(filepath, head_path),
@@ -383,10 +388,11 @@ def run_debt_report() -> int:
     """
     rows: list[str] = []
     for filepath in _tree_python_files():
-        loc = _count_loc(filepath)
+        source = _working_tree_source(filepath)
+        loc = _loc_of(source)
         if loc > MAX_LOC:
             rows.append(f"  {filepath}: {loc} LOC (cap {MAX_LOC})")
-        functions = _count_module_level_functions(filepath)
+        functions = _public_module_functions(source)
         if len(functions) > MAX_MODULE_FUNCTIONS:
             rows.append(f"  {filepath}: {len(functions)} public module-level functions (cap {MAX_MODULE_FUNCTIONS})")
     if not rows:

@@ -13,6 +13,8 @@ of the stack it watches) can restart the stack and DM the owner. Each says REPAI
 - a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
 - a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
 - a runtime clone that has drifted off its default branch (REPORTS),
+- ``loop_runner_enabled`` OFF with every enabled loop behind its cadence — a kill-switched
+    fleet whose timers still go RUNNING -> SUCCESSFUL, so the heartbeat reads healthy (REPORTS),
 - a ``worker_quiescing`` gate outliving any deploy that could explain it (REPAIRS when provably dead, else REPORTS),
 - a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain`` — REPORTS),
 - a Slack app-config token pair aging toward its 12-hour expiry, past which it is
@@ -35,6 +37,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.doctor.self_heal_frozen_fleet import check_frozen_fleet_under_kill_switch
 from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
 from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
 from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
@@ -524,6 +527,7 @@ def run_self_heal_checks() -> bool:
         _check_stale_loop_timer,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
+        check_frozen_fleet_under_kill_switch,
         check_stranded_quiescing_gate,
         check_slack_drain_alive,
         check_slack_config_token_fresh,

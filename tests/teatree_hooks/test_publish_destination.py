@@ -204,6 +204,29 @@ class TestResolvePublishDestination:
         # ``glab mr list`` is neither a flag/api/create target → None.
         assert publish_destination.resolve_publish_destination("glab mr list") is None
 
+    def test_leading_cd_resolves_the_repo_it_navigates_into(self, tmp_path: Path) -> None:
+        # The whole point of honouring the ``cd``: reading segment ZERO would read the
+        # ``cd`` itself in exactly the case the two dirs differ, so the cwd fallback
+        # would be unreachable where it is needed and every such post resolved to None.
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
+        ambient = tmp_path / "workspace"
+        ambient.mkdir()
+
+        dest = publish_destination.resolve_publish_destination(f"cd {repo} && gh pr create --title x", ambient)
+
+        assert dest is not None
+        assert dest.slug == "github.com/acme-internal/app"
+        assert dest.via == "cwd"
+
+    def test_leading_cd_onto_no_real_directory_is_none(self, tmp_path: Path) -> None:
+        # The ``cd`` fails, so the command publishes nowhere; falling back to the
+        # ambient repo would answer with a subject the command never posts to.
+        ambient = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
+
+        command = f"cd {tmp_path / 'missing'} && gh pr create --title x"
+
+        assert publish_destination.resolve_publish_destination(command, ambient) is None
+
 
 class TestIsPublicDestination:
     """FAIL-CLOSED: PUBLIC unless the slug provably matches the internal allowlist."""
@@ -277,6 +300,39 @@ class TestIsPublicDestination:
         cfg = _config(tmp_path, ["internalcorp/private-svc"])
         dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_full_work_item_url_in_internal_namespace_is_internal(self, tmp_path: Path) -> None:
+        # A PROGRAMMATIC caller names its destination by full work-item URL, not a
+        # bare slug; the scheme+host must not defeat the namespace match the bash
+        # gates already make on the very same target.
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(
+            slug="https://gitlab.example/internalcorp/group/app/-/work_items/14", via="api", forge="gitlab"
+        )
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_full_issue_url_in_private_repos_allowlist_is_internal(self, tmp_path: Path) -> None:
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(
+            slug="https://gitlab.example/internalcorp/group/app/-/issues/7", via="api", forge="gitlab"
+        )
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_full_issue_url_on_genuinely_public_repo_stays_public(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(
+            slug="https://github.com/souliane/teatree/issues/5", via="api", forge="github"
+        )
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+    def test_full_url_under_superset_namespace_stays_public(self, tmp_path: Path) -> None:
+        # Normalisation must not relax the segment boundary: ``internalcorp`` still
+        # does not cover an unrelated ``internalcorp-public`` owner.
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(
+            slug="https://gitlab.example/internalcorp-public/app/-/issues/1", via="api", forge="gitlab"
+        )
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
 
     def test_malformed_config_treats_everything_as_public(self, tmp_path: Path) -> None:
         # A corrupt (non-JSON) stored value fails open to an empty allowlist in

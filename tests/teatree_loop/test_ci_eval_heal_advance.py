@@ -35,17 +35,21 @@ class _FakeClient:
         runs: list[dict[str, object]] | None = None,
         artifact: dict[str, object] | None = None,
         download_error: Exception | None = None,
+        trigger_error: Exception | None = None,
     ) -> None:
         self._head_sha = head_sha
         self._runs = runs if runs is not None else []
         self._artifact = artifact
         self._download_error = download_error
+        self._trigger_error = trigger_error
         self.triggered: list[dict[str, object]] = []
 
     def resolve_head_sha(self, ref: str) -> str:
         return self._head_sha
 
     def trigger_workflow(self, workflow: str, *, ref: str, inputs: dict[str, str]) -> None:
+        if self._trigger_error is not None:
+            raise self._trigger_error
         self.triggered.append({"workflow": workflow, "ref": ref, "inputs": inputs})
 
     def list_runs(self, workflow: str, *, branch: str, limit: int = 20) -> list[dict[str, object]]:
@@ -236,10 +240,12 @@ class _FakeFixer:
         changed_paths: Sequence[str] = ("src/teatree/skills/t3-rules/SKILL.md",),
         head_sha: str = "f" * 40,
         raise_on_propose: Exception | None = None,
+        raise_on_publish: Exception | None = None,
     ) -> None:
         self._changed = tuple(changed_paths)
         self._head = head_sha
         self._raise = raise_on_propose
+        self._raise_publish = raise_on_publish
         self.proposed = 0
         self.published: list[FixProposal] = []
         self.discarded: list[FixProposal] = []
@@ -251,6 +257,8 @@ class _FakeFixer:
         return FixProposal(changed_paths=self._changed, worktree_path="/tmp/wt", base_sha="base", commit_sha="c0ffee")
 
     def publish(self, session: CiEvalHealSession, proposal: FixProposal) -> str:
+        if self._raise_publish is not None:
+            raise self._raise_publish
         self.published.append(proposal)
         return self._head
 
@@ -338,6 +346,25 @@ class TestArmedFixerDispatch(TestCase):
         assert session.state == CiEvalHealSession.State.HALTED
         assert "dispatch failed" in session.halt_reason
 
+    def test_a_failed_publish_halts_instead_of_claiming_a_push_that_never_landed(self) -> None:
+        # ``record_fix`` lands PUSHED and consumes an attempt, and PUSHED is not a source
+        # state ``halt`` accepts — so recording before the push landed left an un-haltable
+        # session whose only exit was re-triggering the eval on the UNFIXED branch until
+        # the budget burned out.
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer(raise_on_publish=RuntimeError("git push rejected"))
+        escalated: list[int] = []
+
+        advance_session(session, client=_red_run(), escalate=lambda s: escalated.append(s.pk), fixer=fixer)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert session.fix_attempts == 0  # the budget is not spent on a fix that never shipped
+        assert len(fixer.discarded) == 1
+        assert "publishing the fix failed" in session.halt_reason
+        assert escalated == [session.pk]
+
 
 class TestAntiCheatRejectsTestEdit(TestCase):
     """The load-bearing PR-3b guardrail — a fixer that edits the TEST is rejected, never pushed."""
@@ -405,6 +432,111 @@ class TestPushedRetrigger(TestCase):
         assert outcome.to_state == CiEvalHealSession.State.AWAITING_CI
 
 
+class TestAdvancementOwnership(TestCase):
+    """Two advancers holding the same scanned row must not both act on one step.
+
+    The loop tick and ``t3 eval ci-heal advance`` both call ``advance_open_sessions``,
+    so a rival advancer routinely holds an instance the winner already moved on.
+    django-fsm guards on the in-memory ``state``, so without a compare-and-swap
+    against the persisted row the loser's transition passes and it repeats the step.
+    """
+
+    def test_rival_advancer_does_not_dispatch_a_second_ci_run(self) -> None:
+        session = _session()
+        rival = CiEvalHealSession.objects.get(pk=session.pk)
+        client = _FakeClient(head_sha="b" * 40)
+
+        advance_session(session, client=client, escalate=_never)
+        outcome = advance_session(rival, client=client, escalate=_never)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert len(client.triggered) == 1
+        assert "superseded" in outcome.note
+
+    def test_rival_advancer_does_not_publish_a_second_fix(self) -> None:
+        _arm_autofix()
+        session = _triaging(reds=["rules_under_load"])
+        rival = CiEvalHealSession.objects.get(pk=session.pk)
+        fixer = _FakeFixer()
+
+        advance_session(session, client=_FakeClient(), escalate=_never, fixer=fixer)
+        advance_session(rival, client=_FakeClient(), escalate=_never, fixer=fixer)
+
+        assert fixer.proposed == 1
+        assert len(fixer.published) == 1
+
+    def test_rival_advancer_does_not_escalate_a_second_time(self) -> None:
+        session = _triaging(reds=["rules_under_load"])
+        rival = CiEvalHealSession.objects.get(pk=session.pk)
+        escalated: list[int] = []
+
+        advance_session(session, client=_FakeClient(), escalate=lambda s: escalated.append(s.pk))
+        advance_session(rival, client=_FakeClient(), escalate=lambda s: escalated.append(s.pk))
+
+        assert escalated == [session.pk]
+
+    def test_rival_advancer_does_not_reopen_a_session_the_fix_branch_returned_to_awaiting(self) -> None:
+        # The fix branch ends back on AWAITING_CI, so a state-equality claim would let the
+        # rival through; only a generation check sees that the row moved under it.
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        rival = CiEvalHealSession.objects.get(pk=session.pk)
+
+        advance_session(session, client=_red_run(), escalate=_never, fixer=_FakeFixer())
+        outcome = advance_session(rival, client=_red_run(), escalate=_never, fixer=_FakeFixer())
+
+        session.refresh_from_db()
+        assert session.head_sha == "f" * 40
+        assert session.state == CiEvalHealSession.State.AWAITING_CI
+        assert session.fix_attempts == 1
+        assert "superseded" in outcome.note
+
+    def test_rival_advancer_does_not_retrigger_a_second_time(self) -> None:
+        session = _triaging(reds=["rules_under_load"])
+        session.begin_fix()
+        session.save()
+        session.record_fix(changed_paths=["src/teatree/skills/foo.md"])
+        session.save()
+        rival = CiEvalHealSession.objects.get(pk=session.pk)
+        client = _FakeClient(head_sha="n" * 40)
+
+        advance_session(session, client=client, escalate=_never)
+        advance_session(rival, client=client, escalate=_never)
+
+        assert len(client.triggered) == 1
+
+
+class TestDispatchFailureIsNeverASilentWait(TestCase):
+    """Claiming AWAITING_CI before the dispatch is safe only because the halt can follow it."""
+
+    def test_a_failed_ci_dispatch_halts_instead_of_awaiting_a_run_that_never_started(self) -> None:
+        session = _session()
+        client = _FakeClient(trigger_error=RuntimeError("workflow dispatch rejected"))
+        escalated: list[int] = []
+
+        advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert "dispatching the eval failed" in session.halt_reason
+        assert escalated == [session.pk]
+
+    def test_a_failed_retrigger_halts_instead_of_awaiting_a_run_that_never_started(self) -> None:
+        session = _triaging(reds=["rules_under_load"])
+        session.begin_fix()
+        session.save()
+        session.record_fix(changed_paths=["src/teatree/skills/foo.md"])
+        session.save()
+        client = _FakeClient(trigger_error=RuntimeError("workflow dispatch rejected"))
+
+        advance_session(session, client=client, escalate=_noop)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert "dispatching the eval failed" in session.halt_reason
+
+
 class TestRedNeverSelfCertifiesGreen(TestCase):
     """Sweep: under every arming/budget/cheat combination, a red never reaches GREEN."""
 
@@ -430,6 +562,13 @@ class TestRedNeverSelfCertifiesGreen(TestCase):
 def _awaiting(*, head_sha: str = "a" * 40) -> CiEvalHealSession:
     session = _session()
     session.trigger(ci_run_id="", head_sha=head_sha)
+    session.save()
+    return session
+
+
+def _triaging(*, reds: Sequence[str]) -> CiEvalHealSession:
+    session = _awaiting()
+    session.receive_result(red_scenarios=list(reds))
     session.save()
     return session
 
