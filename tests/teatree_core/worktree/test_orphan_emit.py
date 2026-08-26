@@ -86,11 +86,43 @@ class TestTheSignalStaysRoutable(_OrphanEmitFixture):
         dirty = self._add_orphan("agent-4579-routable")
         (dirty / "wip.py").write_text("GATE = True\n", encoding="utf-8")
         self._add_orphan("agent-4579-routable-commits", files={"new.py": "WORK = 1\n"})
+        detached_squashed = self._add_orphan("agent-4579-routable-detached", files={"sq.py": "X = 1\n"}, detach=True)
+        (self.repo_main / "sq.py").write_text("X = 1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: land sq.py (#1)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
 
         emitted = [record.to_dict() for record in self._collect()]
 
         assert emitted, "fixture invalid — nothing was emitted to inspect"
         assert all(not record["content_verified"] or record["unique_commit_shas"] for record in emitted)
+        assert not any(record["path"] == str(detached_squashed) for record in emitted), (
+            "a detached HEAD whose content is already captured on origin/main holds no "
+            "unique work and must not reach the handoff at all"
+        )
+
+    def test_a_squash_merged_detached_orphan_is_absent_like_a_synced_named_branch(self) -> None:
+        """#4579 hold: orphan_has_unique_work must run the squash check for a detached HEAD too.
+
+        Before the fix, a detached HEAD whose commits are absent-from-all-remotes by SHA but
+        whose CONTENT is captured on ``origin/main`` (the ordinary squash-merge shape) was
+        treated as unique work by ``orphan_has_unique_work`` (the squash check was skipped for
+        ``DETACHED_HEAD``) while ``_build_record`` correctly found it redundant — so the record
+        serialised ``content_verified: true`` with empty ``unique_commit_shas``, the exact
+        DELETE leaf, while the reaper kept the same checkout as "unpushed work not on any
+        remote". Both must now agree it holds nothing worth reporting.
+        """
+        wt_path = self._add_orphan("agent-4579-detached-squash", files={"new.py": "WORK = 1\n"}, detach=True)
+        (self.repo_main / "new.py").write_text("WORK = 1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: land new.py (#1)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+
+        assert self._record_for(wt_path) is None, (
+            "content already captured on origin/main — must not be reported as unique work"
+        )
+        reaped = self._reap(dry_run=True)
+        assert any(line.startswith("WOULD Reap orphan worktree") and str(wt_path) in line for line in reaped), reaped
 
     def test_a_clean_ignored_orphan_is_withheld_like_a_ledger_row(self) -> None:
         wt_path = self._add_orphan("agent-4579-ignored")

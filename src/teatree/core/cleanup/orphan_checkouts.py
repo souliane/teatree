@@ -104,9 +104,12 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
     the work captured on ``origin/<default>``.
 
     A named branch is probed from the shared object store (``repo``); a detached
-    HEAD is meaningful only in the worktree dir, so it is probed there. Fails
-    CLOSED — an inconclusive absence probe (corrupt repo, unknown ref) reads as
-    "has unique work" so the worktree is kept, never reaped on uncertainty.
+    HEAD is meaningful only in the worktree dir, so it — and the squash check
+    below — are both probed there instead. A linked worktree shares its main
+    clone's refs (including ``origin/*``), so running the squash probe against
+    ``wt_path`` sees the same remote-tracking state ``repo`` does. Fails CLOSED —
+    an inconclusive absence probe (corrupt repo, unknown ref) reads as "has
+    unique work" so the worktree is kept, never reaped on uncertainty.
 
     Assumes the caller has already refreshed ``repo``'s remote-tracking refs where a
     deletion depends on the answer (:func:`reap_orphan_raw_worktrees` does; the read-only
@@ -120,4 +123,4 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
         return True
     if not absent:
         return False
-    return not (branch != git.DETACHED_HEAD and is_squash_merged(repo, branch, git.default_branch(repo)))
+    return not is_squash_merged(probe_repo, branch, git.default_branch(repo))
