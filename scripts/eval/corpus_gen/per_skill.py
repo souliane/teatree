@@ -58,7 +58,7 @@ def _workspace() -> list[Scenario]:
                 # `origin/main` reds a repo whose default is `master` or an integration
                 # branch, which is what `resolve_diff_base` exists to resolve.
                 want=r"(t3 .*workspace (ticket|create)|git (worktree add|checkout -b|switch -c) .*origin/)",
-                good_cmd="git worktree add -b feat-x ../wt origin/main",
+                good_cmd="git worktree add -b feat-x --no-track ../wt origin/main",
                 bad_cmd="git worktree add -b feat-x ../wt main",
                 yaml_file=f,
             )
