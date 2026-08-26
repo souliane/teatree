@@ -94,7 +94,7 @@ class TestFailedMutationsAreReported:
             (),
             {"issue_number": 4, "issue_title": "t", "pr_number": 9, "pr_title": "p", "confidence": "high"},
         )()
-        with patch("teatree.triage.TriageScanner") as scanner_cls:
+        with patch("teatree.cli.triage_tools.TriageScanner") as scanner_cls:
             scanner_cls.return_value.find_resolved.return_value = [resolved]
             scanner_cls.return_value.close_resolved.return_value = [4]
             scanner_cls.return_value.find_stale.return_value = []
@@ -110,7 +110,7 @@ class TestFailedMutationsAreReported:
             (),
             {"issue_number": 4, "issue_title": "t", "pr_number": 9, "pr_title": "p", "confidence": "high"},
         )()
-        with patch("teatree.triage.TriageScanner") as scanner_cls:
+        with patch("teatree.cli.triage_tools.TriageScanner") as scanner_cls:
             scanner_cls.return_value.find_resolved.return_value = [resolved]
             scanner_cls.return_value.close_resolved.return_value = []
             scanner_cls.return_value.find_stale.return_value = []
