@@ -7,7 +7,7 @@ are assembled at runtime so this file carries no literal token.
 import os
 from unittest.mock import patch
 
-from teatree.core.forge_push_credential import (
+from teatree.core.push.forge_credential import (
     CredentialSource,
     ForgeCredential,
     credential_failure_hint,
@@ -37,7 +37,7 @@ class TestResolveForgeCredential:
     def test_falls_back_to_overlay_pass_store(self) -> None:
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push_credential._overlay_github_token", return_value=FAKE_TOKEN),
+            patch("teatree.core.push.forge_credential._overlay_github_token", return_value=FAKE_TOKEN),
         ):
             os.environ.pop("GH_TOKEN", None)
             os.environ.pop("TEATREE_GH_TOKEN", None)
@@ -48,7 +48,7 @@ class TestResolveForgeCredential:
     def test_no_credential_falls_through_to_ambient_helper(self) -> None:
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push_credential._overlay_github_token", return_value=""),
+            patch("teatree.core.push.forge_credential._overlay_github_token", return_value=""),
         ):
             os.environ.pop("GH_TOKEN", None)
             os.environ.pop("TEATREE_GH_TOKEN", None)

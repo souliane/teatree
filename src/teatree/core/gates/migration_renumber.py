@@ -25,6 +25,8 @@ from django.db import DEFAULT_DB_ALIAS, connections
 from django.db.migrations.executor import MigrationExecutor
 from django.db.migrations.recorder import MigrationRecorder
 
+from teatree.core.schema_readiness import pending_migrations
+
 #: Failure text that means "the object this migration creates is already there" —
 #: the only class of migrate failure a renumber can explain.
 COLLISION_MARKERS: tuple[str, ...] = (
@@ -121,8 +123,6 @@ def renumber_hint(pairs: Sequence[RenumberedMigration]) -> str:
 
 def renumbered_migrations(alias: str = DEFAULT_DB_ALIAS) -> list[RenumberedMigration]:
     """Read *alias* and report every pending migration that is a renumbered applied one."""
-    from teatree.core.schema_readiness import pending_migrations  # noqa: PLC0415 — deferred: avoids an import cycle
-
     connection = connections[alias]
     executor = MigrationExecutor(connection)
     squashes = {

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from teatree.core.forge_push_credential import resolve_forge_credential
+from teatree.core.push.forge_credential import resolve_forge_credential
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import run_allowed_to_fail
@@ -46,7 +46,7 @@ _GLAB_OPEN_MR: tuple[str, ...] = ("glab", "mr", "list", "--state", "opened", "--
 def forge_cli_env() -> dict[str, str] | None:
     """The subprocess env a forge CLI read needs, or ``None`` when no token resolves.
 
-    :func:`~teatree.core.forge_push_credential.resolve_forge_credential` is the one chain
+    :func:`~teatree.core.push.forge_credential.resolve_forge_credential` is the one chain
     every forge WRITE already goes through (``GH_TOKEN`` env, then the compose
     ``env_file``'s ``TEATREE_GH_TOKEN``, then the overlay ``pass`` store), so a
     read routed through here sees exactly what the writer sees.

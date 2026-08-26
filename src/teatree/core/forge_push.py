@@ -23,7 +23,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Self, TypedDict
 
-from teatree.core.forge_push_credential import (
+from teatree.core.forge_push_refs import BranchRef, local_tip
+from teatree.core.push.forge_credential import (
     CREDENTIAL_FAILURE_MARKERS,
     CredentialSource,
     ForgeCredential,
@@ -32,7 +33,6 @@ from teatree.core.forge_push_credential import (
     resolve_forge_credential,
     scrub_token,
 )
-from teatree.core.forge_push_refs import BranchRef, local_tip
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.git_run import run as git_read
 from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_fail

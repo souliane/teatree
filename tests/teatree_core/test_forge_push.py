@@ -16,7 +16,7 @@ import pytest
 
 from teatree.core import forge_push
 from teatree.core.forge_push import PUSH_EXIT_CODES, PUSH_TIMEOUT_SECONDS, PushFailure, PushOutcome, push_branch
-from teatree.core.forge_push_credential import CredentialSource
+from teatree.core.push.forge_credential import CredentialSource
 from teatree.utils import git_run
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CompletedProcess, TimeoutExpired

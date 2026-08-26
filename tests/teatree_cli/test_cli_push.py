@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.push import push
 from teatree.core.forge_push import PUSH_EXIT_CODES, PushFailure, PushOutcome
-from teatree.core.forge_push_credential import CredentialSource
+from teatree.core.push.forge_credential import CredentialSource
 from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()

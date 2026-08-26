@@ -27,7 +27,7 @@ from teatree.core.forge_pr_probe import (
     probe_github_open_pr,
     probe_gitlab_open_pr,
 )
-from teatree.core.forge_push_credential import CredentialSource, ForgeCredential
+from teatree.core.push.forge_credential import CredentialSource, ForgeCredential
 from tests._git_repo import make_git_repo, run_git
 
 _GH_URL = "https://github.com/acme/widgets/pull/7"
