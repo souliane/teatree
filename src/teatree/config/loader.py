@@ -1,7 +1,7 @@
 """TeaTree config loading — ``load_config`` + the logging/dir entry points.
 
 ``load_config`` (builds ``TeaTreeConfig`` from the DB), the default Django LOGGING
-dict, ``load_e2e_repos``, and the ``clone_root`` / ``worktree_root`` /
+dict, ``load_e2e_repos`` / ``load_peer_instances``, and the ``clone_root`` / ``worktree_root`` /
 ``check_for_updates`` resolvers. Split out of the package
 facade for the RUF067 init-is-re-exports-only rule; re-exported from
 ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
@@ -12,7 +12,7 @@ the loader/resolution/discovery import cycle).
 Every ``UserSettings`` field is DB-home: its authoritative value comes from the
 ``ConfigSetting`` store (global + per-overlay rows) + the ``T3_*`` env layer,
 resolved per-field by ``resolution.get_effective_settings``. ``load_config`` builds
-only the NON-settings registry tables (``overlays`` / ``e2e_repos``) into
+only the NON-settings registry tables (``REGISTRY_KEYS``) into
 ``config.raw`` — themselves DB-home, read from the ``ConfigSetting`` store by
 ``_inject_db_registries``. There is no config file: an install is fully configured
 from the DB. Callers that need effective settings must use ``get_effective_settings``,
@@ -21,11 +21,19 @@ not the bare ``load_config().user`` (which is always the dataclass defaults).
 
 import logging
 import os
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 
 import teatree.config as _facade
 from teatree.config.e2e_repo import E2ERepo
+from teatree.config.peer_instance import (
+    DEFAULT_REMOTE_PORT,
+    DEFAULT_TIMEOUT_SECONDS,
+    PeerInstance,
+    PeerTransport,
+    PeerTunnel,
+)
 from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.paths import get_data_dir
 from teatree.update_check import run_update_check
@@ -78,27 +86,49 @@ def default_logging(namespace: str) -> dict:
 
 # The registry tables: NON-``UserSettings`` config read directly off ``config.raw``
 # at many call sites — the ``overlays`` definition registry (``discover_overlays`` +
-# every ``raw["overlays"]`` reader) and the ``e2e_repos`` registry (``load_e2e_repos``).
-# Both are DB-home: stored as a single JSON-dict ``ConfigSetting`` row each
-# (``REGISTRY_SETTINGS``), injected into ``raw`` here so every existing reader is
-# untouched. With no row the table is simply absent (empty).
+# every ``raw["overlays"]`` reader), the ``e2e_repos`` registry (``load_e2e_repos``)
+# and the ``peer_instances`` registry (``load_peer_instances``). Each is DB-home:
+# stored as a single JSON-dict ``ConfigSetting`` row (``REGISTRY_SETTINGS``), injected
+# into ``raw`` here so every existing reader is untouched. With no row the table is
+# simply absent (empty).
+
+
+_REGISTRY_READ_DEGRADED_ADVISORY = (
+    "teatree: the config store could not be read, so the overlays / e2e-repos registries are "
+    "resolving as EMPTY — an overlay you have configured may be invisible to this process. "
+    "Run `t3 doctor check` to see whether the config tier is healthy."
+)
 
 
 def _inject_db_registries(raw: dict) -> None:
-    """Populate ``raw['overlays']`` / ``raw['e2e_repos']`` from their DB rows.
+    """Populate ``raw[<key>]`` from its DB row, for every ``REGISTRY_KEYS`` member.
 
     Read via the Django-free ``cold_reader`` (the same store ``config_setting`` writes)
     because ``load_config`` runs pre-Django on the overlay-discovery path. Fail-open: a
     missing DB / row leaves the key absent, so a not-yet-configured install still boots
     (with no overlays / e2e repos) rather than raising.
+
+    A store that could not be READ AT ALL is the same empty answer to the caller — boot must
+    not raise here — but never the same SILENCE: an unreadable store makes every configured
+    overlay vanish, which presents as "unknown overlay" rather than as the fault it is. So the
+    confirming read is what is asked for, and a failed one is recorded for ``t3 doctor`` and
+    announced once on stderr.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
+    from teatree.config.host_projection import warn_once  # noqa: PLC0415 — deferred with its cold-read siblings
+    from teatree.config.override_read_health import (  # noqa: PLC0415 — deferred with its cold-read siblings
+        record_degraded_read,
+    )
     from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415 — deferred: breaks loader ↔ registries cycle
 
     for key in REGISTRY_KEYS:
-        stored = cold_reader.read_setting(key)
-        if isinstance(stored, dict):
-            raw[key] = stored
+        read = cold_reader.read_setting_confirmed(key)
+        if not read.readable:
+            record_degraded_read("", caller=f"config.loader._inject_db_registries[{key}]")
+            warn_once(_REGISTRY_READ_DEGRADED_ADVISORY)
+            continue
+        if isinstance(read.value, dict):
+            raw[key] = read.value
 
 
 def load_config() -> TeaTreeConfig:
@@ -107,8 +137,8 @@ def load_config() -> TeaTreeConfig:
     Every ``UserSettings`` field is DB-home, so ``user`` here is always the plain
     dataclass defaults; a caller that needs effective values uses
     ``get_effective_settings`` (which layers the ``ConfigSetting`` store + env). The
-    ``raw`` dict carries only the NON-settings registry tables (``overlays`` /
-    ``e2e_repos``), injected from the store by :func:`_inject_db_registries`, so an
+    ``raw`` dict carries only the NON-settings registry tables (``REGISTRY_KEYS``),
+    injected from the store by :func:`_inject_db_registries`, so an
     install with no config file boots a fully DB-configured teatree.
     """
     raw: dict = {}
@@ -136,6 +166,106 @@ def load_e2e_repos() -> list[E2ERepo]:
             )
         )
     return repos
+
+
+def _peer_tunnel_fields(entry: object) -> Mapping[str, object]:
+    """The tunnel's declared fields — anything but a table of them is malformed."""
+    if not isinstance(entry, Mapping):
+        message = f"tunnel must be a table of fields, not {type(entry).__name__}"
+        raise TypeError(message)
+    return {str(key): value for key, value in entry.items()}
+
+
+def _peer_host(value: object) -> str:
+    """The connectable target. Absent, blank or null it renders ``ssh … None``, so it raises."""
+    if not isinstance(value, str) or not value:
+        message = "tunnel must name the host to connect to"
+        raise TypeError(message)
+    return value
+
+
+def _peer_transport(value: object) -> PeerTransport:
+    known = ", ".join(sorted(member.value for member in PeerTransport))
+    declared = str(value)
+    try:
+        return PeerTransport(declared)
+    except ValueError:
+        message = f"unknown tunnel transport {declared!r}; known transports are {known}"
+        raise ValueError(message) from None
+
+
+def _peer_remote_port(value: object) -> int:
+    """The far end of the forward, as a port number.
+
+    Substituting the shipped default for an unparsable one RUNS and forwards to the wrong
+    port — worse than the unrunnable command the tunnel fields exist to end. ``bool`` is
+    rejected ahead of ``int`` because it passes ``isinstance`` and renders as ``:True``.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    message = "tunnel remote_port must be a port number"
+    raise TypeError(message)
+
+
+def _peer_options(value: object) -> tuple[str, ...]:
+    """The transport's verbatim extra arguments — anything but a list of them is malformed."""
+    if not isinstance(value, list | tuple):
+        message = "tunnel options must be a list of arguments"
+        raise TypeError(message)
+    return tuple(str(option) for option in value)
+
+
+def _parse_peer_tunnel(peer: str, entry: object) -> PeerTunnel | None:
+    """Build the tunnel *peer* declares, or ``None`` when it declares none.
+
+    Every malformed field fails LOUD, named against the peer it came from: the caller surfaces
+    the raise as a visible row, whereas coercing a bad field to a shipped default prints — and
+    ``t3 peer up`` then RUNS — a command aimed somewhere nobody asked for. Only the peer's own
+    label is ever echoed; a resolved host or transport option never is.
+    """
+    if entry is None:
+        return None
+    try:
+        fields = _peer_tunnel_fields(entry)
+        return PeerTunnel(
+            host=_peer_host(fields.get("host")),
+            transport=_peer_transport(fields.get("transport", PeerTransport.SSH)),
+            remote_port=_peer_remote_port(fields.get("remote_port", DEFAULT_REMOTE_PORT)),
+            options=_peer_options(fields.get("options", ())),
+        )
+    except (TypeError, ValueError) as exc:
+        message = f"peer {peer!r}: {exc}"
+        raise ValueError(message) from None
+
+
+def load_peer_instances() -> list[PeerInstance]:
+    """Load the peer teatree boxes from the ``peer_instances`` registry (DB-home).
+
+    Reads ``config.raw["peer_instances"]`` — which ``load_config`` populates from the
+    DB-home ``peer_instances`` ``ConfigSetting`` row (``_inject_db_registries``), exactly
+    as :func:`load_e2e_repos` reads its own. Each entry specifies ``url`` (a loopback
+    tunnel to that box's dashboard) and optionally ``note`` and ``timeout_seconds``.
+
+    An entry may also declare ``tunnel`` — ``host`` plus optional ``transport``,
+    ``remote_port`` and ``options`` — saying how the forward into ``url`` is opened. The key
+    it is filed under is the peer's LABEL, which is not a connectable target, so a peer that
+    wants its tunnel command shown states the target there rather than being guessed at.
+    """
+    config = _facade.load_config()
+    peers = []
+    for name, entry in config.raw.get("peer_instances", {}).items():
+        peers.append(
+            PeerInstance(
+                name=name,
+                url=str(entry.get("url", "")),
+                note=str(entry.get("note", "")),
+                timeout_seconds=float(entry.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+                tunnel=_parse_peer_tunnel(str(name), entry.get("tunnel")),
+            )
+        )
+    return peers
 
 
 def clone_root() -> Path:

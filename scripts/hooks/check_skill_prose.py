@@ -7,12 +7,19 @@ piles up, agents stop loading it, and the next session repeats the failure.
 This hook stops the bleeding while staged transition work (#140) shrinks the
 existing rule set.
 
-The hook fails when ``skills/**/SKILL.md`` or ``skills/**/references/*.md``
+The hook fails when a ``**/skills/**/SKILL.md`` or ``**/skills/**/references/*.md``
 adds new imperative bullets (``Non-Negotiable``, leading ``Always``/``Never``/
-``Stop``/``Run``) without an accompanying change in ``src/``,
-``hooks/scripts/``, or ``tests/``. Methodology that genuinely has no code
+``Stop``/``Run``) without an accompanying change under ``src/``, ``tests/``,
+``hooks/scripts/`` or ``scripts/hooks/``. Methodology that genuinely has no code
 home should be rephrased in non-imperative voice (e.g. "Frame findings as
 personal takeaways" rather than "Always frame findings…").
+
+Every path pattern is anchored at ``(?:^|/)`` rather than at the repo root, so
+one implementation serves a flat checkout AND one that mounts its skills under
+``overlay/skills/`` or ``vendor/<core>/skills/`` — where a root-anchored pattern
+matches nothing at all. The staged-diff pathspec is ``*.md``, a strict SUPERSET
+of what the regex then selects: a pathspec narrower than the regex returns 0
+before the regex is ever consulted, so the two cannot be allowed to drift.
 """
 
 import re
@@ -22,17 +29,11 @@ from dataclasses import dataclass
 NEW_RULE_PATTERN = re.compile(
     r"^[\s]*[-*]\s+\*\*(?:[^*]*?\b(?:Non-Negotiable|Always|Never|Stop|Run)\b)",
 )
-# A skill tree is not always the repo root's: an overlay mounts one at
-# ``overlay/skills/`` and a vendored core at ``vendor/<core>/skills/``. Anchoring on
-# a path SEGMENT governs authored prose wherever the tree is mounted.
-SKILL_PATH_PATTERN = re.compile(r"(?:^|/)skills/.+/(SKILL\.md|references/.+\.md)$")
-# A skill-shaped catalogue under a fixture tree is test DATA, not authored prose —
-# the segment anchoring above reaches it, so it is excluded by path.
-FIXTURE_PATH_PATTERN = re.compile(r"(?:^|/)fixtures/")
-# Same reasoning on the companion side: ``src``/``tests`` and both hook-script
-# spellings count wherever they sit, so a vendored or overlay-side code change
-# still discharges the rule.
-COMPANION_PATTERN = re.compile(r"(?:^|/)(?:src|tests)/|(?:^|/)(?:hooks/scripts|scripts/hooks)/")
+SKILL_PATH_PATTERN = re.compile(r"(?:^|/)skills/.+/(?:SKILL\.md|references/.+\.md)$")
+COMPANION_PATH_PATTERN = re.compile(r"(?:^|/)(?:src|tests|hooks/scripts|scripts/hooks)/")
+#: A skill-shaped path under a fixture tree is test DATA, not authored prose. The
+#: ``(?:^|/)`` anchoring reaches it, so it is excluded by path rather than by luck.
+FIXTURE_PATH_PATTERN = re.compile(r"(?:^|/)(?:fixtures|testdata)/")
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,13 @@ def _staged_files() -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def is_skill_prose_path(path: str) -> bool:
+    """Whether *path* is an authored skill document rather than a test fixture."""
+    return bool(SKILL_PATH_PATTERN.search(path)) and not FIXTURE_PATH_PATTERN.search(path)
+
+
 def has_companion_code_change(files: list[str]) -> bool:
-    return any(COMPANION_PATTERN.search(path) for path in files)
+    return any(COMPANION_PATH_PATTERN.search(path) for path in files)
 
 
 def count_new_rule_lines(diff: str) -> list[RuleAddition]:
@@ -80,8 +86,7 @@ def count_new_rule_lines(diff: str) -> list[RuleAddition]:
 
         if raw_line.startswith("+") and not raw_line.startswith("+++"):
             content = raw_line[1:]
-            governed = SKILL_PATH_PATTERN.search(current_file) and not FIXTURE_PATH_PATTERN.search(current_file)
-            if governed and NEW_RULE_PATTERN.search(content):
+            if is_skill_prose_path(current_file) and NEW_RULE_PATTERN.search(content):
                 findings.append(RuleAddition(current_file, line_num, content))
             line_num += 1
 

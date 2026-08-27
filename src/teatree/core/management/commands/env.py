@@ -130,6 +130,8 @@ class Command(TyperCommand):
         worktree = resolve_worktree(path)
         drifted, cache_path = detect_drift(worktree)
         if drifted:
+            # django-typer prints a returned int; only SystemExit reaches the
+            # shell, so returning 1 here reported a stale cache as in sync.
             self.stderr.write(
                 f"  env cache stale at {cache_path} — rerun `t3 <overlay> worktree start`",
             )

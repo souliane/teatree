@@ -16,9 +16,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.model_tiering import TIER_MODELS
+from teatree.config import get_effective_settings
 from teatree.core.admission_governor import governor_enabled
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
 from tests._loop_principal_env import pinned_loop_principal
@@ -191,6 +193,29 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         task.refresh_from_db()
         assert task.status == Task.Status.CLAIMED
         assert task.claimed_by == "loop-slot"
+
+    def test_the_claim_emits_the_token_a_record_must_hand_back(self) -> None:
+        task = self._reviewer_task()
+        stdout = StringIO()
+
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        task.refresh_from_db()
+        assert json.loads(stdout.getvalue())[0]["claim_token"] == claim_generation(task)
+
+    def test_the_in_session_lease_outlasts_the_dispatch_it_has_no_heartbeat_for(self) -> None:
+        """Nothing renews an in-session claim, so the initial lease is the whole budget.
+
+        At ``Task.claim``'s 300s default every Agent-tool dispatch slower than five
+        minutes is reclaimed and re-offered while it is still running.
+        """
+        task = self._reviewer_task()
+
+        call_command("loop_dispatch", "claim-next", "--json", stdout=StringIO())
+
+        task.refresh_from_db()
+        held_for = (task.lease_expires_at - task.claimed_at).total_seconds()
+        assert held_for == get_effective_settings().watchdog_max_runtime_seconds
 
     def test_two_sequential_ticks_never_double_dispatch_same_task(self) -> None:
         """THE N4 KEYSTONE: one pending Task, two ticks, dispatched exactly once.

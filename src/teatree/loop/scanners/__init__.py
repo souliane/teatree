@@ -43,6 +43,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     NullMergeNotifier,
     SlackMergeNotifier,
 )
+from teatree.loop.scanners.pr_sweep_gitlab import ForgePrApiClient, GlabPrApiClient
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
@@ -87,10 +88,12 @@ __all__ = [
     "DbBackupScanner",
     "DeferredQuestionPosterScanner",
     "EvalLocalScanner",
+    "ForgePrApiClient",
     "GhCodexPrApi",
     "GhPrApiClient",
     "GitLabApprovalsScanner",
     "GlabGhMrStateClassifier",
+    "GlabPrApiClient",
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
     "IntakeConcurrencyScanner",

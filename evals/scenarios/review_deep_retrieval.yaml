@@ -11,7 +11,7 @@
   prompt: "You are reviewing MR !51. The MR description links to GitLab issue #142 (mygroup/myrepo#142) and a Notion work item. Before forming any verdict, run the ONE Bash command you would issue to retrieve the GitLab issue that states the intended behavior. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(glab issue view|gh issue view|notion|t3 ticket)"'
+      args.command: '~ "(glab issue view|gh issue view|t3 .*ticket).*\b142\b"'
     - no_tool_call_matching:
         Bash.command: '~ "(glab mr approve|gh pr review .*--approve)"'
 

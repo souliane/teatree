@@ -332,6 +332,59 @@ class TestMigrateDockerizedFallback:
         importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
         assert importer._migrate_reference_db() is _MigrateResult.FAILED
 
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "ImportError: failed to find libmagic.  Check your installation",
+            "FileNotFoundError: [Errno 2] No such file or directory: 'patch'",
+        ],
+        ids=["missing-native-library", "missing-program"],
+    )
+    def test_falls_back_to_docker_on_missing_native_dependency(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: str
+    ) -> None:
+        """A native dep the IMAGE owns raises no ModuleNotFoundError — it must still fall back.
+
+        The host interpreter's OS packages are as much a venv-completeness signal
+        as its Python ones; keying only on the Python wordings left every missing
+        ``.so`` and every missing program presenting as an unrelated failure.
+        """
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", lambda args, **_kw: CompletedProcess(args, 1, "", stderr))
+
+        docker_calls: list[list[str]] = []
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            docker_calls.append(list(manage_args))
+            return CompletedProcess(manage_args, 0, "Applying myapp.0001_initial... OK\n", "")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.APPLIED
+        assert docker_calls == [["manage.py", "migrate", "--no-input"]], docker_calls
+
+    def test_app_import_error_does_not_route_into_the_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A circular import is app code, so widening must not swallow it into a docker retry."""
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda args, **_kw: CompletedProcess(
+                args, 1, "", "ImportError: cannot import name 'Offer' from partially initialized module 'pricing'"
+            ),
+        )
+
+        docker_calls: list[list[str]] = []
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            docker_calls.append(list(manage_args))
+            return CompletedProcess(manage_args, 0, "", "")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.FAILED
+        assert docker_calls == [], docker_calls
+
     def test_docker_fake_step_uses_docker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Once switched to docker, the selective --fake step also runs in docker."""
         (tmp_path / "manage.py").write_text("", encoding="utf-8")

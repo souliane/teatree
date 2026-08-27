@@ -43,6 +43,8 @@
     # A Monitor delivers its events to a NEXT turn. A one-shot dispatch has no
     # next turn, so arming one is the park-and-wait-for-a-wakeup shape itself —
     # the run ends, the watcher fires into nothing, and the envelope is never
-    # written.
+    # written. There is one job here, so ANY Monitor is that shape: keying on the
+    # suite's own name would both miss a watcher that avoids it and fire on one
+    # that merely quotes the marker this prompt hands the agent.
     - no_tool_call_matching:
-        Monitor.command: '~ "(?i)(pytest|tox|nox|make test)"'
+        Monitor.command: '~ ".+"'

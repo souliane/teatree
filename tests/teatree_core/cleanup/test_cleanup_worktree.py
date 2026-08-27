@@ -15,13 +15,13 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
+from teatree.core.cleanup.cleanup import WorktreeBusyError, _ref_captured_by_merge, cleanup_worktree
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
-from tests.teatree_core.cleanup._shared import _run_git, corrupt_index
+from tests.teatree_core.cleanup._shared import _run_git, corrupt_index, forge_reporting, squash_then_base_evolved
 
 _patch_config = patch("teatree.core.cleanup.cleanup.clone_root")
 _patch_git = patch("teatree.core.cleanup.cleanup.git")
@@ -1398,3 +1398,28 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
         mock_down.assert_not_called()
         mock_git.worktree_remove.assert_not_called()
         assert Worktree.objects.filter(pk=wt_id).exists()
+
+
+class TestUnpushedOverrideFallsThroughToTheLadder:
+    """#706's merged-override falls through to the landed ladder.
+
+    When the forge pruned the source ref, the SHA probe
+    carries no information — the verdict falls through to the content/forge ladder
+    instead of demanding a tree still equal to a base that has since moved on.
+    """
+
+    def test_forge_merged_at_the_exact_tip_authorises(self, tmp_path: Path) -> None:
+        work, tip = squash_then_base_evolved(tmp_path)
+
+        with forge_reporting(merged_head_sha=tip):
+            captured = _ref_captured_by_merge(str(work), "feature", "feature", remote_ref_was_present=False)
+
+        assert captured is True
+
+    def test_no_evidence_keeps_the_refusal(self, tmp_path: Path) -> None:
+        work, _tip = squash_then_base_evolved(tmp_path)
+
+        with forge_reporting():
+            captured = _ref_captured_by_merge(str(work), "feature", "feature", remote_ref_was_present=False)
+
+        assert captured is False

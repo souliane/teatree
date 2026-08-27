@@ -61,7 +61,11 @@ from teatree.agents.runner_truncation import (
 )
 from teatree.agents.runner_usage import DispatchProvenance, _attempt_usage
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
-from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
+from teatree.agents.skill_bundle import (
+    ArchitecturalReviewSkillMissingError,
+    resolve_skill_bundle,
+    stage_skills_for_dispatch,
+)
 from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import (
     LimitSignal,
@@ -190,19 +194,11 @@ def _run_agent(
     """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
-    refusal = _pre_harness_refusal(task, phase=phase)
-    if refusal is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
-        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
+    preflight = _preflight(task, phase=phase)
+    if isinstance(preflight, TaskAttempt):
+        return preflight
+    stage_skills, harness = preflight.stage_skills, preflight.harness
 
-    harness = _resolve_backend_or_failure(task, phase=phase)
-    if isinstance(harness, TaskAttempt):
-        return harness
-
-    # Resolve the overlay's stage skills ONCE and thread the list into every
-    # consumer (#3206). Re-resolving per prompt builder re-warns on a
-    # misconfigured skill and re-reads its SKILL.md path for nothing.
-    stage_skills = active_overlay_stage_skills(phase)
     skills = resolve_skill_bundle(
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
@@ -290,6 +286,32 @@ def _run_agent(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Preflight:
+    """What the three checks before the harness opens resolve, once none of them refused."""
+
+    stage_skills: list[str]
+    harness: Harness
+
+
+def _preflight(task: Task, *, phase: str) -> _Preflight | TaskAttempt:
+    """The refusals that must all pass before a turn can be billed, as one short-circuit."""
+    refusal = _pre_harness_refusal(task, phase=phase)
+    if refusal is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
+        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
+
+    stage_skills = _stage_skills_or_refusal(task, phase=phase)
+    if isinstance(stage_skills, TaskAttempt):
+        return stage_skills
+
+    harness = _resolve_backend_or_failure(task, phase=phase)
+    if isinstance(harness, TaskAttempt):
+        return harness
+
+    return _Preflight(stage_skills=stage_skills, harness=harness)
+
+
 def _pre_harness_refusal(task: Task, *, phase: str) -> str | None:
     """Why this dispatch must not run at all, or ``None`` to proceed.
 
@@ -314,6 +336,27 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
     restore = getattr(harness, "restore_unconsumed_resume_thread", None)
     if callable(restore):
         restore()
+
+
+def _stage_skills_or_refusal(task: Task, *, phase: str) -> list[str] | TaskAttempt:
+    """Every reason to refuse before the harness, then the dispatch's stage skills.
+
+    Both refusals precede harness resolution (souliane/teatree#2916): for a resumed
+    pydantic_ai task, resolving the harness destructively pops the parked ancestor's
+    thread, so a run that will never start must not reach it or the conversation is
+    lost. The skills are resolved ONCE here and threaded into every consumer (#3206);
+    re-resolving per prompt builder re-warns on a misconfigured skill and re-reads its
+    SKILL.md path for nothing.
+    """
+    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
+    if budget_breach is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
+        return _record_failure(task, error=budget_breach)  # no-usage: refused on budget — no turn billed
+    try:
+        return stage_skills_for_dispatch(phase)
+    except ArchitecturalReviewSkillMissingError as exc:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched
 
 
 def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | TaskAttempt:

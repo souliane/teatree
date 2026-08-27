@@ -208,7 +208,7 @@ def _attempt_counts_by_ticket(*, since: datetime, overlay_name: str) -> dict[int
         qs.values("task__ticket_id")
         .annotate(
             total=Count("id"),
-            failed=Count("id", filter=Q(exit_code__gt=0)),
+            failed=Count("id", filter=Q(outcome__in=TaskAttempt.FAILED_OUTCOMES)),
         )
         .order_by()
     )

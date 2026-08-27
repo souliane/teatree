@@ -14,6 +14,7 @@ import pytest
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OutboundClaim
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -90,60 +91,60 @@ class TestReviewServiceRecordsOutboundClaims:
 
     def test_post_comment_general_records_gitlab_note_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.post_comment("org/repo", 7, "lgtm")
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm")
         assert code == 0, msg
-        claim = OutboundClaim.objects.get(idempotency_key="gitlab_note:org/repo!7:42")
+        claim = OutboundClaim.objects.get(idempotency_key=f"gitlab_note:{OWNED_REPO}!7:42")
         assert claim.kind == OutboundClaim.Kind.GITLAB_NOTE
-        assert claim.target_url == "https://gitlab.example.com/org/repo/-/merge_requests/7"
-        assert claim.extra["repo"] == "org/repo"
+        assert claim.target_url == f"https://gitlab.example.com/{OWNED_REPO}/-/merge_requests/7"
+        assert claim.extra["repo"] == OWNED_REPO
         assert claim.extra["mr"] == 7
 
     def test_post_draft_note_general_records_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.post_draft_note("org/repo", 9, "stage")
+        msg, code = service.post_draft_note(OWNED_REPO, 9, "stage")
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
-            idempotency_key="gitlab_note:org/repo!9:42",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!9:42",
         ).exists()
 
     def test_publish_draft_notes_records_bulk_publish_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.publish_draft_notes("org/repo", 11)
+        msg, code = service.publish_draft_notes(OWNED_REPO, 11)
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
-            idempotency_key="gitlab_note:org/repo!11:bulk_publish",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!11:bulk_publish",
         ).exists()
 
     def test_reply_to_discussion_records_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.reply_to_discussion("org/repo", 12, "disc-1", "thanks")
+        msg, code = service.reply_to_discussion(OWNED_REPO, 12, "disc-1", "thanks")
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
-            idempotency_key="gitlab_note:org/repo!12:42",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!12:42",
         ).exists()
 
     def test_resolve_discussion_records_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.resolve_discussion("org/repo", 13, "disc-2", resolved=True)
+        msg, code = service.resolve_discussion(OWNED_REPO, 13, "disc-2", resolved=True)
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
-            idempotency_key="gitlab_note:org/repo!13:disc-2#resolved=true",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!13:disc-2#resolved=true",
         ).exists()
 
     def test_update_note_draft_records_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.update_note("org/repo", 14, 500, "fixed")
+        msg, code = service.update_note(OWNED_REPO, 14, 500, "fixed")
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
-            idempotency_key="gitlab_note:org/repo!14:update:draft:500",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!14:update:draft:500",
         ).exists()
 
     def test_approve_records_gitlab_approve_claim(self) -> None:
         service, _ = _service()
-        msg, code = service.approve("org/repo", 15)
+        msg, code = service.approve(OWNED_REPO, 15)
         assert code == 0, msg
-        claim = OutboundClaim.objects.get(idempotency_key="gitlab_approve:org/repo!15:approve")
+        claim = OutboundClaim.objects.get(idempotency_key=f"gitlab_approve:{OWNED_REPO}!15:approve")
         assert claim.kind == OutboundClaim.Kind.GITLAB_APPROVE
         assert claim.extra["endpoint"] == "approve"
 
@@ -151,9 +152,9 @@ class TestReviewServiceRecordsOutboundClaims:
         # After unapprove the read-back must show this identity ABSENT from
         # approved_by (verify_unapproval_landed, #2081).
         service, _ = _service(approvers=[])
-        msg, code = service.unapprove("org/repo", 16)
+        msg, code = service.unapprove(OWNED_REPO, 16)
         assert code == 0, msg
-        claim = OutboundClaim.objects.get(idempotency_key="gitlab_approve:org/repo!16:unapprove")
+        claim = OutboundClaim.objects.get(idempotency_key=f"gitlab_approve:{OWNED_REPO}!16:unapprove")
         assert claim.kind == OutboundClaim.Kind.GITLAB_APPROVE
         assert claim.extra["endpoint"] == "unapprove"
 
@@ -168,7 +169,7 @@ class TestFailurePathsDoNotRecordClaims:
         # "already approved" probe (#1029) must not mask the real failure.
         service, stub = _service(approvers=[])
         monkeypatch.setattr(stub, "post_status", lambda _endpoint: 500)
-        _msg, code = service.approve("org/repo", 7)
+        _msg, code = service.approve(OWNED_REPO, 7)
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
@@ -177,7 +178,7 @@ class TestFailurePathsDoNotRecordClaims:
     ) -> None:
         service, stub = _service()
         monkeypatch.setattr(stub, "get_json_paginated", lambda _endpoint: [])
-        _msg, code = service.approve("org/repo", 8)
+        _msg, code = service.approve(OWNED_REPO, 8)
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
@@ -200,11 +201,11 @@ class TestApprovedRecordedReviewRecordsAClaim:
         # After #1207 the default-draft path is gated on ``post_draft_note``
         # (not ``post_comment``) — that's the action the recorded approval
         # must name to satisfy the gate on the live, default-draft branch.
-        OnBehalfApproval.record(target="org/repo!19", action="post_draft_note", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!19", action="post_draft_note", approver_id="souliane")
 
         service, _ = _service()
-        msg, code = service.post_comment("org/repo", 19, "thanks")
+        msg, code = service.post_comment(OWNED_REPO, 19, "thanks")
         assert code == 0, msg
         assert OutboundClaim.objects.filter(
-            idempotency_key="gitlab_note:org/repo!19:42",
+            idempotency_key=f"gitlab_note:{OWNED_REPO}!19:42",
         ).exists()

@@ -53,6 +53,7 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `require_ticket` | `False` | Whether to enforce a tracked issue before coding/shipping |
 | `known_variants` | `[]` | Tenant variant identifiers |
 | `pr_auto_labels` | `[]` | Labels auto-applied to pull requests (GitLab MRs translated at the API edge) |
+| `pr_auto_reviewers` | `[]` | Usernames set as reviewers in the same call that opens the pull request — applied only on a repo `get_gitlab_token_for_remote` scopes to a non-owner credential |
 | `frontend_repos` | `[]` | Frontend repo names (for build steps) |
 | `workspace_repos` | `[]` | Repo paths relative to `workspace_dir` (supports nested paths) |
 | `protected_branches` | `[]` | Branch names that should never be deleted during cleanup |
@@ -198,6 +199,7 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 | `preflight()` | `[]` | Zero-arg probes run before connector-dependent loop work; each raises when a hard-depended connector is unreachable. |
 | `mcp_provider_expectations()` | `{}` | `{mcp_server_name: provider}` for the connectivity check. |
 | `manifest()` | `[]` | The overlay's required-vs-optional claude.ai connectors by name. |
+| `mcp_tool_group()` | `None` | The overlay's own tools for the teatree MCP server, as an `McpToolGroup`. The server registers the group only on the terms it declares: every `Service` in `requires` declared by some overlay, and every non-read-only `McpTool` naming the gated `seam` it wraps. Either missing, and the whole group is refused. |
 
 ## Supporting types
 

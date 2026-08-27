@@ -21,17 +21,17 @@ contributes nothing, and the handler as a whole swallows every error. A hook tha
 throws blocks the session, which is worse than a missed warning.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
-``stop_snapshot_slot`` sibling.
+``stop_snapshot_slot`` / ``t3_invocation`` siblings.
 """
 
 import json
-import shutil
-import subprocess  # noqa: S404 — fixed-argv git/t3 probes, no shell
+import subprocess  # noqa: S404 — fixed-argv git probes, no shell; the `t3` probe is the seam's
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from hooks.scripts.stop_snapshot_slot import open_prs_for_repo
+from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -105,17 +105,11 @@ def current_branch(repo: Path) -> str:
 
 def fetch_orphans() -> list[dict]:
     """``t3 teatree workspace list-orphans`` as JSON, or ``[]`` on any failure."""
-    t3_bin = shutil.which("t3")
-    if not t3_bin:
+    argv = t3_argv("teatree", "workspace", "list-orphans")
+    if argv is None:
         return []
     try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            [t3_bin, "teatree", "workspace", "list-orphans"],
-            capture_output=True,
-            text=True,
-            timeout=PROBE_TIMEOUT_SECONDS,
-            check=False,
-        )
+        result = run_t3(argv, timeout=PROBE_TIMEOUT_SECONDS)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
     if result.returncode != 0 or not result.stdout.strip():

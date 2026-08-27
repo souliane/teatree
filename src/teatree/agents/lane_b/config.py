@@ -11,8 +11,10 @@ hand with no DB.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
 
 #: Shell command prefixes refused outright on Lane B regardless of phase — the
 #: irreversible/destructive set. This is a coarse denylist ON TOP OF the shared
@@ -30,6 +32,22 @@ _DEFAULT_SHELL_DENYLIST: tuple[str, ...] = (
 #: bounded by the run-level watchdog, not this; the per-command timeout only trips
 #: a single hung invocation.
 _DEFAULT_SHELL_TIMEOUT_SECONDS: float = 600.0
+
+#: Phases whose own contract is "walk the tree / execute-and-verify via shell" —
+#: several corrective shell retries (a scoped re-probe after a too-broad ``find``,
+#: a :class:`~teatree.agents.lane_b.gating.HardDenyToolset` refusal on a path
+#: outside the jail) are the expected path for this shape of work, not a sign of
+#: trouble. Left at the tight defaults, pydantic-ai's own per-tool retry ceiling
+#: (1) and ``HardDenyToolset``'s cumulative denial cap
+#: (:data:`~teatree.agents.lane_b.gating.DEFAULT_MAX_DENIALS`, 3) both abort the
+#: WHOLE dispatch on the very next corrective attempt — a downstream overlay
+#: observed ``architectural_review`` crash on all but one of ~29 scheduled
+#: dispatches this way.
+_SHELL_EXPLORATION_PHASES: Final[frozenset[str]] = frozenset(
+    {"architectural_review", "bughunt", "dogfood_smoke", "eval_local", "backlog_sweep"}
+)
+_SHELL_EXPLORATION_TOOL_RETRIES: Final[int] = 10
+_SHELL_EXPLORATION_MAX_DENIALS: Final[int] = 15
 
 
 @dataclass(frozen=True)
@@ -57,6 +75,20 @@ class LaneBToolConfig:
     shell_denylist: tuple[str, ...] = _DEFAULT_SHELL_DENYLIST
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
     shell_env: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def shell_tool_retries(self) -> int | None:
+        """Per-tool retry override for :attr:`phase`, ``None`` to inherit pydantic-ai's own default.
+
+        Derived from ``phase`` (not a stored field) so direct construction and
+        :meth:`from_options` can never disagree about a given phase's budget.
+        """
+        return _SHELL_EXPLORATION_TOOL_RETRIES if self.phase in _SHELL_EXPLORATION_PHASES else None
+
+    @property
+    def max_denials(self) -> int:
+        """:class:`~teatree.agents.lane_b.gating.HardDenyToolset`'s cumulative denial cap for :attr:`phase`."""
+        return _SHELL_EXPLORATION_MAX_DENIALS if self.phase in _SHELL_EXPLORATION_PHASES else DEFAULT_MAX_DENIALS
 
     @classmethod
     def from_options(cls, options: HarnessOptions, *, phase: str = "") -> "LaneBToolConfig":

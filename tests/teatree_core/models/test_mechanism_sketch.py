@@ -213,3 +213,7 @@ class TestIsCoreSeamChokepoint:
     def test_a_non_core_or_blank_path_is_rejected(self) -> None:
         assert is_core_seam_chokepoint("some/other/repo.py::x") is False
         assert is_core_seam_chokepoint("") is False
+
+    def test_a_traversal_out_of_the_core_tree_is_rejected(self) -> None:
+        assert is_core_seam_chokepoint("src/teatree/../../elsewhere/hack.py::cap") is False
+        assert is_core_seam_chokepoint("src/teatree/core/../overlays/acme/hook.py::cap") is False

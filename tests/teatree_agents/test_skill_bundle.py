@@ -7,14 +7,21 @@ fall-back.
 """
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.agents import skill_bundle
-from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.skill_bundle import (
+    ArchitecturalReviewSkillMissingError,
+    resolve_skill_bundle,
+    stage_skills_for_dispatch,
+)
+from teatree.config.settings import UserSettings
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 
@@ -111,3 +118,42 @@ class TestResolveSkillBundleStageSkillThreading(TestCase):
         ):
             resolve_skill_bundle(phase="coding", overlay_skill_metadata={})
         resolver.assert_called_once_with("coding")
+
+
+class TestArchitecturalReviewSkillReachesTheBundle(TestCase):
+    """``architectural_review`` is scanner-dispatched, so nothing else declares its skill.
+
+    It is in neither ``SUBAGENT_BY_PHASE`` nor the phase->skill map, so
+    ``declared_skills_for_phase`` returns nothing and the configured skill reached the
+    model as prose in the task description while its body never entered the bundle.
+    """
+
+    def _staged(self, name: str) -> list[Path]:
+        staged = Path(tempfile.mkdtemp())
+        (staged / name).mkdir()
+        (staged / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+        return [staged]
+
+    def test_the_configured_skill_is_appended_for_the_review_phase(self) -> None:
+        with (
+            patch.object(skill_bundle, "active_overlay_stage_skills", return_value=["overlay-x"]),
+            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("ac-reviewing-codebase")),
+            patch("teatree.config.get_effective_settings", return_value=UserSettings()),
+        ):
+            assert stage_skills_for_dispatch("architectural_review") == ["overlay-x", "ac-reviewing-codebase"]
+
+    def test_every_other_phase_is_untouched(self) -> None:
+        with patch.object(skill_bundle, "active_overlay_stage_skills", return_value=["overlay-x"]):
+            assert stage_skills_for_dispatch("coding") == ["overlay-x"]
+
+    def test_an_unresolvable_skill_refuses_with_the_name(self) -> None:
+        # The embed drops an unresolvable name silently, so dispatching would run the
+        # review with no guidance at all — worse than not running it.
+        settings = replace(UserSettings(), architectural_review_skill="ac-reviewing-skills")
+        with (
+            patch.object(skill_bundle, "active_overlay_stage_skills", return_value=[]),
+            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("ac-reviewing-codebase")),
+            patch("teatree.config.get_effective_settings", return_value=settings),
+            pytest.raises(ArchitecturalReviewSkillMissingError, match="ac-reviewing-skills"),
+        ):
+            stage_skills_for_dispatch("architectural_review")

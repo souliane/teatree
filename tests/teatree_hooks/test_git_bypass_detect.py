@@ -49,3 +49,71 @@ class TestAllows:
     )
     def test_ordinary_and_out_of_scope_commands_pass(self, command: str) -> None:
         assert git_bypass_deny_reason(command) is None
+
+
+class TestGitGlobalOptionsBeforeThePushSubcommand:
+    """``git`` takes its own options before the subcommand — the bypass is still one.
+
+    ``git push`` had to be CONTIGUOUS, so every valid spelling that puts a global
+    option in between (``-c <k>=<v>``, ``-C <dir>``, ``--no-pager``) walked the
+    auto-merge push option straight past the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -c push.default=simple push -o merge_request.merge_when_pipeline_succeeds",
+            "git -C ../worktree push -o merge_request.merge_when_pipeline_succeeds",
+            "git --no-pager push --push-option=merge_request.merge_when_pipeline_succeeds",
+            "git -C ../wt -c user.name=x push origin HEAD -o merge_request.merge_when_pipeline_succeeds",
+        ],
+    )
+    def test_auto_merge_push_option_is_denied_behind_global_options(self, command: str) -> None:
+        reason = git_bypass_deny_reason(command)
+        assert reason is not None
+        assert "auto-merge" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C ../worktree push origin HEAD",
+            "git -c user.name=x push --force-with-lease",
+        ],
+    )
+    def test_an_ordinary_push_behind_global_options_is_allowed(self, command: str) -> None:
+        assert git_bypass_deny_reason(command) is None
+
+
+class TestEveryValidPushOptionSpelling:
+    """git accepts four spellings of the same push option; only two were matched.
+
+    Verified against git 2.50.1: ``--push-option VALUE``, ``--push-option=VALUE``,
+    ``-o VALUE`` and ``-oVALUE`` all schedule the identical auto-merge. The gate
+    required a space after ``-o`` and an ``=`` after ``--push-option``, so the
+    other two spellings walked the keystone bypass straight through.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --push-option merge_request.merge_when_pipeline_succeeds origin HEAD",
+            "git push -omerge_request.merge_when_pipeline_succeeds origin HEAD",
+            "git -c user.name=x push --push-option merge_request.merge_when_pipeline_succeeds",
+            'git push --push-option "merge_request.merge_when_pipeline_succeeds"',
+        ],
+    )
+    def test_every_spelling_of_the_auto_merge_push_option_is_denied(self, command: str) -> None:
+        reason = git_bypass_deny_reason(command)
+        assert reason is not None
+        assert "auto-merge" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --push-option merge_request.create origin feature",
+            "git push -omerge_request.draft origin feature",
+            "git push -o ci.skip origin feature",
+        ],
+    )
+    def test_an_unrelated_push_option_is_allowed(self, command: str) -> None:
+        assert git_bypass_deny_reason(command) is None

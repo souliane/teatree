@@ -111,6 +111,7 @@ from hooks.scripts.gate_result import (
     warn_gate_skipped,
     warn_validator_timed_out,
 )
+from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
 from hooks.scripts.handlers.classifier_denial import (
@@ -204,7 +205,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.task_created_deny import emit_task_create_deny
+from hooks.scripts.t3_invocation import run_t3, spawn_t3_detached, t3_argv, t3_available
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
@@ -1246,6 +1247,25 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     return _fail_open_or_deny(data, reason)
 
 
+# ── PreToolUse/Agent: enforce-skill-loading-on-dispatch (#1488) ───────
+#
+def emit_task_create_deny(reason: str) -> bool:
+    """Emit the ``TaskCreated`` advisory envelope — visible, and it does NOT block.
+
+    ``systemMessage`` is the payload key that carries the reason: ``main`` exits 0
+    here regardless (``_NEVER_BLOCKING_EVENTS``) because a block would DELETE the
+    already-persisted row, and ``{"continue": false}``/``stopReason`` map to
+    ``preventContinuation``, which ``TaskCreate`` never reads. The stop keys stay
+    for the consumers that do read them.
+
+    Deliberately NOT the ``hooks.scripts.task_created_deny`` sibling of the same
+    name: that one renders ``{"decision": "block"}``, which is precisely the
+    field ``TaskCreate`` reads to delete the row it already persisted.
+    """
+    json.dump({"systemMessage": reason, "continue": False, "stopReason": reason}, sys.stdout)
+    return True
+
+
 def _plan_edit_gate_enabled() -> bool:
     """Whether the plan-edit gate is enabled (default True).
 
@@ -1541,8 +1561,7 @@ def _extract_ai_sig_payload(data: dict) -> str | None:
 
 
 def _ai_sig_scan_argv() -> list[str] | None:
-    t3_bin = shutil.which("t3")
-    return [t3_bin, "tool", "ai-sig-scan", "-"] if t3_bin else None
+    return t3_argv("tool", "ai-sig-scan", "-")
 
 
 # A genuine finding is recognisable by the scanner's well-formed summary
@@ -1638,14 +1657,7 @@ def _run_block_ai_signature(data: dict) -> bool:
 
     allowance = validator_timeout_seconds()
     try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            argv,
-            input=payload,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=allowance,
-        )
+        result = run_t3(argv, timeout=allowance, stdin_text=payload)
     except subprocess.TimeoutExpired:
         warn_validator_timed_out("AI-signature", allowance)
         return False
@@ -3127,7 +3139,10 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
                 "This session is the loop OWNER. The loops are tick-driven and PER-LOOP (#786 WS3, #2650): there is "
                 "no master tick and no roster of long-lived sub-agents to resume — re-arm by ensuring each enabled "
                 "loop's own native `/loop` (firing `t3 loops tick --loop <name>`) is registered for this session; "
-                "each per-loop tick atomically claims the next pending unit via `t3 loop claim-next`."
+                "each per-loop tick atomically claims the next pending unit via `t3 loop claim-next`, and records "
+                "that unit's outcome with `t3 <overlay> tasks record-attempt <task_id> <result_json> "
+                "--claim-token <token>` when its sub-agent returns. Recording is what ends the unit: an unrecorded "
+                "claim is reclaimed and re-offered, never finished."
             ),
         ]
         for _name, entry in sorted(owned):
@@ -3586,9 +3601,12 @@ _RENAME_REMINDER = (
 # ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own
 # cadence — there is no master tick. Each per-loop tick atomically claims
 # pending DB work (WS1 ``t3 loop claim-next`` — conditional-UPDATE CAS)
-# and spawns a FRESH, BOUNDED sub-agent for just that unit, which returns.
+# and spawns a FRESH, BOUNDED sub-agent for just that unit, then records
+# that unit's outcome (``tasks record-attempt --claim-token``) when it returns.
 # Statelessness across ticks IS the compaction-proofing — a worker dying
-# mid-task leaves its Task reclaimable; the next tick re-dispatches it. The
+# mid-task leaves its Task reclaimable; the next tick re-dispatches it. A
+# worker that RETURNS without recording is not the same thing: its unit is
+# reclaimed and re-offered too, forever, because nothing ever ends it. The
 # per-loop *executor* mutex is the WS2 ``LoopLease`` ``loop:<name>`` row;
 # this Django-free hook registry only records which *session* owns a loop
 # (one record, never a roster) so the #758/#810 Stop-hook self-pump can
@@ -3600,8 +3618,11 @@ _TICK_DISPATCH_OWNER_DIRECTIVE = (
     "and there is NO master tick: each enabled loop is its own native Claude `/loop` firing "
     "`t3 loops tick --loop <name>` on its own cadence. Each per-loop tick, claim the next pending unit atomically "
     "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for just that unit (it does the work and "
-    "returns). No persistent loop roster, nothing to re-spawn on compaction — a worker dying mid-task leaves its "
-    "Task reclaimable and the next tick re-dispatches it. Ensure each enabled loop's `/loop` is registered for "
+    "returns). When it returns you MUST record its outcome with `t3 <overlay> tasks record-attempt <task_id> "
+    "<result_json> --claim-token <token>`, passing back the `claim_token` the claim emitted — the claim is the "
+    "spawn boundary, NOT the finish, and an unrecorded unit is reclaimed and re-offered forever. No persistent "
+    "loop roster, nothing to re-spawn on compaction — a worker dying mid-task leaves its Task reclaimable and the "
+    "next tick re-dispatches it. Ensure each enabled loop's `/loop` is registered for "
     "this session." + _RENAME_REMINDER
 )
 
@@ -3609,23 +3630,30 @@ _ACCOUNT_SWITCH_DIRECTIVE = (
     "TEATREE — Claude account switch detected (`/login`).\n\n"
     "The active Claude account changed since teatree last recovered the "
     "connectors, so the in-process MCP/backend token cache may still route "
-    "Slack/Notion calls to the OLD workspace (delivery returns ok but the new "
-    "account sees nothing — souliane/teatree#1176). Run `t3 doctor check` now: "
-    "it invalidates the backend cache, re-probes each connector's live "
-    "reachability, and records the new account so this notice clears. If a "
-    "connector probes unreachable, re-auth that MCP connector in the Claude.ai "
-    "UI before relying on any outbound message."
+    "Slack/Notion calls to the OLD workspace: delivery returns ok while the new "
+    "account sees nothing (souliane/teatree#1176), so nothing at the call site "
+    "will tell you. Run `t3 setup recover-account-switch` NOW. It invalidates "
+    "the backend cache, re-probes only this account's connectors (a live "
+    "`auth.test` each plus a 30s-bounded `claude mcp list`), and records the new "
+    "fingerprint — which is what stops this notice repeating every session. "
+    "This fires only on an ACTUAL switch, so it is a rare one-off, not a "
+    "session-start ritual. Do NOT reach for `t3 doctor check` instead: it is "
+    "containerized and sweeps every check, costing MINUTES, and it must never "
+    "sit on the session-start path. If the recovery reports a connector "
+    "unreachable, re-auth it in the Claude.ai UI and re-run the recovery."
 )
 
 _MCP_CONNECTIVITY_DIRECTIVE = (
     "TEATREE — verify enabled MCP servers are connected.\n\n"
-    "Enabled MCP servers are configured for this account. Run `t3 doctor check` "
-    "now: it live-probes each enabled server (`claude mcp list`) and surfaces a "
-    "LOUD, named finding for any enabled-but-disconnected server (or a provider "
-    "mismatch). An enabled MCP that is not connected fails tool calls late and "
-    "silently — confirm connectivity before relying on any MCP tool. If one is "
-    "disconnected, reconnect it (re-auth the connector in the Claude.ai UI, or "
-    "restart its local command) and re-run."
+    "Enabled MCP servers are configured for this account. An enabled MCP that "
+    "is not connected fails tool calls late, so the verification belongs at the "
+    "point of use, not here: a failing MCP tool call is the loud, detectable "
+    "trigger. When one DOES fail, run `t3 mcp reconnect` — it live-probes the "
+    "declared connectors with one bounded `claude mcp list` and prints the exact "
+    "reconnect target per down connector — then re-auth that connector in the "
+    "Claude.ai UI (or restart its local command). Do NOT run `t3 doctor check` "
+    "for this, here or after a failure: it is containerized and sweeps every "
+    "check, costing MINUTES, and it must never sit on the session-start path."
 )
 
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
@@ -3763,9 +3791,10 @@ def _account_switch_advisory() -> str | None:
     Uses the pure, Django-free fingerprint reader so the SessionStart hot path
     stays fast and crash-proof: compares the active ``oauthAccount.accountUuid``
     against the last-recovered one. Pure-read — does NOT record the new
-    fingerprint or reset the cache (the network-bound recovery is `t3 doctor
-    check`), so the directive keeps firing every session until recovery runs.
-    Any import / read failure returns None so the directive never blocks.
+    fingerprint or reset the cache — the bounded recovery the directive names is
+    `t3 setup recover-account-switch` — so the directive keeps firing every
+    session until that recovery runs. Any import / read failure returns None so
+    the directive never blocks.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -3790,9 +3819,10 @@ def _mcp_connectivity_advisory() -> str | None:
     Uses the cheap, network-free ``~/.claude.json`` reader (NOT the live probe)
     to keep the network probe off the every-session SessionStart hot path: even
     within the 30s hook budget a slow or hung MCP endpoint would stall every
-    session start, so session start nudges the agent to run ``t3 doctor check``
-    (the bounded probe) only when there is something to verify. Any import /
-    read failure returns None so the directive never blocks SessionStart.
+    session start. So the directive verifies nothing here and names the reactive
+    recovery instead — ``t3 mcp reconnect``, run when an MCP tool actually fails,
+    which is the only detectable trigger. Any import / read failure returns None
+    so the directive never blocks SessionStart.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -4045,17 +4075,11 @@ def _consolidated_pending_work() -> list[dict]:
     a full in-flight budget will refuse never re-arms the self-pump (the
     un-advanceable re-offer). ``[]`` on any failure so it fails safe to idle.
     """
-    t3_bin = shutil.which("t3")
-    if not t3_bin:
+    argv = t3_argv("loop", "pending-spawn", "--json", "--claimable-only")
+    if argv is None:
         return []
     try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            [t3_bin, "loop", "pending-spawn", "--json", "--claimable-only"],
-            capture_output=True,
-            text=True,
-            timeout=_SELF_PUMP_PENDING_TIMEOUT,
-            check=False,
-        )
+        result = run_t3(argv, timeout=_SELF_PUMP_PENDING_TIMEOUT)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
     if result.returncode != 0 or not result.stdout.strip():
@@ -4249,7 +4273,12 @@ def _loop_self_pump(data: dict) -> bool | None:
         "for each claimed unit until it returns nothing — the claim is atomic "
         "(#786 WS1), so no separate post-spawn claim step and no double-dispatch "
         "(the per-loop `/loop`s do the scanning; the self-pump only drains the "
-        "already-pending work). Outstanding now:\n" + _format_pending_summary(pending)
+        "already-pending work). The claim is the spawn boundary, NOT the finish: "
+        "when a sub-agent returns you MUST record its outcome with "
+        "`t3 <overlay> tasks record-attempt <task_id> <result_json>`. An Agent-tool "
+        "dispatch never reaches the headless TaskAttempt flow, so nothing else "
+        "records it — an unrecorded unit stays CLAIMED until its lease lapses, is "
+        "reclaimed to PENDING, and is re-offered forever. Outstanding now:\n" + _format_pending_summary(pending)
     )
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True
@@ -5098,7 +5127,7 @@ def handle_speak_all_on_stop(data: dict) -> None:
         local, _slack = _speak_settings()
         if local != "all":
             return
-        if shutil.which("say") is None or shutil.which("t3") is None:
+        if shutil.which("say") is None or not t3_available():
             return
         turn = _last_assistant_turn(data.get("transcript_path", ""))
         if turn is None:
@@ -5106,17 +5135,13 @@ def handle_speak_all_on_stop(data: dict) -> None:
         text = turn[0].strip()
         if not text:
             return
+        argv = t3_argv("speak", text)
+        if argv is None:
+            return
         overlay = os.environ.get("T3_OVERLAY_NAME", "")
-        argv = [shutil.which("t3") or "t3", "speak", text]
         if overlay:
             argv.extend(["--overlay", overlay])
-        subprocess.Popen(  # noqa: S603 — detached, fire-and-forget; speak is best-effort
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        spawn_t3_detached(argv)
     except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] speak-on-stop skipped (unexpected error: {exc})",
@@ -5289,6 +5314,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_block_verbatim_operator_paste,
         handle_enforce_skill_loading,
+        handle_block_general_purpose_agent,
         handle_block_direct_commands,
         handle_block_git_add_all,
         handle_block_raw_pid_kill,
@@ -5318,6 +5344,9 @@ _HANDLERS: dict[str, list] = {
         handle_track_agents,
         handle_resolve_answered_question,
     ],
+    # Nothing registered here can block — see ``_NEVER_BLOCKING_EVENTS``. The
+    # skill-loading arm has MOVED to the PreToolUse ``Agent`` matcher, where the
+    # dispatch prompt it demands actually exists and a deny is non-destructive.
     "TaskCreated": [handle_dispatch_prompt_quote_scanner_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
@@ -5347,12 +5376,22 @@ _HANDLERS: dict[str, list] = {
 # stdout and read by the harness ONLY at exit code 0. For these, exiting 2 is a
 # *blocking error*: the harness ignores stdout (and the ``decision: block`` JSON
 # in it) and feeds STDERR back to Claude — so an exit-2 block discards the reason
-# and surfaces an empty "No stderr output" failure. PreToolUse / TaskCreated are
-# the exceptions: their deny is only honoured at exit code 2 (#1447), so they are
-# deliberately absent here and keep exiting 2.
+# and surfaces an empty "No stderr output" failure. PreToolUse is the exception:
+# its deny is only honoured at exit code 2 (#1447), so it is deliberately absent
+# here and keeps exiting 2.
 _JSON_DECISION_EVENTS: frozenset[str] = frozenset(
     {"Stop", "SubagentStop", "UserPromptSubmit", "PostToolUse", "PreCompact"},
 )
+
+# Events where a block is DATA DESTRUCTION, not prevention: ``TaskCreate``
+# persists the row, runs the ``TaskCreated`` hooks, then DELETES that row on any
+# ``blockingError`` (verified in the installed binary). The reason never even
+# arrives — ``{"continue": false}`` maps to ``preventContinuation``, while the
+# tool reads only ``blockingError``, so the block that fires is the exit-2
+# fallback "No stderr output". The router therefore never exits non-zero here,
+# however a handler votes; a gate speaks via ``{"systemMessage": …}`` at exit 0
+# (``{"decision": "block"}`` surfaces the reason but still deletes the row).
+_NEVER_BLOCKING_EVENTS: frozenset[str] = frozenset({"TaskCreated"})
 
 
 def main() -> None:
@@ -5396,9 +5435,9 @@ def main() -> None:
     if args.event == "PreToolUse" and not deny_emitted:
         _reset_deny_streak(data.get("session_id", ""))
 
-    # Exit-code contract is per-event. PreToolUse / TaskCreated denies are only
-    # honoured at exit code 2 (#1447) and their reason rides ``hookSpecificOutput``
-    # / ``continue:false`` on stdout, which the harness reads even at exit 2.
+    # Exit-code contract is per-event. A PreToolUse deny is only honoured at exit
+    # code 2 (#1447), its reason riding ``hookSpecificOutput`` on stdout, which the
+    # harness reads even at exit 2.
     # A ``Verdict.ALLOW`` decision must NOT exit 2: the harness honours a PreToolUse
     # allow only at exit 0 with the nested envelope, so ``deny_emitted`` gates the
     # exit-2 branch and an allow falls through to the exit-0 default (#3).
@@ -5407,6 +5446,10 @@ def main() -> None:
     # and read stderr instead — so a Stop block must exit 0 to let its
     # ``{"decision":"block","reason":...}`` reach the agent. Exiting 2 there was
     # the "Stop hook fails with No stderr output" defect.
+    # ``_NEVER_BLOCKING_EVENTS`` outranks both: on TaskCreated a block deletes the
+    # task the tool already persisted, so no handler's vote may reach exit 2.
+    if args.event in _NEVER_BLOCKING_EVENTS:
+        return
     if deny_emitted and args.event not in _JSON_DECISION_EVENTS:
         sys.exit(2)
 

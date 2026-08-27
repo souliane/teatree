@@ -557,7 +557,7 @@ class TestOverlayScaffolder:
         assert camelize("a_b_c") == "ABC"
 
     def test_write_overlay(self, tmp_path):
-        s = OverlayScaffolder(tmp_path, "test_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "test_overlay")
         s.write_overlay("test")
         pkg_dir = tmp_path / "src" / "test_overlay"
         assert (pkg_dir / "__init__.py").is_file()
@@ -569,14 +569,14 @@ class TestOverlayScaffolder:
 
     def test_write_skill_md(self, tmp_path):
         skill_dir = tmp_path / "skills" / "t3:acme"
-        s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "t3_overlay")
         s.write_skill_md(skill_dir, "t3-acme", "t3:acme")
         text = (skill_dir / "SKILL.md").read_text()
         assert "name: t3:acme" in text
         assert "t3:workspace" not in text
 
     def test_copy_config_templates(self, tmp_path):
-        s = OverlayScaffolder(tmp_path, "t3_overlay", "pkg")
+        s = OverlayScaffolder(tmp_path, "t3_overlay")
         s.copy_config_templates()
         assert (tmp_path / ".editorconfig").is_file()
         assert (tmp_path / ".gitignore").is_file()
@@ -585,7 +585,7 @@ class TestOverlayScaffolder:
         assert (tmp_path / ".python-version").is_file()
 
     def test_write_pyproject(self, tmp_path):
-        s = OverlayScaffolder(tmp_path, "demo_overlay", "demo")
+        s = OverlayScaffolder(tmp_path, "demo_overlay")
         s.write_pyproject("t3-demo")
         pyproject = tmp_path / "pyproject.toml"
         assert pyproject.is_file()

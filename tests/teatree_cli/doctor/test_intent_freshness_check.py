@@ -138,7 +138,11 @@ def _run(
     elif open_directive_consumer:
         settings, seams = _open_directive_consumer(factory_score_enabled=factory_score_enabled)
     else:
-        settings, seams = (None, None)
+        # Settings stay None so the SHIPPED default flag is what answers. The budget
+        # seam is still pinned: unpinned it samples the RUNNING box's RAM, so a machine
+        # past the 85% ceiling refuses the guard chain and reds this suite for a reason
+        # no part of it is about.
+        settings, seams = None, GuardSeams(budget=BudgetVerdict.allow())
     buf = io.StringIO()
     with redirect_stdout(buf):
         ok = _check_intent_freshness(settings=settings, seams=seams)

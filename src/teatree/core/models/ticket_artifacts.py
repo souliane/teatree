@@ -74,8 +74,8 @@ class LandscapeArtifactRef:
 class E2eRunRef:
     """An E2eMandatoryRun's evidence for the per-ticket artifact aggregation (#273).
 
-    ``posted_url`` is the SHA-bound ``e2e post-test-plan`` comment — the place the
-    E2E video/evidence lives — and is empty for a recorded-but-unposted run.
+    ``posted_url`` is the ticket's ``test-plans/<repo>-<ticket>.md`` — the place the
+    E2E evidence lives — and is empty for a recorded-but-unpublished run.
     """
 
     spec: str

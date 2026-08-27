@@ -6,7 +6,7 @@ human ``steps``, the claim→capture mapping) and ephemeral run provenance
 is pushed. Tracking the whole file in a private test repo therefore churns it on
 every run. :func:`strip_run_provenance` drops the top-level ``dev``/``local``
 provenance blocks so the committed file is byte-stable across runs; the full
-manifest stays out-of-repo for ``post-test-plan`` and provenance stays DB-home
+manifest stays out-of-repo for ``write-test-plan`` and provenance stays DB-home
 (``Ticket.extra['e2e_recipe']``).
 """
 

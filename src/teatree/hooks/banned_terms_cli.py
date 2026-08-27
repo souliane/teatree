@@ -67,6 +67,9 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 # the commit, so the budget is deliberately tight.
 _GIT_DIFF_TIMEOUT_S = 10
 
+# The variables that tell git WHERE the repository is; git exports them to hooks.
+_GIT_REPO_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE"})
+
 # The REQUIRED term-list key: an unset value fails loud (the optional allowlist
 # carve-out is read via ``banned_term_registry.allowlist_terms``, empty when unset).
 _TERMS_KEY = "banned_terms"
@@ -118,6 +121,24 @@ def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
     return tuple(str(e).strip() for e in read.value if str(e).strip())
 
 
+def legacy_banned_terms(*, env_value: str = "", db_path: Path | None = None) -> tuple[str, ...]:
+    """The PRE-registry ``banned_terms`` source: the env secret, else the DB row.
+
+    The registry-free half of :func:`resolve_banned_terms`, so the registry
+    MIGRATION has a source that is genuinely the old config. Reading the
+    dual-read resolver there made the rebuild copy the registry back onto itself
+    and its verification compare the registry with itself, which passes for any
+    registry including a lossy one.
+    """
+    env = env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")
+    if env.strip():
+        return tuple(t.strip() for t in env.split(",") if t.strip())
+    terms = _db_array(_TERMS_KEY, db_path)
+    if terms is None:
+        raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
+    return terms
+
+
 def resolve_banned_terms(
     config_path: Path | None = None, *, env_value: str = "", db_path: Path | None = None
 ) -> tuple[str, ...]:
@@ -142,18 +163,13 @@ def resolve_banned_terms(
     DB path (else the canonical DB / ``T3_CONFIG_DB``).
     """
     del config_path  # legacy pre-DB arg; the term list is DB-home now
-    env = env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")
-    if env.strip():
-        return tuple(t.strip() for t in env.split(",") if t.strip())
-    from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
+    if not (env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")).strip():
+        from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
 
-    registry_terms = registry_terms_for_gate("diff", db_path=db_path)
-    if registry_terms is not None:
-        return registry_terms
-    terms = _db_array(_TERMS_KEY, db_path)
-    if terms is None:
-        raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
-    return terms
+        registry_terms = registry_terms_for_gate("diff", db_path=db_path)
+        if registry_terms is not None:
+            return registry_terms
+    return legacy_banned_terms(env_value=env_value, db_path=db_path)
 
 
 def banned_terms_required(*, db_path: Path | None = None) -> bool:
@@ -233,6 +249,19 @@ def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     return allowlist_terms(db_path)
 
 
+def _git_env_locating_the_repo_from_cwd() -> dict[str, str]:
+    """The process env with the git variables that name a repository dropped.
+
+    ``git commit`` exports ``GIT_DIR``/``GIT_WORK_TREE`` to every hook. With
+    ``GIT_DIR`` set, git stops discovering the repository from the CWD and takes
+    the CWD for the work-tree ROOT, so a relative pathspec resolves against the
+    repository root instead — a hook running in a SUBDIRECTORY then reads a
+    same-named file from the wrong level, silently leaving the file it was asked
+    about unscanned. Dropping both restores CWD-relative resolution.
+    """
+    return {name: value for name, value in os.environ.items() if name not in _GIT_REPO_LOCATION_VARS}
+
+
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
     """Return *file*'s ADDED lines from the staged diff, or ``None`` on failure.
 
@@ -259,6 +288,7 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
             ["git", "diff", "--cached", "-U0", "--diff-filter=ACMR", "--", file],
             expected_codes=(0,),
             cwd=repo,
+            env=_git_env_locating_the_repo_from_cwd(),
             timeout=_GIT_DIFF_TIMEOUT_S,
         )
     except (CommandFailedError, TimeoutExpired, OSError):

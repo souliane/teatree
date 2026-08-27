@@ -1,27 +1,22 @@
-"""Tests for ``t3 <overlay> e2e post-test-plan`` (teatree #272, #2165).
+"""Tests for ``t3 <overlay> e2e write-test-plan`` (teatree #272).
 
-The one-note-per-ticket evidence model: a single GitLab note per ticket that
-renders a side-by-side ``Dev | Local`` test plan and accumulates environment
+The one-file-per-ticket test-plan model: ``test-plans/<repo>-<ticket>.md`` in the e2e
+repo, rendering a side-by-side ``Dev | Local`` plan and accumulating environment
 columns across runs via a hidden machine-readable state blob.
 
 The pure-builder half exercises the manifest parse, the merge over prior state,
 the side-by-side render (videos row, screenshot pairs, em-dash cells, the
-dev-gap line, per-repo commit provenance, MR links), and the splice that adds a
-dev column while preserving a frozen local column.
+dev-gap line, per-repo commit + run-instant provenance, MR links), and the
+splice that adds a dev column while preserving a frozen local column.
 
-The relative-embed half asserts the body embeds the claimable relative
-``/uploads/<secret>/<file>`` reference, never the absolute ``/-/project/`` or
-any ``https://`` upload URL (the #2165 regression).
-
-The hard-fail half asserts the validators refuse bad evidence with no host side
-effect; the media-gate half asserts a non-rendering upload aborts the post; the
-on-behalf half asserts the gate stays in front of the post.
+The command half asserts the plan lands at the derived path, a second run
+updates that one file, nothing is posted to any forge, and the capture /
+blocked-body gates refuse a bad plan with nothing written.
 """
 
 import json
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -30,17 +25,37 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.backend_protocols import UploadVerification
 from teatree.core.evidence import test_plan_validation as _validation
-from teatree.core.management.commands._test_plan import post as _test_plan
+from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
+from teatree.core.management.commands._test_plan import mr_post as _mr_post
 from teatree.core.management.commands._test_plan import render as _render
+from teatree.core.management.commands._test_plan import render as _test_plan
 from teatree.core.management.commands._test_plan import scenario as _scenario
+from teatree.core.management.commands._test_plan import write as _write
 from teatree.core.management.commands._test_plan.render import PlanState, render_body
+from teatree.core.management.commands.e2e import Command as E2eCommand
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
-_MOCK_OVERLAY = {"test": CommandOverlay()}
 _ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
+_E2E_REPO = "client-workspace"
+
+
+class _E2eRepoMetadata(OverlayMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"runner": "external", "project_path": f"org/{_E2E_REPO}", "e2e_dir": "e2e"}
+
+
+class _E2eRepoOverlay(CommandOverlay):
+    metadata = _E2eRepoMetadata()
+
+    def get_repos(self) -> list[str]:
+        return [_E2E_REPO]
+
+
+_MOCK_OVERLAY = {"test": _E2eRepoOverlay()}
+_E2E_OVERLAY = _MOCK_OVERLAY
 _MOCK_OVERLAY_VALUE = next(iter(_MOCK_OVERLAY.values()))
 
 
@@ -546,27 +561,55 @@ class TestRefuseStillsOnly:
         _validation.refuse_stills_only(has_image=False, has_video=False, allow_no_video=False)
 
 
+def _real_video(path: Path) -> str:
+    """A short ffmpeg-rendered clip — the video gate reads it with ffprobe, so it must be real."""
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            *("-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=4"),
+            *("-pix_fmt", "yuv420p", str(path)),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return str(path)
+
+
+def _seed_ticket_with_e2e_worktree(tmp: Path) -> Ticket:
+    """A ticket whose e2e-repo worktree is a real directory, so the plan path resolves."""
+    ticket = Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+    checkout = tmp / "checkout"
+    checkout.mkdir(exist_ok=True)
+    Worktree.objects.create(
+        ticket=ticket,
+        overlay="test",
+        repo_path=_E2E_REPO,
+        branch="8521-feat-thing",
+        extra={"worktree_path": str(checkout)},
+    )
+    return ticket
+
+
 class TestNoVideoGateAtCommand(TestCase):
-    """``build_validated_post`` refuses a stills-only manifest unless ``--allow-no-video``."""
+    """``build_validated_write`` refuses a stills-only manifest unless ``--allow-no-video``."""
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._tmp = tmp_path
         monkeypatch.setattr(
-            _test_plan,
+            _write,
             "resolve_worktree",
-            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+            MagicMock(side_effect=_write.WorktreeNotFoundError("none")),
         )
+        self.enterContext(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
 
     def _ticket(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        _seed_ticket_with_e2e_worktree(self._tmp)
 
     def _manifest(self, *, video: bool) -> str:
         local: dict[str, object] = {"images": [str(_red_boxed_png(self._tmp / "a.png"))]}
         if video:
-            local["video"] = _write_webm(self._tmp / "v.webm", b"V")
+            local["video"] = _real_video(self._tmp / "v.mp4")
         return json.dumps(
             {
                 "ticket": "8521",
@@ -577,21 +620,22 @@ class TestNoVideoGateAtCommand(TestCase):
 
     def test_stills_only_manifest_is_refused(self) -> None:
         self._ticket()
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=False))
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(video=False))
         with pytest.raises(_test_plan.TestPlanValidationError, match="no video"):
-            _test_plan.build_validated_post(flags)
+            _write.build_validated_write(flags)
 
     def test_stills_only_manifest_passes_with_allow_no_video(self) -> None:
         self._ticket()
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=False), allow_no_video=True)
-        post = _test_plan.build_validated_post(flags)
-        assert post.issue_url == _ISSUE_URL
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(video=False), allow_no_video=True)
+        write = _write.build_validated_write(flags)
+        assert write.issue_url == _ISSUE_URL
 
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
     def test_manifest_with_a_video_passes(self) -> None:
         self._ticket()
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=True))
-        post = _test_plan.build_validated_post(flags)
-        assert post.issue_url == _ISSUE_URL
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(video=True))
+        write = _write.build_validated_write(flags)
+        assert write.issue_url == _ISSUE_URL
 
 
 def _blank_preroll_webm(path: Path) -> str:
@@ -630,21 +674,20 @@ def _blank_preroll_webm(path: Path) -> str:
     reason="ffmpeg/ffprobe not installed",
 )
 class TestVideoPrerollGateAtCommand(TestCase):
-    """``build_validated_post`` REFUSES a manifest whose video opens with blank pre-roll."""
+    """``build_validated_write`` REFUSES a manifest whose video opens with blank pre-roll."""
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._tmp = tmp_path
         monkeypatch.setattr(
-            _test_plan,
+            _write,
             "resolve_worktree",
-            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+            MagicMock(side_effect=_write.WorktreeNotFoundError("none")),
         )
+        self.enterContext(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
 
     def _ticket(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        _seed_ticket_with_e2e_worktree(self._tmp)
 
     def _manifest(self, video_path: str) -> str:
         return json.dumps(
@@ -663,16 +706,16 @@ class TestVideoPrerollGateAtCommand(TestCase):
     def test_blank_preroll_video_is_refused(self) -> None:
         self._ticket()
         video = _blank_preroll_webm(self._tmp / "blank.mp4")
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video))
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(video))
         with pytest.raises(_test_plan.TestPlanValidationError, match=r"(?i)pre-roll"):
-            _test_plan.build_validated_post(flags)
+            _write.build_validated_write(flags)
 
     def test_skip_validation_lets_a_blank_preroll_video_through(self) -> None:
         self._ticket()
         video = _blank_preroll_webm(self._tmp / "blank2.mp4")
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video), skip_validation=True)
-        post = _test_plan.build_validated_post(flags)
-        assert post.issue_url == _ISSUE_URL
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(video), skip_validation=True)
+        write = _write.build_validated_write(flags)
+        assert write.issue_url == _ISSUE_URL
 
     def test_tight_video_passes(self) -> None:
         self._ticket()
@@ -692,9 +735,9 @@ class TestVideoPrerollGateAtCommand(TestCase):
             check=True,
             capture_output=True,
         )
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(str(tight)))
-        post = _test_plan.build_validated_post(flags)
-        assert post.issue_url == _ISSUE_URL
+        flags = _write.TestPlanFlags(ticket="", manifest=self._manifest(str(tight)))
+        write = _write.build_validated_write(flags)
+        assert write.issue_url == _ISSUE_URL
 
 
 class TestManifestPathResolution:
@@ -755,15 +798,14 @@ class TestTicketFallbackFromManifest(TestCase):
         self._tmp = tmp_path
         # No worktree → the resolution must come from the manifest's ticket field.
         monkeypatch.setattr(
-            _test_plan,
+            _write,
             "resolve_worktree",
-            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+            MagicMock(side_effect=_write.WorktreeNotFoundError("none")),
         )
+        self.enterContext(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
 
     def test_manifest_ticket_field_used_when_flag_omitted(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        _seed_ticket_with_e2e_worktree(self._tmp)
         img = _red_boxed_png(self._tmp / "a.png")
         manifest = json.dumps(
             {
@@ -772,9 +814,9 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
-        post = _test_plan.build_validated_post(flags)
-        assert post.issue_url == _ISSUE_URL
+        flags = _write.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
+        write = _write.build_validated_write(flags)
+        assert write.issue_url == _ISSUE_URL
 
     def test_missing_ticket_everywhere_raises_resolution_error(self) -> None:
         img = _red_boxed_png(self._tmp / "a.png")
@@ -784,9 +826,9 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
-        with pytest.raises(_test_plan.TestPlanResolutionError, match="Could not determine the ticket"):
-            _test_plan.build_validated_post(flags)
+        flags = _write.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
+        with pytest.raises(_write.TestPlanResolutionError, match="Could not determine the ticket"):
+            _write.build_validated_write(flags)
 
 
 class TestMrLabel:
@@ -805,229 +847,133 @@ class TestMrLabel:
         assert line == "Repos & MRs: client!6331"
 
 
-# --- command + host integration ---------------------------------------------
+# --- command + file-store integration ---------------------------------------
 
 
-class _EvidenceTestBase(TestCase):
+class _PlanFileTestBase(TestCase):
+    """A ticket whose e2e-repo worktree is a real directory the plan can land in."""
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         self._tmp = tmp_path
 
-    @pytest.fixture(autouse=True)
-    def _no_on_behalf_gate(
-        self,
-        tmp_path_factory: pytest.TempPathFactory,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate  # noqa: PLC0415
+    def _ticket(self) -> Ticket:
+        return _seed_ticket_with_e2e_worktree(self._tmp)
 
-        disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    @property
+    def _plan_path(self) -> Path:
+        return self._tmp / "checkout" / "test-plans" / "repo-8521.md"
 
-    def _patch_host(self, host: MagicMock) -> None:
-        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: host)
-        self._monkeypatch.setattr(
-            _test_plan,
-            "resolve_worktree",
-            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
-        )
+    def _run(self, **kwargs: object) -> dict[str, object]:
+        self._monkeypatch.setattr(_write, "_resolve_worktree_or_none", lambda: None)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_E2E_OVERLAY):
+            return cast("dict[str, object]", call_command("e2e", "write-test-plan", **kwargs))
 
-    def _ticket(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+    def _run_expecting_exit(self, **kwargs: object) -> None:
+        with pytest.raises(SystemExit):
+            self._run(**kwargs)
 
     def _local_manifest(self) -> str:
         img = str(_red_boxed_png(self._tmp / "step1.png"))
-        vid = _write_webm(self._tmp / "run.webm", b"V")
         return json.dumps(
             {
                 "ticket": "8521",
                 "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
-                "local": {"commits": {"client": "aabb"}},
-                "workflows": [{"workflow": "Login", "local": {"video": vid, "images": [img]}}],
+                "local": {"commits": {"client": "aabb"}, "ran_at": "2026-08-13T09:00:00Z"},
+                "workflows": [{"workflow": "Login", "local": {"images": [img]}}],
             },
         )
 
+    def _run_local(self, **kwargs: object) -> dict[str, object]:
+        return self._run(ticket=_ISSUE_URL, manifest=self._local_manifest(), allow_no_video=True, **kwargs)
 
-class TestCreateAndRelativeEmbed(_EvidenceTestBase):
-    """A first run creates the note and embeds the RELATIVE upload reference (#2165)."""
 
-    def _run(self, host: MagicMock, **kwargs: object) -> dict[str, object]:
-        self._patch_host(host)
-        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        # The existence gate passes; the embed is the RELATIVE /uploads ref GitLab
-        # claims on save — never the absolute /-/project or https:// form (#2165).
-        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            return cast("dict[str, object]", call_command("e2e", "post-test-plan", **kwargs))
+class TestWritesThePlanFile(_PlanFileTestBase):
+    """A first run creates ``test-plans/<repo>-<ticket>.md`` and cites its captures."""
 
-    def test_creates_note_with_relative_embed(self) -> None:
+    def test_creates_the_plan_file_at_the_derived_path(self) -> None:
         self._ticket()
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 77, "web_url": "u"}
 
-        result = self._run(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
+        result = self._run_local()
 
         assert result["action"] == "created"
-        assert result["comment_id"] == 77
         assert result["envs"] == ["local"]
-        host.post_issue_comment.assert_called_once()
-        host.update_issue_comment.assert_not_called()
-        body = host.post_issue_comment.call_args.kwargs["body"]
+        assert result["path"] == str(self._plan_path)
+        body = self._plan_path.read_text(encoding="utf-8")
         assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
-        # The body embeds the RELATIVE /uploads ref, never the absolute forms.
-        assert "](/uploads/deadbeef/x.png)" in body
-        assert "/-/project/" not in body
-        assert "https://gitlab.com/-/project/" not in body
-        host.verify_upload.assert_called()
+        assert "`step1.png`" in body
+        assert "2026-08-13T09:00:00Z" in body
 
-    def test_updates_existing_note_in_place(self) -> None:
+    def test_the_plan_file_carries_no_host_absolute_capture_path(self) -> None:
         self._ticket()
-        host = MagicMock()
-        prior_state = {
-            "ticket": "8521",
-            "title": "t",
-            "mrs": [],
-            "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
-            "local": {
-                "commits": {"client": "old"},
-                "workflows": {"Old": {"video_md": "", "image_md": ["![i](/uploads/s/o.png)"]}},
-            },
-        }
-        marker = "<!-- t3-e2e-evidence ticket=8521 -->"
-        blob = "<!-- t3-e2e-data " + json.dumps(prior_state, separators=(",", ":"), sort_keys=True) + " -->"
-        host.list_issue_comments.return_value = [{"id": 33, "body": f"{marker}\n{blob}\n## E2E Evidence — t\n"}]
-        host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
 
-        result = self._run(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
+        self._run_local()
+
+        assert str(self._tmp) not in self._plan_path.read_text(encoding="utf-8")
+
+    def test_second_run_updates_the_same_file_rather_than_adding_another(self) -> None:
+        self._ticket()
+        self._run_local()
+
+        result = self._run_local()
 
         assert result["action"] == "updated"
-        assert result["comment_id"] == 33
-        host.update_issue_comment.assert_called_once()
-        host.post_issue_comment.assert_not_called()
+        assert [p.name for p in self._plan_path.parent.iterdir()] == ["repo-8521.md"]
+        assert self._plan_path.read_text(encoding="utf-8").count("<!-- t3-e2e-evidence ticket=8521 -->") == 1
 
-
-class TestUploadLandsOnNoteProject(_EvidenceTestBase):
-    """Artifacts upload to the SAME project the note is created on (multi-repo manifest).
-
-    Live-run bug: the note was created on the ticket's project but every
-    artifact uploaded to the manifest's *second* repo (the CI/product project),
-    whose ``/uploads/<secret>/<file>`` namespace the ticket's note cannot serve
-    → every embedded image 404s. The fix uploads to the project that owns the
-    issue URL the note posts on, regardless of how many repos the manifest
-    references. The MR links in the body are just links; they must NOT influence
-    the upload target.
-    """
-
-    _NOTE_PROJECT = "org/repo"  # the project that owns _ISSUE_URL (the ticket's project)
-    _SECOND_REPO = "org/product"  # the manifest's second repo / overlay CI project
-
-    class _CiProjectMeta(OverlayMetadata):
-        """Metadata whose CI project path is the manifest's SECOND repo."""
-
-        def get_ci_project_path(self) -> str:
-            return "org/product"
-
-    class _CiProjectOverlay(CommandOverlay):
-        """Overlay whose CI project path is a DIFFERENT project from the note's.
-
-        Mirrors the live failure: ``get_ci_project_path`` resolves to the second
-        repo, so the pre-fix code uploads artifacts there even though the note is
-        created on the ticket's project — this test goes RED.
-        """
-
-        def __init__(self) -> None:
-            self.metadata = TestUploadLandsOnNoteProject._CiProjectMeta()
-
-    def _multi_repo_manifest(self) -> str:
-        """A manifest carrying TWO repos, the second matching the CI project."""
-        img = str(_red_boxed_png(self._tmp / "step1.png"))
-        vid = _write_webm(self._tmp / "run.webm", b"V")
-        return json.dumps(
+    def test_a_dev_run_merges_over_the_local_run_already_recorded(self) -> None:
+        self._ticket()
+        self._run_local()
+        dev_manifest = json.dumps(
             {
                 "ticket": "8521",
-                "mrs": [
-                    f"https://gitlab.com/{self._NOTE_PROJECT}/-/merge_requests/6331",
-                    f"https://gitlab.com/{self._SECOND_REPO}/-/merge_requests/7585",
-                ],
-                "local": {"commits": {"repo": "aabb", "product": "ccdd"}},
-                "workflows": [{"workflow": "Login", "local": {"video": vid, "images": [img]}}],
+                "dev": {"commits": {"client": "ccdd"}, "ran_at": "2026-08-14T11:30:00Z"},
+                "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
             },
         )
 
-    def test_upload_project_is_the_notes_project_not_the_second_repo(self) -> None:
+        self._run(ticket=_ISSUE_URL, manifest=dev_manifest)
+
+        body = self._plan_path.read_text(encoding="utf-8")
+        assert "aabb" in body
+        assert "ccdd" in body
+        assert "2026-08-13T09:00:00Z" in body
+        assert "2026-08-14T11:30:00Z" in body
+
+
+class TestNothingIsPosted(_PlanFileTestBase):
+    """The plan is a file: writing it makes no forge call at all."""
+
+    def test_no_code_host_is_resolved_or_called(self) -> None:
         self._ticket()
         host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 77, "web_url": "u"}
-        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
-        # The host resolves the note's own project slug from the issue URL.
-        host.repo_for_issue_url.return_value = self._NOTE_PROJECT
-        self._patch_host(host)
+        with patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host) as factory:
+            self._run_local()
 
-        overlay = {"test": self._CiProjectOverlay()}
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlay):
-            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest=self._multi_repo_manifest())
+        factory.assert_not_called()
+        assert host.method_calls == []
 
-        # Every upload must target the project that owns the note, NEVER the
-        # manifest's second repo / CI project.
-        assert host.upload_file.call_count >= 1
-        for call in host.upload_file.call_args_list:
-            assert call.kwargs["repo"] == self._NOTE_PROJECT, (
-                f"upload landed on {call.kwargs['repo']!r}, expected the note's project {self._NOTE_PROJECT!r}"
-            )
-            assert call.kwargs["repo"] != self._SECOND_REPO
-        for call in host.verify_upload.call_args_list:
-            assert call.kwargs["repo"] == self._NOTE_PROJECT
+    def test_the_command_no_longer_exposes_a_posting_verb(self) -> None:
+        assert not hasattr(E2eCommand, "post_test_plan")
+        assert not hasattr(E2eCommand, "post_evidence")
+        assert not hasattr(E2eCommand, "retract_evidence")
 
 
-class TestMediaRenderGate(_EvidenceTestBase):
-    """A non-rendering upload aborts the post — "posted" never means "broken media"."""
+class TestUnresolvablePlanLocation(_PlanFileTestBase):
+    """A ticket with no e2e-repo worktree fails loud instead of writing nowhere."""
 
-    def _run_expecting_exit(self, host: MagicMock, **kwargs: object) -> None:
-        self._patch_host(host)
-        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        self._ticket()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "post-test-plan", **kwargs)
-        host.post_issue_comment.assert_not_called()
-        host.update_issue_comment.assert_not_called()
-
-    def test_refuses_to_post_when_upload_does_not_resolve(self) -> None:
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.verify_upload.return_value = UploadVerification(
-            ok=False,
-            embed_url="/uploads/deadbeef/x.png",
-            detail="upload fetch returned HTTP 404",
-        )
-        self._run_expecting_exit(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
-
-    def test_missing_artifact_file_exits_before_any_upload(self) -> None:
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        manifest = json.dumps(
-            {
-                "ticket": "8521",
-                "local": {"commits": {}},
-                "workflows": [{"workflow": "Login", "local": {"images": [str(self._tmp / "absent.png")]}}],
-            },
-        )
-        self._run_expecting_exit(host, ticket=_ISSUE_URL, manifest=manifest)
-        host.upload_file.assert_not_called()
+    def test_missing_e2e_worktree_exits_nonzero(self) -> None:
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        with pytest.raises(SystemExit):
+            self._run_local()
+        assert not self._plan_path.exists()
 
 
-class TestImagePreflightAtCommand(_EvidenceTestBase):
-    """The red-box preflight refuses a no-red-box screenshot at the command, before upload."""
+class TestCapturePreflightAtCommand(_PlanFileTestBase):
+    """The red-box preflight refuses a no-red-box screenshot before anything is written."""
 
     def _no_red_box_manifest(self) -> str:
-        # A real (Pillow-openable) PNG with NO red highlight box.
         from PIL import Image  # noqa: PLC0415
 
         plain = self._tmp / "plain.png"
@@ -1040,145 +986,66 @@ class TestImagePreflightAtCommand(_EvidenceTestBase):
             },
         )
 
-    def test_no_red_box_refused_before_upload(self) -> None:
+    def test_no_red_box_refused_before_the_write(self) -> None:
         self._ticket()
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        self._patch_host(host)
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest=self._no_red_box_manifest())
-        host.upload_file.assert_not_called()
-        host.post_issue_comment.assert_not_called()
+        self._run_expecting_exit(ticket=_ISSUE_URL, manifest=self._no_red_box_manifest())
+        assert not self._plan_path.exists()
 
-    def test_skip_validation_lets_a_no_red_box_post_through(self) -> None:
+    def test_skip_validation_lets_a_no_red_box_plan_through(self) -> None:
         self._ticket()
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 88, "web_url": "u"}
-        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
-        host.repo_for_issue_url.return_value = "org/repo"
-        self._patch_host(host)
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "e2e",
-                    "post-test-plan",
-                    ticket=_ISSUE_URL,
-                    manifest=self._no_red_box_manifest(),
-                    skip_validation=True,
-                    allow_no_video=True,
-                ),
-            )
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
+        self._run(ticket=_ISSUE_URL, manifest=self._no_red_box_manifest(), skip_validation=True, allow_no_video=True)
+        assert self._plan_path.is_file()
 
-
-class TestRequiresManifest(_EvidenceTestBase):
-    """An empty --manifest exits non-zero with no host side effect."""
-
-    def test_missing_manifest_exits(self) -> None:
+    def test_missing_artifact_file_exits_before_the_write(self) -> None:
         self._ticket()
-        host = MagicMock()
-        self._patch_host(host)
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest="")
-        host.upload_file.assert_not_called()
-        host.post_issue_comment.assert_not_called()
-
-
-class TestOnBehalfGateConsulted(TestCase):
-    """The on-behalf gate stays in front of the post when evidence is NOT auto-allowed.
-
-    ``post_e2e_evidence`` is in the default ``on_behalf_auto_actions`` allowlist
-    (the user does not approve their own evidence posts), so this suite clears
-    that allowlist to prove the gate still blocks when a user opts back into
-    gating. The default carve-out (gate auto-proceeds) is covered by
-    :class:`TestOnBehalfEvidenceAutoProceeds`.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # ``on_behalf_post_mode`` and ``on_behalf_auto_actions`` are DB-home
-        # (#1775): a ``[teatree]`` TOML value is ignored on read. Stage both via
-        # their ``T3_*`` env tier (the highest, DB-home-compatible layer): ASK
-        # mode plus an empty auto-actions allowlist so the gate actually blocks.
-        self._monkeypatch = monkeypatch
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
-        monkeypatch.setenv("T3_ON_BEHALF_AUTO_ACTIONS", "")
-
-    def _post(self, *, comments: list[dict[str, object]]) -> MagicMock:
-        host = MagicMock()
-        host.list_issue_comments.return_value = comments
-        post = _test_plan.TestPlanPost(
-            issue_url=_ISSUE_URL,
-            ticket_id="8521",
-            title="t",
-            manifest=_test_plan.TestPlanManifest(
-                ticket="8521",
-                mrs=(),
-                dev=_test_plan.SideManifest(present=False),
-                local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
-            ),
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {}},
+                "workflows": [{"workflow": "Login", "local": {"images": [str(self._tmp / "absent.png")]}}],
+            },
         )
-        with pytest.raises(_test_plan.OnBehalfPostBlockedError):
-            _test_plan.post_test_plan_comment(host, post)
-        host.upload_file.assert_not_called()
-        host.post_issue_comment.assert_not_called()
-        host.update_issue_comment.assert_not_called()
-        return host
-
-    def test_create_branch_blocked_without_approval(self) -> None:
-        self._post(comments=[])
-
-    def test_update_branch_blocked_without_approval(self) -> None:
-        self._post(comments=[{"id": 1, "body": "<!-- t3-e2e-evidence ticket=8521 -->\nx"}])
+        self._run_expecting_exit(ticket=_ISSUE_URL, manifest=manifest)
+        assert not self._plan_path.exists()
 
 
-class TestOnBehalfEvidenceAutoProceeds(TestCase):
-    """Under the DEFAULT allowlist, ``post_e2e_evidence`` proceeds even under ASK.
+class TestRequiresManifest(_PlanFileTestBase):
+    """An empty --manifest exits non-zero rather than writing an empty plan."""
 
-    The user does not approve their own evidence posts — ``post_e2e_evidence``
-    is in the default ``on_behalf_auto_actions`` carve-out — so a blocking mode
-    does NOT raise the on-behalf block for the evidence path.
-    """
+    def test_empty_manifest_exits_nonzero(self) -> None:
+        self._ticket()
+        self._run_expecting_exit(ticket=_ISSUE_URL, manifest="")
+        assert not self._plan_path.exists()
 
-    @pytest.fixture(autouse=True)
-    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # ``on_behalf_post_mode`` is DB-home (#1775) — ASK mode is staged via its
-        # ``T3_*`` env tier. The default ``on_behalf_auto_actions`` carve-out is
-        # left intact (evidence proceeds).
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
 
-    def test_post_proceeds_without_approval_under_ask(self) -> None:
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 91, "web_url": "u"}
-        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
-        host.repo_for_issue_url.return_value = "org/repo"
-        post = _test_plan.TestPlanPost(
-            issue_url=_ISSUE_URL,
-            ticket_id="8521",
-            title="t",
-            manifest=_test_plan.TestPlanManifest(
-                ticket="8521",
-                mrs=(),
-                dev=_test_plan.SideManifest(present=False),
-                local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
-            ),
+class TestBlockedBodyGateAtCommand(_PlanFileTestBase):
+    """A "could not test" free-text plan is refused — the file ships to colleagues in the MR."""
+
+    def test_blocked_phrase_in_a_body_file_is_refused_with_nothing_written(self) -> None:
+        self._ticket()
+        body = self._tmp / "plan.md"
+        body.write_text("## Test Plan\n\nUnable to test the login flow.\n", encoding="utf-8")
+        with patch(
+            "teatree.core.management.commands._test_plan.write.check_blocked_body_from_config",
+            side_effect=BlockedTestPlanPostError("blocked phrase"),
+        ):
+            self._run_expecting_exit(ticket=_ISSUE_URL, body_file=str(body))
+        assert not self._plan_path.exists()
+
+    def test_a_structured_blocked_workflow_disclosure_is_not_gated(self) -> None:
+        self._ticket()
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
+                "blocked_workflows": {"Login": "deploy blocked on cred"},
+            },
         )
-        # No OnBehalfPostBlockedError despite ASK mode — the carve-out proceeds.
-        result = _test_plan.post_test_plan_comment(host, post)
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
+
+        self._run(ticket=_ISSUE_URL, manifest=manifest)
+
+        assert "**Blocked:** deploy blocked on cred" in self._plan_path.read_text(encoding="utf-8")
 
 
 class TestPureHelpers:
@@ -1208,11 +1075,11 @@ class TestPureHelpers:
             {"id": 2, "body": "<!-- t3-e2e-evidence ticket=9999 -->\nother ticket"},
             {"id": 3, "body": '<!-- t3-e2e-evidence ticket=8521 -->\n<!-- t3-e2e-data {"ticket":"8521"} -->'},
         ]
-        found = _test_plan.find_existing_note(comments, ticket_id="8521")
+        found = _mr_post.find_existing_note(comments, ticket_id="8521")
         assert found is not None
         assert found.comment_id == 3
         assert found.state["ticket"] == "8521"
-        assert _test_plan.find_existing_note([], ticket_id="8521") is None
+        assert _mr_post.find_existing_note([], ticket_id="8521") is None
 
 
 # --- zero-media rejection ---------------------------------------------------
@@ -1294,62 +1161,6 @@ class TestZeroMediaRejection:
         )
         parsed = _test_plan.parse_manifest(manifest)
         assert parsed.local.present is True
-
-
-# --- retract-evidence command -----------------------------------------------
-
-
-class TestRetractEvidence(_EvidenceTestBase):
-    """``e2e retract-evidence`` deletes the ticket's single test-plan note."""
-
-    def _existing_note_body(self) -> str:
-        marker = "<!-- t3-e2e-evidence ticket=8521 -->"
-        state: dict[str, object] = {
-            "ticket": "8521",
-            "title": "t",
-            "mrs": [],
-            "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
-            "local": {"commits": {"client": "aabb"}, "workflows": {}},
-            "steps": {},
-        }
-        blob = "<!-- t3-e2e-data " + json.dumps(state, separators=(",", ":"), sort_keys=True) + " -->"
-        return f"{marker}\n{blob}\n## Test Plan — t\n"
-
-    def test_deletes_existing_note(self) -> None:
-        self._ticket()
-        host = MagicMock()
-        host.list_issue_comments.return_value = [{"id": 42, "body": self._existing_note_body()}]
-        host.delete_issue_comment.return_value = {}
-        self._patch_host(host)
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)
-        host.delete_issue_comment.assert_called_once_with(issue_url=_ISSUE_URL, comment_id=42)
-
-    def test_exits_nonzero_when_no_note_exists(self) -> None:
-        self._ticket()
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        self._patch_host(host)
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)
-        host.delete_issue_comment.assert_not_called()
-
-    def test_exits_nonzero_when_no_code_host(self) -> None:
-        self._ticket()
-        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: None)
-        self._monkeypatch.setattr(
-            _test_plan,
-            "resolve_worktree",
-            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
-        )
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)
 
 
 # --- #2304: templates, never-render-empty, --body-file ----------------------
@@ -1701,77 +1512,34 @@ class TestNeverEmptyRender(TestCase):
             _render.render_body(state)
 
 
-class TestBodyFile(TestCase):
-    def _ticket(self) -> MagicMock:
-        ticket = MagicMock()
-        ticket.issue_url = _ISSUE_URL
-        ticket.ticket_number = "8521"
-        return ticket
+class TestBodyFile(_PlanFileTestBase):
+    """``--body-file`` writes a pre-authored body verbatim to the ticket's plan file."""
 
-    def _patch_host(self) -> MagicMock:
-        host = MagicMock()
-        host.repo_for_issue_url.return_value = "org/repo"
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 42}
-        return host
+    def _body_file(self, content: str) -> str:
+        path = self._tmp / "plan.md"
+        path.write_text(content, encoding="utf-8")
+        return str(path)
 
-    def test_body_file_posts_content_directly(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "plan.md"
-            body_path.write_text("<!-- t3-e2e-evidence ticket=8521 -->\n## Test Plan\n\nSome steps.\n")
-            host = self._patch_host()
-            with (
-                patch("teatree.core.management.commands._test_plan.post.code_host_from_overlay", return_value=host),
-                patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None),
-                patch("teatree.core.models.Ticket.objects.resolve", return_value=self._ticket()),
-                patch(
-                    "teatree.core.management.commands._test_plan.post.require_on_behalf_approval",
-                    side_effect=lambda **kw: kw["publish"](),
-                ),
-                patch("teatree.core.management.commands._test_plan.post.on_behalf_block_message", return_value=""),
-                patch("teatree.core.management.commands._test_plan.post.notify_user_on_behalf_post"),
-                patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
-            ):
-                call_command("e2e", "post-test-plan", ticket="8521", body_file=str(body_path))
-            host.upload_file.assert_not_called()
-            posted_body = host.post_issue_comment.call_args[1]["body"]
-            assert "## Test Plan" in posted_body
+    def test_body_file_content_lands_in_the_plan_file(self) -> None:
+        self._ticket()
+        body = "<!-- t3-e2e-evidence ticket=8521 -->\n## Test Plan\n\nSome steps.\n"
+
+        self._run(ticket=_ISSUE_URL, body_file=self._body_file(body))
+
+        assert self._plan_path.read_text(encoding="utf-8") == body
 
     def test_empty_body_file_exits_nonzero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "empty.md"
-            body_path.write_text("")
-            with (
-                pytest.raises(SystemExit) as exc_info,
-                patch(
-                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
-                    return_value=self._patch_host(),
-                ),
-                patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
-            ):
-                call_command("e2e", "post-test-plan", ticket="8521", body_file=str(body_path))
-            assert exc_info.value.code != 0
+        self._ticket()
+        self._run_expecting_exit(ticket=_ISSUE_URL, body_file=self._body_file(""))
+        assert not self._plan_path.exists()
 
     def test_body_file_and_manifest_mutually_exclusive(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            body_path = Path(tmp) / "plan.md"
-            body_path.write_text("## Plan\n")
-            with (
-                pytest.raises(SystemExit) as exc_info,
-                patch(
-                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
-                    return_value=self._patch_host(),
-                ),
-                patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
-            ):
-                call_command(
-                    "e2e",
-                    "post-test-plan",
-                    ticket="8521",
-                    body_file=str(body_path),
-                    manifest='{"workflows":[]}',
-                )
-            assert exc_info.value.code != 0
+        self._ticket()
+        self._run_expecting_exit(
+            ticket=_ISSUE_URL,
+            body_file=self._body_file("## Plan\n"),
+            manifest='{"workflows":[]}',
+        )
 
 
 _BROWSER_MANIFEST = json.dumps(
@@ -1826,7 +1594,7 @@ class TestTemplateThroughManifest(TestCase):
 
 
 class TestTemplateRoundTrip(TestCase):
-    """A second ``post-test-plan`` re-reads the blob; new fields must survive."""
+    """A second ``write-test-plan`` re-reads the blob; new fields must survive."""
 
     def _seeded_state(self) -> PlanState:
         return {
@@ -1886,19 +1654,3 @@ class TestCaptureMatrixRendersBlocked(TestCase):
         assert "| Dev | Local |" in visible
         assert "Checkout" in visible
         assert "Not deployed yet" in visible
-
-
-class TestTemplateFlag(TestCase):
-    def test_template_flag_overrides_manifest_default(self) -> None:
-        flags = _test_plan.TestPlanFlags(
-            ticket="8521",
-            manifest=json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "Login", "steps": ["s"]}]}),
-            template="browser-click-first",
-        )
-        with patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None):
-            ticket = MagicMock()
-            ticket.issue_url = _ISSUE_URL
-            ticket.ticket_number = "8521"
-            with patch("teatree.core.models.Ticket.objects.resolve", return_value=ticket):
-                post = _test_plan.build_validated_post(flags)
-        assert post.manifest.template == "browser-click-first"

@@ -85,6 +85,13 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # tests/teatree_cli/doctor/test_dream_blocked_check.py; pin it to a pass here so
     # this aggregation smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_dream_consolidation_blocked", lambda: True)
+    # The control-DB writers gate reads the live descriptor table, where a SIBLING xdist
+    # worker holding the control DB is indistinguishable from the rogue host writer it
+    # hunts — so it FAILs on how many workers pytest happened to spawn, not on the code.
+    # Pinned at the OS READ, never the check: the classification and its FAIL text still
+    # run, and are exercised both ways in
+    # tests/teatree_cli/doctor/test_checks_db_integrity.py.
+    monkeypatch.setattr("teatree.cli.doctor.checks_db_integrity._control_db_writers", list)
     # The config-tier health gate (#3873) reports whether a ConfigSetting override read
     # recently FAILED, reading a marker file beside the box's REAL control DB — a path
     # outside this test's DB isolation, so a genuine unrelated degradation recorded by

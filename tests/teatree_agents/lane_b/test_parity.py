@@ -50,6 +50,7 @@ from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
 from teatree.hooks import (
     _repo_visibility,
+    git_bypass_detect,
     raw_merge_detect,
     raw_review_post_detect,
     safe_kill_detect,
@@ -96,6 +97,10 @@ def _lane_a_raw_merge_denies(command: str) -> bool:
 
 def _lane_a_pid_kill_denies(command: str) -> bool:
     return safe_kill_detect.detect_raw_pid_kill(command).is_raw_pid_kill
+
+
+def _lane_b_git_bypass_denies(command: str) -> bool:
+    return git_bypass_detect.git_bypass_deny_reason(command) is not None
 
 
 def _streaming_model(*, tool_command: str) -> FunctionModel:
@@ -397,6 +402,11 @@ class TestBashHardDenyCorpusParity:
         ),
         ("glab reviewer assign", "glab mr update 7 --reviewer alice", _lane_a_reviewer_denies),
         ("gh reviewer assign", "gh pr edit 7 --add-reviewer bob", _lane_a_reviewer_denies),
+        (
+            "curl reviewer assign",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d '{\"reviewer_ids\": [42]}'",
+            _lane_a_reviewer_denies,
+        ),
         ("raw pid kill", "kill -9 4242", _lane_a_pid_kill_denies),
     )
 
@@ -446,7 +456,27 @@ class TestBashHardDenyCorpusParity:
                     "gh pr create --reviewer bob",
                     "glab api projects/1/merge_requests/2 -X PUT -f reviewer_ids=3",
                     "gh api repos/o/x/pulls/7/requested_reviewers",
+                    "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d '{\"reviewer_ids\": [42]}'",
+                    "curl https://api.github.com/repos/o/x/pulls/7/requested_reviewers",
                     "git commit -m 'note about --reviewer'",
+                ),
+            ),
+            # git-family shapes only: outside this family the Lane-A guard carries
+            # the whole t3-bypass denylist (docker, npm, …) the leaf never claims.
+            (
+                _lane_b_git_bypass_denies,
+                _lane_a_direct_denies,
+                (
+                    "git commit -m x --no-" + "verify",
+                    "git -c core.hooks" + "Path=/dev/null commit -m x",
+                    "git push -o merge_request.merge_when_pipeline_succeeds",
+                    "git -c push.default=simple push -o merge_request.merge_when_pipeline_succeeds",
+                    "git --no-pager push --push-option=merge_request.merge_when_pipeline_succeeds",
+                    "git push --push-option merge_request.merge_when_pipeline_succeeds",
+                    "git push -omerge_request.merge_when_pipeline_succeeds",
+                    "git push origin HEAD",
+                    "git -C ../worktree push origin HEAD",
+                    "git push -o merge_request.create origin feature",
                 ),
             ),
         )

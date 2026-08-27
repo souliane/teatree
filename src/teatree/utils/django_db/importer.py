@@ -33,6 +33,7 @@ from teatree.utils.django_db.helpers import (
     _terminate_connections,
     is_loopback_host,
     rewrite_url_host,
+    split_password_from_url,
     url_host,
 )
 from teatree.utils.django_db.migrate import _MAX_MIGRATE_RETRIES, _MigrateResult
@@ -466,6 +467,7 @@ class DjangoDbImporter:
             # the remote→local-superuser boundary, so the local ownership-
             # reassignment post-steps take over cleanly. -Fc keeps it the
             # deterministic custom format db_restore auto-detects.
+            dump_url, password = split_password_from_url(cfg.remote_db_url)
             result = run_allowed_to_fail(
                 [
                     "pg_dump",
@@ -474,8 +476,9 @@ class DjangoDbImporter:
                     "--no-privileges",
                     "-f",
                     str(dump_path),
-                    cfg.remote_db_url,
+                    dump_url,
                 ],
+                env={**os.environ, "PGPASSWORD": password} if password else None,
                 timeout=cfg.dump_timeout,
                 expected_codes=None,
             )

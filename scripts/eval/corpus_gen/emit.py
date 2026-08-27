@@ -2,7 +2,10 @@
 
 import itertools
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 from scripts.eval.corpus_gen.model import Scenario, fixture_stream, scenario_yaml
 
@@ -11,6 +14,13 @@ _GENERATED_HEADER = (
     "# Edit the declaration in scripts/eval/corpus_gen/catalog.py and re-run\n"
     "# `uv run python scripts/eval/generate_corpus.py`.\n"
 )
+_VARIANT_SUFFIXES = ("_pass.stream.jsonl", "_fail.stream.jsonl", "_noop.stream.jsonl")
+
+
+@dataclass(frozen=True)
+class CatalogWrite:
+    written: list[Path]
+    removed: list[Path]
 
 
 def _variants_for(scenario: Scenario) -> tuple[str, ...]:
@@ -53,12 +63,58 @@ def emit_catalog(
     return yaml_files, fixture_files
 
 
-def write_catalog(scenarios: list[Scenario], *, scenarios_dir: Path, fixtures_dir: Path) -> list[Path]:
-    """Write the catalog to disk and return every path written."""
+def _generated_scenario_files(scenarios_dir: Path) -> list[Path]:
+    """The YAML in *scenarios_dir* this generator wrote, identified by its own header."""
+    return [
+        path
+        for path in sorted(scenarios_dir.glob("*.yaml"))
+        if path.read_text(encoding="utf-8").startswith(_GENERATED_HEADER)
+    ]
+
+
+def _declared_names(path: Path) -> set[str]:
+    entries = yaml.safe_load(path.read_text(encoding="utf-8")) or ()
+    return {entry["name"] for entry in entries if isinstance(entry, dict) and "name" in entry}
+
+
+def orphaned_generated_files(
+    planned_yaml: set[Path],
+    planned_fixtures: set[Path],
+    *,
+    scenarios_dir: Path,
+    fixtures_dir: Path,
+) -> list[Path]:
+    """Generated files on disk that the declaration no longer produces.
+
+    A fixture is a candidate only when a generated YAML declares its scenario:
+    both directories are shared with hand-written scenarios, which this generator
+    neither wrote nor may delete.
+    """
+    generated = _generated_scenario_files(scenarios_dir)
+    orphans = [path for path in generated if path not in planned_yaml]
+    for name in sorted({name for path in generated for name in _declared_names(path)}):
+        orphans += [
+            fixture
+            for suffix in _VARIANT_SUFFIXES
+            if (fixture := fixtures_dir / f"{name}{suffix}") not in planned_fixtures and fixture.is_file()
+        ]
+    return sorted(orphans)
+
+
+def write_catalog(scenarios: list[Scenario], *, scenarios_dir: Path, fixtures_dir: Path) -> CatalogWrite:
+    """Write the catalog to disk, drop what it no longer declares, and report both."""
     yaml_files, fixture_files = emit_catalog(scenarios, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir)
     written: list[Path] = []
     for path, text in itertools.chain(yaml_files.items(), fixture_files.items()):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         written.append(path)
-    return written
+    removed = orphaned_generated_files(
+        set(yaml_files),
+        set(fixture_files),
+        scenarios_dir=scenarios_dir,
+        fixtures_dir=fixtures_dir,
+    )
+    for path in removed:
+        path.unlink()
+    return CatalogWrite(written=written, removed=removed)

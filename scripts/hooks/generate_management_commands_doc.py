@@ -14,9 +14,10 @@ output, where the docs-drift gate reads it.
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+import generated_doc_staging
 
 _DEFAULT_OUTPUT = Path("docs/generated/management-commands.md")
 
@@ -52,9 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         output.write_text(markdown, encoding="utf-8")
 
     if markdown != old and output == _DEFAULT_OUTPUT:
-        subprocess.run(["git", "add", str(output)], check=False)
+        generated_doc_staging.stage(output)
         json_path = output.with_suffix(".json")
-        subprocess.run(["git", "add", str(json_path)], check=False)
+        generated_doc_staging.stage(json_path)
         print(f"Updated {output}")
 
     return 0

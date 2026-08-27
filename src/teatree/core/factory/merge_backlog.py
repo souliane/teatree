@@ -9,6 +9,7 @@ authorisations stood unconsumed (#4250).
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
@@ -183,3 +184,86 @@ def max_actionable_clear_age_hours(overlay: str, now: datetime) -> float | None:
     """Age in hours of the oldest standing merge authorisation, or ``None``."""
     backlog = unconsumed_actionable_clears(overlay, now)
     return backlog[0].age_hours if backlog else None
+
+
+class ClearStanding(StrEnum):
+    """Why an unconsumed CLEAR is, or is not, part of the standing merge backlog.
+
+    ``LIVE`` is the population :func:`unconsumed_actionable_clear_rows` returns and
+    every existing surface reports. The other two are the rows those surfaces
+    deliberately filter out — correctly, because neither can authorise a merge — and
+    which therefore appear nowhere at all.
+    """
+
+    LIVE = "live"
+    SUPERSEDED = "superseded"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True, slots=True)
+class OutstandingClear:
+    """One unconsumed CLEAR and the standing that decides which surfaces can see it."""
+
+    pk: int
+    slug: str
+    pr_id: int
+    reviewed_sha: str
+    reviewer_identity: str
+    issued_at: datetime
+    standing: ClearStanding
+
+    @property
+    def ref(self) -> str:
+        return f"{self.slug}#{self.pr_id}"
+
+    def describe(self) -> str:
+        stamp = self.issued_at.isoformat()
+        sha = self.reviewed_sha[:8] or "(none)"
+        return (
+            f"{self.standing} {self.ref} clear={self.pk} sha={sha} by {self.reviewer_identity or '(none)'} at {stamp}"
+        )
+
+
+def _standing_of(clear: MergeClear, context: SupersedeContext) -> ClearStanding:
+    """*clear*'s standing, checked in the order that names the FIRST reason it is unmergeable."""
+    if not clear.is_actionable():
+        return ClearStanding.INCOMPLETE
+    if clear_is_superseded(clear, context):
+        return ClearStanding.SUPERSEDED
+    return ClearStanding.LIVE
+
+
+def outstanding_clear_rows(overlay: str) -> list[OutstandingClear]:
+    """EVERY unconsumed CLEAR, classified — including the ones no other surface reports.
+
+    :func:`unconsumed_actionable_clear_rows` narrows to what can still authorise a
+    merge, so a row that is incomplete (a mis-issue missing a load-bearing field) or
+    superseded (a newer sibling or a covering merge moved past it) is filtered out of
+    the backlog, the S4 staleness trip, ``t3 doctor check``, and — because it reads
+    the same narrowed population — ``ticket reconcile-clears``. Nothing then lists
+    them, so a mis-issued authorisation stands in the durable governance store
+    forever with no supported way to even see it.
+
+    This is the deliberately unnarrowed read: the same scope predicate and the same
+    supersede context, but every unconsumed row returned with its standing named
+    rather than dropped. Oldest first, so a ledger read top-down is chronological.
+    """
+    in_scope = clear_scope_predicate(overlay)
+    qs = MergeClear.objects.filter(consumed_at__isnull=True).select_related("ticket")
+    unconsumed = [clear for clear in qs if in_scope(clear)]
+    if not unconsumed:
+        return []
+    context = superseding_context(overlay)
+    rows = [
+        OutstandingClear(
+            pk=clear.pk,
+            slug=clear.slug,
+            pr_id=clear.pr_id,
+            reviewed_sha=clear.reviewed_sha,
+            reviewer_identity=clear.reviewer_identity,
+            issued_at=clear.issued_at,
+            standing=_standing_of(clear, context),
+        )
+        for clear in unconsumed
+    ]
+    return sorted(rows, key=lambda row: row.issued_at)

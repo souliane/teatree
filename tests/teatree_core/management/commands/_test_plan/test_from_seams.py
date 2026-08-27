@@ -1,4 +1,4 @@
-"""Assemble the ``scenario-plan`` note from overlay seams — ``--from-seams`` (#3329)."""
+"""Assemble the ``scenario-plan`` file from overlay seams — ``--from-seams`` (#3329)."""
 
 from pathlib import Path
 from typing import cast
@@ -7,19 +7,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from PIL import Image
 
-from teatree.core.backend_protocols import UploadVerification
 from teatree.core.e2e_scenario import Capture, Scenario
 from teatree.core.intake.e2e_workitem import RunProvenance, record_run
 from teatree.core.management.commands._test_plan import from_seams as _from_seams
-from teatree.core.management.commands._test_plan.post import PostTestPlanResult
-from teatree.core.models import Ticket
-from teatree.core.overlay import OverlayE2E
+from teatree.core.management.commands._test_plan.write import PlanWriteResult
+from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayE2E, OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
 _ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
 _TICKET_NUMBER = "8521"
 _SPEC = "e2e/specs/login.spec.ts"
+_E2E_REPO = "client-workspace"
 
 
 class _SeamsE2E(OverlayE2E):
@@ -38,21 +39,20 @@ class _SeamsE2E(OverlayE2E):
         )
 
 
+class _SeamsMetadata(OverlayMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"runner": "external", "project_path": f"org/{_E2E_REPO}", "e2e_dir": "e2e"}
+
+
 class _SeamsOverlay(CommandOverlay):
     e2e = _SeamsE2E()
+    metadata = _SeamsMetadata()
+
+    def get_repos(self) -> list[str]:
+        return [_E2E_REPO]
 
 
 _MOCK_OVERLAY = {"test": _SeamsOverlay()}
-
-
-def _fake_host() -> MagicMock:
-    host = MagicMock()
-    host.repo_for_issue_url.return_value = "org/repo"
-    host.list_issue_comments.return_value = []
-    host.post_issue_comment.return_value = {"id": 99, "web_url": "u"}
-    host.upload_file.return_value = {"full_path": "/-/project/9/uploads/x/step1.png"}
-    host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/x/step1.png")
-    return host
 
 
 class _FromSeamsBase(TestCase):
@@ -69,8 +69,21 @@ class _FromSeamsBase(TestCase):
             MagicMock(side_effect=_from_seams.WorktreeNotFoundError("none")),
         )
 
+    @property
+    def _plan_path(self) -> Path:
+        return self._tmp / "checkout" / "test-plans" / f"repo-{_TICKET_NUMBER}.md"
+
     def _ticket_with_recipe(self, *, spec: str = _SPEC, shas: dict[str, str] | None = None) -> Path:
         ticket = Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        checkout = self._tmp / "checkout"
+        checkout.mkdir(exist_ok=True)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=_E2E_REPO,
+            branch="8521-feat-thing",
+            extra={"worktree_path": str(checkout)},
+        )
         artifacts_root = self._tmp / "artifacts"
         record_run(
             ticket,
@@ -86,69 +99,60 @@ class _FromSeamsBase(TestCase):
         env_dir.mkdir(parents=True, exist_ok=True)
         (env_dir / f"{slot}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    def _run(self, host: MagicMock, *, ticket: str, spec_path: str, artifacts_dir: str) -> PostTestPlanResult:
-        self._monkeypatch.setattr(_from_seams, "code_host_from_overlay", lambda: host)
+    def _run(self, *, ticket: str, spec_path: str, artifacts_dir: str) -> PlanWriteResult:
         request = _from_seams.FromSeamsRequest(ticket=ticket, spec_path=spec_path, artifacts_dir=artifacts_dir)
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            return _from_seams.run_from_seams(request, write_out=lambda _s: None, write_err=lambda _s: None)
+            return _from_seams.run_from_seams(request, write_err=lambda _s: None)
 
 
-class TestAssembleAndPost(_FromSeamsBase):
-    def test_creates_scenario_plan_note_from_seams(self) -> None:
+class TestAssembleAndWrite(_FromSeamsBase):
+    def test_creates_scenario_plan_file_from_seams(self) -> None:
         artifacts_root = self._ticket_with_recipe()
         self._write_capture(artifacts_root)
-        host = _fake_host()
 
-        result = self._run(host, ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+        result = self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
 
         assert result["action"] == "created"
         assert result["envs"] == ["local"]
-        host.post_issue_comment.assert_called_once()
-        body = host.post_issue_comment.call_args.kwargs["body"]
+        assert result["path"] == str(self._plan_path)
+        body = self._plan_path.read_text(encoding="utf-8")
         assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
         assert "### Scenario 1 — Login" in body
-        # The declared capture's uploaded embed and its caption render.
-        assert "](/uploads/x/step1.png)" in body
+        # The declared capture is cited by its artifacts-root-relative path, with its caption.
+        assert "`8521/local/step1.png`" in body
         assert "the login form" in body
         # The recorded SHA renders in the environment footer.
         assert "backend `abc1234`" in body
 
-    def test_rerun_updates_the_single_note_in_place(self) -> None:
+    def test_rerun_updates_the_single_file_in_place(self) -> None:
         artifacts_root = self._ticket_with_recipe()
         self._write_capture(artifacts_root)
-        host = _fake_host()
-        host.list_issue_comments.return_value = [{"id": 55, "body": "<!-- t3-e2e-evidence ticket=8521 -->\nprior"}]
-        host.update_issue_comment.return_value = {"id": 55}
+        self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
 
-        result = self._run(host, ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+        result = self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
 
         assert result["action"] == "updated"
-        assert result["comment_id"] == 55
-        host.update_issue_comment.assert_called_once()
-        host.post_issue_comment.assert_not_called()
+        assert [p.name for p in self._plan_path.parent.iterdir()] == [f"repo-{_TICKET_NUMBER}.md"]
 
 
 class TestFailLoud(_FromSeamsBase):
-    def test_no_authored_scenarios_exits_nonzero_no_post(self) -> None:
+    def test_no_authored_scenarios_exits_nonzero_nothing_written(self) -> None:
         self._ticket_with_recipe(spec="e2e/specs/unknown.spec.ts")
-        host = _fake_host()
         with pytest.raises(SystemExit):
-            self._run(host, ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
-        host.post_issue_comment.assert_not_called()
+            self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+        assert not self._plan_path.exists()
 
-    def test_missing_capture_file_exits_nonzero_no_post(self) -> None:
+    def test_missing_capture_file_exits_nonzero_nothing_written(self) -> None:
         self._ticket_with_recipe()  # no capture written
-        host = _fake_host()
         with pytest.raises(SystemExit):
-            self._run(host, ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
-        host.post_issue_comment.assert_not_called()
+            self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+        assert not self._plan_path.exists()
 
     def test_no_per_repo_shas_exits_nonzero(self) -> None:
         self._ticket_with_recipe(shas={})
-        host = _fake_host()
         with pytest.raises(SystemExit):
-            self._run(host, ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
-        host.post_issue_comment.assert_not_called()
+            self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+        assert not self._plan_path.exists()
 
 
 class TestResolveSeamsRun(_FromSeamsBase):
@@ -162,16 +166,33 @@ class TestResolveSeamsRun(_FromSeamsBase):
         assert run.per_repo_shas == {"backend": "abc1234"}
 
 
-class TestPostTestPlanFromSeamsCommand(_FromSeamsBase):
-    def test_command_from_seams_flag_assembles_and_posts(self) -> None:
+class TestWriteTestPlanFromSeamsCommand(_FromSeamsBase):
+    def test_command_from_seams_flag_assembles_and_writes(self) -> None:
         artifacts_root = self._ticket_with_recipe()
         self._write_capture(artifacts_root)
-        host = _fake_host()
-        self._monkeypatch.setattr(_from_seams, "code_host_from_overlay", lambda: host)
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast(
                 "dict[str, object]",
-                call_command("e2e", "post-test-plan", from_seams=True, ticket=_ISSUE_URL),
+                call_command("e2e", "write-plan-from-seams", ticket=_ISSUE_URL),
             )
         assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
+        assert self._plan_path.is_file()
+
+
+class TestCommittedCapturesAreGated(_FromSeamsBase):
+    """The evidence beside this plan is re-validated here too — the claim holds on every write path."""
+
+    def _commit_capture_with_no_red_box(self) -> None:
+        evidence_dir = self._plan_path.parent / "evidence" / self._plan_path.stem
+        evidence_dir.mkdir(parents=True)
+        Image.new("RGB", (400, 300), (240, 240, 240)).save(evidence_dir / "hand-dropped.png", "PNG")
+
+    def test_a_hand_placed_capture_with_no_red_box_refuses_the_write(self) -> None:
+        artifacts_root = self._ticket_with_recipe()
+        self._write_capture(artifacts_root)
+        self._commit_capture_with_no_red_box()
+
+        with pytest.raises(SystemExit):
+            self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+
+        assert not self._plan_path.exists()

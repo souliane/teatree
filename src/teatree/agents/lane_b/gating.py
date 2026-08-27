@@ -176,7 +176,9 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
 #: it cannot satisfy (or a genuinely-blocked path the model keeps re-attempting
 #: with variations) would loop, burning tokens. Past this cap the deny becomes a
 #: terminal :class:`UnexpectedModelBehavior` that ends the run instead of retrying.
-_DEFAULT_MAX_DENIALS: int = 3
+#: Public so :mod:`teatree.agents.lane_b.config` can widen it per phase instead of
+#: redeclaring the same number.
+DEFAULT_MAX_DENIALS: int = 3
 
 #: Cap on how many distinct runs' denial tallies :class:`HardDenyToolset` retains.
 #: ``denial_counts`` is shared across every ``for_run`` copy for the toolset's whole
@@ -218,7 +220,7 @@ class HardDenyToolset(WrapperToolset[None]):
     """
 
     cwd: Path | None = None
-    max_denials: int = _DEFAULT_MAX_DENIALS
+    max_denials: int = DEFAULT_MAX_DENIALS
     denial_counts: dict[str, int] = field(default_factory=dict)
 
     async def call_tool(

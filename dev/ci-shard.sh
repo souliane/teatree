@@ -20,7 +20,10 @@
 #   dev/ci-shard.sh 3 -n0                    # serial, deterministic order
 #   LEAK_SENTINEL=error dev/ci-shard.sh 3    # fail the polluter locally
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 GROUP="${1:?usage: dev/ci-shard.sh <group 1..N> [--splits N] [extra pytest args]}"
 shift

@@ -282,6 +282,59 @@ class TestOverlayConfig(TestCase):
         assert config.get_gitlab_token() == ""
         assert config.get_github_token() == ""
 
+    def test_gitlab_token_for_remote_defaults_to_the_plain_token(self) -> None:
+        # Every overlay that does not scope its GitLab credential per remote must
+        # keep resolving the one token it always used, whatever remote is asked.
+        config = OverlayConfig()
+        config._register_secret("gitlab_token", "forge/pat")
+        remotes = (
+            "git@gitlab.com:org/repo.git",
+            "https://gitlab.com/other/repo",
+            "",
+        )
+        with patch("teatree.utils.secrets.read_pass", return_value="plain-token"):
+            resolved = [config.get_gitlab_token_for_remote(remote) for remote in remotes]
+
+        assert resolved == ["plain-token"] * len(remotes)
+
+    def test_a_default_overlay_acts_as_the_owner_on_every_remote(self) -> None:
+        # The scoping every "make the owner a CHECKER" feature reads: core scopes
+        # no credential, so the owner is the AUTHOR everywhere and nothing may
+        # name him as reviewer or approver of his own PR.
+        config = OverlayConfig()
+        config._register_secret("gitlab_token", "forge/pat")
+
+        with patch("teatree.utils.secrets.read_pass", return_value="plain-token"):
+            scoped = [config.acts_as_distinct_identity_on(r) for r in ("git@gitlab.com:org/repo.git", "")]
+
+        assert scoped == [False, False]
+
+    def test_a_remote_with_its_own_credential_is_a_distinct_identity(self) -> None:
+        class ScopedConfig(OverlayConfig):
+            def get_gitlab_token(self) -> str:
+                return "owner-token"
+
+            def get_gitlab_token_for_remote(self, remote: str) -> str:
+                return "bot-token" if remote.endswith("factory.git") else self.get_gitlab_token()
+
+        config = ScopedConfig()
+
+        assert config.acts_as_distinct_identity_on("git@gitlab.com:org/factory.git")
+        assert not config.acts_as_distinct_identity_on("git@gitlab.com:org/product.git")
+
+    def test_an_unresolvable_remote_is_never_a_distinct_identity(self) -> None:
+        # Fails conservative: an empty remote answers False, withholding the
+        # assignment rather than making one against an unknown author.
+        class AlwaysBotConfig(OverlayConfig):
+            def get_gitlab_token(self) -> str:
+                return "owner-token"
+
+            def get_gitlab_token_for_remote(self, remote: str) -> str:
+                del remote
+                return "bot-token"
+
+        assert not AlwaysBotConfig().acts_as_distinct_identity_on("")
+
     def test_toml_pass_key_registers_secret_reader(self) -> None:
         mock_config = MagicMock()
         mock_config.raw = {

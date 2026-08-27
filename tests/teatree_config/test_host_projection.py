@@ -8,8 +8,10 @@ so every test here plants the bad state and asserts the loud outcome — most of
 counter exists.
 """
 
+import fcntl
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -211,8 +213,13 @@ class TestColdReadersFallThroughToTheProjection:
 
     @pytest.fixture(autouse=True)
     def _unreachable_source(self, tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Must be a path that cannot exist: on a box where the real control-DB volume IS
-        # mounted, naming it makes the fall-through under test silently not happen.
+        # The unreachable source is pinned inside this test's OWN tmp dir, never at the
+        # literal `DEFAULT_CONTROL_DB_DIR / DB_FILENAME`. That literal is a live path — the
+        # control-DB volume mount, and what `paths.TRUE_CANONICAL_DB` resolves to — so in a
+        # container it is PRESENT, `loop_status` takes its `db.exists()` branch, and the
+        # fall-through this class exists to cover never runs. It read as an order-dependent
+        # flake: the shard that materialised the file reddened `assert 'enabled' == 'paused'`
+        # while the same test passed in isolation on a host.
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
         monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: tmp_path / "absent" / "db.sqlite3")
 
@@ -341,3 +348,43 @@ class TestAdvisorySilenceSeam:
         host_projection.warn_once("projection is absent", env={})
 
         assert capsys.readouterr().err.count("projection is absent") == 1
+
+
+class TestHighwaterRatchetIsSerialised:
+    """The observed-generation file may only move FORWARD, whatever the read interleaving.
+
+    Two hooks read the projection at once; each compares its own generation against the
+    file and then writes. Unlocked, the reader holding the OLDER generation can land its
+    write after the newer one, leaving the file naming a generation this host has already
+    passed — and the very next stale projection then reads FRESH.
+    """
+
+    def test_a_concurrent_recorder_waits_for_the_holder_and_then_skips(self, source_db: Path, data_dir: Path) -> None:
+        reader = ProjectionReader(data_dir)
+        ProjectionPublisher(source_db, data_dir).publish()
+        assert reader.read().staleness is Staleness.FRESH, "control: the fresh projection must read clean"
+        _plant_generation(reader.target, 5)
+        reader.highwater_path.write_text("3\n", encoding="utf-8")
+
+        with reader.highwater_lock_path.open("a", encoding="utf-8") as holder:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            late = threading.Thread(target=reader.read)
+            late.start()
+            late.join(timeout=0.5)
+            assert late.is_alive(), "the generation-5 recorder did not serialise on the sibling lock"
+            reader.highwater_path.write_text("9\n", encoding="utf-8")
+            fcntl.flock(holder, fcntl.LOCK_UN)
+        late.join(timeout=10)
+
+        assert reader.highwater_path.read_text(encoding="utf-8").strip() == "9"
+
+    def test_an_unwritable_data_dir_still_reads(self, source_db: Path, data_dir: Path) -> None:
+        reader = ProjectionReader(data_dir)
+        ProjectionPublisher(source_db, data_dir).publish()
+        reader.highwater_lock_path.unlink()
+        reader.highwater_path.write_text("1\n", encoding="utf-8")
+        data_dir.chmod(0o500)
+        try:
+            assert reader.read().staleness is Staleness.FRESH
+        finally:
+            data_dir.chmod(0o700)

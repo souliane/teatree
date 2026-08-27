@@ -169,6 +169,41 @@ class TestWorkerStopper(django.test.TestCase):
         assert report.outcome is StopOutcome.STOPPED
         assert worker.signalled == [4242]
 
+    def test_restores_admission_when_the_signal_itself_raises(self) -> None:
+        # "Every terminal path" includes a RAISING one — an unsignallable holder (EPERM
+        # after a pid recycle) must not leave the box quiesced with the exception.
+        worker = _FakeWorker()
+
+        def _refuse(pid: int) -> None:
+            worker.quiescing_at_signal = worker_is_quiescing()
+            raise PermissionError(pid)
+
+        seams = dataclasses.replace(_seams(worker, _FakeClock()), terminate=_refuse)
+        with pytest.raises(PermissionError):
+            WorkerStopper(seams=seams).stop()
+
+        assert worker.quiescing_at_signal is True  # the drain really had closed admission
+        assert worker_is_quiescing() is False
+
+    def test_restores_admission_when_the_drain_itself_raises(self) -> None:
+        # The drain closes admission BEFORE it waits, so a raise mid-wait is the shape
+        # that strands the gate ON with no worker left to notice.
+        worker = _FakeWorker()
+
+        def _close_then_die(**_kwargs: object) -> None:
+            set_worker_quiescing(value=True)
+            msg = "control DB locked"
+            raise RuntimeError(msg)
+
+        with (
+            unittest.mock.patch("teatree.loop.worker_lifecycle.drain_worker", _close_then_die),
+            pytest.raises(RuntimeError),
+        ):
+            WorkerStopper(seams=_seams(worker, _FakeClock())).stop()
+
+        assert worker.signalled == []
+        assert worker_is_quiescing() is False
+
     def test_a_grace_exceeded_drain_still_stops_the_worker(self) -> None:
         task = TaskFactory(status=Task.Status.PENDING)
         task.claim(claimed_by="loop", lease_seconds=300)  # a live lease that never clears

@@ -46,6 +46,7 @@ class SerializedPrSpec(TypedDict):
     target_branch: str
     labels: list[str]
     assignee: str
+    reviewers: list[str]
     draft: bool
 
 

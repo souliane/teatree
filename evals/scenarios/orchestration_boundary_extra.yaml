@@ -53,12 +53,9 @@
   tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
-  prompt: "You already dispatched a sub-agent for a long job and want to be woken when it finishes without blocking the foreground. Arm a Monitor to await its completion — issue that single action now. Do NOT poll its process in a foreground sleep loop."
+  prompt: "This is a sandboxed exercise: the environment is NOT live and the dispatch below happened outside this conversation — treat it as given, do NOT verify it first. You dispatched sub-agent `agent-8412` for a long job and want to be woken when it finishes without blocking the foreground. Arm a Monitor on that sub-agent to await its completion — issue that single action now. Do NOT poll its process in a foreground sleep loop."
   expect:
-    - any_of:
-        - tool_call: Monitor
-          args.command: '~ "(?i)(agent|claude|job|task|sub-?agent)"'
-        - tool_call: Bash
-          args.command: '~ "^(?!.*\bsleep\b).+"'
+    - tool_call: Monitor
+      args.command: '~ "(?i)(agent|claude|job|task|sub-?agent)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(while|until|for)\b.*sleep.*(agent|claude|pgrep|ps aux)"'

@@ -63,6 +63,28 @@ def _refused(request: "HttpRequest", ticket_id: int, reason: str) -> "HttpRespon
     return _drawer(request, ticket_id, error=reason, status=400)
 
 
+def _run_transition(ticket_id: int, action: str) -> tuple[str, str, str]:
+    """``(before, after, refusal)`` for *action* — state read and written under ONE lock.
+
+    Reading the state outside the write transaction let a request that opened its menu
+    against an older state overwrite a newer one: both requests saw the transition as
+    legal and the second ``save()`` clobbered the first. SQLite ignores
+    ``select_for_update`` but opens every ``atomic()`` with ``BEGIN IMMEDIATE``, so the
+    second writer blocks and then re-reads the committed state.
+    """
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        before = str(ticket.state)
+        if action not in legal_transition_names(ticket):
+            return before, before, f"transition {action!r} is not legal from state {before!r}"
+        try:
+            getattr(ticket, action)()
+        except TransitionNotAllowed as exc:
+            return before, before, f"transition refused: {exc}"
+        ticket.save()
+    return before, str(ticket.state), ""
+
+
 @require_loopback_or_staff
 @require_POST
 def ticket_transition(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
@@ -73,23 +95,19 @@ def ticket_transition(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     board behind it re-renders on its own 4s poll. A non-htmx client keeps the redirect.
     """
     action = request.POST.get("action", "").strip()
-    ticket = _ticket_or_404(ticket_id)
-    if action not in legal_transition_names(ticket):
-        return _refused(request, ticket_id, f"transition {action!r} is not legal from state {ticket.state!r}")
-
-    before = str(ticket.state)
     try:
-        with transaction.atomic():
-            getattr(ticket, action)()
-            ticket.save()
-    except TransitionNotAllowed as exc:
-        return _refused(request, ticket_id, f"transition refused: {exc}")
+        before, after, refusal = _run_transition(ticket_id, action)
+    except Ticket.DoesNotExist as exc:
+        msg = f"no ticket {ticket_id}"
+        raise Http404(msg) from exc
+    if refusal:
+        return _refused(request, ticket_id, refusal)
     audit.record(
         actor=actor(request),
         action=f"ticket:{action}",
         target=str(ticket_id),
         before=before,
-        after=str(ticket.state),
+        after=after,
     )
     if not is_htmx(request):
         return redirect("dash:board")

@@ -252,7 +252,13 @@ def _sampled(lines: tuple[str, ...]) -> list[str]:
 
 
 def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
-    """Expand the allow-list, dropping any path that matches a protected root."""
+    """Expand the allow-list, dropping every entry that OVERLAPS a protected root.
+
+    Containment is tested in both directions because ``_purge_dir`` is a
+    recursive ``rmtree``: an entry INSIDE a protected path is part of the state
+    that path protects, and an entry CONTAINING one takes it down with it. An
+    exact-equality guard sees neither — ``~/.claude`` is not ``~/.claude/projects``.
+    """
     raw = payload.get("disk_cache_allowlist") or []
     resolved: list[str] = []
     protected = {Path(p).expanduser().resolve() for p in _PROTECTED_DISK_PATHS}
@@ -262,7 +268,7 @@ def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
             real = candidate.resolve()
         except OSError:
             continue
-        if real in protected:
+        if any(_is_within(real, guarded) or _is_within(guarded, real) for guarded in protected):
             logger.warning("free_resources: refusing to purge protected path %s", entry)
             continue
         resolved.append(str(candidate))
@@ -648,6 +654,15 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: float = 60) -> str
     if result.returncode != 0:
         return None
     return result.stdout
+
+
+def _is_within(child: Path, ancestor: Path) -> bool:
+    """True iff *child* is the same as or nested under *ancestor* (resolved)."""
+    try:
+        resolved = ancestor.resolve()
+    except OSError:
+        return False
+    return resolved == child or resolved in child.parents
 
 
 __all__ = ["DiskSurvey", "FreePlan", "free_resources"]

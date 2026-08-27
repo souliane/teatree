@@ -1,14 +1,15 @@
 """Atomic claim + lease-renewal over ``Task`` — the #786 compare-and-swap shape.
 
 The per-instance claim/lease half of the task lifecycle: :func:`claim` takes an
-existing row (a fresh PENDING task or a reclaimable expired-lease orphan) and
-:func:`renew_lease` heartbeats this worker's live claim. Both are backend-agnostic
-conditional ``UPDATE`` compare-and-swaps — never a read-then-write — so they stay
-correct on the production SQLite backend where ``select_for_update`` is a silent
-no-op. Split out of ``task.py`` (which is at its module-health LOC cap) — the thin
-``Task`` methods delegate here. The functions take a ``Task`` and reach the model
-class through the instance, so this module needs no runtime import of ``Task`` and
-stays cycle-free (task.py imports it at module level).
+existing row (a fresh PENDING task or a reclaimable expired-lease orphan),
+:func:`renew_lease` heartbeats this worker's live claim, and
+:func:`complete_claimed` hands the claim back terminally. All three are
+backend-agnostic compare-and-swaps — never an unguarded read-then-write — so they
+stay correct on the production SQLite backend where ``select_for_update`` is a
+silent no-op. Split out of ``task.py`` (which is at its module-health LOC cap) —
+the thin ``Task`` methods delegate here. The functions take a ``Task`` and reach
+the model class through the instance, so this module needs no runtime import of
+``Task`` and stays cycle-free (task.py imports it at module level).
 """
 
 import logging
@@ -27,6 +28,16 @@ if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+_COMPLETION_FIELDS = (
+    "status",
+    "result_artifact_path",
+    "claimed_at",
+    "claimed_by",
+    "claimed_by_session",
+    "lease_expires_at",
+    "heartbeat_at",
+)
 
 #: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
 #: The renewal is an asyncio task on the same event loop the agent drives, so a starved box
@@ -217,6 +228,84 @@ def renew_lease(task: "Task", *, lease_seconds: int = 300) -> None:
     task.lease_expires_at = expires
     task.owner_pid = owner_pid
     task.owner_pid_namespace = owner_pid_namespace
+
+
+def claim_generation(task: "Task") -> str:
+    """The token naming ONE claim of *task*, re-minted by every (re)claim.
+
+    What a claimer hands back to terminalize the unit it was given. The
+    ``(claimed_by, claimed_by_session, claimed_at)`` triple is the same generation
+    :func:`renew_lease` and :func:`complete_claimed` guard on; rendering it as one
+    opaque string is what lets a caller that does NOT hold the claim-time instance
+    — an out-of-process ``tasks record-attempt`` reading the row fresh — still
+    prove which generation it was dispatched under. ``""`` for an unclaimed row.
+    """
+    if task.claimed_at is None:
+        return ""
+    return f"{task.claimed_by}|{task.claimed_by_session}|{task.claimed_at.isoformat()}"
+
+
+def _generation_holds(task: "Task") -> bool:
+    """Whether the live row still carries the claim generation *task* was taken under.
+
+    A guard read rather than a conditional ``UPDATE`` because the terminal write must
+    stay an instance ``save()``: the terminal-task ``post_save`` receiver is what closes
+    the session, and a queryset ``UPDATE`` would skip it. Both share the caller's
+    ``atomic`` block, which SQLite opens ``IMMEDIATE``, so the first writer holds
+    the reserved lock across the pair and the check cannot be overtaken.
+
+    It answers a question about the CALLER's instance, so it is only as truthful as
+    that instance's provenance: a long-held claim-time instance (the headless driver)
+    is compared against a generation that genuinely moved, while a freshly re-read row
+    would be compared against itself. An out-of-process caller therefore proves its
+    generation with :func:`claim_generation` at its own boundary before recording.
+    """
+    return (
+        type(task)
+        .objects.filter(
+            pk=task.pk,
+            claimed_by=task.claimed_by,
+            claimed_by_session=task.claimed_by_session,
+            claimed_at=task.claimed_at,
+        )
+        .exists()
+    )
+
+
+def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
+    """Terminalize *task* COMPLETED — refused once its claim generation moved on.
+
+    The completion half of the guard :func:`renew_lease` puts on the heartbeat, and
+    the other half of the same double-spend: a worker whose lease lapsed while a
+    rival reclaimed the row must not mark that row done — and auto-advance the
+    ticket — for work it no longer owns. That is the "racing ``complete()``"
+    :func:`renew_lease` already names as the harm.
+    """
+    if not _generation_holds(task):
+        raise LeaseLostError(describe_lease_loss(task))
+    task.status = task.Status.COMPLETED
+    task.result_artifact_path = result_artifact_path
+    task.claimed_at = None
+    task.claimed_by = ""
+    task.claimed_by_session = ""
+    task.lease_expires_at = None
+    task.heartbeat_at = None
+    task.save(update_fields=list(_COMPLETION_FIELDS))
+
+
+def fail_claimed(task: "Task", *, reason: str) -> None:
+    """Terminalize *task* FAILED — refused once its claim generation moved on.
+
+    The failure twin of :func:`complete_claimed`, and the half that was missing: a
+    lapsed worker landing a verdict on a unit a rival now owns burns the rival's
+    repair-loop budget and terminalizes work that is still running. ``Task.fail``
+    itself stays unguarded because its other callers hold no claim — an operator
+    cancel, a superseded phase, the stale-claim reaper — and are deliberate
+    outside terminalizations rather than a worker reporting its own run.
+    """
+    if not _generation_holds(task):
+        raise LeaseLostError(describe_lease_loss(task))
+    task.fail(reason=reason)
 
 
 def describe_lease_loss(task: "Task") -> str:

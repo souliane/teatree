@@ -713,3 +713,55 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
 def test_all_underscore_shapes_are_caught(joined: str) -> None:
     hits = banned_terms_tree_scan.scan_text(joined.format(b=SYNTH_BRAND), (SYNTH_BRAND,))
     assert [h[1].lower() for h in hits] == [SYNTH_BRAND]
+
+
+class TestTreeEnumerationFailsLoud:
+    """An unread tree is refused, never reported as a clean one.
+
+    ``git ls-files`` failing or timing out produced an empty file list, which the
+    scan reported as zero findings — the same answer a genuinely clean repo
+    gives. On a leak backstop that is the fail-open shape: the gate says "clean"
+    about a tree it never opened.
+    """
+
+    def test_a_timed_out_enumeration_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", f"BRAND = '{SYNTH_BRAND}'\n")
+
+        def _timeout(*_args: object, **_kwargs: object) -> object:
+            raise banned_terms_tree_scan.TimeoutExpired(["git", "ls-files"], 30)
+
+        monkeypatch.setattr(banned_terms_tree_scan, "run_allowed_to_fail", _timeout)
+        with pytest.raises(banned_terms_tree_scan.TreeEnumerationError):
+            banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,))
+
+    def test_an_errored_enumeration_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", f"BRAND = '{SYNTH_BRAND}'\n")
+
+        class _Failed:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: index file corrupt"
+
+        monkeypatch.setattr(banned_terms_tree_scan, "run_allowed_to_fail", lambda *_a, **_k: _Failed())
+        with pytest.raises(banned_terms_tree_scan.TreeEnumerationError):
+            banned_terms_tree_scan.git_tracked_files(repo)
+
+
+class TestSuffixlessTrackedFilesAreScanned:
+    """A tracked text file without a recognised suffix is still committed content.
+
+    The scanner kept an ALLOWLIST of text suffixes, so every tracked file without
+    one — ``Dockerfile``, ``NOTICE``, ``CODEOWNERS``, an extension-less script —
+    was silently invisible to the backstop whose whole job is to see what the
+    diff gate cannot.
+    """
+
+    @pytest.mark.parametrize("filename", ["Dockerfile", "NOTICE", "CODEOWNERS", "run-migrations"])
+    def test_a_committed_brand_in_a_suffixless_file_is_found(self, tmp_path: Path, filename: str) -> None:
+        repo = _repo_with(tmp_path, filename, f"MAINTAINER {SYNTH_BRAND}\n")
+        findings = banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,))
+        assert [f.path for f in findings] == [filename]
+
+    def test_a_binary_suffix_is_still_skipped(self, tmp_path: Path) -> None:
+        repo = _repo_with(tmp_path, "logo.png", f"binary-ish {SYNTH_BRAND}\n")
+        assert banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,)) == []

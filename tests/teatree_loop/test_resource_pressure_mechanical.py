@@ -108,6 +108,46 @@ class DiskCachePurgeTests(TestCase):
             free_resources({"resource": "disk", "disk_cache_allowlist": [str(projects)]})
         assert projects.exists(), "session memory must never be purged"
 
+    def _purge_guarded(self, *, protected: Path, allowlisted: Path) -> None:
+        with (
+            patch.object(mechanical_resources, "_PROTECTED_DISK_PATHS", (str(protected),)),
+            patch.object(mechanical_resources, "reclaim_disk", return_value=_fake_reclaim_report()),
+        ):
+            free_resources({"resource": "disk", "disk_cache_allowlist": [str(allowlisted)]})
+
+    def test_ancestor_of_a_protected_path_is_refused(self) -> None:
+        """``rmtree`` on an entry CONTAINING a protected path takes that path down with it."""
+        home = self.tmp / "claude"
+        projects = home / "projects"
+        _write_file(projects / "session.jsonl", 1024)
+        _write_file(home / "settings.json", 16)
+
+        self._purge_guarded(protected=projects, allowlisted=home)
+
+        assert projects.exists(), "an ancestor of session memory must never be purged"
+
+    def test_descendant_of_a_protected_path_is_refused(self) -> None:
+        """An entry INSIDE a protected path is part of the state that path protects."""
+        projects = self.tmp / "projects"
+        one_project = projects / "some-project"
+        _write_file(one_project / "session.jsonl", 1024)
+
+        self._purge_guarded(protected=projects, allowlisted=one_project)
+
+        assert one_project.exists(), "a subtree of session memory must never be purged"
+
+    def test_a_sibling_of_a_protected_path_is_still_purged(self) -> None:
+        """Anti-vacuous control: containment must not swallow an ordinary neighbouring cache."""
+        projects = self.tmp / "projects"
+        cache = self.tmp / "prek"
+        _write_file(projects / "session.jsonl", 1024)
+        _write_file(cache / "blob", 1024)
+
+        self._purge_guarded(protected=projects, allowlisted=cache)
+
+        assert not cache.exists()
+        assert projects.exists()
+
     def test_reclaimed_bytes_recorded_on_marker(self) -> None:
         cache = self.tmp / "pre-commit"
         _write_file(cache / "blob", _GIB // 2)

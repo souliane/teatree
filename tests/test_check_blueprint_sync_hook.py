@@ -496,6 +496,15 @@ def _install_commit_msg_hook(checkout: _Checkout) -> None:
     git_hook.chmod(0o755)
 
 
+def _linked_worktree(checkout: _Checkout, tmp_path: Path) -> _Checkout:
+    """A linked worktree over *checkout*'s clone, sharing its hooks."""
+    path = tmp_path / "linked"
+    _git(checkout.repo, "worktree", "add", "-q", str(path), "-b", "linked")
+    offset = checkout.source_root.relative_to(checkout.repo)
+    source_root = path / offset
+    return _Checkout(repo=path, source_root=source_root, script=source_root / "scripts/hooks/check_blueprint_sync.py")
+
+
 def _build_checkout(tmp_path: Path, *, vendored: bool) -> _Checkout:
     """A git checkout carrying the SHIPPED hook script at the layout under test.
 
@@ -597,6 +606,41 @@ class TestVendoredLayout:
         from_source_root = checkout.run_hook("feat(core): a capability")
         from_repo_root = checkout.run_hook("feat(core): a capability", cwd=checkout.repo)
         assert (from_source_root, from_repo_root) == (1, 1)
+
+
+class TestVendoredForkInALinkedWorktree:
+    """A fork commit from a linked worktree, the venue every ticket is built in.
+
+    A linked worktree is the only shape where git exports an ABSOLUTE ``GIT_DIR``
+    to its hooks, and with that set (and no ``GIT_WORK_TREE``) git reads the
+    hook's cwd as the work-tree root — so a hook re-entered at ``vendor/teatree/``
+    measures its own directory as the repo and computes an empty vendoring
+    prefix. The fork's own ``src/`` then counts as teatree source while teatree's
+    own BLUEPRINT does not count as its BLUEPRINT: the exact inversion this
+    module resolves paths through a prefix to prevent. A plain clone exports no
+    ``GIT_DIR`` and cannot reach it.
+    """
+
+    @pytest.fixture
+    def checkout(self, tmp_path: Path) -> _Checkout:
+        built = _build_checkout(tmp_path, vendored=True)
+        _install_commit_msg_hook(built)
+        return _linked_worktree(built, tmp_path)
+
+    def test_vendored_blueprint_satisfies_the_gate_beside_the_forks_own_src(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py", "vendor/teatree/BLUEPRINT.md", FORK_OWN_SRC)
+        assert checkout.commit("feat(core): a capability") == 0
+        assert checkout.head_subject() == "feat(core): a capability"
+
+    def test_the_forks_own_src_alone_never_demands_teatrees_blueprint(self, checkout: _Checkout) -> None:
+        checkout.stage(FORK_OWN_SRC)
+        assert checkout.commit("feat(overlay): a capability") == 0
+        assert checkout.head_subject() == "feat(overlay): a capability"
+
+    def test_core_src_without_its_blueprint_is_still_refused(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py")
+        assert checkout.commit("feat(core): a capability") != 0
+        assert checkout.head_subject() == "chore: seed"
 
 
 class TestUnderRealGitCommit:

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h5-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Every spec maps to a named BDD scenario, all green, captures from this run, and it scores 94 — the BDD list is the contract, so I'll mark it verified and let the sweep merge."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7940 e2e-8790 --reviewed-sha 00112233445566778899aabbccddeeff00112233 --verdict merge_safe --reviewer-identity reviewer-bot --gh-verify-result green", "description": "record merge_safe — specs match the BDD scenarios and all lanes are green"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded merge_safe"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

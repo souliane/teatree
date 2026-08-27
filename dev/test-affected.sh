@@ -38,7 +38,10 @@
 #   bash dev/test-affected.sh -- <pytest arg> # forward extra args to pytest
 #   PYTEST_XDIST_AUTO_NUM_WORKERS=2 bash dev/test-affected.sh   # bound a FULL run's RAM
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # bash 3.2 (the macOS system bash) treats "${ARR[@]}" on an EMPTY array as an
 # unbound variable under `set -u`, so every no-argument caller -- which is how

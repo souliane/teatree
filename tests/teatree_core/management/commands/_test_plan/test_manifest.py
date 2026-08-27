@@ -7,13 +7,14 @@ paths that need no on-disk media (bad JSON, empty/absent captures, unknown
 template) plus a real-file happy path under ``tmp_path`` (Unit 22 split).
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
 from teatree.core.management.commands._test_plan import state as state_mod
-from teatree.core.management.commands._test_plan.manifest import parse_manifest, validate_template
+from teatree.core.management.commands._test_plan.manifest import SideManifest, parse_manifest, validate_template
 from teatree.core.management.commands._test_plan.state import DEFAULT_TEMPLATE
 
 # A minimal valid PNG (8-byte signature + IHDR) that ``media_kind`` recognises.
@@ -93,3 +94,21 @@ class TestParseManifestHappyPath:
         manifest = parse_manifest(raw)
         assert manifest.local.present is True
         assert manifest.local.workflows["wf"].images == (img,)
+
+
+class TestSideManifestFieldOrder:
+    """The deleted duplicate is recorded only by the generated field order.
+
+    ``ran_at`` was declared twice and every caller passes it by keyword, so dropping
+    the earlier declaration instead reorders the positional signature against the
+    class docstring, silently.
+    """
+
+    def test_the_declared_order_is_the_documented_one(self) -> None:
+        assert [field.name for field in dataclasses.fields(SideManifest)] == [
+            "present",
+            "commits",
+            "ran_at",
+            "missing_on_dev",
+            "workflows",
+        ]

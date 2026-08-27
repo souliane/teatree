@@ -732,12 +732,38 @@ class TestF8PipelineAutoMergeBypass:
     @pytest.mark.parametrize(
         "command",
         [
+            # git's own global options sit between the program word and the
+            # subcommand, so a contiguous `git push` match never saw these.
+            "git -c push.default=simple push -o merge_request.merge_when_pipeline_succeeds",
+            "git -C ../worktree push -o merge_request.merge_when_pipeline_succeeds",
+            "git --no-pager push --push-option=merge_request.merge_when_pipeline_succeeds",
+            # The two option spellings git accepts that the `-o `/`--push-option=`
+            # pair did not cover (verified against git 2.50.1).
+            "git push --push-option merge_request.merge_when_pipeline_succeeds origin HEAD",
+            "git push -omerge_request.merge_when_pipeline_succeeds origin HEAD",
+        ],
+    )
+    def test_f8_every_valid_spelling_of_the_auto_merge_push_is_blocked(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is True, f"auto-merge push must be blocked: {command!r}"
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "git push origin main",
             "git push -u origin feature",
             "git push --force-with-lease origin feature",
             "git push -o merge_request.create origin feature",
             "git push -o merge_request.draft origin feature",
             'git push -o "merge_request.create" origin feature',
+            "git -C ../worktree push origin HEAD",
+            "git push --push-option merge_request.create origin feature",
+            "git push -omerge_request.draft origin feature",
         ],
     )
     def test_f8_normal_push_not_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
