@@ -168,7 +168,7 @@ class TestReplyTransportAfterReceiptDm:
             idempotency_key="slack:ar-1:reply",
         )
         assert dispatch.status == ReplyDispatch.Status.SENT
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:C-eng/t1:post_in_thread")
+        ping = BotPing.objects.get(idempotency_key__startswith="on_behalf_post:C-eng/t1:post_in_thread")
         assert ping.status == BotPing.Status.SENT
         assert "hello team" in ping.text
 
@@ -201,7 +201,7 @@ class TestReplyTransportAfterReceiptDm:
         )
         NoopReplier().redeliver(dispatch)
 
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:C-eng/t9:post_comment")
+        ping = BotPing.objects.get(idempotency_key__startswith="on_behalf_post:C-eng/t9:post_comment")
         assert ping.status == BotPing.Status.SENT
         assert "retry body" in ping.text
 

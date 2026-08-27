@@ -17,9 +17,11 @@ prints findings and exits non-zero.
 """
 
 import re
-import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from teatree.utils import work_tree
 
 #: In scope: ``.spec.ts`` under any ``e2e/`` dir (top-level or overlay-nested).
 _SPEC_PATH_RE = re.compile(r"(?:^|/)e2e/.*\.spec\.ts$")
@@ -72,37 +74,20 @@ def scan_spec_lines(path: str, lines: list[str]) -> list[Finding]:
     return findings
 
 
-def scan_specs(paths: list[str], *, root: Path) -> list[Finding]:
-    """Scan each in-scope spec path under ``root``; missing files are skipped."""
+def scan_specs(paths: list[str], *, read: Callable[[str], str]) -> list[Finding]:
+    """Scan each in-scope spec path, sourcing its text through *read*.
+
+    *read* must FAIL on a path it cannot produce rather than return nothing: a
+    staged name the source cannot resolve means the name set and the tree
+    disagree — the vendored-project re-rooting :mod:`teatree.utils.work_tree`
+    repairs — and skipping it would report clean having scanned zero specs.
+    """
     findings: list[Finding] = []
     for path in paths:
         if not is_spec_path(path):
             continue
-        file_path = root / path
-        try:
-            text = file_path.read_text(encoding="utf-8")
-        except (FileNotFoundError, IsADirectoryError):
-            continue
-        findings.extend(scan_spec_lines(path, text.splitlines()))
+        findings.extend(scan_spec_lines(path, read(path).splitlines()))
     return findings
-
-
-def _run_git(cmd: list[str]) -> str:
-    """Run a git query, FAIL-LOUD on a non-zero exit.
-
-    ``check=False`` would let a git failure return an empty string, which
-    ``main()`` reads as "no staged specs" and silently exits 0 — the gate
-    fake-green. A ``CalledProcessError`` instead crashes with a diagnostic.
-    """
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
-    return result.stdout
-
-
-def _staged_spec_paths() -> list[str]:
-    out = _run_git(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"])
-    return [line for line in out.splitlines() if line and is_spec_path(line)]
 
 
 def _format_failure(findings: list[Finding]) -> str:
@@ -117,10 +102,11 @@ def _format_failure(findings: list[Finding]) -> str:
 
 
 def main() -> int:
-    paths = _staged_spec_paths()
+    tree = work_tree.resolve(Path.cwd())
+    paths = [path for path in tree.staged_names("--diff-filter=ACMR") if is_spec_path(path)]
     if not paths:
         return 0
-    findings = scan_specs(paths, root=Path.cwd())
+    findings = scan_specs(paths, read=tree.staged_text)
     if not findings:
         return 0
     print(_format_failure(findings))

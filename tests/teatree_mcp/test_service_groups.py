@@ -11,7 +11,7 @@ from django.test import TestCase
 from mcp.server.mcpserver import MCPServer
 
 from teatree.backends.types import Service
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from teatree.mcp.server import _SERVICE_GROUPS
 from teatree.mcp.services_forge import register_github, register_gitlab
@@ -81,6 +81,7 @@ _REGISTRAR_BY_SERVICE = {
 class _ServiceOverlay:
     def __init__(self, *services: Service) -> None:
         self.config = OverlayConfig(required_third_party_services=frozenset(services))
+        self.connectors = OverlayConnectors()
 
 
 def _tools_for(*services: Service) -> set[str]:

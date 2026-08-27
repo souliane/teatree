@@ -1,58 +1,76 @@
-"""Tests for ``DockerAliasInstaller`` — the ``t3 setup`` alias-wiring unit (#3232).
+"""Tests for ``retire_alias`` — the ``t3 setup`` alias-retirement unit (#3232).
 
-``t3 setup`` wires the containerized ``t3`` alias into the operator's shell rc
-files. It manages ``~/.bashrc`` always and ``~/.zshrc`` only when it exists, and
-no-ops inside a container (there the container IS the CLI). Best-effort — an
-unwritable rc WARNs and never aborts setup.
+A ``PATH`` launcher reaches every shell, so the alias a previous ``t3 setup``
+wrote is removed rather than refreshed. The rc files carry the operator's own
+functions, so the assertion that matters is that everything outside the fenced
+block survives byte for byte.
 """
 
 from pathlib import Path
-from unittest.mock import patch
 
-from teatree.cli.setup.docker_alias import DockerAliasInstaller
-from teatree.docker.workflow import ALIAS_MARKER_BEGIN, alias_line
+from teatree.cli.setup.docker_alias import retire_alias
+from teatree.docker.workflow import ALIAS_MARKER_BEGIN, ALIAS_MARKER_END
+
+_ABOVE = """# the operator's own profile
+greet() {
+    echo hello
+}
+
+"""
+_BELOW = """export EDITOR=emacs
+farewell() {
+    echo bye
+}
+"""
+_BLOCK = f'{ALIAS_MARKER_BEGIN}\nalias t3="/somewhere/deploy/t3"\n{ALIAS_MARKER_END}\n'
 
 
-class TestTargetRcFiles:
-    def test_bashrc_always_zshrc_only_when_present(self, tmp_path: Path) -> None:
-        installer = DockerAliasInstaller(tmp_path, home=tmp_path)
-        assert installer.target_rc_files() == [tmp_path / ".bashrc"]
-
-        (tmp_path / ".zshrc").write_text("", encoding="utf-8")
-        assert installer.target_rc_files() == [tmp_path / ".bashrc", tmp_path / ".zshrc"]
+def _rc_with_block(home: Path, name: str) -> Path:
+    home.mkdir(parents=True, exist_ok=True)
+    rc = home / name
+    rc.write_text(_ABOVE + _BLOCK + _BELOW, encoding="utf-8")
+    return rc
 
 
-class TestInstall:
-    def test_writes_alias_into_bashrc_on_a_host(self, tmp_path: Path) -> None:
-        repo = tmp_path / "clone"
-        home = tmp_path / "op_home"
-        home.mkdir()
+class TestRetireAlias:
+    def test_removes_the_block_from_every_rc_leaving_user_content_intact(self, tmp_path: Path) -> None:
+        home = tmp_path / "rc-home"
+        bashrc = _rc_with_block(home, ".bashrc")
+        zshrc = _rc_with_block(home, ".zshrc")
         messages: list[str] = []
-        with patch("teatree.cli.setup.docker_alias.is_running_in_container", return_value=False):
-            DockerAliasInstaller(repo, home=home).install(echo=messages.append)
 
-        bashrc = home / ".bashrc"
-        assert ALIAS_MARKER_BEGIN in bashrc.read_text(encoding="utf-8")
-        assert alias_line(repo) in bashrc.read_text(encoding="utf-8")
-        assert any("Installed containerized t3 alias" in m for m in messages)
+        retire_alias(echo=messages.append, home=home)
 
-    def test_noop_inside_container(self, tmp_path: Path) -> None:
-        home = tmp_path / "op_home"
+        assert bashrc.read_text(encoding="utf-8") == _ABOVE + _BELOW
+        assert zshrc.read_text(encoding="utf-8") == _ABOVE + _BELOW
+        assert [m for m in messages if m.startswith("OK")] == [
+            f"OK    Removed the superseded containerized t3 alias from {rc} — the launcher replaces it."
+            for rc in (bashrc, zshrc)
+        ]
+
+    def test_is_silent_when_no_rc_carries_the_block(self, tmp_path: Path) -> None:
+        home = tmp_path / "rc-home"
         home.mkdir()
+        (home / ".bashrc").write_text(_ABOVE, encoding="utf-8")
         messages: list[str] = []
-        with patch("teatree.cli.setup.docker_alias.is_running_in_container", return_value=True):
-            DockerAliasInstaller(tmp_path, home=home).install(echo=messages.append)
 
-        assert not (home / ".bashrc").exists()
-        assert any("Containerized runtime" in m for m in messages)
+        retire_alias(echo=messages.append, home=home)
 
-    def test_warns_but_does_not_raise_when_rc_unwritable(self, tmp_path: Path) -> None:
-        repo = tmp_path / "clone"
-        home = tmp_path / "op_home"
-        # A .bashrc that is a directory makes the write fail -> UNWRITABLE, not a raise.
+        assert messages == []
+        assert (home / ".bashrc").read_text(encoding="utf-8") == _ABOVE
+
+    def test_never_creates_an_rc_file(self, tmp_path: Path) -> None:
+        home = tmp_path / "rc-home"
         home.mkdir()
-        (home / ".bashrc").mkdir()
+        retire_alias(echo=lambda _line: None, home=home)
+        assert list(home.iterdir()) == []
+
+    def test_an_unwritable_rc_warns_and_setup_continues(self, tmp_path: Path) -> None:
+        home = tmp_path / "rc-home"
+        home.mkdir()
+        (home / ".bashrc").write_bytes(b"\xff\xfe not utf-8")
         messages: list[str] = []
-        with patch("teatree.cli.setup.docker_alias.is_running_in_container", return_value=False):
-            DockerAliasInstaller(repo, home=home).install(echo=messages.append)
-        assert any("WARN" in m and "not writable" in m for m in messages)
+
+        retire_alias(echo=messages.append, home=home)
+
+        assert any(m.startswith("WARN") and "by hand" in m for m in messages)

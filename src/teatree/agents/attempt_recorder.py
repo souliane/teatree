@@ -635,5 +635,5 @@ def _record_failure(
         result=result or {},
         **usage_fields(usage),
     )
-    task.fail(reason=error)
+    task.fail_claimed(reason=error)
     return attempt

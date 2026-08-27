@@ -17,8 +17,12 @@ a finding and exits non-zero.
 """
 
 import re
-import subprocess
 from dataclasses import dataclass
+from pathlib import Path
+
+from teatree.utils import work_tree
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _CLI_INIT_PATH = "src/teatree/cli/__init__.py"
 _TICKET_MODEL_PATH = "src/teatree/core/models/ticket.py"
@@ -46,34 +50,29 @@ class Finding:
         )
 
 
-def _run_git(cmd: list[str]) -> str:
-    """Run a git query, FAIL-LOUD on a non-zero exit.
+def _tree() -> work_tree.WorkTree:
+    """This project's own work tree, FAIL-LOUD when git cannot name it.
 
-    ``check=False`` would let a git failure (corrupt index, runner misconfig)
-    return an empty string, which ``main()`` reads as "no staged changes" and
-    silently exits 0 — every doc-update trigger skipped, the gate fake-green.
-    A ``CalledProcessError`` instead crashes the hook with a visible diagnostic.
+    Every path literal above (``src/teatree/...``, ``README.md``) is relative to
+    THIS project's root, so the staged names must be too. Read straight from a
+    bare ``git diff`` they are relative to the work-tree top, which is a
+    different directory whenever the project is vendored inside a fork — and
+    then no trigger prefix ever matches and the gate passes having detected
+    nothing. :mod:`teatree.utils.work_tree` is what re-roots them.
     """
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
-    return result.stdout
+    return work_tree.resolve(_REPO_ROOT)
 
 
 def _staged_diff() -> str:
-    return _run_git(["git", "diff", "--cached", "--diff-filter=ACMR", "-U0"])
+    return _tree().staged_diff("--diff-filter=ACMR", "-U0")
 
 
 def _staged_files() -> list[str]:
-    return [
-        line for line in _run_git(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"]).splitlines() if line
-    ]
+    return _tree().staged_names("--diff-filter=ACMR")
 
 
 def _added_files() -> list[str]:
-    return [
-        line for line in _run_git(["git", "diff", "--cached", "--name-only", "--diff-filter=A"]).splitlines() if line
-    ]
+    return _tree().staged_names("--diff-filter=A")
 
 
 def _added_lines_for_path(diff: str, target_path: str) -> list[str]:

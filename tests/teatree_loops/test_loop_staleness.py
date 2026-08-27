@@ -53,6 +53,7 @@ _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 # module import, so a patch on ``teatree.loop.loop_state_db`` resolves fine and still
 # never reaches the read — a dead mock that only LOOKS like it stubs the planes.
 _HOLDS_SEAM = "teatree.loops.enable_verdict.control_planes_in_db"
+_RUNNER_SEAM = "teatree.loops.timer_chains.loop_runner_enabled"
 
 
 def _mini(name: str, *, off_live_tick: bool = False) -> MiniLoop:
@@ -82,6 +83,13 @@ def _loop(
         delay_seconds=cadence,
         last_run_at=None if ran_ago is None else timezone.now() - ran_ago,
     )
+
+
+def _daily_loop(name: str, *, cadence: int, at: dt.time, ran_ago: dt.timedelta) -> Loop:
+    """An interval loop switched to a wall-clock schedule — it KEEPS its fallback interval."""
+    row = _loop(name, cadence=cadence, ran_ago=ran_ago)
+    Loop.objects.filter(pk=row.pk).update(daily_at=at)
+    return row
 
 
 def _mode(name: str = "present", *, entries: dict[str, bool] | None = None) -> ResolvedMode:
@@ -159,6 +167,26 @@ class TestStaleLoops(_LoopTableCase):
         _loop("every_tick", cadence=None, ran_ago=dt.timedelta(days=1))
         with patch(_REGISTRY_SEAM, return_value=(_mini("every_tick"),)):
             assert stale_loops(timezone.now()) == []
+
+    def test_daily_loop_is_not_judged_against_the_interval_daily_at_overrides(self) -> None:
+        # A daily loop keeps the ``delay_seconds`` its script-loop constraint forces it to
+        # carry, but ``daily_at`` decides when it runs. Measuring 3x that dead interval
+        # reports an on-schedule daily loop as an unexplained STALE fault every pass —
+        # the "gate people learn to ignore" this module's docstring refuses to be.
+        _daily_loop("news", cadence=60, at=dt.time(8, 0), ran_ago=dt.timedelta(hours=5))
+        with patch(_REGISTRY_SEAM, return_value=(_mini("news"),)):
+            assert stale_loops(timezone.now()) == []
+
+    def test_daily_loop_is_not_counted_in_the_frozen_fleet_denominator(self) -> None:
+        # ``considered`` and ``stale`` must come from the same set, or one daily row
+        # inflates the denominator and a genuinely frozen fleet stops reporting frozen.
+        _daily_loop("news", cadence=60, at=dt.time(8, 0), ran_ago=dt.timedelta(hours=5))
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
+        registry = (_mini("news"), _mini("tickets"))
+        with patch(_REGISTRY_SEAM, return_value=registry), patch(_ADMITTED_SEAM, return_value=[]):
+            health = loop_health(timezone.now())
+        assert health.considered == 1
+        assert health.frozen_fleet
 
     def test_stale_loops_are_sorted_by_name(self) -> None:
         for name in ("ship", "dispatch", "tickets"):
@@ -583,3 +611,77 @@ class TestSuppressionStaysOnTheNarrowVerdict(_LoopTableCase):
             health = loop_health(timezone.now())
         assert [loop.name for loop in health.stale] == ["tickets"]
         assert health.unexplained == ()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestKillSwitchIsAMeasuredCause(_LoopTableCase):
+    """The kill-switch stops every chain BEFORE admission, so the verdict must measure it.
+
+    ``loop_timer`` step 0 returns ``halted`` while ``loop_runner_enabled`` is OFF and
+    never re-enqueues a successor, while ``ensure_loop_timers`` — which the switch does
+    not gate — re-heads each drained chain every five minutes. The fleet therefore keeps
+    a full RUNNING -> SUCCESSFUL heartbeat and does no work, and the mode is untouched:
+    naming it sends the operator to ``t3 loop preset``, which stopped nothing.
+    """
+
+    def _health(
+        self,
+        *,
+        registry: tuple[MiniLoop, ...],
+        runner_on: bool,
+        admitted: list[str] | None = None,
+        mode: ResolvedMode | None = None,
+    ) -> LoopHealth:
+        with (
+            patch(_REGISTRY_SEAM, return_value=registry),
+            patch(_ADMITTED_SEAM, return_value=[loop.name for loop in registry] if admitted is None else admitted),
+            patch(_MODE_SEAM, return_value=mode or _mode()),
+            patch(_HOLDS_SEAM, return_value=(set(), {})),
+            patch(_RUNNER_SEAM, return_value=runner_on),
+        ):
+            return loop_health(timezone.now())
+
+    def test_a_frozen_fleet_under_an_off_kill_switch_names_the_kill_switch(self) -> None:
+        # The box's exact shape: every loop ADMITTED, and not one has ticked — so the
+        # mode demonstrably is not what stopped them.
+        names = ("tickets", "dispatch")
+        for name in names:
+            _loop(name, ran_ago=dt.timedelta(hours=7))
+        health = self._health(registry=tuple(_mini(name) for name in names), runner_on=False)
+        rendered = "\n".join(health.lines())
+        assert health.frozen_fleet
+        assert not health.ok
+        assert "loop_runner_enabled" in rendered
+        assert "loop preset auto" not in rendered
+
+    def test_a_frozen_fleet_with_the_kill_switch_on_still_names_the_mode(self) -> None:
+        # The control: the mode incident this cause line was written for must survive.
+        names = ("tickets", "dispatch")
+        for name in names:
+            _loop(name, ran_ago=dt.timedelta(hours=7))
+        health = self._health(
+            registry=tuple(_mini(name) for name in names),
+            runner_on=True,
+            admitted=[],
+            mode=_mode(name="offline", entries=dict.fromkeys(names, False)),
+        )
+        rendered = "\n".join(health.lines())
+        assert health.frozen_fleet
+        assert "'offline'" in rendered
+        assert "loop preset auto" in rendered
+        assert "loop_runner_enabled" not in rendered
+
+    def test_the_json_carries_the_kill_switch_the_verdict_measured(self) -> None:
+        _loop("tickets", ran_ago=dt.timedelta(hours=7))
+        payload = self._health(registry=(_mini("tickets"),), runner_on=False).as_json()
+        assert payload["loop_runner_enabled"] is False
+        assert payload["frozen_fleet"] is True
+
+    def test_an_off_kill_switch_alone_does_not_fail_a_ticking_fleet(self) -> None:
+        # Anti-vacuity: the switch is a sanctioned operator action, so it is a finding
+        # only once the fleet it stopped is provably dead. A gate that reddens the
+        # moment the switch is flipped is one people learn to ignore.
+        _loop("tickets", ran_ago=dt.timedelta(seconds=30))
+        health = self._health(registry=(_mini("tickets"),), runner_on=False)
+        assert health.ok
+        assert "FAIL" not in "\n".join(health.lines())

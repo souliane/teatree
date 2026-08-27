@@ -268,7 +268,14 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
 
     Returns an outcome tag: ``"simple"`` — answered & whole unit stamped;
     ``"needs_work"`` — Stage B bailed (delegate); ``"retry"`` —
-    post/readback failed, unit left unanswered for next cycle.
+    post/readback failed (or a rival cycle owns the unit), left for next cycle.
+
+    Claim -> post -> release-on-failure, the same discipline
+    :func:`_handle_noted` and :func:`_orchestrate` hold: the unit's CAS is taken
+    BEFORE the post, so a concurrent cycle that lost it cannot post a second copy
+    of the same answer. It is released on any post/read-back failure, and the
+    thread-root dedup below then finds a reply that DID land, so a released unit
+    is re-stamped rather than answered twice.
 
     The thread ROOT (resolved from the user-message ts via #2061's
     helper) is the single key used for both the pre-post dedup and the
@@ -282,15 +289,18 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
     answer = build_simple_answer(unit.lead)
     if answer is None or answer == NEEDS_WORK_SENTINEL:
         return "needs_work"
-    thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
-    if bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root):
-        _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE)
-        _react_done(backend, unit)
-        return "simple"
-    backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
-    if not verify_reply_visible(backend, channel=unit.channel, thread_root=thread_root):
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE):
         return "retry"
-    _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE)
+    try:
+        thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
+        if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root):
+            backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
+            if not verify_reply_visible(backend, channel=unit.channel, thread_root=thread_root):
+                _unmark_unit_loop_replied(unit)
+                return "retry"
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
     _react_done(backend, unit)
     return "simple"
 
@@ -320,10 +330,12 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
     created — the owner's instruction, and the reason a repeated report of the
     same problem cannot mint a rival lane in a shared checkout.
 
-    Two failure paths, both retry-safe. A coverage report that cannot be
-    delivered releases the claim, so the unit is re-read next cycle and the
-    owner is never left with silence. A dispatch whose 🔧 reaction fails also
-    releases the claim — and the retry finds the lane it just minted
+    EVERY failure path under the claim releases it, because the claim is what
+    removes the unit from ``loop_unreplied()``: a coverage lookup that raises, a
+    dispatch that dies part-way through its Ticket/Session/Task writes, an
+    undeliverable coverage report, or a failed 🔧 reaction would each otherwise
+    retire the owner's message with no lane and no reply. Every one is retry-safe —
+    the retry finds the lane it just minted
     (:attr:`~teatree.loop.slack_answer.orchestration.CoverageKind.THIS_MESSAGE`),
     so it re-reacts instead of dispatching twice.
 
@@ -334,6 +346,17 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
     """
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
         return
+    try:
+        _dispatch_or_report(backend, unit, reading, report)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
+
+
+def _dispatch_or_report(
+    backend: MessagingBackend, unit: _Unit, reading: InboundReading, report: SlackAnswerReport
+) -> None:
+    """The claimed body of :func:`_orchestrate` — dispatch ONE lane, or name the covering one."""
     coalesced = tuple(row.slack_ts for row in unit.rows)
     coverage = find_coverage(
         fingerprint=work_fingerprint(reading, unit.text),
@@ -360,11 +383,7 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
                 text=unit.text,
             ),
         )
-    try:
-        backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
-    except Exception:
-        _unmark_unit_loop_replied(unit)
-        raise
+    backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
     report.dispatched += 1
 
 

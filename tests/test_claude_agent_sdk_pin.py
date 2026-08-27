@@ -167,9 +167,11 @@ def _automated_uv_tool_installs(
 
     Scoped to the build/deploy/CI surfaces, where a missing override is not advice a human
     can correct but a hard build failure. A command counts once it names a target —
-    ``--editable <path>`` or ``--from git+…`` — which is what separates an invocation from
-    prose mentioning one. Backslash continuations are joined first, so a flag on the next
-    line still belongs to the same command.
+    ``--editable <path>`` or ``--from git+…`` — and once it is on a line the shell, the
+    Dockerfile or the YAML actually runs: a ``#`` comment quoting the invocation is prose
+    on all three surfaces, and one explaining why the flag is required read as a site
+    missing it. Backslash continuations are joined after the comment lines are dropped,
+    so a flag on the next line still belongs to the same command.
 
     *command_flag* / *env_var* are the two ways one setting can reach an install — on the
     command, or ambiently through the image ENV. They are parameters because the override
@@ -193,7 +195,8 @@ def _automated_uv_tool_installs(
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            joined = text.replace("\\\n", " ")
+            runnable = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+            joined = runnable.replace("\\\n", " ")
             for match in _RUNNABLE_UV_TOOL_INSTALL.finditer(joined):
                 flagged = command_flag in match.group(0) or f"{env_var}=" in joined
                 installs.append((path.relative_to(_REPO_ROOT).as_posix(), "flagged" if flagged else match.group(0)))

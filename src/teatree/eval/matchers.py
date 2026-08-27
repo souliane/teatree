@@ -32,6 +32,26 @@ class CallPattern:
     regex: str
 
 
+@dataclasses.dataclass(frozen=True)
+class ArgPattern:
+    """An ``(arg_path, regex)`` predicate on one argument of the call under test."""
+
+    arg_path: str
+    regex: str
+
+
+def without_exempt_calls(run: EvalRun, exempt: ArgPattern) -> EvalRun:
+    """Return *run* with every tool call satisfying *exempt* dropped.
+
+    Applied before a negative assertion, this is the ``unless`` clause: the excused
+    calls are invisible to the negative, so "forbidden UNLESS the same call also does
+    Y" needs no second matcher kind.
+    """
+    pattern = re.compile(exempt.regex)
+    kept = tuple(call for call in run.tool_calls if not pattern.search(_as_text(_get_arg(call, exempt.arg_path)) or ""))
+    return dataclasses.replace(run, tool_calls=kept)
+
+
 def _get_arg(call: EvalToolCall, arg_path: str) -> object:
     value: object = call.input
     for part in arg_path.split("."):

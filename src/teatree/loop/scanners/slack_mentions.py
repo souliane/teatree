@@ -85,7 +85,7 @@ class SlackMentionsScanner:
         mentions = self.backend.fetch_mentions(since=cursors.get("mentions", ""))
         dms = self.backend.fetch_dms(since=cursors.get("dms", ""))
 
-        drained_any = self._drain_queue_into(mentions, dms)
+        drained_any, foreign = self._drain_queue_into(mentions, dms)
 
         signals: list[ScanSignal] = []
         for event in mentions:
@@ -126,30 +126,42 @@ class SlackMentionsScanner:
             # never retries them).
             from teatree.backends.slack.receiver import commit_drain  # noqa: PLC0415 — deferred: loaded at tick time
 
-            commit_drain()
+            commit_drain(retain=foreign)
         return signals
 
-    @staticmethod
-    def _drain_queue_into(mentions: list[RawAPIDict], dms: list[RawAPIDict]) -> bool:
-        """Fold queued Socket Mode events into the fetched mention/DM lists.
+    def _drain_queue_into(
+        self,
+        mentions: list[RawAPIDict],
+        dms: list[RawAPIDict],
+    ) -> tuple[bool, list[dict]]:
+        """Fold this overlay's queued Socket Mode events into the mention/DM lists.
 
-        Returns whether the JSONL queue yielded anything, so :meth:`scan`
-        commits the backing file only after persisting. ``reaction_added``
-        events land in ``slack-reactions.jsonl`` (drained by
-        ``SlackReviewIntentScanner``, #1047) and never reach here.
+        Returns whether the JSONL queue yielded anything (so :meth:`scan`
+        commits the backing file only after persisting) plus the records
+        belonging to a SIBLING overlay, which :meth:`scan` hands back to the
+        queue for that overlay's own scanner. ``reaction_added`` events land in
+        ``slack-reactions.jsonl`` (drained by ``SlackReviewIntentScanner``,
+        #1047) and never reach here.
         """
-        from teatree.backends.slack.receiver import drain_event_queue  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.backends.slack.receiver import (  # noqa: PLC0415 — deferred: loaded at tick time
+            drain_event_queue,
+            record_is_owned_by,
+        )
 
         drained_any = False
+        foreign: list[dict] = []
         for queued in drain_event_queue():
             drained_any = True
+            if not record_is_owned_by(queued, self.overlay):
+                foreign.append(queued)
+                continue
             event = queued.get("event", {})
             event_type = event.get("type", "")
             if event_type == "app_mention":
                 mentions.append(event)
             elif event_type == "message" and event.get("channel_type", "") == "im":
                 dms.append(event)
-        return drained_any
+        return drained_any, foreign
 
     def _record_review_intent(self, event: RawAPIDict) -> None:
         """Persist a ``ReviewAssignment`` row and post ``:eyes:`` for MR-bearing mentions.

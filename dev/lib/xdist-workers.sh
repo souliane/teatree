@@ -20,6 +20,12 @@
 # to re-tune the bound without touching the lanes.
 : "${T3_MB_PER_TEST_WORKER:=512}"
 
+# Withheld from the worker budget before it is divided. The pytest PARENT, Django's
+# per-worker import and the container floor are not free, so budgeting the whole cap to
+# workers overshoots it: measured on a 2048 MiB cap, 4 workers peaked at 2050 MiB and the
+# cgroup killed the push gate, while 2 workers sat at 1305 MiB (#4589).
+: "${T3_MB_PARENT_RESERVE:=512}"
+
 # Injectable for tests; the defaults are the real cgroup v2 / v1 paths.
 : "${T3_CGROUP_MEMORY_MAX_V2:=/sys/fs/cgroup/memory.max}"
 : "${T3_CGROUP_MEMORY_MAX_V1:=/sys/fs/cgroup/memory/memory.limit_in_bytes}"
@@ -54,6 +60,20 @@ _t3_cgroup_memory_cap_bytes() {
     echo "$raw"
 }
 
+# Leave the chosen bound beside the pre-push hook. A lane the cgroup kills takes its own
+# buffered output with it, so `t3 push` can otherwise only report that the gate "printed
+# nothing" and guess at an OOM cap; this file outlives the kill and lets
+# `teatree.core.forge_push` name the numbers instead (#4589). Best-effort by design —
+# a lane must never fail for want of a diagnostic.
+_t3_record_bound() {
+    local gitdir
+    gitdir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+    [ -w "$gitdir" ] || return 0
+    printf 'workers=%s cap_mib=%s reserve_mib=%s per_worker_mib=%s\n' \
+        "$1" "$2" "$T3_MB_PARENT_RESERVE" "$T3_MB_PER_TEST_WORKER" >|"$gitdir/t3-xdist-bound" || true
+    return 0
+}
+
 # Default PYTEST_XDIST_AUTO_NUM_WORKERS from the cgroup cap. Always returns 0 — a box
 # with no cgroup, an unreadable cap, or an uncapped limit is simply left as it is.
 bound_xdist_workers_to_memory() {
@@ -64,11 +84,18 @@ bound_xdist_workers_to_memory() {
     local cap
     cap=$(_t3_cgroup_memory_cap_bytes) || return 0
 
-    local allowed=$((cap / 1024 / 1024 / T3_MB_PER_TEST_WORKER))
+    local cap_mib=$((cap / 1024 / 1024))
+    local budget=$((cap_mib - T3_MB_PARENT_RESERVE))
+    local allowed=0
+    if [ "$budget" -ge "$T3_MB_PER_TEST_WORKER" ]; then
+        allowed=$((budget / T3_MB_PER_TEST_WORKER))
+    fi
     if [ "$allowed" -lt 1 ]; then
         # A cap below one worker's footprint still needs ONE worker: 0 would leave the
-        # lane with no runner at all, turning a tight box into a wedged one.
+        # lane with no runner at all, turning a tight box into a wedged one. Saying so is
+        # the point — a silent clamp reads exactly like a bound that fits.
         allowed=1
+        echo "=== WARNING: cgroup memory cap ${cap_mib} MiB less a ${T3_MB_PARENT_RESERVE} MiB parent reserve cannot afford one ${T3_MB_PER_TEST_WORKER} MiB worker — running 1 anyway, which may still be OOM-killed ==="
     fi
 
     local cores
@@ -83,6 +110,7 @@ bound_xdist_workers_to_memory() {
     fi
 
     export PYTEST_XDIST_AUTO_NUM_WORKERS="$allowed"
-    echo "=== bounding pytest to ${allowed} worker(s): cgroup memory cap $((cap / 1024 / 1024)) MiB at ${T3_MB_PER_TEST_WORKER} MiB/worker (${cores} cores) ==="
+    echo "=== bounding pytest to ${allowed} worker(s): cgroup memory cap ${cap_mib} MiB less a ${T3_MB_PARENT_RESERVE} MiB parent reserve at ${T3_MB_PER_TEST_WORKER} MiB/worker (${cores} cores) ==="
+    _t3_record_bound "$allowed" "$cap_mib"
     return 0
 }

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.apps import apps
 from django.db import models, transaction
@@ -10,6 +10,9 @@ from teatree.core.managers import SessionManager
 from teatree.core.modelkit.phases import CANONICAL_PHASES, normalize_phase
 from teatree.core.models.errors import QualityGateError
 from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,24 @@ class Session(models.Model):
 
     def __str__(self) -> str:
         return str(self.agent_id or f"session-{self.pk}")
+
+    def save(
+        self,
+        force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        force_update: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        using: str | None = None,
+        update_fields: "Iterable[str] | None" = None,
+    ) -> None:
+        # A blank overlay is indistinguishable from a legacy pre-multi-overlay row, which is
+        # why `overlay_scope_q` had to admit such a session for EVERY overlay to stay visible.
+        if not self.overlay and self.ticket_id:  # ty: ignore[unresolved-attribute]  # Django FK
+            self.overlay = self.ticket.overlay
+        super().save(
+            force_insert=force_insert,
+            force_update=force_update,
+            using=using,
+            update_fields=update_fields,
+        )
 
     def recording_identity(self, explicit: str = "") -> str:
         """A guaranteed-non-empty attribution identity for a phase visit.

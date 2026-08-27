@@ -108,7 +108,7 @@ def effective_default(key: str) -> object:
 
 
 @cached_per_request
-def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
+def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool = False) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
 
     Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
@@ -150,9 +150,16 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
 
     ``overlay_name`` resolves a SPECIFIC named overlay instead of the active
     one — the loop's scanner-builders fan out over every registered overlay,
-    not just the session's. In that mode the env layer is NOT applied; the DB
-    tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
+    not just the session's, and a per-session ``T3_*`` opinion must not be
+    smeared across all of them, so that mode drops the env layer by default; the
+    DB tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
     collapse run identically. This is the single resolver both paths share.
+
+    ``apply_env`` re-arms the env layer for a named overlay. A caller that named
+    the overlay because the WORK named it — not because it is fanning out — is
+    still the operator's one session, and dropping the layer there silently
+    retires every ``T3_*`` override for that read, in the permissive direction as
+    readily as the restrictive one.
 
     To make an additional setting DB-overridable, add it to
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
@@ -197,7 +204,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     overrides.update(layers.global_db)
     overrides.update(layers.overlay_db)
     env_overrides: dict[str, Any] = {}
-    if overlay_name is None:
+    if overlay_name is None or apply_env:
         env_overrides = env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)

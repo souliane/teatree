@@ -40,7 +40,7 @@ def _hermetic_env() -> dict[str, str]:
 
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
-        ["git", *args],  # noqa: S607
+        ["git", *args],  # noqa: S607 — git from PATH is what the hook under test itself runs
         cwd=cwd,
         check=True,
         capture_output=True,
@@ -172,7 +172,7 @@ def _git_log_body_bytes(work: Path) -> int:
     Its size determines whether ``grep -q``'s early close triggers SIGPIPE.
     """
     out = subprocess.run(
-        ["git", "log", "--format=%B", "HEAD"],  # noqa: S607
+        ["git", "log", "--format=%B", "HEAD"],  # noqa: S607 — git from PATH is what the hook under test itself runs
         cwd=work,
         capture_output=True,
         check=True,
@@ -181,24 +181,52 @@ def _git_log_body_bytes(work: Path) -> int:
     return len(out)
 
 
-def _run_hook(work: Path, env: dict[str, str], branch: str) -> subprocess.CompletedProcess[str]:
-    sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],  # noqa: S607
+def _rev_parse(work: Path, rev: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", rev],  # noqa: S607 — git from PATH is what the hook under test itself runs
         cwd=work,
         capture_output=True,
         text=True,
         check=True,
         env=_hermetic_env(),
     ).stdout.strip()
-    stdin = f"refs/heads/{branch} {sha} refs/heads/{branch} 0000000000000000000000000000000000000000\n"
+
+
+def _run_hook(
+    work: Path,
+    env: dict[str, str],
+    branch: str,
+    remote_sha: str = "0000000000000000000000000000000000000000",
+) -> subprocess.CompletedProcess[str]:
+    sha = _rev_parse(work, "HEAD")
+    stdin = f"refs/heads/{branch} {sha} refs/heads/{branch} {remote_sha}\n"
     return subprocess.run(
-        ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607
+        ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607 — git from PATH is what the hook under test itself runs
         cwd=work,
         input=stdin,
         capture_output=True,
         text=True,
         check=False,
         env=env,
+    )
+
+
+def _run_hook_via_prek(work: Path, env: dict[str, str], branch: str) -> subprocess.CompletedProcess[str]:
+    """Drive the hook the way prek does: prek eats pre-push stdin and passes the range in ``PRE_COMMIT_*``."""
+    synth = dict(env)
+    synth["PRE_COMMIT_REMOTE_NAME"] = "origin"
+    synth["PRE_COMMIT_TO_REF"] = _rev_parse(work, "HEAD")
+    synth["PRE_COMMIT_FROM_REF"] = "0000000000000000000000000000000000000000"
+    synth["PRE_COMMIT_LOCAL_BRANCH"] = f"refs/heads/{branch}"
+    synth["PRE_COMMIT_REMOTE_BRANCH"] = f"refs/heads/{branch}"
+    return subprocess.run(
+        ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607 — git from PATH is what the hook under test itself runs
+        cwd=work,
+        input="",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=synth,
     )
 
 
@@ -324,6 +352,65 @@ class TestRefusePushToForeignOpenMr:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_override_token_in_an_already_pushed_commit_does_not_authorise_this_push(self, tmp_path: Path) -> None:
+        """The override is scoped to the commits the push INTRODUCES, not to all history.
+
+        The token sits in a commit the remote already has, so it authorised its
+        own push and nothing else. Searching the pushed sha's whole ancestry
+        makes that one token a permanent blanket waiver for every later push to
+        the teammate's branch.
+        """
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        _commit(
+            work,
+            "feature.txt",
+            "a clean feature line\n",
+            message="add feature\n\n[push-to-foreign-mr-ok: pair-programming with teammate]",
+        )
+        already_pushed = _rev_parse(work, "HEAD")
+        _git(work, "update-ref", "refs/remotes/origin/feature-x", already_pushed)
+        _commit(work, "later.txt", "an unrelated later change\n", message="unrelated follow-up")
+
+        result = _run_hook(work, env, "feature-x", remote_sha=already_pushed)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_override_token_in_a_newly_pushed_commit_still_allows_the_push(self, tmp_path: Path) -> None:
+        """Narrowing the search to the push range keeps the genuine override working."""
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        _commit(work, "base.txt", "already on the remote\n", message="base")
+        already_pushed = _rev_parse(work, "HEAD")
+        _git(work, "update-ref", "refs/remotes/origin/feature-x", already_pushed)
+        _commit(
+            work,
+            "feature.txt",
+            "a clean feature line\n",
+            message="add feature\n\n[push-to-foreign-mr-ok: pair-programming with teammate]",
+        )
+
+        result = _run_hook(work, env, "feature-x", remote_sha=already_pushed)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_override_scope_uses_tracking_refs_when_the_protocol_reports_no_remote_sha(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A first push of the branch still subtracts what the remote already has."""
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        _commit(
+            work,
+            "feature.txt",
+            "a clean feature line\n",
+            message="add feature\n\n[push-to-foreign-mr-ok: pair-programming with teammate]",
+        )
+        _git(work, "update-ref", "refs/remotes/origin/feature-x", _rev_parse(work, "HEAD"))
+        _commit(work, "later.txt", "an unrelated later change\n", message="unrelated follow-up")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+
     def test_fails_open_when_gh_pr_list_errors(self, tmp_path: Path) -> None:
         """A transient ``gh`` API failure must ALLOW the push (fail open)."""
         work, env = _setup(tmp_path, failing_gh=True)
@@ -350,7 +437,7 @@ class TestRefusePushToForeignOpenMr:
         zero = "0000000000000000000000000000000000000000"
         stdin = f"refs/heads/feature-x {zero} refs/heads/feature-x {zero}\n"
         result = subprocess.run(
-            ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607
+            ["bash", str(HOOK), "origin", "https://github.com/acme/widget.git"],  # noqa: S607 — git from PATH is what the hook under test itself runs
             cwd=work,
             input=stdin,
             capture_output=True,
@@ -376,8 +463,125 @@ class TestRefusePushToForeignOpenMr:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_prek_invocation_blocks_on_an_empty_stdin_push(self, tmp_path: Path) -> None:
+        """The prek wiring is the production path, and a stdin-only gate is inert on it."""
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook_via_prek(work, env, "feature-x")
+
+        combined = result.stdout + result.stderr
+        assert result.returncode == 1, combined
+        assert "teammate" in combined, combined
+
+    def test_prek_invocation_allows_our_own_open_mr(self, tmp_path: Path) -> None:
+        """The synthesized range resolves the real branch, not a blanket block."""
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr(author=_OUR_LOGIN))
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook_via_prek(work, env, "feature-x")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_hook_is_executable(self) -> None:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
+
+
+def _make_glab_shim(bin_dir: Path, *, username: str, merge_requests: list[dict[str, object]]) -> None:
+    """Write a fake ``glab`` answering ``api user`` and the open-MR query.
+
+    ``glab api`` has no ``--jq`` flag, so both answers are plain JSON — the
+    shape the resolver parses in Python.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "glab"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        f"rows = json.loads({json.dumps(merge_requests)!r})\n"
+        "if args[:2] == ['api', 'user']:\n"
+        f"    print(json.dumps({{'username': {username!r}}}))\n"
+        "    sys.exit(0)\n"
+        "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+        "    branch = args[1].split('source_branch=')[1].split('&')[0]\n"
+        "    print(json.dumps([r for r in rows if r['source_branch'] == branch]))\n"
+        "    sys.exit(0)\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+class TestGitLabRemotesAreGatedToo:
+    """A GitLab remote reaches the guard at all.
+
+    The hook resolved the backing MR with ``gh`` and exited early when ``gh`` was
+    absent, so on a GitLab remote — the remote a fork of this project pushes to —
+    it could never fire. Nothing reported that; a guard that cannot ask reads
+    exactly like a guard that found nothing.
+    """
+
+    _REMOTE = "https://gitlab.com/acme-eng/widget.git"
+
+    def _setup_gitlab(self, tmp_path: Path, *, author: str) -> tuple[Path, dict[str, str]]:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work = tmp_path / "work"
+        _git(tmp_path, "clone", str(origin), str(work))
+        _git(work, "config", "user.email", _NOREPLY_EMAIL)
+        _git(work, "config", "user.name", _NOREPLY_NAME)
+        _git(work, "checkout", "-b", "feature-x")
+        _git(work, "remote", "set-url", "origin", self._REMOTE)
+
+        bin_dir = tmp_path / "bin"
+        _make_glab_shim(
+            bin_dir,
+            username=_OUR_LOGIN,
+            merge_requests=[{"iid": 77, "source_branch": "feature-x", "author": {"username": author}}],
+        )
+        env = _hermetic_env()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        return work, env
+
+    def _run(self, work: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607 — git from PATH is what the hook itself runs
+            cwd=work,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=_hermetic_env(),
+        ).stdout.strip()
+        stdin = f"refs/heads/feature-x {sha} refs/heads/feature-x {'0' * 40}\n"
+        return subprocess.run(
+            ["bash", str(HOOK), "origin", self._REMOTE],  # noqa: S607 — bash via PATH is the real invocation
+            cwd=work,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_blocks_push_to_a_foreign_open_gitlab_mr(self, tmp_path: Path) -> None:
+        work, env = self._setup_gitlab(tmp_path, author="teammate")
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = self._run(work, env)
+
+        combined = result.stdout + result.stderr
+        assert result.returncode == 1, combined
+        assert "teammate" in combined, combined
+        assert "77" in combined, combined
+
+    def test_allows_push_to_our_own_open_gitlab_mr(self, tmp_path: Path) -> None:
+        work, env = self._setup_gitlab(tmp_path, author=_OUR_LOGIN)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = self._run(work, env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 if __name__ == "__main__":

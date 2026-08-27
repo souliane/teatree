@@ -17,7 +17,13 @@ from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, HeadReview, MergeAttempt, PrSummary
+from teatree.loop.scanners.pr_sweep_types import (
+    GITLAB_PIPELINE_CHECK_NAME,
+    UV_AUDIT_CHECK_NAME,
+    HeadReview,
+    MergeAttempt,
+    PrSummary,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models.review_verdict import ReviewVerdict
@@ -103,6 +109,27 @@ def classify_sweep_ci(
             return "uv_audit_red_but_clean_on_main", False, failing
         return "ci_red", False, failing
     return None, False, failing
+
+
+def classify_gitlab_sweep_ci(verdict: str) -> tuple[str | None, bool, set[str]]:
+    """The sweep's CI decision on GitLab, from the head pipeline's own verdict.
+
+    GitLab exposes no branch-protection required-context set — its backend answers
+    ``[]``, which :func:`classify_required_rollup` reads as "no gate configured" and
+    classifies GREEN. Running the GitHub ladder here would therefore pass every MR
+    whatever its pipeline did, so the GitLab arm reads
+    :meth:`CodeHostQuery.required_checks_status` instead: the head pipeline's status,
+    which already aggregates the required jobs server-side and fails closed to
+    ``pending`` when no pipeline ran.
+
+    The uv-audit fallback never applies (there is no per-check verdict to compare
+    against ``main``), so the middle element is always ``False``.
+    """
+    if verdict == "green":
+        return None, False, set()
+    if verdict == "pending":
+        return "ci_pending", False, set()
+    return "ci_red", False, {GITLAB_PIPELINE_CHECK_NAME}
 
 
 def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) -> MergeAttempt:

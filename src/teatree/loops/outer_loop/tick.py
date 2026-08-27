@@ -30,6 +30,9 @@ from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
 from teatree.loops.outer_loop.revert import ask_revert
 from teatree.loops.outer_loop.score import read_score
 
+#: The ``action`` a guard-chain refusal carries — a zero-mutation no-op, not an advance.
+REFUSED_ACTION = "refused"
+
 
 @dataclass(frozen=True, slots=True)
 class TickSeams:
@@ -71,7 +74,7 @@ def run_tick(
     resolved_settings = settings if settings is not None else get_effective_settings(overlay or None)
     verdict = evaluate_guards(settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now)
     if not verdict.ok:
-        return OuterLoopTickResult(action="refused", reason=verdict.reason)
+        return OuterLoopTickResult(action=REFUSED_ACTION, reason=verdict.reason)
 
     experiment = OuterLoopExperiment.objects.active(overlay=overlay).order_by("created_at", "pk").first()
     if experiment is None:

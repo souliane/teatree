@@ -105,6 +105,7 @@ orchestration-layer module may compose both.
 import logging
 from datetime import datetime
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
@@ -463,13 +464,18 @@ def _escalate_once(task: Task, *, reason: str) -> None:
     fresh ``Task`` rows a stuck phase mints each redispatch cycle collapse to a SINGLE
     open question instead of one per cycle. Reuses the §17.1 invariant 9 surface
     (statusline / ``t3 teatree questions list`` / the Slack DM drain).
+
+    Both writes share one transaction: the stamp is permanent and the question is the
+    ONLY surface the halt reaches a human on, so a stamp that outlived a failed
+    ``record`` would park the task silently, forever, with nobody told.
     """
-    _stamp_halt(task)
     where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
     phase = normalize_phase(task.phase)
     question = _halt_question(task, where=where, phase=phase, reason=reason)
-    DeferredQuestion.record(
-        question,
-        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
-        dedupe_marker=escalation_marker(task),
-    )
+    with transaction.atomic():
+        _stamp_halt(task)
+        DeferredQuestion.record(
+            question,
+            session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+            dedupe_marker=escalation_marker(task),
+        )

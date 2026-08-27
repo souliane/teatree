@@ -1,14 +1,17 @@
 """The shared preset/schedule write seam — tri-state round-trip incl. genuine absence (#3559)."""
 
 import datetime as dt
+from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_preset import LOW_POWER_PRESET_SETTING
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops import preset_editing
 from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.mode_shape import LOAD_BEARING_LOOPS
 from teatree.loops.preset_editing import PresetEditError, activate_preset, clear_preset_override, set_preset_entry
@@ -81,6 +84,25 @@ class PresetEntryTriStateTestCase(TestCase):
     def test_unknown_loop_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
             set_preset_entry("present", "ghost", "on")
+
+    def test_the_row_is_read_inside_the_write_transaction(self) -> None:
+        # ``entries`` is ONE JSON map, so a read taken BEFORE the write transaction drops
+        # whatever the other editor (dashboard vs CLI) stored in between. SQLite opens in
+        # IMMEDIATE mode, so reading inside the block makes the edit a real
+        # compare-and-swap — a property of WHERE the read happens, and nothing else.
+        depth_outside = len(connection.savepoint_ids)
+        depth_at_read: list[int] = []
+        real_require = preset_editing.require_preset
+
+        def _recording_require(name: str) -> Mode:
+            depth_at_read.append(len(connection.savepoint_ids))
+            return real_require(name)
+
+        with patch.object(preset_editing, "require_preset", _recording_require):
+            set_preset_entry("present", "review", "off")
+
+        assert depth_at_read == [depth_outside + 1]
+        assert Mode.objects.by_name("present").entries == {"review": False}
 
 
 class PresetEntryResolverReflectionTestCase(TestCase):

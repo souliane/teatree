@@ -27,7 +27,10 @@
 #   bash dev/test-shuffle.sh          # seed 7 (the recorded #2359 reproducer)
 #   bash dev/test-shuffle.sh 7 1 13 100   # CI's full matrix, serially
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 SEEDS=("${@:-7}")
 

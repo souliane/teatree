@@ -49,6 +49,7 @@ OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
 STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 GLAB_STALE_BASE_REMOTE_GATE_KEY = "glab_stale_base_remote_gate_enabled"
 GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
+GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
 VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 MERGED_DETECTION_GATE_KEY = "merged_detection_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
@@ -59,19 +60,21 @@ MERGED_DETECTION_GATE_KEY = "merged_detection_gate_enabled"
 # The ``danger_`` prefix makes a forgotten ``true`` unmissable — this switch
 # disables protective gates wholesale.
 DANGER_GATE_FAIL_OPEN_KEY = "danger_gate_fail_open"
+DANGER_GATE_FAIL_OPEN_DEFAULT = False
 
 
-def _gate_key_is_enabled(key: str) -> bool:
-    """Resolve the DB-home ``<key>`` gate (default True), failing OPEN to enabled.
+def _gate_key_is_enabled(key: str, *, default: bool = True) -> bool:
+    """Resolve the DB-home ``<key>`` gate, degrading to *default* on a missing/broken DB.
 
-    The gate is enabled unless an explicit ``false`` is recorded in the canonical
-    config DB. Reads via the Django-free cold reader, so ``t3 teatree gate status``
-    reports what the flipped hook reader sees. Fails OPEN to enabled on a
-    missing/broken DB so the reported status matches the gate's own fail-open posture.
+    The per-gate kill-switches default True (enabled unless an explicit ``false``
+    is recorded); the master fail-open switch defaults False, so its callers pass
+    ``default=False`` — reading it through the wrong posture reports a value the
+    switch's own resolver would never return. Reads via the Django-free cold
+    reader, so ``t3 <overlay> gate status`` reports what the flipped hook sees.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    return cold_reader.bool_setting(key, default=True)
+    return cold_reader.bool_setting(key, default=default)
 
 
 def gate_is_enabled() -> bool:
@@ -109,9 +112,7 @@ def danger_gate_fail_open_is_enabled() -> bool:
     must never cause. The over-deny gates consult this; the PUBLIC-egress leak gate
     never does.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    return cold_reader.bool_setting(DANGER_GATE_FAIL_OPEN_KEY, default=False)
+    return _gate_key_is_enabled(DANGER_GATE_FAIL_OPEN_KEY, default=DANGER_GATE_FAIL_OPEN_DEFAULT)
 
 
 def _set_gate_key(key: str, *, enabled: bool) -> Path:
@@ -128,19 +129,21 @@ def _set_gate_key(key: str, *, enabled: bool) -> Path:
     return cold_writer.canonical_config_db()
 
 
-def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
+def _write_gate_and_verify(key: str, *, enabled: bool, default: bool = True) -> Path:
     """Write ``<key>=<enabled>``, verify the toggle actually took, and return the DB destination.
 
-    After the write, read the gate back through :func:`_gate_key_is_enabled` (the same
-    canonical-DB read the flipped hook reader resolves). If the observed state disagrees
-    with *enabled*, the canonical DB was missing or locked (or the write otherwise
-    failed) and the toggle did NOT take: raise ``typer.Exit(1)`` with a loud message so
-    the command never prints a success line over a stale, still-effective gate. Catching
-    the mismatch by read-back rather than by classifying the write error covers EVERY
-    failure mode, regardless of cause.
+    After the write, read the gate back through :func:`_gate_key_is_enabled` under the
+    key's OWN unresolved-value posture (*default*) — the master fail-open switch
+    resolves default-False, so verifying its ``enable`` through the default-True
+    posture reported success over a write that never landed. If the observed state
+    disagrees with *enabled*, the canonical DB was missing or locked (or the write
+    otherwise failed) and the toggle did NOT take: raise ``typer.Exit(1)`` with a loud
+    message so the command never prints a success line over a stale, still-effective
+    gate. Catching the mismatch by read-back rather than by classifying the write error
+    covers EVERY failure mode, regardless of cause.
     """
     destination = _set_gate_key(key, enabled=enabled)
-    if _gate_key_is_enabled(key) != enabled:
+    if _gate_key_is_enabled(key, default=default) != enabled:
         still = "ENABLED" if not enabled else "DISABLED"
         typer.echo(
             f"ERROR: `{key}` did NOT take — the canonical DB is locked or the write failed; "
@@ -330,6 +333,12 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
 
     _register_keyed_gate(
         gate_group,
+        name="general-purpose",
+        key=GENERAL_PURPOSE_AGENT_GATE_KEY,
+        label="Blank general-purpose sub-agent dispatch gate",
+    )
+    _register_keyed_gate(
+        gate_group,
         name="verbatim-paste",
         key=VERBATIM_PASTE_GATE_KEY,
         label="Verbatim operator-paste publish gate",
@@ -367,13 +376,17 @@ def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
     @fail_open.command(name="enable")
     def enable() -> None:
         """Turn the master fail-open switch ON (self-rescue from an over-deny lockout)."""
-        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=True)
+        destination = _write_gate_and_verify(
+            DANGER_GATE_FAIL_OPEN_KEY, enabled=True, default=DANGER_GATE_FAIL_OPEN_DEFAULT
+        )
         typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {destination}")
 
     @fail_open.command(name="disable")
     def disable() -> None:
         """Turn the master fail-open switch OFF (restore normal gate enforcement)."""
-        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=False)
+        destination = _write_gate_and_verify(
+            DANGER_GATE_FAIL_OPEN_KEY, enabled=False, default=DANGER_GATE_FAIL_OPEN_DEFAULT
+        )
         typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {destination}")
 
     gate_group.add_typer(fail_open, name="fail-open")

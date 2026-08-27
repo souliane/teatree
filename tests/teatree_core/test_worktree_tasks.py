@@ -208,7 +208,7 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
 
         wt = self._worktree(state=Worktree.State.PROVISIONED)
         expected_project = compose_project(wt)
-        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down:
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None) as down:
             result = execute_worktree_stop.call(wt.pk)
         assert result["worktree_id"] == wt.pk
         assert result["ok"] is True
@@ -216,8 +216,19 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
         down.assert_called_once()
         assert down.call_args.args[0] == expected_project
 
+    def test_a_failed_down_is_reported_as_failure(self) -> None:
+        """Containers the down could not stop still hold this worktree's ports and volumes."""
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        with patch(
+            "teatree.core.worktree.worktree_tasks.docker_compose_down",
+            return_value="exit 1: no such network",
+        ):
+            result = execute_worktree_stop.call(wt.pk)
+        assert result["ok"] is False
+        assert "no such network" in result["detail"]
+
     def test_no_ops_when_worktree_row_already_gone(self) -> None:
-        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down:
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None) as down:
             result = execute_worktree_stop.call(999_999)
         assert result == {"worktree_id": 999_999, "skipped": True}
         down.assert_not_called()
@@ -227,7 +238,7 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
         wt = self._worktree(state=Worktree.State.PROVISIONED)
         wt.db_name = "wt_keepme"
         wt.save(update_fields=["db_name"])
-        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down"):
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None):
             execute_worktree_stop.call(wt.pk)
         wt.refresh_from_db()
         assert wt.db_name == "wt_keepme"
@@ -302,14 +313,13 @@ class TestWorkerRunsRunnerOutsideClaimLock(TransactionTestCase):
         assert seen["in_atomic"] is False
 
     def test_stop_compose_down_runs_outside_transaction(self) -> None:
-        """``docker compose down`` defaults to a 30s timeout — the control DB's whole busy_timeout."""
+        """``docker compose down`` is a subprocess like any runner — never under the write lock."""
         wt = self._worktree(state=Worktree.State.PROVISIONED)
         seen: dict[str, bool] = {}
 
-        def _spy_down(project: str, **kwargs: object) -> None:
+        def _spy_down(_project: str) -> None:
             seen["in_atomic"] = connection.in_atomic_block
 
         with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", _spy_down):
-            result = execute_worktree_stop.call(wt.pk)
-        assert result["ok"] is True
+            execute_worktree_stop.call(wt.pk)
         assert seen["in_atomic"] is False

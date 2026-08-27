@@ -209,13 +209,13 @@ def terms_for_gate(gate: str, *, db_path: Path | None = None) -> tuple[str, ...]
 
 def _legacy_terms_for_gate(gate: str, *, db_path: Path | None = None) -> tuple[str, ...]:
     """The pre-registry source for *gate* — raises on a genuinely-unset ban list."""
-    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
-    from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_cli import legacy_banned_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_tree_scan import legacy_brand_terms  # noqa: PLC0415  dual-read cycle
 
     if gate in {"diff", "core"}:
-        return resolve_banned_terms(db_path=db_path)
+        return legacy_banned_terms(db_path=db_path)
     if gate == "tree":
-        return load_brand_terms(db_path=db_path)
+        return legacy_brand_terms(db_path=db_path)
     if gate == "overlay":
         return _legacy_overlay_terms(db_path=db_path)
     if gate == ALLOW:
@@ -275,11 +275,11 @@ def _legacy_export_scan_terms(db_path: Path | None = None) -> tuple[str, ...]:
     unset source is caught and skipped (an empty scan set) — the export must not crash
     on a store with no terms.
     """
-    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
-    from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_cli import legacy_banned_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_tree_scan import legacy_brand_terms  # noqa: PLC0415  dual-read cycle
 
     seen: dict[str, None] = {}
-    for resolver in (resolve_banned_terms, load_brand_terms):
+    for resolver in (legacy_banned_terms, legacy_brand_terms):
         try:
             resolved = resolver(db_path=db_path)
         except BannedTermsUnsetError:
@@ -334,6 +334,13 @@ def _dedup(terms: tuple[str, ...]) -> list[str]:
 def build_registry_from_legacy(db_path: Path | None = None) -> dict[str, list[str]]:
     """Build the class-tagged registry from the current four legacy sources.
 
+    Every source is read through its REGISTRY-FREE resolver
+    (``legacy_banned_terms`` / ``legacy_brand_terms`` / ``_legacy_overlay_terms`` /
+    ``_legacy_allowlist``). The dual-read resolvers return the consolidated
+    registry when one exists, so reading them here made a rebuild copy the
+    registry back onto itself and its verification compare the registry with
+    itself — self-referential, and green for any registry including a lossy one.
+
     ``banned_brands`` → ``leak`` (the high-confidence list, scanned everywhere);
     ``banned_terms`` → ``prose_collider`` (its current diff+core routing, never
     the full tree); ``overlay_leak_terms`` → ``overlay``;
@@ -344,16 +351,16 @@ def build_registry_from_legacy(db_path: Path | None = None) -> dict[str, list[st
     no-brands operator and yields an empty ``leak``), as are ``overlay_leak_terms``
     and the allowlist (both inert-when-empty).
     """
-    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
-    from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_cli import legacy_banned_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_tree_scan import legacy_brand_terms  # noqa: PLC0415  dual-read cycle
 
-    terms = resolve_banned_terms(db_path=db_path)
+    terms = legacy_banned_terms(db_path=db_path)
     try:
-        brands = load_brand_terms(db_path=db_path)
+        brands = legacy_brand_terms(db_path=db_path)
     except BannedTermsUnsetError:
         brands = ()
     overlay = _legacy_overlay_terms(db_path=db_path)
-    allow = allowlist_terms(db_path=db_path)
+    allow = _legacy_allowlist(db_path=db_path)
     return {
         LEAK: _dedup(brands),
         PROSE_COLLIDER: _dedup(terms),
@@ -405,23 +412,25 @@ class MigrationVerification:
 def verify_migration(registry: dict[str, list[str]], *, db_path: Path | None = None) -> MigrationVerification:
     """Verify *registry* reproduces every effective term the old three sources yield.
 
-    Recomputes the old effective sets (``banned_terms`` for the diff/core gates,
-    ``banned_brands`` for the tree gate, ``overlay_leak_terms`` for the overlay gate,
-    the allowlist for ``allow``) and checks the registry against them: no term dropped
+    Recomputes the old effective sets from the REGISTRY-FREE resolvers
+    (``banned_terms`` for the diff/core gates, ``banned_brands`` for the tree gate,
+    ``overlay_leak_terms`` for the overlay gate, the allowlist for ``allow``) — a
+    dual-read source would return the registry under verification and make the
+    comparison self-referential — and checks the registry against them: no term dropped
     from the union, no term fabricated, the allowlist and the overlay class round-trip
     exactly, and no per-gate term the routing would stop scanning. The migration is
     lossless iff :attr:`MigrationVerification.ok`.
     """
-    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415  dual-read cycle
-    from teatree.hooks.banned_terms_tree_scan import load_brand_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_cli import legacy_banned_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_terms_tree_scan import legacy_brand_terms  # noqa: PLC0415  dual-read cycle
 
-    old_ban = set(resolve_banned_terms(db_path=db_path))
+    old_ban = set(legacy_banned_terms(db_path=db_path))
     try:
-        old_brands = set(load_brand_terms(db_path=db_path))
+        old_brands = set(legacy_brand_terms(db_path=db_path))
     except BannedTermsUnsetError:
         old_brands = set()
     old_overlay = set(_legacy_overlay_terms(db_path=db_path))
-    old_allow = set(allowlist_terms(db_path=db_path))
+    old_allow = set(_legacy_allowlist(db_path=db_path))
 
     normalised = _normalise_registry(registry)
     new_ban = set(normalised[LEAK]) | set(normalised[PROSE_COLLIDER]) | set(normalised[TONE])

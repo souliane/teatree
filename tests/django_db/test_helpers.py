@@ -18,7 +18,14 @@ from teatree.utils.django_db.dslr import extract_failing_migration as _extract_f
 from teatree.utils.django_db.dslr import find_dslr_cmd as _find_dslr_cmd
 from teatree.utils.django_db.dslr import find_dslr_snapshots as _find_dslr_snapshots
 from teatree.utils.django_db.dslr import restore_ref_from_dslr as _restore_ref_from_dslr
-from teatree.utils.django_db.helpers import _ensure_ref_db, _local_db_url, _pg_args, _terminate_connections
+from teatree.utils.django_db.helpers import (
+    _ensure_ref_db,
+    _local_db_url,
+    _pg_args,
+    _terminate_connections,
+    split_password_from_url,
+)
+from teatree.utils.django_db.reconcile import is_config_error
 
 from ._shared import _fail_run, _make_importer, _ok_run
 
@@ -66,6 +73,46 @@ class TestExtractInconsistentHistory:
         assert extract_inconsistent_history("Applying myapp.0001_initial...\n") is None
 
 
+class TestIsConfigError:
+    """The environment-vs-app boundary that gates the dockerized fallback.
+
+    The three consumers all read this as "do not trust this interpreter" — retry
+    in docker, refuse to fake, refuse to reconcile — so a missed environment
+    failure costs a whole provision, while a misread APP error costs one docker
+    retry that fails identically. The line is drawn at what the IMAGE owns: a
+    Python module, a settings module, a native library the loader could not
+    open, a program name PATH could not resolve. Never a bare exception class.
+    """
+
+    @pytest.mark.parametrize(
+        "combined",
+        [
+            "ModuleNotFoundError: No module named 'celery'",
+            "django.core.exceptions.ImproperlyConfigured: settings are not configured",
+            "ImportError: failed to find libmagic.  Check your installation",
+            "ImportError: libGL.so.1: cannot open shared object file: No such file or directory",
+            "OSError: cannot load library 'libgobject-2.0-0': libgobject-2.0-0: not found",
+            "ImageNotFoundError: dlopen(libcairo.2.dylib): Library not loaded: libcairo.2.dylib",
+            "FileNotFoundError: [Errno 2] No such file or directory: 'patch'",
+        ],
+    )
+    def test_environment_failures_are_config_errors(self, combined: str) -> None:
+        assert is_config_error(combined) is True
+
+    @pytest.mark.parametrize(
+        "combined",
+        [
+            "ImportError: cannot import name 'Offer' from partially initialized module 'pricing'",
+            "FileNotFoundError: [Errno 2] No such file or directory: '/app/fixtures/rates.json'",
+            "FileNotFoundError: [Errno 2] No such file or directory: 'rates.json'",
+            "django.db.utils.OperationalError: connection refused",
+            'psycopg2.errors.DuplicateTable: relation "pricing_offer" already exists',
+        ],
+    )
+    def test_application_failures_are_not_config_errors(self, combined: str) -> None:
+        assert is_config_error(combined) is False
+
+
 class TestDslrSnapName:
     def test_includes_ref_db_name(self) -> None:
         result = _dslr_snap_name("development-acme")
@@ -82,6 +129,19 @@ class TestLocalDbUrl:
         assert "db.local" in url
         assert "mydb" in url
         assert "p%40ss" in url  # URL-encoded
+
+
+class TestSplitPasswordFromUrl:
+    def test_strips_and_decodes_the_password(self) -> None:
+        url, password = split_password_from_url("postgres://u:p%40ss@db.local:5432/mydb?sslmode=require")
+        assert url == "postgres://u@db.local:5432/mydb?sslmode=require"
+        assert password == "p@ss"
+
+    def test_passwordless_url_is_returned_verbatim(self) -> None:
+        assert split_password_from_url("postgres://u@db.local/mydb") == ("postgres://u@db.local/mydb", "")
+
+    def test_url_without_userinfo_is_returned_verbatim(self) -> None:
+        assert split_password_from_url("postgres://db.local/mydb") == ("postgres://db.local/mydb", "")
 
 
 class TestPgArgs:
@@ -101,6 +161,8 @@ class TestPgArgs:
         monkeypatch.delenv("POSTGRES_USER", raising=False)
         monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
         monkeypatch.delenv("POSTGRES_PORT", raising=False)
+        # The unset-host default is venue-dependent, and CI itself runs in a container.
+        monkeypatch.setattr("teatree.utils.ports.running_in_container", lambda: False)
         host, user, _env = _pg_args()
         assert host == "localhost"
         assert user == "postgres"  # default from db.pg_user()

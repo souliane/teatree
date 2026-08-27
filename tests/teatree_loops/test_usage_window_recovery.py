@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core.models import BotPing, Session, Task, Ticket, UsageWindowState
@@ -242,6 +243,24 @@ class TestChainScheduling(django.test.TestCase):
         usage_window_recovery.func()
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+
+        assert DBTaskResult.objects.filter(
+            task_path=usage_window_recovery.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_a_recovery_body_that_raises_still_leaves_a_queued_successor(self) -> None:
+        # Successor-FIRST, like every other loop chain: this is the ONLY thing that
+        # re-arms a parked window, so a raise inside the body ending the chain leaves
+        # every parked task parked with nothing left to release it.
+        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+
+        _set_autorecovery(on=True)
+        with (
+            mock.patch("teatree.loops.usage_window_recovery.recover_windows", side_effect=_DownError),
+            pytest.raises(_DownError),
+        ):
+            usage_window_recovery.func()
 
         assert DBTaskResult.objects.filter(
             task_path=usage_window_recovery.module_path, status=TaskResultStatus.READY

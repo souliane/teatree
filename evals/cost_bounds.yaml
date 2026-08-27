@@ -13,6 +13,16 @@
 # (it did not execute, or metered $0) is a MISSING violation — the gate goes RED
 # rather than silently passing it. A scenario NOT listed here is un-bounded.
 #
+# An EMPTY `scenarios` map is RED too (COST BOUNDS VACUOUS): the gate would bind
+# nothing, and a cost audit that checked zero scenarios must not report a pass it
+# never earned. Pin the first calibrated bound below, or drop `--gate-cost-bounds`
+# from the lane — do not leave a gate that reads as green while checking nothing.
+#
+# Both REDs presuppose a backend that records cost, so the gate runs on
+# `--backend api` only. `anthropic_api` and `pydantic_ai` report none, which would
+# make every ceiling here read MISSING on a healthy run; `t3 eval run` exits 2 on
+# that pairing rather than letting a calibration make the lane worse.
+#
 # `default_margin` applies to any scenario that omits its own `margin`. Add a
 # scenario by appending its calibrated `bound_usd` (and an optional per-scenario
 # `margin` when it needs a tighter/looser band than the default).

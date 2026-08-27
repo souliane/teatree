@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
 from teatree.backends.slack import reactions as slack_reactions
-from teatree.core.models import PullRequest, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
@@ -54,6 +54,11 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 class TestAutoEnqueueHeadlessSignal(TestCase):
     """post_save signal auto-enqueues headless tasks on creation."""
+
+    def setUp(self) -> None:
+        # the shipped architectural_review_skill is an apm install no runner has, and an
+        # unresolvable one refuses the dispatch before the signal under test can complete
+        ConfigSetting.objects.set_value("architectural_review_skill", "review")
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_headless_task_auto_executes_on_creation(self) -> None:
@@ -339,7 +344,7 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append((pull_request,))
             return 1
 
-        with mode_immediate_cm(), _patch_approval_publisher(_fake):
+        with mode_immediate_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -358,7 +363,7 @@ class TestApprovalReactionOnTransition(TestCase):
         # suppression: a recorded approval would let it publish, exercised by the
         # next test). Pinned, because the shipped autonomy collapses an unset mode
         # to IMMEDIATE (#3895), which would silently make this the gate-OFF case.
-        with mode_gate_on_cm(), _patch_approval_publisher(_fake):
+        with mode_gate_on_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -384,7 +389,7 @@ class TestApprovalReactionOnTransition(TestCase):
             return 1
 
         # Gate ON by default — but the recorded approval satisfies it.
-        with _patch_approval_publisher(_fake):
+        with _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -397,7 +402,7 @@ class TestApprovalReactionOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with mode_immediate_cm(), _patch_approval_publisher(_boom):
+        with mode_immediate_cm(), _patch_approval_publisher(_boom), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -465,7 +470,11 @@ class TestApprovalReactionOnTransition(TestCase):
         )
         assert row is not None
 
-        with mode_immediate_cm(), _patch_approval_publisher(lambda _pr: 1):
+        with (
+            mode_immediate_cm(),
+            _patch_approval_publisher(lambda _pr: 1),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             pr.approve()
             pr.save()
 

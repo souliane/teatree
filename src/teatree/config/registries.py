@@ -4,8 +4,9 @@ Two families of DB-home config that live OUTSIDE the ``UserSettings`` dataclass
 partition (``config/homes.py``):
 
 *   :data:`REGISTRY_SETTINGS` — the ``overlays`` definition registry (consumed by
-    ``discover_overlays`` and every ``raw["overlays"]`` reader) and the ``e2e_repos``
-    registry (``load_e2e_repos``). Each is stored as ONE JSON-dict ``ConfigSetting``
+    ``discover_overlays`` and every ``raw["overlays"]`` reader), the ``e2e_repos``
+    registry (``load_e2e_repos``) and the ``peer_instances`` registry
+    (``load_peer_instances``). Each is stored as ONE JSON-dict ``ConfigSetting``
     row and injected into ``config.raw`` by ``loader._inject_db_registries``, so every
     existing ``config.raw[...]`` reader is untouched.
 
@@ -43,9 +44,14 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
 #: they group, so adding one below needs no edit in ``setting_groups``.
 REGISTRY_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Definitions")
 
+#: The registry whose unreadability makes every configured overlay vanish, so a consumer
+#: reading an empty overlay set can tell "unconfigured" from "could not be read".
+REGISTRY_OVERLAYS: str = "overlays"
+
 REGISTRY_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    "overlays": _parse_registry_dict,
+    REGISTRY_OVERLAYS: _parse_registry_dict,
     "e2e_repos": _parse_registry_dict,
+    "peer_instances": _parse_registry_dict,
 }
 
 REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
@@ -108,6 +114,10 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "active_loop_schedule": _parse_strict_str,
     "low_power_auto_engage": _parse_strict_bool,
     "low_power_preset_name": _parse_strict_str,
+    # Host-keyed logins the operator ALSO acts as (``{"gitlab.com": ["my-bot"]}``), read
+    # cold by the pre-push foreign-MR guard: a forge CLI answers with ONE login, so an MR
+    # our own bot authored is otherwise indistinguishable from a teammate's.
+    "self_forge_identities": _parse_registry_dict,
 }
 
 COLD_SETTING_KEYS: tuple[str, ...] = tuple(COLD_SETTINGS)

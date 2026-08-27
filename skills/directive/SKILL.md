@@ -45,8 +45,8 @@ t3 directive capture "<verbatim directive text>" [--scope <overlay>]
 ## Set expectations (≤3 lines, after capture)
 
 - Interpretation runs headless on the directive loop — you do not drive it.
-- A **ratify question arrives as a Slack DM** (or read it via
-  `t3 teatree questions list` / `/t3:checking`); answer it to approve.
+- A **ratify question arrives as a Slack DM** (or read it with the
+  `mcp__teatree__question_list` MCP tool — the pending backlog as JSON; fall back to `t3 teatree questions list` / `/t3:checking`); answer it to approve.
 - Nothing implements before that approval — `Directive.admit` is structurally
   human-gated (it raises without a consumed, answered ratify question).
 

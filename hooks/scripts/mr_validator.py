@@ -13,16 +13,16 @@ different outcome from a bare ``None`` (no validator exists at all — fail clos
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
-the stdlib-only ``gate_result`` sibling.
+the stdlib-only ``gate_result`` / ``t3_invocation`` siblings.
 """
 
 import os
-import shutil
-import subprocess  # noqa: S404 — stdlib subprocess for a trusted internal CLI call
+import subprocess  # noqa: S404 — the CompletedProcess return type; the spawn itself is the seam's
 import sys
 from pathlib import Path
 
 from hooks.scripts.gate_result import ValidatorTimedOut, validator_timeout_seconds
+from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities so the helpers the router
 # imports and a test patching one here operate on ONE module object.
@@ -42,10 +42,7 @@ def mr_validate_argv() -> list[str] | None:
     script = os.environ.get("T3_MR_VALIDATE_SCRIPT", "")
     if script and Path(script).is_file():
         return ["python3", script]
-    t3_bin = shutil.which("t3")
-    if t3_bin:
-        return [t3_bin, "tool", "validate-mr"]
-    return None
+    return t3_argv("tool", "validate-mr")
 
 
 def run_mr_validator(
@@ -62,11 +59,8 @@ def run_mr_validator(
     section_args = ["--sections-optional"] if sections_optional else []
     allowance = validator_timeout_seconds()
     try:
-        return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+        return run_t3(
             [*argv, "--title", title, "--description", description, *repo_args, *section_args],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=allowance,
         )
     except subprocess.TimeoutExpired:

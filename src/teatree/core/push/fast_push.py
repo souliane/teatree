@@ -23,6 +23,13 @@ not turn every merge-forward push into a refusal.
 Any finding is a hard refusal: nothing is committed, nothing is pushed. So is a range
 nothing can bound — fail closed, exactly as ``_branch_guard_finding`` already does for an
 unresolvable default branch.
+
+The empty-delta guard is re-enforced in-process for the same reason the leak gates are, and
+NOT by restoring the hook chain: nothing at the pre-push stage performs this check, so the
+bypass is not what opens the hole (#4551). It gates pull-request CREATION alone — the push
+still lands, because a withheld pull request must never strand the work it was checkpointing.
+``pr_from_branch_would_be_empty`` fails CLOSED, so an unreadable probe opens the pull request
+rather than suppressing one the branch genuinely owes.
 """
 
 import json
@@ -37,6 +44,7 @@ from typing import Final, Protocol
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
+from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -52,6 +60,9 @@ LEAK_GATES: Final[tuple[str, str, str, str]] = (
     "overlay-leak",
     "author-identity",
 )
+
+#: ``pr_action`` for a push whose branch could only open a zero-file pull request (#4551).
+EMPTY_DELTA_PR_SKIP: Final = "skipped-empty-delta"
 
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
@@ -77,6 +88,7 @@ class FastPushOutcome:
     pushed: bool = False
     pr_url: str = ""
     pr_action: str = ""
+    pr_skip_reason: str = ""
     message: str = ""
 
 
@@ -129,6 +141,20 @@ class GlabForge:
             cwd=self._repo,
             env=forge_cli_env(),
         )
+
+
+def _empty_delta_reason(branch: str, target: str) -> str:
+    """Name what the three-dot probe established — and a remedy for either direction.
+
+    An empty delta arises just as well from a self-reverting branch or an empty commit, so
+    naming a squash-then-merge-back cause would claim more than the probe actually measured.
+    """
+    return (
+        f"branch {branch!r} carries no changes over {target}, so its pull request would "
+        f"carry zero files. The push landed, so nothing is lost — if work is missing, "
+        f"commit it on {branch!r} and re-run `t3 fast-push`; if it already landed, tear "
+        f"the branch down instead."
+    )
 
 
 def forge_for_repo(repo: Path) -> ForgeClient | None:
@@ -462,6 +488,11 @@ class FastPusher:
             forge.update_pr(url=existing, body=body)
             outcome.pr_url = existing
             outcome.pr_action = "updated"
+            return
+        target = f"origin/{self._default_branch()}"
+        if pr_from_branch_would_be_empty(str(self._repo), outcome.branch, target):
+            outcome.pr_action = EMPTY_DELTA_PR_SKIP
+            outcome.pr_skip_reason = _empty_delta_reason(outcome.branch, target)
             return
         title = outcome.message.splitlines()[0]
         outcome.pr_url = forge.create_pr(branch=outcome.branch, title=title, body=body)

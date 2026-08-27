@@ -23,9 +23,8 @@ context manager removes the secret keys from ``os.environ`` for the spawn window
 restores them after — belt (hermetic strip) plus suspenders (allowlist ``options.env``).
 """
 
-import contextlib
 import os
-from collections.abc import Iterator
+import threading
 
 from teatree.core.modelkit.phases import normalize_phase
 
@@ -89,8 +88,42 @@ def reader_child_env(base: "dict[str, str]") -> dict[str, str]:
     return {key: value for key, value in base.items() if key in _READER_ENV_ALLOWLIST}
 
 
-@contextlib.contextmanager
-def reader_env_hermetic() -> Iterator[None]:
+class _NestedEnvScrub:
+    """Refcounted ``os.environ`` scrub: concurrent readers share one strip, the last out restores.
+
+    ``os.environ`` is process-global, so an unsynchronized strip/restore pair loses the
+    guarantee under a multithreaded worker: two overlapping readers each capture their own
+    "stripped" mapping, and the first to exit restores every secret while the second is
+    still spawning. Holding the depth and the saved mapping behind one lock makes the
+    reduced environment span the UNION of the active reader windows.
+    """
+
+    def __init__(self, keep: frozenset[str]) -> None:
+        self._keep = keep
+        self._lock = threading.Lock()
+        self._depth = 0
+        self._stripped: dict[str, str] = {}
+
+    def __enter__(self) -> None:
+        with self._lock:
+            if self._depth == 0:
+                self._stripped = {k: v for k, v in os.environ.items() if k not in self._keep}
+                for key in self._stripped:
+                    del os.environ[key]
+            self._depth += 1
+
+    def __exit__(self, *_exc: object) -> None:
+        with self._lock:
+            self._depth -= 1
+            if self._depth == 0:
+                os.environ.update(self._stripped)
+                self._stripped = {}
+
+
+_READER_ENV_SCRUB = _NestedEnvScrub(_READER_ENV_ALLOWLIST)
+
+
+def reader_env_hermetic() -> _NestedEnvScrub:
     """Strip every non-allowlisted key from ``os.environ`` for the duration, restoring after.
 
     The mutating sibling of :func:`reader_child_env` — allowlist parity, so belt ==
@@ -98,12 +131,7 @@ def reader_env_hermetic() -> Iterator[None]:
     and cannot DELETE a key the overrides omit. A reader spawned inside this context
     inherits an ``os.environ`` reduced to the allowlist: no posting/forge/secret
     credential of ANY name (a denylist would miss ``DATABASE_URL`` / ``SENTRY_DSN``).
-    Keys are restored on exit so the rest of the process is unaffected.
+    Keys are restored once the LAST active reader leaves, so the rest of the process is
+    unaffected and an overlapping reader never sees them come back early.
     """
-    stripped = {key: value for key, value in os.environ.items() if key not in _READER_ENV_ALLOWLIST}
-    for key in stripped:
-        del os.environ[key]
-    try:
-        yield
-    finally:
-        os.environ.update(stripped)
+    return _READER_ENV_SCRUB

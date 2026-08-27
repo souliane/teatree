@@ -7,7 +7,9 @@ deletes a disabled/unknown loop's timers — all without dispatching anything.
 
 import datetime as dt
 import os
+import tempfile
 import types
+from pathlib import Path
 from unittest import mock
 
 import django.test
@@ -28,6 +30,8 @@ from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
 #: A preset of the test's own, so nothing here depends on the seeded production modes.
 _PRESET = "forced-on-4185"
+#: A worker pid that is not the recorded singleton holder — a replaced worker, so gone.
+_REPLACED_WORKER_PID = 424242
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
@@ -605,3 +609,101 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestDrainChainFreesEveryStrandedPath(django.test.TestCase):
+    """The maintenance pass must leave no RUNNING row of ANY task path wedged forever.
+
+    Measured on the running box: 33 RUNNING rows surviving indefinitely, the oldest 26
+    days. Every reaper is keyed to one path or one status — ``ensure_loop_timers``
+    repairs only an ADMITTED loop's ``loop_timer``, ``reap_stuck_runs`` filters on
+    ``execute_task``, ``expire_stale_jobs`` retires only READY, ``prune_task_results``
+    skips READY and RUNNING alike — so a row from any other path is unreachable by all
+    of them. ``STRANDED_JOB_GRACE_SECONDS``'s own docstring names the gap ("every reaper
+    is per-task-path"); two readers already judge RUNNING rows against it, and nothing
+    ever writes the verdict back.
+    """
+
+    def setUp(self) -> None:
+        DBTaskResult.objects.all().delete()
+        pid_file = Path(self.enterContext(tempfile.TemporaryDirectory())) / "worker.pid"
+        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        self.enterContext(mock.patch("teatree.utils.singleton.default_pid_path", return_value=pid_file))
+
+    def _stranded(self, *, task_path: str, queue_name: str, age_days: int) -> DBTaskResult:
+        result = execute_task.enqueue(1, "coding")
+        DBTaskResult.objects.filter(id=result.id).update(
+            task_path=task_path,
+            queue_name=queue_name,
+            status=TaskResultStatus.RUNNING,
+            started_at=timezone.now() - dt.timedelta(days=age_days),
+            worker_ids=[f"worker-{_REPLACED_WORKER_PID}-0-{queue_name}"],
+        )
+        return DBTaskResult.objects.get(id=result.id)
+
+    def test_a_days_old_off_live_tick_drive_is_freed(self) -> None:
+        row = self._stranded(
+            task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path,
+            queue_name=timer_chains.LOOPS_QUEUE,
+            age_days=22,
+        )
+
+        timer_reconciler.drain_chain.func()
+
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED, "a 22-day-old RUNNING drive is a corpse, not in flight"
+
+    def test_a_retired_loops_timer_row_is_freed(self) -> None:
+        # `pane_reaper` was dropped by migration 0033; ensure_loop_timers reaps a RUNNING
+        # timer only for an ADMITTED loop, and its comment's "a RUNNING one dies on its
+        # own next fire" never happens once the chain is gone.
+        result = timer_chains.loop_timer.enqueue("pane_reaper")
+        DBTaskResult.objects.filter(id=result.id).update(
+            status=TaskResultStatus.RUNNING,
+            started_at=timezone.now() - dt.timedelta(days=26),
+            worker_ids=[f"worker-{_REPLACED_WORKER_PID}-0-loops"],
+        )
+
+        timer_reconciler.drain_chain.func()
+
+        assert DBTaskResult.objects.get(id=result.id).status == TaskResultStatus.FAILED
+
+    def test_a_task_path_that_no_longer_exists_is_freed(self) -> None:
+        row = self._stranded(
+            task_path="teatree.loops.timer_reconciler.drain_headless_chain",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            age_days=7,
+        )
+
+        timer_reconciler.drain_chain.func()
+
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED
+
+    def test_a_row_the_live_worker_still_carries_survives_the_pass(self) -> None:
+        # Age bounds a plausible runtime; the carrier stamped at claim time is the fact.
+        # A 22-day-old row this very process claimed is in flight, not a corpse.
+        result = execute_task.enqueue(1, "coding")
+        DBTaskResult.objects.filter(id=result.id).update(
+            task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path,
+            queue_name=timer_chains.LOOPS_QUEUE,
+            status=TaskResultStatus.RUNNING,
+            started_at=timezone.now() - dt.timedelta(days=22),
+            worker_ids=[f"worker-{os.getpid()}-0-loops"],
+        )
+
+        timer_reconciler.drain_chain.func()
+
+        assert DBTaskResult.objects.get(id=result.id).status == TaskResultStatus.RUNNING
+
+    def test_a_stranded_teardown_stops_suppressing_its_own_retry(self) -> None:
+        # TeardownDispatch.outstanding_for reads a RUNNING teardown past the grace as
+        # stranded already; leaving the row RUNNING keeps the queue disagreeing with the
+        # only reader that acts on it.
+        row = self._stranded(task_path="teatree.core.tasks.execute_teardown", queue_name="default", age_days=24)
+
+        timer_reconciler.drain_chain.func()
+
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED

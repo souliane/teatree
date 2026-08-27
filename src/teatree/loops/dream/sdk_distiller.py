@@ -273,20 +273,27 @@ def _loads_array(text: str) -> list[object] | None:
 
 
 def _coerce_cluster(entry: object) -> DistilledCluster | None:
+    """One model-emitted element as a cluster, or ``None`` when its shape is not the contract.
+
+    ``is_binding`` must be a JSON boolean, not merely truthy: ``bool("false")`` is True,
+    so a stringified reply flipped every cluster to BINDING — and a BINDING row is one
+    :class:`~teatree.core.models.ConsolidatedMemory` refuses to expire or retire forever.
+    """
     if not isinstance(entry, Mapping):
         return None
     fields = cast("Mapping[str, object]", entry)
     if any(key not in fields for key in _REQUIRED_CLUSTER_KEYS):
         return None
     source_files = fields["source_files"]
-    if not isinstance(source_files, list):
+    is_binding = fields["is_binding"]
+    if not isinstance(source_files, list) or not isinstance(is_binding, bool):
         return None
     paths = [str(path) for path in source_files]
     return DistilledCluster(
         cluster_key=deterministic_cluster_key(paths),
         rule=str(fields["rule"]),
         source_files=paths,
-        is_binding=bool(fields["is_binding"]),
+        is_binding=is_binding,
         verified_citation=str(fields["verified_citation"]),
         durable_destination=str(fields.get("durable_destination", "")),
     )

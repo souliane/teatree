@@ -127,7 +127,7 @@ class PassPathSelector:
     def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE) -> str | None:
         """The ``pass_path`` override for *kind* in *scope*, or ``None`` for the built-in.
 
-        Reuses a fresh, non-exhausted sticky pick with no probe; else selects the first
+        Reuses a still-configured, fresh, non-exhausted sticky pick with no probe; else selects the first
         non-exhausted account from the overlay's list, then falls back across overlays.
         When the REQUESTED scope has no routing configured, falls back to the cross-scope
         union — a bare eval shell (no active overlay → :data:`GLOBAL_SCOPE`) still routes
@@ -146,14 +146,16 @@ class PassPathSelector:
             fell_back_across_scopes = True
         now = timezone.now()
 
+        everywhere = self._all_configured_paths(kind)
         sticky = AnthropicActivePick.objects.pick_for(kind.value, scope)
-        if sticky is not None and self._sticky_is_usable(sticky, now):
+        # A sticky pinned before the operator dropped that account from routing is not a
+        # reuse candidate — it names an account this install is no longer configured for.
+        if sticky is not None and sticky in everywhere and self._sticky_is_usable(sticky, now):
             return sticky
 
         chosen = self._first_usable(configured, now)
         if chosen is None:
-            others = [path for path in self._all_configured_paths(kind) if path not in configured]
-            chosen = self._first_usable(others, now)
+            chosen = self._first_usable([path for path in everywhere if path not in configured], now)
         if chosen is None:
             raise self._all_exhausted_error(kind)
 

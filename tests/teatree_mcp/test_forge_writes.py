@@ -22,7 +22,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from tests.teatree_mcp._call_tool_result import structured as _structured
 
@@ -30,6 +30,7 @@ from tests.teatree_mcp._call_tool_result import structured as _structured
 class _ServiceOverlay:
     def __init__(self, *services: Service) -> None:
         self.config = OverlayConfig(required_third_party_services=frozenset(services))
+        self.connectors = OverlayConnectors()
 
 
 class _FakeForge:

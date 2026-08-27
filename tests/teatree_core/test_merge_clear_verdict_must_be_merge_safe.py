@@ -14,6 +14,7 @@ Integration-style: the real guarded factory (``MergeClear.issue`` via the
 ``gh`` subprocess — the unstoppable external — is stubbed.
 """
 
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -71,8 +72,8 @@ class TestNonGreenVerdictNeverIssuable(TestCase):
         for verdict in _HOLD_VERDICTS:
             with self.subTest(verdict=verdict):
                 ticket = TicketFactory()
-                result = cast(
-                    "dict[str, object]",
+                err = StringIO()
+                with pytest.raises(SystemExit) as exc:
                     call_command(
                         "ticket",
                         "clear",
@@ -83,13 +84,13 @@ class TestNonGreenVerdictNeverIssuable(TestCase):
                         gh_verify_result=verdict,
                         blast_class="docs",
                         ticket_id=int(ticket.pk),
-                    ),
-                )
-                assert not result["issued"]
+                        stderr=err,
+                    )
+                assert exc.value.code == 1
                 # Split messages (FIX-EXPEDITE): a pending snapshot is refused as
                 # "issuable only via the expedite waiver"; a failed one as "can never
                 # authorize a merge". Both name their verdict class.
-                assert verdict in cast("str", result["error"]).lower()
+                assert verdict in err.getvalue().lower()
         assert MergeClear.objects.count() == 0
 
     def test_clear_with_green_verdict_is_issued(self) -> None:

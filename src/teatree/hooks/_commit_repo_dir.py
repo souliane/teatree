@@ -2,9 +2,12 @@ r"""Resolve the dir whose repo a ``git`` command's commit LANDS in.
 
 Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
 the module-health LOC cap. This module owns one concern: from a Bash command
-string, statically resolve the working directory ``git`` would use, mirroring
+string, statically resolve the working directory a command runs in, mirroring
 ``git``'s documented global-flag semantics so the banned-terms carve-out
 decides privacy from the repo the commit ACTUALLY lands in.
+:func:`segment_cwds` answers the same question PER top-level segment, so the
+publish gates classify each segment against the dir bash would run IT in rather
+than one dir applied to the whole command.
 
 ``git`` selects a commit's repo as: the ``--git-dir``/``$GIT_DIR`` repo if
 specified, else the repo discovered from the effective working directory,
@@ -47,6 +50,7 @@ from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker
+from teatree.hooks._shell_lexer import TokenKind, tokenize
 
 # Returned by ``effective_repo_dir`` when a ``-C`` value cannot be resolved
 # statically (e.g. it carries a substitution marker). The commit carve-out
@@ -57,7 +61,11 @@ UNRESOLVABLE_REPO_DIR: Final[str] = "\x00teatree-unresolvable-repo-dir\x00"
 # A ``cd <path>`` / ``pushd <path>`` navigation segment needs the verb plus
 # its single path argument.
 _NAV_WITH_PATH_WORD_COUNT: Final[int] = 2
-_NAV_VERBS: Final[frozenset[str]] = frozenset({"cd", "pushd"})
+NAVIGATION_VERBS: Final[frozenset[str]] = frozenset({"cd", "pushd"})
+
+# Every verb that MOVES the shell's working directory. Wider than ``NAVIGATION_VERBS``:
+# ``popd`` names no path, so it moves the cwd to somewhere this parse cannot know.
+_CWD_MUTATING_VERBS: Final[frozenset[str]] = NAVIGATION_VERBS | {"popd"}
 
 
 def _last_flag_value(words: list[str], flag: str) -> str | None:
@@ -153,7 +161,7 @@ def leading_cd_dir(command: str) -> str | None:
     """
     accumulator: Path | None = None
     for words in command_segments(command):
-        if len(words) < _NAV_WITH_PATH_WORD_COUNT or words[0] not in _NAV_VERBS:
+        if len(words) < _NAV_WITH_PATH_WORD_COUNT or words[0] not in NAVIGATION_VERBS:
             break
         path = _shell_path(words[1])
         accumulator = path if path.is_absolute() or accumulator is None else accumulator / path
@@ -182,6 +190,54 @@ def leading_cd_target(command: str, cwd: Path | None) -> Path | str | None:
         return None
     target = anchored_dir(cd_dir, cwd)
     return target if target.is_dir() else UNRESOLVABLE_REPO_DIR
+
+
+def _command_opens_subshell(command: str) -> bool:
+    """Return True iff ``command`` opens a ``( ... )`` group.
+
+    The lexer emits the OPENER as a separator but glues the CLOSER onto its
+    neighbouring word, so a subshell's extent is not reconstructable -- and with it,
+    whether a ``cd`` inside the group survives past it. Bash restores the cwd when the
+    subshell exits, so a tracker that cannot see the exit would carry the inner ``cd``
+    onto the segments that follow and classify them against the wrong repo.
+    """
+    return any(token.kind is TokenKind.OP and token.value == "(" for token in tokenize(command))
+
+
+def _navigated_dir(words: list[str], running: Path | None) -> Path | None:
+    """Return the dir a cwd-mutating segment lands in, or ``None`` when unprovable."""
+    if len(words) != _NAV_WITH_PATH_WORD_COUNT or words[0] not in NAVIGATION_VERBS:
+        return None
+    if running is None and not _shell_path(words[1]).is_absolute():
+        return None
+    target = anchored_dir(words[1], running)
+    return target if target.is_dir() else None
+
+
+def segment_cwds(command: str, cwd: Path | None) -> list[Path | None]:
+    """Return the dir EACH top-level segment runs in, aligned with :func:`command_segments`.
+
+    The cwd MOVES as bash moves it: every ``cd``/``pushd`` segment re-points it for the
+    segments that FOLLOW. Resolving one dir for the whole command instead -- from its
+    leading ``cd`` or from the ambient hook cwd -- classifies every later publish against
+    the FIRST dir, so a second ``cd`` into a public clone posts under the first one's
+    verdict and an obscured public post hides behind a leading non-public segment.
+
+    ``None`` is the fail-closed answer for a dir this parse cannot prove: a ``cd`` onto no
+    real directory (the ``cd`` fails, so the command publishes nowhere), a bare
+    ``cd``/``popd``/``cd -``, a relative ``cd`` with no base to anchor on, or ANY navigation
+    once a subshell has opened (:func:`_command_opens_subshell`). Both consumers -- the
+    leak-gate visibility scope and the private-post carve-out -- already read ``None`` as
+    "no provable destination" and refuse to skip on it.
+    """
+    scoped = _command_opens_subshell(command)
+    running = cwd
+    cwds: list[Path | None] = []
+    for words in command_segments(command):
+        cwds.append(running)
+        if words[0] in _CWD_MUTATING_VERBS:
+            running = None if scoped else _navigated_dir(words, running)
+    return cwds
 
 
 def git_root_for_dir(start: Path) -> Path | None:

@@ -23,6 +23,8 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from teatree.paths import teatree_source_root
+
 Status = Literal["blocking", "warn"]
 
 BLOCKING_NOW = "BLOCKING-NOW"
@@ -30,10 +32,6 @@ BLOCKING_NOW = "BLOCKING-NOW"
 _STATUSES: frozenset[str] = frozenset({"blocking", "warn"})
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ISSUE_RE = re.compile(r"^souliane/teatree#\d+$")
-
-
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
 
 
 def manifest_path() -> Path:
@@ -55,7 +53,7 @@ class RegressionRule:
 
     @property
     def rule_path(self) -> Path:
-        return repo_root() / self.file
+        return teatree_source_root() / self.file
 
     @property
     def is_blocking(self) -> bool:

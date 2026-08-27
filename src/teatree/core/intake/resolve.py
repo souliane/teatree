@@ -249,6 +249,22 @@ def _overlay_name_for_cwd(cwd_path: Path) -> str | None:
     return overlay_name_of(overlay) or None
 
 
+def _linked_worktree_root(cwd: str) -> Path | None:
+    """The linked-worktree root *cwd* sits in, or ``None`` when it is not in one.
+
+    Only the root carries ``.git`` as a file, so testing *cwd* itself saw nothing
+    for every invocation made from a subdirectory of the worktree.
+    """
+    here = Path(cwd).resolve()
+    if (here / ".git").is_file():
+        return here
+    toplevel = git.run(repo=cwd, args=["rev-parse", "--show-toplevel"])
+    if not toplevel:
+        return None
+    root = Path(toplevel).resolve()
+    return root if (root / ".git").is_file() else None
+
+
 def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Worktree | None:
     """Detect a git worktree from the filesystem and auto-register it in the DB.
 
@@ -271,10 +287,9 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
     the branch+repo reuse and the ``auto:`` fork below, not raise out of the
     single CLI entry point and route the caller onto a raw script.
     """
-    cwd_path = Path(cwd).resolve()
-    git_file = cwd_path / ".git"
-    if not git_file.is_file():
-        return None  # Not a git worktree (worktrees have .git as a file, not dir)
+    cwd_path = _linked_worktree_root(cwd)
+    if cwd_path is None:
+        return None
 
     branch = git.current_branch(repo=cwd)
     if not branch:

@@ -149,6 +149,27 @@ def attached_value(token: str, prefix: str) -> str | None:
     return None
 
 
+# Attached spellings of the ``gh``/``glab api`` field flags. pflag accepts
+# ``--field=body=x`` / ``-fbody=x`` exactly as it accepts the spaced form, so the
+# publish-DETECTION method resolver and the body/secret EXTRACTORS all read them
+# through :func:`attached_api_field` rather than each recognising their own subset.
+_API_FIELD_ATTACHED_PREFIXES: Final[tuple[str, ...]] = ("--field=", "--raw-field=", "-f", "-F")
+
+
+def attached_api_field(token: str) -> str | None:
+    """Return the ``name=value`` assignment an ATTACHED api field flag carries.
+
+    The required ``=`` in the value is what keeps an ``=``-free ``-F<path>`` —
+    the ``--body-file`` short form :func:`_body_file_resolution._short_f_body_file`
+    owns — out of the field grammar.
+    """
+    for prefix in _API_FIELD_ATTACHED_PREFIXES:
+        value = attached_value(token, prefix)
+        if value is not None and "=" in value:
+            return value
+    return None
+
+
 def canonical_leader(word: str) -> str:
     """Return the basename of a program word (``/usr/bin/gh`` → ``gh``, ``./gh`` → ``gh``).
 

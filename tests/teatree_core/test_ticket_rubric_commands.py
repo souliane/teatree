@@ -53,10 +53,11 @@ class TestRubricSetCommand(TestCase):
         with pytest.raises(SystemExit):
             call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps({"text": "AC1"}))
 
-    def test_set_with_no_input_returns_error(self) -> None:
+    def test_set_with_no_input_exits_nonzero(self) -> None:
         ticket = _ticket()
-        result = cast("dict[str, object]", call_command("ticket", "rubric-set", str(ticket.pk)))
-        assert "error" in result
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("ticket", "rubric-set", str(ticket.pk))
+        assert exc_info.value.code == 1
 
     def test_set_refuses_non_string_non_object_item(self) -> None:
         ticket = _ticket()

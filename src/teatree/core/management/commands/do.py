@@ -30,7 +30,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.models.errors import InvalidTransitionError
 
 # stopped_reason values that mean "the operator must act" -> exit 1.
-_FAILED_REASONS = frozenset({"blocked", "ignored"})
+_FAILED_REASONS = frozenset({"blocked", "ignored", "off_path"})
 
 
 class _ChokepointError(TypedDict, total=False):

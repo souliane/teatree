@@ -118,14 +118,14 @@ def _recap_key(groups: list[CheckGroup], *, scope: str) -> str:
     return f"checking_recap:{scope}:{digest}"
 
 
-def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, notify: bool) -> None:
-    """DM the recap through the real bot→user egress when ``--notify`` is set (#2966)."""
+def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, notify: bool) -> bool:
+    """Whether the recap DM landed — trivially true when there is nothing to send (#2966)."""
     if not notify:
-        return
+        return True
     blocks, fence = _recap_table_dm(groups, header=header)
     if not blocks:
-        return
-    notify_user(
+        return True
+    return notify_user(
         fence,
         kind=NotifyKind.INFO,
         idempotency_key=_recap_key(groups, scope=scope),
@@ -191,12 +191,16 @@ class Command(MachineOutputCommand):
             code_host=self._resolve_code_host(),
             overlay_repos=self._resolve_overlay_repos(),
         )
-        if not flags.since and not flags.no_advance:
-            advance_checkpoint_monotonic(now)
         stamp = _stamp(report.since)
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         groups = [report.merged, report.in_flight, report.needs_you]
-        _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
+        # The checkpoint consumes the window, so advancing it over an undelivered
+        # recap loses those rows for good — deliver first, advance only on success.
+        delivered = _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
+        if not delivered:
+            self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
+        if not flags.since and not flags.no_advance and delivered:
+            advance_checkpoint_monotonic(now)
         return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
 
     def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> AllOverlaysReportDict:
@@ -221,15 +225,17 @@ class Command(MachineOutputCommand):
             overlay_configs=overlay_configs,
         )
 
-        if not flags.since and not flags.no_advance:
+        stamp = _stamp(report.earliest_since)
+        header = f"Since {stamp} · all overlays"
+        groups = [report.merged, report.in_flight, report.needs_you]
+        delivered = _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
+        if not delivered:
+            self.stderr.write("  recap DM not delivered — the checking window is left unadvanced")
+        if not flags.since and not flags.no_advance and delivered:
             for name in overlays:
                 path = checkpoint_path(overlay=name)
                 advance_checkpoint_monotonic(now, path)
 
-        stamp = _stamp(report.earliest_since)
-        header = f"Since {stamp} · all overlays"
-        groups = [report.merged, report.in_flight, report.needs_you]
-        _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
         return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
 
     def _emit[ReportT: (CheckingReportDict, AllOverlaysReportDict)](

@@ -92,8 +92,10 @@ class FullMetadata(OverlayMetadata):
             {"name": "broken", "help": "No command defined"},
         ]
 
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True) -> ValidationResult:
-        del require_sections
+    def validate_pr(
+        self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
+    ) -> ValidationResult:
+        del require_sections, repo
         errors = []
         if not title:
             errors.append("Title is required")

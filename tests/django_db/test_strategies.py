@@ -155,6 +155,33 @@ class TestTryFetchRemoteDump:
         assert "--no-owner" in captured[0]
         assert "--no-privileges" in captured[0]
 
+    def test_pg_dump_takes_the_password_from_the_environment_not_argv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An argv element is world-readable via ``ps``; libpq reads ``PGPASSWORD``."""
+        (tmp_path / ".data").mkdir()
+        importer = _make_importer(
+            tmp_path,
+            dslr_cmd=[],
+            remote_db_url="postgres://u:s3cr%40t@host:5432/db?sslmode=require",
+        )
+        captured: list[tuple[list[str], dict]] = []
+
+        def fake_run(args, **kw):
+            if isinstance(args, list) and args[0] == "pg_dump":
+                captured.append((args, kw))
+                Path(args[args.index("-f") + 1]).write_bytes(b"PGDMP")
+            return _ok_run()
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        importer._try_fetch_remote_dump()
+
+        assert captured, "pg_dump was not invoked"
+        argv, kwargs = captured[0]
+        assert not any("s3cr" in arg for arg in argv)
+        assert argv[-1] == "postgres://u@host:5432/db?sslmode=require"
+        assert kwargs["env"]["PGPASSWORD"] == "s3cr@t"
+
 
 # ---------------------------------------------------------------------------
 # Strategy: CI dump

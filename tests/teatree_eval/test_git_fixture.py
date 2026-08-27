@@ -113,7 +113,7 @@ class TestProvisionE2eArtifactsFixture:
             assert len(webm) > 1024, f"run.webm is trivially small ({len(webm)} bytes)"
 
     def test_screenshots_are_byte_distinct(self) -> None:
-        # post-test-plan's md5 dedup gate refuses two byte-identical images, and a
+        # write-test-plan's md5 dedup gate refuses two byte-identical images, and a
         # diligent agent runs that check before posting — identical captures make it
         # correctly refuse and never issue the canonical command (the #3190 regression).
         with provision_e2e_artifacts_fixture() as root:
@@ -121,7 +121,7 @@ class TestProvisionE2eArtifactsFixture:
             assert (env_dir / "step1.png").read_bytes() != (env_dir / "step2.png").read_bytes()
 
     def test_screenshots_clear_the_real_image_gates(self) -> None:
-        # The bytes must pass the SAME gates post-test-plan enforces (red-box pixel
+        # The bytes must pass the SAME gates write-test-plan enforces (red-box pixel
         # count + byte-identical dedup), not merely look like a PNG to `file`. A
         # capture short of the red-box floor reads as box-less evidence a correct
         # agent refuses to post.

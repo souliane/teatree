@@ -53,6 +53,37 @@ DEFAULT_JUDGE_MODEL = TIER_MODELS[DEFAULT_TIER]
 # operators an `op "value"` expression may use.
 _OP_PATTERN = re.compile(rf'^({"|".join(re.escape(op) for op in MATCHER_OPERATORS)})\s+"(.*)"$')
 
+# Every top-level key _parse_spec reads. A key outside this set is a typo, and an
+# ignored typo silently drops the cap/flag the author wrote (`watchdog_second: 30`
+# leaves the scenario on the lane default) with no signal at load time.
+PERMITTED_SPEC_KEYS = frozenset(
+    {
+        "agent",
+        "agent_path",
+        "agent_sections",
+        "available_skills",
+        "cli_stubs",
+        "context_preamble",
+        "expect",
+        "fixture",
+        "judge",
+        "lane",
+        "max_budget_usd",
+        "max_turns",
+        "model",
+        "name",
+        "phase",
+        "production_hooks",
+        "prompt",
+        "scenario",
+        "single_action",
+        "surface",
+        "tier",
+        "tools",
+        "watchdog_seconds",
+    }
+)
+
 
 class EvalSpecError(ValueError):
     def __init__(self, path: Path, line: int | None, message: str) -> None:
@@ -76,6 +107,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     if not isinstance(entry, Mapping):
         raise EvalSpecError(path, None, f"each spec must be a mapping, got {type(entry).__name__}")
     spec_map: Mapping[str, Any] = {str(k): v for k, v in entry.items()}
+    _reject_unknown_keys(spec_map, path)
     name = _required_str(spec_map, "name", path)
     scenario = _required_str(spec_map, "scenario", path)
     agent_path = str(spec_map.get("agent_path") or spec_map.get("agent") or default_agent_path or DEFAULT_AGENT_PATH)
@@ -126,6 +158,13 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         production_hooks=_parse_bool(spec_map, "production_hooks", name, path),
         single_action=single_action,
     )
+
+
+def _reject_unknown_keys(entry: Mapping[str, Any], path: Path) -> None:
+    unknown = sorted(set(entry) - PERMITTED_SPEC_KEYS)
+    if unknown:
+        permitted = ", ".join(sorted(PERMITTED_SPEC_KEYS))
+        raise EvalSpecError(path, None, f"unknown spec key(s) {unknown} (permitted: {permitted})")
 
 
 def _parse_bool(entry: Mapping[str, Any], key: str, spec_name: str, path: Path) -> bool:
@@ -376,6 +415,7 @@ def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
     tool, arg_path = raw_key.split(".", 1)
     operator, value = _parse_op_expr(str(op_expr), spec_name, path)
     guard_tool, guard_arg_path, guard_operator, guard_value = _parse_order_guard(item, spec_name, path)
+    unless_arg_path, unless_operator, unless_value = _parse_exemption(item, spec_name, path)
     return Matcher(
         kind="negative",
         tool=tool,
@@ -386,7 +426,30 @@ def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
         guard_arg_path=guard_arg_path,
         guard_operator=guard_operator,
         guard_value=guard_value,
+        unless_arg_path=unless_arg_path,
+        unless_operator=unless_operator,
+        unless_value=unless_value,
     )
+
+
+def _parse_exemption(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str, str]:
+    """Parse the optional ``unless`` exemption on a negative matcher.
+
+    Shape: ``unless: '<arg> <op> "value"'`` (e.g. ``'run_in_background ~ "(?i)true"'``).
+    The arg belongs to the SAME call the negative matched, so it carries no tool
+    prefix. Absent (the default) yields three empty strings, leaving the negative
+    unexcusable.
+    """
+    raw = item.get("unless")
+    if raw is None:
+        return "", "", ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `unless` must be a non-empty string")
+    arg_path, _, op_part = raw.strip().partition(" ")
+    if not arg_path or not op_part.strip():
+        raise EvalSpecError(path, None, f'spec {spec_name!r}: `unless` must read `<arg> op "value"`, got {raw!r}')
+    operator, value = _parse_op_expr(op_part, spec_name, path)
+    return arg_path, operator, value
 
 
 def _parse_order_guard(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str, str, str]:

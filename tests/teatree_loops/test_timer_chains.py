@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops import timer_chains
+from teatree.loops.seed import DEFAULT_LOOPS
 
 
 def _fire(name: str, *, task_id: uuid.UUID | None = None) -> dict:
@@ -83,11 +84,21 @@ class TestComputeTickDeadline(django.test.SimpleTestCase):
         assert timer_chains.compute_tick_deadline(Loop(name="n", delay_seconds=None)) == pytest.approx(300.0)
 
     def test_daily_loop_gets_the_generous_daily_deadline_not_the_300s_floor(self) -> None:
-        # A ``daily_at`` loop has no ``delay_seconds``; ``3 x cadence`` would collapse to
-        # 300s and SIGKILL a legitimately long daily scan after its anchor was consumed.
         row = Loop(name="dly", delay_seconds=None, daily_at=dt.time(8, 0))
         assert timer_chains.compute_tick_deadline(row) == pytest.approx(timer_chains.DAILY_TICK_DEADLINE_SECONDS)
         assert timer_chains.DAILY_TICK_DEADLINE_SECONDS > timer_chains.MIN_TICK_DEADLINE_SECONDS
+
+    def test_daily_deadline_wins_over_the_fallback_interval_every_script_loop_must_carry(self) -> None:
+        # ``loop_script_requires_delay`` forces every script loop to store an interval, so
+        # every SHIPPED daily loop carries one; keying the daily branch on its absence made
+        # that branch unreachable and stretched the shipped 86400s fallback to a 72h ceiling.
+        row = Loop(name="news", delay_seconds=86400, daily_at=dt.time(8, 0))
+        assert timer_chains.compute_tick_deadline(row) == pytest.approx(timer_chains.DAILY_TICK_DEADLINE_SECONDS)
+
+    def test_every_shipped_daily_seed_carries_the_interval_that_made_the_branch_unreachable(self) -> None:
+        daily = [spec for spec in DEFAULT_LOOPS if spec.daily_at is not None]
+        assert daily, "the shipped seed table no longer defines a daily loop"
+        assert all(spec.delay_seconds for spec in daily)
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)

@@ -70,6 +70,13 @@ _CONFIG_SUFFIXES: frozenset[str] = frozenset(
 # it — the Write/checkout/restore surfaces cover the named-config case cleanly.
 _GIT_RESTORE_VERBS: tuple[str, ...] = ("checkout", "restore")
 
+# git's leading global options that consume the NEXT token as their value, so the
+# subcommand scan skips two tokens for them. Without this, ``git -C <dir> checkout``
+# reads ``-C`` as the subcommand and the restore goes unseen.
+_GLOBAL_OPTS_WITH_VALUE: frozenset[str] = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+
 _GIT_RE = re.compile(r"\bgit\b")
 
 
@@ -144,32 +151,41 @@ def write_overwrites_existing(file_path: str, *, exists: bool) -> bool:
     return exists and is_user_config_path(file_path)
 
 
+def _restore_operands(tokens: list[str]) -> list[str]:
+    """Operand tokens of the first ``git`` restore call, or ``[]`` for a non-restore.
+
+    A git invocation's SUBCOMMAND is the first token after ``git`` that is not one
+    of git's leading global options, so the scan walks past ``-C <dir>`` /
+    ``--git-dir=<dir>`` rather than reading them as the verb. Taking the operands
+    from the verb onward also keeps a global option's own value (``-C ~/.config``)
+    out of the path candidates.
+    """
+    for index, tok in enumerate(tokens):
+        if tok != "git":
+            continue
+        cursor = index + 1
+        while cursor < len(tokens):
+            candidate = tokens[cursor]
+            if not candidate.startswith("-"):
+                if candidate in _GIT_RESTORE_VERBS:
+                    return tokens[cursor + 1 :]
+                break
+            base = candidate.split("=", 1)[0]
+            cursor += 2 if base in _GLOBAL_OPTS_WITH_VALUE and "=" not in candidate else 1
+    return []
+
+
 def _restore_targets_config(command: str) -> list[str]:
     """Best-effort: config paths a git-restore command would clobber.
 
-    Scans the tokens after a ``checkout`` / ``restore`` verb (and the whole
-    command for ``stash pop`` / ``stash apply``) for any token that is a user
-    config path. Returns the matching paths; empty when the restore does not
-    touch a config file (or is not a restore at all).
+    Scans the operands after a ``checkout`` / ``restore`` verb for any token that
+    is a user config path. Returns the matching paths; empty when the restore does
+    not touch a config file (or is not a restore at all).
     """
     if not _GIT_RE.search(command):
         return []
-    tokens = command.split()
-    config_tokens: list[str] = []
-
-    is_restore = any(
-        tok == "git" and i + 1 < len(tokens) and tokens[i + 1] in _GIT_RESTORE_VERBS for i, tok in enumerate(tokens)
-    )
-    if not is_restore:
-        return []
-
-    for tok in tokens:
-        # Skip flags and the verbs themselves; the path operands carry config.
-        if tok.startswith("-") or tok in {"git", *_GIT_RESTORE_VERBS}:
-            continue
-        if is_user_config_path(tok):
-            config_tokens.append(tok)
-    return config_tokens
+    operands = _restore_operands(command.split())
+    return [tok for tok in operands if not tok.startswith("-") and is_user_config_path(tok)]
 
 
 def find_blind_write(file_path: str, *, exists: bool, was_read: bool) -> ConfigOverwriteFinding | None:

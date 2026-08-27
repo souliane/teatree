@@ -10,7 +10,7 @@ import pytest
 
 from teatree.core.management.commands._workspace.helpers import prune_dslr_snapshots_skipping
 from teatree.utils.django_db import dslr_prune
-from teatree.utils.django_db.dslr_prune import parse_dslr_snapshots, stale_dslr_snapshots
+from teatree.utils.django_db.dslr_prune import parse_dslr_snapshots, prune_dslr_snapshots, stale_dslr_snapshots
 
 
 class TestParseDslrSnapshots:
@@ -86,3 +86,18 @@ class TestPruneDslrSnapshotsSkipping:
         labels = prune_dslr_snapshots_skipping(keep=1, in_use_tenants=set(), dry_run=False)
         assert labels == ["Pruned DSLR snapshot: 20260101_alpha"]
         assert ["dslr", "delete", "-y", "20260101_alpha"] in deletes
+
+
+class TestPruneDslrSnapshots:
+    def test_a_refused_delete_is_not_reported_as_pruned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Reporting an undeleted snapshot makes the next run believe the disk was freed.
+        monkeypatch.setattr(dslr_prune, "find_dslr_cmd", lambda *_a, **_k: ["dslr"])
+        stdout = "20260101_alpha\n20260103_alpha\n"
+
+        def _refuse_deletes(cmd: list[str], **_k: object) -> types.SimpleNamespace:
+            if "delete" in cmd:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="snapshot is in use")
+            return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(dslr_prune, "run_allowed_to_fail", _refuse_deletes)
+        assert prune_dslr_snapshots(keep=1) == []

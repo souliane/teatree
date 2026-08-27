@@ -1,11 +1,9 @@
 """Host-facing MR/PR test-plan poster (F3.1).
 
-The MR/PR-surface twin of the ticket/issue poster in :mod:`.post`. Splitting the
-two surfaces keeps each module within the module-health LOC cap while both share
-the same gates (on-behalf peek, upload existence check, blocked-body + forge-write
-seam, hidden-marker idempotency) via helpers imported from :mod:`.post`.
-
-The note is posted on the **MR/PR**; the ticket/issue poster lives in :mod:`.post`.
+The only surface a test plan is still POSTED on. A ticket's own test plan is a
+file in the e2e repo (:mod:`.file_store` / :mod:`.write`), so the note-matching,
+upload-verification and comment helpers this poster needs live here rather than
+in a shared module with no other consumer.
 """
 
 from collections.abc import Callable
@@ -14,8 +12,13 @@ from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.evidence.test_plan_blocked_gate import check_blocked_body_from_config
-from teatree.core.management.commands._test_plan.post import _comment_id, _verified_embed, find_existing_note
-from teatree.core.management.commands._test_plan.render import render_ticket_marker
+from teatree.core.management.commands._test_plan.render import (
+    PlanState,
+    TestPlanValidationError,
+    find_ticket_marker,
+    parse_state_blob,
+    render_ticket_marker,
+)
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -25,7 +28,7 @@ from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import route_forge_write
 from teatree.types import RawAPIDict
 
-__all__ = ["MrTestPlanPost", "post_mr_test_plan_comment"]
+__all__ = ["ExistingNote", "MrTestPlanPost", "TestPlanMediaError", "find_existing_note", "post_mr_test_plan_comment"]
 
 # The wire action key for the MR/PR-surface poster. It stays ``post_evidence``
 # (NOT renamed to ``post_test_plan``): it is the PERSISTED value on live
@@ -54,6 +57,63 @@ class MrTestPlanPost:
     @property
     def target(self) -> str:
         return f"{self.repo}!{self.mr_iid}"
+
+
+class TestPlanMediaError(TestPlanValidationError):
+    """An uploaded artifact would not render in the posted note.
+
+    Raised by the post-upload existence gate when an embedded media URL does
+    not resolve (non-200) or the fetched bytes are not the expected medium — so
+    "posted" can never mean "returned 201 but referenced a missing upload".
+    """
+
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingNote:
+    comment_id: int
+    state: PlanState
+
+
+def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> ExistingNote | None:
+    """Return the first comment whose marker matches *ticket_id*, or ``None``."""
+    for comment in comments:
+        body = str(comment.get("body", ""))
+        if not find_ticket_marker(body, ticket_id=ticket_id):
+            continue
+        comment_id = _comment_id(comment)
+        if comment_id:
+            return ExistingNote(comment_id=comment_id, state=parse_state_blob(body))
+    return None
+
+
+def _comment_id(result: RawAPIDict) -> int:
+    """Extract the integer comment id from a host create response."""
+    raw = result.get("id")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return 0
+
+
+def _verified_embed(host: CodeHostBackend, *, repo: str, filepath: str, label: str) -> str:
+    """Upload one artifact, existence-check it, and return its relative-ref embed.
+
+    The existence gate (#2156): after uploading, the host fetches the artifact
+    back through its token-authenticated route and magic-byte-checks the
+    content, so the note is never posted referencing a missing upload. The
+    returned markdown embeds the **relative** ``/uploads/<secret>/<file>``
+    reference (#2165) — the form GitLab's reference scanner claims on save; the
+    absolute form is not claimed and 404s in a browser.
+    """
+    upload = host.upload_file(repo=repo, filepath=filepath)
+    verification = host.verify_upload(repo=repo, upload=upload)
+    if not verification.ok:
+        msg = f"Test plan {label} ({Path(filepath).name}) failed the upload check: {verification.detail}"
+        raise TestPlanMediaError(msg)
+    return f"![{label}]({verification.embed_url})"
 
 
 def _render_mr_note_body(*, title: str, body: str, embeds: list[str], marker_id: str) -> str:
@@ -105,9 +165,8 @@ def post_mr_test_plan_comment(
 ) -> RawAPIDict:
     """Gate + upload + create-or-update the one test-plan note on a PR/MR.
 
-    The MR-surface twin of :func:`teatree.core.management.commands._test_plan.post.post_test_plan_comment`
-    (which posts on the ticket/issue). Both posters now share the SAME gates so
-    they can never drift (F3.1):
+    The one surface a test plan is still posted on (a ticket's own plan is a
+    file in the e2e repo). The gates it runs:
 
     * the non-consuming on-behalf peek fires FIRST — before any host call — so a
         blocked post touches no upload/list/comment API;
