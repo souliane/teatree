@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         AcceptanceCriterion,
         AntiVacuityAttestation,
         FixRecord,
+        FixRecordOverride,
         JSONObject,
         ReviewContext,
         ReviewSkillRun,
@@ -164,6 +165,16 @@ class TicketEvidenceModel(TicketFacet):
         """
         stored = cast("FixRecord", {field: str(record.get(field, "")).strip() for field in FIX_RECORD_FIELDS})
         self.merge_extra(set_keys={"fix_record": stored})
+
+    def record_fix_record_override(self, reason: str) -> None:
+        """Stamp the audited EXCEPTION for a fix the kind heuristic mis-classifies (#1661/#4520).
+
+        Deliberately weaker than the forced-repro gate's human-authorized ``ReproWaiver``:
+        this one is self-authored, which is why it is the exception and the agent's
+        ``fix_record`` envelope member is the route.
+        """
+        override: FixRecordOverride = {"reason": reason}
+        self.merge_extra(set_keys={"fix_record_override": override})
 
     def record_review_context(self, work_item: str, documents: list[str], analysis: str) -> None:
         """Stamp durable evidence the referenced context was retrieved + analyzed.

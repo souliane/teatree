@@ -11301,6 +11301,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              mandatory-E2E gate (#1967).                     │
 │ integration-review-override  Record the audited escape hatch for the         │
 │                              cross-repo integration-review gate.             │
+│ fix-record-override          Record the audited exception for the fix-ticket │
+│                              FixRecord DoD gate.                             │
 │ dod-override                 Record the DoD local-E2E gate escape hatch for  │
 │                              a ticket (#88).                                 │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
@@ -11555,6 +11557,31 @@ Usage: t3 teatree ticket integration-review-override [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --reason        TEXT  Why this >=2-repo ticket is exempt.                    │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket fix-record-override`
+
+```
+Usage: t3 teatree ticket fix-record-override [OPTIONS] TICKET_ID
+
+ Record the audited exception for the fix-ticket FixRecord DoD gate
+ (#1661/#4520).
+
+ The ROUTE through that gate is the fixing agent's ``fix_record``
+ result-envelope
+ member, which ``agents.fix_record_recorder`` validates and writes. This is the
+ EXCEPTION beside it — a fix the kind heuristic mis-classifies, or a genuinely
+ trivial one with no root cause to state. A blank reason is refused: a
+ self-authored exception that names no reason is indistinguishable from a
+ bypass.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason        TEXT  Why this fix needs no FixRecord.                       │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
