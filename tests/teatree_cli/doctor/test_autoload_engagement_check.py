@@ -16,7 +16,6 @@ an empty demand means two opposite things depending on where the doctor ran.
 
 import contextlib
 import io
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +24,7 @@ from django.db.utils import OperationalError
 from django.test import TestCase
 
 import teatree
-from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN
 from teatree.cli.doctor.checks_cold_hooks import (
     _ENGAGEMENT_PROBE,
     _LANE_SDK,
@@ -33,10 +32,10 @@ from teatree.cli.doctor.checks_cold_hooks import (
     _run_hook_probe,
 )
 from teatree.core.models import ConfigSetting
+from tests._lane_env import pinned_lane
 
 _PROBE = "teatree.cli.doctor.checks_cold_hooks._run_hook_probe"
 _SETTINGS = "teatree.config.get_effective_settings"
-_INTERACTIVE_LANE_ENV = {"T3_AUTOLOAD": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
 
 
 def _run_check() -> tuple[bool, str]:
@@ -59,9 +58,7 @@ class TestProbeRunsAgainstTheRealShim(TestCase):
         # The probe inherits this process's env, so the lane must be STATED: run
         # under an SDK runner the demand is legitimately empty and an inherited
         # lane would read as a broken engagement chain.
-        with patch.dict("os.environ", _INTERACTIVE_LANE_ENV):
-            os.environ.pop("CLAUDE_AGENT_SDK_VERSION", None)
-            assert session_lane() == LANE_INTERACTIVE_CLI
+        with pinned_lane(LANE_INTERACTIVE_CLI, T3_AUTOLOAD="1"):
             parsed = _run_hook_probe(repo_root, _ENGAGEMENT_PROBE.format(plugin_root=str(repo_root)))
 
         assert parsed is not None, "the hook shim probe did not run at all"

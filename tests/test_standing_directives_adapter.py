@@ -26,7 +26,9 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import loop_registrations
 from hooks.scripts.loop_registrations import emit_standing_directives_once
+from hooks.scripts.session_lane import LANE_SDK, LANE_UNKNOWN
 from teatree.loop.standing_directives import MAX_DIRECTIVE_CHARS, STANDING_DIRECTIVES
+from tests._lane_env import pin_lane
 
 _FAKE = [
     {"slot_id": "slot-a", "cadence_seconds": 300, "text": "Alpha rule.", "scope": "attended", "wakes_session": False},
@@ -54,12 +56,10 @@ def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def not_the_sdk_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     """Close the SDK-lane seam the ambient env opens.
 
-    A headless factory agent runs the suite with ``CLAUDE_AGENT_SDK_VERSION`` /
-    ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` exported, which is exactly the lane the
-    adapter excludes — so an unpinned env decides the assertion, not the code.
+    A headless factory agent runs the suite in exactly the lane the adapter excludes,
+    so an unstated env would decide the assertion rather than the code.
     """
-    monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    pin_lane(monkeypatch, LANE_UNKNOWN)
 
 
 @pytest.fixture
@@ -369,7 +369,7 @@ class TestTheGateMatrix:
 
     def test_the_sdk_lane_is_excluded(self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch) -> None:
         # Factory workers are FSM-governed and have no user-request channel.
-        monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "0.1.0")
+        pin_lane(monkeypatch, LANE_SDK)
 
         assert _emit() == ""
 

@@ -15,12 +15,14 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_UNKNOWN
 from teatree.agents import permission_modes
 from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
 from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
+from tests._lane_env import pin_lane
 from tests._loop_principal_env import pinned_loop_principal
 
 runner = CliRunner()
@@ -172,14 +174,14 @@ class TestStartCommand:
         assert "--slot" not in result.stdout
 
     def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDECODE", "1")
+        pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
         result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 0
         assert "t3 worker status" in result.stdout
 
     def test_missing_claude_binary_exits_with_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDECODE", raising=False)
+        pin_lane(monkeypatch, LANE_UNKNOWN)
         with (
             patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
             patch("teatree.cli.loop.app.shutil.which", return_value=None),
@@ -191,7 +193,7 @@ class TestStartCommand:
         assert "t3 worker status" in result.stdout
 
     def test_spawns_claude_without_a_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDECODE", raising=False)
+        pin_lane(monkeypatch, LANE_UNKNOWN)
         with (
             patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
             patch("teatree.cli.loop.app.shutil.which", return_value="/usr/bin/claude"),
@@ -230,7 +232,7 @@ class TestStartCommandSessionPins:
         db = tmp_path / "config.sqlite3"
         _seed_config_db(db, **rows)
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.delenv("CLAUDECODE", raising=False)
+        pin_lane(monkeypatch, LANE_UNKNOWN)
         monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         with (
             patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),

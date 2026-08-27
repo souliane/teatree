@@ -15,7 +15,6 @@ and a uniformly-restrictive one (which would pass the refuse-cases) both go red.
 """
 
 import json
-import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,17 +24,9 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import headless_authoring_gate as gate
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN
 from tests._git_repo import make_git_repo, run_git
-
-#: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
-#: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
-#: two keys are what separate a human-driven session from every SDK embedding.
-#: ``CLAUDE_AGENT_SDK_VERSION`` is pinned EMPTY rather than left absent: these patches merge
-#: into the real environment, and when the suite itself runs under an SDK agent that marker
-#: is already set — ``_lane`` would read SDK, and every refuse-case here would go green-by-
-#: allowing. The fixture must state the whole interactive contract, not inherit half of it.
-_INTERACTIVE_ENV = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1", "CLAUDE_AGENT_SDK_VERSION": ""}
-_SDK_ENV = {"CLAUDE_CODE_ENTRYPOINT": "sdk-py", "CLAUDE_AGENT_SDK_VERSION": "0.2.95"}
+from tests._lane_env import pinned_lane
 
 
 def _run_chain(data: dict) -> bool:
@@ -51,7 +42,7 @@ def engaged_session(tmp_path: Path) -> Iterator[Path]:
         mock.patch.object(router, "_teatree_engaged", return_value=True),
         mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
         mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
-        mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
+        pinned_lane(LANE_INTERACTIVE_CLI),
     ):
         yield tmp_path
 
@@ -93,9 +84,8 @@ class TestTheFactoryIsNeverRefused:
             mock.patch.object(router, "_teatree_engaged", return_value=True),
             mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
             mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
-            mock.patch.dict(os.environ, _SDK_ENV, clear=False),
+            pinned_lane(LANE_SDK),
         ):
-            os.environ.pop("CLAUDECODE", None)
             assert _run_chain(_edit()) is False
             assert _run_chain(_dispatch("t3:coder")) is False
 
@@ -107,10 +97,8 @@ class TestTheFactoryIsNeverRefused:
             mock.patch.object(router, "_teatree_engaged", return_value=True),
             mock.patch.object(gate, "_path_is_in_live_worktree", return_value=False),
             mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
-            mock.patch.dict(os.environ, {}, clear=False),
+            pinned_lane(LANE_UNKNOWN),
         ):
-            for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_AGENT_SDK_VERSION"):
-                os.environ.pop(key, None)
             assert _run_chain(_edit()) is False
 
 
@@ -259,7 +247,7 @@ def headless_interactive(tmp_path: Path) -> Iterator[None]:
         mock.patch.object(router, "_teatree_engaged", return_value=True),
         mock.patch.object(gate, "_gate_enabled", return_value=True),
         mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
-        mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
+        pinned_lane(LANE_INTERACTIVE_CLI),
     ):
         yield
 
@@ -405,7 +393,7 @@ def managed_and_unmanaged(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
         mock.patch.object(router, "STATE_DIR", tmp_path / "state"),
         mock.patch.object(router, "_teatree_engaged", return_value=True),
         mock.patch.object(gate, "_gate_enabled", return_value=True),
-        mock.patch.dict(os.environ, {**_INTERACTIVE_ENV, "T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}),
+        pinned_lane(LANE_INTERACTIVE_CLI, T3_CONFIG_DB=str(db), T3_OVERLAY_NAME=""),
     ):
         yield managed, unmanaged
 

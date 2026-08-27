@@ -34,7 +34,9 @@ from hooks.scripts.hook_router import (
     handle_track_skill_usage,
     handle_user_prompt_submit,
 )
+from hooks.scripts.session_lane import LANE_UNKNOWN
 from hooks.scripts.teatree_settings import autoload_enabled
+from tests._lane_env import pin_lane
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -57,11 +59,10 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # A headless factory agent runs this suite with the Agent-SDK lane exported,
-    # which suppresses the standing directives (#4166) — an unpinned env would
-    # decide the delivery assertions below rather than the gating under test.
-    monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    # A headless factory agent runs this suite in the Agent-SDK lane, which suppresses
+    # the standing directives (#4166) — an unstated lane would decide the delivery
+    # assertions below rather than the gating under test.
+    pin_lane(monkeypatch, LANE_UNKNOWN)
     # Hermetic HOME: ``autoload_enabled`` is DB-home (the legacy file tier is
     # removed) — it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting
     # sqlite. A clean home with no DB keeps the default-OFF (#256) path deterministic

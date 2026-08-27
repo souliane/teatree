@@ -205,6 +205,23 @@ def _reset_webhook_rate_limiter() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _neutralise_ambient_lane_env() -> Iterator[None]:
+    """Strip the session-lane markers a factory / Agent-SDK runner exports (#3973).
+
+    ``session_lane`` reads them, so a test that does not STATE a lane inherits the
+    runner's — and the headless authoring gate, which fails open for every lane but a
+    positively identified interactive CLI, then allowed ten refuse-cases that read green.
+    CI exports no marker, which is why it never reproduced there; stripping them here
+    makes an unstated lane UNKNOWN in both venues. A case that needs a lane pins one
+    through ``tests._lane_env``.
+    """
+    from tests._lane_env import ambient_lane_env_stripped  # noqa: PLC0415 — deferred: keeps conftest import-light
+
+    with ambient_lane_env_stripped():
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _restore_django_settings_module() -> Iterator[None]:
     """Revert any ``DJANGO_SETTINGS_MODULE`` an in-process CLI test set process-globally.
 

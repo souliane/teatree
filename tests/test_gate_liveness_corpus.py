@@ -49,11 +49,13 @@ import hooks.scripts.hook_router as router
 import hooks.scripts.verbatim_paste_gate as _verbatim_paste_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from teatree.hooks import verbatim_paste as _verbatim_paste
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
+from tests._lane_env import pin_lane
 
 if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
@@ -398,9 +400,7 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
 
 def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.write_state("teatree-active", "")
-    ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
-    ctx.monkeypatch.setenv("CLAUDECODE", "1")
-    ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    pin_lane(ctx.monkeypatch, LANE_INTERACTIVE_CLI)
     ctx.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
     repo = _managed_repo(ctx, "1-feat-acme")
     source = repo / "src" / "acme"
