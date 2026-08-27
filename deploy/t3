@@ -126,6 +126,9 @@ CREDENTIAL_MOUNT_SOURCES=(
 DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.local/share/teatree"
     "$TEATREE_HOST_HOME/.local/share/teatree-worktrees"
+    # The uv interpreter root both venues name identically, so a venv under the
+    # worktree bind stays valid in each and is never rebuilt (#4642).
+    "$TEATREE_HOST_HOME/.local/share/uv/python"
     "$TEATREE_HOST_HOME/workspace/t3-workspaces"
     # The host WORKSPACE root — the off-box host-identity overlay mounts it whole
     # so the container can resolve source clones (a linked worktree's gitdir
@@ -135,14 +138,8 @@ DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.claude/projects"
     "$TEATREE_HOST_HOME/.local/bin"
 )
-# The shared uv interpreter root (#4642). Its own array, not a DATA_MOUNT_SOURCES
-# member: that array also answers "which host roots may a checkout live under?"
-# for the reachability diagnostic below, and an interpreter root is not one.
-INTERPRETER_MOUNT_SOURCES=(
-    "$TEATREE_HOST_HOME/.local/share/uv/python"
-)
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
-install -d "${DATA_MOUNT_SOURCES[@]}" "${INTERPRETER_MOUNT_SOURCES[@]}"
+install -d "${DATA_MOUNT_SOURCES[@]}"
 
 # THE SUPERSEDED SHELL ALIAS, retired from the HOST rc files (#3232). An earlier
 # `t3 setup` wrote a marker-fenced `alias t3=...` block; a PATH launcher reaches
