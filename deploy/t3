@@ -126,6 +126,9 @@ CREDENTIAL_MOUNT_SOURCES=(
 DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.local/share/teatree"
     "$TEATREE_HOST_HOME/.local/share/teatree-worktrees"
+    # The uv interpreter root both venues name identically, so a venv under the
+    # worktree bind stays valid in each and is never rebuilt (#4642).
+    "$TEATREE_HOST_HOME/.local/share/uv/python"
     "$TEATREE_HOST_HOME/workspace/t3-workspaces"
     # The host WORKSPACE root — the off-box host-identity overlay mounts it whole
     # so the container can resolve source clones (a linked worktree's gitdir

@@ -48,6 +48,7 @@ from teatree.cli.doctor.checks_environment import (
 from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_identity_wiring import check_identity_wiring
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
+from teatree.cli.doctor.checks_interpreter_plane import _check_interpreter_plane
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
@@ -479,7 +480,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     )
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
-    ok = all([_check_stale_uv_venv(), _check_venv_interpreter_is_this_host(), ok])
+    # Every venv-hygiene probe runs through `all` so none short-circuits another: a
+    # wrong-toolchain venv, a foreign-host interpreter and a venue-unresolvable one are
+    # different faults with different remedies, and reporting one must not hide the rest.
+    ok = all([_check_stale_uv_venv(), _check_venv_interpreter_is_this_host(), _check_interpreter_plane(), ok])
     ok = all([_check_stale_path_t3(), _check_t3_launcher_managed(), _check_control_db_reachable()]) and ok
     ok = _check_agent_session_pins() and ok
     # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a

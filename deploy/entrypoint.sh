@@ -974,6 +974,12 @@ init)
     # outright when a constraints file is missing, so it must exist for every role that
     # later runs `t3 update` off this shared volume.
     ensure_uv_constraints
+    # The TOOL plane, named explicitly rather than inherited (#4642). Compose points
+    # the ambient UV_PYTHON_INSTALL_DIR at the shared PROJECT root, so a bare
+    # `uv tool install --reinstall` below would rebuild the tool venvs against a
+    # host-controlled directory and couple this container's own `t3` and `prek` to
+    # it. Pinning the volume keeps a tool venv rebuilt where it was baked.
+    TOOL_PYTHON_ROOT=/opt/teatree/uv/python
     # Resolve the interpreter + editable install + prek. The self-contained image
     # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
     # box), so this is a fast no-op refresh when online and is skipped entirely when
@@ -997,7 +1003,8 @@ init)
         # and this is the original single-package install.
         set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
         require_install_headroom
-        uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
+        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" \
+            uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
             --overrides "${CLONE_DIR}/uv-overrides.txt" \
             --constraints "${CONSTRAINTS_FILE}"
         # An install that produced a venv whose CLI cannot start is an install FAILURE, not
@@ -1016,7 +1023,7 @@ init)
         # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
         # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
         # /opt/teatree/uv is a named volume that shadows any image-baked install.
-        uv tool install prek==0.4.10
+        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" uv tool install prek==0.4.10
     else
         # OFFLINE: the interpreter, editable install, and prek are baked into the
         # image, so init proceeds with no cold fetch. Fail loud only if the image
@@ -1028,6 +1035,16 @@ init)
                 exit 1
             }
         done
+    fi
+    # The interpreter root is now a bind of the HOST's (#4642), so unlike the
+    # image-baked volume it can arrive EMPTY — a fresh box whose host has never
+    # run uv, booting offline, where the install above was skipped. Every later
+    # `uv run` would then rebuild every worktree venv it touches. Name the gap
+    # instead: this cannot self-heal without the network, and a refusal stating
+    # the remedy beats a silent gigabyte. Outside the network guard on purpose.
+    if ! ls -d "$UV_PYTHON_INSTALL_DIR"/cpython-* >/dev/null 2>&1; then
+        echo "entrypoint: FATAL the shared interpreter root $UV_PYTHON_INSTALL_DIR holds no cpython-* interpreter. It is a bind of the host's uv python root, so it is empty until something installs there. Run 'uv python install $(cat "${CLONE_DIR}/.python-version")' on the host (or restore connectivity and re-run Deploy), then restart this container." >&2
+        exit 1
     fi
     # Install the commit/push gate hooks on the base clone's SHARED hooks dir
     # (git links every worktree to it), so the privacy leak gate (#685), the
