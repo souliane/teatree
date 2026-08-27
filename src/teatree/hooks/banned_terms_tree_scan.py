@@ -46,7 +46,7 @@ from pathlib import Path
 
 from teatree.config import cold_reader
 from teatree.hooks import term_match
-from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 # Comma-separated brand list, used by CI where the operator's DB row is not
 # populated. Mirrors ``$TEATREE_OVERLAY_LEAK_TERMS`` for the overlay-leak
@@ -58,38 +58,69 @@ _BRANDS_KEY = "banned_brands"
 _GIT_LS_TIMEOUT_S = 30
 _GIT_SHOW_TIMEOUT_S = 30
 
-# Suffixes that hold scannable text. A tracked binary (image, archive)
-# is skipped — it cannot carry a readable brand name and may not decode.
-_TEXT_SUFFIXES: frozenset[str] = frozenset(
+# Suffixes whose content is not decodable text. Everything ELSE is scanned: the
+# gate reads the committed blob and skips whatever fails to decode, so a suffix
+# it does not recognise costs one failed read, while EXCLUDING it costs a
+# permanently-invisible committed leak. The prior allowlist of "text suffixes"
+# silently dropped every tracked text file without one — ``Dockerfile``,
+# ``Makefile``, ``NOTICE``, ``CODEOWNERS``, ``.gitignore``, an extension-less
+# script — from a backstop whose whole job is to see what the diff gate cannot.
+_BINARY_SUFFIXES: frozenset[str] = frozenset(
     {
-        ".py",
-        ".pyi",
-        ".md",
-        ".rst",
-        ".txt",
-        ".html",
-        ".htm",
-        ".css",
-        ".yml",
-        ".yaml",
-        ".toml",
-        ".json",
-        ".cfg",
-        ".ini",
-        ".sh",
-        ".bash",
-        ".zsh",
-        ".ts",
-        ".tsx",
-        ".js",
-        ".jsx",
-        ".sql",
-        ".env",
-        ".j2",
-        ".jinja",
-        ".jinja2",
-        ".tmpl",
-        ".dockerfile",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".ico",
+        ".webp",
+        ".tif",
+        ".tiff",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".zst",
+        ".tar",
+        ".7z",
+        ".rar",
+        ".jar",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".mp3",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".webm",
+        ".wav",
+        ".ogg",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".exe",
+        ".bin",
+        ".o",
+        ".a",
+        ".pyc",
+        ".pyo",
+        ".whl",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+        ".pkl",
+        ".npy",
+        ".npz",
+        ".parquet",
+        ".xlsx",
+        ".xls",
+        ".docx",
+        ".doc",
+        ".pptx",
+        ".ppt",
     }
 )
 
@@ -169,6 +200,23 @@ class TreeFinding:
         return f"{self.path}:{self.lineno}: {self.term!r} — {self.line.strip()}"
 
 
+def legacy_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
+    """The PRE-registry ``banned_brands`` source: the env secret, else the DB row.
+
+    The registry-free half of :func:`load_brand_terms`, so the registry MIGRATION
+    has a source that is genuinely the old config. Reading the dual-read resolver
+    there made the rebuild copy the registry back onto itself and its verification
+    compare the registry with itself, which passes for any registry at all.
+    """
+    env = os.environ.get(_BRANDS_ENV, "")
+    if env.strip():
+        return tuple(t.strip() for t in env.split(",") if t.strip())
+    brands = cold_reader.read_setting(_BRANDS_KEY, db_path=db_path)
+    if not isinstance(brands, list):
+        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
+    return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())
+
+
 def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
     """Load the high-confidence brand list, FAILING LOUD when it is unset.
 
@@ -185,18 +233,13 @@ def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
     empty because a load bug would look identical to a deliberate no-brands
     choice.
     """
-    env = os.environ.get(_BRANDS_ENV, "")
-    if env.strip():
-        return tuple(t.strip() for t in env.split(",") if t.strip())
-    from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
+    if not os.environ.get(_BRANDS_ENV, "").strip():
+        from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
 
-    registry_terms = registry_terms_for_gate("tree", db_path=db_path)
-    if registry_terms is not None:
-        return registry_terms
-    brands = cold_reader.read_setting(_BRANDS_KEY, db_path=db_path)
-    if not isinstance(brands, list):
-        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
-    return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())
+        registry_terms = registry_terms_for_gate("tree", db_path=db_path)
+        if registry_terms is not None:
+            return registry_terms
+    return legacy_brand_terms(db_path=db_path)
 
 
 def scan_text(text: str, terms: tuple[str, ...]) -> list[tuple[int, str, str]]:
@@ -217,26 +260,33 @@ def scan_text(text: str, terms: tuple[str, ...]) -> list[tuple[int, str, str]]:
 
 
 def git_tracked_files(repo_root: Path) -> list[Path]:
-    """Enumerate git-tracked text files under *repo_root*.
+    """Enumerate the git-tracked files under *repo_root* that could hold text.
 
     Uses ``git ls-files`` (the same source the shell gate's pre-commit
-    invocation feeds from) and keeps only the text suffixes the scanner
-    can read. RAISES :class:`TreeEnumerationError` when git could not answer, and
-    when it answered with no tracked files at all — both mean the scan read nothing,
-    which is a non-answer rather than a clean tree. A repo whose tracked files are
-    all binary is a genuine empty RESULT and returns ``[]``.
+    invocation feeds from) and drops only the suffixes that cannot decode
+    (:data:`_BINARY_SUFFIXES`).
+
+    RAISES :class:`TreeEnumerationError` when git could not answer — a non-repo root
+    included — and when it answered with no tracked files at all. Both mean the scan
+    read nothing, which is a non-answer rather than a clean tree: an unread tree says
+    nothing about what is committed in it, so reporting it as a clean scan is the
+    fail-open a leak backstop must never take. A repo whose tracked files are all
+    binary is a genuine empty RESULT and returns ``[]``.
     """
     try:
-        result = run_checked(
+        result = run_allowed_to_fail(
             ["git", "-C", str(repo_root), "ls-files", "-z"],
+            expected_codes=None,
             timeout=_GIT_LS_TIMEOUT_S,
         )
-    except (CommandFailedError, TimeoutExpired, OSError) as exc:
+    except (TimeoutExpired, OSError) as exc:
         raise TreeEnumerationError.for_root(repo_root, f"{type(exc).__name__}: {exc}") from exc
+    if result.returncode != 0:
+        raise TreeEnumerationError.for_root(repo_root, result.stderr.strip() or f"exit {result.returncode}")
     names = [n for n in result.stdout.split("\0") if n]
     if not names:
         raise TreeEnumerationError.for_root(repo_root, "git reported no tracked files")
-    return [repo_root / n for n in names if (repo_root / n).suffix.lower() in _TEXT_SUFFIXES]
+    return [repo_root / n for n in names if (repo_root / n).suffix.lower() not in _BINARY_SUFFIXES]
 
 
 def committed_blob_text(repo_root: Path, rel_path: str) -> str | None:

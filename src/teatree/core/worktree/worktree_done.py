@@ -46,12 +46,12 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
     INCONCLUSIVE_SOURCE,
     RedundancyVerdict,
-    _branch_has_open_pr,
     _branch_tree_matches_squash,
     branch_redundancy,
     content_equivalence_blockers,
     effective_default_target,
     is_squash_merged,
+    reset_forge_probe_cache,
 )
 from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
@@ -156,9 +156,10 @@ def _branch_squash_merged(worktree: Worktree) -> bool:
     patch-id-equivalent to ``origin/<default>`` — including a still-OPEN PR that merely
     resembles the default branch. An open PR is the forge's positive proof the work is
     unfinished, so it vetoes the squash-merged done signal (#3093): a worktree backing an
-    open PR is never reported done, so a sweep can never wipe its live work. The FSM
-    terminal-state path in :func:`worktree_is_done` is unaffected — only this content
-    heuristic is gated.
+    open PR is never reported done, so a sweep can never wipe its live work. The veto
+    lives inside :func:`is_squash_merged` (the shared destructive chokepoint), so this
+    path and the branch-prune pass inherit it identically. The FSM terminal-state path
+    in :func:`worktree_is_done` is unaffected — only this content heuristic is gated.
     """
     workspace = clone_root()
     repo = resolve_clone_path(workspace, worktree)
@@ -167,8 +168,6 @@ def _branch_squash_merged(worktree: Worktree) -> bool:
     try:
         default = git.default_branch(str(repo))
     except (RuntimeError, CommandFailedError):
-        return False
-    if _branch_has_open_pr(str(repo), worktree.branch):
         return False
     return is_squash_merged(str(repo), worktree.branch, default)
 
@@ -203,22 +202,24 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
     return ChangeAnalysis(proven_redundant=not reasons, kept_reasons=reasons)
 
 
-def _current_head_sha(worktree: Worktree, *, workspace: Path) -> str | None:
-    """The worktree's current tip SHA, or the recovered last-HEAD SHA when the ref is gone.
+def _wipe_fingerprint(worktree: Worktree, *, workspace: Path) -> tuple[str | None, tuple[str, ...]]:
+    """The tip SHA plus the working tree's dirt — the state the analysis was made against.
 
     The TOCTOU bracket for :func:`reap_done_worktree`: sampled before the
-    redundancy analysis and again just before the force-wipe, so a commit that
-    lands in the window changes the value and the wipe is refused. A present ref
-    resolves via ``rev-parse``; a dangling HEAD (post-merge ref deletion) falls
-    back to the reflog-recovered SHA so a moving dangling ref is still detected.
+    redundancy analysis and again just before the force-wipe, so anything landing
+    in the window changes the value and the wipe is refused. BOTH halves are
+    carried because :func:`analyze_worktree_changes` proves both redundant — a
+    tip-only bracket left an uncommitted edit written mid-sweep to be force-wiped
+    unexamined. A present ref resolves via ``rev-parse``; a dangling HEAD
+    (post-merge ref deletion) falls back to the reflog-recovered SHA so a moving
+    dangling ref is still detected.
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     target = _effective_target(str(repo_main), wt_path, worktree)
     resolved = git.run(repo=target.probe_repo, args=["rev-parse", "--verify", "--quiet", target.ref])
-    if resolved:
-        return resolved
-    return classify_orphan_ref(target).recovered_sha
+    head = resolved or classify_orphan_ref(target).recovered_sha
+    return head, tuple(real_uncommitted_reasons(wt_path, target))
 
 
 def _unpushed_commit_reasons(
@@ -248,6 +249,12 @@ def _unpushed_commit_reasons(
     if not content_equivalence_blockers(content_repo, content_ref, default_target):
         return []
     if branch is not None and _branch_tree_matches_squash(str(repo_main), branch):
+        return []
+    # The full landed ladder, for the branch the two probes above cannot clear:
+    # a squash whose patch was resolved at merge and whose file the base then
+    # edited again defeats every patch-id/tree instrument, while the forge's
+    # merge record at the exact tip still proves it landed. Fails CLOSED.
+    if branch is not None and branch_redundancy(content_repo, branch, default_target).redundant:
         return []
     preview = ", ".join(unpushed[:_PREVIEW_LIMIT]) + (", …" if len(unpushed) > _PREVIEW_LIMIT else "")
     return [f"{len(unpushed)} commit(s) not provably on {default_target} (content not upstream): {preview}"]
@@ -426,7 +433,7 @@ def reap_done_worktree(
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
 
-    head_at_analysis = _current_head_sha(worktree, workspace=workspace)
+    fingerprint_at_analysis = _wipe_fingerprint(worktree, workspace=workspace)
     analysis = analyze_worktree_changes(worktree, workspace=workspace)
     if not analysis.proven_redundant:
         return ReapOutcome(
@@ -437,7 +444,7 @@ def reap_done_worktree(
         )
 
     return _wipe_proven_redundant(
-        worktree, workspace=workspace, signal=signal, head_at_analysis=head_at_analysis, dry_run=dry_run
+        worktree, workspace=workspace, signal=signal, fingerprint_at_analysis=fingerprint_at_analysis, dry_run=dry_run
     )
 
 
@@ -472,33 +479,39 @@ def _dead_checkout_outcome(
     return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
+def _fingerprint_label(fingerprint: tuple[str | None, tuple[str, ...]]) -> str:
+    head, dirt = fingerprint
+    return f"{head} + {len(dirt)} dirt reason(s)"
+
+
 def _wipe_proven_redundant(
     worktree: Worktree,
     *,
     workspace: Path,
     signal: DoneSignal,
-    head_at_analysis: str | None,
+    fingerprint_at_analysis: tuple[str | None, tuple[str, ...]],
     dry_run: bool,
 ) -> ReapOutcome:
-    """Wipe a proven-redundant worktree, with a TOCTOU re-check of HEAD before the force-wipe.
+    """Wipe a proven-redundant worktree, re-checking the TOCTOU bracket before the force-wipe.
 
-    The redundancy analysis proved the tip captured at ``head_at_analysis`` is
-    fully upstream, but ``cleanup_worktree(force=True)`` bypasses every data-loss
-    guard. A commit landing between the analysis and the wipe would be destroyed
-    unexamined — so HEAD is re-read here and the wipe refused (KEEP) if it moved,
-    leaving the worktree for the next sweep to re-analyse.
+    The redundancy analysis proved the state captured at ``fingerprint_at_analysis``
+    is fully upstream, but ``cleanup_worktree(force=True)`` bypasses every data-loss
+    guard. A commit OR an uncommitted edit landing between the analysis and the wipe
+    would be destroyed unexamined — so the fingerprint is re-read here and the wipe
+    refused (KEEP) if it moved, leaving the worktree for the next sweep to re-analyse.
     """
     if dry_run:
         return ReapOutcome(
             "would-wipe",
             f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant",
         )
-    head_before_wipe = _current_head_sha(worktree, workspace=workspace)
-    if head_before_wipe != head_at_analysis:
+    fingerprint_before_wipe = _wipe_fingerprint(worktree, workspace=workspace)
+    if fingerprint_before_wipe != fingerprint_at_analysis:
         return ReapOutcome(
             "kept",
-            f"KEPT '{worktree.branch}': HEAD moved during analysis "
-            f"({head_at_analysis} → {head_before_wipe}) — re-run cleanup to re-analyse",
+            f"KEPT '{worktree.branch}': the worktree changed during analysis "
+            f"({_fingerprint_label(fingerprint_at_analysis)} → {_fingerprint_label(fingerprint_before_wipe)}) "
+            "— re-run cleanup to re-analyse",
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
     result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
@@ -515,6 +528,7 @@ def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[Reap
     3): never prompts, salvage is the separate explicit ``t3 <overlay> workspace
     salvage``. DSLR snapshots are deliberately untouched (CORRECTION 2).
     """
+    reset_forge_probe_cache()
     return [
         reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
         for worktree in Worktree.objects.select_related("ticket")

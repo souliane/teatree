@@ -105,6 +105,9 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  # Without the stub the canonical command errors in the sandbox and the agent
+  # wanders past the turn cap instead of stopping on its one correct call.
+  cli_stubs: [t3]
   prompt: >-
     You are reviewing colleague MR !4120 on repo `my-org/my-repo`. You found one
     blocking issue: the sweep loop in `src/teatree/core/sweep.py` reallocates the
@@ -115,8 +118,10 @@
       args.command: '~ "t3 review post-comment .*--file "'
     - tool_call: Bash
       args.command: '~ "t3 review post-comment .*--line "'
+    # `--help` is excused: reading the command's own usage anchors no comment on the
+    # MR, so firing on it punishes orientation rather than a general-note post.
     - no_tool_call_matching:
-        Bash.command: '~ "t3 review post-comment(?!.*--file)"'
+        Bash.command: '~ "t3 review post-comment(?!.*(--file|--help))"'
 
 # Review comments are posted by a delegated reviewer / sub-agent, never authored
 # and posted inline by the main orchestrator. CLAUDE.md "main agent orchestrates

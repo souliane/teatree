@@ -132,6 +132,11 @@ class ConcurrencyGovernor:
                 self._cond.notify_all()
 
 
+def _refuse_if_aborted(aborted: threading.Event) -> None:
+    if aborted.is_set():
+        raise CreditExhaustedError(_SUITE_ABORTED_MESSAGE)
+
+
 def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFAULT_PARALLEL) -> list[EvalRun]:
     """Run each spec through *runner*, ``parallel`` at a time, in spec order.
 
@@ -162,10 +167,12 @@ def run_specs(runner: EvalRunner, specs: list[EvalSpec], *, parallel: int = DEFA
     governor = ConcurrencyGovernor(workers)
 
     def _guarded(spec: EvalSpec) -> EvalRun:
-        if aborted.is_set():
-            raise CreditExhaustedError(_SUITE_ABORTED_MESSAGE)
         try:
+            _refuse_if_aborted(aborted)
             with governor.slot():
+                # Re-checked UNDER the permit: a worker parked here while the ceiling was
+                # shrunken can wait out the sibling scenario that kills the key.
+                _refuse_if_aborted(aborted)
                 run = _safe_run(runner, spec)
         except CreditExhaustedError:
             aborted.set()

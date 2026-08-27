@@ -22,6 +22,7 @@ from django.test import TestCase
 
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.credentials import AnthropicSubscriptionCredential
 
@@ -70,6 +71,7 @@ class TestPassAtKLaneResolvesEvalCredential(TestCase):
         ):
             run_pass_at_k_lane(
                 [_spec()],
+                backend=API_BACKEND,
                 max_turns=None,
                 trials=3,
                 require="any",
@@ -86,6 +88,7 @@ class TestMatrixLaneResolvesEvalCredential(TestCase):
         ):
             run_model_matrix_lane(
                 [_spec()],
+                backend=API_BACKEND,
                 models="claude-opus-4-8,claude-sonnet-4-6",
                 max_turns=None,
                 trials=1,

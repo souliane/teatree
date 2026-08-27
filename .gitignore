@@ -5,6 +5,10 @@
 __pycache__/
 *.pyc
 .venv/
+# The environment the shell hooks build for themselves when this tree's own
+# `.venv` is unusable here — a cold clone, or one bind-mounted across a
+# container boundary (scripts/hooks/lib/resolve-uv.sh).
+.venv-hook/
 .ruff_cache/
 .pytest_cache/
 .jscpd/

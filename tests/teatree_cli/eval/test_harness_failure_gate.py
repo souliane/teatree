@@ -25,6 +25,7 @@ from teatree.cli.eval.escalate import escalate_failures
 from teatree.cli.eval.multi_trial import TrialPolicy, collect_matrix_rows, run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.run_modes import RunGuards
 from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.green_proof import evaluate_green_proof
 from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON, measured_nothing
 from teatree.eval.ladder import LadderPolicy, run_escalation_ladder
@@ -136,6 +137,7 @@ class TestEveryLaneGates:
         with pytest.raises(typer.Exit) as exc:
             run_pass_at_k_lane(
                 [_spec("chip")],
+                backend=API_BACKEND,
                 max_turns=None,
                 trials=2,
                 require="any",
@@ -150,6 +152,7 @@ class TestEveryLaneGates:
         with pytest.raises(typer.Exit) as exc:
             run_model_matrix_lane(
                 [_spec("chip")],
+                backend=API_BACKEND,
                 models="claude-sonnet-4-6",
                 max_turns=None,
                 trials=1,

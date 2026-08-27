@@ -266,9 +266,9 @@ class TestGeneratorAndCheckAgainstFakeRepo:
     ) -> None:
         monkeypatch.delenv("FSM_DIAGRAMS_NO_STAGE", raising=False)
         staged: list[list[str]] = []
-        monkeypatch.setattr(gen.subprocess, "run", lambda cmd, **_: staged.append(cmd))
+        monkeypatch.setattr(gen.generated_doc_staging.subprocess, "run", lambda cmd, **_: staged.append(cmd))
         gen.main()
-        assert any(cmd[:2] == ["git", "add"] for cmd in staged)
+        assert any(cmd[:2] == ["git", "-C"] and cmd[3:5] == ["add", "--"] for cmd in staged)
 
 
 class TestRealRepoConsumersInSync:

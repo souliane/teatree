@@ -42,11 +42,26 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.cleanup.cleanup import _EffectiveTarget
 
-# Regenerable artifacts a "real uncommitted change" probe must ignore: provisioning
-# writes the env cache into every worktree, so a porcelain status listing only
-# those is still clean for the wipe decision.
-_REGENERABLE_WORKTREE_PATHS = (CACHE_FILENAME, f"{CACHE_DIRNAME}/")
+# The ONLY paths a "real uncommitted change" probe may ignore: the regenerable
+# env cache provisioning writes into every worktree, plus the fixed set of
+# known-ephemeral orchestration scratch. Anything unrecognised is REAL work —
+# and `.claude/` itself is NEVER debris (product repos track real skills and
+# settings there); only its `worktrees/` run scratch is.
+ORCHESTRATION_DEBRIS_PREFIXES = (
+    CACHE_FILENAME,
+    f"{CACHE_DIRNAME}/",
+    ".claude/worktrees/",
+    ".secfix/",
+    ".fix-bug/",
+    ".worker-status/",
+    ".claude-prompt",
+    ".commit-message.txt",
+)
 _PREVIEW_LIMIT = 3
+
+
+def is_orchestration_debris(path: str) -> bool:
+    return path.startswith(ORCHESTRATION_DEBRIS_PREFIXES)
 
 
 def _porcelain_path(line: str) -> str:
@@ -113,14 +128,16 @@ def working_tree_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTreeDi
     if not git.check(repo=wt_path, args=["rev-parse", "--verify", "--quiet", "HEAD"]):
         return _dangling_head_dirt(wt_path, target)
     try:
-        porcelain = git.status_porcelain_strict(wt_path)
+        # ``-uall`` lists untracked FILES, never a collapsed ``dir/`` entry — a
+        # collapsed ``.claude/`` is undecidable between debris scratch and a real
+        # authored skill, and undecidable must read REAL.
+        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
+        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
     except CommandFailedError as exc:
         return WorkingTreeDirt(reasons=(f"could not read working-tree status ({exc}) — keeping",), proven=False)
-    dirty = [
-        path
-        for line in porcelain.splitlines()
-        if (path := _porcelain_path(line)) and not path.startswith(_REGENERABLE_WORKTREE_PATHS)
-    ]
+    candidates = [_porcelain_path(line) for line in porcelain.splitlines()]
+    candidates.extend(line.strip() for line in diff_head.splitlines())
+    dirty = [path for path in dict.fromkeys(candidates) if path and not is_orchestration_debris(path)]
     return _dirt_verdict(dirty)
 
 
@@ -151,7 +168,7 @@ def _dangling_head_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTree
     dirty = [
         stripped
         for raw in (*changed.splitlines(), *untracked.splitlines())
-        if (stripped := raw.strip()) and not stripped.startswith(_REGENERABLE_WORKTREE_PATHS)
+        if (stripped := raw.strip()) and not is_orchestration_debris(stripped)
     ]
     return _dirt_verdict(dirty)
 

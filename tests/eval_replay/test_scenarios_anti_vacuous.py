@@ -372,6 +372,28 @@ def test_negative_only_gate_flags_an_only_negative_scenario() -> None:
     assert judge_only not in flagged, "a judge-only (matcherless) scenario carries no negative matcher to pair."
 
 
+def test_every_scenario_agent_definition_resolves() -> None:
+    """Every scenario's ``agent_path`` must LOAD, resolved exactly as the runner resolves it.
+
+    An unresolvable agent path raises inside the metered run, so the scenario reports
+    FAIL having executed zero model turns — a red indistinguishable from a behavioural
+    regression, paid for at full price. Nothing else read ``agent_path`` at load time:
+    the two ``agent_sections`` gates below skip every scenario that declares none, which
+    is most of them, so a whole overlay catalog went vacuously red for a full run.
+    """
+    offenders: list[str] = []
+    for spec in discover_specs():
+        try:
+            load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
+        except (FileNotFoundError, ValueError) as exc:
+            offenders.append(f"  - {spec.name} ({spec.source_path.name}): {exc}")
+    assert not offenders, (
+        "scenario(s) name an agent_path that does not resolve to a readable, non-empty "
+        "SKILL.md. Each would run to a runner error at metered time — zero turns "
+        "executed, reported as a plain FAIL:\n" + "\n".join(offenders)
+    )
+
+
 def test_every_declared_agent_section_resolves_against_its_skill() -> None:
     """A scenario's ``agent_sections`` must name real ``## `` sections of its skill.
 
@@ -386,7 +408,7 @@ def test_every_declared_agent_section_resolves_against_its_skill() -> None:
     for spec in discover_specs():
         if not spec.agent_sections:
             continue
-        text = load_agent_definition(spec.agent_path)
+        text = load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
         try:
             extract_sections(text, spec.agent_sections)
         except MissingSectionError as exc:
@@ -432,7 +454,7 @@ def test_every_declared_agent_section_extracts_completely() -> None:
     for spec in discover_specs():
         if not spec.agent_sections:
             continue
-        text = load_agent_definition(spec.agent_path)
+        text = load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
         extracted = extract_sections(text, spec.agent_sections)
         for name in spec.agent_sections:
             expected = _expected_section_body(text, name)

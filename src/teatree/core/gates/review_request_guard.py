@@ -54,6 +54,7 @@ independent review).
 import datetime as dt
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -170,15 +171,16 @@ def _default_options() -> GuardOptions:
     )
 
 
-def _live_matches(
-    canonical: str,
+def _read_matches(
+    canonicals: frozenset[str],
     target: GuardTarget,
     opts: GuardOptions,
 ) -> tuple[bool, list]:
-    """Recency-bounded live read. Returns ``(ok, in_window_matches)``.
+    """One recency-bounded channel walk answering EVERY url in *canonicals*.
 
-    ``ok`` is False on any failed/timed-out/not-ok read so the caller
-    fails safe to suppression.
+    The walk is paginated and rate-limited, so a caller holding many urls pays
+    for one read rather than one per url. Returns ``(ok, in_window_matches)``;
+    ``ok`` is False on any failed/timed-out/not-ok read so the caller fails safe.
     """
     from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415 — lazy import
 
@@ -188,7 +190,7 @@ def _live_matches(
         token=target.token,
         channel_id=target.channel_id,
         channel_name=target.channel_name,
-        pr_urls=[canonical],
+        pr_urls=sorted(canonicals),
         max_pages=opts.max_pages,
         oldest_ts=f"{oldest.timestamp():.6f}",
         timeout=opts.read_timeout,
@@ -196,13 +198,22 @@ def _live_matches(
     try:
         read = get_backend_provider().read_recent_review_matches(spec)
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
-        logger.warning("review_request_guard: live read failed for %s: %s", canonical, exc)
+        logger.warning("review_request_guard: live read failed for %s: %s", sorted(canonicals), exc)
         return False, []
     if not read.ok:
         return False, []
     oldest_epoch = oldest.timestamp()
-    in_window = [m for m in read.matches if m.pr_url == canonical and m.ts and _ts_epoch(m.ts) >= oldest_epoch]
+    in_window = [m for m in read.matches if m.pr_url in canonicals and m.ts and _ts_epoch(m.ts) >= oldest_epoch]
     return True, in_window
+
+
+def _live_matches(
+    canonical: str,
+    target: GuardTarget,
+    opts: GuardOptions,
+) -> tuple[bool, list]:
+    """The single-url read every dedup decision is made on."""
+    return _read_matches(frozenset({canonical}), target, opts)
 
 
 def _live_decision(
@@ -413,6 +424,41 @@ def reconcile_out_of_band(
     match = in_window[0]
     _reconcile(canonical, match.permalink)
     return match.permalink
+
+
+@dataclass(frozen=True, slots=True)
+class LiveAskRead:
+    """Which merge requests the review channel carries an ask for, and how far back it looked.
+
+    ``since`` travels with ``asked`` because a clean read only proves absence
+    over the stretch it covered, and a caller that re-derives the window from
+    its own clock gets a different answer than the read used.
+    """
+
+    asked: frozenset[str]
+    since: dt.datetime
+
+    def carries(self, mr_url: str) -> bool:
+        return _canonical(mr_url) in self.asked
+
+
+def read_live_asks(
+    mr_urls: Iterable[str],
+    target: GuardTarget,
+    *,
+    options: GuardOptions | None = None,
+) -> LiveAskRead | None:
+    """Which of *mr_urls* the channel carries an in-window ask for; ``None`` when the read FAILED.
+
+    A failed read is never an empty one: collapsing the two turns an
+    unreachable Slack into a confident "nobody was asked".
+    """
+    opts = options or _default_options()
+    ok, in_window = _read_matches(frozenset(_canonical(url) for url in mr_urls), target, opts)
+    if not ok:
+        return None
+    since = (opts.now or timezone.now()) - opts.recency_window
+    return LiveAskRead(asked=frozenset(match.pr_url for match in in_window), since=since)
 
 
 def _ts_epoch(ts: str) -> float:

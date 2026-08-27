@@ -1,3 +1,4 @@
+# test-path: cross-cutting — the gate spans hook_router.py (hooks/) and teatree.config.host_projection.
 """Self-DM-token gate: refuse claude.ai Slack MCP writes to a bot↔user DM channel.
 
 The claude.ai Slack MCP write tools (``slack_send_message``,
@@ -20,10 +21,12 @@ other channel pass through untouched.
 
 Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify the
 author config-free (no token/network, schema text not in the input), so an
-unreadable/missing config store DENIES with an error naming the config-store
-problem and the fix. A readable store with no ids stays ALLOW (genuinely-empty
-is a real state, not an error). The ``[teatree] self_dm_gate_enabled`` kill-switch
-is the sanctioned explicit disable.
+unreadable config store DENIES with an error naming the config-store problem and
+the fix. A readable store with no ids stays ALLOW (genuinely-empty is a real
+state, not an error). An ABSENT canonical DB is not unreadable on a host — the
+control DB lives in a container volume and the ids come from the published host
+projection, exactly as the id reads themselves resolve them. The ``[teatree]
+self_dm_gate_enabled`` kill-switch is the sanctioned explicit disable.
 """
 
 import json
@@ -33,6 +36,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.config.host_projection import ProjectionPublisher
 
 
 def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
@@ -87,6 +91,36 @@ def _point_at_seeded_db(db: Path, rows: dict[str, object], monkeypatch: pytest.M
     _seed_config_db(db, rows)
     monkeypatch.setenv("T3_CONFIG_DB", str(db))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+
+def _point_at_host_view(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, canonical_db: Path | None = None) -> Path:
+    """A host's view: the canonical control DB unreachable, the data dir it projects into empty.
+
+    Returns the data dir, so a caller can publish a projection into it.
+    """
+    absent = tmp_path / "control-db-volume" / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(canonical_db if canonical_db is not None else absent))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    data_dir = tmp_path / "share" / "teatree"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+def _project_onto_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: dict[str, object], *, canonical_db: Path | None = None
+) -> None:
+    """Publish *rows* as the host projection, from a source DB only the container side can open."""
+    data_dir = _point_at_host_view(tmp_path, monkeypatch, canonical_db=canonical_db)
+    source = tmp_path / "source-db.sqlite3"
+    _seed_config_db(source, rows)
+    conn = sqlite3.connect(str(source))
+    try:
+        # The publisher projects the loop-state table unguarded, so a source without it raises.
+        conn.execute("CREATE TABLE teatree_loop_state (id INTEGER PRIMARY KEY, name TEXT, status TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    ProjectionPublisher(source, data_dir).publish()
 
 
 def _event(tool_name: str, tool_input: dict, *, session_id: str) -> dict:
@@ -241,6 +275,95 @@ class TestFailsClosedOnUnresolvableConfig:
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s6")
         )
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+
+
+class TestResolvesFromTheHostProjection:
+    """The ordinary HOST case: the control DB is in a container volume, only the projection is readable.
+
+    The id reads (``mapping_setting`` / ``str_setting``) already fall through to the
+    published projection when the canonical DB file is absent. The reachability probe
+    did not, so it answered "unreachable" for a store the very next lines read the ids
+    out of — and the gate fail-closed on every colleague-channel write.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _projected_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _project_onto_host(tmp_path, monkeypatch, _ROWS_WITH_DM_CHANNELS)
+
+    def test_ids_resolve_from_the_projection(self) -> None:
+        destinations = router._self_dm_destination_ids()
+
+        assert destinations.resolved is True
+        assert destinations.ids == frozenset({_USER_ID, "D0BFIRSTDM01", "D0BSECONDDM2"})
+
+    def test_global_user_id_resolves_from_the_projection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _project_onto_host(tmp_path / "another-host", monkeypatch, _ROWS_GLOBAL_USER_ONLY)
+
+        assert router._self_dm_destination_ids().ids == frozenset({"U0GLOBALUSER"})
+
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input"),
+        [
+            (_SEND, {"channel": "C0COLLEAGUE1", "text": "review note"}),
+            (_REACT, {"channel": "C0COLLEAGUE1", "name": "eyes", "timestamp": "1.2"}),
+            (_SCHEDULE, {"channel": "C0COLLEAGUE1", "text": "later", "post_at": "1"}),
+        ],
+    )
+    def test_colleague_channel_write_passes_through(
+        self, tool_name: str, tool_input: dict, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        verdict = router.handle_block_self_dm_via_mcp(_event(tool_name, tool_input, session_id="p1"))
+
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+
+    @pytest.mark.parametrize("destination", [_DM_CHANNEL, "D0BSECONDDM2", _USER_ID])
+    def test_self_dm_write_is_still_denied(self, destination: str, capsys: pytest.CaptureFixture[str]) -> None:
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": destination, "text": "report"}, session_id="p2")
+        )
+
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "notify send" in deny["permissionDecisionReason"]
+
+
+class TestStaysClosedWithoutAProjectionToReadFrom:
+    """The projection is a fallback for an ABSENT canonical DB, never a second chance at a broken one."""
+
+    def test_no_projection_published_is_denied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _point_at_host_view(tmp_path, monkeypatch)
+
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="p3")
+        )
+
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+
+    def test_corrupt_canonical_db_is_denied_even_with_a_projection_published(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A PRESENT but unreadable canonical DB is what the id reads use, and they get
+        # nothing from it — no projection fallback applies — so an empty id set here is a
+        # read failure, not a genuinely-empty config, and the gate must stay closed.
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database at all")
+        _project_onto_host(tmp_path, monkeypatch, _ROWS_WITH_DM_CHANNELS, canonical_db=corrupt)
+
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": "C0COLLEAGUE1", "text": "review note"}, session_id="p4")
+        )
+
         assert verdict is True
         deny = _parse_deny(capsys)
         assert deny is not None

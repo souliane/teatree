@@ -8,11 +8,16 @@ colleague-visible and belong to the owner.
 """
 
 import datetime as dt
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ReviewRequestPost
+from teatree.core.gates.review_request_guard import GuardTarget
+from teatree.core.models import DeferredQuestion, ReviewRequestPost
+from teatree.core.review.mr_state_question import mr_state_marker
 from teatree.core.review.mr_triage import RepoOwner, TriageAction, TriageReason
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.mr_triage_scan import MrTriageScanner
@@ -28,6 +33,39 @@ def _mr(iid: int, **payload: object) -> dict[str, object]:
 
 def _green(iid: int, **payload: object) -> dict[str, object]:
     return _mr(iid, head_pipeline={"status": "success"}, **payload)
+
+
+def _opened(iid: int, *, days_ago: float = 2.0, **payload: object) -> dict[str, object]:
+    """A green merge request carrying the creation stamp the channel read is measured against."""
+    return _green(iid, created_at=(timezone.now() - dt.timedelta(days=days_ago)).isoformat(), **payload)
+
+
+@contextmanager
+def _channel() -> Iterator[None]:
+    target = GuardTarget(channel_id="C1", channel_name="reviews", token="xoxb-bot")
+    with patch("teatree.loop.scanners.mr_triage_scan.resolve_guard_target", return_value=target):
+        yield
+
+
+@contextmanager
+def _reads(*, ok: bool = True, asked: tuple[str, ...] = ()) -> Iterator[None]:
+    """Stage the review channel's history. ``ok=False`` is a FAILED read, never an empty one."""
+    now = timezone.now().timestamp()
+    matches = [type("M", (), {"pr_url": url, "ts": f"{now:.6f}"})() for url in asked]
+    read = type("R", (), {"ok": ok, "matches": matches})
+    provider = type("P", (), {"read_recent_review_matches": lambda _spec: read()})
+    with patch("teatree.core.backend_registry.get_backend_provider", return_value=provider):
+        yield
+
+
+@contextmanager
+def _exempt(*patterns: str) -> Iterator[None]:
+    with patch("teatree.loop.scanners.mr_triage_scan.review_exempt_patterns", return_value=patterns):
+        yield
+
+
+def _open_mr_questions() -> list[DeferredQuestion]:
+    return list(DeferredQuestion.pending().filter(dedupe_marker__startswith="mr-state:"))
 
 
 def _grouped(iid: int, *, repo: str = _REPO, **payload: object) -> dict[str, object]:
@@ -200,6 +238,71 @@ class TestAWorkGroupIsHeldUntilEveryMemberIsReady(TestCase):
 
         assert [s.payload["url"] for s in signals] == [f"{_REPO}/28"]
         assert signals[0].payload["reason"] is TriageReason.WORK_GROUP_NOT_READY
+
+
+class TestAMissingReviewIsProvedAgainstTheChannel(TestCase):
+    """The one fact no ledger can supply: nobody has been asked yet.
+
+    An absent ledger row is silence, so the surveyor reads the review channel
+    itself. What it earns there is the ladder's review-request rung — the first
+    time a merge request nobody ever asked about becomes visible as such.
+    """
+
+    def test_a_green_mr_the_channel_never_carried_is_a_review_request(self) -> None:
+        with _channel(), _reads():
+            signals = MrTriageScanner(host=FakeCodeHost(user="alice", my_prs=[_opened(30)])).scan()
+
+        assert _actions(signals) == [TriageAction.REQUEST_REVIEW]
+
+    def test_an_ask_already_in_the_channel_is_not_a_second_request(self) -> None:
+        """Asked out of band, so the ledger holds no clock — it waits rather than ask again."""
+        with _channel(), _reads(asked=(f"{_REPO}/31",)):
+            signals = MrTriageScanner(host=FakeCodeHost(user="alice", my_prs=[_opened(31)])).scan()
+
+        assert _actions(signals) == [TriageAction.WAIT]
+        assert _open_mr_questions() == []
+
+    def test_a_failed_channel_read_is_never_a_missing_review(self) -> None:
+        with _channel(), _reads(ok=False):
+            signals = MrTriageScanner(host=FakeCodeHost(user="alice", my_prs=[_opened(32)])).scan()
+
+        assert _actions(signals) == [TriageAction.ASK_OWNER]
+
+    def test_the_missing_review_reaches_the_owner_not_only_the_statusline(self) -> None:
+        with _channel(), _reads():
+            MrTriageScanner(host=FakeCodeHost(user="alice", my_prs=[_opened(33)])).scan()
+
+        assert [q.dedupe_marker for q in _open_mr_questions()] == [mr_state_marker(f"{_REPO}/33")]
+
+    def test_a_held_group_member_asks_the_owner_nothing(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[_opened(34, title="feat: part a (repo#7)"), _opened(35, title="feat: part b (repo#7)", draft=True)],
+        )
+
+        with _channel(), _reads():
+            MrTriageScanner(host=host).scan()
+
+        assert _open_mr_questions() == []
+
+
+class TestAReviewExemptRepoIsNeverAskedAbout(TestCase):
+    """R2 is a declared axis the ladder already carries; the surveyor has to feed it."""
+
+    def test_an_exempt_repo_surfaces_no_review_request(self) -> None:
+        with _channel(), _reads(), _exempt("group/repo"):
+            signals = MrTriageScanner(host=FakeCodeHost(user="alice", my_prs=[_opened(36)])).scan()
+
+        assert signals == []
+
+    def test_an_exempt_repo_still_owes_its_ci_fix(self) -> None:
+        """Exemption answers for everything social and for nothing else."""
+        host = FakeCodeHost(user="alice", my_prs=[_mr(37, head_pipeline={"status": "failed"})])
+
+        with _channel(), _reads(), _exempt("group/repo"):
+            signals = MrTriageScanner(host=host).scan()
+
+        assert _actions(signals) == [TriageAction.FIX_CI]
 
 
 class TestItNeverActs(TestCase):

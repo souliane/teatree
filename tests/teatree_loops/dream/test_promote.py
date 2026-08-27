@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.review.review_findings import find_bare_references
@@ -150,6 +151,23 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
         specs = load_eval_yaml(outcome.scenario_path)
         assert [s.name for s in specs] == ["derived_delegate_under_load"]
         assert specs[0].lane == "under_load"
+
+    def test_a_failed_fixture_write_never_activates_the_scenario_that_names_it(self) -> None:
+        # Appending to the scenario YAML is what makes the scenario LIVE, so it must come
+        # last: a scenario the suite discovers but whose replay fixtures are missing is a
+        # broken eval lane, while orphan fixtures nothing yet references are inert.
+        real_write_text = Path.write_text
+
+        def _fixtures_fail(self: Path, *args: object, **kwargs: object) -> int:
+            if self.suffix == ".jsonl":
+                msg = "disk full"
+                raise OSError(msg)
+            return real_write_text(self, *args, **kwargs)
+
+        with patch.object(Path, "write_text", _fixtures_fail), pytest.raises(OSError, match="disk full"):
+            self._promote(_GROUNDED_CANDIDATE)
+
+        assert not (self.scenarios / "promoted_drift.yaml").exists()
 
     def test_promoted_scenario_is_anti_vacuous_fail_red_pass_green(self) -> None:
         outcome = self._promote(_GROUNDED_CANDIDATE)

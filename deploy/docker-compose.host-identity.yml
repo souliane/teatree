@@ -18,7 +18,7 @@
 # run from the host. On the box the two coordinates coincide, so this never fires
 # there — which is exactly why it stayed invisible.
 #
-# Mounting the worktree tree AT ITS OWN HOST PATH gives the container one
+# Mounting the workspace tree AT ITS OWN HOST PATH gives the container one
 # coordinate both venues agree on: a worktree path is then valid as a container
 # path AND as a host path, so anything the container passes to the daemon names a
 # real host directory. This is the same "path identity" device the credential
@@ -29,14 +29,25 @@
 # Worktree row records. This file only ADDS the second, host-identical view. On a
 # host where the homes match, the two targets would collide, so the file is not
 # added there at all.
+# The mount covers the whole host WORKSPACE root, not just its t3-workspaces
+# subtree, because the worktree tree alone is not self-contained: a linked
+# checkout's `.git` file names its SOURCE CLONE by the host's absolute path
+# (`<host-home>/workspace/<repo>/.git/worktrees/<name>`), and ad-hoc agent
+# worktrees live in sibling roots (`<repo>-<slug>/`, `*/.claude/worktrees/`).
+# A container that sees the worktrees but not the clones cannot resolve a
+# single checkout's admin entry, so every landed probe answers
+# `clone-unresolvable` and `workspace clean-all` can verify nothing (measured:
+# 56 of 70 emit records unverifiable). One identity mount of the workspace
+# root gives the stored clone paths, the gitdir pointers and the ad-hoc roots
+# one coordinate both venues resolve.
 services:
   teatree-worker:
     volumes:
       - type: bind
-        source: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
-        target: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
+        source: ${TEATREE_HOST_HOME}/workspace
+        target: ${TEATREE_HOST_HOME}/workspace
   teatree-admin:
     volumes:
       - type: bind
-        source: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
-        target: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
+        source: ${TEATREE_HOST_HOME}/workspace
+        target: ${TEATREE_HOST_HOME}/workspace

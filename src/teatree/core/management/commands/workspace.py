@@ -6,14 +6,14 @@ from typing import IO, Annotated, cast
 import typer
 from django.db import transaction
 from django_fsm import can_proceed
-from django_typer.management import command
+from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.cleanup.unshipped_restore import restore_bundle
-from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
-from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.anchor import resolve_workspace_ticket
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
@@ -61,7 +61,7 @@ def _worktree_root() -> Path:
     return _config_worktree_root()
 
 
-class Command(MachineOutputCommand):
+class Command(TyperCommand):
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def ticket(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a CLI flag; the arg list IS the public `workspace ticket` surface, not an internal design smell.
@@ -104,7 +104,7 @@ class Command(MachineOutputCommand):
             str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
         ] = "",
     ) -> int:
-        """Create or update a ticket and trigger worktree provisioning."""
+        """Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)."""
         # The pk is for a ``call_command`` caller; the summary below is the human view.
         self.print_result = False
         _wh.warn_orphans(self.stderr.write)
@@ -171,6 +171,7 @@ class Command(MachineOutputCommand):
         ),
     ) -> int:
         """Provision every worktree in the current ticket workspace, in parallel."""
+        # The count is for a ``call_command`` caller; the per-worktree lines above are the human view.
         self.print_result = False
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
@@ -202,7 +203,6 @@ class Command(MachineOutputCommand):
         if failures:
             names = ", ".join(f"{r.repo_path} ({r.detail})" for r in failures)
             _die(self.stderr.write, f"  Stopped: {names} — fix and re-run.")
-        self.stdout.write(f"  {len(worktrees)} worktree(s) in the workspace")
         return len(worktrees)
 
     @command()
@@ -244,9 +244,11 @@ class Command(MachineOutputCommand):
                 continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
             commands = list(overlay.runtime.run_commands(wt))
-            with transaction.atomic():
-                wt.start_services(services=commands)
-                wt.save()
+            # Only the FIRST sibling can lose this recount — once it holds the
+            # slot the ticket is excluded from its own count — so bailing here
+            # leaves no half-started workspace behind.
+            if not start_services_or_enqueue(wt, services=commands, write_out=self.stdout.write):
+                return f"queued {len(worktrees)} worktree(s) — no free local-stack slot"
             started.append(wt)
             result = WorktreeStartRunner(wt, overlay=overlay).run()
             self.stdout.write(f"    {result.detail}")

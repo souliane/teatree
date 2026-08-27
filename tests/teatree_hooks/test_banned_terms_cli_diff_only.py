@@ -91,12 +91,15 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-def _run_cli(repo: Path, db: Path, *files: str, diff_only: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    repo: Path, db: Path, *files: str, diff_only: bool = False, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Invoke the banned_terms_cli module exactly as the pre-commit hook does.
 
-    Runs with ``cwd=repo`` (prek runs hooks from the repo root and passes
-    repo-relative paths) so the staged diff resolves against the right repo, and
-    points the DB-home reader at the seeded DB via ``T3_CONFIG_DB``.
+    Runs with ``cwd=repo`` (prek runs hooks from the project root and passes
+    project-relative paths) so the staged diff resolves against the right repo,
+    and points the DB-home reader at the seeded DB via ``T3_CONFIG_DB``.
+    *extra_env* adds the variables a real hook invocation inherits.
     """
     argv = ["--diff-only"] if diff_only else []
     argv.extend(files)
@@ -106,7 +109,7 @@ def _run_cli(repo: Path, db: Path, *files: str, diff_only: bool = False) -> subp
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "T3_CONFIG_DB": str(db)},
+        env={**os.environ, "T3_CONFIG_DB": str(db), **(extra_env or {})},
     )
 
 
@@ -508,3 +511,51 @@ def test_full_file_report_flags_committed_line(tmp_path: Path) -> None:
 
 def test_full_file_report_skips_missing_file(tmp_path: Path) -> None:
     assert _full_file_report([str(tmp_path / "missing.md")], _TERMS) == []
+
+
+def _init_repo_with_same_name_at_two_levels(tmp_path: Path, *, banned_at: str) -> tuple[Path, Path]:
+    """A repo staging ``README.md`` at the root AND in ``sub/``; only *banned_at* carries a term."""
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    _git(repo, "init", "-b", "main")
+    (repo / "seed.md").write_text("clean seed\n", encoding="utf-8")
+    _git(repo, "add", "seed.md")
+    _git(repo, "commit", "-m", "seed")
+    text = {"root": "clean root line\n", "sub": "clean sub line\n"}
+    text[banned_at] = "acme line\n"
+    (repo / "README.md").write_text(text["root"], encoding="utf-8")
+    (repo / "sub" / "README.md").write_text(text["sub"], encoding="utf-8")
+    _git(repo, "add", "README.md", "sub/README.md")
+    return repo, _seed_db(tmp_path, list(_TERMS))
+
+
+class TestStagedDiffIgnoresInheritedGitDir:
+    """``git commit`` exports GIT_DIR to hooks, which re-roots a relative pathspec.
+
+    A hook running in a SUBDIRECTORY then reads a same-named file from the
+    repository root: the file it was asked about goes unscanned, and one it was
+    never asked about is reported under that name.
+    """
+
+    def test_a_root_namesake_carrying_a_term_does_not_block(self, tmp_path: Path) -> None:
+        repo, db = _init_repo_with_same_name_at_two_levels(tmp_path, banned_at="root")
+
+        result = _run_cli(repo / "sub", db, "README.md", diff_only=True, extra_env={"GIT_DIR": str(repo / ".git")})
+
+        assert result.returncode == 0, result.stdout
+
+    def test_the_subdirectory_file_carrying_a_term_still_blocks(self, tmp_path: Path) -> None:
+        repo, db = _init_repo_with_same_name_at_two_levels(tmp_path, banned_at="sub")
+
+        result = _run_cli(repo / "sub", db, "README.md", diff_only=True, extra_env={"GIT_DIR": str(repo / ".git")})
+
+        assert result.returncode == 1
+        assert "BANNED TERM in README.md:" in result.stdout
+
+    def test_staged_added_lines_reads_the_cwd_relative_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, _db = _init_repo_with_same_name_at_two_levels(tmp_path, banned_at="root")
+        monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+
+        assert staged_added_lines(repo / "sub", "README.md") == ["clean sub line"]

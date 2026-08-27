@@ -33,9 +33,17 @@ _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 _DEFAULT_FOLLOWUP_REPOS = ["souliane/teatree"]
 
 
-def _is_github_slug(value: str) -> bool:
-    owner, sep, name = value.partition("/")
-    return bool(sep) and bool(owner) and bool(name) and "/" not in name
+def _is_forge_repo_path(value: str) -> bool:
+    """True for a forge repo path — ``owner/repo`` OR a nested ``group/sub/repo``.
+
+    The nested arm is not cosmetic: the whole PR sweep hangs off this filter, and
+    requiring exactly two segments dropped every GitLab project the operator had
+    declared, so the sweep silently fell back to the public default and never saw
+    the fork's own MRs (#72). A single-segment entry is a bare directory name from
+    workspace discovery, never a slug, and is still dropped.
+    """
+    segments = value.split("/")
+    return len(segments) > 1 and all(segments)
 
 
 def _repo_root() -> Path:
@@ -81,7 +89,7 @@ class TeatreeMetadata(OverlayMetadata):
 
     @override
     def get_followup_repos(self) -> list[str]:
-        slugs = [repo for repo in self._config.workspace_repos if _is_github_slug(repo)]
+        slugs = [repo for repo in self._config.workspace_repos if _is_forge_repo_path(repo)]
         return slugs or list(_DEFAULT_FOLLOWUP_REPOS)
 
     @override

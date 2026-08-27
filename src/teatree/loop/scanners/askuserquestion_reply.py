@@ -77,7 +77,14 @@ class AskUserQuestionReplyScanner:
             # never recorded against a reply the user never saw acknowledged).
             reply.unmark_loop_replied()
             return
-        if not apply_bound_answer(bound):
+        try:
+            applied = apply_bound_answer(bound)
+        except Exception:
+            # Nothing was applied, so the claim must go back — otherwise the
+            # reply is consumed forever by a failure that never recorded it.
+            reply.unmark_loop_replied()
+            raise
+        if not applied:
             reply.unmark_loop_replied()
 
     def _react_ack(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> bool:

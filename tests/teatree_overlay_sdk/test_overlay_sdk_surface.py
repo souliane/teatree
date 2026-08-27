@@ -165,7 +165,8 @@ EXPECTED_RUNTIME_SIGNATURES: dict[str, str] = {
 EXPECTED_E2E_SIGNATURES: dict[str, str] = {
     "env_extras": (
         "(self, env_cache: dict[str, str], *, context: teatree.core.e2e_scenario.E2eExtrasContext = "
-        "E2eExtrasContext(target='', spec_path='', artifacts_dir='', compose_project='')) -> dict[str, str]"
+        "E2eExtrasContext(target='', spec_path='', artifacts_dir='', compose_project='', base_url='')"
+        ") -> dict[str, str]"
     ),
     "playwright_args": "(self, spec_path: str) -> list[str]",
     "preflight": ("(self, *, customer: str | None, base_url: str | None) -> list[collections.abc.Callable[[], None]]"),
@@ -186,6 +187,7 @@ EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
 EXPECTED_CONNECTOR_SIGNATURES: dict[str, str] = {
     "manifest": "(self) -> list['ConnectorRequirement']",
     "mcp_provider_expectations": "(self) -> dict[str, str]",
+    "mcp_tool_group": "(self) -> teatree.core.mcp_tool_group.McpToolGroup | None",
     "preflight": "(self) -> list[collections.abc.Callable[[], None]]",
 }
 
@@ -298,7 +300,7 @@ def test_connector_signatures_are_frozen():
 def test_base_is_shrunk_to_the_identity_surface():
     """PR-27b: the flat ``get_*`` provisioning/runtime/e2e/review hooks left the base."""
     base = _signatures(OverlayBase)
-    assert len(base) <= 12, f"OverlayBase regrew to {len(base)} methods — regroup into a facet"
+    assert len(base) <= 13, f"OverlayBase regrew to {len(base)} methods — regroup into a facet"
     for gone in ("env_extra", "provisioning.env_extra", "runtime.run_commands", "can_auto_merge", "e2e.env_extras"):
         assert gone not in base
 

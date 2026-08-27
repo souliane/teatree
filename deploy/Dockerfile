@@ -124,6 +124,28 @@ RUN apt-get update -qq && \
 RUN npx --yes playwright@1.57.0 install-deps chromium && \
     rm -rf /var/lib/apt/lists/*
 
+# The OS packages the HOSTED PROJECT needs at IMPORT time — the third class after "tools
+# a role shells out to" and "libraries the browser dlopens". The worker runs a checked-out
+# project's own `manage.py` and `pytest` in this image's interpreter, so what that
+# project's import graph dlopens (libmagic, poppler, libGL, libgomp, glib) or execs
+# (patch) has to be here too.
+#
+# Its own layer because of the blast radius: these fail inside `django.setup()`, before
+# any test runs, so ONE absent `.so` aborts pytest COLLECTION for the whole repository and
+# reads as "the suite cannot run". Both wordings — a bare `ImportError`, a
+# `FileNotFoundError` — name no module, which is why `utils/django_db/reconcile.py` has to
+# recognise them explicitly to classify the interpreter as unverified.
+#
+# An ARG so a project with a different runtime set replaces it at build time rather than
+# forking this file. Debian's generic names: where one is virtual on the pinned release
+# (noble's `libmagic1` -> `libmagic1t64`) apt resolves the single provider. `curl` and
+# `libgl1` are already installed above and re-listed anyway, so the value stays a verbatim
+# mirror of the consuming project's own manifest and drift is a set comparison.
+ARG TEATREE_RUNTIME_OS_PACKAGES="libmagic1 curl poppler-utils libgomp1 libgl1 libglib2.0-0 patch"
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends ${TEATREE_RUNTIME_OS_PACKAGES} && \
+    rm -rf /var/lib/apt/lists/*
+
 # Non-root runtime user.
 RUN useradd -m -d /home/teatree -s /bin/bash teatree
 
@@ -190,10 +212,18 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 # this committed, reviewable file to change the loop agent's configuration.
 COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
 
+# The GPG home a hand-issued `docker exec … sh -lc` resolves. The entrypoint's
+# redirect onto the container-local key copy reaches only the role process, so an
+# exec keeps the baked GNUPGHOME and reads every secret EMPTY with rc=0. /etc/profile
+# globs `/etc/profile.d/*.sh`, which is the one channel that reaches an exec the
+# entrypoint never ran for. Baked at the SYSTEM level because it holds no secret —
+# only the instruction to prefer the home the entrypoint already built.
+COPY --chmod=0644 deploy/profile-gnupg-home.sh /etc/profile.d/10-teatree-gnupg-home.sh
+
 # The GitLab https credential helper, baked at the SYSTEM level because it holds no
 # secret — only the instruction to read one from `GITLAB_TOKEN` at use time. In the
 # image rather than the entrypoint so it also covers the containers the entrypoint
-# never runs for: `deploy/t3` falls back to a one-off `run --rm --entrypoint t3`
+# never runs for: `deploy/t3` falls back to a one-off `run --rm` container
 # whenever the stack is down, and that container must still be able to clone a
 # private repo into its workspace (`core.worktree.clone_provision`).
 #
@@ -204,6 +234,15 @@ COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settin
 # emits nothing and git falls through exactly as if it were not registered.
 RUN git config --system --replace-all "credential.https://gitlab.com.helper" \
     '!f() { test "$1" = get && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
+
+# Both SSH spellings of a gitlab.com remote resolved onto the https transport the
+# helper above authenticates. The image ships NO ssh client on purpose — an ssh
+# remote would need the operator's private key inside a container that already holds
+# the docker socket — so a hard-coded `git@gitlab.com:` remote (the form every clone
+# url in a checked-in config carries) dies on `cannot run ssh: No such file or
+# directory`, four layers below whatever command triggered the clone.
+RUN git config --system --replace-all "url.https://gitlab.com/.insteadOf" "git@gitlab.com:" && \
+    git config --system --add "url.https://gitlab.com/.insteadOf" "ssh://git@gitlab.com/"
 
 USER teatree
 WORKDIR /home/teatree

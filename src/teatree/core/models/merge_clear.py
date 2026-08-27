@@ -30,6 +30,7 @@ from teatree.core.models.reviewer_identity import (
     unrecognised_reviewer_message,
 )
 from teatree.core.models.ticket import Ticket
+from teatree.paths import VENDORED_CORE_PREFIX
 from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
@@ -69,6 +70,10 @@ SHA_FULL_LEN = 40
 # the trusted-author set, loosened a gate, edited the classifier that judges
 # itself, or shipped a destructive migration must NEVER auto-merge itself on
 # agent-only review — the factory cannot loosen its own guardrails unattended.
+# The prefixes are spelled relative to TEATREE's root; a forge reports paths
+# relative to the working-tree root, which in a fork that vendors core is the
+# fork root — so :func:`_substrate_candidates` tests the de-vendored form too,
+# without which every prefix here is dead code in such a fork.
 _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
     "src/teatree/core/models/merge_clear.py",
@@ -87,6 +92,18 @@ _SUBSTRATE_PATH_PREFIXES = (
     "docs/blueprint/",
 )
 _SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
+
+
+def _substrate_candidates(normalized: str) -> tuple[str, ...]:
+    """*normalized* as the forge reported it, plus its de-vendored form when it has one.
+
+    Both are tested rather than only the stripped one: a fork that vendors core
+    carries its OWN ``hooks/`` and ``docs/blueprint/`` at the repo root, which must
+    keep matching.
+    """
+    if normalized.startswith(VENDORED_CORE_PREFIX):
+        return (normalized, normalized.removeprefix(VENDORED_CORE_PREFIX))
+    return (normalized,)
 
 
 def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
@@ -108,14 +125,18 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     match after stripping a leading ``./`` or ``/``; the bare governance file
     names (``BLUEPRINT.md`` etc.) match on the final path component so a
     look-alike sibling (``BLUEPRINT.md.bak``, ``src/teatree/core/merger/``) is not
-    misclassified.
+    misclassified. Every prefix is spelled relative to teatree's OWN root, while a
+    forge reports paths relative to the working-tree root — the fork root in a fork
+    that vendors core under ``vendor/teatree/`` — so each path is matched in both
+    forms (:func:`_substrate_candidates`).
     """
     for raw in paths:
         normalized = raw.strip().lstrip("/").removeprefix("./")
         if not normalized:
             continue
-        if any(normalized.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
-            return True
+        for candidate in _substrate_candidates(normalized):
+            if any(candidate.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
+                return True
         if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
             return True
     return False

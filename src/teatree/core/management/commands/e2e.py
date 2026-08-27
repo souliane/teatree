@@ -1,6 +1,5 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
-import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,20 +8,21 @@ from typing import IO, Annotated, cast
 import typer
 from django_typer.management import command
 
-from teatree.core.intake.resolve import resolve_worktree
-from teatree.core.machine_output import MachineOutputCommand
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands import _e2e_discovery as _disc
+from teatree.core.management.commands import _e2e_in_tree as _in_tree
 from teatree.core.management.commands import _e2e_lanes as _lanes
+from teatree.core.management.commands import _e2e_resolvers as _resolvers
 from teatree.core.management.commands import _e2e_run_workitem as _workitem
 from teatree.core.management.commands import _e2e_runners as _runners
+from teatree.core.management.commands._test_plan import committed_captures as _committed_captures
 from teatree.core.management.commands._test_plan import from_seams as _from_seams
-from teatree.core.management.commands._test_plan import post as _test_plan_post
 from teatree.core.management.commands._test_plan import tracked as _tracked_manifest
+from teatree.core.management.commands._test_plan import write as _test_plan_write
+from teatree.core.management.commands._test_plan.write import TestPlanValidationError
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.worktree.worktree_env import compose_project
-from teatree.utils.ports import host_published_port_host
 from teatree.utils.run import run_streamed
 
 # Re-exports for back-compat with tests and external callers (#1322 split).
@@ -35,18 +35,18 @@ _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
 _build_e2e_env = _runners.build_e2e_env
 E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
+E2eSpecsRemoteUnreachableError = _runners.E2eSpecsRemoteUnreachableError
 PlaywrightOptions = _runners.PlaywrightOptions
 
 
-# Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
-_MRS_HELP = "MR/PR URL(s) the test plan covers (repeat or comma-separate). Supplements the manifest's 'mrs'."
-_MRS_OPTION = typer.Option(None, "--mrs", help=_MRS_HELP)
-_SKIP_HELP = "User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use."
+# Shared typer.Option declarations for ``write-test-plan``.
+_SKIP_HELP = "User-authorised bypass of the capture preflight (red-box / duplicate gates). Not for routine use."
 _SKIP_VALIDATION_OPTION = typer.Option(default=False, help=_SKIP_HELP)
-_TEMPLATE_HELP = "Body template: capture-matrix (default), browser-click-first, or link-api. Overrides the manifest's."
-_TEMPLATE_OPTION = typer.Option("", "--template", help=_TEMPLATE_HELP)
-_NO_VIDEO_HELP = "Post a stills-only manifest (screenshots, no video). Refused by default — capture video:'on' instead."
+_NO_VIDEO_HELP = "Accept a stills-only manifest (screenshots, no video). Refused by default — capture video:'on'."
 _ALLOW_NO_VIDEO_OPTION = typer.Option(default=False, help=_NO_VIDEO_HELP)
+_JSON_HELP = "Emit the written plan's {path, envs, action} as JSON on stdout (human summary -> stderr)."
+_EMBED_HELP = "Commit the run's captures beside the plan (for a plan issued outside this repo) instead of citing them."
+_EMBED_CAPTURES_OPTION = typer.Option(default=False, help=_EMBED_HELP)
 
 
 @dataclass
@@ -178,11 +178,13 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         overlay = get_overlay()
         config = overlay.metadata.get_e2e_config()
         if not config:
-            return {"error": "No E2E config in the overlay (get_e2e_config)."}
+            self.stderr.write("  trigger-ci refused: no E2E config in the overlay (get_e2e_config).")
+            raise SystemExit(1)
 
         ci = ci_service_from_overlay()
         if ci is None:
-            return {"error": "No CI service configured."}
+            self.stderr.write("  trigger-ci refused: no CI service configured.")
+            raise SystemExit(1)
 
         project = config.get("project_path", overlay.metadata.get_ci_project_path())
         ref = branch or config.get("ref", "main")
@@ -201,98 +203,28 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
                 raise SystemExit(1) from exc
 
     def _require_frontend_port(self, worktree: Worktree, linked_ticket: Ticket | None) -> int:
-        port = _discover_frontend_port(worktree, linked_ticket=linked_ticket)
-        if port is None:
-            probed = ", ".join(_ticket_frontend_projects(worktree, linked_ticket=linked_ticket)) or "none"
-            self.stderr.write(
-                f"Frontend not running (no docker `frontend` service in [{probed}], "
-                "no local process on 4200). Run `t3 <overlay> worktree start` first.",
-            )
-            raise SystemExit(1)
-        return port
+        return _resolvers.require_frontend_port(worktree, linked_ticket, write=self.stderr.write)
 
     def _resolve_target_env(
         self,
         resolved_target: str,
         linked_ticket: Ticket | None,
     ) -> tuple[str | None, str | None, dict[str, str] | None]:
-        """Build the per-target trio passed to ``_build_e2e_env``."""
-        if resolved_target in {"dev", "qa"}:
-            if not os.environ.get("BASE_URL"):
-                self.stderr.write(
-                    f"--target {resolved_target} requires BASE_URL (the deployed environment URL) to be set.",
-                )
-                raise SystemExit(1)
-            return None, None, None
-
-        # The frontend port is published on the DOCKER HOST. `localhost` names that
-        # host only when the CLI runs natively; from inside the containerized CLI it is
-        # the container's own loopback, where nothing listens.
-        host = host_published_port_host()
-
-        if linked_ticket is not None:
-            linked_wt = _resolve_linked_worktree(linked_ticket)
-            if linked_wt is not None:
-                port = self._require_frontend_port(linked_wt, linked_ticket)
-                return f"http://{host}:{port}", compose_project(linked_wt), _linked_env_cache(linked_wt)
-
-        worktree = resolve_worktree()
-        port = self._require_frontend_port(worktree, linked_ticket)
-        return f"http://{host}:{port}", compose_project(worktree), None
+        return _resolvers.resolve_target_env(
+            resolved_target,
+            linked_ticket,
+            write=self.stderr.write,
+            require_port=self._require_frontend_port,
+        )
 
     def _resolve_linked_ticket(self, linked_to: int) -> Ticket | None:
-        """Resolve ``--linked-to <pk>`` to a Ticket or exit on misconfig.
-
-        ``0`` means "no link" — return None (back-compat path). A non-zero
-        pk that misses must fail fast: silently falling through would mask
-        the user's intent to route at a specific backend stack.
-        """
-        if not linked_to:
-            return None
-        try:
-            return Ticket.objects.get(pk=linked_to)
-        except Ticket.DoesNotExist:
-            self.stderr.write(
-                f"--linked-to ticket pk={linked_to} not found. "
-                "Pass the backend ticket's pk (see `t3 <overlay> ticket list`).",
-            )
-            raise SystemExit(2) from None
+        return _resolvers.resolve_linked_ticket(linked_to, write=self.stderr.write)
 
     def _resolve_artifacts_dir(self, explicit: str) -> str:
-        """Resolve the out-of-repo E2E artifacts root the runner exports (#3331).
-
-        An explicit ``--artifacts-dir`` is honoured but REFUSED when it resolves
-        inside a repo working tree (captures never live in a source tree). Empty
-        derives ``<ticket_dir>/.t3-cache/artifacts`` from the resolved worktree;
-        an unresolvable worktree yields ``""`` (the var is simply not exported).
-        """
-        if explicit:
-            try:
-                _runners.refuse_artifacts_dir_in_repo(Path(explicit))
-            except _runners.ArtifactsDirInRepoError as exc:
-                self.stderr.write(str(exc))
-                raise SystemExit(2) from exc
-            return str(Path(explicit).expanduser())
-        try:
-            worktree = resolve_worktree()
-        except Exception:  # noqa: BLE001 — an unresolvable worktree degrades to no artifacts dir, never aborts
-            return ""
-        wt_path = (worktree.extra or {}).get("worktree_path", "") if worktree else ""
-        return str(_runners.e2e_artifacts_root(wt_path)) if wt_path else ""
+        return _resolvers.resolve_artifacts_dir(explicit, write=self.stderr.write)
 
     def _resolve_target(self, target: str) -> str:
-        """Resolve the dual-env target deterministically.
-
-        Explicit values are ``dev`` / ``qa`` / ``local``. Empty preserves the
-        back-compat inference: ``BASE_URL`` means remote ``dev``, else ``local``.
-        """
-        normalized = target.strip().lower()
-        if normalized in {"dev", "qa", "local"}:
-            return normalized
-        if normalized:
-            self.stderr.write(f"--target must be 'dev', 'qa', or 'local', got {target!r}.")
-            raise SystemExit(2)
-        return "dev" if os.environ.get("BASE_URL") else "local"
+        return _resolvers.resolve_target(target, write=self.stderr.write)
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -356,6 +288,9 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         except _runners.E2eSpecsResolutionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(exc.exit_code) from exc
+        except _runners.SpecsCheckoutBusyError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from exc
 
         linked_ticket = self._resolve_linked_ticket(linked_to)
         resolved_target = self._resolve_target(target)
@@ -433,58 +368,161 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         )
         return _runners.run_project_suite(opts, write_err=self.stderr.write)
 
-    @command(name="post-test-plan")
+    @command(name="in-tree")
+    def in_tree(self, test_path: str = "", *, config: str = "") -> str:
+        """Run a Playwright config that lives in THIS checkout's e2e dir — no stack, no credentials.
+
+        The third source beside ``project`` (the repo's own pytest suite) and
+        ``external`` (a cloned specs repo run against a live stack). What
+        distinguishes it is the absence of every precondition those two carry:
+        no specs clone, no frontend port, no env cache, no tenant, no
+        credentials. The run is exactly ``npx playwright test -c <config>
+        [<filter>]`` in ``<checkout>/<e2e_dir>``, with the ambient environment
+        untouched — so a browserless CI lane (a static-analysis or unit lane)
+        reproduces locally byte-for-byte, in the CONTRIBUTOR's own worktree.
+
+        The checkout is the one the command was invoked from, so a lane runs
+        against the branch under review rather than a cached clone of the
+        default ref.
+
+        ``--test-path`` is the Playwright filter — a spec, a line-scoped spec
+        (``x.spec.ts:42``) or a directory; omitted, the whole config runs.
+        Repo-relative (``e2e/contrib/tests/x.spec.ts``), e2e-dir-relative
+        (``contrib/tests/x.spec.ts``) and absolute forms all work.
+
+        The config comes from the overlay's per-spec lane mapping
+        (``e2e.playwright_args``); ``--config`` overrides it. When neither
+        yields one the command REFUSES rather than let Playwright fall back to
+        the default config, whose global setup typically logs in and aborts.
+        """
+        overlay = get_overlay()
+        try:
+            plan = _in_tree.resolve_run(
+                test_path=test_path,
+                config=config,
+                e2e_dir=overlay.metadata.get_e2e_config().get("e2e_dir", "e2e"),
+                overlay_args=overlay.e2e.playwright_args(test_path),
+            )
+        except _in_tree.InTreeResolutionError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(2) from exc
+
+        self.stdout.write(f"  Running from: {plan.run_dir}")
+        self.stdout.write(f"  Command: {shlex.join(plan.command)}")
+
+        rc = run_streamed(plan.command, cwd=plan.run_dir, check=False)
+        if rc == 0:
+            return "E2E passed."
+        self.stderr.write(f"E2E failed (exit {rc}).")
+        raise SystemExit(rc)
+
+    @command(name="write-test-plan")
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def post_test_plan(  # noqa: PLR0913 — CLI entrypoint; each flag is a distinct user-facing option
+    def write_test_plan(  # noqa: PLR0913 — django-typer command: every param is a distinct user-facing CLI flag; the arg list IS the public `e2e write-test-plan` surface
         self,
         *,
         manifest: str = "",
         ticket: str = "",
-        title: str = "",
-        mrs: list[str] = _MRS_OPTION,
-        skip_validation: bool = _SKIP_VALIDATION_OPTION,
         body_file: str = "",
-        template: str = _TEMPLATE_OPTION,
+        skip_validation: bool = _SKIP_VALIDATION_OPTION,
         allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
-        from_seams: bool = False,
+        embed_captures: bool = _EMBED_CAPTURES_OPTION,
+        json_output: Annotated[bool, typer.Option("--json", help=_JSON_HELP)] = False,
+    ) -> _test_plan_write.PlanWriteResult:
+        """Write (or update) the ticket's plan at ``test-plans/<repo>-<ticket>.md`` in the e2e repo.
+
+        ONE file per ticket, in the repo that owns the specs it describes — the
+        plan is reviewed and merged with them, never posted to the forge. A
+        re-run merges the env(s) it supplies over what the file already records.
+        ``--manifest`` is the JSON path/string and the plan's only content
+        source (ticket, title, MRs, template, per-env commits + run instant, gap,
+        captures); ``--ticket`` selects the issue; ``--skip-validation`` bypasses
+        the capture preflight; ``--allow-no-video`` permits a stills-only
+        manifest (refused by default); ``--body-file`` writes a pre-authored body
+        verbatim (mutually exclusive with ``--manifest``); ``--embed-captures``
+        commits the captures beside the plan for a plan issued outside this repo.
+        Captures already committed beside the plan are re-validated on every
+        write, so a hand-placed screenshot cannot skip the preflight.
+        See :mod:`._test_plan.write`.
+        """
+        flags = _test_plan_write.TestPlanFlags(
+            ticket=ticket,
+            manifest=manifest,
+            body_file=body_file,
+            skip_validation=skip_validation,
+            allow_no_video=allow_no_video,
+            embed_captures=embed_captures,
+        )
+        result = _test_plan_write.run_write_test_plan(flags, write_err=self.stderr.write)
+        self._emit_plan_write(result, json_output=json_output)
+        return result
+
+    @command(name="verify-plan-captures")
+    def verify_plan_captures(
+        self,
+        *,
+        plans_dir: str = "",
+        skip_validation: bool = _SKIP_VALIDATION_OPTION,
+    ) -> list[str]:
+        """Verify every capture committed under ``test-plans/evidence/`` passes the preflight.
+
+        The standing gate over evidence already in git — wire it into a repo's
+        pre-commit config or CI so a capture placed beside a plan by hand meets
+        the same red-box and duplicate bar ``write-test-plan`` enforces.
+        ``--plans-dir`` defaults to ``test-plans`` under the directory ``t3`` was
+        invoked from, and refuses loudly when that directory does not exist.
+        Exits non-zero naming every offending evidence directory, and refuses
+        outright when there is nothing to look at — an absent or image-less
+        ``evidence`` tree included.
+        """
+        self.print_result = False
+        try:
+            root = Path(plans_dir) if plans_dir else _committed_captures.resolve_default_plans_dir()
+            failures = _committed_captures.verify_plans_dir(root, skip=skip_validation)
+        except TestPlanValidationError as err:
+            self.stderr.write(str(err))
+            raise SystemExit(1) from err
+        for failure in failures:
+            self.stderr.write(failure)
+        if failures:
+            raise SystemExit(1)
+        self.stderr.write(f"  Committed captures under {root} all carry a highlight box and are distinct.")
+        return failures
+
+    @command(name="write-plan-from-seams")
+    def write_plan_from_seams(
+        self,
+        *,
+        ticket: str = "",
         spec_path: str = "",
         artifacts_dir: str = "",
-    ) -> _test_plan_post.PostTestPlanResult:
-        """Post (or update) the ticket's single test-plan note from a manifest.
+        title: str = "",
+        json_output: Annotated[bool, typer.Option("--json", help=_JSON_HELP)] = False,
+    ) -> _test_plan_write.PlanWriteResult:
+        """Assemble the ``scenario-plan`` file from the overlay seams instead of a manifest (#3329).
 
-        ONE note per ticket (never an MR); a re-run merges the env(s) it
-        supplies over the prior state. ``--manifest`` is the JSON path/string
-        (ticket, MRs, per-env commits, gap, captures); ``--ticket`` selects the
-        issue; ``--title`` overrides the heading; ``--template``
-        (``capture-matrix`` / ``browser-click-first`` / ``link-api``) selects
-        the body shape, overriding the manifest's ``template``;
-        ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
-        permits a stills-only manifest (refused by default); ``--body-file``
-        posts a pre-authored body verbatim (no upload; mutually exclusive with
-        ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
-        deprecated alias.
-
-        ``--from-seams`` (#3329) assembles the ``scenario-plan`` note from the
-        overlay seams instead of a manifest: it folds ``overlay.e2e.scenarios``,
-        the run's captures, and the recipe's recorded SHAs. ``--spec-path`` /
-        ``--artifacts-dir`` default to the recipe's recorded ``last_run``.
+        Folds ``overlay.e2e.scenarios``, the run's captures, and the recipe's
+        recorded SHAs. ``--spec-path`` / ``--artifacts-dir`` default to the
+        recipe's recorded ``last_run``.
         """
-        if from_seams:
-            request = _from_seams.FromSeamsRequest(
-                ticket=ticket, spec_path=spec_path, artifacts_dir=artifacts_dir, title=title
-            )
-            return _from_seams.run_from_seams(request, write_out=self.stdout.write, write_err=self.stderr.write)
-        return _test_plan_post.run_post_test_plan(
-            manifest=manifest,
-            ticket=ticket,
-            title=title,
-            mrs=mrs,
-            skip_validation=skip_validation,
-            write_out=self.stdout.write,
-            write_err=self.stderr.write,
-            body_file=body_file,
-            template=template,
-            allow_no_video=allow_no_video,
+        request = _from_seams.FromSeamsRequest(
+            ticket=ticket, spec_path=spec_path, artifacts_dir=artifacts_dir, title=title
+        )
+        result = _from_seams.run_from_seams(request, write_err=self.stderr.write)
+        self._emit_plan_write(result, json_output=json_output, source="from-seams")
+        return result
+
+    def _emit_plan_write(
+        self, result: _test_plan_write.PlanWriteResult, *, json_output: bool, source: str = ""
+    ) -> None:
+        """Route a plan write through the machine-output seam: payload to stdout, summary to stderr."""
+        self.print_result = False
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_test_plan_write.summary_line(result, source=source),
         )
 
     @command(name="tracked-manifest")
@@ -517,43 +555,4 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
             overlay=get_overlay(),
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-        )
-
-    @command(name="retract-evidence")
-    def retract_evidence(
-        self,
-        *,
-        ticket: str = "",
-    ) -> None:
-        """Withdraw the ticket's single test-plan note."""
-        return _test_plan_post.run_retract_evidence(
-            ticket=ticket,
-            write_out=self.stdout.write,
-            write_err=self.stderr.write,
-        )
-
-    @command(name="post-evidence", hidden=True, deprecated=True)
-    # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def post_evidence(  # noqa: PLR0913 — CLI entrypoint, each flag is a distinct user-facing option
-        self,
-        *,
-        manifest: str = "",
-        ticket: str = "",
-        title: str = "",
-        mrs: list[str] = _MRS_OPTION,
-        skip_validation: bool = _SKIP_VALIDATION_OPTION,
-        body_file: str = "",
-        template: str = _TEMPLATE_OPTION,
-        allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
-    ) -> _test_plan_post.PostTestPlanResult:
-        """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
-        return self.post_test_plan(
-            manifest=manifest,
-            ticket=ticket,
-            title=title,
-            mrs=mrs,
-            skip_validation=skip_validation,
-            body_file=body_file,
-            template=template,
-            allow_no_video=allow_no_video,
         )

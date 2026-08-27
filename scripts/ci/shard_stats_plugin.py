@@ -19,6 +19,12 @@ where one is stated, the lane value otherwise, matching how
 ``pytest_timeout._get_item_settings`` resolves it. Only the tightest few per shard
 are kept: ``scripts/ci/report_timeout_headroom.py`` merges the twelve and names
 whatever is running out of room, as a report and never a gate.
+
+Both records are measured where the tests are — and under ``-n auto`` that is an
+xdist WORKER, while the file belongs to the controller. Each worker ships its
+record home through ``config.workeroutput`` and the controller fans them in
+(``pytest_testnodedown``) before it writes last, so the artifact carries what ran
+rather than the controller's own untouched zeros.
 """
 
 import json
@@ -34,6 +40,9 @@ _OUT_OPTION = "--shard-stats-out"
 # Enough that the merged twelve cover any plausible tail, small enough that the
 # artifact stays a summary rather than a copy of the durations file.
 _KEEP_PER_SHARD = 20
+
+#: ``config.workeroutput`` key an xdist worker ships its record home under.
+_WORKEROUTPUT_KEY = "shard_stats_record"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -99,6 +108,17 @@ class ShardStats:
         self.selected = 0
         self.ceilings: dict[str, float] = {}
         self.seconds: defaultdict[str, float] = defaultdict(float)
+        #: Headroom entries fanned IN from finished xdist workers (controller-side only).
+        self.absorbed: list[HeadroomEntry] = []
+
+    def absorb(self, shipped: ShardStatsFile) -> None:
+        """Fold one finished xdist worker's record into this (controller) process's."""
+        # Every worker collects the WHOLE suite and pytest-split narrows each to the
+        # same slice, so the workers agree on both counts and `max` takes that agreed
+        # value while leaving a serial run's own counts (nothing to absorb) alone.
+        self.total_collected = max(self.total_collected, shipped["total_collected"])
+        self.selected = max(self.selected, shipped["selected"])
+        self.absorbed.extend(shipped["slowest_against_ceiling"])
 
     def payload(self, config: pytest.Config) -> ShardStatsFile:
         return ShardStatsFile(
@@ -110,16 +130,14 @@ class ShardStats:
         )
 
     def tightest(self) -> list[HeadroomEntry]:
-        measured = [
-            (seconds / self.ceilings[node_id], node_id, seconds)
+        entries = [
+            HeadroomEntry(node_id=node_id, seconds=round(seconds, 3), ceiling=self.ceilings[node_id])
             for node_id, seconds in self.seconds.items()
             if node_id in self.ceilings
         ]
-        measured.sort(key=lambda entry: (-entry[0], entry[1]))
-        return [
-            HeadroomEntry(node_id=node_id, seconds=round(seconds, 3), ceiling=self.ceilings[node_id])
-            for _consumed, node_id, seconds in measured[:_KEEP_PER_SHARD]
-        ]
+        entries.extend(self.absorbed)
+        entries.sort(key=lambda entry: (-entry["seconds"] / entry["ceiling"], entry["node_id"]))
+        return entries[:_KEEP_PER_SHARD]
 
     def write(self, config: pytest.Config) -> None:
         out = config.getoption(_OUT_OPTION)
@@ -156,4 +174,24 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
-    _STATS.write(session.config)
+    # ``workeroutput`` exists ONLY on an xdist worker, and a worker measured the
+    # records but does not own the file; ship them and let the controller write.
+    workeroutput = getattr(session.config, "workeroutput", None)
+    if workeroutput is None:
+        _STATS.write(session.config)
+        return
+    workeroutput[_WORKEROUTPUT_KEY] = _STATS.payload(session.config)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: object) -> None:
+    """Fan a finished xdist worker's record into the controller's, which writes last.
+
+    Without this the controller's ``pytest_sessionfinish`` writes the counts of a
+    process that never collected — 0 collected, 0 selected — and the completeness
+    check reads ``0 == 0`` as an exact partition, passing having measured nothing.
+    ``optionalhook`` keeps it a no-op when xdist is absent (the hookspec is too).
+    """
+    workeroutput = getattr(node, "workeroutput", None)
+    if isinstance(workeroutput, dict) and _WORKEROUTPUT_KEY in workeroutput:
+        _STATS.absorb(workeroutput[_WORKEROUTPUT_KEY])

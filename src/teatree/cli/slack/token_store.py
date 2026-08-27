@@ -9,20 +9,15 @@ call. The prefix validators in
 refusing the bad write up front.
 
 :class:`SlackTokenSlot` pairs each ``pass`` key with the validator its
-value must pass, and :func:`store_slack_token` enforces two invariants
-before any ``pass insert``:
-
-1.  **Validate before write.** A value whose prefix does not match the
-    slot is refused — no write happens — so a bot token cannot reach the
-    user slot.
-2.  **Back up before overwrite.** An existing value is copied to a
-    timestamped ``<key>.bak-<UTC stamp>`` sibling key before the
-    overwrite, keeping the prior token recoverable on a non-git store.
+value must pass. The slot policy is what lives here — the value's prefix
+must match the slot before a byte is written, so a bot token cannot reach
+the user slot. The back-up-before-overwrite half is
+:func:`~teatree.utils.secrets.write_pass_with_backup`, shared with every
+other guided token walkthrough.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from teatree.backends.slack.token_validation import (
     TokenSlotMismatchError,
@@ -30,7 +25,7 @@ from teatree.backends.slack.token_validation import (
     assert_bot_token,
     assert_user_token,
 )
-from teatree.utils.secrets import read_pass, write_pass
+from teatree.utils.secrets import SecretStoreError, write_pass_with_backup
 
 type Validator = Callable[[str], None]
 type Echo = Callable[[str], None]
@@ -63,11 +58,6 @@ def app_token_slot(token_ref: str) -> SlackTokenSlot:
     return SlackTokenSlot(f"{token_ref}-app", assert_app_token, "app (xapp-)")
 
 
-def _backup_key(pass_key: str) -> str:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{pass_key}.bak-{stamp}"
-
-
 def store_slack_token(slot: SlackTokenSlot, value: str, *, echo: Echo) -> str:
     """Validate *value* for *slot*, back up any prior value, then write it.
 
@@ -84,27 +74,10 @@ def store_slack_token(slot: SlackTokenSlot, value: str, *, echo: Echo) -> str:
     except TokenSlotMismatchError as exc:
         echo(f"ERROR Refusing to write to the {slot.slot_name} slot ({slot.pass_key}): {exc}")
         raise SlackTokenWriteError(str(exc)) from exc
-
-    backup_key = _back_up_existing(slot, echo=echo)
-
-    if not write_pass(slot.pass_key, value):
-        insert_message = f"`pass insert {slot.pass_key}` failed — token not stored."
-        raise SlackTokenWriteError(insert_message)
-    return backup_key
-
-
-def _back_up_existing(slot: SlackTokenSlot, *, echo: Echo) -> str:
-    existing = read_pass(slot.pass_key)
-    if not existing:
-        return ""
-    backup_key = _backup_key(slot.pass_key)
-    if not write_pass(backup_key, existing):
-        backup_message = (
-            f"could not back up the existing {slot.slot_name} token to `{backup_key}` — refusing to overwrite."
-        )
-        raise SlackTokenWriteError(backup_message)
-    echo(f"OK    Backed up the existing {slot.slot_name} token to `pass {backup_key}` before overwriting.")
-    return backup_key
+    try:
+        return write_pass_with_backup(slot.pass_key, value, echo=echo)
+    except SecretStoreError as exc:
+        raise SlackTokenWriteError(str(exc)) from exc
 
 
 __all__ = [

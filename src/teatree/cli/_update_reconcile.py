@@ -47,7 +47,7 @@ _SHORT_SHA_LEN = 7
 
 
 def _create_reconcile_backup_ref(repo: Path, head_sha: str) -> str:
-    """Create a recoverable ref at *head_sha* before a reconcile reset; return its name.
+    """Create a recoverable ref at *head_sha*; return its name, or ``""`` when the write failed.
 
     Defense-in-depth (#2400): even with the content gate, a reset is destructive,
     so the pre-reset HEAD is captured under a ``refs/t3-reconcile-backup/<sha>``
@@ -55,12 +55,16 @@ def _create_reconcile_backup_ref(repo: Path, head_sha: str) -> str:
     same HEAD never fails on a name clash. The ref keeps the old commits
     reachable (not just in the reflog), making any future misclassification
     trivially recoverable via ``git reset --hard <ref>``.
+
+    A failed write returns ``""`` so the caller can refuse the reset: the recovery
+    net is the whole reason the reset is authorized, and naming a ref that does not
+    exist in the success line is worse than not resetting.
     """
     from teatree.cli.update import _git  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     ref = f"refs/t3-reconcile-backup/{head_sha}"
-    _git(repo, "update-ref", ref, head_sha, expected_codes=None)
-    return ref
+    written = _git(repo, "update-ref", ref, head_sha, expected_codes=None)
+    return ref if written.returncode == 0 else ""
 
 
 def reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: str) -> "RepoUpdate":
@@ -135,6 +139,16 @@ def reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: st
     dropped = len(classification.squash_merged) + len(classification.merge_commits)
     head_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     backup_ref = _create_reconcile_backup_ref(repo, head_sha)
+    if not backup_ref:
+        return RepoUpdate(
+            name,
+            UpdateStatus.FAILED,
+            reason=(
+                f"git pull --ff-only failed: {pull_stderr} (refusing to reconcile {repo}: the "
+                f"recovery ref refs/t3-reconcile-backup/{head_sha} could not be created, so the "
+                f"hard reset would have no recoverable pre-reset HEAD)"
+            ),
+        )
     reset = _git(repo, "reset", "--hard", target, expected_codes=None)
     if reset.returncode != 0:
         return RepoUpdate(

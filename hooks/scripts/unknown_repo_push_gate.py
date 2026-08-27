@@ -50,8 +50,28 @@ sys.modules.setdefault("hooks.scripts.unknown_repo_push_gate", sys.modules[__nam
 # requiring the two words adjacent let it through unevaluated.
 _PUSH_PREFIX = r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace)(?:=\S+|\s+\S+)\s+)*"
 _SCOPE_GIT_PUSH_RE = re.compile(_PUSH_PREFIX + r"push\b")
-_SCOPE_GIT_PUSH_DRY_RUN_RE = re.compile(_PUSH_PREFIX + r"push\b[^\n|;&]*?(?:--dry-run|\s-n\b)")
+_SCOPE_SEGMENT_END_RE = re.compile(r"[\n|;&]")
+_SCOPE_DRY_RUN_ARG_RE = re.compile(r"(?:^|\s)(?:--dry-run|-n)(?=\s|=|$)")
 _SCOPE_PUSH_OK_RE = re.compile(r"\[scope-push-ok:\s*(\S[^\]]*?)\s*\]")
+
+
+def _writes_a_push(skeleton: str) -> bool:
+    """Whether *skeleton* runs at least one push that actually WRITES to a remote.
+
+    The dry run is an EXEMPTION, so it is read off ONE push's own arguments — the
+    text from its verb to the next command separator or the next push — never off
+    the whole command: a whole-command search hands one push's ``--dry-run`` to
+    every other push chained beside it, so ``git push --dry-run x && git push y``
+    exempted its live half. A skeleton carrying no push writes nothing.
+    """
+    pushes = list(_SCOPE_GIT_PUSH_RE.finditer(skeleton))
+    for index, push in enumerate(pushes):
+        start = push.end()
+        end = pushes[index + 1].start() if index + 1 < len(pushes) else len(skeleton)
+        separator = _SCOPE_SEGMENT_END_RE.search(skeleton, start, end)
+        if not _SCOPE_DRY_RUN_ARG_RE.search(skeleton[start : separator.start() if separator else end]):
+            return True
+    return False
 
 
 def _unknown_repo_push_gate_enabled() -> bool:
@@ -155,10 +175,11 @@ _UNKNOWN_REPO_PUSH_REASON = (
 def _unknown_repo_push_is_in_scope(data: dict) -> bool:
     """Whether the call is a real ``git push`` this gate must evaluate.
 
-    True only for a ``Bash`` ``git push`` that writes (``--dry-run`` / ``-n``
-    are exempt), with the gate enabled and no per-call
-    ``[scope-push-ok: <reason>]`` token present. A present token is honoured
-    here (with a stderr NOTE) so the handler stays a single decision.
+    True only for a ``Bash`` ``git push`` that writes — a push whose OWN
+    arguments carry ``--dry-run`` / ``-n`` is exempt, and only that push — with
+    the gate enabled and no per-call ``[scope-push-ok: <reason>]`` token
+    present. A present token is honoured here (with a stderr NOTE) so the
+    handler stays a single decision.
 
     The verb is matched against the quote/heredoc-stripped skeleton, as in every
     sibling gate: the same words inside a ``-m`` message or a heredoc body are
@@ -169,8 +190,7 @@ def _unknown_repo_push_is_in_scope(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
-    skeleton = strip_quoted_and_heredoc(command)
-    if not _SCOPE_GIT_PUSH_RE.search(skeleton) or _SCOPE_GIT_PUSH_DRY_RUN_RE.search(skeleton):
+    if not _writes_a_push(strip_quoted_and_heredoc(command)):
         return False
     if not _unknown_repo_push_gate_enabled():
         return False

@@ -12,6 +12,8 @@ against the real resolved config (the gap the prior version shipped: empty
 ``public_repos`` made the gate inert).
 """
 
+import json
+import sqlite3
 from collections.abc import Sequence
 from types import SimpleNamespace
 
@@ -86,6 +88,62 @@ def test_private_target_passes_same_leaking_content(inject_rules) -> None:
     result = scan_outbound_text(text=f"This touches {REDACT} verbatim user said.", target_repo="acme/private")
     assert not result.refused
     assert result.is_public is False
+
+
+class TestFullForgeUrlTarget:
+    """A URL-shaped ``target_repo`` classifies as the SLUG it names, both directions.
+
+    The programmatic publish paths (``t3 ... ticket comment``/``create-sub`` via
+    ``route_forge_write``, the on-behalf ``reply_transport``) name their destination
+    by full issue/work-item URL, not by bare slug. Nothing here mocks
+    ``_target_is_public``: the classifier under test is the real
+    ``is_public_destination``, driven off a seeded config, so an internal URL is a
+    clean pass AND a genuinely-public URL still refuses the same body.
+    """
+
+    LEAKING = f"This note names {REDACT} internals."
+
+    @pytest.fixture
+    def internal_config(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            [
+                ("internal_publish_namespaces", json.dumps(["internalcorp"])),
+                ("private_repos", json.dumps(["internalcorp"])),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: ([REDACT], []))
+        return db
+
+    def test_internal_work_item_url_passes_flagged_body(self, internal_config) -> None:
+        result = scan_outbound_text(
+            text=self.LEAKING,
+            target_repo="https://gitlab.example/internalcorp/group/app/-/work_items/14",
+            forge="gitlab",
+        )
+        assert result.is_public is False
+        assert not result.refused
+
+    def test_public_issue_url_still_refuses_the_same_body(
+        self, internal_config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        result = scan_outbound_text(
+            text=self.LEAKING,
+            target_repo=f"https://github.com/{REAL_PUBLIC}/issues/5",
+            forge="github",
+        )
+        assert result.is_public
+        assert result.refused
 
 
 def test_classification_error_fails_closed_to_scanning(monkeypatch: pytest.MonkeyPatch) -> None:

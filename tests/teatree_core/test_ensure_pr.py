@@ -18,9 +18,13 @@ from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import _ticket_extra_for_branch, create_or_defer_pr
 from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.overlay import OverlayConfig
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, run_checked
+from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
+
+ORPHAN_BRANCH = "fix/3100-x"
 
 
 class TestTicketExtraForBranch(TestCase):
@@ -54,6 +58,26 @@ class TestTicketExtraForBranch(TestCase):
         Worktree.objects.create(ticket=old, overlay="test", repo_path="/tmp/a", branch="shared")
         Worktree.objects.create(ticket=new, overlay="test", repo_path="/tmp/b", branch="shared")
         assert _ticket_extra_for_branch("shared") == {}
+
+
+def _orphan_repo(tmp_path: Path) -> Path:
+    """A pushed-main repo sitting on an orphan branch with one own commit."""
+    origin = tmp_path / "origin.git"
+    run_checked(["git", "init", "--bare", str(origin)])
+    work = tmp_path / "work"
+    run_checked(["git", "init", "-b", "main", str(work)])
+    run_checked(["git", "config", "user.email", "agent@users.noreply.github.com"], cwd=work)
+    run_checked(["git", "config", "user.name", "agent"], cwd=work)
+    run_checked(["git", "remote", "add", "origin", str(origin)], cwd=work)
+    (work / "README.md").write_text("seed\n")
+    run_checked(["git", "add", "-A"], cwd=work)
+    run_checked(["git", "commit", "-m", "seed"], cwd=work)
+    run_checked(["git", "push", "-u", "origin", "main"], cwd=work)
+    run_checked(["git", "checkout", "-b", ORPHAN_BRANCH], cwd=work)
+    (work / "fix.py").write_text("x = 1\n")
+    run_checked(["git", "add", "-A"], cwd=work)
+    run_checked(["git", "commit", "-m", "fix(core): own commit"], cwd=work)
+    return work
 
 
 class NonAssignableHost:
@@ -91,34 +115,68 @@ class TestNonAssignableIdentityRegression3100(TestCase):
         self._monkeypatch = monkeypatch
         self._tmp_path = tmp_path
 
-    def _orphan_repo(self) -> Path:
-        origin = self._tmp_path / "origin.git"
-        run_checked(["git", "init", "--bare", str(origin)])
-        work = self._tmp_path / "work"
-        run_checked(["git", "init", "-b", "main", str(work)])
-        run_checked(["git", "config", "user.email", "agent@users.noreply.github.com"], cwd=work)
-        run_checked(["git", "config", "user.name", "agent"], cwd=work)
-        run_checked(["git", "remote", "add", "origin", str(origin)], cwd=work)
-        (work / "README.md").write_text("seed\n")
-        run_checked(["git", "add", "-A"], cwd=work)
-        run_checked(["git", "commit", "-m", "seed"], cwd=work)
-        run_checked(["git", "push", "-u", "origin", "main"], cwd=work)
-        run_checked(["git", "checkout", "-b", "fix/3100-x"], cwd=work)
-        (work / "fix.py").write_text("x = 1\n")
-        run_checked(["git", "add", "-A"], cwd=work)
-        run_checked(["git", "commit", "-m", "fix(core): own commit"], cwd=work)
-        return work
-
     def test_create_succeeds_without_assignee(self) -> None:
         host = NonAssignableHost()
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: host)
-        repo = self._orphan_repo()
+        repo = _orphan_repo(self._tmp_path)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = create_or_defer_pr(str(repo), "fix/3100-x")
+            result = create_or_defer_pr(str(repo), ORPHAN_BRANCH)
 
         assert result.get("url") == "https://github.com/souliane/teatree/pull/9999"
         assert host.created_specs[0].assignee == ""
+
+
+class _BotAuthoredConfig(OverlayConfig):
+    """Every repo is written under a credential that is not the overlay-wide one."""
+
+    def get_gitlab_token(self) -> str:
+        return "owner-token"
+
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        del remote
+        return "bot-token"
+
+
+class _OwnerAuthoredConfig(OverlayConfig):
+    """Every repo is written as the owner — core's default, stated explicitly."""
+
+    def get_gitlab_token(self) -> str:
+        return "owner-token"
+
+
+class TestOverlayReviewerPolicyReachesTheOrphanBranchSpec(TestCase):
+    """The second spec-build site carries the overlay's standing reviewer policy.
+
+    ``ensure-pr`` opens the PR for a branch pushed without one, so a policy wired
+    only through ``ShipExecutor`` would silently skip every orphan-branch MR —
+    and, before the scoping landed, would set the owner as reviewer of his own MR
+    on every repo the overlay writes under its own credential.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _reviewers_on_spec(self, config: OverlayConfig) -> list[str]:
+        host = NonAssignableHost()
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: host)
+        overlay = CommandOverlay()
+        overlay.config = config
+        overlay.config.pr_auto_reviewers = ["policy-reviewer"]
+        repo = _orphan_repo(self._tmp_path)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}):
+            create_or_defer_pr(str(repo), ORPHAN_BRANCH)
+
+        return host.created_specs[0].reviewers
+
+    def test_spec_carries_the_overlays_configured_reviewers(self) -> None:
+        assert self._reviewers_on_spec(_BotAuthoredConfig()) == ["policy-reviewer"]
+
+    def test_an_owner_authored_repo_gets_no_reviewer(self) -> None:
+        assert self._reviewers_on_spec(_OwnerAuthoredConfig()) == []
 
 
 class AssignableHost:

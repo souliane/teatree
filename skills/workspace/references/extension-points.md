@@ -27,7 +27,7 @@ OverlayBase
   ├── runtime: OverlayRuntime             (run_commands, verify_endpoints, readiness_probes, ...)
   ├── e2e: OverlayE2E                     (env_extras, playwright_args, scenarios, ...)
   ├── review: OverlayReview               (can_auto_merge, classify_customer_display_impact, ...)
-  ├── connectors: OverlayConnectors       (preflight, mcp_provider_expectations, manifest)
+  ├── connectors: OverlayConnectors       (preflight, mcp_provider_expectations, manifest, mcp_tool_group)
   └── mandatory hooks             (on OverlayBase)
         ├── get_repos()
         └── get_provision_steps()
@@ -47,6 +47,7 @@ Settings are defined in `overlay_settings.py` and overridden per-user in the DB 
 | `gitlab_url` | `GITLAB_URL` | GitLab instance base URL |
 | `known_variants` | `KNOWN_VARIANTS` | Multi-tenant variant list |
 | `pr_auto_labels` | `PR_AUTO_LABELS` | Labels applied to new PRs |
+| `pr_auto_reviewers` | `PR_AUTO_REVIEWERS` | Reviewers set when the PR is opened, on bot-authored repos only |
 | `frontend_repos` | `FRONTEND_REPOS` | Repos that need E2E tests |
 | `dev_env_url` | `DEV_ENV_URL` | Development environment URL |
 | `github_owner` | `GITHUB_OWNER` | GitHub org/user for API calls |

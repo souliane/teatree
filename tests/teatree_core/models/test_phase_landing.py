@@ -143,13 +143,13 @@ class TestReviewVerdictEvidence(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
-    def _verdict(self, *, reviewed_sha: str, pr_id: int = 7) -> ReviewVerdict:
+    def _verdict(self, *, reviewed_sha: str, pr_id: int = 7, slug: str = "o/r") -> ReviewVerdict:
         # No ``ticket=``: no path guarantees the FK — the shell `review record` defaults it
         # away (the envelope path does set it), so a test that stamps it would certify a
         # lookup that misses every shell-recorded verdict.
         return ReviewVerdict.record(
             pr_id=pr_id,
-            slug="o/r",
+            slug=slug,
             reviewed_sha=reviewed_sha,
             verdict=ReviewVerdict.Verdict.MERGE_SAFE,
             reviewer_identity="cold-reviewer",
@@ -158,6 +158,14 @@ class TestReviewVerdictEvidence(TestCase):
     def test_a_verdict_at_the_reviewed_head_is_evidence_the_review_landed(self) -> None:
         task = self._reviewing_task()
         self._verdict(reviewed_sha=_HEAD)
+
+        assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
+
+    def test_a_verdict_recorded_under_another_slug_casing_is_the_same_repo(self) -> None:
+        # Forge slugs are case-insensitive: reading `Owner/Repo` and `owner/repo` as two repos
+        # loses the evidence and records a landed review as a lease-loss failure.
+        task = self._reviewing_task()
+        self._verdict(reviewed_sha=_HEAD, slug="O/R")
 
         assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
 

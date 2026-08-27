@@ -1,6 +1,6 @@
 """Deterministic pre-post validation of test-plan images.
 
-The preflight the ``e2e post-test-plan`` command runs over every image the
+The preflight the ``e2e write-test-plan`` command runs over every image the
 manifest references BEFORE any upload or post. It refuses the whole post
 (fail-loud) when an image is not a real piece of test-plan evidence, so the user never has
 to manually spot a red-box-less screenshot or a pasted-twice look-alike after

@@ -15,7 +15,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT
-from teatree.cli.eval.run_docker import RunDockerArgs
+from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
 
 
 def _args(**overrides: object) -> RunDockerArgs:
@@ -187,3 +187,79 @@ class TestTheCliWiresSurfaceIntoTheContainer:
 
     def test_no_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
         assert "--surface" not in self._forwarded_args(["eval", "run", "--docker"])
+
+
+class TestJudgeFlagsReachTheContainer:
+    """Dropping ``--judge`` ran the container matcher-only while the host claimed LLM grading."""
+
+    def test_judge_and_its_budget_are_forwarded(self) -> None:
+        passthrough = _args(judge=True, judge_budget=7).passthrough()
+        assert "--judge" in passthrough
+        assert passthrough[passthrough.index("--judge-budget") + 1] == "7"
+
+    def test_no_judge_flag_when_grading_is_matcher_only(self) -> None:
+        assert "--judge" not in _args(judge=False).passthrough()
+
+    def test_the_cli_hands_the_judge_flags_over(self) -> None:
+        from teatree.cli import app  # noqa: PLC0415 — the CLI app is expensive to import at module scope.
+
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--docker", "--judge", "--judge-budget", "5"])
+        assert run_in_docker.called, "the run was not routed into the container"
+        forwarded = list(run_in_docker.call_args.args[0])
+        assert "--judge" in forwarded, f"--judge was dropped: {forwarded}"
+        assert forwarded[forwarded.index("--judge-budget") + 1] == "5"
+
+
+class TestUnreachableHostTranscriptDirIsRefused:
+    """Only the repo is mounted, so a host ``--transcript-dir`` would grade the container's cwd."""
+
+    def test_transcript_dir_with_docker_exits_two(self, tmp_path: Path) -> None:
+        with pytest.raises(typer.Exit) as exc:
+            run_in_docker_or_exit(
+                _args(transcript_dir=tmp_path),
+                baseline=False,
+                gate_regressions=False,
+                gate_cost_regression=False,
+                gate_cost_bounds=False,
+            )
+        assert exc.value.exit_code == 2
+
+    def test_no_transcript_dir_still_dispatches(self) -> None:
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            run_in_docker_or_exit(
+                _args(transcript_dir=None),
+                baseline=False,
+                gate_regressions=False,
+                gate_cost_regression=False,
+                gate_cost_bounds=False,
+            )
+        assert run_in_docker.called
+
+
+class TestReportsMustShareOneParentDirectory:
+    """One writable bind-mount serves one host dir; two parents silently collapsed into the first."""
+
+    def test_reports_under_different_parents_are_refused(self, tmp_path: Path) -> None:
+        args = _args(
+            transcript_html=tmp_path / "a" / "transcript.html",
+            summary_md=tmp_path / "b" / "summary.md",
+        )
+        with pytest.raises(typer.Exit) as exc:
+            args.dispatch()
+        assert exc.value.exit_code == 2
+
+    def test_reports_sharing_a_parent_are_accepted(self, tmp_path: Path) -> None:
+        args = _args(transcript_html=tmp_path / "transcript.html", summary_md=tmp_path / "summary.md")
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            args.dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path

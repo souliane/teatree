@@ -15,6 +15,10 @@ from teatree.types import RawAPIDict
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
+# GitLab aggregates every required job into ONE pipeline status, so a red MR there
+# has no per-check name to report. This stands in as the failing-required name the
+# cross-PR report renders (#4090), so a GitLab red is legible beside a GitHub one.
+GITLAB_PIPELINE_CHECK_NAME = "pipeline"
 
 # GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
 # and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
@@ -88,6 +92,10 @@ class PrSummary:
     # False = fork / cross-repo (holds for human approval), None = the forge did not
     # report it ⇒ fail closed to the identity+visibility author check.
     same_repo: bool | None = None
+    # The forge this summary was READ from, carried so every downstream live-forge
+    # read (`PrRef`) binds the same transport the listing used. A bare slug carries
+    # no host, so re-deriving it per read is what let a GitLab MR be probed on GitHub.
+    host_kind: str = "github"
 
 
 @dataclass(frozen=True, slots=True)

@@ -237,6 +237,7 @@ _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
         ("src/teatree/core/modelkit/diff_scope.py", "src/other_paths.py"),
         ("src/teatree/core/modelkit/diff_scope.py", "src/paths.py"),
         ("src/teatree/core/models/merge_clear.py", "src/teatree/core/merger/"),
+        ("src/teatree/core/models/mechanism_sketch.py", "src/teatree/../overlays/x.py"),
         ("src/teatree/core/models/review_verdict.py", "teatree.core.review.diff_scope_gate"),
         ("src/teatree/core/review/diff_scope_probe.py", "teatree.core.review.diff_scope_gate"),
         ("src/teatree/core/views/github_webhook.py", "settings.TEATREE_GITHUB_WEBHOOK_SECRET"),

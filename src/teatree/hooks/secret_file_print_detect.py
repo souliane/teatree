@@ -56,10 +56,14 @@ _TOKEN_LITERAL_RE = re.compile(r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk
 _PRINT_VERBS = frozenset({"cat", "head", "tail"})
 _ECHO_VERBS = frozenset({"echo", "printf"})
 
-# A downstream pipe stage that itself re-emits its stdin to stdout, so the secret
-# still reaches the transcript. A non-re-emitting sink (``wc``, ``gpg``, ``base64
-# -d``) consumes the secret, keeping it off stdout.
-_RE_EMITTER_SINKS = frozenset({"cat", "less", "more", "tee", "grep", "head", "tail"})
+# A downstream pipe stage PROVEN to destroy its stdin rather than re-emit it, so
+# the secret cannot reach the transcript through it. An unrecognised stage is
+# treated as re-emitting: a denylist of known re-emitters let every ordinary text
+# transformer (``sed``, ``awk``, ``cut``, ``tr``) print the credential unchecked.
+# ``base64`` is deliberately absent — ``base64 -d`` re-emits the decoded secret.
+_CONSUMING_SINKS = frozenset(
+    {"wc", "gpg", "openssl", "pbcopy", "md5sum", "sha1sum", "sha256sum", "sha512sum", "shasum", "cksum"}
+)
 
 # A producer stage needs at least the verb plus one operand (the token literal
 # for echo/printf, ``show`` for pass) before it can emit a secret.
@@ -141,9 +145,11 @@ def _statement_prints_secret(stages: list[list[str]]) -> bool:
     downstream = stages[1:]
     if not downstream:
         return True
-    # The secret still displays iff SOME downstream stage re-emits to stdout; a
-    # pipeline whose sinks all consume (``| gpg``, ``| wc``) keeps it off stdout.
-    return any(bool(stage) and stage[0] in _RE_EMITTER_SINKS for stage in downstream)
+    if _stage_redirects_stdout(downstream[-1]):
+        return False
+    # Only a PROVEN consumer (``| wc``, ``| gpg``) destroys the secret; once one
+    # runs, no later stage can resurrect it. Everything else re-emits.
+    return not any(bool(stage) and stage[0] in _CONSUMING_SINKS for stage in downstream)
 
 
 def is_secret_print(command: str) -> bool:

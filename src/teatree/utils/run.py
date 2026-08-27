@@ -22,6 +22,7 @@ import subprocess
 import sys
 from collections import deque
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, SubprocessError, TimeoutExpired
 from typing import IO, cast
@@ -45,26 +46,44 @@ __all__ = [
     "STDOUT",
     "STREAMED_STDERR_RETAINED_LINES",
     "SUBPROCESS_UNREACHABLE",
+    "BytePipe",
     "CommandFailedError",
     "CompletedProcess",
     "Popen",
     "TimeoutExpired",
+    "redact_secrets",
     "run_allowed_to_fail",
     "run_checked",
     "run_streamed",
     "spawn",
+    "spawn_byte_pipe",
     "spawn_session_leader",
 ]
 
 
 _SECRET_HEADER_RE = re.compile(r"(?i)(authorization|x-[\w-]*token|x-[\w-]*key)\s*:\s*\S.*")
 _SECRET_QUERY_RE = re.compile(r"(?i)\b(token|access_token|api_key|password|secret)=[^&\s]+")
+# An env-var ASSIGNMENT whose name ends in a credential class — a `-e NAME=value`
+# forward, an env prefix on a command. Keyed on the suffix rather than a list of
+# variable names, which is a list someone forgets to extend: matching only `TOKEN`
+# published `T3_SECRET_KEY` and an `ANTHROPIC_API_KEY` into transcripts.
+_SECRET_ENV_ASSIGN_RE = re.compile(r"(?:\A|(?<=[=\s]))([A-Z][A-Z0-9_]*(?:KEY|SECRET|PASSWORD|TOKEN))=(\S+)")
 
 
-def _redact_secrets(arg: str) -> str:
-    """Strip credential values from a single command-line argument."""
+def redact_secrets(arg: str) -> str:
+    """Strip credential values from a single command-line argument.
+
+    Public (not module-private) because callers OUTSIDE this module's own
+    :class:`CommandFailedError` formatting need the same discipline — e.g. a Lane-B
+    tool wrapping a raw stdlib exception (``subprocess.TimeoutExpired``) whose
+    default ``str()`` echoes the unredacted command verbatim.
+
+    The variable NAME survives every substitution: it is what makes a failure
+    diagnosable, and only the value is a secret.
+    """
     redacted = _SECRET_HEADER_RE.sub(lambda m: f"{m.group(1)}: <redacted>", arg)
-    return _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
+    redacted = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
+    return _SECRET_ENV_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=<redacted>", redacted)
 
 
 class CommandFailedError(RuntimeError):
@@ -78,7 +97,7 @@ class CommandFailedError(RuntimeError):
         super().__init__(self._format())
 
     def _format(self) -> str:
-        cmd_str = " ".join(_redact_secrets(arg) for arg in self.cmd)
+        cmd_str = " ".join(redact_secrets(arg) for arg in self.cmd)
         tail = _last_lines(self.stderr or self.stdout, n=20)
         if tail:
             return f"command failed (rc={self.returncode}): {cmd_str}\n{tail}"
@@ -218,6 +237,30 @@ def spawn(
         stderr=stderr,
         text=True,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class BytePipe:
+    """A spawned child whose binary ``stdin``/``stdout`` pipes are both known present.
+
+    The narrowing exists once here so no caller needs a defensive ``is None`` branch for
+    two pipes :func:`spawn_byte_pipe` always opens.
+    """
+
+    process: Popen[bytes]
+    stdin: IO[bytes]
+    stdout: IO[bytes]
+
+
+def spawn_byte_pipe(cmd: Sequence[str]) -> BytePipe:
+    """Spawn a background process with BINARY stdin/stdout pipes for the caller to pump.
+
+    Distinct from :func:`spawn`, which is text-mode: a caller relaying an OPAQUE byte
+    stream (an HTTP body, a compressed payload) must not have it decoded and re-encoded.
+    ``stderr`` is discarded — nothing reads it, and an unread PIPE can fill and block the child.
+    """
+    process = subprocess.Popen(list(cmd), stdin=PIPE, stdout=PIPE, stderr=DEVNULL)
+    return BytePipe(process=process, stdin=cast("IO[bytes]", process.stdin), stdout=cast("IO[bytes]", process.stdout))
 
 
 def spawn_session_leader(

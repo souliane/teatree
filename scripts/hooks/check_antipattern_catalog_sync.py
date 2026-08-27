@@ -13,9 +13,10 @@ the gate and hide a stale committed catalog. The fix on a failure is to run
 See: souliane/teatree#166
 """
 
-import subprocess
 import sys
 from pathlib import Path
+
+from teatree.utils import work_tree
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _YAML_REL = "src/teatree/quality/antipatterns.yaml"
@@ -30,13 +31,10 @@ def _committed(repo_root: Path, rel: str) -> str | None:
     for the gate to catch. ``None`` (no git repo, untracked path) lets the caller
     fall back to the working tree, e.g. a throwaway test tree.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "show", f":{rel}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout if result.returncode == 0 else None
+    try:
+        return work_tree.resolve(repo_root).blob("", rel)
+    except work_tree.WorkTreeError:
+        return None
 
 
 def check(repo_root: Path) -> int:

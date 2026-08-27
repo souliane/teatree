@@ -16,6 +16,8 @@ from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
+from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
+from teatree.core.models.task_claim import fail_claimed as _fail_claimed_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
 from teatree.core.models.task_claim import window_parked as _window_parked
 from teatree.core.models.task_phase_disposition import (
@@ -112,6 +114,11 @@ class Task(models.Model):
     # admission chokepoint; null = never admitted.
     admitted_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
+    # How many times this row's lapsed lease has been reclaimed and re-offered. The
+    # re-offer budget is counted HERE rather than over ``TaskAttempt`` because a
+    # dispatch that never records its outcome leaves the attempt ledger frozen, so the
+    # per-phase iteration budget never advances and nothing bounds the re-offer loop.
+    reclaim_count = models.PositiveIntegerField(default=0)
     # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
     # checked via an atomic conditional UPDATE before verifying its artifact,
     # so two concurrent ticks never double-verify (or double-complete) the
@@ -206,18 +213,12 @@ class Task(models.Model):
         land or neither does. ``replay_orphaned_transitions`` is the
         boot/tick safety net for rows that slipped through before the fix
         or any future seam.
+
+        ``complete_claimed`` refuses the write when a rival reclaimed the
+        row under this worker, raising ``LeaseLostError``.
         """
         with transaction.atomic():
-            self.status = self.Status.COMPLETED
-            self.result_artifact_path = result_artifact_path
-            self._clear_claim()
-            self.save(
-                update_fields=[
-                    "status",
-                    "result_artifact_path",
-                    *CLAIM_FIELDS,
-                ],
-            )
+            _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self._advance_ticket()
 
     def complete_surfacing_advance_failure(self, *, result_artifact_path: str = "") -> str:
@@ -242,16 +243,7 @@ class Task(models.Model):
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
         with transaction.atomic():
-            self.status = self.Status.COMPLETED
-            self.result_artifact_path = result_artifact_path
-            self._clear_claim()
-            self.save(
-                update_fields=[
-                    "status",
-                    "result_artifact_path",
-                    *CLAIM_FIELDS,
-                ],
-            )
+            _complete_claimed_task(self, result_artifact_path=result_artifact_path)
         try:
             self._advance_ticket()
         except (InvalidTransitionError, QualityGateError, TransitionNotAllowed) as exc:
@@ -453,6 +445,9 @@ class Task(models.Model):
                 *CLAIM_FIELDS,
             ],
         )
+
+    def fail_claimed(self, *, reason: str) -> None:
+        _fail_claimed_task(self, reason=reason)
 
     def reopen(self) -> None:
         if self.status != self.Status.FAILED:

@@ -29,10 +29,12 @@
 # and feeds ref updates on stdin, one per line:
 #   <local-ref> <local-sha> <remote-ref> <remote-sha>
 # A deleted ref has local-sha all-zeros (skip it). The scanned set is the
-# commits reachable from the pushed sha but from no already-public ref —
-# `<local-sha> --not <origin/default> [<remote-sha>]` — never a single
-# linear `<remote-sha>..<local-sha>` range, which a merge-forward inflates
-# with the whole of `main` (#3523).
+# commits the remote does NOT already have — `<local-sha> --not
+# --remotes=<remote>` — never a single linear `<remote-sha>..<local-sha>`
+# range (a merge-forward inflates it with the whole of `main`, #3523) and
+# never `--not <origin/default>` alone (on a fork whose default branch is
+# thousands of commits behind, that re-scans the entire already-public
+# history on every push and turns the gate into an outage).
 #
 # Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which routes
 # the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab) and
@@ -78,16 +80,46 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 # hard-coded ONE forge: a gitlab.com remote errored on every push, so
 # visibility was permanently undetermined and this gate re-scanned a PRIVATE
 # repo forever.
+#
+# The interpreter fallback offers core's package root in BOTH supported layouts —
+# `<root>/src/teatree` in a standalone checkout, `<root>/vendor/teatree/src/teatree`
+# in a fork that vendors core — and tries version-explicit interpreters before a
+# bare `python3`, which on a stock Mac is the Command Line Tools 3.9 stub and
+# cannot import core (requires-python >=3.13) whatever PYTHONPATH says.
+#
+# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a
+# PRIVATE repo gets silently downgraded to "assume public" and re-scanned on
+# every push: the verdict is undetermined, the gate says only "could not
+# confirm", and the REASON it could not confirm is invisible forever.
 _resolve_visibility() {
+  local err py probe_path rc=1
+  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX")
+  probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src${PYTHONPATH:+:${PYTHONPATH}}"
+
   if command -v uv >/dev/null 2>&1; then
-    uv run --project "${repo_root}" --no-sync \
-      python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>/dev/null && return 0
+    if uv run --project "${repo_root}" --no-sync \
+        python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+      rc=0
+    fi
   fi
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-      python3 -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>/dev/null && return 0
+
+  if [ "${rc}" -ne 0 ]; then
+    for py in python3.13 python3.14 python3; do
+      command -v "${py}" >/dev/null 2>&1 || continue
+      if PYTHONPATH="${probe_path}" \
+          "${py}" -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+        rc=0
+        break
+      fi
+    done
   fi
-  return 1
+
+  if [ "${rc}" -ne 0 ] && [ -s "${err}" ]; then
+    echo "⚠ push privacy gate: visibility probe failed — diagnostics below." >&2
+    sed 's/^/    /' "${err}" >&2 2>/dev/null || true
+  fi
+  rm -f "${err}"
+  return "${rc}"
 }
 
 # Overridable for testing, mirroring T3_PRIVACY_SCAN_CMD.
@@ -126,10 +158,6 @@ scan_cmd=${T3_PRIVACY_SCAN_CMD:-t3 tool privacy-scan}
 # whenever the scanner itself failed (#126 gap 3). Overridable for testing.
 findings_code=${T3_PRIVACY_FINDINGS_EXIT_CODE:-3}
 
-default_ref=$(git symbolic-ref --short refs/remotes/"${remote_name}"/HEAD 2>/dev/null || true)
-default_branch=${default_ref#"${remote_name}"/}
-default_branch=${default_branch:-main}
-
 # Ref updates arrive on stdin under git's native pre-push protocol. But when the
 # hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the
 # runner CONSUMES stdin itself and exposes the push range via PRE_COMMIT_* env
@@ -147,27 +175,17 @@ if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
     "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
 fi
 
-# Is ${sha} the TRUE base to diff against for this ref update? On git's
-# native pre-push protocol the reported remote_sha IS the real remote-side
-# tip, so it is always authoritative. On the prek synthesized-from-env path
-# the value is `PRE_COMMIT_FROM_REF`, which git reports as a STALE ancestor
-# (a weeks-old `main` commit) for the first push of a long-lived branch that
-# merged `main` since it was created (#3414) — NOT all-zeros and NOT the
-# current tip. Trusting it re-includes dozens of already-public, immutable
-# commits and false-positives the identity guard and the content scan.
-# Trust the synthesized remote_sha ONLY when it is confirmed to be the
-# current tip of the branch's remote-tracking ref (i.e. the branch already
-# exists on the remote and this is an update push); otherwise fall back to
-# the merge-base with the remote default branch, the true new-content range.
-_remote_sha_is_trusted_base() {
-  local remote_ref="$1" sha="$2"
-  [ "${synthesized}" = "1" ] || return 0  # native stdin — git's sha is authoritative
-  local branch="${remote_ref#refs/heads/}"
-  [ -n "${branch}" ] && [ "${branch}" != "HEAD" ] || return 1
-  local tracked
-  tracked=$(git rev-parse --verify --quiet \
-    "refs/remotes/${remote_name}/${branch}" 2>/dev/null || true)
-  [ -n "${tracked}" ] && [ "${tracked}" = "${sha}" ]
+# Every remote-tracking ref of the pushed-to remote, as a single `--not`
+# argument, or empty when the remote has none locally. This is the whole
+# "what does the remote already have?" answer: `--remotes=<remote>` is the
+# same set prek/pre-commit itself uses to derive PRE_COMMIT_FROM_REF, so the
+# hook and its runner agree on what is new.
+_remote_exclusion() {
+  local first
+  first=$(git for-each-ref --count=1 --format='%(refname)' \
+    "refs/remotes/${remote_name}" 2>/dev/null || true)
+  [ -n "${first}" ] || return 1
+  printf '%s' "--remotes=${remote_name}"
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
@@ -213,33 +231,52 @@ _attribute_findings() {
 }
 
 blocked=0
-while read -r local_ref local_sha remote_ref remote_sha; do
+while read -r local_ref local_sha _remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
 
-  # The push newly exposes the commits reachable from the pushed sha but
-  # from NO already-public ref: `origin/<default>` plus, when it is
-  # confirmed to be the branch's own remote tip, the reported remote_sha.
-  # A single linear `remote_sha..HEAD` range instead spans every commit a
-  # merge-forward brought in from `main` — all of it already public, and
-  # every finding and non-noreply identity in it a false positive (#3523).
+  # The push newly exposes the commits reachable from the pushed sha but from
+  # NO ref the remote already has — i.e. `--not --remotes=<remote>`, EVERY
+  # remote-tracking ref of that remote.
+  #
+  # READ THIS BEFORE "improving" it back to `--not origin/<default>`. That
+  # looks more thorough and is not: it is the MERGE-REQUEST range, not the
+  # PUSH range. They are different questions. An MR's range is legitimately
+  # everything the branch adds to the default branch — on a vendored fork's
+  # import branch that is thousands of commits, and reviewing them is the
+  # MR's job. A PUSH only ever exposes what the remote does not already
+  # have. Using the MR range as the push range re-scans the whole MR on
+  # every push, so a 3-commit push scans 2276 commits: minutes of CPU, and —
+  # worse — it can never pass, because somewhere in a history that large the
+  # scanner always finds something, and every one of those hits is in
+  # already-pushed, immutable, already-remote content that this push is not
+  # exposing. A gate that cannot pass is not a strict gate; it is an outage,
+  # and the leak it lets through is the one in the commit nobody could push
+  # (#3523).
+  #
+  # A branch with no upstream yet (a first push) needs no special case: the
+  # remote's OTHER refs are still subtracted, so a new branch off an
+  # already-pushed base scans only its own new commits, not all of history.
   public_tips=()
-  default_tip=$(git rev-parse --verify --quiet \
-    "refs/remotes/${remote_name}/${default_branch}^{commit}" 2>/dev/null || true)
-  if [ -n "${default_tip}" ]; then
-    public_tips+=("${default_tip}")
+  remote_exclusion=$(_remote_exclusion || true)
+  if [ -n "${remote_exclusion}" ]; then
+    public_tips+=("${remote_exclusion}")
   fi
-  if [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ] \
-    && _remote_sha_is_trusted_base "${remote_ref}" "${remote_sha}"; then
+  # Git's NATIVE pre-push protocol reports the true remote-side tip, which is
+  # fresher than our tracking refs when the remote has advanced; it narrows
+  # the range further. On the prek synthesized path the value is a DERIVED
+  # `PRE_COMMIT_FROM_REF` (prek computes it from `--not --remotes=<remote>`
+  # itself), so it adds nothing there and is not trusted as a base.
+  if [ "${synthesized}" != "1" ] && [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ]; then
     remote_tip=$(git rev-parse --verify --quiet "${remote_sha}^{commit}" 2>/dev/null || true)
     if [ -n "${remote_tip}" ]; then
       public_tips+=("${remote_tip}")
     fi
   fi
 
-  # No resolvable public tip (brand-new repo, unknown sha, shallow clone):
-  # fail CLOSED by subtracting nothing, so the whole history reachable from
-  # the pushed sha is scanned — wider, never narrower.
+  # No resolvable remote ref at all (brand-new repo, shallow clone): fail
+  # CLOSED by subtracting nothing, so the whole history reachable from the
+  # pushed sha is scanned — wider, never narrower.
   new_commits=("${local_sha}")
   if [ ${#public_tips[@]} -gt 0 ]; then
     new_commits+=("--not" "${public_tips[@]}")

@@ -12,6 +12,7 @@ readers. No other module parses ``~/.claude.json``'s account identity.
 """
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,11 +84,19 @@ def load_recorded_fingerprint(*, home: Path | None = None) -> str:
 
 
 def record_fingerprint(fingerprint: str, *, home: Path | None = None) -> Path:
-    """Persist *fingerprint* as the last-recovered account (idempotent overwrite)."""
+    """Persist *fingerprint* as the last-recovered account (idempotent overwrite).
+
+    Written to a sibling temp file and moved into place, so an interruption
+    mid-write leaves the PREVIOUS checkpoint intact: a truncated file loads as
+    ``""``, which reads as "first run" and permanently skips the reprobe the
+    next real switch needs.
+    """
     home = home if home is not None else Path.home()
     path = _recovered_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"accountUuid": fingerprint}), encoding="utf-8")
+    staged = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    staged.write_text(json.dumps({"accountUuid": fingerprint}), encoding="utf-8")
+    staged.replace(path)
     return path
 
 

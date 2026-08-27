@@ -109,6 +109,27 @@ class TestReapResult:
         assert "1 image(s)" in text
 
 
+class TestRemovalFailuresAreNotCountedAsRemovals:
+    """A refused `docker rm`/`rmi` must not be reported as a completed teardown."""
+
+    def test_a_refused_removal_reports_nothing_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"backend-wt99": ["backend-wt99-web-1"]},
+            images={"backend-wt99": ["sha256:img1"]},
+        )
+
+        def refuse_removals(cmd, *, expected_codes=None, timeout=None, **kwargs) -> CompletedProcess:
+            if list(cmd)[:2] in (["docker", "rm"], ["docker", "rmi"]):
+                return CompletedProcess(list(cmd), 1, "", "permission denied")
+            return fake(cmd, expected_codes=expected_codes, timeout=timeout, **kwargs)
+
+        _patch(monkeypatch, refuse_removals)
+        result = reap_compose_project("backend-wt99")
+        assert result.containers_removed == 0
+        assert result.images_removed == 0
+        assert result.is_noop
+
+
 class TestReapComposeProject:
     def test_removes_containers_and_images_for_the_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeDocker(

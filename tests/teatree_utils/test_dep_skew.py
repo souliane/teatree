@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.utils import dep_skew
+from teatree.utils.dep_drift import declared_dependency_names
 from teatree.utils.dep_skew import find_version_skew
 
 _PYPROJECT = """
@@ -84,3 +86,20 @@ class TestAMarkerThatExcludesThisEnvironment:
         deps = "pytest>=9999; python_version >= '3'"
 
         assert [skew.name for skew in find_version_skew(_write(pyproject, deps))] == ["pytest"]
+
+
+class TestItsOwnImportsAreDeclared:
+    """``dep_skew`` needs real specifier semantics, so it imports a non-stdlib package.
+
+    ``packaging`` reached every developer env transitively (gunicorn and pillow both
+    pull it) and reached the deployed uv tool env not at all, so ``t3 doctor check``
+    aborted at ``from packaging.requirements import ...`` -- the one venue where the
+    check it guards actually matters.
+    """
+
+    def test_packaging_is_declared_not_merely_transitive(self) -> None:
+        pyproject = Path(dep_skew.__file__).resolve().parents[3] / "pyproject.toml"
+
+        assert "packaging" in declared_dependency_names(pyproject), (
+            f"{pyproject} does not declare 'packaging', which teatree.utils.dep_skew imports directly"
+        )

@@ -13,9 +13,9 @@ schema (see :mod:`teatree.eval.transcript`). The two share an identical
 ``message.content[]`` block shape (``tool_use`` / ``text``), so tool-call and
 text extraction is reused verbatim. They diverge at the terminus: a sub-agent
 JSONL carries NO ``result`` event — completion is the final ``assistant``
-message's ``stop_reason``. On disk that field is frequently ``null`` (the
-streaming reason is not persisted), so a missing/non-string ``stop_reason`` is
-treated as a clean completion, not an abort. This module supplies that
+message's ``stop_reason``, and on disk that field is frequently ``null`` (the
+streaming reason is not persisted), so reading it is subtler than a string
+compare: :func:`_terminal_reason` owns the rule. This module supplies that
 session-aware terminal reason and assembles the :class:`EvalRun` the grader
 consumes, so a sub-agent transcript grades identically to a ``claude -p`` one.
 
@@ -29,6 +29,10 @@ from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import StreamJsonEvent, extract_text_blocks, extract_tool_calls
 
 _DIRTY_STOP_REASONS = frozenset({"max_tokens", "refusal", "error", "aborted"})
+
+#: Reasons a turn ended MID-FLIGHT: to invoke a tool, or to pause. The continuation is
+#: simply not in the file, so a capture ending here is cut short, never a clean finish.
+_NONTERMINAL_STOP_REASONS = frozenset({"tool_use", "pause_turn"})
 
 
 def is_subagent_transcript(raw: str) -> bool:
@@ -95,12 +99,13 @@ def _terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
     A sub-agent JSONL has no ``result`` event; the run's outcome is the last
     assistant turn's ``stop_reason``. On disk that field is commonly ``null`` (the
     streamed reason is not persisted). An explicit string reason is authoritative —
-    only a dirty one (``max_tokens`` / ``refusal`` / ``error`` / ``aborted``) is an
-    error. A ``null`` reason is a clean finish ONLY when the final assistant turn
-    carries closing text; a ``null`` reason with no trailing text is a truncated /
-    mid-write capture (``incomplete``, an error) — never a silent clean completion,
-    so a negative-matcher scenario cannot pass on half a transcript. No assistant
-    event at all is an abort.
+    a dirty one (``max_tokens`` / ``refusal`` / ``error`` / ``aborted``) and a
+    NONTERMINAL one (``tool_use`` / ``pause_turn``) are both errors, the latter as
+    ``incomplete``. A ``null`` reason is a clean finish ONLY when the turn carries text;
+    a ``null`` reason with no trailing text is a truncated / mid-write capture
+    (``incomplete``, an error) — never a silent clean completion, so a
+    negative-matcher scenario cannot pass on half a transcript. No assistant event at
+    all is an abort.
     """
     for event in reversed(events):
         if event.type != "assistant":
@@ -109,6 +114,8 @@ def _terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
         if not isinstance(message, dict):
             return "incomplete", True
         stop_reason = message.get("stop_reason")
+        if stop_reason in _NONTERMINAL_STOP_REASONS:
+            return "incomplete", True
         if isinstance(stop_reason, str):
             return stop_reason, stop_reason in _DIRTY_STOP_REASONS
         if _has_closing_text(message):

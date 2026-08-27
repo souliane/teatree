@@ -547,6 +547,31 @@ def _arrange_self_dm_gate(ctx: GateContext) -> None:
     ctx.seed_overlays({"t3-acme": {"slack_dm_channel_id": _SELF_DM_CHANNEL}})
 
 
+# block-general-purpose-agent (PreToolUse Agent): a blank sub-agent dispatched at a
+# managed repo denies; the same brief with a typed sub-agent allows. WHICH repos are
+# managed is overlay knowledge, so the registry is seeded rather than read off the host.
+
+
+def _arrange_general_purpose_gate(ctx: GateContext) -> None:
+    ctx.seed_overlays({"t3-acme": {"workspace_repos": ["acme-product"]}})
+
+
+def _general_purpose_dispatch(subagent_type: str) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": subagent_type, "prompt": "Fix the failing test in acme-product"},
+    }
+
+
+def _general_purpose_deny(_ctx: GateContext) -> dict:
+    return _general_purpose_dispatch("general-purpose")
+
+
+def _general_purpose_allow(_ctx: GateContext) -> dict:
+    return _general_purpose_dispatch("t3:coder")
+
+
 def _self_dm_deny(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
@@ -1015,6 +1040,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
             "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
         },
         arrange=_arrange_skill_loading,
+    ),
+    GateRow(
+        gate_id="block-general-purpose-agent",
+        handler=router.handle_block_general_purpose_agent,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_general_purpose_deny,
+        allow_input=_general_purpose_allow,
+        arrange=_arrange_general_purpose_gate,
     ),
     GateRow(
         gate_id="block-edit-before-planned",

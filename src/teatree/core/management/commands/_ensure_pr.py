@@ -36,9 +36,14 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    pr_reviewers_for_remote,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.utils import git, git_remote
 from teatree.utils.disposable_checkout import is_disposable_checkout
@@ -276,8 +281,10 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
 
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
-    overlay = get_overlay()
+    # A genuinely orphan branch has no owning ticket to scope the overlay by, so
+    # it keeps the ambient default; a branch that HAS one is shipped under it.
     owning_ticket = _ticket_for_branch(branch_name)
+    overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     close_ticket = should_close_ticket(
         _ticket_extra_for_branch(branch_name),
         setting_enabled=overlay.config.mr_close_ticket,
@@ -318,8 +325,9 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         title=title,
         description=description,
         target_branch=resolve_pr_target_branch(owning_ticket, branch=branch_name),
-        labels=overlay_pr_labels(),
+        labels=overlay_pr_labels(overlay),
         assignee=assignee,
+        reviewers=pr_reviewers_for_remote(overlay, remote),
         draft=False,
     )
     try:

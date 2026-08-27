@@ -147,6 +147,23 @@ class TestToTerse(TestCase):
         assert "applied" in report.to_terse(dry_run=False)
 
 
+class TestDryRunHeaderTellsTheTruthAboutTheSweeps(TestCase):
+    """The boot sweeps run on the default path and WRITE — the header may not deny it."""
+
+    def test_a_sweep_that_recovered_rows_is_not_reported_as_nothing_changed(self) -> None:
+        report = RecoverReport(boot_sweeps=BootSweepCounts(reclaimed_claims=2, reclaimed_leases=1))
+
+        out = report.to_terse(dry_run=True)
+
+        assert "nothing changed" not in out
+        assert "3 row(s)" in out
+
+    def test_a_sweep_that_touched_nothing_still_says_nothing_changed(self) -> None:
+        report = RecoverReport(boot_sweeps=BootSweepCounts())
+
+        assert "(nothing changed)" in report.to_terse(dry_run=True)
+
+
 class TestBranchToTicketUrl(TestCase):
     def test_maps_resolvable_clones_and_skips_unresolvable(self) -> None:
         from teatree.core.models import Worktree  # noqa: PLC0415

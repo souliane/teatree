@@ -1132,5 +1132,158 @@ class TestLeakGateResolvesVisibilityOnTheRemotesOwnForge:
         assert "privacy" in (result.stdout + result.stderr).lower()
 
 
+_PROBE_FAILURE_MARKER = "probe-exploded-marker-7f3a"
+_PROBE_REMOTE_URL = "https://github.com/acme/widget.git"
+
+
+def _fake_core_package(src_root: Path, *, verdict: str = "", fail_marker: str = "") -> None:
+    """Plant a minimal ``teatree.hooks.repo_visibility_cli`` under ``src_root``.
+
+    It either prints a verdict (a probe that resolves) or writes ``fail_marker``
+    to stderr and exits non-zero (a probe that breaks). Being first on
+    ``PYTHONPATH`` it shadows any real teatree the interpreter may have
+    installed, so the outcome is the test's, not the runner's environment's.
+    """
+    hooks = src_root / "teatree" / "hooks"
+    hooks.mkdir(parents=True)
+    (src_root / "teatree" / "__init__.py").write_text("", encoding="utf-8")
+    (hooks / "__init__.py").write_text("", encoding="utf-8")
+    body = (
+        f"import sys\nsys.stderr.write({fail_marker!r} + '\\n')\nraise SystemExit(1)\n"
+        if fail_marker
+        else f"print({verdict!r})\n"
+    )
+    (hooks / "repo_visibility_cli.py").write_text(body, encoding="utf-8")
+
+
+def _relocate_hook(root: Path) -> Path:
+    """Place the real hook at ``<root>/scripts/hooks/`` so it derives ``root``.
+
+    A symlink, not a copy: the hook resolves its repo root from ``$0``'s
+    directory, so this exercises the shipped script rather than a snapshot of
+    it that could drift away from the file under test.
+    """
+    hooks_dir = root / "scripts" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    placed = hooks_dir / HOOK.name
+    placed.symlink_to(HOOK)
+    return placed
+
+
+def _make_failing_uv_shim(bin_dir: Path) -> None:
+    """A ``uv`` that always fails, so the interpreter fallback is what runs."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "uv"
+    shim.write_text(
+        "#!/usr/bin/env bash\necho 'uv: no usable environment' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _make_always_finding_scanner(bin_dir: Path) -> Path:
+    """A scanner that reports a finding on ANY input.
+
+    These tests are about which VISIBILITY the gate resolves, not about what the
+    scanner detects. An always-finding stub makes the two outcomes unambiguous:
+    exit 0 can only mean the scan was SKIPPED on a resolved private verdict, and
+    a refusal can only mean the undetermined path ran the scan.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "privacy-scan-stub"
+    stub.write_text(
+        "#!/usr/bin/env bash\ncat >/dev/null\necho '1: secret / redacted-match'\nexit 3\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return stub
+
+
+class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
+    """The probe must find core in EITHER layout, and never fail silently.
+
+    Two independent defects made a PRIVATE repo scan as public forever. The
+    fallback offered only ``<root>/src`` on ``PYTHONPATH``, which is where core
+    lives in a standalone checkout but NOT in a fork that vendors it at
+    ``<root>/vendor/teatree/src`` — so the probe could not import ``teatree``
+    at all. And both probe branches redirected stderr to ``/dev/null``, so the
+    reason was invisible: the gate reported only "could not confirm", and the
+    operator saw a private repo refused over its own domain vocabulary.
+
+    Fail-closed behaviour is unchanged and pinned by the third test: an
+    undetermined verdict still scans and still blocks a real finding.
+    """
+
+    def _probe_clone(
+        self,
+        tmp_path: Path,
+        *,
+        core_src: str,
+        verdict: str = "",
+        fail_marker: str = "",
+    ) -> tuple[Path, Path, dict[str, str]]:
+        root = tmp_path / "checkout"
+        root.mkdir()
+        hook = _relocate_hook(root)
+        _fake_core_package(root / core_src, verdict=verdict, fail_marker=fail_marker)
+
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work = tmp_path / "work"
+        _git(tmp_path, "clone", str(origin), str(work))
+        _git(work, "config", "user.email", _NOREPLY_EMAIL)
+        _git(work, "config", "user.name", _NOREPLY_NAME)
+        _git(work, "remote", "set-url", "origin", _PROBE_REMOTE_URL)
+
+        bin_dir = tmp_path / "bin"
+        _make_failing_uv_shim(bin_dir)
+        env = _hermetic_env()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["T3_PRIVACY_SCAN_CMD"] = str(_make_always_finding_scanner(bin_dir))
+        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
+
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+        return hook, work, env
+
+    def _run(self, hook: Path, work: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            # `bash <hook>` is git's real pre-push invocation shape; test-only driver.
+            ["bash", str(hook), "origin", _PROBE_REMOTE_URL],  # noqa: S607 — the hook's real invocation shape
+            cwd=work,
+            input=_push_stdin(work),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_resolves_core_vendored_under_vendor_teatree_src(self, tmp_path: Path) -> None:
+        hook, work, env = self._probe_clone(tmp_path, core_src="vendor/teatree/src", verdict="PRIVATE")
+
+        result = self._run(hook, work, env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not confirm" not in (result.stdout + result.stderr).lower()
+
+    def test_resolves_core_in_a_standalone_checkout_under_src(self, tmp_path: Path) -> None:
+        hook, work, env = self._probe_clone(tmp_path, core_src="src", verdict="PRIVATE")
+
+        result = self._run(hook, work, env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not confirm" not in (result.stdout + result.stderr).lower()
+
+    def test_failed_probe_surfaces_its_error_and_still_fails_closed(self, tmp_path: Path) -> None:
+        hook, work, env = self._probe_clone(tmp_path, core_src="src", fail_marker=_PROBE_FAILURE_MARKER)
+
+        result = self._run(hook, work, env)
+
+        assert _PROBE_FAILURE_MARKER in result.stderr, result.stdout + result.stderr
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

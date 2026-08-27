@@ -19,6 +19,13 @@
 # gitlab/github <-> parent would cycle).
 # tests/quality/test_backends_explicit_coupling.py pins the explicit edge.
 #
+# teatree.failure_signatures -- the failure-cause phrase tables and their pure
+# text predicates. teatree.agents (the recorder) and teatree.core (the review
+# backend cooldown) both read them and share the `domain` layer, so neither can
+# host them without cycling; a dependency-free foundation leaf is the only home
+# both may depend on. teatree.agents.outage_classifier keeps only the part that
+# needs AgentResultBlob.
+#
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only
 # SAME-layer edges bind here. teatree.mcp (integration), for example, also
@@ -48,6 +55,11 @@ layers = [
 
 [[modules]]
 path = "teatree.paths"
+layer = "foundation"
+depends_on = ["teatree.sqlite_snapshot"]
+
+[[modules]]
+path = "teatree.sqlite_snapshot"
 layer = "foundation"
 depends_on = []
 
@@ -176,6 +188,7 @@ depends_on = [
   "teatree.paths",
   "teatree.pricing",
   "teatree.project",
+  "teatree.failure_signatures",
   "teatree.config",
   "teatree.utils",
   "teatree.timeouts",
@@ -187,6 +200,9 @@ depends_on = [
   # ORM-free enum home shared with the MCP service-declaration mechanism
   # (OverlayConfig.required_third_party_services validates against Service).
   "teatree.backends.types",
+  # the readiness probe's boot-time GET reuses the shared bounded-retry
+  # transport rather than carrying a second, uncapped retry loop.
+  "teatree.backends.http_retry",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",
@@ -333,6 +349,9 @@ depends_on = [
   "teatree.core.managers",
   "teatree.core.models.errors",
   "teatree.core.repair_loop",
+  # the substrate classifier reads the vendoring prefix from the paths leaf rather
+  # than carrying a second literal to drift from.
+  "teatree.paths",
   # SessionHandover's check constraint names the runner principal, so the value
   # comes from the identity leaf rather than a second literal to drift from.
   "teatree.core.session_identity",
@@ -353,6 +372,7 @@ path = "teatree.agents"
 layer = "domain"
 depends_on = [
   "teatree.types",
+  "teatree.failure_signatures",
   "teatree.core",
   "teatree.core.modelkit",
   "teatree.core.models",
@@ -551,6 +571,7 @@ depends_on = [
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
+  "teatree.failure_signatures",
   "teatree.self_update",
   "teatree.config",
   "teatree.core",
@@ -764,7 +785,8 @@ depends_on = [
   "teatree.loop.review_claim_signals",
   "teatree.loop.review_done_reactions",
   "teatree.loop.review_request_tracker",
-  "teatree.loop.pr_ticket_index"
+  "teatree.loop.pr_ticket_index",
+  "teatree.loop.inbound_reading"
 ]
 
 [[modules]]
@@ -878,6 +900,8 @@ depends_on = [
   "teatree.backends.slack",
   "teatree.core",
   "teatree.core.models",
+  "teatree.loop.inbound_classifier",
+  "teatree.loop.inbound_reading",
   "teatree.loop.self_improve",
   "teatree.loop.statusline"
 ]

@@ -103,14 +103,15 @@ class TestVerdictReadBack(TestCase):
         assert recorded is not None
         assert recorded.verdict == ReviewVerdict.Verdict.HOLD
 
-    def test_a_verdict_recorded_under_a_differently_cased_slug_does_not_read_back(self) -> None:
-        # The landed-work guard matches the slug exactly, so a row it cannot see is not
-        # persisted as far as any consumer is concerned — the read-back must say so.
+    def test_a_verdict_recorded_under_a_differently_cased_slug_reads_back(self) -> None:
+        # Forge slugs are case-insensitive, and the merge gate and the landed-work guard
+        # both resolve them that way — a read-back that did not would report a verdict
+        # those consumers CAN see as never persisted.
         task = self._target_with_verdict(recorded_slug=_SLUG.upper())
         target = review_target_for_task(task)
         assert target is not None
 
-        assert verdict_at(target) is None
+        assert verdict_at(target) is not None
 
     def test_an_unknown_head_can_never_read_back_a_verdict(self) -> None:
         task = _reviewer_task(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}")

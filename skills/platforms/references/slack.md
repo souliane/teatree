@@ -10,13 +10,14 @@ Slack has no official CLI. Use MCP tools (e.g., `slack_send_message`, `slack_sea
 
 ## Review-Request Dedup (race-safe — #1084)
 
-**Do not hand-search the channel to dedup a review request.** A manual search separated from the post is a race: the user (or a retry) can post the same request in the gap. Use the enforced gate **in the same turn as the post**:
+**Do not hand-search the channel to dedup a review request.** A manual search separated from the post is a race: the user (or a retry) can post the same request in the gap. Use the enforced gate **in the same turn as the post** — prefer the `mcp__teatree__review_request_check` MCP tool, which returns `action=post|suppress` for one MR URL; fall back to the CLI below when the MCP server isn't connected:
 
 ```bash
+# CLI fallback (MCP server not connected)
 t3 review-request check --mr-url "<MR_URL>"
 ```
 
-It reads the live channel's recent history (`conversations.history`, recency-bounded, no `search:read` scope) and takes an atomic DB claim. Post only on `{"action": "post"}`; on `{"action": "suppress", ...}` a request already exists (any author — a user's own post suppresses the agent) — record the returned `permalink` and skip.
+It reads the live channel's recent history (`conversations.history`, recency-bounded, no `search:read` scope). The check is decision-only and takes NO durable claim, so a refused post can never wedge a later real one — the atomic `ReviewRequestPost` claim is taken by `review-request post` itself. Post only on `{"action": "post"}`; on `{"action": "suppress", ...}` a request already exists (any author — a user's own post suppresses the agent) — record the returned `permalink` and skip.
 
 **Connect-token read note (load-bearing).** The gate reads with the *same* token an outbound post to that channel would use. For a Slack-Connect externally-shared channel the bot token (`xoxb-…`) cannot read history (`mcp_externally_shared_channel_restricted`) — the user OAuth token (`xoxp-…`) is required, and the gate routes to it via the single token-selection policy (`teatree.backends.slack.token_policy.channel_token`) exactly when the post would. Read-token == post-token: a dedup that read with a token the channel rejects would always see an empty history and never suppress a duplicate.
 
@@ -91,6 +92,6 @@ Remove entries where the PR is approved or merged to keep the cache small.
 ## Rules
 
 - **Never post without user approval.** Always present a dry-run summary first.
-- **Never post duplicates — enforced.** Run `t3 review-request check --mr-url <url>` in the same turn as the post and abort on `suppress` (#1084). The gate's live read + atomic DB claim, not a hand-search or a JSON cache, is what makes a duplicate impossible.
+- **Never post duplicates — enforced.** Run the `mcp__teatree__review_request_check` MCP tool (or `t3 review-request check --mr-url <url>` when the MCP server isn't connected) in the same turn as the post and abort on `suppress` (#1084). The gate's live read, plus the atomic `ReviewRequestPost` claim that `review-request post` takes, is what makes a duplicate impossible — not a hand-search or a JSON cache.
 - PR URLs stay hidden in reminders. Post only the Slack permalink to the original review request.
 - **One reminder per day per PR.** Use `last_reminded` to prevent spamming.

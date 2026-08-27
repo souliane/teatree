@@ -19,7 +19,10 @@
 # purpose: they share one venv and one test DB, and interleaved output would make
 # a failure unreadable — the win here is failing fast, not overlapping work.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # A CALLER's pipeline (`bash dev/ci-parity.sh 2>&1 | tail -25`) reports its LAST
 # stage's status, so this lane's exit code is erased before anyone reads it.
