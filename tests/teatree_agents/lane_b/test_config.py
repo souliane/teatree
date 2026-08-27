@@ -5,6 +5,7 @@ import pytest
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
 
 
 class TestLaneBToolConfig:
@@ -45,3 +46,37 @@ class TestLaneBToolConfig:
         config = LaneBToolConfig()
         assert config.shell_denylist
         assert config.shell_timeout_seconds > 0
+
+
+class TestShellExplorationRetryBudget:
+    """architectural_review et al. get a wider shell retry budget.
+
+    A phase whose own contract is "walk the tree via shell" hit pydantic-ai's
+    per-tool retry ceiling and HardDenyToolset's cumulative denial cap on the very
+    next corrective retry, aborting the whole dispatch — these properties widen
+    both for that phase family, derived from ``phase`` so direct construction and
+    ``from_options`` can never disagree.
+    """
+
+    @pytest.mark.parametrize(
+        "phase", ["architectural_review", "bughunt", "dogfood_smoke", "eval_local", "backlog_sweep"]
+    )
+    def test_exploration_phase_widens_both_ceilings(self, phase: str) -> None:
+        config = LaneBToolConfig(phase=phase)
+        assert config.shell_tool_retries is not None
+        assert config.shell_tool_retries > 1
+        assert config.max_denials > DEFAULT_MAX_DENIALS
+
+    @pytest.mark.parametrize("phase", ["coding", "reviewing", "planning", "shipping", ""])
+    def test_other_phase_keeps_the_tight_default(self, phase: str) -> None:
+        config = LaneBToolConfig(phase=phase)
+        assert config.shell_tool_retries is None  # inherits pydantic-ai's own default unchanged
+        assert config.max_denials == DEFAULT_MAX_DENIALS
+
+    def test_from_options_derives_the_same_budget_as_direct_construction(self, tmp_path: Path) -> None:
+        # The budget is a property of `phase`, not a field `from_options` fills in
+        # separately — so the two construction paths can never disagree.
+        via_options = LaneBToolConfig.from_options(HarnessOptions(cwd=str(tmp_path)), phase="architectural_review")
+        direct = LaneBToolConfig(fs_root=tmp_path, phase="architectural_review")
+        assert via_options.shell_tool_retries == direct.shell_tool_retries
+        assert via_options.max_denials == direct.max_denials

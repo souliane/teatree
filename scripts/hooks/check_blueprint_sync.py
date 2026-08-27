@@ -15,6 +15,18 @@ files under ``docs/blueprint/`` (e.g. ``configuration.md``,
 ``loop-topology.md``) — the appendices ARE the BLUEPRINT, so updating one of
 them satisfies the sync requirement just as the monolith does.
 
+``src/`` and ``BLUEPRINT.md`` are relative to teatree's OWN root, which is the
+git repo root only in a plain clone. A fork that vendors core keeps it at
+``vendor/teatree/``, and git reports every staged path relative to the FORK
+root — so teatree's source arrives as ``vendor/teatree/src/…`` (matching no
+``src/`` literal, leaving core changes ungated) while its BLUEPRINT arrives as
+``vendor/teatree/BLUEPRINT.md`` (matching no blueprint literal, so the gate
+could not be satisfied at all). The fork's OWN ``src/`` meanwhile matched the
+literal, so a concurrent agent's staged overlay file moved the verdict of an
+unrelated commit. :func:`_vendoring_prefix` maps the staged set back onto
+teatree's root, which decides both questions at once: a path outside that tree
+is neither teatree source nor teatree's BLUEPRINT.
+
 The ``fix:``/``refactor:`` exemption only fires if the hook can read the commit
 *type*, which lives in the commit message. The commit message is sourced
 robustly: from ``argv[1]`` when prek hands it the commit-message file at the
@@ -52,6 +64,8 @@ import pathlib
 import subprocess
 import sys
 
+from teatree.utils import work_tree
+
 # Commit types that don't require BLUEPRINT updates. ``refactor`` joins the
 # set because a behaviour-preserving internal change (a swapped runner, an
 # extracted helper) does not alter the external contracts BLUEPRINT documents
@@ -71,14 +85,68 @@ _SHIPPED_CONTRACT_PATHS = ("src/teatree/config/defaults.toml",)
 _SHIPPED_CONTRACT_SUFFIXES = ("_enums.py", "/config/enums.py")
 
 
+def _teatree_source_root() -> pathlib.Path:
+    """The directory holding teatree's own ``src/`` and ``BLUEPRINT.md``.
+
+    Derived from this script's own location, so it is layout-independent: the
+    repo root in a plain clone, ``<fork>/vendor/teatree`` in a fork that vendors
+    core. Mirrors ``teatree.paths.teatree_source_root`` and the sibling
+    ``check_blueprint_invariant_numbering`` hook, but anchored on the script
+    rather than an imported package: the tree being COMMITTED is the one to
+    reason about, and an installed ``teatree`` can be a different checkout
+    entirely.
+    """
+    return pathlib.Path(__file__).resolve().parents[2]
+
+
+def _vendoring_prefix() -> str:
+    """Where teatree's root sits inside the git working tree, as a path prefix.
+
+    ``""`` for a plain clone (the two coincide) and ``"vendor/teatree/"`` for a
+    fork that vendors core. Git reports staged paths relative to the working-tree
+    root, so this is what maps them onto the ``src/`` and ``BLUEPRINT.md``
+    literals below. Resolved from teatree's own root rather than the process cwd,
+    so it names the same working tree :func:`_staged_files` reads. Falls back to
+    the plain-clone assumption when the root is unresolvable (no git checkout).
+    ``teatree.paths.VENDORED_CORE_PREFIX`` is the same convention stated statically,
+    for consumers classifying forge paths with no local checkout to measure.
+
+    :mod:`teatree.utils.work_tree` is the one place that drops
+    ``GIT_DIR``/``GIT_WORK_TREE`` and asks git where the tree really starts, so
+    every check hook computes this prefix the same way.
+    """
+    try:
+        return work_tree.resolve(_teatree_source_root()).prefix
+    except work_tree.WorkTreeError:
+        return ""
+
+
+def _teatree_relative(path: str, prefix: str) -> str | None:
+    """*path* re-expressed relative to teatree's root, or ``None`` if outside it.
+
+    ``None`` is the answer that keeps a fork's own tree out of this gate: its
+    ``src/fork_overlay/`` is not teatree source, and teatree's BLUEPRINT does not
+    document it — so it can neither trip the gate nor satisfy it.
+    """
+    norm = path.replace("\\", "/")
+    if not prefix:
+        return norm
+    return norm.removeprefix(prefix) if norm.startswith(prefix) else None
+
+
 def _staged_files() -> list[str]:
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip().splitlines()
+    """The paths this commit stages, relative to the git working-tree root.
+
+    ``--cached`` is the set git is committing, not merely the index as it stands:
+    on a path-limited commit git points ``GIT_INDEX_FILE`` at the temporary index
+    holding exactly those paths, which this inherits. Anchored at teatree's own
+    root so it reads the working tree :func:`_vendoring_prefix` measured against.
+    """
+    try:
+        tree = work_tree.resolve(_teatree_source_root())
+    except work_tree.WorkTreeError:
+        return []
+    return tree.run("diff", "--cached", "--name-only", "--diff-filter=ACMR").strip().splitlines()
 
 
 def _is_merge_commit() -> bool:
@@ -109,26 +177,6 @@ def _is_revert_commit() -> bool:
         check=False,
     )
     return result.returncode == 0
-
-
-def _vendoring_prefix() -> str:
-    """The staged-path prefix teatree's own tree sits behind, or "" in a plain clone.
-
-    Git reports staged paths relative to the OUTER repository root, so a fork that
-    vendors core at ``vendor/teatree/`` stages teatree's source as
-    ``vendor/teatree/src/…`` and its BLUEPRINT as ``vendor/teatree/BLUEPRINT.md``.
-    Deriving the prefix from this file's own location is what lets one hook serve both
-    layouts, and is why the fork's own ``src/`` is not read as teatree source.
-    """
-    teatree_root = pathlib.Path(__file__).resolve().parents[2]
-    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        return ""
-    try:
-        relative = teatree_root.relative_to(pathlib.Path(result.stdout.strip()).resolve())
-    except ValueError:
-        return ""
-    return "" if relative == pathlib.Path() else f"{relative.as_posix()}/"
 
 
 def _is_blueprint(path: str, prefix: str = "") -> bool:

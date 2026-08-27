@@ -14,6 +14,9 @@ or whose subject cannot be determined — is KEPT. Dropping a question whose sub
 is still live is the failure mode these tests pin against.
 """
 
+from unittest.mock import patch
+
+from django.db.utils import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -181,3 +184,24 @@ class TestRepairHaltReconcile(TestCase):
 
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
         assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+
+class TestEscalationIsAllOrNothing(TestCase):
+    """The halt stamp and the question the owner sees land together, or neither does."""
+
+    def test_a_failed_question_write_leaves_the_task_unstamped_for_the_next_pass(self) -> None:
+        # The stamp drops the row out of EVERY future scan, and the question is the only
+        # surface a halt reaches a human on — so a stamp that outlived a failed record
+        # parks the task silently, forever, with nobody told.
+        task = _failed_task()
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+
+        # The sweep isolates a per-row fault and keeps going, so the escalation's own
+        # writes are the only thing that can undo a half-done park.
+        with patch.object(DeferredQuestion, "record", side_effect=OperationalError("disk I/O")):
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert HALT_STAMP not in task.execution_reason
+        assert not DeferredQuestion.objects.filter(dedupe_marker__startswith="repair-halt:").exists()

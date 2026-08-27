@@ -4,10 +4,12 @@ import enum
 import io
 import json
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django_typer.management import TyperCommand, command
 
-from teatree.core.machine_output import MachineOutputCommand, emit, to_jsonable
+from teatree.core.machine_output import MachineOutputCommand, call_command_streamed, emit, to_jsonable
 
 
 class _Color(enum.Enum):
@@ -111,3 +113,40 @@ class TestMachineOutputCommandPinsPrintResult(TestCase):
         out, err = self._channels()
         assert out == ""
         assert err != ""
+
+
+class _NonStrReturn(TyperCommand):
+    """A command whose typed return Django's own ``OutputWrapper`` cannot print."""
+
+    @command()
+    def pk(self) -> int:
+        self.stdout.write("body line")
+        return 1091
+
+    @command()
+    def other(self) -> str:
+        return "x"
+
+
+class TestCallCommandStreamed(TestCase):
+    """Capturing a child command's output must not hand Django the option that breaks it.
+
+    ``BaseCommand.execute`` swaps django-typer's str-casting wrapper for Django's own
+    whenever ``stdout=``/``stderr=`` is passed, and Django's then calls ``.endswith`` on
+    the raw return — so a truthy non-``str`` return crashes the CALLER mid-walk.
+    """
+
+    def test_the_control_shape_still_raises(self) -> None:
+        buf = io.StringIO()
+        with pytest.raises(AttributeError, match="endswith"):
+            call_command(_NonStrReturn(), "pk", stdout=buf, stderr=buf)
+
+    def test_streamed_call_returns_the_typed_value_and_captures_stdout(self) -> None:
+        buf = io.StringIO()
+        assert call_command_streamed(_NonStrReturn(), "pk", stream=buf) == 1091
+        assert "body line" in buf.getvalue()
+
+    def test_streamed_call_resolves_a_registered_command_by_name(self) -> None:
+        buf = io.StringIO()
+        call_command_streamed("signals", stream=buf)
+        assert buf.getvalue() != ""

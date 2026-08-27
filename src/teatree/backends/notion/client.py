@@ -20,12 +20,13 @@ Reads run under the shared bounded-retry transport
 CONNECT-phase failure, never replayed once the request reached Notion.
 """
 
+from collections.abc import Callable
 from typing import cast
 
 import httpx
 
 from teatree.backends.http_retry import SimpleRetryTransport
-from teatree.backends.notion.errors import NotionBadTokenError, NotionErrorClassifier
+from teatree.backends.notion.errors import NotionBadTokenError, NotionError, NotionErrorClassifier
 from teatree.backends.notion.liveness import LivenessVerdict, PageLivenessProbe
 from teatree.llm.credentials import Credential, CredentialSpec
 from teatree.types import RawAPIDict
@@ -40,6 +41,8 @@ DEFAULT_API_VERSION = "2022-06-28"
 #: ``/v1/data_sources/{id}/query`` exists only from this version onward; the
 #: request that needs it carries this header instead of the pinned default.
 DATA_SOURCE_API_VERSION = "2025-09-03"
+
+type PagedRequest = Callable[[httpx.Client, str | None], httpx.Response]
 
 
 class NotionTokenCredential(Credential):
@@ -136,6 +139,20 @@ class NotionClient:
             raise NotionBadTokenError(msg)
         response.raise_for_status()
 
+    def any_object_shared(self) -> bool:
+        """Whether ANY page or database has been shared with this integration.
+
+        ``POST /v1/search`` returns only granted objects, so an empty result is the
+        precise "the token authenticates but was never shared onto anything" state —
+        which every later read reports indistinguishably as a 404 on one page.
+        """
+        with self._client() as client:
+            response = self._transport.run(
+                lambda: client.post(f"{self._BASE}/search", json={"page_size": 1}), idempotent=True
+            )
+            self._errors.raise_for(response, target="the integration's shared objects")
+            return bool(cast("RawAPIDict", response.json()).get("results"))
+
     # ── page + database reads ───────────────────────────────────────────
 
     def get_page(self, page_id: str) -> RawAPIDict:
@@ -190,49 +207,58 @@ class NotionClient:
             version=DATA_SOURCE_API_VERSION,
         )
 
-    def _query(self, path: str, *, db_filter: RawAPIDict | None, page_size: int, version: str) -> list[RawAPIDict]:
+    def _paginate(self, request: PagedRequest, *, target: str) -> list[RawAPIDict]:
+        """Follow ``next_cursor`` to the end of *request*, one page at a time.
+
+        A cursor Notion hands back a second time means the walk has stopped
+        advancing; the read fails loud rather than spinning forever inside an
+        unattended run.
+        """
         results: list[RawAPIDict] = []
         cursor: str | None = None
-        headers = {"Notion-Version": version} if version else None
+        seen: set[str] = set()
         with self._client() as client:
             while True:
-                payload: RawAPIDict = {"page_size": page_size}
-                if db_filter is not None:
-                    payload["filter"] = db_filter
-                if cursor:
-                    payload["start_cursor"] = cursor
-                response = self._transport.run(
-                    lambda p=payload: client.post(f"{self._BASE}/{path}", json=p, headers=headers),
-                    idempotent=True,
-                )
-                self._errors.raise_for(response, target=path)
+                response = self._transport.run(lambda c=cursor: request(client, c), idempotent=True)
+                self._errors.raise_for(response, target=target)
                 body = response.json()
                 results.extend(body.get("results", []))
                 cursor = body.get("next_cursor")
                 if not body.get("has_more") or not cursor:
                     return results
+                if cursor in seen:
+                    msg = (
+                        f"Notion repeated the pagination cursor {cursor!r} while reading {target}; "
+                        "the walk is not advancing, so the read is abandoned rather than looped forever."
+                    )
+                    raise NotionError(msg)
+                seen.add(cursor)
+
+    def _query(self, path: str, *, db_filter: RawAPIDict | None, page_size: int, version: str) -> list[RawAPIDict]:
+        headers = {"Notion-Version": version} if version else None
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            payload: RawAPIDict = {"page_size": page_size}
+            if db_filter is not None:
+                payload["filter"] = db_filter
+            if cursor:
+                payload["start_cursor"] = cursor
+            return client.post(f"{self._BASE}/{path}", json=payload, headers=headers)
+
+        return self._paginate(request, target=path)
 
     # ── block reads ─────────────────────────────────────────────────────
 
     def list_block_children(self, block_id: str) -> list[RawAPIDict]:
         """Return every direct child block of *block_id*, following pagination."""
-        results: list[RawAPIDict] = []
-        cursor: str | None = None
-        with self._client() as client:
-            while True:
-                params: dict[str, str] = {"page_size": "100"}
-                if cursor:
-                    params["start_cursor"] = cursor
-                response = self._transport.run(
-                    lambda p=params: client.get(f"{self._BASE}/blocks/{block_id}/children", params=p),
-                    idempotent=True,
-                )
-                self._errors.raise_for(response, target=f"block {block_id}")
-                body = response.json()
-                results.extend(body.get("results", []))
-                cursor = body.get("next_cursor")
-                if not body.get("has_more") or not cursor:
-                    return results
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            params: dict[str, str] = {"page_size": "100"}
+            if cursor:
+                params["start_cursor"] = cursor
+            return client.get(f"{self._BASE}/blocks/{block_id}/children", params=params)
+
+        return self._paginate(request, target=f"block {block_id}")
 
     def list_comments(self, block_id: str) -> list[RawAPIDict]:
         """Return the open (unresolved) comments attached to *block_id*.
@@ -243,22 +269,14 @@ class NotionClient:
         :class:`~teatree.backends.notion.errors.NotionCapabilityDeniedError` rather
         than as an empty comment list.
         """
-        results: list[RawAPIDict] = []
-        cursor: str | None = None
-        with self._client() as client:
-            while True:
-                params: dict[str, str] = {"block_id": block_id, "page_size": "100"}
-                if cursor:
-                    params["start_cursor"] = cursor
-                response = self._transport.run(
-                    lambda p=params: client.get(f"{self._BASE}/comments", params=p), idempotent=True
-                )
-                self._errors.raise_for(response, target=f"comments on {block_id}")
-                body = response.json()
-                results.extend(body.get("results", []))
-                cursor = body.get("next_cursor")
-                if not body.get("has_more") or not cursor:
-                    return results
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            params: dict[str, str] = {"block_id": block_id, "page_size": "100"}
+            if cursor:
+                params["start_cursor"] = cursor
+            return client.get(f"{self._BASE}/comments", params=params)
+
+        return self._paginate(request, target=f"comments on {block_id}")
 
     # ── block writes ────────────────────────────────────────────────────
 

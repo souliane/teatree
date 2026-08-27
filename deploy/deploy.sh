@@ -2,7 +2,10 @@
 # Converge the teatree headless stack on the box. Idempotent: re-running brings
 # the checkout current, rebuilds the image, and re-applies the compose stack.
 # Run as the deploy user (in the docker group) from the repo checkout.
-# Reads NO secrets — compose's env_file (deploy/teatree.env) supplies them.
+# Reads ONE secret, the GitLab token, because it is the only one that must reach a
+# `docker exec` and so must be in the container's create-time environment; every
+# other secret is supplied by compose's env_file (deploy/teatree.env) or read by
+# the entrypoint itself.
 set -euo pipefail
 
 # PHYSICAL resolution (`pwd -P`), matching the sibling `t3`. A fork commonly exposes
@@ -54,12 +57,82 @@ compose() {
 # convergence at a time; a second invocation exits cleanly, since the holder always
 # fast-forwards to the latest main and GitHub re-fires for any later push.
 DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
-# Append, never truncate: `>` would wipe the winner's in-progress record below from an
-# invocation that goes on to lose the race.
-exec 9>>"$DEPLOY_LOCK"
-if ! flock -n 9; then
-    echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
-    exit 0
+DEPLOY_LOCK_DIR=""
+# What makes the mkdir lock self-healing where no pid check can be: a RECYCLED pid
+# reads alive forever, and a winner killed between its `mkdir` and its pid write
+# leaves a lock no pid names. Derived from the one hold that varies — the drain —
+# plus an hour for the build, the swap and the admin wait, so it can never expire a
+# live convergence.
+DEPLOY_LOCK_MAX_AGE_MINUTES=$(((${TEATREE_DRAIN_TIMEOUT:-1800} + 3600) / 60))
+DEPLOY_LOCK_MAX_RECLAIMS=5
+
+# `kill -0` cannot answer this alone: it fails with EPERM on ANOTHER USER's live
+# process, and the default lock sits in world-shared /tmp, so a refused signal is
+# evidence the process exists. `ps -p` reports existence without needing that right.
+_pid_alive() {
+    kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
+}
+
+# The pid a lock names, or failure when it names none. `mkdir` publishes the lock one
+# syscall BEFORE the pid lands in it, so an absent — or half-written — pid is a winner
+# mid-acquisition, never a free lock; the caller must read failure here as HELD.
+_lock_holder_pid() {
+    local pid
+    pid="$(cat "$1/pid" 2>/dev/null || true)"
+    case "$pid" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "$pid"
+}
+
+_lock_expired() {
+    [ -n "$(find "$1" -maxdepth 0 -mmin "+$DEPLOY_LOCK_MAX_AGE_MINUTES" 2>/dev/null)" ]
+}
+
+# Release ONLY a lock this process is named in. Ownership is proved from the lock
+# itself, not from where the trap sits relative to the acquisition, so hoisting the
+# trap — its other job has nothing to do with the lock — cannot make it delete the
+# lock another convergence holds.
+_release_deploy_lock() {
+    [ -n "${DEPLOY_LOCK_DIR:-}" ] || return 0
+    [ "$(cat "$DEPLOY_LOCK_DIR/pid" 2>/dev/null || true)" = "$$" ] || return 0
+    rm -rf "$DEPLOY_LOCK_DIR"
+}
+
+if command -v flock >/dev/null 2>&1; then
+    # Append, never truncate: `>` would wipe the winner's in-progress record below from an
+    # invocation that goes on to lose the race.
+    exec 9>>"$DEPLOY_LOCK"
+    if ! flock -n 9; then
+        echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
+        exit 0
+    fi
+else
+    # macOS ships no flock, and `! flock` cannot tell "held" from "missing": a 127 read as
+    # a held lock, so every deploy on this host exited 0 having converged nothing.
+    DEPLOY_LOCK_DIR="$DEPLOY_LOCK.d"
+    reclaims=0
+    until mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; do
+        reclaims=$((reclaims + 1))
+        if [ "$reclaims" -gt "$DEPLOY_LOCK_MAX_RECLAIMS" ]; then
+            echo "deploy: $DEPLOY_LOCK_DIR keeps reappearing after $DEPLOY_LOCK_MAX_RECLAIMS reclaims — refusing to converge." >&2
+            exit 1
+        fi
+        if holder="$(_lock_holder_pid "$DEPLOY_LOCK_DIR")" && ! _pid_alive "$holder"; then
+            echo "deploy: reclaiming $DEPLOY_LOCK_DIR from dead pid $holder." >&2
+        elif _lock_expired "$DEPLOY_LOCK_DIR"; then
+            echo "deploy: reclaiming $DEPLOY_LOCK_DIR — pid ${holder:-unknown} has held it over ${DEPLOY_LOCK_MAX_AGE_MINUTES}m, longer than a convergence can run." >&2
+        else
+            echo "deploy: another convergence (pid ${holder:-unknown}) already holds $DEPLOY_LOCK_DIR — exiting (it converges to latest main)." >&2
+            exit 0
+        fi
+        if ! rm -rf "$DEPLOY_LOCK_DIR"; then
+            echo "deploy: cannot remove the stale $DEPLOY_LOCK_DIR — refusing to converge." >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    printf '%s\n' "$$" >"$DEPLOY_LOCK_DIR/pid"
 fi
 
 # The convergence's own in-progress record (#4339). /proc/locks is filtered by pid
@@ -112,6 +185,8 @@ _clear_quiescing_if_stranded() {
         compose exec -T teatree-worker \
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
     fi
+    _release_deploy_lock
+    return 0
 }
 trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT
 
@@ -137,7 +212,14 @@ if ! command -v docker >/dev/null 2>&1; then
     echo "deploy: docker is not installed — see deploy/README.md bootstrap." >&2
     exit 1
 fi
-if ! systemctl is-active --quiet docker; then
+# Probe the DAEMON, never the systemd unit: `! systemctl is-active` cannot tell an
+# inactive unit from an absent systemctl, so a 127 on a host without systemd read as
+# "docker is down" and the run died on `sudo systemctl` with docker serving all along.
+if ! docker info >/dev/null 2>&1; then
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "deploy: docker is installed but not serving, and this host has no systemd to start it — start docker (Docker Desktop, colima, …) and re-run." >&2
+        exit 1
+    fi
     if ! sudo -n true 2>/dev/null; then
         echo "deploy: docker is not running and passwordless sudo is unavailable — enable it once per deploy/README.md bootstrap (systemctl enable --now docker)." >&2
         exit 1
@@ -242,7 +324,8 @@ install -d \
     "$HOME/.local/share/teatree" \
     "$HOME/.local/share/teatree-worktrees" \
     "$HOME/workspace/t3-workspaces" \
-    "$HOME/.claude/projects"
+    "$HOME/.claude/projects" \
+    "$HOME/.local/bin"
 
 # Derive the container's runtime UID from the HOST at deploy time (#3438). Every
 # bind mount above is at path identity, so the container's teatree user MUST hold
@@ -276,6 +359,36 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
 echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
+
+# The GitLab token compose interpolates into every service's `environment:`, so a
+# `docker exec` inherits it — the entrypoint's own export cannot, since it reaches
+# only the role's process tree. Resolved from the box's pass store rather than
+# teatree.env so the plaintext stays gpg-encrypted at rest and a rotation needs no
+# file rewrite. Read here because this is the process that runs `compose up`, and
+# compose interpolates from ITS environment. Absent pass or key, it stays empty and
+# the entrypoint's own read remains the only path, exactly as before.
+if [ -z "${GITLAB_TOKEN:-}" ] && command -v pass >/dev/null 2>&1; then
+    GITLAB_TOKEN="$(pass show "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}" 2>/dev/null | head -n1 || true)"
+fi
+export GITLAB_TOKEN="${GITLAB_TOKEN:-}"
+if [ -n "$GITLAB_TOKEN" ]; then
+    echo "deploy: GitLab token resolved for the container environment (key ${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat})"
+else
+    echo "deploy: no GitLab token on this host — containers fall back to the entrypoint's own pass read" >&2
+fi
+
+# The Notion integration token, on exactly the terms above: teatree.env is regenerated
+# wholesale on every deploy and is deliberately secret-free, so `pass` is the only
+# source, and the per-service declaration is what a `docker exec` inherits.
+if [ -z "${NOTION_TOKEN:-}" ] && command -v pass >/dev/null 2>&1; then
+    NOTION_TOKEN="$(pass show "${NOTION_TOKEN_PASS_PATH:-notion/integration-token}" 2>/dev/null | head -n1 || true)"
+fi
+export NOTION_TOKEN="${NOTION_TOKEN:-}"
+if [ -n "$NOTION_TOKEN" ]; then
+    echo "deploy: Notion token resolved for the container environment (key ${NOTION_TOKEN_PASS_PATH:-notion/integration-token})"
+else
+    echo "deploy: no Notion token on this host — run 't3 notion setup' if the factory must read Notion" >&2
+fi
 
 # Services the staged swap names, in the order it stages them. Everything compose
 # declares beyond this list is converged last, so a service added later is never

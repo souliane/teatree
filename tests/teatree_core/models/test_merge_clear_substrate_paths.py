@@ -17,6 +17,8 @@ from django.test import TestCase
 
 from teatree.core.models import MergeClear, merge_clear
 from teatree.core.models.merge_clear import _SUBSTRATE_PATH_PREFIXES, diff_paths_are_substrate
+from teatree.loop.scanners.pr_sweep_substrate import pr_diff_is_substrate
+from teatree.loop.scanners.pr_sweep_types import PrSummary
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -230,3 +232,73 @@ class TestIsSubstrateConsultsTouchedPaths(TestCase):
     def test_substrate_paths_indeterminate_defaults_false(self) -> None:
         clear = self._logic_clear()
         assert clear.substrate_paths_indeterminate is False
+
+
+# The literal is spelled out here rather than imported from ``teatree.paths`` so the
+# test pins the shape a forge actually reports for this fork, and a wrong constant
+# turns these RED instead of agreeing with itself.
+_VENDORED = "vendor/teatree/"
+
+
+def _concrete_path(prefix: str) -> str:
+    """A changed-file path under *prefix* — the prefix itself when it already names a file."""
+    return f"{prefix}x.py" if prefix.endswith("/") else prefix
+
+
+class TestVendoredCorePathsAreSubstrate:
+    """A forge reports paths relative to the WORKING-TREE root, so a fork's core arrives vendored."""
+
+    @pytest.mark.parametrize("prefix", _SUBSTRATE_PATH_PREFIXES)
+    def test_vendored_form_of_every_prefix_is_substrate(self, prefix: str) -> None:
+        assert diff_paths_are_substrate([_VENDORED + _concrete_path(prefix)]) is True
+
+    @pytest.mark.parametrize("prefix", _SUBSTRATE_PATH_PREFIXES)
+    def test_unvendored_form_of_every_prefix_stays_substrate(self, prefix: str) -> None:
+        # A vendoring fork's own repo root carries its OWN hooks/ and docs/blueprint/,
+        # so widening to the stripped form must not cost the as-reported form.
+        assert diff_paths_are_substrate([_concrete_path(prefix)]) is True
+
+    def test_a_gate_under_vendored_core_is_substrate(self) -> None:
+        assert diff_paths_are_substrate([f"{_VENDORED}src/teatree/core/gates/design_critic_gate.py"]) is True
+
+    def test_a_vendor_dir_that_is_not_the_core_root_is_not_stripped(self) -> None:
+        assert diff_paths_are_substrate(["some/other/vendor/src/teatree/core/gates/x.py"]) is False
+
+    def test_a_sibling_vendored_checkout_is_not_stripped(self) -> None:
+        assert diff_paths_are_substrate(["vendor/teatree-fork/src/teatree/core/gates/x.py"]) is False
+
+    def test_stripping_does_not_promote_an_ordinary_vendored_path(self) -> None:
+        assert diff_paths_are_substrate([f"{_VENDORED}src/teatree/cli/doctor/checks.py"]) is False
+
+    def test_stripping_does_not_promote_a_vendored_test_file(self) -> None:
+        assert diff_paths_are_substrate([f"{_VENDORED}tests/teatree_core/test_x.py"]) is False
+
+
+class TestVendoredCoreReachesBothMergeRoutes(TestCase):
+    """The CLEAR path and the solo sweep read one rule, so they cannot diverge on one diff."""
+
+    def test_logic_clear_touching_vendored_core_is_substrate(self) -> None:
+        clear = MergeClear.objects.create(
+            pr_id=4244,
+            slug="a-fork/vendors-teatree",
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        clear.touched_paths = (f"{_VENDORED}src/teatree/core/models/merge_clear.py",)
+        assert clear.is_substrate() is True
+
+    def test_solo_sweep_agrees_the_same_diff_is_substrate(self) -> None:
+        pr = PrSummary(
+            slug="a-fork/vendors-teatree",
+            number=4244,
+            head_sha="b" * 40,
+            is_draft=False,
+            has_changes_requested=False,
+        )
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+            return_value=[f"{_VENDORED}src/teatree/core/models/merge_clear.py"],
+        ):
+            assert pr_diff_is_substrate(pr) is True

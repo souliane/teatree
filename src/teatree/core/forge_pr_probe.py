@@ -36,11 +36,12 @@ from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# Both CLIs list only OPEN PRs/MRs here (``--state open`` / ``--state opened``), one
-# row, so a non-empty payload IS an open PR/MR. The branch selector is appended by
-# the forge-specific wrapper (``--head`` on GitHub, ``--source-branch`` on GitLab).
+# Both CLIs list only OPEN PRs/MRs here, one row, so a non-empty payload IS an open
+# PR/MR. The branch selector is appended by the forge-specific wrapper (``--head`` on
+# GitHub, ``--source-branch`` on GitLab).
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
-_GLAB_OPEN_MR: tuple[str, ...] = ("glab", "mr", "list", "--state", "opened", "--output", "json", "-P", "1")
+# glab has no state flag: open is its default and --all/--closed/--merged are the opt-outs.
+_GLAB_OPEN_MR: tuple[str, ...] = ("glab", "mr", "list", "--output", "json", "-P", "1")
 
 
 def forge_cli_env() -> dict[str, str] | None:
@@ -163,21 +164,38 @@ def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
 def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe:
     """Run *cmd* (a forge CLI that lists only OPEN PRs/MRs) and classify the result.
 
-    A non-empty JSON array is an open PR/MR (:attr:`~PrProbeOutcome.FOUND`, carrying
-    the first row's *key*); an empty array is :attr:`~PrProbeOutcome.NONE`. A missing
-    binary (``OSError``), a non-zero exit, or unparsable / non-list JSON is
-    :attr:`~PrProbeOutcome.UNKNOWN` — the probe could not answer.
+    A non-empty JSON array whose first row carries a non-empty string at *key* is an
+    open PR/MR (:attr:`~PrProbeOutcome.FOUND`, carrying that url); an empty array is
+    :attr:`~PrProbeOutcome.NONE`. A missing binary (``OSError``), a non-zero exit,
+    unparsable / non-list JSON, or a row shaped otherwise is
+    :attr:`~PrProbeOutcome.UNKNOWN` — the probe could not answer. Both CLIs are
+    invoked with an explicit field selector, so a row missing *key* is a changed
+    output schema, never a PR with no url: reporting FOUND-with-``""`` there let the
+    fail-closed teardown adapter read an unverified open PR as verified absence.
     """
+    stdout = _open_pr_stdout(cmd, repo_dir)
+    if stdout is None:
+        return PrProbe.unknown()
+    return _classify_open_pr_rows(stdout, cmd[0], key=key)
+
+
+def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
+    """*cmd*'s stdout, or ``None`` when the forge CLI could not answer at all."""
     try:
         result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=forge_cli_env())
     except OSError:
         logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
-        return PrProbe.unknown()
+        return None
     if result.returncode != 0:
         logger.warning("open-PR probe %r failed (exit %s) in %s — unknown", cmd[0], result.returncode, repo_dir)
-        return PrProbe.unknown()
+        return None
+    return result.stdout or "[]"
+
+
+def _classify_open_pr_rows(stdout: str, tool: str, *, key: str) -> PrProbe:
+    """Classify a forge CLI's OPEN-PR listing into the tri-state probe result."""
     try:
-        payload = json.loads(result.stdout or "[]")
+        payload = json.loads(stdout)
     except json.JSONDecodeError:
         return PrProbe.unknown()
     if not isinstance(payload, list):
@@ -185,4 +203,8 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
     if not payload:
         return PrProbe.none()
     first = payload[0]
-    return PrProbe.found(str(first.get(key, "")) if isinstance(first, dict) else "")
+    url = first.get(key) if isinstance(first, dict) else None
+    if not isinstance(url, str) or not url:
+        logger.warning("open-PR probe %r returned a row with no %r — unknown", tool, key)
+        return PrProbe.unknown()
+    return PrProbe.found(url)

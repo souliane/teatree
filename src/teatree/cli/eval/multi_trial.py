@@ -27,7 +27,7 @@ from teatree.cli.eval.run_modes import (
 )
 from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.api_runner import MAX_BUDGET_USD
-from teatree.eval.backends import API_BACKEND, ApiRunnerParams, EvalRunner, make_runner
+from teatree.eval.backends import ApiRunnerParams, EvalRunner, make_runner
 from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
 from teatree.eval.model_resolution import resolve_eval_model
@@ -109,6 +109,7 @@ def _run_scenario_with_progress(
 def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
     specs: list[EvalSpec],
     *,
+    backend: str,
     max_turns: int | None,
     trials: int,
     require: str,
@@ -129,6 +130,12 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     summary_json: Path | None = None,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed.
+
+    ``backend`` is the caller's resolved ``--backend``, already narrowed to a fresh
+    Claude lane by :func:`~teatree.cli.eval.app_helpers.require_api_backend_for_fresh_run`
+    — so it is ``api`` OR ``anthropic_api``, and the runner is built for whichever was
+    asked for. Hardcoding ``api`` here ran an ``anthropic_api`` sweep on the ``claude``
+    CLI child that lane exists to avoid, silently.
 
     ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
     ``METERED_DEFAULT_EFFORT`` calibration). It is the runner-wide default applied
@@ -157,7 +164,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         gate_cost_bounds=gate_cost_bounds,
     )
     runner = make_runner(
-        API_BACKEND,
+        backend,
         ApiRunnerParams(
             max_turns_override=max_turns,
             require_executed=require_executed,
@@ -206,13 +213,15 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
     )
     RunGuards.hooks_registered(results)
-    RunGuards.executed(
-        executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
-    )
-    RunGuards.api_metered_total(
-        backend=API_BACKEND,
-        executed=sum(1 for r in results if not r.skipped),
-        total_cost_usd=sum(r.cost_usd for r in results),
+    executed = sum(1 for r in results if not r.skipped)
+    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
+    # Both vacuous-green shapes, because the lane runs on either fresh backend: the
+    # $0-cost one sees only `api`, and every unmetered fresh lane's equivalent signal
+    # is an empty trajectory. Running one alone leaves whichever backend it is blind
+    # to with no guard at all.
+    RunGuards.api_metered_total(backend=backend, executed=executed, total_cost_usd=sum(r.cost_usd for r in results))
+    RunGuards.fresh_run_produced_output(
+        backend=backend, executed=executed, results=[trial for r in results for trial in r.trial_results]
     )
     regressed = False
     cost_regressed = False
@@ -247,6 +256,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
 def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the matrix path.
     specs: list[EvalSpec],
     *,
+    backend: str,
     models: str,
     max_turns: int | None,
     trials: int,
@@ -266,6 +276,10 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
 ) -> None:
     """Run the suite once per model and render a per-model comparison.
 
+    ``backend`` is the caller's resolved ``--backend``, narrowed to a fresh Claude lane
+    upstream exactly as in :func:`run_pass_at_k_lane` — the matrix runs on whichever of
+    the two was asked for, never on a hardcoded ``api``.
+
     ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
     ``METERED_DEFAULT_EFFORT`` calibration), the runner-wide default for scenarios
     declaring no ``model@effort``. A matrix variant's own ``model@effort`` tag (and
@@ -284,7 +298,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         gate_cost_bounds=gate_cost_bounds,
     )
     runner = make_runner(
-        API_BACKEND,
+        backend,
         ApiRunnerParams(
             max_turns_override=max_turns,
             require_executed=require_executed,

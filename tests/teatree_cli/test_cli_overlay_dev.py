@@ -503,7 +503,11 @@ class TestUninstallCommand:
 
         captured: list[list[str]] = []
 
-        with patch("teatree.utils.run.subprocess.run", side_effect=lambda cmd, **_k: captured.append(cmd)):
+        def _record(cmd: list[str], **_k: object) -> MagicMock:
+            captured.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("teatree.utils.run.subprocess.run", side_effect=_record):
             result = CliRunner().invoke(overlay_dev_app, ["uninstall", "example-overlay"])
 
         assert result.exit_code == 0, result.output
@@ -522,6 +526,30 @@ class TestUninstallCommand:
 
         assert result.exit_code == 0, result.output
         assert json.loads((fork / ".t3.local.json").read_text())["overlays"] == {}
+
+    def test_a_refused_uninstall_keeps_the_tracking_state_and_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``uv pip uninstall`` exits 0 for an absent package, so a nonzero code is a real failure.
+
+        Dropping the state entry behind it left the workspace claiming the overlay
+        was gone while the package was still installed and still resolving.
+        """
+        teatree_wt = _make_standalone_worktree(tmp_path / "ac-teatree-121-xyz" / "teatree")
+        (teatree_wt / ".t3.local.json").write_text('{"overlays": {"example-overlay": {"source": "/tmp/x"}}}')
+        monkeypatch.delenv("TEATREE_INVOCATION_CWD", raising=False)
+        monkeypatch.chdir(teatree_wt)
+
+        with patch(
+            "teatree.utils.run.subprocess.run",
+            return_value=MagicMock(returncode=2, stdout="", stderr="permission denied"),
+        ):
+            result = CliRunner().invoke(overlay_dev_app, ["uninstall", "example-overlay"])
+
+        assert result.exit_code == 1, result.output
+        assert "permission denied" in result.output
+        state = json.loads((teatree_wt / ".t3.local.json").read_text())
+        assert "example-overlay" in state["overlays"]
 
 
 class TestStatusCommand:

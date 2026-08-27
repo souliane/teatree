@@ -32,10 +32,21 @@ from teatree.eval.regression_corpus_fixtures import (
 from teatree.eval.regression_corpus_fixtures import git as _git
 
 if TYPE_CHECKING:
+    from django.db.models import Model
+
     from teatree.core.backend_protocols import MessagingBackend
 
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
+
+
+@contextmanager
+def _ephemeral_row(row: "Model") -> Iterator[None]:
+    """Delete *row* on exit — the corpus runs against the LIVE control DB, not a test DB."""
+    try:
+        yield
+    finally:
+        row.delete()
 
 
 def _seed_config_db(db: Path, key: str, value: object) -> None:
@@ -167,7 +178,7 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
         )
     )
 
-    with _staged_overlay_autonomy(overlay_name, autonomy):
+    with _ephemeral_row(clear), _staged_overlay_autonomy(overlay_name, autonomy):
         try:
             _assert_clear_authorized(
                 clear=clear,
@@ -202,16 +213,17 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
         gh_verify_result=MergeClear.VerifyResult.GREEN,
         blast_class=MergeClear.BlastClass.LOGIC,
     )
-    try:
-        _assert_clear_authorized(
-            clear=clear,
-            executing_loop_identity=identity,
-            slug=slug,
-            pr_id=pr_id,
-        )
-    except MergePreconditionError:
-        return True
-    return False
+    with _ephemeral_row(clear):
+        try:
+            _assert_clear_authorized(
+                clear=clear,
+                executing_loop_identity=identity,
+                slug=slug,
+                pr_id=pr_id,
+            )
+        except MergePreconditionError:
+            return True
+        return False
 
 
 def _check_loop_owner_lease_pid_anchored() -> bool:
@@ -338,8 +350,11 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     Pre-fix a crashing/timed-out scanner read as ``None`` (ALLOW) — a security
     gate failing open on a crash. The fixed :func:`scan_text` must:
     * return :data:`SCANNER_UNAVAILABLE_MARKER` (gate BLOCKS) when the shell
-        scanner raises, never ``None``, and
+        scanner CRASHES, never ``None``, and
     * return ``None`` on a genuine no-op (no config / no script to run).
+
+    A scan killed at its budget is the sibling case and carries its own marker, so
+    this predicate pins the crash arm only.
     """
     from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
 
@@ -477,6 +492,36 @@ def _check_causeless_failure_does_not_trip_the_stall() -> bool:
     return not envelope_allowed and not ceiling_allowed and must_block
 
 
+def _check_environmental_fingerprint_drop_is_narrower_than_the_display_axis() -> bool:
+    """#3957: the fingerprint axis drops the text-uninformative kinds, not every environmental one.
+
+    ``is_environmental`` is the operator-DISPLAY axis, so reusing it as the fingerprint
+    filter imports ``result_error`` / ``provision_failed`` / ``landing_unverified`` / the
+    lease kinds — and ``transient_requeue``'s reopen branch passes no
+    ``last_two_deterministic_kinds``, so that filter is its ONLY stall check. Must:
+    * drop two identical ``outage`` fingerprints, which say nothing about the work, and
+    * keep two identical ``landing_unverified`` ones, a defect recurring rather than an outage repeated, and
+    * hold the fact that leg rests on — ``landing_unverified`` IS environmental on the display axis.
+    """
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        is_environmental,
+        stall_fingerprints,
+    )
+    from teatree.core.repair_loop import is_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    def _stalls(reason: str) -> bool:
+        pair = (classify_failure(reason), terminal_reason_fingerprint(reason))
+        return is_stalled(stall_fingerprints([pair, pair]))
+
+    defect = "landing_unverified: coder yielded with no commit"
+    return (
+        not _stalls("outage_death: unable to connect to api")
+        and _stalls(defect)
+        and is_environmental(classify_failure(defect))
+    )
+
+
 def _check_causeless_kind_is_dropped_from_the_kind_stall() -> bool:
     """#4276: the KIND-level drop, the mechanism ``runtime_ceiling`` actually needs.
 
@@ -515,6 +560,7 @@ __all__ = [
     "_check_branch_currency_conflict_only",
     "_check_causeless_failure_does_not_trip_the_stall",
     "_check_causeless_kind_is_dropped_from_the_kind_stall",
+    "_check_environmental_fingerprint_drop_is_narrower_than_the_display_axis",
     "_check_forge_resolves_by_host_not_token",
     "_check_loop_owner_lease_pid_anchored",
     "_check_merge_precondition_maker_is_not_checker",

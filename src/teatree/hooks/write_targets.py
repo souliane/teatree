@@ -31,6 +31,18 @@ from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokeniz
 
 _MAX_INTERPRETER_DEPTH: Final[int] = 3
 
+# A heredoc and its body. The delimiter is any shell WORD, not just ``\w+``: bash
+# takes ``<<'PY-1'`` / ``<<"body.txt"`` exactly as it takes ``<<EOF``, and a
+# ``\w+``-only delimiter left the whole body unpaired — so an interpreter heredoc
+# spelled that way reported no write targets AND no unresolved target, which the
+# write gates read as "this command writes nothing". Quote characters and
+# whitespace stay out of the class so the delimiter cannot swallow the rest of
+# the line; the terminator is the backreference, matched literally.
+_HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"<<-?\s*['\"]?(?P<delim>[A-Za-z0-9_][\w.+:@%^=,~-]*)['\"]?[^\n]*\n(?P<body>.*?)\n[ \t]*(?P=delim)[ \t]*(?=\n|$)",
+    re.DOTALL,
+)
+
 _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # An output redirect, optionally fd-qualified: ``>`` / ``>>`` / ``>|`` / ``2>``.
 _REDIRECT_RE: Final[re.Pattern[str]] = re.compile(r"^\d*(?:>>|>\|?)")
@@ -130,8 +142,7 @@ def _command_write_targets(command: str, *, depth: int) -> WriteTargets:
 
 def _heredoc_bodies(command: str) -> dict[str, str]:
     """Map every heredoc delimiter in ``command`` to its body text."""
-    pattern = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n[ \t]*\1[ \t]*(?=\n|$)", re.DOTALL)
-    return {match.group(1): match.group(2) for match in pattern.finditer(command)}
+    return {match.group("delim"): match.group("body") for match in _HEREDOC_RE.finditer(command)}
 
 
 def _segment_write_targets(words: list[Token], heredocs: dict[str, str], *, depth: int) -> tuple[list[str], bool]:
@@ -284,9 +295,10 @@ def _interpreter_body_targets(
     is_python = leader.startswith("python")
     if depth >= _MAX_INTERPRETER_DEPTH or not (is_shell or is_python):
         return [], False
+    bodies, unread_heredoc = _interpreter_bodies(words, heredocs)
     targets: list[str] = []
-    unresolved = False
-    for body in _interpreter_bodies(words, heredocs):
+    unresolved = unread_heredoc
+    for body in bodies:
         if is_shell:
             nested = _command_write_targets(body, depth=depth + 1)
             targets.extend(nested.targets)
@@ -298,34 +310,42 @@ def _interpreter_body_targets(
     return targets, unresolved
 
 
-def _interpreter_bodies(words: list[Token], heredocs: dict[str, str]) -> list[str]:
-    """The code an interpreter segment runs: its heredoc bodies plus any ``-c`` value.
+def _interpreter_bodies(words: list[Token], heredocs: dict[str, str]) -> tuple[list[str], bool]:
+    """The code an interpreter segment runs, and whether a heredoc body went UNREAD.
 
-    The heredoc operator is recognised on the verbatim span (shell syntax); the
-    delimiter comes from the decoded value, so ``<<'PY'`` and ``<<PY`` name the
-    same body.
+    The bodies are the segment's heredocs plus any ``-c`` value. The heredoc
+    operator is recognised on the verbatim span (shell syntax); the delimiter
+    comes from the decoded value, so ``<<'PY'`` and ``<<PY`` name the same body.
+
+    A heredoc whose delimiter :func:`_heredoc_bodies` could not pair with a body
+    is reported UNREAD, not dropped: the segment demonstrably feeds an interpreter
+    a script this module cannot see, which is the module's ``unresolved`` answer —
+    silently returning no bodies made it indistinguishable from a segment that
+    writes nothing, and both write gates key on that distinction.
     """
     bodies: list[str] = []
+    unread = False
     expect_delimiter = False
     for index, word in enumerate(words):
+        delimiter: str | None = None
         if expect_delimiter:
             expect_delimiter = False
-            bodies.extend(_body_for_delimiter(word.value, heredocs))
-            continue
-        if not word.raw.startswith("<<"):
+            delimiter = word.value
+        elif not word.raw.startswith("<<"):
             if word.value == "-c" and index + 1 < len(words):
                 bodies.append(words[index + 1].value)
-            continue
-        if word.value in {"<<", "<<-"}:
+        elif word.value in {"<<", "<<-"}:
             expect_delimiter = True
         else:
-            bodies.extend(_body_for_delimiter(word.value.removeprefix("<<-").removeprefix("<<"), heredocs))
-    return bodies
-
-
-def _body_for_delimiter(delimiter: str, heredocs: dict[str, str]) -> list[str]:
-    body = heredocs.get(delimiter.strip("'\""))
-    return [body] if body is not None else []
+            delimiter = word.value.removeprefix("<<-").removeprefix("<<")
+        if delimiter is None:
+            continue
+        body = heredocs.get(delimiter.strip("'\""))
+        if body is None:
+            unread = True
+        else:
+            bodies.append(body)
+    return bodies, unread
 
 
 def _python_body_targets(body: str) -> tuple[list[str], bool]:

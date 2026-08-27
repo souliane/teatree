@@ -36,6 +36,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project under a local   │
 │                 gunicorn server.                                             │
+│ dashboard       Open the teatree dashboard board, served by the same local   │
+│                 gunicorn as the admin.                                       │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -68,8 +70,12 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 stop the loops entirely (there is no fallback plane; PR-28   │
 │                 retired the native `/loop` cron mirror). Each per-loop tick  │
 │                 atomically claims the next pending unit (`t3 loop            │
-│                 claim-next`) and spawns one fresh bounded sub-agent for it;  │
-│                 a dying worker leaves its Task reclaimable and the next tick │
+│                 claim-next`), spawns one fresh bounded sub-agent for it, and │
+│                 records the outcome when that sub-agent returns (`tasks      │
+│                 record-attempt --claim-token`) — the claim is the spawn      │
+│                 boundary, not the finish, and an unrecorded unit is          │
+│                 reclaimed and re-offered rather than ever completing; a      │
+│                 dying worker leaves its Task reclaimable and the next tick   │
 │                 re-dispatches it. Check the worker with `t3 worker status`;  │
 │                 ensure one is running with `t3 worker ensure`.               │
 │ goal            Standing verified-green goals (PR-25).                       │
@@ -111,6 +117,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 off_live_tick + critic/signal code guards) — the master flag │
 │                 graduated default-ON in #3895, so the disabled loop row is   │
 │                 what keeps a fresh install inert.                            │
+│ peer            The loopback forwards the Compare Instances page reads its   │
+│                 peers through.                                               │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -130,9 +138,12 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  `loop_runner_enabled` is the kill-switch — set it false to stop the loops
  entirely (there is no fallback plane; PR-28 retired the native `/loop` cron
  mirror). Each per-loop tick atomically claims the next pending unit (`t3 loop
- claim-next`) and spawns one fresh bounded sub-agent for it; a dying worker
- leaves its Task reclaimable and the next tick re-dispatches it. Check the
- worker with `t3 worker status`; ensure one is running with `t3 worker ensure`.
+ claim-next`), spawns one fresh bounded sub-agent for it, and records the
+ outcome when that sub-agent returns (`tasks record-attempt --claim-token`) —
+ the claim is the spawn boundary, not the finish, and an unrecorded unit is
+ reclaimed and re-offered rather than ever completing; a dying worker leaves
+ its Task reclaimable and the next tick re-dispatches it. Check the worker with
+ `t3 worker status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -146,7 +157,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ spawn-claim      Claim a Task by id (legacy — prefer atomic ``claim-next``). │
 │ start            Spawn a Claude Code session; the t3-master registers each   │
 │                  enabled loop's ``/loop``.                                   │
-│ stop             Print the slot id to stop in the Claude Code session.       │
+│ stop             Print how to stop the durable, worker-driven loops.         │
 │ claim            Claim the session-scoped t3-master slot for this Claude     │
 │                  session (#1073).                                            │
 │ owner            Show which session owns the t3-master slot AND this         │

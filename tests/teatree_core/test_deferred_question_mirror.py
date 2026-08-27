@@ -51,6 +51,21 @@ class TestLiveForReply:
         assert live.pk == new.pk
         assert old.pk != live.pk
 
+    def test_another_scopes_higher_counter_does_not_outrank_the_newer_question(self) -> None:
+        # `generation` is a per-(session, run) cursor, so a long-running scope's
+        # high counter must not steal a reply from a newer scope's first question.
+        DeferredQuestion.record(
+            "older, high counter", session_id="s1", run_id="r1", generation=7, slack_channel="D1", slack_ts="100.0"
+        )
+        newest = DeferredQuestion.record(
+            "newest, fresh scope", session_id="s2", run_id="r2", generation=1, slack_channel="D1", slack_ts="101.0"
+        )
+
+        live = DeferredQuestion.live_for_reply(channel="D1", after_ts="200.0")
+
+        assert live is not None
+        assert live.pk == newest.pk
+
     def test_reply_before_mirror_ts_does_not_bind(self) -> None:
         DeferredQuestion.record("q", session_id="s", run_id="r", generation=1, slack_channel="D1", slack_ts="500.0")
         assert DeferredQuestion.live_for_reply(channel="D1", after_ts="499.9") is None

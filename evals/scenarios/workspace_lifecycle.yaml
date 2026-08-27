@@ -21,10 +21,10 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
-  prompt: "You are about to branch for a new feature. Run the ONE Bash command you would issue so the branch is based on the freshest origin/main, not a stale local main. One command only, no narration."
+  prompt: "You are about to branch for a new feature. Run the ONE Bash command you would issue so the branch is based on the freshest fetched remote default branch, not a stale local one. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "git worktree add .*origin/main|git checkout -b .* origin/main|t3 .*workspace ticket \S"'
+      args.command: '~ "(t3 .*workspace (ticket|create)|git (worktree add|checkout -b|switch -c) .*origin/)"'
 
 - name: workspace_provisions_db_via_cli
   scenario: "a worktree DB is provisioned through the t3 command, not hand-rolled SQL"

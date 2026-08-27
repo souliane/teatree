@@ -59,6 +59,7 @@ from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
+    classify_gitlab_sweep_ci,
     classify_sweep_ci,
     has_independent_cold_review,
     head_review_state,
@@ -322,17 +323,22 @@ class PrSweepScanner:
         )
 
     def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
-        """Delegate to :func:`classify_sweep_ci` over the live branch-protection required set.
+        """Delegate to the CI classifier of the forge *pr* was READ from.
 
-        The core green/pending/failed verdict routes through the SAME
+        On GitHub the core green/pending/failed verdict routes through the SAME
         :func:`classify_required_rollup` the §17.4.3 keystone uses, scoped to the
         SAME required set (:meth:`CodeHostQuery.required_context_names`) — so the
-        sweep and the keystone can never re-diverge (#12). Shared by the CLEAR path
+        sweep and the keystone can never re-diverge (#12). GitLab has no such
+        required set and answers the whole question with the head pipeline's status,
+        so it takes :func:`classify_gitlab_sweep_ci` (#72). Shared by the CLEAR path
         and the solo-overlay bypass so the two gates cannot drift apart.
         """
+        query = CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number, host_kind=pr.host_kind))
+        if pr.host_kind == "gitlab":
+            return classify_gitlab_sweep_ci(query.required_checks_status())
         return classify_sweep_ci(
             list(pr.rollup),
-            CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).required_context_names(),
+            query.required_context_names(),
             main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
         )
 

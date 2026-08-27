@@ -3,9 +3,15 @@
 The shipped defaults an operator tunes are not only ``ConfigSetting`` keys: the loops,
 modes and schedules are too. They ride the SAME override rule as a setting — only a field
 tuned away from its ``defaults.toml`` seed is exported — but they live in their own models,
-carry no operator secrets, and take the same path in a shared and a private export. That
-is a different concern from the ``ConfigSetting`` store's secret-guarded rows, so it lives
-in its own module; :mod:`teatree.core.config_interchange.migration` composes the two.
+so they are a different concern from the ``ConfigSetting`` store's rows and live in their
+own module; :mod:`teatree.core.config_interchange.migration` composes the two.
+
+They are NOT exempt from the secret guard. A preset's ``entries`` is a table of setting
+values, so a seed row can carry a credential coordinate exactly as a ``ConfigSetting`` row
+can, and :func:`emit_seed_tables` therefore asks the caller's guard about each field. A
+withheld field is DROPPED whole rather than emitted partially: the import classifies only
+the fields a document carries, so an absent one leaves the target's own value alone, while a
+partially-emitted table would silently delete the entries the guard removed.
 
 The dependency runs one way: this module knows nothing of the export's row dataclasses. It
 answers in :class:`SeedFieldDisposition`, and the caller maps each one onto its own
@@ -20,6 +26,7 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
+from teatree.core.config_interchange.secret_guard import withheld_within
 from teatree.core.models import Loop, Mode, ModeSchedule
 from teatree.core.models.config_setting import ConfigValue
 
@@ -28,6 +35,20 @@ _SEED_MODELS = {"loops": Loop, "modes": Mode, "schedules": ModeSchedule}
 
 #: Renders one ``{key: value}`` mapping as a key-sorted TOML table.
 type SortedTableFactory = Callable[[dict[str, ConfigValue]], tomlkit_items.Table]
+
+
+@dataclass(frozen=True, slots=True)
+class WithheldSeedField:
+    """One seed field the secret guard kept out of a shared export."""
+
+    table: str
+    name: str
+    field: str
+    reason: str
+
+    @property
+    def scope(self) -> str:
+        return f"{self.table}.{self.name}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +68,17 @@ class SeedFieldDisposition:
         return f"{self.table}.{self.name}"
 
 
+def seed_models() -> dict[str, type[Loop] | type[Mode] | type[ModeSchedule]]:
+    """The seed-table -> model registry, for a reader that needs the models themselves.
+
+    The snapshot surface reads each seed row's NON-interchange fields off the model, which
+    ``live_seed_rows`` (deliberately restricted to ``SEED_ROW_FIELDS``) cannot answer. A
+    public accessor rather than a reach into the private mapping, so this module keeps
+    owning which model each table lives in.
+    """
+    return dict(_SEED_MODELS)
+
+
 def live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
     """Every row of *table*'s model as ``{name: {seed field: value}}``."""
     fields = SEED_ROW_FIELDS[table]
@@ -56,20 +88,53 @@ def live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
     }
 
 
-def emit_seed_tables(document: tomlkit.TOMLDocument, sorted_table: SortedTableFactory) -> None:
+def emit_seed_tables(
+    document: tomlkit.TOMLDocument,
+    sorted_table: SortedTableFactory,
+    *,
+    terms: tuple[str, ...] = (),
+    withhold_secrets: bool = True,
+) -> list[WithheldSeedField]:
     """Attach a ``[<family>.<name>]`` sub-table per seed row that diverges from its default.
 
     *sorted_table* is the caller's key-sorted table renderer, so the seed tables and the
-    settings tables come out of one formatting path.
+    settings tables come out of one formatting path. Each field then goes through the shared
+    guard (*terms* being the export's banned-term scan terms) and a withheld one is dropped,
+    reported back so the caller names it exactly as it names a withheld ``ConfigSetting`` row.
+    *withhold_secrets* off is the ``--include-private`` personal backup, which carries
+    everything.
     """
+    withheld = []
     for table in SEED_TABLES:
-        diverged = seed_divergences(table, live_seed_rows(table))
-        if not diverged:
+        shareable = {}
+        for name, body in seed_divergences(table, live_seed_rows(table)).items():
+            kept, dropped = _shareable_fields(table, name, body, terms, guarded=withhold_secrets)
+            withheld.extend(dropped)
+            if kept:
+                shareable[name] = kept
+        if not shareable:
             continue
         family = tomlkit.table(is_super_table=True)
-        for name in sorted(diverged):
-            family[name] = sorted_table(diverged[name])
+        for name in sorted(shareable):
+            family[name] = sorted_table(shareable[name])
         document[table] = family
+    return withheld
+
+
+def _shareable_fields(
+    table: str, name: str, body: dict[str, ConfigValue], terms: tuple[str, ...], *, guarded: bool
+) -> tuple[dict[str, ConfigValue], list[WithheldSeedField]]:
+    if not guarded:
+        return dict(body), []
+    kept: dict[str, ConfigValue] = {}
+    dropped = []
+    for field, value in body.items():
+        held = withheld_within(field, value, terms)
+        if held:
+            dropped.append(WithheldSeedField(table, name, field, held[0].reason))
+        else:
+            kept[field] = value
+    return kept, dropped
 
 
 def classify_seed_rows(doc: dict[str, Any]) -> list[SeedFieldDisposition]:

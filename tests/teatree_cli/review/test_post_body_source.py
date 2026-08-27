@@ -1,6 +1,6 @@
 """``review post-comment`` body source resolution (souliane/teatree#32).
 
-``t3 <overlay> review post-comment REPO MR NOTE`` historically took the body
+``t3 review post-comment REPO MR NOTE`` historically took the body
 as the positional ``NOTE`` only. Large MR-thread evidence is awkward to pass
 as a single shell-quoted argument, and the #1415 banned-terms PreToolUse gate
 only scans the well-known body flags (``-m``/``--body``/``--body-file``) on a

@@ -1,8 +1,8 @@
 """What a registry row means on the way back in — a compound row that survives redaction.
 
-``overlays`` and ``e2e_repos`` are single ``ConfigSetting`` rows whose value is a table of
-independent facts, and the export renders each entry as its own ``[overlays.<name>]`` /
-``[e2e_repos.<name>]`` TOML table. That makes them the one place a file can be INCOMPLETE
+Each ``REGISTRY_SETTINGS`` key is a single ``ConfigSetting`` row whose value is a table of
+independent facts, and the export renders each entry as its own ``[<key>.<name>]`` TOML
+table. That makes them the one place a file can be INCOMPLETE
 about a row it describes: the secret guard withholds an overlay's credential coordinates
 from a shared export, so the emitted table names the overlay without naming where its
 tokens live.

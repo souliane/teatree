@@ -329,6 +329,44 @@ class ReconcileMergedGapsTestCase(TestCase):
         assert second == []
         host2.get_issue.assert_not_called()  # no forge re-read for the already-reconciled gap
 
+    def test_an_unreadable_umbrella_leaves_the_gap_unstamped_for_the_next_pass(self) -> None:
+        # The reconciled stamp is permanent — it removes the ticket from every future
+        # scan — so stamping on a forge read that never returned the body would leave the
+        # umbrella showing an open box for a merged fix with nothing left to re-check it.
+        ticket = self._scheduled_gap()
+        ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
+        )
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        host = _fake_host()
+        host.get_issue.side_effect = RuntimeError("forge 503")
+
+        assert ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA) == []
+
+        ticket.refresh_from_db()
+        assert not (ticket.extra or {}).get("dream_gap_reconciled_at")
+        assert ConsolidatedMemory.objects.get(cluster_key="gap-1").disposition != (
+            ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        )
+
+    def test_a_refused_umbrella_write_leaves_the_gap_unstamped(self) -> None:
+        ticket = self._scheduled_gap()
+        ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
+        )
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
+        host = _fake_host(body=existing)
+        host.get_issue.return_value = {"body": existing, "state": "merged"}
+
+        with patch.object(ul, "_scrubbed_update", return_value=False):
+            assert ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA) == []
+
+        ticket.refresh_from_db()
+        assert not (ticket.extra or {}).get("dream_gap_reconciled_at")
+
     def test_unmerged_gap_is_left_alone(self) -> None:
         self._scheduled_gap()
         host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")

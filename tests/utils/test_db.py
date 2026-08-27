@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
@@ -7,7 +8,14 @@ from teatree.utils import db
 from teatree.utils import run as utils_run_mod
 
 
-def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def dump(tmp_path: Path) -> str:
+    path = tmp_path / "dump.pgsql"
+    path.write_bytes(b"PGDMP-fake-dump")
+    return str(path)
+
+
+def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     commands: list[list[str]] = []
     monkeypatch.setenv("POSTGRES_HOST", "db.internal")
     monkeypatch.setenv("POSTGRES_USER", "postgres")
@@ -31,11 +39,11 @@ def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
-    db.db_restore("wt_123", "/tmp/dump.dump")
+    db.db_restore("wt_123", dump)
 
-    assert commands[0][:2] == ["dropdb", "-h"]
-    assert commands[1][:2] == ["createdb", "-h"]
-    assert commands[2] == ["pg_restore", "-l", "/tmp/dump.dump"]
+    assert commands[0][:2] == ["pg_restore", "-l"]
+    assert commands[1][:2] == ["dropdb", "-h"]
+    assert commands[2][:2] == ["createdb", "-h"]
     assert commands[3][0] == "pg_restore"
 
 
@@ -107,7 +115,7 @@ def test_drop_db_defaults_to_process_env_host_when_unset(monkeypatch: pytest.Mon
     assert commands[0][4] == "postgres"
 
 
-def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
     monkeypatch.delenv("POSTGRES_PORT", raising=False)
     monkeypatch.setenv("POSTGRES_HOST", "db.internal")
@@ -136,7 +144,7 @@ def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.Monke
     assert db.pg_env().get("PGPASSWORD") is None
     assert db.pg_host() == "db.internal"
     assert db.pg_user() == "worker"
-    db.db_restore("wt_42", "/tmp/dump.sql")
+    db.db_restore("wt_42", dump)
     assert db.db_exists("wt_42") is True
     assert commands[3][0] == "psql"
 
@@ -170,7 +178,7 @@ def test_db_exists_raises_when_psql_cannot_connect(monkeypatch: pytest.MonkeyPat
         db.db_exists("wt_live")
 
 
-def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     def fake_run(
         args: list[str],
         *,
@@ -191,10 +199,10 @@ def test_db_restore_raises_when_restore_commands_fail(monkeypatch: pytest.Monkey
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="pg_restore failed"):
-        db.db_restore("wt_55", "/tmp/dump.dump")
+        db.db_restore("wt_55", dump)
 
 
-def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     def fake_run(
         args: list[str],
         *,
@@ -213,10 +221,10 @@ def test_db_restore_raises_when_psql_restore_fails(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="psql restore failed"):
-        db.db_restore("wt_56", "/tmp/dump.sql")
+        db.db_restore("wt_56", dump)
 
 
-def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     def fake_run(
         args: list[str],
         *,
@@ -235,10 +243,10 @@ def test_db_restore_detects_truncated_pg_restore(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
-        db.db_restore("wt_70", "/tmp/dump.pgdump")
+        db.db_restore("wt_70", dump)
 
 
-def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch, dump: str) -> None:
     def fake_run(
         args: list[str],
         *,
@@ -257,7 +265,7 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="Corrupt or truncated dump"):
-        db.db_restore("wt_71", "/tmp/dump.sql")
+        db.db_restore("wt_71", dump)
 
 
 def test_pg_env_includes_port_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,3 +303,58 @@ def test_pg_env_resolves_password_via_pass_key(monkeypatch: pytest.MonkeyPatch) 
     assert env["PGPASSWORD"] == "from-pass"
     # The literal value must not be planted into the original process env.
     assert os.environ.get("POSTGRES_PASSWORD", "") == ""
+
+
+def test_db_restore_refuses_to_drop_when_the_dump_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Dropping first turns an absent dump into an unrecoverable loss of the database.
+    commands: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        db.db_restore("wt_live", "/nonexistent/dump.pgsql")
+    assert commands == []
+
+
+def test_db_restore_refuses_to_drop_when_the_dump_is_empty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    empty = tmp_path / "truncated.pgsql"
+    empty.write_bytes(b"")
+    commands: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        db.db_restore("wt_live", str(empty))
+    assert commands == []
+
+
+class TestPgHostResolvesTheServerVenue:
+    """``localhost`` is the container's own loopback, not the host that publishes 5432."""
+
+    def test_explicit_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_HOST", "db.internal")
+        assert db.pg_host() == "db.internal"
+
+    def test_native_run_stays_localhost(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+        monkeypatch.setattr("teatree.utils.ports.running_in_container", lambda: False)
+        assert db.pg_host() == "localhost"
+
+    def test_containerized_run_names_the_docker_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+        monkeypatch.setattr("teatree.utils.ports.running_in_container", lambda: True)
+        monkeypatch.setattr("teatree.utils.ports.socket.gethostbyname", lambda _n: "192.168.65.254")
+        assert db.pg_host() == "host.docker.internal"
+
+    def test_empty_override_is_not_a_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_HOST", "")
+        monkeypatch.setattr("teatree.utils.ports.running_in_container", lambda: False)
+        assert db.pg_host() == "localhost"

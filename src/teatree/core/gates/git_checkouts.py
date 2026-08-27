@@ -25,13 +25,28 @@ from pathlib import Path
 from teatree.paths import auto_isolated_worktrees_dir
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
+#: Directory names that mark an installed (non-editable) copy. The walk stops at
+#: one so a packaged install inside a project's venv never claims that project's
+#: clone as the one teatree is installed from.
+_PACKAGED_MARKERS: frozenset[str] = frozenset({"site-packages", "dist-packages"})
+
 
 def _installed_clone() -> Path | None:
-    """The clone this ``teatree`` package is installed from, or ``None`` when packaged."""
+    """The clone this ``teatree`` package is installed from, or ``None`` when packaged.
+
+    The git root is found by walking up rather than at a fixed depth: a repo that
+    VENDORS the package under a subdirectory holds it deeper than ``src/teatree``,
+    and a fixed-depth probe reports no installed clone there at all — leaving the
+    checkout every commit is made from outside hook installation and repair.
+    """
     import teatree  # noqa: PLC0415 — deferred: the package cannot import itself at module scope
 
-    repo = Path(teatree.__file__).resolve().parents[2]
-    return repo if (repo / ".git").exists() else None
+    for parent in Path(teatree.__file__).resolve().parents:
+        if parent.name in _PACKAGED_MARKERS:
+            return None
+        if (parent / ".git").exists():
+            return parent
+    return None
 
 
 def _isolated_worktrees() -> Iterator[Path]:

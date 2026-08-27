@@ -17,6 +17,20 @@ class HealthCheck:
     description: str = ""
 
 
+def _symlink_is_checkable(dest: Path, source: Path) -> bool:
+    """Is there anything to check for a declared symlink spec?
+
+    A dest on disk is always checkable — ``apply_symlinks`` links whatever the
+    source's state, so a dangling link is the breakage to REPORT, never to skip.
+    A live source with no dest is checkable too: the link should exist and does
+    not. Neither present is the one case that is not the worktree's fault — an
+    overlay provisioning its own symlinks may skip a spec whose source is absent
+    (an optional file its clone does not ship), and demanding a dest provision
+    deliberately never created would fail a correctly provisioned worktree.
+    """
+    return dest.is_symlink() or dest.exists() or source.exists()
+
+
 def _symlink_source_healthy(dest: Path, source: Path) -> bool:
     if dest.is_symlink():
         if not source.exists():
@@ -48,7 +62,7 @@ def default_health_checks(provisioning: "OverlayProvisioning", worktree: "Worktr
         for spec in provisioning.symlinks(worktree):
             dest = Path(wt_path) / spec.get("path", "")
             source = Path(spec.get("source", ""))
-            if spec.get("mode", "symlink") == "symlink" and source.exists():
+            if spec.get("mode", "symlink") == "symlink" and _symlink_is_checkable(dest, source):
                 checks.append(
                     HealthCheck(
                         name=f"symlink-{spec.get('path', '?')}",

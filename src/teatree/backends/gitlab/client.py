@@ -106,10 +106,38 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             payload["labels"] = ",".join(spec.labels)
         if spec.assignee:
             payload["assignee_username"] = spec.assignee
+        # GitLab takes ``reviewer_ids`` on the create POST, so the reviewer is atomic
+        # with the MR — no second call, and no window where it exists unreviewed.
+        if reviewer_ids := self._resolve_reviewer_ids(spec.reviewers):
+            payload["reviewer_ids"] = reviewer_ids
         if spec.draft and not spec.title.startswith("Draft:"):
             payload["title"] = f"Draft: {spec.title}"
 
         return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
+
+    def _resolve_reviewer_ids(self, usernames: list[str]) -> list[int]:
+        """Numeric ids for *usernames*, dropping — LOUDLY — any that do not resolve.
+
+        A configured reviewer who no longer exists must not fail the create — the
+        MR matters more than the assignment, mirroring ``resolve_pr_assignee``. But
+        ``resolve_user_id_by_username`` returns ``0`` precisely "so callers can
+        detect and report the failure": swallowing it makes one typo in
+        ``pr_auto_reviewers`` open every MR unreviewed with no signal at all, which
+        is indistinguishable from the policy working. The drop is degraded
+        behaviour, so it is reported at ``warning`` every time it happens.
+        """
+        resolved = {name: self._client.resolve_user_id_by_username(name) for name in usernames}
+        reviewer_ids = [user_id for user_id in resolved.values() if user_id]
+        if unresolved := [name for name, user_id in resolved.items() if not user_id]:
+            logger.warning(
+                "pr_auto_reviewers: %s did not resolve to a GitLab user — opening the MR with "
+                "%d of %d configured reviewer(s). Fix the username in the overlay's "
+                "pr_auto_reviewers, then run `t3 <overlay> review apply-reviewer-policy`.",
+                ", ".join(repr(name) for name in unresolved),
+                len(reviewer_ids),
+                len(resolved),
+            )
+        return reviewer_ids
 
     def current_user(self) -> str:
         """Return the authenticated GitLab username."""

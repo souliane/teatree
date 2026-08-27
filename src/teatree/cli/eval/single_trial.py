@@ -19,6 +19,7 @@ from teatree.cli.eval.all import hint_missing_transcripts
 from teatree.cli.eval.app_helpers import write_single_trial_reports
 from teatree.cli.eval.escalate import (
     EscalationConfig,
+    EscalationOutcome,
     EscalationReport,
     TrialRunner,
     describe_classification,
@@ -28,6 +29,7 @@ from teatree.cli.eval.escalate import (
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
 from teatree.eval.backends import (
     API_BACKEND,
+    FRESH_RUN_BACKENDS,
     TRANSCRIPT_BACKEND,
     ApiRunnerParams,
     EvalRunner,
@@ -55,15 +57,30 @@ class SingleTrialGates:
     gate_cost_bounds: bool = False
 
 
-def make_escalation_runner(*, max_budget_usd: float, effort: EffortLevel | None) -> EvalRunner:
-    """Build the metered api runner the escalation re-runs through.
+def make_escalation_runner(
+    *, backend: str, max_budget_usd: float, effort: EffortLevel | None, require_executed: bool
+) -> EvalRunner:
+    """Build the runner the escalation re-runs a failed scenario through.
 
-    Escalation always RUNS the model fresh (a re-run of a failed scenario), so it
-    is the metered api backend regardless of the initial single-trial backend —
-    the transcript backend cannot produce a new trial. Held apart so the
-    single-trial test harness can stub the escalation runner without a live model.
+    Escalation always RUNS the model fresh, so it MIRRORS the lane's own *backend*
+    whenever that backend can produce a new trial (:data:`FRESH_RUN_BACKENDS`) and
+    rewrites onto ``api`` only for ``transcript`` — the one lane that merely replays
+    an already-recorded run. Forcing ``api`` unconditionally predates the CLI-free
+    ``anthropic_api`` backend and silently moved ITS escalation onto the ``claude``
+    CLI child that lane exists to avoid; where no CLI is provisioned every escalation
+    trial then skips, which is the ``0/k escalation trials`` symptom.
+
+    ``require_executed`` is forwarded so an escalation that CANNOT run fails loud
+    rather than skipping: a skipped re-run disambiguates nothing, and a silent one
+    hides the trial-1 failure the escalation was spent to confirm.
+
+    Held apart so the single-trial test harness can stub the escalation runner
+    without a live model.
     """
-    return make_runner(API_BACKEND, ApiRunnerParams(max_budget_usd=max_budget_usd, effort=effort))
+    return make_runner(
+        backend if backend in FRESH_RUN_BACKENDS else API_BACKEND,
+        ApiRunnerParams(max_budget_usd=max_budget_usd, effort=effort, require_executed=require_executed),
+    )
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -132,7 +149,9 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     RunGuards.api_metered(backend=backend, executed=executed, results=results)
     RunGuards.judge_metered(judge_requested=judge, results=results)
     if escalation is not None:
-        escalation_runner = make_escalation_runner(max_budget_usd=max_budget_usd, effort=effort)
+        escalation_runner = make_escalation_runner(
+            backend=backend, max_budget_usd=max_budget_usd, effort=effort, require_executed=require_executed
+        )
 
         def _escalation_trial(spec: EvalSpec) -> ScenarioResult:
             return evaluate(spec, escalation_runner.run(spec), judge=grader)
@@ -164,7 +183,8 @@ def _escalate_and_gate(
 
     Each scenario that failed trial 1 is re-run ``escalate_trials`` times through
     *trial* (a fresh metered runner closure); a scenario that recovers on any trial
-    is flaky (green), one that fails every escalation trial is confirmed (red). The
+    is flaky (green), one that fails every escalation trial is confirmed (red), and
+    one whose trials all skipped is unresolved (also red — nothing re-proved it). The
     escalation section is appended to the sanitized ``--summary-md`` dashboard so
     the PR's ``$GITHUB_STEP_SUMMARY`` shows the flaky/confirmed split.
     """
@@ -184,8 +204,19 @@ def _render_escalation_text(report: EscalationReport) -> str:
         return "ESCALATION: no scenario failed the single trial — nothing to escalate."
     lines = ["ESCALATION:"]
     lines.extend(
-        f"  {describe_classification(outcome).upper()} {outcome.spec_name} "
-        f"({outcome.passes}/{outcome.trials} escalation trials)"
+        f"  {describe_classification(outcome).upper()} {outcome.spec_name} ({_describe_trials(outcome)})"
         for outcome in report.outcomes
     )
     return "\n".join(lines)
+
+
+def _describe_trials(outcome: EscalationOutcome) -> str:
+    """The trial tally, spelled out for ``unresolved`` where a bare 0/k reads as a loss.
+
+    An escalation that never ran also tallies 0 passes, and printing it the same way
+    as a fought-and-lost 0/k hides the one fact a reader needs: the failure was never
+    re-tested.
+    """
+    if outcome.classification == "unresolved":
+        return f"all {outcome.trials} escalation trials skipped — the trial-1 failure stands"
+    return f"{outcome.passes}/{outcome.trials} escalation trials"

@@ -14,6 +14,8 @@ from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_classify = patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject")
 _patch_tree_match = patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash")
+# Patch the tri-state probe the classifier actually calls: a double on the collapsed
+# `find_open_pr` wrapper leaves the real one shelling out to `gh`/`glab` under test.
 _patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch")
 _patch_git = patch("teatree.core.gates.orphan_guard.git")
 
@@ -103,6 +105,27 @@ class TestClassifyBranch(TestCase):
         assert report.status is BranchStatus.UNPUSHED_ORPHAN
         assert report.is_orphan
 
+    @_patch_git
+    @_patch_open_pr
+    @_patch_tree_match
+    @_patch_classify
+    def test_a_readable_probe_finding_nothing_is_a_pushed_orphan(
+        self,
+        mock_classify: MagicMock,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+        mock_git: MagicMock,
+    ) -> None:
+        mock_classify.return_value = _classification([_commit()])
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.none()
+        mock_git.run.return_value = "abc123\trefs/heads/feature"
+
+        report = classify_branch("/repo", "feature")
+
+        assert report.status is BranchStatus.PUSHED_ORPHAN
+        assert report.is_orphan
+
 
 class TestClassifyBranchWhenTheProbeCannotAnswer(TestCase):
     """#4116: a can't-tell probe is its own state, never a confident "no PR".
@@ -133,6 +156,7 @@ class TestClassifyBranchWhenTheProbeCannotAnswer(TestCase):
 
         assert report.status is BranchStatus.PR_UNKNOWN
         assert not report.is_orphan
+        assert report.open_pr_url == ""
 
 
 class TestClassifyBranchWhoseWorkAlreadyLanded:
@@ -201,6 +225,23 @@ class TestClassifyBranchWhoseWorkAlreadyLanded:
         report = classify_branch(str(self.clone), "fix/parse")
 
         assert report.is_orphan
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_an_unreadable_probe_does_not_defeat_the_content_check(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+    ) -> None:
+        """An unreachable forge must not turn landed work back into an orphan."""
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.unknown()
+        self._land_the_fix_under_a_different_path()
+
+        report = classify_branch(str(self.clone), "fix/parse")
+
+        assert report.status is BranchStatus.SYNCED
+        assert not report.is_orphan
 
 
 _SQUASHED_BRANCH = "feat/parse"

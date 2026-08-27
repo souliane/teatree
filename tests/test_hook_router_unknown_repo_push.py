@@ -206,6 +206,49 @@ class TestDegradedPathIsAudible:
         assert "SKIPPED is not PASSED" not in capsys.readouterr().err
 
 
+class TestTheDryRunExemptionBelongsToItsOwnPush:
+    """The exemption is read off ONE push's own arguments, not the whole command.
+
+    A whole-command search hands one push's ``--dry-run`` to every push chained
+    beside it, so ``git push --dry-run x && git push y`` walks the live half
+    straight past the scope gate — in EITHER order, and under any separator. The
+    same search also exempted a real push on the strength of the words merely
+    appearing in a quoted commit message or another option's value.
+    """
+
+    @pytest.mark.parametrize(
+        ("case_id", "command"),
+        [
+            ("quoted-in-commit-message", "git commit -m 'run git push --dry-run first' && git push origin HEAD"),
+            ("inside-an-option-value", "git push origin HEAD -o merge_request.title='ship the --dry-run mode'"),
+            ("dry-run-leads", "git push --dry-run origin HEAD && git push origin HEAD"),
+            ("dry-run-trails", "git push origin HEAD && git push --dry-run origin HEAD"),
+            ("semicolon-separated", "git push -n origin HEAD ; git push origin HEAD"),
+        ],
+    )
+    def test_a_real_push_beside_a_dry_run_mention_is_still_gated(
+        self, case_id: str, command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _repo_with_remote(tmp_path / case_id, "git@github.com:randomuser/randomrepo.git")
+        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is True
+        assert _parse_deny(capsys) is not None
+
+    def test_a_dash_c_dry_run_does_not_exempt_the_dash_c_push_chained_after_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The prefix that lets `git -C <dir> push` be seen at all consumes the leading
+        # separator, so the per-push segment must start at the verb, not at the match.
+        repo = _repo_with_remote(tmp_path / "dash-c-chain", "git@github.com:randomuser/randomrepo.git")
+        command = f"git -C {repo} push --dry-run origin HEAD && git -C {repo} push origin HEAD"
+        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is True
+        assert _parse_deny(capsys) is not None
+
+    @pytest.mark.parametrize("command", ["git push -n origin HEAD", "git push --dry-run"])
+    def test_a_genuine_dry_run_is_still_exempt(self, command: str, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / command[-6:].replace(" ", "_"), "git@github.com:randomuser/randomrepo.git")
+        assert router.handle_block_unknown_repo_push(_push_event(command, repo)) is False
+
+
 class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         repo = _repo_with_remote(tmp_path / "tok", "git@github.com:randomuser/randomrepo.git")

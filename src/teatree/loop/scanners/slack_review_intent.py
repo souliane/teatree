@@ -43,6 +43,8 @@ from teatree.url_classify import first_pr_url
 
 logger = logging.getLogger(__name__)
 
+_MAX_REACTION_ATTEMPTS = 3
+
 
 def _first_mr_url(text: str) -> str:
     return first_pr_url(text)
@@ -51,6 +53,36 @@ def _first_mr_url(text: str) -> str:
 def _event_user(event: RawAPIDict) -> str:
     user = event.get("user")
     return user if isinstance(user, str) else ""
+
+
+@dataclass(frozen=True, slots=True)
+class _DrainedReactions:
+    """One drain's reaction events, each paired with the queue record it came from.
+
+    ``None`` in place of a record marks an event that came from the backend's
+    in-memory queue, so there is nothing on disk to hand back for it.
+    """
+
+    events: list[tuple[RawAPIDict, dict | None]]
+    retain: list[dict]
+    from_file: bool
+
+
+def _retry_or_drop(record: dict | None, *, retain: list[dict], ts: object) -> None:
+    """Queue a failed record for one more drain, up to :data:`_MAX_REACTION_ATTEMPTS`.
+
+    Unbounded retention would re-run a poison record every tick forever; a
+    committed-away record loses a merely transient failure. The budget is what
+    separates the two.
+    """
+    if record is None:
+        return
+    attempts = record.get("attempts", 0)
+    attempts = attempts + 1 if isinstance(attempts, int) else 1
+    if attempts >= _MAX_REACTION_ATTEMPTS:
+        logger.warning("Dropping reaction event %s after %d failed attempts", ts, attempts)
+        return
+    retain.append({**record, "attempts": attempts})
 
 
 def _reaction_item(event: RawAPIDict) -> tuple[str, str]:
@@ -97,13 +129,15 @@ class SlackReviewIntentScanner:
         target_user = getattr(self.backend, "user_id", "")
         signals: list[ScanSignal] = []
 
-        reactions, drained_file = self._drain_reactions()
-        for event in reactions:
+        drained = self._drain_reactions()
+        retain = drained.retain
+        for event, record in drained.events:
             ts = event.get("ts") or event.get("event_ts", "<unknown>")
             try:
                 signal = self._handle_reaction(event, target_user)
             except Exception:
                 logger.exception("SlackReviewIntentScanner failed on reaction event %s", ts)
+                _retry_or_drop(record, retain=retain, ts=ts)
                 continue
             if signal is not None:
                 signals.append(signal)
@@ -111,14 +145,14 @@ class SlackReviewIntentScanner:
         # SAME drained snapshot (never a second JSONL drain). Runs before the
         # commit below so its idempotency rows persist alongside the review rows;
         # a crash before commit leaves the file for the next drain to recover.
-        self._self_ack_reactor().ack_owner_reactions(reactions)
-        if drained_file:
+        self._self_ack_reactor().ack_owner_reactions([event for event, _record in drained.events])
+        if drained.from_file:
             # Discard the backing file only after the reactions above are
             # handled (rows persisted) — a crash before this point leaves it
             # for the next drain to recover (#1047).
             from teatree.backends.slack.receiver import commit_reactions_drain  # noqa: PLC0415 — tick-time import
 
-            commit_reactions_drain()
+            commit_reactions_drain(retain=retain)
 
         for event in self._drain_mentions():
             ts = event.get("ts") or event.get("event_ts", "<unknown>")
@@ -134,29 +168,34 @@ class SlackReviewIntentScanner:
         # when the review loop is stopped the loop must queue none of them.
         return filter_review_intent_signals(signals)
 
-    def _drain_reactions(self) -> tuple[list[RawAPIDict], bool]:
-        """Drain reaction events; flag whether the file-backed queue had any.
+    def _drain_reactions(self) -> "_DrainedReactions":
+        """Drain this overlay's reaction events plus the records to hand back.
 
         Production path: pop from ``slack-reactions.jsonl`` via
         :func:`drain_reactions_queue`. Test path: pop from the backend's
         in-memory ``fetch_reactions`` (used by ``FakeMessaging`` so unit
-        tests stay file-system free). The returned flag is true when the
-        JSONL queue yielded events, so :meth:`scan` knows to commit the
-        backing file only after the rows are persisted.
+        tests stay file-system free), which has no queue record to hand back.
         """
-        from teatree.backends.slack.receiver import drain_reactions_queue  # noqa: PLC0415 — tick-time import
+        from teatree.backends.slack.receiver import (  # noqa: PLC0415 — tick-time import
+            drain_reactions_queue,
+            record_is_owned_by,
+        )
 
-        events: list[RawAPIDict] = []
-        drained_file = False
+        events: list[tuple[RawAPIDict, dict | None]] = []
+        retain: list[dict] = []
+        from_file = False
         for queued in drain_reactions_queue():
-            drained_file = True
+            from_file = True
+            if not record_is_owned_by(queued, self.overlay):
+                retain.append(queued)
+                continue
             event = queued.get("event", {})
             if isinstance(event, dict):
-                events.append(event)
+                events.append((event, queued))
         fetch_reactions = getattr(self.backend, "fetch_reactions", None)
         if callable(fetch_reactions):
-            events.extend(fetch_reactions())
-        return events, drained_file
+            events.extend((event, None) for event in fetch_reactions())
+        return _DrainedReactions(events=events, retain=retain, from_file=from_file)
 
     def _drain_mentions(self) -> list[RawAPIDict]:
         """Drain mention events without consuming the JSONL queue.

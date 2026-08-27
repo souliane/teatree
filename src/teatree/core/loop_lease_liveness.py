@@ -179,6 +179,19 @@ def anchorable_owner_pid(owner_pid: int | None) -> int | None:
     return owner_pid
 
 
+def owner_pid_is_dead(owner_pid: int | None) -> bool:
+    """Whether the pid probe POSITIVELY answers that ``owner_pid`` is gone.
+
+    The one not-live reason that is PROOF, split out of :func:`reclaim_reason`'s
+    prose so an eviction CAS can pick its predicate on it. A null pid and an
+    unavailable probe are indeterminate, never proof.
+    """
+    if owner_pid is None:
+        return False
+    probe = pid_alive_probe()
+    return probe is not None and not probe(owner_pid)
+
+
 def lease_is_live(claim: LeaseClaim, now: datetime, *, trust_pid_past_ttl: bool) -> bool:
     """Whether a non-empty session's lease is live (#1073/#1604/#3571).
 

@@ -27,7 +27,7 @@ from teatree.cli.doctor.checks_bootstrap import (
 )
 from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable, _check_config_override_tier_healthy
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
-from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
+from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
     _check_control_db_agreement,
@@ -40,6 +40,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_path_t3,
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
+    _check_venv_interpreter_is_this_host,
 )
 from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
@@ -66,6 +67,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
+from teatree.cli.doctor.checks_notion import _check_notion_credentials
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
@@ -148,11 +150,11 @@ __all__ = (
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_control_db_agreement",
+    "_check_control_db_reachable",
     "_check_dangling_editable_pth",
     "_check_database_health",
     "_check_declared_dependencies_provisioned",
     "_check_dispatched_overlay_skills",
-    "_check_docker_workflow_wired",
     "_check_drain_lane_starved",
     "_check_dream_consolidation_blocked",
     "_check_dream_staleness",
@@ -172,6 +174,7 @@ __all__ = (
     "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_mode_override_staleness",
+    "_check_notion_credentials",
     "_check_provision_concurrency_from_host",
     "_check_pyright_lsp_plugin",
     "_check_recommended_skills",
@@ -188,6 +191,7 @@ __all__ = (
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
     "_check_starved_intake_candidates",
+    "_check_t3_launcher_managed",
     "_check_t3_master_unheld_while_loops_tick",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_liveness",
@@ -196,6 +200,7 @@ __all__ = (
     "_check_tmp_tmpfs_sizing",
     "_check_ttyd_for_dashboard",
     "_check_unconsumed_merge_clears",
+    "_check_venv_interpreter_is_this_host",
     "_check_worker_memory_cap",
     "_check_worker_running",
     "_check_worker_singleton_holder",

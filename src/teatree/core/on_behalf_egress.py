@@ -20,6 +20,9 @@ public method runs the identical fixed sequence in one place:
     routed wire call (``post_routed`` / ``react_routed``), then
     :func:`notify_user_on_behalf_post` — but only on a *real* successful
     publish (``ok`` truthy), never on ``already_reacted`` or ``ok:false``.
+    A wire call whose artifact did NOT land (``ok:false`` other than
+    ``already_reacted``, or an empty body) rolls the gate's approval consume
+    and audit back, so the single-use approval survives for a retry.
 
 It reuses the three existing seams verbatim — the pre-gate
 (:mod:`teatree.core.on_behalf_gate_recorded`), the after-receipt audit
@@ -44,6 +47,7 @@ here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
 """
 
 import logging
+from collections.abc import Callable
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
@@ -52,6 +56,31 @@ from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, 
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+class _PublishDidNotLandError(Exception):
+    """Carries the raw body of a wire call that did not put the artifact on the surface.
+
+    Raised INSIDE the gate's ``publish`` callback so its ``transaction.atomic``
+    rolls the approval consume and the audit back (#1879) — a Slack ``ok:false``
+    must not spend a single-use approval or record a post that never landed.
+    """
+
+    def __init__(self, response: RawAPIDict) -> None:
+        super().__init__(str(response.get("error") or "no response"))
+        self.response = response
+
+
+def _publish_or_rollback(publish: Callable[[], RawAPIDict]) -> RawAPIDict:
+    """Run *publish* and raise :class:`_PublishDidNotLandError` unless the artifact landed.
+
+    ``already_reacted`` IS landed — the reaction is present, the call was just the
+    idempotent no-op. An empty body (no token resolved) is not.
+    """
+    response = publish()
+    if response.get("ok") or response.get("error") == "already_reacted":
+        return response
+    raise _PublishDidNotLandError(response)
 
 
 class OnBehalfSlackEgress:
@@ -108,11 +137,16 @@ class OnBehalfSlackEgress:
         if self._is_self_dm(channel):
             return self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
         _route_colleague_send(channel=channel, payload=f":{emoji}:", action=action, target=target)
-        response = require_on_behalf_approval(
-            target=target,
-            action=action,
-            publish=lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji),
-        )
+        try:
+            response = require_on_behalf_approval(
+                target=target,
+                action=action,
+                publish=lambda: _publish_or_rollback(
+                    lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
+                ),
+            )
+        except _PublishDidNotLandError as unlanded:
+            return unlanded.response
         if response.get("ok"):
             notify_user_on_behalf_post(
                 target=target,
@@ -149,7 +183,10 @@ class OnBehalfSlackEgress:
         thread roots on (#2053): only this answer path deliberately threads
         under the question, so the retire fires iff the DM is genuinely an
         answer — an unrelated INFO DM that ``notify_user`` happens to thread
-        under an open question never reaches here. Colleague/channel: gate
+        under an open question never reaches here, and a DM Slack refused
+        (``ok:false``, or no ``ts``) leaves the question pending for the next
+        answerer pass rather than retiring an answer nobody received.
+        Colleague/channel: gate
         first (raises :class:`OnBehalfPostBlockedError` on BLOCK with no
         recorded approval, before any wire call), post, then DM the
         after-receipt notice only on a successful publish (``ok`` truthy) —
@@ -160,14 +197,20 @@ class OnBehalfSlackEgress:
             from teatree.core.speak import deliver_user_dm  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
             response = deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
-            _retire_threaded_answer(thread_ts)
+            if response.get("ok") and response.get("ts"):
+                _retire_threaded_answer(thread_ts)
             return response
         text = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
-        response = require_on_behalf_approval(
-            target=target,
-            action=action,
-            publish=lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts),
-        )
+        try:
+            response = require_on_behalf_approval(
+                target=target,
+                action=action,
+                publish=lambda: _publish_or_rollback(
+                    lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
+                ),
+            )
+        except _PublishDidNotLandError as unlanded:
+            return unlanded.response
         if response.get("ok"):
             notify_user_on_behalf_post(
                 target=target,

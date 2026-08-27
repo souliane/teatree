@@ -49,6 +49,8 @@ t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --li
 
 The `--live` post lands immediately instead of batching with a review. Reserve this for the cases where the default draft path explicitly errors with the collapsed-diff message AND the user has authorised the live post in Slack.
 
+**The cost asymmetry is why `--live` is per-file, never per-review:** N findings cost N draft invocations and ONE human authorization for the batch publish, whereas `--live` costs TWO invocations per finding (`t3 review authorize` then `post-comment … --live`) because the live-post token is single-use — so only the collapsed-diff file goes live, and every other finding stays a draft.
+
 **Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
 
 1. Pick the nearest added line in `foo.py` (even a whitespace or adjacent-line change) and open the body with "Note on an unchanged line below:" so the reader sees the anchor is a stand-in.

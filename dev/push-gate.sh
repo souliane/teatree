@@ -24,7 +24,10 @@
 # is unconditional. Measured 34s at `-n auto` — a tenth of the `tests/quality` dir it
 # is explicitly NOT joining, and bounded (it never grows with the diff).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below (`scripts/hooks/lib/resolve-uv.sh` first) then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
 # change — so a memory-capped container spawns host-many workers and dies as an opaque
@@ -33,11 +36,24 @@ cd "$(dirname "$0")/.."
 . dev/lib/xdist-workers.sh
 bound_xdist_workers_to_memory
 
+# A bare `uv run` from a workspace MEMBER syncs the ROOT's shared `.venv`, reconciling it
+# to the member's dependency set while this gate is importing from it — so the run dies
+# on ImportErrors naming packages no diff went near. `uv_project_run_prefix` redirects to
+# an environment the hooks own; `|| rc=$?` because `if !` reports the NEGATION.
+. scripts/hooks/lib/resolve-uv.sh
+uv_resolution_rc=0
+uv_bin="$(resolve_uv)" || uv_resolution_rc=$?
+if [ "${uv_resolution_rc}" -ne 0 ]; then
+    echo "push-gate: no usable uv (resolve_uv rc=${uv_resolution_rc}) — see scripts/hooks/lib/resolve-uv.sh" >&2
+    exit 2
+fi
+uv_project_run_prefix "${uv_bin}" "$PWD"
+
 echo "=== [1/3] never-lockout safety contract ==="
-uv run pytest tests/test_gate_never_lockout_contract.py -q
+"${UV_PROJECT_RUN[@]}" run pytest tests/test_gate_never_lockout_contract.py -q
 
 echo "=== [2/3] conformance lane: registry/route totality (whole-tree input, not diff-scopable) ==="
-uv run pytest tests/conformance -q
+"${UV_PROJECT_RUN[@]}" run pytest tests/conformance -q
 
 echo "=== [3/3] incremental push gate: scoped doctest + ast-grep (FULL on uncertainty) ==="
-uv run t3 tool push-gate --run
+"${UV_PROJECT_RUN[@]}" run t3 tool push-gate --run

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
 from django.apps import apps
+from django.db import transaction
 
 from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE
 from teatree.loop.scanners.base import ScanSignal
@@ -119,20 +120,23 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.core.models.session import Session  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    in_flight = Task.objects.filter(
-        ticket=ticket,
-        phase=SHORT_DESCRIBE_PHASE,
-        status__in=Task.Status.active(),
-    )
-    if in_flight.exists():
-        return
-    if not ticket.consume_phase_attempt(SHORT_DESCRIBE_PHASE, max_attempts=SHORT_DESCRIBE_MAX_ATTEMPTS):
-        return
-    session = Session.objects.create(ticket=ticket, agent_id="short-describe")
-    Task.objects.create(
-        ticket=ticket,
-        session=session,
-        phase=SHORT_DESCRIBE_PHASE,
-        subject=f"Summarize #{ticket.ticket_number}",
-        execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",
-    )
+    # One transaction over check + budget + write, so a concurrent tick cannot
+    # observe "none in flight" between another's budget spend and its insert.
+    with transaction.atomic():
+        in_flight = Task.objects.filter(
+            ticket=ticket,
+            phase=SHORT_DESCRIBE_PHASE,
+            status__in=Task.Status.active(),
+        )
+        if in_flight.exists():
+            return
+        if not ticket.consume_phase_attempt(SHORT_DESCRIBE_PHASE, max_attempts=SHORT_DESCRIBE_MAX_ATTEMPTS):
+            return
+        session = Session.objects.create(ticket=ticket, agent_id="short-describe")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase=SHORT_DESCRIBE_PHASE,
+            subject=f"Summarize #{ticket.ticket_number}",
+            execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",
+        )

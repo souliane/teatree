@@ -7,6 +7,7 @@ off. A CLEAR with no resolved ticket (out-of-FSM) is not gated here — the gate
 binds to a ticket's evidence.
 """
 
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -43,7 +44,7 @@ class _SafeOverlay:
     review = _SafeReview()
 
 
-def _clear(ticket: Ticket) -> dict[str, object]:
+def _clear(ticket: Ticket, **extra: object) -> dict[str, object]:
     return cast(
         "dict[str, object]",
         call_command(
@@ -58,8 +59,18 @@ def _clear(ticket: Ticket) -> dict[str, object]:
             # resolver has nothing to derive from; these tests are about the E2E gate,
             # and naming the forge is what lets them reach it.
             forge="github",
+            **extra,
         ),
     )
+
+
+def _refused_clear(ticket: Ticket) -> str:
+    """The stderr of a gate-blocked ``ticket clear``, asserting the nonzero exit (#932)."""
+    err = StringIO()
+    with pytest.raises(SystemExit) as exc:
+        _clear(ticket, stderr=err)
+    assert exc.value.code == 1
+    return err.getvalue()
 
 
 class _ClearGateBase(TestCase):
@@ -96,10 +107,9 @@ class _ClearGateBase(TestCase):
 class TestClearBlocks(_ClearGateBase):
     def test_impacting_no_evidence_blocks_clear(self) -> None:
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
-            result = _clear(self.ticket)
-        assert result["issued"] is False
-        assert "record-e2e-run" in str(result["error"])
-        assert "e2e-bypass" in str(result["error"])
+            refusal = _refused_clear(self.ticket)
+        assert "record-e2e-run" in refusal
+        assert "e2e-bypass" in refusal
 
 
 class TestClearAllows(_ClearGateBase):
@@ -123,9 +133,8 @@ class TestClearAllows(_ClearGateBase):
     def test_green_but_unposted_evidence_blocks_clear(self) -> None:
         E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="green", posted_url="")
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
-            result = _clear(self.ticket)
-        assert result["issued"] is False
-        assert "record-e2e-run" in str(result["error"])
+            refusal = _refused_clear(self.ticket)
+        assert "record-e2e-run" in refusal
 
     def test_recorded_bypass_allows_clear(self) -> None:
         E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id="souliane")

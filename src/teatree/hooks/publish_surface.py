@@ -291,9 +291,11 @@ def _extract_repo_flag(words: list[str]) -> str:
 def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
     """Resolve THIS posting segment's own target slug, mirroring gh/glab.
 
-    Resolution order, scoped to ``words`` (never to a sibling ``cd``
-    segment -- a ``cd`` in another segment does NOT change where gh/glab
-    posts):
+    Resolution order. The flag and env steps read ``words`` alone; the final
+    fallback reads ``cwd``, which is THIS segment's own publish dir
+    (:func:`_commit_repo_dir.segment_cwds`) and NOT the raw ambient one -- a
+    ``cd`` in an earlier segment moves the shell, so a flagless post lands in
+    whichever repo the chain navigated into last:
 
     - ``--repo``/``-R`` from this segment (explicit flag, LAST-WINS).
     - For ``gh`` ONLY: the ``GH_REPO`` env var, when no flag is present.
@@ -302,7 +304,8 @@ def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
         ``glab`` has no equivalent env var, so this step is skipped for it.
     - The CWD origin slug, as the final fallback.
 
-    Unresolvable/empty => ``""`` (caller treats as NOT private).
+    Unresolvable/empty => ``""`` (caller treats as NOT private), so a segment
+    whose publish dir the parse could not prove never vouches for a downgrade.
     """
     explicit_repo = _extract_repo_flag(words)
     if explicit_repo:
@@ -362,8 +365,11 @@ def command_is_pure_private_gh_glab_post(
         ``gh api`` / ``glab api`` raw REST (which can target any surface) nor a
         read verb (``gh issue view``); and
     - targeting a known-PRIVATE repo (:func:`segment_target_is_private`) --
-        ``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then the CWD
-        fallback. One public/unknown target fails the proof.
+        ``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then THAT
+        segment's own publish dir, which every ``cd`` in the chain re-points
+        (:func:`_commit_repo_dir.segment_cwds`) -- so a ``cd`` into a public
+        clone is judged on that clone, never on the ambient private one. One
+        public/unknown target fails the proof.
 
     A single non-conforming segment -- a second non-``gh`` verb, ANY transport
     construct, a raw-REST segment, a read verb, or a public/unknown target --
@@ -383,7 +389,10 @@ def command_is_pure_private_gh_glab_post(
         return False
     if not any(_segment_is_posting_verb(strip_cd_prefix(words)) for words in segments):
         return False
-    return all(_segment_proves_pure_private_post(words, cwd, config_path=config_path) for words in segments)
+    return all(
+        _segment_proves_pure_private_post(words, segment_cwd, config_path=config_path)
+        for words, segment_cwd in zip(segments, _commit_repo_dir.segment_cwds(command, cwd), strict=True)
+    )
 
 
 def _segment_proves_pure_private_post(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
@@ -560,7 +569,11 @@ def visibility_unknown_for_block(
     if _commit_carve_out.command_has_git_commit_segment(command) and cwd is not None:
         slugs.append(_repo_visibility.slug_for_cwd(cwd))
     slugs.extend(
-        _segment_target_slug(words, cwd) for words in _command_segments(command) if _segment_is_posting_verb(words)
+        _segment_target_slug(words, segment_cwd)
+        for words, segment_cwd in zip(
+            _command_segments(command), _commit_repo_dir.segment_cwds(command, cwd), strict=True
+        )
+        if _segment_is_posting_verb(words)
     )
     for slug in slugs:
         if not slug or _repo_visibility.slug_is_allowlisted_private(slug, config_path):

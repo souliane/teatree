@@ -53,6 +53,34 @@ class TestFixVersion:
         skill.write_text("# No version line here\n")
         assert check_skill_versions._fix_version(skill, "1.0.0") is False
 
+    def test_leaves_a_body_example_alone_when_the_frontmatter_has_no_version(self, tmp_path: Path) -> None:
+        """The fixer owns the frontmatter field, never a `version:` line in the prose."""
+        skill = tmp_path / "SKILL.md"
+        body = "---\nname: t3:x\n---\n# Body\n\n```yaml\nmetadata:\n  version: 0.0.1\n```\n"
+        skill.write_text(body)
+
+        assert check_skill_versions._fix_version(skill, "1.0.0") is False
+        assert skill.read_text() == body
+
+    def test_rewrites_the_frontmatter_field_not_a_later_body_example(self, tmp_path: Path) -> None:
+        skill = tmp_path / "SKILL.md"
+        skill.write_text(
+            "---\nname: t3:x\nmetadata:\n  version: 0.0.1\n---\n# Body\n\n```yaml\n  version: 9.9.9\n```\n"
+        )
+
+        assert check_skill_versions._fix_version(skill, "1.0.0") is True
+        text = skill.read_text()
+        assert "  version: 1.0.0\n---" in text
+        assert "  version: 9.9.9" in text
+
+    def test_returns_false_without_frontmatter_even_when_the_body_has_a_version(self, tmp_path: Path) -> None:
+        skill = tmp_path / "SKILL.md"
+        body = "# Body only\n\n  version: 0.0.1\n"
+        skill.write_text(body)
+
+        assert check_skill_versions._fix_version(skill, "1.0.0") is False
+        assert skill.read_text() == body
+
 
 class TestMain:
     def test_returns_zero_when_all_match(self, tmp_path: Path) -> None:

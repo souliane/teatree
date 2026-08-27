@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
+from teatree.paths import teatree_source_root
+
 #: A bare ``free`` token in any casing — not one half of a hyphenated compound.
 _BARE_FREE: Final[re.Pattern[str]] = re.compile(r"(?<![\w-])free(?![\w-])", re.IGNORECASE)
 
@@ -39,12 +41,8 @@ class Violation:
         return f"{self.path}:{self.line_number}: {self.line.strip()}"
 
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
 def scanned_paths(root: Path | None = None) -> list[Path]:
-    base = root or repo_root()
+    base = root or teatree_source_root()
     paths = [base / name for name in _SCANNED_FILES]
     for directory in _SCANNED_DIRS:
         paths.extend(sorted((base / directory).rglob("*.py")))
@@ -75,7 +73,7 @@ def _is_absence_sense(line: str, match: re.Match[str]) -> bool:
 
 
 def scan(root: Path | None = None) -> list[Violation]:
-    base = root or repo_root()
+    base = root or teatree_source_root()
     violations: list[Violation] = []
     for path in scanned_paths(base):
         relative = path.relative_to(base).as_posix()

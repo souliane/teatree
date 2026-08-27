@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.utils import OperationalError
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
@@ -253,6 +254,26 @@ class PersistCompliancePassTestCase(TestCase):
         recurrence_row = next(r for r in records if r.is_recurrence)
         assert recurrence_row.rule_source == RuleSource.MEMORY
         assert recurrence_row.remediation == RemediationKind.NONE
+
+    def test_a_failed_record_write_leaves_no_snapshot_claiming_violations_it_cannot_show(self) -> None:
+        # The §4 gate reads the snapshot's counts and the recurrence detection reads the
+        # rows, so a snapshot that outlived its detail rows is a permanently unrepairable
+        # audit trail — nothing re-derives the findings of a pass that already happened.
+        findings = [
+            ComplianceFinding(
+                rule_source=RuleSource.MEMORY,
+                rule_identity="feedback_a",
+                evidence="violated a",
+                is_recurrence=True,
+            )
+        ]
+        with (
+            patch.object(InstructionComplianceRecord.objects, "bulk_create", side_effect=OperationalError("disk I/O")),
+            pytest.raises(OperationalError),
+        ):
+            persist_compliance_pass(findings, instructions_observed=10)
+
+        assert not InstructionComplianceSnapshot.objects.exists()
 
     def test_escalated_recurrence_record_carries_the_escalation_url(self) -> None:
         host = _fake_host()

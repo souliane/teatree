@@ -15,7 +15,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server, services_sharepoint
 
 
@@ -24,6 +24,7 @@ class _SharePointOverlay:
         self.config = OverlayConfig(
             required_third_party_services=frozenset({Service.SHAREPOINT}),
         )
+        self.connectors = OverlayConnectors()
 
 
 class TestSharePointClientResolution(TestCase):

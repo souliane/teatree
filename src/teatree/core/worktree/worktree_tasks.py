@@ -173,8 +173,9 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
     Distinct from teardown: the DB is NOT dropped and the git worktree is NOT
     removed, so a later ``start_services`` is a fast resume. State stays in
     ``PROVISIONED`` whether the down succeeds or fails — ``docker_compose_down``
-    is itself best-effort and idempotent (a re-fire compose-downs an already
-    down project as a no-op).
+    is idempotent (a re-fire compose-downs an already down project as a no-op) —
+    but a down that FAILED is reported as ``ok=False``, because the containers it
+    was meant to stop may still be holding this worktree's ports and volumes.
 
     The state guard re-reads PROVISIONED under a row lock: a row that is no
     longer PROVISIONED (a concurrent ``start_services`` revived it between the
@@ -188,6 +189,9 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
     every concurrent writer, and the loop tick's own lease TTL-lapsed while its
     owner was alive. Nothing in the ``down`` needs the lock: ``compose_project``
     reads the already-fetched row's own fields, and neither outcome writes FSM state.
+
+    A down that FAILED is reported as ``ok=False``: the containers it was meant to stop
+    may still hold this worktree's ports and volumes.
     """
     with transaction.atomic():
         try:
@@ -204,7 +208,10 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
         project = compose_project(worktree)
 
-    docker_compose_down(project)
+    failure = docker_compose_down(project)
+    if failure:
+        logger.warning("Worktree stop left compose project %s up for %s: %s", project, worktree_id, failure)
+        return {"worktree_id": worktree_id, "ok": False, "detail": f"compose project {project} still up: {failure}"}
     return {"worktree_id": worktree_id, "ok": True, "detail": f"stopped compose project {project}"}
 
 

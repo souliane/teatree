@@ -19,7 +19,7 @@ from django.test import TestCase
 
 from teatree.backends.types import Service
 from teatree.core.gates.review_request_guard import GuardTarget
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
@@ -35,6 +35,7 @@ def _call(tool: str, args: dict[str, Any]) -> Any:
 class _SlackOverlay:
     def __init__(self) -> None:
         self.config = OverlayConfig(required_third_party_services=frozenset({Service.SLACK}))
+        self.connectors = OverlayConnectors()
 
 
 class _FakeMessaging:

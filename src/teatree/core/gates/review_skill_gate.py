@@ -56,14 +56,14 @@ class ReviewSkillEvidenceError(RuntimeError):
     """A ``reviewing`` visit lacked evidence the configured review skill ran."""
 
 
-def configured_review_skill() -> str:
+def configured_review_skill(overlay: str | None = None) -> str:
     """The effective ``review_skill`` (env -> per-overlay -> global -> default)."""
-    return get_effective_settings().review_skill.strip()
+    return get_effective_settings(overlay).review_skill.strip()
 
 
-def configured_review_skill_alternates() -> tuple[str, ...]:
+def configured_review_skill_alternates(overlay: str | None = None) -> tuple[str, ...]:
     """The effective ``review_skill_alternates``, stripped, deduped, order-preserving."""
-    declared = get_effective_settings().review_skill_alternates
+    declared = get_effective_settings(overlay).review_skill_alternates
     return tuple(dict.fromkeys(name.strip() for name in declared if name.strip()))
 
 
@@ -71,7 +71,7 @@ def configured_review_skill_alternates() -> tuple[str, ...]:
 PER_PR_REVIEW_SKILL = "t3:review"
 
 
-def accepted_per_pr_review_skills() -> frozenset[str]:
+def accepted_per_pr_review_skills(overlay: str | None = None) -> frozenset[str]:
     """Every skill whose recorded run satisfies a per-PR ship (souliane/teatree#3530).
 
     ``review_skill`` set to the periodic architectural tier
@@ -87,12 +87,12 @@ def accepted_per_pr_review_skills() -> frozenset[str]:
     unarmed: only an unset ``review_skill`` produces it, so declaring alternates
     can never turn the gate off.
     """
-    configured = configured_review_skill()
+    configured = configured_review_skill(overlay)
     if not configured:
         return frozenset()
-    architectural = get_effective_settings().architectural_review_skill.strip()
+    architectural = get_effective_settings(overlay).architectural_review_skill.strip()
     primary = PER_PR_REVIEW_SKILL if configured == architectural else configured
-    return frozenset({primary, *configured_review_skill_alternates()})
+    return frozenset({primary, *configured_review_skill_alternates(overlay)})
 
 
 def recorded_review_skill(ticket: "Ticket") -> str:
@@ -104,14 +104,16 @@ def recorded_review_skill(ticket: "Ticket") -> str:
 def check_review_skill_evidence(ticket: "Ticket") -> None:
     """Refuse a ``reviewing`` attestation that no accepted review-skill run backs.
 
-    NO-OP when ``review_skill`` is unset (the opt-in default) or when
+    NO-OP when ``review_skill`` is unset for the TICKET's own overlay (the
+    opt-in default — resolving the ambient process overlay instead would let
+    another overlay's configuration disarm the gate, the #F2.3 hole) or when
     *ticket* isn't in its overlay's own repo (see "Repo scoping" above).
     Otherwise the durable ``review_skill_run`` artifact must name one of the
     accepted per-PR review skills (:func:`accepted_per_pr_review_skills`). The
     refusal names every one of them, so the operator can see which reviewers
     would satisfy it rather than guessing at a single expected string.
     """
-    accepted = accepted_per_pr_review_skills()
+    accepted = accepted_per_pr_review_skills(ticket.overlay or None)
     if not accepted:
         return
     if not ticket_repo_is_overlay_own(ticket):
