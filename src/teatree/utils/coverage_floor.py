@@ -52,11 +52,15 @@ class CoverageReport:
     overall_percent: float | None
     overall_floor: int
     module_results: list[ModuleCoverage] = field(default_factory=list)
+    #: ``[tool.coverage.report] precision`` — the digits coverage.py rounds to before
+    #: comparing against ``fail_under``. Rounding to fewer digits here would report a
+    #: PASS on a total the run that enforces the floor rejects.
+    precision: int = 0
 
     def passes(self) -> bool:
         if self.overall_percent is None:
             return False
-        if round(self.overall_percent) < self.overall_floor:
+        if round(self.overall_percent, self.precision) < self.overall_floor:
             return False
         return all(m.passes() for m in self.module_results)
 
@@ -79,6 +83,11 @@ def _load_pyproject(path: Path) -> dict:
 def load_overall_floor(pyproject_path: Path) -> int:
     data = _load_pyproject(pyproject_path)
     return int(data["tool"]["coverage"]["report"]["fail_under"])
+
+
+def load_report_precision(pyproject_path: Path) -> int:
+    data = _load_pyproject(pyproject_path)
+    return int(data.get("tool", {}).get("coverage", {}).get("report", {}).get("precision", 0))
 
 
 def load_per_module_floors(pyproject_path: Path) -> dict[str, int]:
@@ -105,10 +114,11 @@ def measure_coverage(
     per_module_floors: dict[str, int] | None = None,
 ) -> CoverageReport:
     overall_floor = load_overall_floor(pyproject_path)
+    precision = load_report_precision(pyproject_path)
     floors = per_module_floors if per_module_floors is not None else load_per_module_floors(pyproject_path)
 
     if not coverage_data_file.exists():
-        return CoverageReport(overall_percent=None, overall_floor=overall_floor, module_results=[])
+        return CoverageReport(overall_percent=None, overall_floor=overall_floor, module_results=[], precision=precision)
 
     import coverage  # noqa: PLC0415 — heavy import, only needed when .coverage exists
 
@@ -133,4 +143,5 @@ def measure_coverage(
         overall_percent=overall_percent,
         overall_floor=overall_floor,
         module_results=module_results,
+        precision=precision,
     )

@@ -146,6 +146,9 @@ class LoopHealth:
     considered: int
     #: Registered loops NO driver reaches — the structural fault staleness cannot see.
     driverless: tuple[str, ...] = ()
+    #: The ``loop_runner_enabled`` kill-switch, read from the SAME fail-safe reader every
+    #: chain fire gates on — the gate that precedes admission, so it precedes the cause.
+    runner_enabled: bool = True
 
     @property
     def unexplained(self) -> tuple[StaleLoop, ...]:
@@ -164,6 +167,7 @@ class LoopHealth:
     def as_json(self) -> dict[str, Any]:
         return {
             **self.admission.as_json(),
+            "loop_runner_enabled": self.runner_enabled,
             "stale": [loop.as_json() for loop in self.stale],
             "considered": self.considered,
             "frozen_fleet": self.frozen_fleet,
@@ -216,7 +220,22 @@ class LoopHealth:
         )
 
     def _cause_line(self) -> str:
-        """Name the most likely cause, so a stale reading is actionable rather than alarming."""
+        """Name the cause this reading MEASURED, so the remedy points at what actually stopped work.
+
+        The kill-switch comes first because its gate does: ``loop_timer`` step 0 returns
+        ``halted`` before the admission check, so while it is OFF the mode, the presets and
+        the per-loop planes are all untouched and none of them explains anything. Blaming
+        one of them sends the operator to ``t3 loop preset``, which stopped nothing.
+        """
+        if not self.runner_enabled:
+            return (
+                "FAIL the loop runner kill-switch is OFF (loop_runner_enabled=false) — every "
+                "`loop_timer` fire returns `halted` before the admission check without re-enqueueing "
+                "a successor, and the reconciler re-heads the drained chain, so the timers keep a full "
+                "RUNNING -> SUCCESSFUL heartbeat while no loop does any work. No mode, preset or worker "
+                "fault is involved. Turn it back on with "
+                "`t3 <overlay> config_setting set loop_runner_enabled true`, or confirm the stop is intended."
+            )
         if self.frozen_fleet:
             return (
                 f"FAIL the worker is RUNNING but ticking NOTHING — all {self.considered} measured "
@@ -280,6 +299,11 @@ def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
     A row in the second half but not the first is standing still ON PURPOSE, which is what
     :func:`_is_suppressed` says of it. It is measured so the FLEET-wide reading can see it,
     never so it can be reported as unexplained.
+
+    A ``daily_at`` row is excluded from both halves even though it also carries
+    ``delay_seconds``: the ``loop_script_requires_delay`` constraint forces every script
+    loop to store an interval, and ``daily_at`` overrides it, so ``3 x delay_seconds``
+    measures a cadence the loop does not keep.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
     from teatree.loops.chain_membership import (  # noqa: PLC0415 — deferred: ORM-backed
@@ -292,7 +316,9 @@ def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
     return [
         (row, cadence)
         for row in Loop.objects.all()
-        if (cadence := row.delay_seconds) and (row.name in members or (row.enabled and row.name in live_tick))
+        if (cadence := row.delay_seconds)
+        and row.daily_at is None
+        and (row.name in members or (row.enabled and row.name in live_tick))
     ]
 
 
@@ -364,11 +390,14 @@ def admission(now: dt.datetime) -> Admission:
 
 def loop_health(now: dt.datetime) -> LoopHealth:
     """The one loop-health reading ``t3 worker status`` reports and exits on."""
+    from teatree.loops.timer_chains import loop_runner_enabled  # noqa: PLC0415 — deferred: ORM-backed read
+
     return LoopHealth(
         admission=admission(now),
         stale=tuple(stale_loops(now)),
         considered=len(_measured_loops(now)),
         driverless=driverless_loops(),
+        runner_enabled=loop_runner_enabled(),
     )
 
 

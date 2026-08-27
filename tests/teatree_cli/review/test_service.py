@@ -17,8 +17,8 @@ from teatree.cli.review.service import ReviewService
 
 
 def _broken_overlay() -> mock._patch:
-    """Patch the URL-derived resolver to raise — the unreadable-overlay case."""
-    return mock.patch("teatree.core.overlay_loader.get_overlay_for_url", side_effect=RuntimeError("broken overlay"))
+    """Patch the repo-derived resolver to raise — the unreadable-overlay case."""
+    return mock.patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("broken overlay"))
 
 
 class TestResolveBaseUrl:
@@ -38,7 +38,7 @@ class TestResolveBaseUrl:
         overlay.config.gitlab_url = ""
         with (
             mock.patch.dict(os.environ, {"GITLAB_URL": env_url}),
-            mock.patch("teatree.core.overlay_loader.get_overlay_for_url", return_value=overlay),
+            mock.patch("teatree.core.overlay_loader.get_overlay", return_value=overlay),
         ):
             assert self._service()._resolve_base_url() == env_url
 

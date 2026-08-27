@@ -1,6 +1,6 @@
 ---
 name: e2e
-description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "post test plan", "post evidence", or is working with Playwright-based tests.
+description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "test plan", "post test plan", "post evidence", or is working with Playwright-based tests.
 compatibility: macOS/Linux, Playwright, Node.js, t3 CLI.
 requires:
   - test
@@ -12,7 +12,7 @@ metadata:
 
 # E2E Testing
 
-Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate.
+Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate.
 
 ## Dependencies
 
@@ -36,31 +36,7 @@ Agentic browser work — driving a deployed page (navigate/click/fill/upload) an
 - **chrome-devtools-mcp:** upstream's `--headless` option defaults to `false`, so a registration that omits the flag pops a visible Chrome window on **every** navigation. `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) appends `--headless=true` off the default-on `chrome_devtools_headless` setting, so the line `t3 mcp browser-diagnosis` prints is headless unless an operator deliberately opts into a headed browser. Never turn that setting off, and re-register any server you find registered without the flag.
 - **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
 
-**Register it (default on):**
-
-```bash
-t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON by default
-# turn OFF only on a host that cannot run the server:
-# t3 <overlay> config_setting set chrome_devtools_mcp_enabled false
-```
-
-The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --headless=true`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
-
-**Optional aid for authoring/debugging Playwright specs, never required (#3271).** The same live DOM/console/network view makes *writing* a Playwright spec (finding the right selector, confirming the expected DOM state) and *debugging* a red one far more tractable than working blind. It is purely a developer-experience aid — teatree's runtime requires **zero** MCP, so its absence gates nothing: `t3 doctor` only ever emits an INFO suggestion for it, never a WARN/FAIL. Prerequisite: a Chrome/Chromium executable on the host (the server launches its own Chrome over the DevTools Protocol).
-
-**Pre-authorize the tools for an unattended run.** So the tool never prompts mid-run, allow the server in `~/.claude/settings.json`:
-
-```jsonc
-{
-  "permissions": {
-    "allow": [
-      "mcp__chrome-devtools__*"
-    ]
-  }
-}
-```
-
-**Research finding — MCP allow-rules match by server + tool name only, no domain form.** Per the [Claude Code permission rule syntax](https://docs.claude.com/en/docs/claude-code/permissions#mcp), an MCP specifier is `mcp__server`, `mcp__server__*`, or `mcp__server__tool_name` — there is **no** argument/domain form, so you cannot scope `mcp__chrome-devtools__navigate_page` to a domain the way `WebFetch(domain:example.com)` scopes `WebFetch`. The allow-rule is therefore all-or-nothing per tool. Since chrome-devtools-mcp drives its own launched Chrome (not a shared extension session), there is no per-origin browser gate to clear on top of the allow-rule — allowing the tool is sufficient for an unattended run.
+The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` line and the tools it surfaces, the `~/.claude/settings.json` pre-authorization entry, and the finding that MCP allow-rules carry no domain form are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
 
 ## Running E2E Tests
 
@@ -151,7 +127,7 @@ function requireEnv(name: string): string {
   if (!v) throw new Error(`${name} is required for this E2E run but was unset`);
   return v;
 }
-const password = requireEnv('E2E_BROKERAGE_PASSWORD');   // throws if the secret wasn't injected
+const password = requireEnv('E2E_ACME_PASSWORD');   // throws if the secret wasn't injected
 ```
 
 The username may be a published code constant; the password (and any tenant/host that is a secret) always comes from env via this guard. `t3 <overlay> e2e` injects the documented secret into the run env; a spec that hard-codes the value bypasses that path and the secret store entirely.
@@ -202,13 +178,13 @@ When using visual snapshot plugins (`pytest-playwright-visual`, `assert_snapshot
 
 ## Pre-Push Browser Sanity Gate (Visual QA)
 
-`t3 <overlay> pr create` runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See `t3:ship` § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+The `mcp__teatree__pr_create` MCP tool — and its `t3 <overlay> pr create` CLI fallback, for a session whose MCP server isn't connected — runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See `t3:ship` § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
 
 This gate is **not a replacement for E2E evidence** — it only catches silent-render regressions before push.
 
 ## DoD Local-E2E Gate (UI-visible tickets)
 
-**E2E evidence is part of "done", not an optional extra — record it BEFORE ship (Non-Negotiable).** A UI-visible ticket is not done until it has a green local E2E artifact, and the deployed-env proof follows once the change is live. The canonical sequence:
+**E2E evidence is part of "done", not an optional extra — record it BEFORE ship (Non-Negotiable).** A UI-visible ticket is not done until it has a green local E2E artifact, and the deployed-env proof follows once the change is live. The canonical sequence — prefer the `mcp__teatree__pr_create` MCP tool for step 2, which runs the same ship gate; fall back to the CLI below when the MCP server isn't connected (the `e2e` verbs have no MCP twin and stay CLI):
 
 ```bash
 # 1. BEFORE ship — green local E2E run is mandatory; this records the gating artifact:
@@ -217,15 +193,15 @@ t3 <overlay> e2e run <work-item> --target local
 # 2. Ship only after step 1 is green (Ticket.ship() refuses otherwise):
 t3 <overlay> pr create
 
-# 3. After merge + deploy — run E2E against the dev environment and post the test plan
+# 3. After merge + deploy — run E2E against the dev environment and update the plan file
 #    (the deployed-env run is the completing half of "done", not a nice-to-have):
 t3 <overlay> e2e run <work-item> --target dev
-t3 <overlay> e2e post-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
+t3 <overlay> e2e write-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
 ```
 
-Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run plus a posted test plan is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven.
+Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run merged into the plan file is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven. Step 3 lands in the SAME file step 1's local run wrote; the two envs accumulate, they never fork.
 
-The posted test plan the gate expects is the **comprehensive ticket test plan**, not just proof a green local run happened: one workflow per affected UI surface with a red-boxed screenshot, plus an explicit `Actual: ✅ <result>` for every backend/API claim (a backend-only workflow renders as its steps + `Actual` line, not an empty Dev|Local table). A green local E2E artifact satisfies the ship gate; the comprehensive plan is what makes the posted evidence trustworthy.
+The plan the gate expects is the **comprehensive ticket test plan**, not just proof a green local run happened: one workflow per affected UI surface with a red-boxed screenshot, plus an explicit `Actual: ✅ <result>` for every backend/API claim (a backend-only workflow renders as its steps + `Actual` line, not an empty Dev|Local table). A green local E2E artifact satisfies the ship gate; the comprehensive plan is what makes the recorded evidence trustworthy.
 
 `Ticket.ship()` refuses to ship a **UI-visible** ticket — one whose scope includes a repo in the active overlay's `frontend_repos` — until a **green local-stack E2E artifact** exists. The durable `Ticket.extra['e2e_recipe'].last_run` must be `result == "green"` AND `env == "local"`; a `dev` run records provenance but does NOT satisfy the gate. A dev-after-merge run is deliberately not enough — the whole point is to catch missing scope *before* the merge, not after. A green local run is recorded automatically by `t3 <overlay> e2e run <work-item>` (which resolves an on-disk workspace, so `env` defaults to `local`).
 
@@ -247,7 +223,7 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 ### Artifacts Are Never Committed to a Product Repo (Non-Negotiable)
 
-An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, and once `post-test-plan` uploads it, the ticket note holds the durable copy. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. The artifacts root lives **outside every working tree** (§ "Artifact directory layout"), so a correctly-pathed run never touches the repo; keep `artifacts/` gitignored in product repos anyway as a backstop against a stray hard-coded path. The evidence lives on the ticket, not in the branch.
+An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, so the plan **cites** it by its artifacts-root-relative path rather than carrying its bytes. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. The artifacts root lives **outside every working tree** (§ "Artifact directory layout"), so a correctly-pathed run never touches the repo; keep `artifacts/` gitignored in product repos anyway as a backstop against a stray hard-coded path. The plan file is what the branch carries; the recordings stay out of it.
 
 The three-kind table (artifact / fixture / manifest) and their homes, where run provenance lives, what a private test repo may commit via `e2e tracked-manifest`, and the loose-seed-script smell are in [`skills/e2e/references/artifact-classification.md`](references/artifact-classification.md).
 
@@ -265,34 +241,38 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 
 **Conciseness** — a plan that exceeds what a reviewer needs to verify fast is too long. Aim for the minimum: exact URL, exact account, one expected outcome per step. A 30k-character test plan buries the actual steps in narration; keep it short enough to skim.
 
+**A plan describes the CURRENT state only (Non-Negotiable).** No "previously", no "used to", no note that a rule changed or that the document was rewritten. A reader opens the plan to learn what is tested now, so every sentence about a former state is one they must read and then discard. The single thing that is not history and must stay: where a recorded result was produced under conditions that no longer hold, say so as a property of **that result** — "recorded against a build that stores on fixing" — never as a story about the document changing. Why a scenario changed belongs in the MR; why the plan changed belongs in the commit message.
+
+**At most one version bump per merge request.** A plan issued outside the repo carries a revision history; while its MR is open the plan is still in flux, so a second edit revises that MR's row rather than adding another. A row exists to tell someone holding an older copy what changed — nobody outside holds a copy of an unmerged plan, so a row per edit only buries the change that matters.
+
 **Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
 
 The deterministic primitive for this rule is `teatree.core.evidence.doc_evidence` (#2296) — route doc-export evidence checks through it rather than hand-rolling a substring scan. Parse the document into a `StructuredDoc` (named `fields` + labelled table `rows`) and verify with `check_doc_evidence(doc, FieldClaim(term=…, field_label=…))` or `ColumnClaim(term=…, column_label=…)`. The probe binds the assertion to the field/column the AC constrains and **fails loud** (`DocEvidenceError`) when that anchor is absent — never falling back to an incidental free-text match. A bare page-wide substring is rejected outright (`reject_page_wide_substring`); it is not evidence. It is an available primitive, not a globally-enforced gate yet — wiring a specific call site (e.g. an overlay's doc-export verification step) into it is the follow-up.
 
-## Posting a Test Plan
+## Writing the Test Plan
 
-There is ONE canonical command for posting a test plan — do not hand-craft a GitLab/GitHub note, do not paste screenshots into a comment by hand, and do not explore for an alternative path:
+The test plan is a FILE IN THE E2E REPO, never a forge comment: `test-plans/<repo>-<gitlab-ticket>.md` at the repo root, a sibling of `e2e/`, in the ticket's checkout of the repo that owns the specs. It is reviewed and merged with the specs it describes. There is ONE canonical command — do not hand-craft a GitLab/GitHub note, do not hand-write the file, and do not explore for an alternative path:
 
 ```bash
-t3 <overlay> e2e post-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
+t3 <overlay> e2e write-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
 ```
 
-The manifest is the single input. Build it once, then run that command — re-running is always safe (each run merges its env over the prior note state, § "Post Testing Evidence on the Ticket").
+The path is derived, never passed: the repo from the overlay's declared e2e config, the filename from the ticket number. The manifest is the single input. Build it once, then run that command — re-running is always safe: each run merges its env over what the file already records and rewrites that one file, so a second run updates the plan instead of adding a second copy of it.
 
-**A test plan posted to a colleague-facing ticket is evidence of real testing — never an admission of not testing (Non-Negotiable).** A note posted on the user's behalf to a colleague/product ticket MUST reflect testing actually performed on the real (deployed) environment with real evidence. **NEVER** post a public note containing "unable to test", "blocked", "DEV verification pending", "could not verify", "not automatable", or any equivalent — to the user's colleagues that reads as incompetence and is humiliating. The gate before any on-behalf post is one question: *did I actually verify this on the real env, with real evidence?* If no, do not post.
+**A test plan that ships to a colleague-facing repo is evidence of real testing — never an admission of not testing (Non-Negotiable).** The plan merges into a colleague/product repo, so it MUST reflect testing actually performed on the real (deployed) environment with real evidence. **NEVER** write a plan containing "unable to test", "blocked", "DEV verification pending", "could not verify", "not automatable", or any equivalent — to the user's colleagues that reads as incompetence and is humiliating. The gate before any on-behalf post is one question: *did I actually verify this on the real env, with real evidence?* If no, do not post.
 
-- Hit a blocker (missing credential, unpinned object id, wrong tenant, a field not exposed)? **Fix the blocker so you CAN test** — resolve the credential (§ "Resolve E2E credentials…"), pin a real reproducible object id, run against the correct tenant, replicate the DEV object to local (§ "Replicating a DEV object to local") — then post a real plan.
-- If, after genuine effort, you truly cannot test, post **nothing public**. Surface the precise named blocker to the user privately and let them unblock it. A "couldn't test" public note is strictly worse than no note. This is the same terminal as the rubric's `BLOCKED(<named-gate>)` (§ "Verify–Review Loop to Threshold") — surface the gate, post nothing caveated.
+- Hit a blocker (missing credential, unpinned object id, wrong tenant, a field not exposed)? **Fix the blocker so you CAN test** — resolve the credential (§ "Resolve E2E credentials…"), pin a real reproducible object id, run against the correct tenant, replicate the DEV object to local (§ "Replicating a DEV object to local") — then write a real plan.
+- If, after genuine effort, you truly cannot test, write **no plan at all**. Surface the precise named blocker to the user privately and let them unblock it. A "couldn't test" plan in the branch is strictly worse than no plan. This is the same terminal as the rubric's `BLOCKED(<named-gate>)` (§ "Verify–Review Loop to Threshold") — surface the gate, post nothing caveated.
 
-**A user directive to "post it in whatever state it's in" does NOT override this — do X, never Y (Non-Negotiable).** Under deadline pressure the recurring drift the metered lane caught is: verification is blocked (a missing credential, an expired GPG key), the user says "post the test plan in whatever state it's in / we're behind / just get it on the ticket", and the agent OBEYS by posting a caveated "DEV verification pending — unable to test" note to a colleague-facing ticket. That is wrong. The colleague-protection rule is not the user's to waive on a colleague's behalf: the user authorizing the post does not make a "couldn't test" note any less humiliating to the partner team who reads it, and the user cannot see how it lands on the colleague. So the directive authorizes the *intent* ("get #N's test plan handled"), never the *blocked-note artifact*. Your single next action under that directive is one of two safe moves — **fix the blocker so you CAN post a real plan** (re-inject the credential via `pass`/the secret store, retry the run), or **surface the named blocker privately** (an `AskUserQuestion` stating the exact gate — the missing credential — and asking how to unblock, posting NOTHING public). It is **never** a `Bash` post of a note carrying "unable to test" / "blocked" / "DEV verification pending" / "not yet tested" to the colleague ticket, no matter how explicit the user's "post it anyway" was.
+**A user directive to "just get the plan written in whatever state it's in" does NOT override this — do X, never Y (Non-Negotiable).** Under deadline pressure the recurring drift the metered lane caught is: verification is blocked (a missing credential, an expired GPG key), the user says "write the test plan in whatever state it's in / we're behind / just get it on the ticket", and the agent OBEYS by committing a caveated "DEV verification pending — unable to test" plan to a colleague-facing repo. That is wrong. The colleague-protection rule is not the user's to waive on a colleague's behalf: the user authorizing it does not make a "couldn't test" plan any less humiliating to the partner team who reviews the MR, and the user cannot see how it lands on the colleague. So the directive authorizes the *intent* ("get #N's test plan handled"), never the *blocked-plan artifact*. Your single next action under that directive is one of two safe moves — **fix the blocker so you CAN write a real plan** (re-inject the credential via `pass`/the secret store, retry the run), or **surface the named blocker privately** (an `AskUserQuestion` stating the exact gate — the missing credential — and asking how to unblock, writing NOTHING into the repo). It is **never** a plan carrying "unable to test" / "blocked" / "DEV verification pending" / "not yet tested" committed to a colleague repo, and never a hand-posted forge note saying the same, no matter how explicit the user's "just get it written" was.
 
 ```bash
-# Blocked on a credential, user says "post the test plan in whatever state it's in".
+# Blocked on a credential, user says "write the test plan in whatever state it's in".
 # do X — fix the blocker, OR surface it privately (AskUserQuestion: which credential, how to unblock):
-pass insert -m e2e/e2etest-password          # re-inject the credential, then run+post a REAL plan
-# … or AskUserQuestion("E2E_BROKERAGE_PASSWORD is missing / GPG key unavailable — how do you want to unblock #8568?")
-# never Y — do NOT obey the directive by posting a caveated blocked note to the colleague ticket:
-# t3 <overlay> e2e post-test-plan --ticket 8568 --note "DEV verification pending — unable to test …"   # FORBIDDEN
+pass insert -m e2e/e2etest-password          # re-inject the credential, then run+write a REAL plan
+# … or AskUserQuestion("E2E_ACME_PASSWORD is missing / GPG key unavailable — how do you want to unblock #8568?")
+# never Y — do NOT obey the directive by committing a caveated blocked plan to the colleague repo:
+# t3 <overlay> e2e write-test-plan --ticket 8568 --body-file blocked-plan.md   # FORBIDDEN when that body says "unable to test"
 ```
 
 **The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's `Dev | Local` evidence table, so the test plan is steps-plus-evidence, not bare images. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
@@ -314,35 +294,40 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
 
 **Set the environment with `--target`, never by hand-editing `BASE_URL`.** The env a manifest fills is decided by the `--target dev|local` flag on the `t3 <overlay> e2e run` invocation that produced the captures (§ "Dual-Env Testing" → "Target selection"), and recorded in the manifest's `dev`/`local` blocks. Do not export or rewrite `BASE_URL` to redirect the run — `--target` is the one knob; the runner exports `T3_E2E_TARGET` for you.
 
-**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots that go into the manifest) runs **locally behind the `--target` flag** — there is no CI parity for capturing/posting the test-plan note. CI runs the suite for pass/fail, but it does **not** assemble or post a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|local`, then post them with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
+**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots the manifest cites) runs **locally behind the `--target` flag** — there is no CI parity for capturing or writing the plan. CI runs the suite for pass/fail, but it does **not** assemble or write a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|local`, then write the plan with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
 
-## Post Testing Evidence on the Ticket
+## Where the Plan Lives
 
-**Use `t3 <overlay> e2e post-test-plan --manifest <json>`.** It maintains ONE structured test-plan note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
+**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so `7311.md` alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
 
-How the note renders (header provenance, per-workflow steps, the `Dev | Local` table), where artifacts upload, the hidden state blob and its merge semantics, the flag table, and how to pick `--template` from the AC's modality are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
+The file carries a hidden state blob, so a run recovers the prior state, merges its own env over it, and rewrites the file. Each env's evidence carries three fields — `env`, `commits`, `ran_at` — so a reader never has to infer where a run happened, against which commit, or when.
+
+How the plan renders (header provenance, per-workflow steps, the `Dev | Local` table), the hidden state blob and its merge semantics, the flag table, and how to pick the manifest's `template` from the AC's modality are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
 
 ### Manifest shape
 
-The manifest JSON schema and the per-field notes are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
+The manifest JSON schema and the per-field notes are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
 
 ### Artifact directory layout (Non-Negotiable)
 
-The per-environment directory layout, the `T3_E2E_ARTIFACTS_DIR` contract, and the worked paths are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
+The per-environment directory layout, the `T3_E2E_ARTIFACTS_DIR` contract, and the worked paths are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
 
 ### Rules
 
-- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/` directory.
-- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test-plan note, not optional. Write it in plain manual-testing language.
-- **One note per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same note.
+- **Cite whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/` directory. The plan records each one's artifacts-root-relative path; the bytes stay out of the repo.
+- **`--embed-captures` is the exception, and only for a plan issued OUTSIDE the repository.** Its reader has no access to the artifacts directory, so a citation into one is a dead reference; the flag copies that run's captures to `test-plans/evidence/<repo>-<ticket>/` and embeds them by relative link. Never reach for it on an internal plan — committing binaries a citation already covers bloats the repo for no reader.
+- **Never hand-place a capture in the evidence directory.** `write-test-plan` is the only sanctioned way one gets there, because it re-validates the set the repo would hold **after** the run — already-committed captures plus incoming ones — through the same red-box and duplicate preflight the cited path uses, before anything is copied or written. `--body-file` is gated identically: a hand-authored body is exactly the path that let unvalidated captures reach a reviewer. A capture dropped in by hand skips no gate at write time — it fails the next write, by name.
+- **Wire the standing gate into the repo that holds the plans.** `t3 <overlay> e2e verify-plan-captures --plans-dir <checkout>/test-plans` validates every ticket's committed captures, and **refuses when there is nothing to look at** rather than reporting success — a check that passes because it found nothing is the failure it exists to prevent. It belongs in that repo's pre-commit config or CI, since a capture can be committed without ever running a command.
+- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test plan, not optional. Write it in plain manual-testing language.
+- **One file per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same file.
 - Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
 
 ### Evidence Source Integrity (Non-Negotiable)
 
-Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging) or a teatree-managed local stack, never from stale local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
+Evidence a plan carries — cited or committed — MUST come from the **deployed environment** (dev/staging) or a teatree-managed local stack, never from stale local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
 
-`t3 <overlay> e2e post-test-plan` **machine-enforces** that every referenced artifact exists and is the right media kind before any upload or post, and uploads each via the relative `/uploads/<secret>/<file>` reference GitLab claims on save (so the media actually renders — not a broken image or a dead video player).
+`t3 <overlay> e2e write-test-plan` **machine-enforces**, before it writes anything, that every referenced artifact exists and is the right media kind, that every still carries a red highlight box and is distinct from the others, and that the video has no excessive blank pre-roll.
 
 **Prohibited evidence sources:**
 
@@ -357,7 +342,7 @@ Evidence posted on tickets or MRs MUST come from the **deployed environment** (d
 - API responses from the deployed environment
 - Documents regenerated on the deployed environment after merge + deploy
 
-**Before posting evidence, verify:**
+**Before a capture goes into a plan, verify:**
 
 1. The MR is merged and deployed to the target environment
 2. Screenshots show a real environment URL in the browser bar (not `localhost`)
@@ -401,7 +386,7 @@ The captured recording must:
 - **Start the interaction promptly** — no significant blank/static pre-roll. Begin the recording right before the interaction starts; do **not** record dead setup time (waiting on a login, a cold-loading SPA, an idle page) and leave it at the head of the clip. A recording that opens on a frozen or black screen for many seconds reads as a broken capture, not evidence.
 - **End on a clearly-framed final state** showing the asserted outcome — hold the final frame on the result the test verifies (the rendered field, the confirmation screen, the computed value), settled and unambiguous, so the last thing a reviewer sees is the proof. Do not let the recording cut mid-transition or end on a navigation/blank frame.
 
-The `scripts/analyze_video.py --verify` command and how `post-test-plan` machine-enforces the pre-roll budget are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
+The `scripts/analyze_video.py --verify` command and how `write-test-plan` machine-enforces the pre-roll budget are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
 
 ### Store Contamination Check
 
@@ -409,11 +394,11 @@ E2E tests for features that load data via a state management store must verify t
 
 ## Test Tracking Files
 
-Each test file can have a sibling `.md` with the same basename — a single source of truth for what has been tested and posted per ticket.
+Each test file can have a sibling `.md` with the same basename — a single source of truth for what has been tested per ticket.
 
-| Ticket | PR | Description | Comment |
-|--------|-----|-------------|---------|
-| [PROJ-1234](url) | [#5678](url) | Initial: feature X | [Plan + images](url) |
+| Ticket | PR | Description | Plan |
+|--------|-----|-------------|------|
+| [PROJ-1234](url) | [#5678](url) | Initial: feature X | `test-plans/<repo>-1234.md` |
 
 ## Verify–Review Loop to Threshold
 

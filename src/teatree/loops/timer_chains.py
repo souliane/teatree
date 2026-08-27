@@ -101,10 +101,10 @@ IDLE_POLL_FLOOR_SECONDS = 60
 #: The interval tick subprocess deadline is ``max(MIN_TICK_DEADLINE_SECONDS, 3 x cadence)``.
 MIN_TICK_DEADLINE_SECONDS = 300.0
 DEADLINE_CADENCE_MULTIPLIER = 3
-#: A ``daily_at`` loop has no ``delay_seconds``, so ``3 x cadence`` collapses to the
-#: 300 s floor — far too short for a daily news scan / sweep, which is then SIGKILLed
-#: AFTER its cadence anchor was already consumed (loss for a full 24 h). Daily ticks
-#: get their own generous deadline instead; a genuine overrun past it escalates loudly.
+#: ``3 x cadence`` is meaningless for a ``daily_at`` loop — the interval it would
+#: multiply is the fallback the ``loop_script_requires_delay`` constraint forces every
+#: script loop to carry, not the schedule the loop actually runs on. Daily ticks get
+#: their own deadline; a genuine overrun past it escalates loudly.
 DAILY_TICK_DEADLINE_SECONDS = 1800.0
 
 
@@ -255,12 +255,13 @@ def _idle_successor_run_after(row: "Loop", now: dt.datetime) -> dt.datetime:
 def compute_tick_deadline(row: "Loop") -> float:
     """The hard subprocess-tick deadline.
 
-    An interval loop gets ``max(300 s, 3 x cadence)``. A ``daily_at`` loop has no
-    ``delay_seconds`` (so ``3 x cadence`` would collapse to the 300 s floor and
-    SIGKILL a legitimately long daily scan after its anchor was already consumed) —
-    it gets the dedicated :data:`DAILY_TICK_DEADLINE_SECONDS` instead.
+    An interval loop gets ``max(300 s, 3 x cadence)``. ``daily_at`` OVERRIDES the
+    interval (:meth:`Loop.is_due`), so a scheduled loop gets the dedicated
+    :data:`DAILY_TICK_DEADLINE_SECONDS` whatever ``delay_seconds`` it also carries —
+    keying that branch on an absent interval instead made it unreachable for every
+    shipped daily loop, whose 86400 s fallback stretched the ceiling to 72 h.
     """
-    if row.delay_seconds is None and row.daily_at is not None:
+    if row.daily_at is not None:
         return DAILY_TICK_DEADLINE_SECONDS
     cadence = row.delay_seconds or 0
     return max(MIN_TICK_DEADLINE_SECONDS, DEADLINE_CADENCE_MULTIPLIER * float(cadence))
@@ -371,6 +372,10 @@ def loop_timer(context: object, name: str) -> TimerResult:
         # The killed tick already consumed its anchor, so its work is lost until the
         # next slot (a full 24 h for a daily loop). Surface it loudly, never silent.
         _escalate_tick_timeout(name, deadline=compute_tick_deadline(row))
+    elif outcome["returncode"]:
+        # The chain survives a failing tick by design; without this the only record of
+        # a loop failing every slot is a return value no health surface reads.
+        logger.warning("loop_timer %r tick exited %s — the loop did not do its work", name, outcome["returncode"])
 
     # (5) post-tick refinement. A faulted tick (crash before the CAS, connector
     # outage, lost lease) leaves the anchor unmoved, so the loop is still "due" and

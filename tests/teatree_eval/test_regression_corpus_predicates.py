@@ -133,3 +133,32 @@ class TestStagedAutonomyHermeticAgainstDbTier(TestCase):
         # The below-full floor must still BLOCK a human-less substrate CLEAR even
         # though the host DB pins this overlay to full.
         assert predicates._check_merge_precondition_substrate_human_authorize() is True
+
+
+class TestPredicatesLeaveNoDurableRows(TestCase):
+    """The corpus runs against the live control DB, so a predicate cleans up what it wrote.
+
+    A leaked ``MergeClear`` is a durable merge authorisation for a real repo slug
+    sitting in the operator's store, written by a check that only wanted to
+    exercise a guard.
+    """
+
+    def _clear_pks(self) -> set[int]:
+        from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+        return set(MergeClear.objects.values_list("pk", flat=True))
+
+    def test_substrate_human_authorize_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_substrate_human_authorize() is True
+        assert self._clear_pks() == before
+
+    def test_substrate_full_autonomy_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
+        assert self._clear_pks() == before
+
+    def test_maker_is_not_checker_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_maker_is_not_checker() is True
+        assert self._clear_pks() == before

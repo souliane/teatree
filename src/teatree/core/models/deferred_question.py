@@ -343,17 +343,22 @@ class DeferredQuestion(models.Model):
 
     @classmethod
     def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
-        """The highest-generation pending question mirrored to *channel* before *after_ts*.
+        """The most recently captured pending question mirrored to *channel* before *after_ts*.
 
         Recency is a heuristic, not identity: with a deep mirrored backlog the
         newest row is reliably NOT the one an unaddressed reply answers. Reply
         binding therefore goes through :meth:`for_thread` /
-        :meth:`sole_for_reply`; this stays the generation cursor for the
-        capture path, where one live generation per (session, run) is the rule.
+        :meth:`sole_for_reply`; this stays the cursor for the capture path.
+
+        Recency, not ``generation``, orders the candidates: the cursor
+        :meth:`next_generation` mints is scoped to one ``(session_id, run_id)``,
+        so comparing it across the many scopes that mirror into one DM binds a
+        reply to whichever scope happens to count highest. Within a scope the
+        two agree — a superseded question is already stale — so nothing is lost.
         """
         if not channel or not after_ts:
             return None
-        return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-generation", "-created_at").first()
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-created_at", "-pk").first()
 
     @classmethod
     def for_thread(cls, *, channel: str, thread_ts: str, after_ts: str) -> "DeferredQuestion | None":

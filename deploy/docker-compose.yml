@@ -9,6 +9,22 @@
 # (#3454 — TEATREE_GH_TOKEN / T3_ADMIN_PASSWORD, see deploy/entrypoint.sh and
 # deploy/README.md). Other non-secret runtime config (clone/repo paths, uv dirs)
 # is baked into the image.
+#
+# GITLAB_TOKEN and NOTION_TOKEN are the secrets that must additionally be declared
+# per service, and the reason is the boundary the entrypoint cannot cross. The entrypoint's
+# `export` reaches only the ROLE's own process tree; `docker exec` starts from the
+# CONTAINER's environment, which is fixed at create time — so an exec'd process
+# saw an unset GITLAB_TOKEN while the role process had it the whole time. The
+# baked credential helper then interpolated the empty value and authenticated with
+# an EMPTY password, which GitLab reports as `HTTP Basic: Access denied` — read for
+# a whole day as a missing branch rather than a missing token. Declaring it here is
+# what a `docker exec` inherits; the entrypoint's pass read stays as the fallback
+# for a container created without it (the watchdog cannot read the host's pass).
+# The value is interpolated from the deploying host, never written here: deploy.sh
+# and deploy/t3 both resolve it from `pass` (TEATREE_GITLAB_TOKEN_PASS_PATH,
+# default `gitlab/pat`). Unset, it renders empty and nothing changes.
+# NOTION_TOKEN crosses the same boundary for the same reason, resolved by deploy.sh
+# from NOTION_TOKEN_PASS_PATH (default `notion/integration-token`).
 name: teatree
 
 # The PROJECT interpreter root every worktree virtualenv is built against: uv's
@@ -164,6 +180,20 @@ x-teatree-common: &teatree-common
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
       target: /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+    # The host's PATH bin dir, so the CONTAINER can write the host `t3` launcher
+    # (#3232). Retiring the host CLI leaves nothing on the host able to write it,
+    # which would make a relocated checkout unrepairable; this one directory is
+    # the whole window, and `t3 setup` writes exactly one file through it.
+    #
+    # The ONE bind deliberately NOT at path identity. `/home/teatree/.local/bin`  # privacy-scan:allow — the box's public, documented deploy home
+    # is on the container's own PATH, and the file landing here execs `docker
+    # compose`, so mounting at identity would make the host launcher resolvable
+    # INSIDE the container — a `t3` that dispatches into the container it is
+    # already running in. The target is therefore its own container path, which
+    # nothing but the launcher installer reads.
+    - type: bind
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/bin  # privacy-scan:allow — the box's public, documented deploy home
+      target: /var/lib/teatree/host-bin
     # Credential plane: the host-provisioned pass store + its GPG home, as
     # DEDICATED mounts decoupled from the data dir (a data-dir change must never
     # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
@@ -281,6 +311,9 @@ services:
     environment:
       TEATREE_ROLE: init
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
+      # See the header: what a `docker exec` inherits, unlike the entrypoint's export.
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       # Where core lives INSIDE the source mount. The default is the mount root
@@ -291,15 +324,17 @@ services:
       # install that registers the overlay entry point. Interpolated from the
       # host env because that is the only channel deploy/t3 can reach compose on.
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # The HOST checkout holding `deploy/`. init runs `t3 setup`, which renders
+      # the host `t3` launcher's exec target from this — so a boot repairs the
+      # host launcher against the checkout the deploy was driven from. Init also
+      # owns the shared clone root, so this is where the discovery link is
+      # retargeted at the host-visible checkout, before the worker reads it (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
       # Same default expression as the /host-tmp bind source above, so the sweep's
       # probe_root always names the SAME host path the mount actually points at
       # (#4165) — a value read here that disagreed with the mount source would
       # blind the open-file guard exactly as a hard-coded /tmp did.
       TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
-      # Init owns the shared clone root, so it is where the discovery link is
-      # retargeted at the host-visible checkout — before the worker that reads
-      # it starts (#4120).
-      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     restart: "no"
 
   # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
@@ -309,19 +344,23 @@ services:
     environment:
       TEATREE_ROLE: worker
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # The service `deploy/t3` execs into, so this is the fallback for a
+      # `t3 setup` dispatched at it; the wrapper's own `--env` carries the
+      # CURRENT checkout and wins, which is what repairs a relocation. It is also
+      # the value clone discovery is pointed at, so the worktrees this role cuts
+      # carry a `gitdir:` the host resolves too (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
       # Same default expression as the /host-tmp bind source above, so the sweep's
       # probe_root always names the SAME host path the mount actually points at
       # (#4165) — a value read here that disagreed with the mount source would
       # blind the open-file guard exactly as a hard-coded /tmp did.
       TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
-      # Same value as the checkout bind in the shared anchor: the entrypoint
-      # points clone discovery at it so the worktrees this role cuts carry a
-      # `gitdir:` the host resolves too (#4120).
-      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     # THE ONE SERVICE THAT MAY DRIVE THE DAEMON. The shared mount set carries
     # /var/run/docker.sock, but the socket is mode 0660 root-owned and every app
     # service runs as the non-root TEATREE_UID, so the mount alone grants nothing.
@@ -391,6 +430,8 @@ services:
     environment:
       TEATREE_ROLE: admin
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
@@ -432,6 +473,8 @@ services:
     environment:
       TEATREE_ROLE: slack-listener
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
       T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
@@ -500,6 +543,12 @@ services:
       TEATREE_UID: ${TEATREE_UID:-1001}
       TEATREE_IMAGE: ${TEATREE_IMAGE:-teatree-headless:latest}
       TEATREE_DOCKER_SOCKET_GID: ${TEATREE_DOCKER_SOCKET_GID:-0}
+      # Carried for the same reason as the rest of this block, and it is the one
+      # value this container cannot re-derive: the host's pass store is not mounted
+      # here, so a repair that had to (re)create a service would otherwise render an
+      # empty token and hand the new container the failure this file just fixed.
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      NOTION_TOKEN: ${NOTION_TOKEN:-}
       # The watchdog role execs watchdog.sh before the entrypoint's TMPDIR export
       # and runs no agents, so it never writes scratch to this root — but #3641's
       # contract is that EVERY service declares the output root explicitly, so the
@@ -564,7 +613,7 @@ volumes:
   # worktree reads as `fatal: not a git repository: /Users/...` in the container
   # and vice versa. Each side owning its clones is the only self-consistent
   # arrangement; the container fills this volume by cloning what it needs
-  # (`OverlayBase.get_repo_clone_url` -> `core.worktree.clone_provision`).
+  # (`overlay.provisioning.repo_clone_url` -> `core.worktree.clone_provision`).
   # It is a VOLUME rather than the image's writable layer so the clones — minutes
   # of network each — survive container recreation.
   teatree_clones:

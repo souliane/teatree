@@ -1,8 +1,8 @@
 """The dashboard shell every page extends — identity, landmarks, and the morph config.
 
-Three properties that belong to the shell rather than to any one page: which BOX the
-operator is looking at, whether a keyboard user can reach the content, and whether a
-polled morph swap is allowed to overwrite what someone is typing.
+Four properties that belong to the shell rather than to any one page: which BOX the
+operator is looking at, which mark brands it, whether a keyboard user can reach the
+content, and whether a polled morph swap is allowed to overwrite what someone is typing.
 """
 
 import socket
@@ -12,7 +12,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
-from teatree.dash.views.base import instance_label, nav_context
+from teatree.dash.views.base import brand_logo, instance_label, nav_context
 from tests.factories import TicketFactory
 
 
@@ -35,6 +35,40 @@ class InstanceLabelTestCase(TestCase):
         ConfigSetting.objects.set_value("dashboard_instance_label", "build-box")
         response = self.client.get(reverse("dash:board"))
         assert b"build-box" in response.content
+
+
+class BrandLogoTestCase(TestCase):
+    """The header mark is a static path an overlay or operator names, teatree's own by default."""
+
+    SHIPPED_MARK = "dash/logo.jpg"
+    OVERRIDING_MARK = "dash/favicon.svg"
+
+    def test_an_unset_logo_resolves_to_the_mark_teatree_ships(self) -> None:
+        """Also proves the shipped default names a file the static finders actually resolve."""
+        assert brand_logo() == self.SHIPPED_MARK
+
+    def test_a_configured_logo_replaces_the_shipped_mark(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_logo", self.OVERRIDING_MARK)
+        assert brand_logo() == self.OVERRIDING_MARK
+
+    def test_a_logo_no_finder_resolves_is_dropped_rather_than_rendered_broken(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_logo", "nowhere/absent.svg")
+        assert brand_logo() is None
+
+    def test_the_mark_reaches_every_page_through_the_nav_context(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_logo", self.OVERRIDING_MARK)
+        assert nav_context("dash:board")["brand_logo"] == self.OVERRIDING_MARK
+
+    def test_the_rendered_header_carries_the_configured_mark(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_logo", self.OVERRIDING_MARK)
+        body = self.client.get(reverse("dash:board")).content.decode()
+        assert f"/static/{self.OVERRIDING_MARK}" in body
+
+    def test_the_page_still_renders_when_no_mark_resolves(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_logo", "nowhere/absent.svg")
+        response = self.client.get(reverse("dash:board"))
+        assert response.status_code == 200
+        assert b"dash-mark" not in response.content
 
 
 class ShellAccessibilityTestCase(TestCase):

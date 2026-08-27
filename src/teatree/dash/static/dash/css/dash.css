@@ -56,8 +56,11 @@ select:focus-visible,
   font-size: var(--text-md);
   letter-spacing: 0.01em;
 }
-.dash-brand svg {
-  color: var(--brand);
+.dash-mark {
+  height: 20px;
+  width: auto;
+  max-width: 96px;
+  border-radius: 3px;
 }
 .dash-instance {
   font-family: var(--font-mono);

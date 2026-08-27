@@ -36,6 +36,15 @@ def test_malformed_file_is_replaced_not_trusted(tmp_path: Path) -> None:
     uuid.UUID(value)
 
 
+def test_malformed_file_recovery_is_persisted(tmp_path: Path) -> None:
+    # A corrupt file must not leave the id regenerating per call: an unpersisted
+    # recovery forks the installation identity every claim fences on.
+    (tmp_path / "instance_id").write_text("not-a-uuid", encoding="utf-8")
+    first = read_or_create_instance_id(tmp_path)
+    assert (tmp_path / "instance_id").read_text(encoding="utf-8").strip() == first
+    assert read_or_create_instance_id(tmp_path) == first
+
+
 def _plant_then_link(winner: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ``os.link`` model a racing writer: the winner's file lands first, so our link fails."""
     real_link = os.link

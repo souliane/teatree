@@ -14,7 +14,13 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
+from teatree.core.repair_loop import (
+    IterationStalled,
+    MaxIterationsExceeded,
+    ReofferBudgetExceeded,
+    reoffer_verdict,
+    requeue_verdict,
+)
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 
 
@@ -61,14 +67,26 @@ def check_requeue_allowed(task: Task) -> None:
     * :class:`~teatree.core.repair_loop.IterationStalled` — two identical failures;
     * :class:`~teatree.core.repair_loop.MaxIterationsExceeded` — the iteration cap
         (previously FAILed the row with only a ``logger.warning`` — a silent freeze).
+    * :class:`~teatree.core.repair_loop.ReofferBudgetExceeded` — the row's own
+        re-offer budget, evaluated FIRST because it is the only one of the three
+        that still terminates when nothing ever records an attempt.
 
     A CAUSELESS attempt is dropped from the stall comparison (#4075) but still counted
     toward the cap — see :func:`~teatree.core.modelkit.task_failure_taxonomy.is_causeless`.
 
     A no-op when under the cap and not stalled.
     """
-    attempts = phase_attempts(task)
     phase = normalize_phase(task.phase)
+    try:
+        reoffer_verdict(
+            ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+            phase=phase,
+            reclaim_count=task.reclaim_count,
+        )
+    except ReofferBudgetExceeded:
+        _escalate_reoffers(task, phase=phase, reoffers=task.reclaim_count)
+        raise
+    attempts = phase_attempts(task)
     last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
     try:
         requeue_verdict(
@@ -83,6 +101,30 @@ def check_requeue_allowed(task: Task) -> None:
     except MaxIterationsExceeded:
         _escalate_cap(task, phase=phase, iterations=len(attempts))
         raise
+
+
+def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
+    """Record a durable ``DeferredQuestion`` for an exhausted re-offer budget.
+
+    The signal the re-offer loop had none of: a unit whose outcome nothing records
+    circulates behind a frozen completed counter, so neither the stall detector nor
+    the iteration cap ever fires and no surface says anything is wrong.
+    """
+    ticket = task.ticket
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
+    question = (
+        f"Re-offer budget on {where} (phase {phase!r}): task {task.pk} has been reclaimed and "
+        f"re-offered {reoffers} time(s) without ever terminalizing, so re-offering is paused. "
+        f"Its dispatcher is most likely not recording the outcome (`tasks record-attempt`). "
+        f"How should it proceed — investigate, rework, or ignore?"
+    )
+    DeferredQuestion.record(
+        question,
+        session_id=str(session_id or ""),
+        dedupe_marker=f"reoffer-budget:{ticket.pk}:{phase}",
+        audience=DeferredQuestion.Audience.INTERNAL,
+    )
 
 
 def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:

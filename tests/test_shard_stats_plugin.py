@@ -126,6 +126,51 @@ def test_plugin_records_each_test_against_the_ceiling_that_applied_to_it(tmp_pat
 
 
 @pytest.mark.integration
+def test_both_records_survive_the_xdist_controller_worker_split(tmp_path: Path) -> None:
+    """The lane runs under ``-n auto``, and only a WORKER collects and runs.
+
+    The controller writes the file last from its own state, so without the
+    worker fan-in it emits 0 collected / 0 selected and no headroom — numbers the
+    completeness check reads as an exact partition of an empty suite.
+    """
+    pytest.importorskip("xdist")
+    pytest.importorskip("pytest_timeout")
+    (tmp_path / "test_toy.py").write_text(_TOY_SUITE, encoding="utf-8")
+    stats_out = tmp_path / "shard-stats.1.json"
+
+    env = _clean_env()
+    env["PYTHONPATH"] = str(_REPO_ROOT)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "test_toy.py",
+            "-p",
+            "scripts.ci.shard_stats_plugin",
+            "-n",
+            "2",
+            "-o",
+            "timeout=300",
+            f"--shard-stats-out={stats_out}",
+            "-q",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert stats_out.exists(), completed.stdout + completed.stderr
+    payload = json.loads(stats_out.read_text(encoding="utf-8"))
+    assert payload["total_collected"] == 10, "the controller must write what the workers collected"
+    assert payload["selected"] == 10, "the controller must write what the workers selected"
+    assert payload["slowest_against_ceiling"], "the headroom record must cross the worker boundary too"
+
+
+@pytest.mark.integration
 def test_the_partition_record_survives_a_session_that_dies_mid_run(tmp_path: Path) -> None:
     """The completeness check reads this file; a hard crash must not cost it the counts it needs.
 

@@ -433,6 +433,18 @@ class SdkSynthesizerParseTestCase(TestCase):
         assert synthesized.fail_tool_call == {"name": "Edit", "input": {"file_path": "a.py"}}
         assert synthesized.pass_tool_call == {"name": "Task", "input": {"prompt": "fix in a worktree"}}
 
+    def test_the_candidates_identity_wins_over_a_renamed_scenario(self) -> None:
+        # The prompt says "copy verbatim"; a model that renames it splits the identity in
+        # two, because the derivation outcome, the fixtures and the staging path all key
+        # on the CANDIDATE's name while the staged YAML would carry the model's.
+        raw = (
+            '{"scenario_name": "something_the_model_made_up", "context_preamble": "ctx", '
+            '"prompt": "p", "expect": [{"tool_call": "Task", "args.prompt": "~ \\"fix\\""}], '
+            '"fail_tool_call": {"name": "Edit"}, "pass_tool_call": {"name": "Task"}}'
+        )
+        synthesized = _parse_synthesized(raw, {"scenario_name": "x_under_load"})
+        assert synthesized.scenario_name == "x_under_load"
+
     def test_no_json_object_raises(self) -> None:
         with pytest.raises(ValueError, match="no JSON object"):
             _parse_synthesized("the model refused", {"scenario_name": "x"})
@@ -623,8 +635,11 @@ class ParseSynthesizedExtractsOneObjectTestCase(TestCase):
         assert synthesized.expect == [{"tool_call": "Task", "args.prompt": '~ "fix"'}]
 
     def test_object_with_a_trailing_fragment_does_not_raise_extra_data(self) -> None:
+        # ``scenario_name`` is identity and comes from the candidate, so which object the
+        # scan picked is read off the fields the object itself supplies.
         synthesized = _parse_synthesized(self._WELL_FORMED + "\n}{ trailing noise", {"scenario_name": "x"})
-        assert synthesized.scenario_name == "first_under_load"
+        assert synthesized.context_preamble == "ctx"
+        assert synthesized.prompt == "p"
 
     def test_a_non_json_brace_in_prose_is_skipped_for_the_real_object(self) -> None:
         # Haiku prose like "Thinking {step 1: design}" carries a brace that is not
@@ -632,7 +647,8 @@ class ParseSynthesizedExtractsOneObjectTestCase(TestCase):
         synthesized = _parse_synthesized(
             "Thinking {step 1: design} then:\n" + self._WELL_FORMED, {"scenario_name": "x"}
         )
-        assert synthesized.scenario_name == "first_under_load"
+        assert synthesized.context_preamble == "ctx"
+        assert synthesized.prompt == "p"
 
     def test_only_a_non_json_brace_raises_no_object(self) -> None:
         with pytest.raises(ValueError, match="no JSON object"):

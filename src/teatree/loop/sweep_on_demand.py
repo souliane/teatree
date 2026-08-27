@@ -10,13 +10,21 @@ autonomous merge "never happens". This module closes the loop event-driven:
 ``merge_safe`` verdict, which rebuilds the verdict's own overlay sweep scanner
 (same builder the tick uses) and runs the scanner's single-PR evaluation.
 
-Best-effort: every failure degrades to a logged no-op so a sweep hiccup never
-turns verdict recording into a command failure. The periodic sweep remains the
-backstop — this only removes the cadence-length race window.
+Best-effort: every failure degrades to a no-op so a sweep hiccup never turns
+verdict recording into a command failure. The periodic sweep remains the backstop —
+this only removes the cadence-length race window.
+
+Best-effort is NOT silent. A :class:`ScannerError` — the sweep could not read the
+forge at all — is DM'd through the same owner notice the periodic dispatcher uses,
+because this path is reached from ``review record``, a command that reports success
+either way. That swallowing is how a sweep which had never enumerated one MR on this
+fork's forge looked healthy from every surface (#72).
 """
 
 import logging
 
+from teatree.loop.scanner_error_notice import notify_scanner_error
+from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.pr_sweep import MergeAttempt, PrSweepScanner
 
 logger = logging.getLogger(__name__)
@@ -36,6 +44,10 @@ def trigger_sweep_for_verdict(*, slug: str, pr_id: int, overlay: str) -> MergeAt
         if scanner is None:
             return None
         return scanner.evaluate_one(slug=slug, pr_id=pr_id)
+    except ScannerError as exc:
+        logger.warning("on-demand pr_sweep could not read %s#%d (overlay=%s): %s", slug, pr_id, overlay, exc)
+        notify_scanner_error(label=f"pr_sweep[{overlay}]", exc=exc, overlay=overlay, skipped="not run for this verdict")
+        return None
     except Exception:
         logger.exception("on-demand pr_sweep trigger failed for %s#%d (overlay=%s)", slug, pr_id, overlay)
         return None

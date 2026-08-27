@@ -34,17 +34,23 @@ _AUTO_MERGE_REASON = (
 _NO_VERIFY_REASON = "BLOCKED: `--no-verify` — fix the hook failure instead of bypassing it."
 _NO_GPG_REASON = "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval."
 
+# ``git`` accepts its own global options between the program word and the
+# subcommand (``git -c push.default=simple push``, ``git -C <dir> push``,
+# ``git --no-pager push``), so a contiguous ``git push`` match misses a real
+# bypass written in any of those shapes. Each option is optionally followed by a
+# separate value token; the trailing group backtracks so a value-less option
+# (``--no-pager``) does not swallow ``push``.
+_GIT_GLOBAL_OPTS: str = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
+
+# git accepts four spellings of one push option — ``-o V``, ``-oV``,
+# ``--push-option V`` and ``--push-option=V`` (verified against git 2.50.1) — and
+# all four schedule the identical auto-merge.
+_AUTO_MERGE_PUSH_OPTION: str = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
+
 # VALUE/CONFIG patterns — scanned against the RAW command (quoting cannot evade).
 _RAW_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE), _HOOKS_PATH_REASON),
-    (
-        re.compile(
-            r"\bgit\s+push\b.*"
-            r"(?:-o\s+['\"]?merge_request\.merge_when_pipeline_succeeds"
-            r"|--push-option=['\"]?merge_request\.merge_when_pipeline_succeeds)"
-        ),
-        _AUTO_MERGE_REASON,
-    ),
+    (re.compile(rf"\bgit\s+{_GIT_GLOBAL_OPTS}push\b.*{_AUTO_MERGE_PUSH_OPTION}"), _AUTO_MERGE_REASON),
 )
 
 # TOOL-INVOCATION flag patterns — scanned against a quote-stripped copy so a flag

@@ -32,17 +32,22 @@ class E2eExtrasContext:
     Every field is something core resolved for this run: ``target`` (the dual-env
     target ``"dev"`` / ``"qa"`` / ``"local"`` core routed at), ``spec_path`` (the
     selected Playwright spec), ``artifacts_dir`` (the out-of-repo capture root the
-    runner exported as ``T3_E2E_ARTIFACTS_DIR``), and ``compose_project`` (the
-    teatree-managed docker-compose project). An overlay reads these instead of
-    re-deriving them, so its extras can never disagree with core's routing. A
-    frozen context — not a widening parameter list — so a future field is an
-    additive change, not another signature break.
+    runner exported as ``T3_E2E_ARTIFACTS_DIR``), ``compose_project`` (the
+    teatree-managed docker-compose project), and ``base_url`` (the resolved
+    ``BASE_URL`` the runner is about to export to the child process). An overlay
+    reads these instead of re-deriving them, so its extras can never disagree
+    with core's routing — ``os.environ`` still holds the *host* process's env,
+    not the dict the runner builds for the subprocess, so an overlay reading
+    ``os.environ.get("BASE_URL")`` can see a stale or empty value even though the
+    child will get the right one. A frozen context — not a widening parameter
+    list — so a future field is an additive change, not another signature break.
     """
 
     target: str = ""
     spec_path: str = ""
     artifacts_dir: str = ""
     compose_project: str = ""
+    base_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)

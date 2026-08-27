@@ -330,14 +330,21 @@ def drain_chain() -> dict[str, int]:
     collapses to one. Successor-FIRST (F6): the next fire is queued before the
     reap/drain body, in a try that records-but-never-propagates, so a body fault
     cannot orphan the chain.
+
+    It carries BOTH reapers: :func:`reap_stuck_runs` for ``execute_task``, whose
+    process-aware predicate can re-dispatch what it frees, and
+    :func:`~teatree.loops.stranded_runs.reap_stranded_runs` for every other task path,
+    which nothing else could reach at all.
     """
     from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 — deferred: task-body import
+    from teatree.loops.stranded_runs import reap_stranded_runs  # noqa: PLC0415 — deferred: cycle-safe
 
     if _pending_for_path(drain_chain.module_path):
         return {"deduped": 1}
     drain_chain.using(run_after=timezone.now() + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
     try:
         reaped = reap_stuck_runs()
+        stranded = reap_stranded_runs()
         drained = drain_queue_body()
     except Exception:
         logger.exception("drain_chain body failed; successor already queued, the chain survives")
@@ -345,6 +352,7 @@ def drain_chain() -> dict[str, int]:
     return {
         "reaped_failed": reaped["failed"],
         "reaped_reenqueued": reaped["reenqueued"],
+        "stranded_failed": stranded["failed"],
         "drained": len(drained["enqueued"]),
     }
 

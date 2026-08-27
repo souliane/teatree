@@ -115,7 +115,6 @@
     - teatree.core.review.verdict_findings_publish
     - teatree.core.management.commands.pr
     - teatree.core.management.commands.ticket
-    - teatree.core.management.commands._test_plan.post
     - teatree.core.management.commands._test_plan.mr_post
     - teatree.loop.mechanical
     - teatree.loops.dream.promote_memory

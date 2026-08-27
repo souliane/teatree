@@ -23,11 +23,19 @@ named volume and takes a host directory to run a working tree instead.
 Structure is parsed from the YAML directly (the source of truth); golden
 `docker compose config` assertions render both the default and the overridden
 host home when a usable docker is present.
+
+``deploy/t3`` carries a hand-written second copy of the same host roots — it
+pre-creates each source (dockerd would otherwise create a missing one root-owned)
+and answers "can the container see this path?" from them. Nothing links the two
+files, so the last class here evaluates the wrapper's arrays and pins them against
+this file's bind sources.
 """
 
 import json
 import os
 import pwd
+import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -36,6 +44,7 @@ import pytest
 import yaml
 
 COMPOSE_FILE = Path(__file__).resolve().parents[1] / "deploy" / "docker-compose.yml"
+WRAPPER = COMPOSE_FILE.parent / "t3"
 
 # HOME inside the container — every mount TARGET is anchored here.
 CONTAINER_HOME = "/home/teatree"
@@ -46,6 +55,13 @@ DEFAULT_HOST_HOME = CONTAINER_HOME
 SOURCE_MOUNT_PLACEHOLDER = "${TEATREE_SOURCE_MOUNT:-teatree_src}"
 DEFAULT_SOURCE_VOLUME = "teatree_src"
 CONTAINER_SOURCE_DIR = f"{CONTAINER_HOME}/teatree"
+
+# The host's PATH bin dir, mounted so the CONTAINER can write the host `t3`
+# launcher. The ONE bind deliberately NOT at path identity: `/home/teatree/.local/bin`
+# is on the container's own PATH, and the file landing there execs `docker compose`,
+# so mounting at identity would make the host launcher resolvable inside.
+HOST_BIN_SOURCE = f"{HOST_HOME_PLACEHOLDER}/.local/bin"
+HOST_BIN_TARGET = "/var/lib/teatree/host-bin"
 
 # The three externalized state mounts, by canonical container target.
 EXTERNALIZED = {
@@ -74,6 +90,8 @@ SESSION_PLANE = {
 INTERPRETER_PLANE = {
     f"{CONTAINER_HOME}/.local/share/uv/python",
 }
+# The mounts whose SOURCE is their TARGET rebased on the host home.
+PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE | INTERPRETER_PLANE
 # The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
 # A PAIR by construction: the open-file guard is read from a process table, so the
 # temp root and the table describing its holders must name the same namespace.
@@ -83,7 +101,7 @@ HOST_NAMESPACE = {HOST_SCRATCH_TARGET, HOST_PROC_TARGET}
 # Every host bind mount the shared list must carry, by canonical container target.
 # The host-namespace pair is listed separately: it is not a container path rebased
 # onto the host home, so the state-plane source rule below does not apply to it.
-ALL_BIND_TARGETS = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE | INTERPRETER_PLANE
+ALL_BIND_TARGETS = PATH_IDENTICAL | {HOST_BIN_TARGET}
 # The deploy checkout: the clone `workspace ticket` cuts worktrees from (#4120).
 # A different KIND of bind from the state planes above — it is not a container
 # path rebased onto the host home but the SAME path on both sides, so the
@@ -105,6 +123,28 @@ CLONE_ROOT_VOLUME = "teatree_clones"
 CLONE_ROOT_TARGET = f"{CONTAINER_HOME}/workspace"
 KEPT_NAMED_VOLUMES = {DEFAULT_SOURCE_VOLUME, "teatree_uv", "teatree_control_db", CLONE_ROOT_VOLUME}
 REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
+# The daemon control channel.
+DOCKER_SOCKET = "/var/run/docker.sock"
+#: Every worker bind whose source is NOT under the host home, enumerated so a new
+#: root elsewhere reds instead of widening the host-home parity silently: the daemon
+#: socket, the host process table and temp root the retention sweep reads, and the
+#: deploy checkout bound at path identity. `/proc` appears twice because the shared
+#: volume list declares it in both compose syntaxes.
+NON_HOST_HOME_WORKER_BINDS = {
+    DOCKER_SOCKET,
+    "/proc",
+    "/proc:/host-proc",
+    "${TEATREE_HOST_TMP:-/tmp}",
+    "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}",
+}
+
+BASH = shutil.which("bash") or "/bin/bash"
+#: The wrapper's two mount-source arrays, from the first declaration to the close of
+#: the second — stopping before the `install -d` that would create the dirs for real.
+WRAPPER_MOUNT_ARRAYS = re.compile(
+    r"^CREDENTIAL_MOUNT_SOURCES=\(.*?^DATA_MOUNT_SOURCES=\(.*?^\)",
+    re.DOTALL | re.MULTILINE,
+)
 
 
 def _compose() -> dict:
@@ -170,6 +210,54 @@ def _short_syntax_sources() -> set[str]:
     }
 
 
+def _worker_bind_sources() -> set[str]:
+    """Every host path bound into teatree-worker, in either compose syntax.
+
+    An ABSOLUTE short-syntax source is a bind by compose's own rule (the docker
+    socket is one); a relative or `${...}`-defaulted one names a volume.
+    """
+    sources = set()
+    for entry in _compose()["services"]["teatree-worker"]["volumes"]:
+        if isinstance(entry, dict):
+            if entry.get("type") == "bind":
+                sources.add(entry["source"])
+        elif (source := entry.rsplit(":", 1)[0]).startswith("/"):
+            sources.add(source)
+    return sources
+
+
+def _wrapper_mount_sources() -> set[str]:
+    """The wrapper's arrays as bash expands them, not as a regex reads them.
+
+    The compose PLACEHOLDER is fed in as the host home, so each expansion comes back
+    in the same spelling as the bind sources above and the two compare directly.
+    """
+    block = WRAPPER_MOUNT_ARRAYS.search(WRAPPER.read_text(encoding="utf-8"))
+    assert block is not None, f"{WRAPPER} no longer declares its mount-source arrays"
+    script = (
+        f"set -eu\nTEATREE_HOST_HOME={shlex.quote(HOST_HOME_PLACEHOLDER)}\n{block.group(0)}\n"
+        'printf "%s\\n" "${CREDENTIAL_MOUNT_SOURCES[@]}" "${DATA_MOUNT_SOURCES[@]}"'
+    )
+    completed = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=True, timeout=30)
+    return set(completed.stdout.splitlines())
+
+
+def _host_identity_worker_bind_sources() -> set[str]:
+    """The off-box overlay's worker bind sources, rendered onto the shared placeholder.
+
+    The overlay interpolates a bare ``${TEATREE_HOST_HOME}`` (it is only ever
+    added on a host that exports one), so rendering it onto the same placeholder
+    the base file defaults to lets the wrapper-parity set union the two files.
+    """
+    identity_file = COMPOSE_FILE.parent / "docker-compose.host-identity.yml"
+    services = yaml.safe_load(identity_file.read_text(encoding="utf-8"))["services"]
+    return {
+        m["source"].replace("${TEATREE_HOST_HOME}", HOST_HOME_PLACEHOLDER)
+        for m in services["teatree-worker"]["volumes"]
+        if isinstance(m, dict) and m.get("type") == "bind"
+    }
+
+
 def _resolve_default(source: str) -> str:
     """The value a `${VAR:-default}` source renders to when VAR is unset."""
     if source.startswith("${") and ":-" in source:
@@ -198,6 +286,8 @@ class TestExternalizedBindMounts:
         # default keeps source == target on the box.
         binds = self._bind_mounts()
         for target in ALL_BIND_TARGETS:
+            if target == HOST_BIN_TARGET:
+                continue
             suffix = target.removeprefix(CONTAINER_HOME)
             assert binds[target]["source"] == f"{HOST_HOME_PLACEHOLDER}{suffix}", (
                 f"{target}: source must be the target rebased on {HOST_HOME_PLACEHOLDER}"
@@ -237,6 +327,13 @@ class TestExternalizedBindMounts:
                 f"{target}: credential plane must be decoupled from the data dir"
             )
 
+    def test_the_host_bin_mount_is_deliberately_not_path_identical(self) -> None:
+        # Its target must stay off the container HOME, so the host launcher it
+        # carries can never be resolved by the container's own PATH.
+        entry = self._bind_mounts()[HOST_BIN_TARGET]
+        assert entry["source"] == HOST_BIN_SOURCE
+        assert not HOST_BIN_TARGET.startswith(CONTAINER_HOME)
+
     def test_kept_named_volume_mounts_still_present(self) -> None:
         assert {_resolve_default(source) for source in _short_syntax_sources()} == KEPT_NAMED_VOLUMES
 
@@ -269,12 +366,33 @@ class TestSourceTreeMountIsOverridable:
         assert 'export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"' in wrapper
 
 
+class TestWrapperMountSourcesMatchCompose:
+    """`deploy/t3`'s hand-written roots and this file's bind sources are one set.
+
+    The wrapper pre-creates every bind source before compose can (dockerd creates a
+    missing one ROOT-owned, locking the non-root container out) and answers "can the
+    container see this path?" from the same arrays. Both jobs are wrong the moment a
+    mount is added here and not there, and nothing else notices: the missed dir is
+    created root-owned at first `up`, and the diagnostic quietly under-reports.
+    """
+
+    def test_the_wrapper_names_exactly_the_workers_host_home_binds(self) -> None:
+        host_home_binds = {source for source in _worker_bind_sources() if source.startswith(HOST_HOME_PLACEHOLDER)}
+        assert _wrapper_mount_sources() == host_home_binds | _host_identity_worker_bind_sources()
+
+    def test_every_worker_bind_outside_the_host_home_is_enumerated(self) -> None:
+        # Scoping the parity above to host-home sources is only sound while every
+        # other root is named; a new one must fail here rather than pass silently.
+        outside = {source for source in _worker_bind_sources() if not source.startswith(HOST_HOME_PLACEHOLDER)}
+        assert outside == NON_HOST_HOME_WORKER_BINDS
+
+
 class TestDockerComposeConfigGolden:
     """Golden: `docker compose config` resolves the same mounts end to end."""
 
     def test_default_host_home_keeps_path_identity(self, tmp_path: Path) -> None:
         mounts = _rendered_mounts(_render(tmp_path, {}))
-        for target in ALL_BIND_TARGETS:
+        for target in PATH_IDENTICAL:
             assert target in mounts, f"{target} missing from rendered config"
             assert mounts[target]["type"] == "bind"
             # On the box the deploy user's home IS the container home.
@@ -288,9 +406,11 @@ class TestDockerComposeConfigGolden:
     def test_host_home_override_moves_sources_and_keeps_targets(self, tmp_path: Path) -> None:
         host_home = "/home/operator"
         mounts = _rendered_mounts(_render(tmp_path, {"TEATREE_HOST_HOME": host_home}))
-        for target in ALL_BIND_TARGETS:
+        for target in PATH_IDENTICAL:
             assert mounts[target]["type"] == "bind"
             assert mounts[target]["source"] == target.replace(CONTAINER_HOME, host_home, 1)
+        # The host-bin mount follows the host home on its SOURCE side only.
+        assert mounts[HOST_BIN_TARGET]["source"] == f"{host_home}/.local/bin"
 
     def test_source_mount_override_binds_a_host_working_tree(self, tmp_path: Path) -> None:
         source = "/srv/downstream-fork/vendor/teatree"
@@ -339,3 +459,30 @@ class TestTopLevelVolumeDeclarations:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+HOST_IDENTITY_FILE = COMPOSE_FILE.parent / "docker-compose.host-identity.yml"
+
+
+def _host_identity_services() -> dict:
+    return yaml.safe_load(HOST_IDENTITY_FILE.read_text(encoding="utf-8"))["services"]
+
+
+class TestHostIdentityOverlayMountsTheCloneRoot:
+    """Off-box, the overlay identity-mounts the host WORKSPACE root.
+
+    Not just the
+    worktree tree beneath it. A linked worktree's gitdir pointer names its source
+    clone by the HOST's absolute path, so a container that cannot see the clones
+    answers every landed probe `clone-unresolvable` and clean-all reclaims nothing
+    (measured: 56 of 70 emit records unverifiable). One identity mount of the
+    workspace root makes the stored clone paths, the ad-hoc worktree roots and the
+    gitdir pointers all resolve in both venues.
+    """
+
+    def test_worker_and_admin_identity_mount_the_workspace_root(self) -> None:
+        for service in ("teatree-worker", "teatree-admin"):
+            mounts = {
+                (m["source"], m["target"]) for m in _host_identity_services()[service]["volumes"] if isinstance(m, dict)
+            }
+            assert ("${TEATREE_HOST_HOME}/workspace", "${TEATREE_HOST_HOME}/workspace") in mounts, service

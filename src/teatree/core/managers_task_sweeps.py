@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from teatree.core.claim_liveness import (
@@ -29,7 +30,7 @@ from teatree.core.claim_liveness import (
     owner_is_executing,
 )
 from teatree.core.modelkit.task_failure_taxonomy import LEASE_EXPIRED_PREFIX, FailureKind
-from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, ReofferBudgetExceeded
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -88,6 +89,10 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
     owner process is still executing it (a memory-thrashed event loop that stalled past its
     900s lease) is held with its owner instead — re-queuing it strands a run that is still
     producing work and hands a second agent the same worktree.
+
+    Each re-queue also stamps the row's ``reclaim_count``, which is what bounds
+    the re-offer loop when the attempt ledger those two budgets read never
+    advances (:func:`~teatree.core.repair_loop.reoffer_verdict`).
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -103,18 +108,20 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
             pk__in=requeueable,
             status=task_model.Status.CLAIMED,
             lease_expires_at__lt=now,
-        ).update(status=task_model.Status.PENDING, **RELEASED_CLAIM)
+        ).update(status=task_model.Status.PENDING, **RELEASED_CLAIM, reclaim_count=F("reclaim_count") + 1)
 
 
 def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int], *, now: "datetime") -> list[int]:
     """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009, #4164).
 
     Consults the repair-loop budget per row: a phase at its iteration cap
-    (:class:`~teatree.core.repair_loop.MaxIterationsExceeded`) or stalled on
-    two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`,
-    which also escalates to the user) is dropped from the re-queue set. So is a
-    row whose owner process is still executing it (#4164) — the only evidence
-    that WITHHOLDS the sweep, never one that widens it.
+    (:class:`~teatree.core.repair_loop.MaxIterationsExceeded`), stalled on
+    two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`),
+    or out of the row's own re-offer budget
+    (:class:`~teatree.core.repair_loop.ReofferBudgetExceeded`) is dropped from the
+    re-queue set. All three escalate to the user. So is a row whose owner process
+    is still executing it (#4164) — the only evidence that WITHHOLDS the sweep,
+    never one that widens it.
     """
     allowed: list[int] = []
     for task in qs.filter(pk__in=candidate_pks).select_related("ticket", "session"):
@@ -124,7 +131,7 @@ def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int], 
             continue
         try:
             task.check_requeue_allowed()
-        except (MaxIterationsExceeded, IterationStalled) as exc:
+        except (MaxIterationsExceeded, IterationStalled, ReofferBudgetExceeded) as exc:
             logger.warning("reclaim skip task=%s ticket=%s %s: %s", task.pk, task.ticket_id, type(exc).__name__, exc)
             continue
         allowed.append(task.pk)

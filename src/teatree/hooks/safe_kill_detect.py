@@ -20,11 +20,18 @@ numeric-pid guess. A ``kill`` token that is NOT at a command position — inside
 comment (``# kill 4242``), inside a string (``echo "to kill: kill 1234"``), as
 another command's argument (``grep kill 4242 file``), or as a subcommand word
 (``git kill 5``).
+
+Flagged regardless of how the program word is SPELLED: a path form
+(``/bin/kill``), a transparent wrapper (``command``/``env``/``xargs``/…), an
+env-assignment prefix, a compound-command keyword (``then kill 4242``) and a
+``sudo`` elevation all name the same guessed pid, so the leader is canonicalised
+before the compare.
 """
 
 import re
 from dataclasses import dataclass
 
+from teatree.hooks._parser_primitives import canonical_leader, strip_wrapper_prefix
 from teatree.hooks._shell_lexer import split_commands, tokenize
 
 # A signal flag on ``kill``: ``-9`` / ``-KILL`` / ``-SIGKILL`` / ``-TERM`` / the
@@ -33,6 +40,14 @@ from teatree.hooks._shell_lexer import split_commands, tokenize
 _SIGNAL_FLAG_RE = re.compile(r"^-(?:s$|[0-9A-Za-z]+$)")
 
 _PID_RE = re.compile(r"^-?\d+$")
+
+# ``sudo`` stays out of the SHARED wrapper set (it is not privilege-transparent),
+# so this gate strips it locally — an elevated kill reaches a process the agent
+# could not otherwise signal.
+# Only these ``sudo`` options consume a value token; every other flag is a switch.
+_SUDO_VALUE_FLAGS = frozenset(
+    {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-r", "--role", "-t", "--type"}
+)
 
 _SAFE_KILL_BLOCK_MSG = (
     "BLOCKED: this command signals a process by a raw pid. The agent has twice killed "
@@ -81,19 +96,43 @@ def _operand_index(words: list[str]) -> int | None:
     return i
 
 
+def _after_sudo_options(words: list[str]) -> list[str]:
+    """The argv ``sudo`` elevates, past ``sudo``'s own options."""
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            return words[index + 1 :]
+        if not word.startswith("-"):
+            break
+        index += 2 if word in _SUDO_VALUE_FLAGS else 1
+    return words[index:]
+
+
 def _kill_pid_in_words(words: list[str]) -> int | None:
     """Return the raw pid a ``kill`` segment targets, or ``None`` when it is not one.
 
-    The segment's first word must be exactly ``kill``. A non-numeric target
-    (``%job``, ``$VAR``, ``$(…)``), a no-op ``-0``/``-s 0`` probe, and a ``kill``
-    that is not the command name all yield ``None``.
+    The segment's executed program must be ``kill``, resolved the same way every
+    other leak/publish detector resolves a leader: a leading env-assignment run, a
+    ``cd``/``pushd`` pair, a compound-command keyword and ONE transparent wrapper
+    are stripped (:func:`strip_wrapper_prefix`), then the basename is taken
+    (:func:`canonical_leader`). A verbatim ``words[0] == "kill"`` test let
+    ``/bin/kill 4242``, ``command kill 4242``, ``env kill 4242`` and ``then kill
+    4242`` name the same guessed pid while passing as "not a kill". A leading
+    ``sudo`` and its own options are dropped for the same reason
+    (:func:`_after_sudo_options`). A non-numeric target (``%job``, ``$VAR``,
+    ``$(…)``), a no-op ``-0``/``-s 0`` probe, and a segment whose program is not
+    ``kill`` all yield ``None``.
     """
-    if not words or words[0] != "kill":
+    program_words = strip_wrapper_prefix(words)
+    if program_words and canonical_leader(program_words[0]) == "sudo":
+        program_words = strip_wrapper_prefix(_after_sudo_options(program_words))
+    if not program_words or canonical_leader(program_words[0]) != "kill":
         return None
-    index = _operand_index(words)
-    if index is None or index >= len(words):
+    index = _operand_index(program_words)
+    if index is None or index >= len(program_words):
         return None
-    target = words[index]
+    target = program_words[index]
     if not _PID_RE.match(target):
         return None  # %job / $VAR / $(…) / a flag — not a raw numeric pid
     pid = abs(int(target))
@@ -105,7 +144,8 @@ def detect_raw_pid_kill(command: str) -> SafeKillDetection:
 
     Detection is anchored to a command position via the shared quote-accurate
     shell lexer (:mod:`teatree.hooks._shell_lexer`): each ``;``/``&&``/``||``/
-    ``|``/newline-separated segment whose first WORD is ``kill`` is inspected, so
+    ``|``/newline-separated segment whose executed PROGRAM is ``kill`` is
+    inspected (:func:`_kill_pid_in_words` canonicalises the leader), so
     a ``kill`` token inside a quoted string (``echo "if it hangs; kill 1234"``),
     a comment, or as another command's argument is never split apart into a bogus
     kill segment. ``kill -0`` (no-op probe), ``pkill``/``killall`` (signal by

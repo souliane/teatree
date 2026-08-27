@@ -12,9 +12,10 @@ See: souliane/teatree#12
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+import generated_doc_staging
 
 _CANONICAL = Path("docs/generated/cli/representative-output.md")
 
@@ -41,7 +42,7 @@ def main() -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")
     if not os.environ.get("CLI_OUTPUT_SNAPSHOT_NO_STAGE"):
-        subprocess.run(["git", "add", str(path)], check=False)
+        generated_doc_staging.stage(path)
         print(f"Updated {_CANONICAL}")
     return 0
 

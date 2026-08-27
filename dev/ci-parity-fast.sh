@@ -4,7 +4,10 @@
 # run the full `bash dev/ci-parity.sh` ONCE before pushing (only it and CI's
 # `test (3.13)` combiner can prove the 93% whole-tree floor).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # A CALLER's pipeline (`bash dev/ci-parity-fast.sh 2>&1 | tail -25`) reports its
 # LAST stage's status, so this lane's exit code is erased before anyone reads it.

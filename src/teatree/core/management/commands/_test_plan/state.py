@@ -60,11 +60,21 @@ class WorkflowEmbed(TypedDict):
 
 
 class SideState(TypedDict):
-    """One side (dev/local) of the persisted state: commits, workflows, optional gap."""
+    """One run's evidence: where it ran, which commits, when — plus its workflows.
+
+    ``env`` / ``commits`` / ``ran_at`` are the three provenance facts an evidence
+    entry carries, kept as fields so a reader never has to infer them from prose.
+    ``env`` restates the enclosing key so one side's record stays self-describing
+    when it is read on its own; ``ran_at`` is the ISO-8601 UTC instant of the run
+    that produced this side's captures, so a capture can be reproduced or aged out
+    without reading prose in a workflow step.
+    """
 
     commits: dict[str, str]
     workflows: dict[str, WorkflowEmbed]
+    ran_at: NotRequired[str]
     missing_on_dev: NotRequired[list[str]]
+    env: NotRequired[str]
 
 
 class PlanState(ScenarioSection):
@@ -118,8 +128,15 @@ def _coerce_side(raw: object, *, env: str) -> SideState:
     commits = {str(k): str(v) for k, v in _as_dict(raw_dict.get("commits")).items()}
     workflows = {str(k): _coerce_workflow(v) for k, v in _as_dict(raw_dict.get("workflows")).items()}
     side: SideState = {"commits": commits, "workflows": workflows}
+    ran_at = str(raw_dict.get("ran_at") or "").strip()
+    if ran_at:
+        side["ran_at"] = ran_at
     if env == "dev":
         side["missing_on_dev"] = [str(m) for m in _as_list(raw_dict.get("missing_on_dev"))]
+    if raw_dict.get("env"):
+        side["env"] = str(raw_dict["env"])
+    if raw_dict.get("ran_at"):
+        side["ran_at"] = str(raw_dict["ran_at"])
     return side
 
 

@@ -10,6 +10,7 @@ callers keep importing the whole test-plan string layer from one module.
 """
 
 import json
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from teatree.core.management.commands._test_plan.manifest import (
@@ -86,18 +87,33 @@ def merge_state(
         "blocked_workflows": dict(prior.get("blocked_workflows", {})),
     }
     if manifest.dev.present:
-        state["dev"] = {
+        dev: SideState = {
             "commits": dict(manifest.dev.commits),
             "missing_on_dev": list(manifest.dev.missing_on_dev),
             "workflows": embeds.get("dev", {}),
+            "env": "dev",
         }
+        state["dev"] = _with_ran_at(dev, manifest.dev.ran_at, prior=prior.get("dev"))
     if manifest.local.present:
-        state["local"] = {"commits": dict(manifest.local.commits), "workflows": embeds.get("local", {})}
+        local: SideState = {
+            "commits": dict(manifest.local.commits),
+            "workflows": embeds.get("local", {}),
+            "env": "local",
+        }
+        state["local"] = _with_ran_at(local, manifest.local.ran_at, prior=prior.get("local"))
     for name, steps in manifest.steps.items():
         state["steps"][name] = list(steps)
     for name, reason in manifest.blocked_workflows.items():
         state["blocked_workflows"][name] = reason
     return state
+
+
+def _with_ran_at(side: SideState, ran_at: str, *, prior: SideState | None) -> SideState:
+    """*side* carrying this run's ``ran_at``, or the prior one when the run recorded none."""
+    carried = ran_at or (prior or {}).get("ran_at", "")
+    if carried:
+        side["ran_at"] = carried
+    return side
 
 
 # --- render -----------------------------------------------------------------
@@ -169,6 +185,27 @@ def _reconcile_line(dev: SideState, local: SideState) -> str:
         else:
             parts.append(f"{repo}: ≠ dev `{dev_sha}` vs local `{local_sha}`")
     return "Dev ± Local: " + ", ".join(parts)
+
+
+def _ran_at_line(dev: SideState, local: SideState) -> str:
+    """``"Dev ran: … Local ran: …"`` for whichever sides recorded a run instant.
+
+    Environment is the side and the version is its commits; this is the third
+    fact an evidence entry needs — a capture with no time cannot be reproduced
+    or aged out against a later build.
+    """
+    sides = (("Dev", dev), ("Local", local))
+    parts = [f"{label} ran: {_human_instant(side['ran_at'])}" for label, side in sides if side.get("ran_at")]
+    return "  ".join(parts)
+
+
+def _human_instant(stored: str) -> str:
+    """The stored ISO instant rendered for a reader; unparsable text passes through verbatim."""
+    try:
+        parsed = datetime.fromisoformat(stored)
+    except ValueError:
+        return stored
+    return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _dev_gap_clause(side: SideState) -> str:
@@ -262,6 +299,9 @@ def _render_header(state: PlanState) -> list[str]:
     reconcile = _reconcile_line(dev, local)
     if reconcile:
         lines.append(reconcile)
+    ran_at = _ran_at_line(dev, local)
+    if ran_at:
+        lines.append(ran_at)
     lines.append("")
     return lines
 

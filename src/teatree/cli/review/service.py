@@ -15,6 +15,14 @@ agent DMs the user the publish/delete commands; under IMMEDIATE it
 publishes with no DM. Read-only methods (``list_draft_notes``,
 ``delete_draft_note``) bypass the gate too.
 
+``reply_to_discussion`` carries the author-side carve-out: on an MR the
+OWNER AUTHORED it posts without approval (the owner's own voice on the
+owner's own work), while the same reply on a COLLEAGUE's MR stays gated.
+Authorship is PROVED per call by
+:func:`~teatree.cli.review.own_mr.owner_authored_mr` and fails CLOSED; no
+other method takes the carve-out, so an approve/unapprove/live comment on
+one's own MR is gated exactly as before.
+
 ``delete_discussion`` IS gated even though it is the deletion-shaped
 sibling of ``delete_draft_note`` — it removes a *published* note that
 colleagues can already see, so the removal itself is an on-behalf
@@ -46,6 +54,7 @@ from teatree.cli.review.on_behalf import (
     publish_or_blocked_issue,
 )
 from teatree.cli.review.on_behalf import register as _register_on_behalf
+from teatree.cli.review.own_mr import owner_authored_mr
 from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
 
@@ -251,8 +260,8 @@ class ReviewService:
         """
         from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415 — deferred: lazy CLI import
         from teatree.cli.review.default_draft import (  # noqa: PLC0415 — lazy: monkeypatchable + defers ORM
-            check_live_post,
             notify_draft_created,
+            publish_live_post,
             resolve_reviewed_head_sha,
         )
 
@@ -299,15 +308,14 @@ class ReviewService:
         )
         if refusal:
             return refusal, 1
-        blocked_live = check_live_post(repo=repo, mr=mr)
-        if blocked_live:
-            return blocked_live, 1
         note, send_refusal = route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
         if send_refusal:
             return send_refusal, 1
-        return publish_or_blocked(
-            repo, mr, "post_comment", lambda: self._post_comment_impl(repo, mr, note, file=file, line=line)
-        )
+
+        def post() -> tuple[str, int]:
+            return self._post_comment_impl(repo, mr, note, file=file, line=line)
+
+        return publish_or_blocked(repo, mr, "post_comment", lambda: publish_live_post(repo=repo, mr=mr, publish=post))
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
@@ -342,13 +350,23 @@ class ReviewService:
         Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): the reply is refused
         without any GitLab side effect when the gate is on and no recorded
         :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "reply_to_discussion")``.
+
+        The one exception is the author-side carve-out: on an MR the OWNER
+        AUTHORED, replying to a reviewer is the owner's own voice on the
+        owner's own work and posts without approval. Authorship is PROVED
+        here — :func:`~teatree.cli.review.own_mr.owner_authored_mr` reads the
+        MR's author against the posting identity and fails CLOSED — and the
+        proof is passed to the peek and the publish so both resolve the same
+        verdict. A reply on a COLLEAGUE's MR is unaffected and stays gated.
+        The receipt DM fires from the publish body either way.
         """
-        blocked = check_on_behalf(repo, mr, "reply_to_discussion")
+        api = self._get_api()
+        own_mr = owner_authored_mr(api, repo, mr)
+        blocked = check_on_behalf(repo, mr, "reply_to_discussion", own_mr=own_mr)
         if blocked:
             return blocked, 1
         from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
-        api = self._get_api()
         encoded = repo.replace("/", "%2F")
         # Reply bodies are always inline (anchored on the existing discussion's
         # diff position), so the inline cap applies.
@@ -360,6 +378,7 @@ class ReviewService:
             mr,
             "reply_to_discussion",
             lambda: reply_to_discussion_impl(self, repo, mr, discussion_id, body, encoded=encoded),
+            own_mr=own_mr,
         )
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:

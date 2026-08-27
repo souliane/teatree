@@ -66,11 +66,6 @@ _ALLOWLIST: frozenset[str] = frozenset(
         # contract_check — but cannot be resolved against the proxied tree, so
         # they are exempted explicitly.
         "t3 overlay contract-check",
-        # Illustrative per-overlay form in a publish-detection parser comment.
-        # The real command is the top-level ``t3 review post-comment``; the
-        # parser also matches a hypothetical per-overlay ``t3 <overlay> review
-        # post-comment`` variant by substring, which is what the comment shows.
-        "t3 teatree review post-comment",
     }
 )
 

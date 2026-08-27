@@ -150,12 +150,24 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.process_freshness:_MEMO": "invalidate_process_freshness",
     "teatree.config.host_projection:_warned": "reset_advisory_memo",
     "teatree.core.worktree.branch_classification:_declared_single_branch_repos": "reset_single_branch_cache",
+    "teatree.core.worktree.branch_classification:_branch_pr_is_merged": "reset_forge_probe_cache",
+    "teatree.core.worktree.branch_classification:_merged_pr_head_sha": "reset_forge_probe_cache",
     "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
     # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
     # below because nothing but the resolver reads that one.
     "teatree.config.seed_defaults:_cache": "reset_seed_defaults_cache",
+    # Open descriptors holding kernel flocks on E2E specs checkouts. A CLI run IS the
+    # process, so process-lifetime is the right production lifetime — but a test process
+    # runs many "runs" in one interpreter, and a leaked claim makes the NEXT test's
+    # acquire of the same ref refuse as "already held" by itself.
+    "teatree.core.management.commands._e2e_specs_checkout:_process_locks": "release_process_locks",
+    # cwd -> work tree, the anchor every portable hook re-roots its staged names against.
+    # Same shape as the entry above: one real hook run is one process with one cwd, but a
+    # test process runs many and creates and destroys git repositories between them, so a
+    # kept entry answers a later test about a tree that no longer has that shape.
+    "teatree.utils.work_tree:_tree_for": "reset_cwd_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.

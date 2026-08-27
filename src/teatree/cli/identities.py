@@ -20,6 +20,12 @@ def seed() -> None:
 
 
 @identities_app.command()
+def bootstrap() -> None:
+    """Derive ``user_identity_aliases`` from the forge logins this venue authenticates as."""
+    managepy_core("identities", "bootstrap")
+
+
+@identities_app.command()
 def add(
     platform: str = typer.Argument(..., help="github | gitlab | slack | internal"),
     handle: str = typer.Argument(..., help="The forge handle / login to trust."),

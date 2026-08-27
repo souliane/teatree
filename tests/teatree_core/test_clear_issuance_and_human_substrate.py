@@ -23,6 +23,7 @@ Only the unstoppable external — the ``gh`` subprocess — is stubbed; every
 teatree model / FSM / DB write is real.
 """
 
+import io
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import cast
@@ -57,6 +58,15 @@ def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 
 _SHA = "c" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
+
+
+def _refused_clear(*args: object, **kwargs: object) -> str:
+    """The stderr of a refused ``ticket clear``, asserting the nonzero exit (#932)."""
+    err = io.StringIO()
+    with pytest.raises(SystemExit) as exc:
+        call_command("ticket", "clear", *args, stderr=err, **kwargs)
+    assert exc.value.code == 1
+    return err.getvalue()
 
 
 @contextmanager
@@ -179,41 +189,29 @@ class TestClearIssuanceSeam(TestCase):
     def test_ticketless_clear_with_an_unresolvable_forge_writes_no_row(self) -> None:
         """The refusal happens BEFORE issuance, so no orphan ratchets the S4 stale-CLEAR signal."""
         with patch("teatree.core.merge.host_kind.find_project_root", return_value=None):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "ticket",
-                    "clear",
-                    "6264",
-                    "acme-eng/widget-api",
-                    reviewed_sha=_SHA,
-                    reviewer_identity="cold-reviewer",
-                    gh_verify_result="green",
-                    blast_class="logic",
-                ),
-            )
-        assert result["issued"] is False
-        assert "could not resolve the forge" in str(result["error"])
-        assert not MergeClear.objects.filter(pr_id=6264).exists()
-        assert not ReviewVerdict.objects.filter(pr_id=6264).exists()
-
-    def test_clear_refuses_an_unknown_forge(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "6265",
+            refusal = _refused_clear(
+                "6264",
                 "acme-eng/widget-api",
                 reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="logic",
-                forge="bitbucket",
-            ),
+            )
+        assert "could not resolve the forge" in refusal
+        assert not MergeClear.objects.filter(pr_id=6264).exists()
+        assert not ReviewVerdict.objects.filter(pr_id=6264).exists()
+
+    def test_clear_refuses_an_unknown_forge(self) -> None:
+        refusal = _refused_clear(
+            "6265",
+            "acme-eng/widget-api",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="logic",
+            forge="bitbucket",
         )
-        assert result["issued"] is False
-        assert "unknown forge 'bitbucket'" in str(result["error"])
+        assert "unknown forge 'bitbucket'" in refusal
         assert not MergeClear.objects.filter(pr_id=6265).exists()
 
     def test_clear_without_ticket_id_adopts_the_prs_owning_ticket(self) -> None:
@@ -297,156 +295,108 @@ class TestClearIssuanceSeam(TestCase):
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         with patch.object(ReviewVerdict, "record", side_effect=ClearIssuanceError("verdict store unavailable")):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "ticket",
-                    "clear",
-                    "864",
-                    "souliane/teatree",
-                    reviewed_sha=_SHA,
-                    reviewer_identity="cold-reviewer",
-                    gh_verify_result="green",
-                    blast_class="docs",
-                    ticket_id=int(ticket.pk),
-                ),
+            refusal = _refused_clear(
+                "864",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
             )
-        assert not result["issued"]
-        assert "verdict store unavailable" in str(result["error"])
+        assert "verdict store unavailable" in refusal
         # The CLEAR row was rolled back with the failed verdict — no orphan.
         assert MergeClear.objects.count() == 0
         assert ReviewVerdict.objects.count() == 0
 
     def test_clear_issuer_equal_to_executing_loop_is_refused(self) -> None:
         """§17.8 clause 3: a CLEAR cannot be issued by the loop that will execute it."""
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "862",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="merge-loop",
-                gh_verify_result="green",
-                blast_class="docs",
-            ),
+        refusal = _refused_clear(
+            "862",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="merge-loop",
+            gh_verify_result="green",
+            blast_class="docs",
         )
-        assert not result["issued"]
-        assert "merge-loop" in result["error"]
+        assert "merge-loop" in refusal
         assert MergeClear.objects.count() == 0
 
     def test_clear_with_maker_reviewer_is_refused(self) -> None:
         """A maker/coding-agent/loop role cannot self-attest its own review."""
         for maker in ("maker:coding", "coding-agent", "loop"):
             with self.subTest(maker=maker):
-                result = cast(
-                    "dict[str, object]",
-                    call_command(
-                        "ticket",
-                        "clear",
-                        "863",
-                        "souliane/teatree",
-                        reviewed_sha=_SHA,
-                        reviewer_identity=maker,
-                        gh_verify_result="green",
-                        blast_class="docs",
-                    ),
+                refusal = _refused_clear(
+                    "863",
+                    "souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity=maker,
+                    gh_verify_result="green",
+                    blast_class="docs",
                 )
-                assert not result["issued"]
-                assert "reviewer" in result["error"].lower()
+                assert "reviewer" in refusal.lower()
         assert MergeClear.objects.count() == 0
 
     def test_clear_rejects_unknown_blast_class(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "864",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="enormous",
-            ),
+        refusal = _refused_clear(
+            "864",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="enormous",
         )
-        assert not result["issued"]
-        assert "blast_class" in result["error"]
+        assert "blast_class" in refusal
         assert MergeClear.objects.count() == 0
 
     def test_clear_with_unknown_ticket_id_is_refused(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "868",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="docs",
-                ticket_id=999999,
-            ),
+        refusal = _refused_clear(
+            "868",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="docs",
+            ticket_id=999999,
         )
-        assert not result["issued"]
-        assert "not found" in result["error"]
+        assert "not found" in refusal
         assert MergeClear.objects.count() == 0
 
     def test_clear_rejects_unknown_gh_verify_result(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "866",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="maybe",
-                blast_class="docs",
-            ),
+        refusal = _refused_clear(
+            "866",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="maybe",
+            blast_class="docs",
         )
-        assert not result["issued"]
-        assert "gh_verify_result" in result["error"]
+        assert "gh_verify_result" in refusal
         assert MergeClear.objects.count() == 0
 
     def test_clear_rejects_empty_reviewer_identity(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "867",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="   ",
-                gh_verify_result="green",
-                blast_class="docs",
-            ),
+        refusal = _refused_clear(
+            "867",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="   ",
+            gh_verify_result="green",
+            blast_class="docs",
         )
-        assert not result["issued"]
-        assert "reviewer_identity is required" in result["error"]
+        assert "reviewer_identity is required" in refusal
         assert MergeClear.objects.count() == 0
 
     def test_clear_rejects_branch_ref_instead_of_sha(self) -> None:
         """``reviewed_sha`` binds to an exact tree — a branch ref is not a SHA."""
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "865",
-                "souliane/teatree",
-                reviewed_sha="main",
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="docs",
-            ),
+        refusal = _refused_clear(
+            "865",
+            "souliane/teatree",
+            reviewed_sha="main",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="docs",
         )
-        assert not result["issued"]
-        assert "sha" in result["error"].lower()
+        assert "sha" in refusal.lower()
         assert MergeClear.objects.count() == 0
 
     def test_clear_normalizes_mixed_case_sha_to_lowercase(self) -> None:
@@ -486,21 +436,14 @@ class TestClearIssuanceSeam(TestCase):
         is required (full 40-char SHA), and where to find it.
         """
         truncated = "abc1234"
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "1162",
-                "souliane/teatree",
-                reviewed_sha=truncated,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="docs",
-            ),
+        error = _refused_clear(
+            "1162",
+            "souliane/teatree",
+            reviewed_sha=truncated,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="docs",
         )
-        assert not result["issued"]
-        error = cast("str", result["error"])
         assert truncated in error
         assert f"length={len(truncated)}" in error
         assert "40" in error
@@ -604,22 +547,16 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
 
     def test_human_authorize_rejected_for_non_substrate(self) -> None:
         """``--human-authorize`` is meaningless off the substrate path — reject it loudly."""
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "872",
-                "souliane/teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="logic",
-                human_authorize="owner:adrien",
-            ),
+        refusal = _refused_clear(
+            "872",
+            "souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="logic",
+            human_authorize="owner:adrien",
         )
-        assert not result["issued"]
-        assert "substrate" in result["error"]
+        assert "substrate" in refusal
         assert MergeClear.objects.count() == 0
 
 
@@ -801,13 +738,12 @@ class TestPrMergeRedirectedToKeystone(TestCase):
     """The old ``t3 ... pr merge`` path is FSM-incoherent post-#863 and must refuse."""
 
     def test_pr_merge_refuses_and_points_at_keystone(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command("pr", "merge", "859", "souliane/teatree"),
-        )
-        assert not result["merged"]
-        assert "ticket merge" in result["error"]
-        assert "ticket clear" in result["error"]
+        err = io.StringIO()
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("pr", "merge", "859", "souliane/teatree", stderr=err)
+        assert exc_info.value.code == 1
+        assert "ticket merge" in err.getvalue()
+        assert "ticket clear" in err.getvalue()
 
 
 def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
@@ -1581,21 +1517,14 @@ class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
     def test_unresolvable_slug_refuses_before_issuing_and_persists_nothing(self) -> None:
         """No owner/repo resolvable → clean refusal, NO orphaned CLEAR, NO verdict row."""
         with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=""):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "ticket",
-                    "clear",
-                    "159",
-                    "merge-candidate-working-repos",
-                    reviewed_sha=_SHA,
-                    reviewer_identity="cold-reviewer",
-                    gh_verify_result="green",
-                    blast_class="logic",
-                ),
+            error = _refused_clear(
+                "159",
+                "merge-candidate-working-repos",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
             )
-        assert not result["issued"]
-        error = cast("str", result["error"])
         assert "could not resolve" in error.lower()
         assert MergeClear.objects.count() == 0
         assert ReviewVerdict.objects.count() == 0

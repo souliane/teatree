@@ -59,11 +59,6 @@ def startoverlay(
     destination: Path,
     *,
     overlay_app: str = typer.Option("t3_overlay", "--overlay-app", help="Name of the overlay Django app"),
-    project_package: str | None = typer.Option(
-        None,
-        "--project-package",
-        help="Project package name (default: derived from project name)",
-    ),
 ) -> None:
     """Create a new TeaTree overlay package."""
     from teatree.overlay_init.generator import OverlayScaffolder  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -73,9 +68,7 @@ def startoverlay(
         typer.echo(f"Destination already exists: {project_root}")
         raise typer.Exit(code=1)
 
-    package_name = project_package or project_name.replace("-", "_").replace("t3_", "")
-    scaffolder = OverlayScaffolder(project_root, overlay_app, package_name)
-    scaffolder.scaffold(project_name)
+    OverlayScaffolder(project_root, overlay_app).scaffold(project_name)
     typer.echo(str(project_root))
 
 

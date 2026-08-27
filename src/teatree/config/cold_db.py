@@ -32,6 +32,14 @@ from teatree.paths import ControlDb
 
 _RUNNABLE_LOOP_STATUS = "enabled"
 
+#: How long a cold read waits for a contended lock before reporting the store UNREADABLE.
+#: The canonical DB runs `journal_mode=TRUNCATE` (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`
+#: dropped WAL), so a committing writer holds EXCLUSIVE and a reader genuinely blocks — the
+#: opposite of WAL, which is what the 100ms this replaces was sized for. Matches the cold
+#: WRITER's own wait on the same file (`cold_writer._BUSY_TIMEOUT_MS`) and stays far under the
+#: ORM tier's 30s, so a genuinely stuck lock is still reported rather than waited out.
+_BUSY_TIMEOUT_MS = 2000
+
 
 def canonical_data_dir(env: Mapping[str, str] = os.environ, home: Path | None = None) -> Path:
     """The PRIMARY teatree DATA dir — the bind-mounted tree, NOT the control DB's parent.
@@ -102,7 +110,7 @@ def _open_readonly(db: Path, parameters: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"{db.absolute().as_uri()}?{parameters}", uri=True)
     try:
         conn.execute("PRAGMA query_only=1")
-        conn.execute("PRAGMA busy_timeout=100")
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
     except sqlite3.Error:
         conn.close()
         raise
@@ -149,20 +157,21 @@ def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, .
     open to a default collapse the sentinel to that default; `row_exists`
     distinguishes it from a clean empty result.
 
-    The canonical DB is WAL-mode (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`),
-    so its file header is permanently WAL-format. When the DB is quiescent — no
-    teatree process holding it, the standalone bash/statusline cold case this
-    module exists for — its `-shm`/`-wal` sidecars are absent, and a `mode=ro`
-    open then FAILS on first read with `SQLITE_CANTOPEN` (it can't recreate the
-    `-shm`). So this tries `mode=ro` first (returns the WAL-current snapshot when
-    a writer is live and the sidecars exist) and, only on that exact
+    The `immutable=1` fallback is for a WAL-FORMAT file. The canonical DB is no
+    longer one — `settings.SQLITE_WRITE_SERIALIZATION_OPTIONS` dropped WAL for
+    `journal_mode=TRUNCATE` — but the header survives on any file written before
+    that, and on a fixture that asks for WAL. Such a file is unreadable through
+    `mode=ro` while quiescent (no teatree process holding it, the standalone
+    bash/statusline cold case this module exists for): its `-shm`/`-wal` sidecars
+    are absent and the open FAILS on first read with `SQLITE_CANTOPEN`, unable to
+    recreate the `-shm`. So this tries `mode=ro` first and, only on that exact
     `SQLITE_CANTOPEN`, falls back to `immutable=1`, which opens the sidecar-less
-    WAL-format file and reads the last-checkpointed value (correct, as no writer
-    is active — see `teatree.paths._sqlite_snapshot`). A locked DB
-    (`SQLITE_BUSY`), an absent table, and every other error keep resolving to the
-    sentinel; `immutable=1` is the fallback ONLY for `SQLITE_CANTOPEN`, never a
-    lock bypass. Shared by `fetch_one`, `loop_status`, and `row_exists` so every
-    cold read runs through one WAL-aware sqlite path.
+    file and reads the last-checkpointed value (correct, as no writer is active —
+    see `teatree.paths._sqlite_snapshot`). A lock is waited out for
+    `_BUSY_TIMEOUT_MS` first and then resolves to the sentinel, like an absent
+    table and every other error; `immutable=1` is the fallback ONLY for
+    `SQLITE_CANTOPEN`, never a lock bypass. Shared by `fetch_one`, `loop_status`
+    and `row_exists`, so every cold read runs through one sqlite path.
     """
     result = _read_once(db, "mode=ro", query, parameters_bindings, many=many)
     if result is _RETRY_QUIESCENT_WAL:

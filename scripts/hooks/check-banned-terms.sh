@@ -41,6 +41,14 @@
 # found" — and the caller, parsing an empty report, turned that into ALLOW.
 # The ``python3`` fallback now probe-imports the module first and exits 2
 # (fail closed, loud) when it cannot run, never letting a crash equal ALLOW.
+#
+# The interpreter is resolved through ``lib/resolve-uv.sh``, never a bare
+# ``command -v uv``. This hook runs with its CWD inside an ARBITRARY repo, and a
+# version-manager shim fronting ``uv`` selects its interpreter from THAT repo's
+# ``.python-version`` — exiting 127 before uv runs when the pinned version is
+# not installed. That wedged the gate closed in every such repo while uv itself
+# was installed and healthy, so the resolver verifies a candidate by RUNNING it
+# and falls through to a real uv binary rather than trusting PATH.
 
 set -euo pipefail
 
@@ -52,10 +60,26 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 scanner_unavailable() {
   echo "ERROR: banned-terms scanner could not run: $1" >&2
-  echo "  Interpreter RESOLUTION found nothing that answers: no uv on this box ran" >&2
-  echo "  '--version' (a version-manager SHIM exiting 127 is skipped, never accepted)," >&2
-  echo "  and python3 could not import the matcher." >&2
-  echo "  Point T3_UV at a working uv binary, or install a Python >= 3.13." >&2
+  if [ "${uv_resolution_rc:-0}" -eq 2 ]; then
+    # The candidate walk never finished, so "nothing answers" was never
+    # established. Naming uv here is the misdirection that made this class
+    # expensive: it sends the reader to reinstall a tool that was never at fault.
+    echo "  Cause class: this hook's own SHELL execution — the uv candidate walk" >&2
+    echo "  did not finish, so whether a uv answers was never determined. The uv on" >&2
+    echo "  this box is NOT implicated: installing one cannot help, and neither can" >&2
+    echo "  pointing T3_UV at a perfectly good binary." >&2
+    echo "  Running: ${BASH_VERSION:-unknown} (${BASH:-unknown path})." >&2
+    echo "  Look for a shell feature the resolver uses that THIS bash lacks — macOS" >&2
+    echo "  selects /bin/bash 3.2 for '#!/usr/bin/env bash', where bash 4+ builtins" >&2
+    echo "  are absent and fail SILENTLY — or a permission error mid-walk." >&2
+    echo "  Reproduce it directly:" >&2
+    echo "    bash -c 'set -u; . ${script_dir}/lib/resolve-uv.sh; resolve_uv'; echo \$?   # 2 = this class" >&2
+  else
+    echo "  Interpreter RESOLUTION found nothing that answers: candidates were listed" >&2
+    echo "  and no uv on this box ran '--version' (a version-manager SHIM exiting 127" >&2
+    echo "  is skipped, never accepted), and python3 could not import the matcher." >&2
+    echo "  Point T3_UV at a working uv binary, or install a Python >= 3.13." >&2
+  fi
   echo "  Failing CLOSED (exit 2): a crash must never be treated as a clean scan." >&2
   exit 2
 }
@@ -68,9 +92,23 @@ scanner_unavailable() {
 # install). ``resolve_uv`` probes rather than trusting PATH, so a broken shim
 # falls through here instead of wedging the gate; ``uv_project_run_prefix`` keeps
 # the run from reconciling an environment on the other side of a bind mount.
-if uv_bin="$(resolve_uv)"; then
+# `resolve_uv` fails two ways that need opposite remedies (lib/resolve-uv.sh):
+# 1 = candidates were listed and none ran, 2 = the listing itself crashed. Keep
+# the code so the report names the one that actually happened. `|| rc=$?` rather
+# than `if !`, whose `$?` is the NEGATION, not the resolver's status.
+uv_resolution_rc=0
+uv_bin=""
+uv_bin="$(resolve_uv)" || uv_resolution_rc=$?
+
+# `--frozen` because dependency RESOLUTION is unbounded, runs on EVERY scan, and is
+# charged against the caller's own scan budget — so on a contended venue it presents
+# as a timeout and the gate blocks clean content. `--no-sync` is deliberately NOT the
+# flag: `uv_project_run_prefix` redirects to a hook-owned UV_PROJECT_ENVIRONMENT that
+# nothing else provisions, so skipping the sync makes a fresh venue fail closed
+# permanently (`ModuleNotFoundError: teatree`) instead of intermittently.
+if [ "${uv_resolution_rc}" -eq 0 ]; then
   uv_project_run_prefix "${uv_bin}" "${repo_root}"
-  exec "${UV_PROJECT_RUN[@]}" run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
+  exec "${UV_PROJECT_RUN[@]}" run --frozen --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
 fi
 
 # ``python3`` fallback. Probe-import the matcher BEFORE running the scanner: an

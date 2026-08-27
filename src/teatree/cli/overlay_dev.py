@@ -236,12 +236,19 @@ def _uv_pip_install_editable(workspace_root: Path, overlay_path: Path) -> None:
     )
 
 
-def _uv_pip_uninstall(workspace_root: Path, name: str) -> None:
-    run_allowed_to_fail(
+def _uv_pip_uninstall(workspace_root: Path, name: str) -> str:
+    """Uninstall *name* from the workspace venv; return uv's stderr when it refused, else ``""``.
+
+    ``uv pip uninstall`` exits 0 for an already-absent package, so a nonzero code is a
+    genuine failure — the package is still installed and the tracking state must not
+    be dropped behind it.
+    """
+    result = run_allowed_to_fail(
         ["uv", "pip", "uninstall", name],
         cwd=workspace_root,
         expected_codes=None,
     )
+    return "" if result.returncode == 0 else (result.stderr.strip() or f"uv exited {result.returncode}")
 
 
 def _load_state(workspace_root: Path) -> dict:
@@ -292,7 +299,10 @@ def uninstall(name: str = typer.Argument(..., help="Overlay name to uninstall.")
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from None
 
-    _uv_pip_uninstall(workspace.root, name)
+    failure = _uv_pip_uninstall(workspace.root, name)
+    if failure:
+        typer.echo(f"Error: uninstalling {name} failed, tracking state kept: {failure}", err=True)
+        raise typer.Exit(code=1)
     state = _load_state(workspace.root)
     state.setdefault("overlays", {}).pop(name, None)
     _save_state(workspace.root, state)

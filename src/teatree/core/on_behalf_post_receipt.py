@@ -38,9 +38,11 @@ def notify_user_on_behalf_post(
 ) -> None:
     """DM the user that a colleague-visible post published under their identity.
 
-    ``target``/``action`` form the idempotency key
-    ``on_behalf_post:{target}:{action}`` — one DM per (target, action)
-    across retries (mirrors the ``on_behalf_autodraft:`` convention).
+    ``target``/``action``/``artifact_url`` form the idempotency key
+    ``on_behalf_post:{target}:{action}:{artifact_url}`` — one DM per
+    PUBLICATION, not per (target, action): a retry re-posts the same
+    artifact and dedups, while a second comment on the same MR is a second
+    post under the user's identity and gets its own receipt.
     ``destination`` is the human-readable place the post landed (a review
     channel, an ``org/repo!7`` ref). ``artifact_url`` is the clickable
     permalink/URL of the post; ``notify_user``'s ``maybe_linkify``
@@ -80,6 +82,6 @@ def notify_user_on_behalf_post(
     notify_user(
         text,
         kind=NotifyKind.INFO,
-        idempotency_key=f"on_behalf_post:{target}:{action}",
+        idempotency_key=f"on_behalf_post:{target}:{action}:{artifact_url}",
         audience=NotifyAudience.COLLEAGUE_ACTION,
     )

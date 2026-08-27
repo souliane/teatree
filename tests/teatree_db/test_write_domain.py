@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.db import write_domain
-from teatree.db.write_domain import ControlDbWriteDomain, read_write_holders_across
+from teatree.db.write_domain import ControlDbWriteDomain, DescriptorTableUnavailableError, read_write_holders_across
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.utils.run import CommandFailedError
 
@@ -137,9 +137,8 @@ class TestReadWriteHoldersAcrossManyPaths:
     def test_the_descriptor_table_is_read_once_for_every_path(self, tmp_path: Path) -> None:
         # The whole point. Forced onto the lsof branch (the non-Linux view) because it
         # is the one whose cost is a subprocess, and the one a call count can observe.
-        # ``which`` is stubbed too: the branch returns BEFORE spawning anything when the
-        # host has no lsof, so without this the count is 0 on a box that lacks one (this
-        # container does) and the guard only holds where lsof happens to be installed.
+        # `_which` is pinned too: a runner without lsof would otherwise never reach the
+        # invocation this counts, and the count would read 0 for the wrong reason.
         paths = [tmp_path / f"db.sqlite3.copy-{index}" for index in range(12)]
         for path in paths:
             path.write_bytes(b"x")
@@ -151,10 +150,43 @@ class TestReadWriteHoldersAcrossManyPaths:
 
         with (
             patch.object(write_domain, "_PROC", tmp_path / "no-procfs"),
-            patch.object(write_domain.shutil, "which", return_value="/usr/bin/lsof"),
+            patch.object(write_domain, "_which", lambda _: "/usr/bin/lsof"),
             patch.object(write_domain, "run_allowed_to_fail", record),
+            pytest.raises(DescriptorTableUnavailableError),
         ):
             read_write_holders_across(paths)
 
         assert len(invocations) == 1, f"one read must cover every path, got {len(invocations)}"
         assert {str(path) for path in paths} <= set(invocations[0])
+
+
+class TestAnUnreadableTableIsNotAnAnswer:
+    """Unmeasured must not reach a caller as measured-empty — that is what certifies a lie."""
+
+    def test_no_descriptor_view_at_all_raises_rather_than_reporting_no_writers(self, tmp_path: Path) -> None:
+        database = tmp_path / "db.sqlite3"
+        database.write_bytes(b"x")
+
+        with (
+            patch.object(write_domain, "_PROC", tmp_path / "no-procfs"),
+            patch.object(write_domain, "_which", lambda _: None),
+            pytest.raises(DescriptorTableUnavailableError, match="no descriptor view"),
+        ):
+            read_write_holders_across([database])
+
+    def test_a_failed_lsof_invocation_names_itself_rather_than_yielding_nothing(self, tmp_path: Path) -> None:
+        database = tmp_path / "db.sqlite3"
+        database.write_bytes(b"x")
+
+        refusal = "lsof: permission denied"
+
+        def explode(command: list[str], **_: object) -> object:
+            raise OSError(refusal)
+
+        with (
+            patch.object(write_domain, "_PROC", tmp_path / "no-procfs"),
+            patch.object(write_domain, "_which", lambda _: "/usr/bin/lsof"),
+            patch.object(write_domain, "run_allowed_to_fail", explode),
+            pytest.raises(DescriptorTableUnavailableError, match="permission denied"),
+        ):
+            read_write_holders_across([database])

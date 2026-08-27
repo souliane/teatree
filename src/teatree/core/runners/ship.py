@@ -15,12 +15,13 @@ from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
+from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import TicketExtra
     from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +55,16 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     return CLOSE_KEYWORD_RE.sub(r"Relates to \g<ref>", description)
 
 
-def get_overlay_publish_gates() -> list[str]:
+def get_overlay_publish_gates(overlay_name: str = "") -> list[str]:
     """Return ``ban_close_trailers_on_namespaces`` — DB-home (#1775).
 
     Empty list when no row exists. Resolved fresh on each ``pr create`` via the
     effective-settings tier so a ``config_setting set`` takes effect on the next
-    invocation without restarting the process.
+    invocation without restarting the process. The key is per-overlay
+    overridable, so the shipping ticket's overlay scopes it — a blank name is
+    the ambient single-overlay default.
     """
-    return list(get_effective_settings().ban_close_trailers_on_namespaces)
+    return list(get_effective_settings(overlay_name or None).ban_close_trailers_on_namespaces)
 
 
 def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
@@ -114,7 +118,7 @@ def resolve_pr_title(ticket: "Ticket", extra: Mapping[str, object] | None, input
     pinned = inputs.title_override or str((extra or {}).get("pr_title_override") or "")
     if pinned:
         return pinned
-    generated = get_overlay().metadata.build_pr_title(
+    generated = get_overlay_for_ticket(ticket).metadata.build_pr_title(
         branch=inputs.branch,
         subject=inputs.subject,
         body=inputs.body or "",
@@ -123,8 +127,7 @@ def resolve_pr_title(ticket: "Ticket", extra: Mapping[str, object] | None, input
     return generated or f"Resolve {ticket.issue_url}"
 
 
-def overlay_pr_labels() -> list[str]:
-    raw = get_overlay().config.pr_auto_labels
+def _config_str_list(raw: object) -> list[str]:
     if isinstance(raw, str):
         values: Iterable[str] = raw.split(",")
     elif isinstance(raw, Iterable):
@@ -134,24 +137,117 @@ def overlay_pr_labels() -> list[str]:
     return [value.strip() for value in values if value.strip()]
 
 
-def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
-    """The worktree to act on — the INVOKING branch's row, not the earliest.
+def overlay_pr_labels(overlay: "OverlayBase") -> list[str]:
+    return _config_str_list(overlay.config.pr_auto_labels)
 
-    #776: ``worktrees.first()`` returns the earliest (often
-    already-merged) row, so a reused ticket spanning N workstreams acted
-    on a stale branch. ``pr create`` records the invoking worktree's
-    current git branch on ``extra['ship_invoking_branch']``; prefer the
-    matching row. Fall back to ``first()`` only when no invoking branch
-    is recorded (the async-worker path that has no CLI cwd context) —
-    legacy behaviour, single-PR tickets unaffected. Public so the
-    pre-push visual-QA gate resolves the same worktree as the ship.
+
+def overlay_pr_reviewers(overlay: "OverlayBase") -> list[str]:
+    """The overlay's standing reviewer policy, unscoped — the raw config read."""
+    return _config_str_list(overlay.config.pr_auto_reviewers)
+
+
+def pr_reviewers_for_remote(overlay: "OverlayBase", remote: str) -> list[str]:
+    """The reviewer policy as it applies to *remote* — empty where the owner is the AUTHOR.
+
+    ``pr_auto_reviewers`` exists to make the owner an independent CHECKER of an MR
+    a bot opened. A repo written under the overlay-wide credential is authored by
+    the owner himself, so applying the policy there would set him as reviewer of
+    his own MR — colleague-visible, and the exact assignment
+    ``handle_block_self_reviewer_assign`` refuses. Every PR-create path resolves
+    its reviewers through here so a third one cannot reintroduce the hole.
     """
-    invoking = str(extra.get("ship_invoking_branch") or "")
-    if invoking:
-        matched = ticket.worktrees.filter(branch=invoking).first()
-        if matched is not None:
-            return matched
-    return ticket.worktrees.first()
+    return overlay_pr_reviewers(overlay) if overlay.config.acts_as_distinct_identity_on(remote) else []
+
+
+class ShipWorktreeAmbiguousError(RuntimeError):
+    """Raised when a multi-repo ticket cannot say WHICH worktree the operator meant."""
+
+
+def _unmatched_reason(invoking_path: str, invoking_branch: str) -> str:
+    """Why no row could be identified — the actionable half of the refusal."""
+    if invoking_path:
+        return f"no recorded worktree is at the invoking path {invoking_path!r}"
+    if invoking_branch:
+        return f"no single repo holds the invoking branch {invoking_branch!r}"
+    return "no invoking worktree could be identified"
+
+
+def _ambiguity_message(ticket: "Ticket", rows: "list[Worktree]", repos: list[str], unmatched: str) -> str:
+    """Name the ambiguity and how to resolve it — never a silently-picked row."""
+    listing = "\n".join(
+        f"  - {row.repo_path} on {row.branch!r} at {(row.extra or {}).get('worktree_path', '') or row.repo_path}"
+        for row in rows
+    )
+    return (
+        f"Refusing to ship ticket {ticket.ticket_number}: it spans {len(repos)} repos "
+        f"({', '.join(repos)}) — {unmatched}, so picking one would ship a repo you did "
+        f"not name.\n"
+        f"candidates:\n{listing}\n"
+        "Run `pr create` from the worktree you mean. Under the containerized `t3` the "
+        "host cwd crosses as TEATREE_INVOCATION_CWD, which deploy/t3 sets only for a cwd "
+        "under a mounted worktree root — export it to the container-side path when your "
+        "checkout lives elsewhere."
+    )
+
+
+def _row_at_invoking_path(rows: "list[Worktree]", invoking_path: str) -> "Worktree | None":
+    """The row whose on-disk worktree IS the invoking cwd, symlink-tolerant."""
+    if not invoking_path:
+        return None
+    return next(
+        (row for row in rows if row.worktree_path and paths_match(row.worktree_path, invoking_path)),
+        None,
+    )
+
+
+def _row_on_invoking_branch(rows: "list[Worktree]", invoking_branch: str) -> "Worktree | None":
+    """The row on the invoking branch — only while ONE repo carries that name.
+
+    ``workspace ticket`` mints ``Worktree.branch`` as ``<N>-ticket`` for every
+    repo of a ticket, so the name is routinely shared across repos and cannot
+    identify one; matching it there would pick the earliest row, which is the
+    silent wrong-repo ship the refusal exists to prevent.
+    """
+    if not invoking_branch:
+        return None
+    matched = [row for row in rows if row.branch == invoking_branch]
+    if len({row.repo_path for row in matched}) != 1:
+        return None
+    return matched[0]
+
+
+def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
+    """The worktree to act on — the INVOKING one, not the earliest.
+
+    #776: ``worktrees.first()`` returns the earliest (often already-merged) row,
+    so a reused ticket spanning N workstreams acted on a stale branch. ``pr
+    create`` records where the operator stood — ``extra['ship_invoking_path']``,
+    the checkout root, and ``extra['ship_invoking_branch']``, its git branch.
+
+    The PATH is the identity and is tried first: it survives the ``<N>-ticket`` →
+    ``<N>-<type>-<desc>`` rename :func:`resolve_and_reconcile_branch` performs
+    mid-ship, and it tells apart the two repos the canonical
+    ``<workspace>/<branch>/<repo-leaf>`` layout puts on the SAME branch name. The
+    branch is the fallback, and only while one repo carries it.
+
+    Falls back to the earliest row only when nothing identifies the invoking one
+    and every row is the SAME repo. A ticket spanning several repos raises
+    :class:`ShipWorktreeAmbiguousError` instead — ``first()`` there is routinely a
+    different repo than the operator is standing in, and shipping it reports "0
+    commits ahead" against a branch they never named.
+    """
+    rows = list(ticket.worktrees.order_by("pk"))
+    invoking_path = str(extra.get("ship_invoking_path") or "")
+    invoking_branch = str(extra.get("ship_invoking_branch") or "")
+    matched = _row_at_invoking_path(rows, invoking_path) or _row_on_invoking_branch(rows, invoking_branch)
+    if matched is not None:
+        return matched
+    repos = sorted({row.repo_path for row in rows})
+    if len(repos) > 1:
+        raise ShipWorktreeAmbiguousError(
+            _ambiguity_message(ticket, rows, repos, _unmatched_reason(invoking_path, invoking_branch))
+        )
+    return rows[0] if rows else None
 
 
 def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
@@ -200,8 +296,12 @@ def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_pa
         worktree.branch = current
         worktree.save(update_fields=["branch"])
         extra = ticket.extra or {}
-        if extra.get("branch") == recorded:
-            ticket.merge_extra(set_keys={"branch": current})
+        # A key still naming the OLD branch matches no row after this write, so
+        # every later re-resolution (the async ``execute_ship``, the CLEAR
+        # preflight) would refuse or pick another repo's row.
+        renamed = {key: current for key in ("branch", "ship_invoking_branch") if extra.get(key) == recorded}
+        if renamed:
+            ticket.merge_extra(set_keys=cast("TicketExtra", renamed))
     return current
 
 
@@ -219,7 +319,10 @@ class ShipExecutor(RunnerBase):
         ticket = self.ticket
         extra = cast("TicketExtra", ticket.extra or {})
 
-        worktree = resolve_ship_worktree(ticket, extra)
+        try:
+            worktree = resolve_ship_worktree(ticket, extra)
+        except ShipWorktreeAmbiguousError as exc:
+            return RunnerResult(ok=False, detail=str(exc))
         if worktree is None:
             return RunnerResult(ok=False, detail="no worktree on ticket")
 
@@ -411,8 +514,12 @@ class ShipExecutor(RunnerBase):
             )
         # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
         # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
-        # the overlay) must not silently advance the FSM to ``in_review``.
-        if expected_slug and expected_slug not in url:
+        # the overlay) must not silently advance the FSM to ``in_review``. The
+        # slug is matched on ``/``-delimited boundaries — a bare substring test
+        # accepted a ``<slug>-mirror`` repo's URL — and both forges put a route
+        # segment after the repo (``/pull/N``, ``/-/merge_requests/N``), so the
+        # trailing slash is always there to anchor against.
+        if expected_slug and f"/{expected_slug}/" not in url:
             return RunnerResult(
                 ok=False,
                 detail=(
@@ -517,7 +624,7 @@ class ShipExecutor(RunnerBase):
         extra: "TicketExtra",
     ) -> PullRequestSpec:
         subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
-        overlay = get_overlay()
+        overlay = get_overlay_for_ticket(ticket)
         # PRODUCE the title via the shared resolver so the ship and the
         # ``ship_preview`` preflight agree on what will ship: a pinned
         # ``--title`` / ``extra['pr_title_override']`` wins, else the
@@ -546,8 +653,8 @@ class ShipExecutor(RunnerBase):
         )
         description = apply_publish_gate(
             description,
-            repo=repo_path,
-            patterns=get_overlay_publish_gates(),
+            repo=git.remote_slug(repo=repo_path),
+            patterns=get_overlay_publish_gates(ticket.overlay),
         )
         warn_if_open_questions_missing(description)
         warn_if_owner_ratification_unbacked(description)
@@ -559,8 +666,9 @@ class ShipExecutor(RunnerBase):
             title=title,
             description=description,
             target_branch=resolve_pr_target_branch(ticket, branch=branch),
-            labels=overlay_pr_labels(),
+            labels=overlay_pr_labels(overlay),
             assignee=assignee,
+            reviewers=pr_reviewers_for_remote(overlay, git.remote_url(repo=repo_path)),
         )
 
     @staticmethod

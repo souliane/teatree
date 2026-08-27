@@ -28,11 +28,13 @@ from pathlib import Path
 from teatree.core.account_fingerprint import current_account_fingerprint, load_recorded_fingerprint, record_fingerprint
 from teatree.core.backend_factory import iter_overlay_backends, reset_backend_caches
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.mcp_connectivity import McpConnectivityOutcome
 
 logger = logging.getLogger(__name__)
 
 type CacheReset = Callable[[], None]
 type BackendsProvider = Callable[[], list[MessagingBackend]]
+type McpConnectivityProbe = Callable[[], McpConnectivityOutcome]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,18 +52,26 @@ class AccountSwitchOutcome:
 
     ``switched`` is ``True`` only when a previously-recorded fingerprint
     differs from the now-active one (a genuine ``/login``). ``all_reachable``
-    reflects the post-reset probe: ``True`` when no connectors were probed or
-    every probed connector answered ``ok``.
+    reflects the post-reset messaging probe: ``True`` when no connectors were
+    probed or every probed connector answered ``ok``. ``mcp_ok`` is the other
+    half of the same bridge — the enabled-MCP connectivity verdict.
     """
 
     current_fingerprint: str
     previous_fingerprint: str
     switched: bool
     probes: tuple[ConnectorProbeResult, ...] = field(default_factory=tuple)
+    mcp_ok: bool = True
+    mcp_findings: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def all_reachable(self) -> bool:
         return all(probe.reachable for probe in self.probes)
+
+    @property
+    def recovered(self) -> bool:
+        """Both halves of the bridge answered — the one predicate for recording."""
+        return self.all_reachable and self.mcp_ok
 
 
 def overlay_messaging_backends() -> list[MessagingBackend]:

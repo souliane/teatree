@@ -240,6 +240,21 @@ def _forge_offline(argv: list[str]) -> tuple[int, str, str]:
     return (1, "", "forge unreachable")
 
 
+def _refusal_text(*args: object, **kwargs: object) -> str:
+    """Whatever the command refused with, whichever seam carried it.
+
+    A refusal reaches the shell as ``SystemExit`` (#932), so the reason is on stderr
+    rather than in a returned ``{"error": …}``; both shapes are read here so the
+    assertion is about the reason, never about how the command stopped.
+    """
+    err = io.StringIO()
+    try:
+        result = call_command(*args, stderr=err, **kwargs)
+    except SystemExit:
+        return err.getvalue()
+    return str(cast("dict[str, object]", result).get("error", ""))
+
+
 @pytest.mark.timeout(240)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """The sanctioned commands that cannot move off ``default`` (#2915).
@@ -261,44 +276,34 @@ class BehindSelfDbSelfHealsTest(TransactionTestCase):
         # A workstream-slug CLEAR probes the forge to reconcile its repo. This case is
         # about the schema gate, so answer that probe offline instead of shelling out.
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_forge_offline):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "ticket",
-                    "clear",
-                    866,
-                    "statusline-stale-wakeup",
-                    reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
-                    reviewer_identity="coldrev-866",
-                    blast_class="logic",
-                ),
+            refusal = _refusal_text(
+                "ticket",
+                "clear",
+                866,
+                "statusline-stale-wakeup",
+                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                reviewer_identity="coldrev-866",
+                blast_class="logic",
             )
         # The clear proceeds past the schema gate; whatever its outcome, it
         # is never the unapplied-migration refusal that #2006 eliminates.
-        assert "unapplied migration" not in str(result.get("error", ""))
+        assert "unapplied migration" not in refusal
         assert pending_migrations() == []
 
     def test_ticket_merge_command_proceeds_past_schema_gate(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command("ticket", "merge", 1),
-        )
-        assert "unapplied migration" not in str(result.get("error", ""))
+        assert "unapplied migration" not in _refusal_text("ticket", "merge", 1)
         assert pending_migrations() == []
 
     def test_review_record_command_proceeds_past_schema_gate(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "review",
-                "record",
-                866,
-                "souliane/teatree",
-                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
-                reviewer_identity="coldrev-866",
-            ),
+        refusal = _refusal_text(
+            "review",
+            "record",
+            866,
+            "souliane/teatree",
+            reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+            reviewer_identity="coldrev-866",
         )
-        assert "unapplied migration" not in str(result.get("error", ""))
+        assert "unapplied migration" not in refusal
         assert pending_migrations() == []
 
 

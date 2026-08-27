@@ -116,3 +116,52 @@ class TestCheckCostBounds:
         rendered = {v.scenario_name: v.render() for v in result.violations}
         assert "OVER BOUND alpha" in rendered["alpha"]
         assert "MISSING beta" in rendered["beta"]
+
+
+class TestNonFiniteBoundsAreRejected:
+    """An infinite/NaN ceiling never compares true, so it would silently disarm the gate."""
+
+    def test_infinite_bound_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(CostBoundsError, match="finite"):
+            load_cost_bounds(_write(tmp_path, "scenarios:\n  alpha:\n    bound_usd: .inf\n"))
+
+    def test_nan_bound_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(CostBoundsError, match="finite"):
+            load_cost_bounds(_write(tmp_path, "scenarios:\n  alpha:\n    bound_usd: .nan\n"))
+
+    def test_infinite_margin_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(CostBoundsError, match="finite"):
+            load_cost_bounds(_write(tmp_path, "scenarios:\n  alpha:\n    bound_usd: 0.1\n    margin: .inf\n"))
+
+    def test_nan_default_margin_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(CostBoundsError, match="finite"):
+            load_cost_bounds(_write(tmp_path, "default_margin: .nan\nscenarios: {}\n"))
+
+
+class TestEmptyCeilingSetIsNeverGreen:
+    """A ceiling set that pins nothing binds nothing — a pass it never earned."""
+
+    def test_empty_config_is_vacuous_and_failed(self) -> None:
+        result = check_cost_bounds({"alpha": 99.0}, CostBoundsConfig(default_margin=0.25, bounds={}))
+        assert result.vacuous
+        assert result.failed
+        assert result.violations == []
+
+    def test_vacuity_renders_its_own_reason(self) -> None:
+        result = check_cost_bounds({}, CostBoundsConfig(default_margin=0.25, bounds={}))
+        assert any("VACUOUS" in line for line in result.render_failures())
+
+    def test_a_pinned_ceiling_set_is_not_vacuous(self) -> None:
+        result = check_cost_bounds({"alpha": 0.05, "beta": 0.40}, _config())
+        assert not result.vacuous
+        assert not result.failed
+
+
+class TestRunWithNoOverlapIsRed:
+    """Configured ceilings none of the run's scenarios touch: every one is MISSING, so the gate is RED."""
+
+    def test_zero_overlap_reds_every_configured_scenario(self) -> None:
+        result = check_cost_bounds({"gamma": 1.0}, _config())
+        assert result.failed
+        assert {v.scenario_name for v in result.violations} == {"alpha", "beta"}
+        assert {v.kind for v in result.violations} == {CostBoundViolationKind.MISSING}
