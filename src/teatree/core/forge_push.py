@@ -96,6 +96,11 @@ _GATE_REFUSAL_RC = 1
 #: words as the message (souliane/teatree#4076).
 _GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hint:", "To ")
 
+#: Where ``dev/lib/xdist-workers.sh`` records the worker bound it chose, in the git common
+#: dir that also holds the pre-push hook — so a gate the cgroup killed still says what it ran
+#: under, having printed nothing before it died.
+_XDIST_BOUND_FILE = "t3-xdist-bound"
+
 
 class CredentialSource(StrEnum):
     """Where the forge-write credential came from, in resolution order."""
@@ -465,8 +470,22 @@ class GitPushError:
         return (
             f"the pre-push gate {self.pre_push_hook} refused this push (rc={self.returncode}) and printed "
             "nothing — a gate killed mid-run (an OOM cap kills the sweep it escalated to) leaves no output. "
-            "Run the gate directly to see its stage output"
+            f"Run the gate directly to see its stage output{self._recorded_xdist_bound()}"
         )
+
+    def _recorded_xdist_bound(self) -> str:
+        """The worker bound the lanes last recorded for this clone, as a message suffix.
+
+        Turns the OOM cap the message already suspects into numbers a reader can check, and
+        stays a suffix so an absent record leaves the wording exactly as it was.
+        """
+        try:
+            recorded = (Path(self.pre_push_hook).parent.parent / _XDIST_BOUND_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded = ""
+        if not recorded:
+            return ""
+        return f". The last worker bound dev/lib/xdist-workers.sh recorded here: {recorded}"
 
 
 def _push_argv(repo: str, remote: str, branch: BranchRef, *, force_with_lease: bool) -> list[str]:

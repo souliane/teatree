@@ -23,9 +23,18 @@ from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    overlay_pr_reviewers,
+    pr_reviewers_for_remote,
+    resolve_and_reconcile_branch,
+    resolve_ship_worktree,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -458,9 +467,51 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         push.assert_not_called()
         host.create_pr.assert_not_called()
 
-    def test_falls_back_to_first_when_no_invoking_branch(self) -> None:
-        """Async-worker path (no CLI cwd context): legacy behaviour kept."""
+    def _single_repo_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/777")
+        for branch in ("s-777-first", "s-777-later"):
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/repo-only",
+                branch=branch,
+                extra={"worktree_path": "/tmp/repo-only"},
+            )
+        return ticket
+
+    def test_multi_repo_with_no_invoking_branch_refuses_instead_of_guessing(self) -> None:
+        """Across repos ``first()`` is a guess — the ship names the ambiguity."""
         ticket = self._multi_worktree_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "spans 2 repos" in result.detail
+        push.assert_not_called()
+
+    def test_multi_repo_invoking_branch_with_no_matching_row_refuses(self) -> None:
+        """A pruned row must not silently demote the ship to another repo."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-branch-with-no-row"}
+        ticket.save(update_fields=["extra"])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "s-776-branch-with-no-row" in result.detail
+        push.assert_not_called()
+
+    def test_single_repo_falls_back_to_first_when_no_invoking_branch(self) -> None:
+        """Async-worker path (no CLI cwd context): the legacy arc, within ONE repo."""
+        ticket = self._single_repo_ticket()
         host = MagicMock()
         host.create_pr.return_value = {"web_url": "https://example.com/mr/legacy"}
         host.current_user.return_value = "souliane"
@@ -475,32 +526,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             result = ShipExecutor(ticket).run()
 
         assert result.ok is True
-        push.assert_called_once_with(repo="/tmp/repo-pr-a", remote="origin", branch="s-776-pr-a-merged")
-
-    def test_invoking_branch_set_but_no_matching_row_falls_back_to_first(self) -> None:
-        """Recorded invoking branch has no Worktree row → legacy fallback.
-
-        Covers the resolution arc where ``ship_invoking_branch`` is set
-        but no row matches (e.g. the row was pruned); ``first()`` is used.
-        """
-        ticket = self._multi_worktree_ticket()
-        ticket.extra = {"ship_invoking_branch": "s-776-branch-with-no-row"}
-        ticket.save(update_fields=["extra"])
-        host = MagicMock()
-        host.create_pr.return_value = {"web_url": "https://example.com/mr/fb"}
-        host.current_user.return_value = "souliane"
-
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
-            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
-        ):
-            result = ShipExecutor(ticket).run()
-
-        assert result.ok is True
-        push.assert_called_once_with(repo="/tmp/repo-pr-a", remote="origin", branch="s-776-pr-a-merged")
+        push.assert_called_once_with(repo="/tmp/repo-only", remote="origin", branch="s-777-first")
 
     def test_refuses_merged_branch_when_no_invoking_hint_recorded(self) -> None:
         """Merged-branch refusal with no ``ship_invoking_branch`` key set.
@@ -750,6 +776,32 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         assert ticket.worktrees.get().branch == "1519-fix-foo"
         assert ticket.extra["branch"] == "1519-fix-foo"
 
+    def test_reconcile_keeps_the_invoking_branch_key_in_step(self) -> None:
+        """A key left naming the OLD branch matches no row on the NEXT resolution.
+
+        The async ``execute_ship`` worker and the CLEAR preflight both re-resolve
+        from ``extra['ship_invoking_branch']`` after this write, in processes that
+        never saw the operator's cwd — so a stale key sends them to another repo's
+        row, or (on a multi-repo ticket) to a refusal.
+        """
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket", extra={"ship_invoking_branch": "1519-ticket"})
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/1519-other-repo",
+            branch="1519-other",
+            extra={"worktree_path": "/tmp/1519-other-repo"},
+        )
+        worktree = ticket.worktrees.order_by("pk").first()
+        assert worktree is not None
+
+        resolve_and_reconcile_branch(ticket, worktree, str(self.repo))
+
+        ticket.refresh_from_db()
+        assert ticket.extra["ship_invoking_branch"] == "1519-fix-foo"
+        assert resolve_ship_worktree(ticket, ticket.extra) == worktree
+
     def test_no_drift_leaves_db_unchanged(self) -> None:
         self._checkout("1519-fix-foo")
         ticket = self._ticket(recorded_branch="1519-fix-foo")
@@ -877,14 +929,16 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
         _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
 
     def _ticket(self) -> Ticket:
+        # A blank overlay is the documented ambient-default fallback; this case
+        # is about backend resolution from the remote, not overlay scoping.
         ticket = Ticket.objects.create(
-            overlay="test",
+            overlay="",
             issue_url="https://gitlab.com/group/repo/-/issues/2025",
             extra={"branch": "547-fix-foo"},
         )
         Worktree.objects.create(
             ticket=ticket,
-            overlay="test",
+            overlay="",
             repo_path=str(self.repo),
             branch="547-fix-foo",
             extra={"worktree_path": str(self.repo)},
@@ -1084,7 +1138,7 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
         cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
         with (
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
+            patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
             patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.push_branch"),
@@ -1150,7 +1204,7 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
         cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
         with (
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
+            patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
             patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.push_branch"),
@@ -1177,19 +1231,157 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
 class TestOverlayPrLabels:
     def test_default_overlay_returns_empty(self) -> None:
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            assert overlay_pr_labels() == []
+            assert overlay_pr_labels(get_overlay()) == []
 
     def test_overlay_with_string_labels(self) -> None:
         mock = MagicMock()
         mock.config.pr_auto_labels = "label-a, label-b"
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": mock}):
-            assert overlay_pr_labels() == ["label-a", "label-b"]
+        assert overlay_pr_labels(mock) == ["label-a", "label-b"]
 
     def test_non_iterable_returns_empty(self) -> None:
         mock = MagicMock()
         mock.config.pr_auto_labels = 42
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": mock}):
-            assert overlay_pr_labels() == []
+        assert overlay_pr_labels(mock) == []
+
+
+class TestOverlayPrReviewers:
+    """The standing reviewer policy is overlay CONFIG, read through one normalizer."""
+
+    def test_default_overlay_returns_empty(self) -> None:
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            assert overlay_pr_reviewers(get_overlay()) == []
+
+    def test_overlay_with_string_reviewers(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_reviewers = "alice, bob"
+        assert overlay_pr_reviewers(mock) == ["alice", "bob"]
+
+    def test_non_iterable_returns_empty(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_reviewers = 42
+        assert overlay_pr_reviewers(mock) == []
+
+
+class TestPrReviewersForRemote:
+    """The policy is SCOPED to a repo whose MRs the owner did not author.
+
+    ``pr_auto_reviewers`` makes the owner an independent checker of a bot's MR.
+    Applied where the overlay writes as the owner himself it would set him as
+    reviewer of his own MR — colleague-visible on the product repos, and the
+    exact assignment ``handle_block_self_reviewer_assign`` exists to refuse.
+    """
+
+    @staticmethod
+    def _overlay(*, reviewers: list[str], distinct: bool) -> MagicMock:
+        overlay = MagicMock()
+        overlay.config.pr_auto_reviewers = reviewers
+        overlay.config.acts_as_distinct_identity_on.return_value = distinct
+        return overlay
+
+    def test_bot_authored_remote_carries_the_policy(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=True)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git") == ["owner"]
+
+    def test_owner_authored_remote_carries_no_reviewer(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=False)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/product.git") == []
+
+    def test_the_remote_is_the_one_the_scope_is_asked_about(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=True)
+
+        pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git")
+
+        overlay.config.acts_as_distinct_identity_on.assert_called_once_with("git@gitlab.com:org/factory.git")
+
+    def test_no_configured_policy_stays_empty_on_a_bot_remote(self) -> None:
+        overlay = self._overlay(reviewers=[], distinct=True)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git") == []
+
+
+class TestShipResolvesOverlayFromTicket(TestCase):
+    """B09_core_intake_review-2: the spec is built from the TICKET's overlay.
+
+    The queued FSM worker runs with every installed overlay registered, so an
+    ambient ``get_overlay()`` is ambiguous there — and when it does resolve it
+    resolves to whichever overlay the process happens to carry, not the one
+    shipping this ticket.
+    """
+
+    def _ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="beta", issue_url="https://github.com/beta/core/issues/5")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="beta",
+            repo_path="/tmp/repo-beta",
+            branch="fix/5",
+            extra={"worktree_path": "/tmp/repo-beta"},
+        )
+        return ticket
+
+    @staticmethod
+    def _overlays(*, bot_authored: bool) -> tuple[MagicMock, MagicMock]:
+        beta = MagicMock()
+        beta.config.mr_close_ticket = True
+        beta.config.pr_auto_labels = ["beta-label"]
+        beta.config.pr_auto_reviewers = ["beta-reviewer"]
+        beta.config.acts_as_distinct_identity_on.return_value = bot_authored
+        beta.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
+        beta.metadata.get_required_description_sections.return_value = []
+        beta.metadata.get_description_section_defaults.return_value = {}
+        alpha = MagicMock()
+        alpha.config.pr_auto_labels = ["alpha-label"]
+        alpha.config.pr_auto_reviewers = ["alpha-reviewer"]
+        alpha.config.acts_as_distinct_identity_on.return_value = bot_authored
+        return alpha, beta
+
+    @staticmethod
+    def _ship(ticket: Ticket, overlays: dict[str, MagicMock], remote: str) -> MagicMock:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/beta/core/pull/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("fix(beta): a change", "Body."),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+        ):
+            ShipExecutor(ticket).run()
+        return host
+
+    def test_spec_carries_the_ticket_overlays_labels_and_reviewers_not_the_ambient_ones(self) -> None:
+        alpha, beta = self._overlays(bot_authored=True)
+
+        host = self._ship(self._ticket(), {"alpha": alpha, "beta": beta}, "git@gitlab.com:beta/core.git")
+
+        spec = host.create_pr.call_args[0][0]
+        assert spec.labels == ["beta-label"]
+        assert spec.reviewers == ["beta-reviewer"]
+
+    def test_an_owner_authored_repo_gets_no_reviewer_from_the_standing_policy(self) -> None:
+        """The user-visible defect: the owner set as reviewer of his OWN product MR.
+
+        ``pr_auto_reviewers`` is configured overlay-wide, but the credential that
+        authors the MR is per-repo. On every repo written under the overlay-wide
+        credential the author IS the owner, so the policy must withhold — the
+        labels still apply, which is what proves the spec was built at all.
+        """
+        alpha, beta = self._overlays(bot_authored=False)
+
+        host = self._ship(self._ticket(), {"alpha": alpha, "beta": beta}, "git@gitlab.com:beta/product.git")
+
+        spec = host.create_pr.call_args[0][0]
+        assert spec.labels == ["beta-label"]
+        assert spec.reviewers == []
 
 
 class TestShipPrUrlRepoMismatch(TestCase):

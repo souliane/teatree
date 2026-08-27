@@ -21,6 +21,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import ConfigSetting, OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -88,7 +89,7 @@ class TestReviewServiceApproveGated:
         _gate(self.tmp_path, self.monkeypatch, on=True)
         service, stub = _service_with_stub()
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 1
         assert "approve-on-behalf" in msg
@@ -97,10 +98,10 @@ class TestReviewServiceApproveGated:
 
     def test_approve_proceeds_with_recorded_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, on=True)
-        OnBehalfApproval.record(target="org/repo!7", action="approve", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="souliane")
         service, stub = _service_with_stub()
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 0, msg
         assert "OK approved" in msg
@@ -110,19 +111,19 @@ class TestReviewServiceApproveGated:
         _gate(self.tmp_path, self.monkeypatch, on=False)
         service, stub = _service_with_stub()
 
-        _, code = service.approve("org/repo", 7)
+        _, code = service.approve(OWNED_REPO, 7)
         assert code == 0
         assert any(c[0] == "post_status" and c[1].endswith("/approve") for c in stub.calls)
 
     def test_approve_consumes_the_recorded_approval_single_use(self) -> None:
         """A recorded approval is single-use: the second call must refuse."""
         _gate(self.tmp_path, self.monkeypatch, on=True)
-        OnBehalfApproval.record(target="org/repo!7", action="approve", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="souliane")
         service, _stub = _service_with_stub()
 
-        _, code1 = service.approve("org/repo", 7)
+        _, code1 = service.approve(OWNED_REPO, 7)
         assert code1 == 0
-        _, code2 = service.approve("org/repo", 7)
+        _, code2 = service.approve(OWNED_REPO, 7)
         assert code2 == 1
 
 
@@ -136,7 +137,7 @@ class TestReviewServiceUnapproveGated:
         _gate(self.tmp_path, self.monkeypatch, on=True)
         service, stub = _service_with_stub()
 
-        msg, code = service.unapprove("org/repo", 7)
+        msg, code = service.unapprove(OWNED_REPO, 7)
 
         assert code == 1
         assert "approve-on-behalf" in msg
@@ -144,10 +145,10 @@ class TestReviewServiceUnapproveGated:
 
     def test_unapprove_proceeds_with_recorded_approval(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, on=True)
-        OnBehalfApproval.record(target="org/repo!7", action="unapprove", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="unapprove", approver_id="souliane")
         service, stub = _service_with_stub()
 
-        msg, code = service.unapprove("org/repo", 7)
+        msg, code = service.unapprove(OWNED_REPO, 7)
 
         assert code == 0, msg
         assert "OK unapproved" in msg
@@ -157,6 +158,6 @@ class TestReviewServiceUnapproveGated:
         _gate(self.tmp_path, self.monkeypatch, on=False)
         service, stub = _service_with_stub()
 
-        _, code = service.unapprove("org/repo", 7)
+        _, code = service.unapprove(OWNED_REPO, 7)
         assert code == 0
         assert any(c[0] == "post_status" and c[1].endswith("/unapprove") for c in stub.calls)

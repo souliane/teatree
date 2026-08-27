@@ -181,6 +181,33 @@ class TestLintCoverageConfig:
         )
         assert _kinds(scan_relaxation(diff)) == {"coverage_omit_added"}
 
+    def test_glob_added_below_an_out_of_context_omit_opener_flagged(self) -> None:
+        # A long `omit` array puts its opener outside the hunk's context lines; git's own
+        # hunk heading still names it, and discarding that read the entry as unenclosed.
+        diff = (
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n"
+            "+++ b/pyproject.toml\n"
+            "@@ -40,3 +40,4 @@ omit = [\n"
+            '     "src/teatree/legacy/a.py",\n'
+            '+    "src/teatree/hard/*.py",\n'
+            '     "src/teatree/legacy/b.py",\n'
+            " ]\n"
+        )
+        assert _kinds(scan_relaxation(diff)) == {"coverage_omit_added"}
+
+    def test_glob_added_below_an_out_of_context_ruff_exclude_opener_passes(self) -> None:
+        diff = (
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n"
+            "+++ b/pyproject.toml\n"
+            "@@ -40,3 +40,4 @@ exclude = [\n"
+            '     "generated/*",\n'
+            '+    "build/*",\n'
+            " ]\n"
+        )
+        assert "coverage_omit_added" not in _kinds(scan_relaxation(diff))
+
     def test_ruff_exclude_glob_not_flagged_as_coverage_omit(self) -> None:
         # A `*`-glob added inside a ruff `exclude` array is NOT a coverage omit — the
         # old context-free matcher false-positived on any quoted glob in a lint/cov file.

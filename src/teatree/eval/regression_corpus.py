@@ -44,6 +44,7 @@ from teatree.eval.regression_corpus_predicates import (
     _check_branch_currency_conflict_only,
     _check_causeless_failure_does_not_trip_the_stall,
     _check_causeless_kind_is_dropped_from_the_kind_stall,
+    _check_environmental_fingerprint_drop_is_narrower_than_the_display_axis,
     _check_forge_resolves_by_host_not_token,
     _check_loop_owner_lease_pid_anchored,
     _check_merge_precondition_maker_is_not_checker,
@@ -118,6 +119,16 @@ _CHECKS: tuple[RegressionCheck, ...] = (
             "ones (still stalls); the two ceiling reasons fingerprint differently, so only the kind drop carries it"
         ),
         predicate=_check_causeless_kind_is_dropped_from_the_kind_stall,
+    ),
+    RegressionCheck(
+        failure_class="the operator-display axis reused as the fingerprint stall filter (#3957)",
+        origin="https://github.com/souliane/teatree/issues/3957",
+        invariant=(
+            "stall_fingerprints drops two identical outage fingerprints (no stall) and keeps two identical "
+            "landing_unverified ones, which is_environmental calls environmental — so transient_requeue's "
+            "reopen branch, which passes no kinds, can still stall on a recurring defect"
+        ),
+        predicate=_check_environmental_fingerprint_drop_is_narrower_than_the_display_axis,
     ),
     RegressionCheck(
         failure_class="substrate-merge human-authorize floor",
@@ -207,8 +218,8 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         failure_class="e2e-test-plan uploads to the note's own project, not a 2nd repo",
         origin="https://github.com/souliane/teatree/pull/2181",
         invariant=(
-            "post_test_plan_comment uploads every artifact to repo_for_issue_url(issue_url) — the note's "
-            "own project — never the manifest's second/CI repo, so the note's /uploads refs resolve"
+            "post_mr_test_plan_comment uploads every artifact to the note's own project — never a "
+            "second/CI repo — so the note's /uploads refs resolve"
         ),
         predicate=check_e2e_test_plan_uploads_to_note_project,
     ),
@@ -242,6 +253,23 @@ def _configured_db_unreachable_reason() -> str | None:
     return control_db_unreachable_reason(Path(name), env=os.environ)
 
 
+def _preflight_row(blocked: str | None) -> CheckResult:
+    """The pre-flight's row, whatever happens — never an exception that takes the corpus with it.
+
+    #4005 says a pre-flight that cannot run is still REPORTED, and that held only for the
+    reasons resolved in advance. `schema_preflight_result` opens the database itself, so
+    anything it raises beyond the migration failure it handles escaped `run_regression_corpus`
+    entirely — losing not just this row but every other check's, which is the same silence
+    #4005 exists to end.
+    """
+    if blocked is not None:
+        return skipped_preflight_result(blocked)
+    try:
+        return schema_preflight_result()
+    except Exception as exc:  # noqa: BLE001 — a pre-flight that cannot run is not-run, never a lost corpus
+        return skipped_preflight_result(f"schema pre-flight could not run ({type(exc).__name__}: {exc})")
+
+
 def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> RegressionReport:
     db_ready = _django_ready()
     # Resolved ONCE, before the pre-flight: the pre-flight itself opens the DB, so a
@@ -258,8 +286,7 @@ def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> Regr
     # When it cannot run it is still REPORTED (#4005) — omitting the row is what let a
     # failed migration pass silently, with nothing naming the pre-flight as not-run.
     if any(check.needs_db for check in checks):
-        blocked = "Django not configured" if not db_ready else unreachable
-        results.append(schema_preflight_result() if blocked is None else skipped_preflight_result(blocked))
+        results.append(_preflight_row("Django not configured" if not db_ready else unreachable))
     for check in checks:
         if check.needs_db and not db_ready:
             results.append(CheckResult(check=check, ok=True, skipped=True, detail="Django not configured"))

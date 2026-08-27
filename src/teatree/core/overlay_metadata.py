@@ -19,7 +19,9 @@ __all__ = ["OverlayMetadata"]
 
 
 class OverlayMetadata:
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True) -> ValidationResult:
+    def validate_pr(
+        self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
+    ) -> ValidationResult:
         """Reject a non-conforming MR title/description (#1540, #312).
 
         Title and first line must match the effective ``mr_title_regex``; the
@@ -29,7 +31,16 @@ class OverlayMetadata:
         ``require_sections=False`` skips the required-section check for a
         title-only update, whose description is not being modified (#3254) — the
         title/first-line/What-Why checks still run.
+
+        ``repo`` is the MR's TARGET repo slug, so an overlay whose rules mirror a
+        CI job only some of its repos run can scope the verdict to those repos.
+        Overlay OWNERSHIP is a wider relation than METADATA POLICY: a repo can
+        sit in an overlay's workspace yet grade its own MR titles by its own
+        convention, and grading it under the overlay's rules then rejects titles
+        its own CI accepts. Blank means the target is unresolved (the cwd-keyed
+        path), where the full policy applies so scoping cannot fail open.
         """
+        del repo
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
         from teatree.core.review.mr_metadata import validate_mr_metadata  # noqa: PLC0415 — deferred: call-time import
 

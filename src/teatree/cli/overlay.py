@@ -75,8 +75,14 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-def _run_workers(project_path: Path, overlay_name: str, count: int, interval: float) -> None:
-    """Spawn *count* ``db_worker`` subprocesses and block until they exit."""
+def _run_workers(project_path: Path, overlay_name: str, count: int, interval: float) -> int:
+    """Spawn *count* ``db_worker`` subprocesses, block until they exit, count the failures.
+
+    A worker that dies on startup (bad settings, unmigrated DB) exits non-zero
+    immediately; reporting "Started N worker(s)" and exiting 0 over that leaves the
+    operator believing the queue is being drained when nothing is draining it.
+    A Ctrl+C shutdown terminates the children deliberately, so it counts none.
+    """
     manage_py = str(project_path / "manage.py")
     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
     if overlay_name:
@@ -97,14 +103,14 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
     ]
     typer.echo(f"Started {count} worker(s). Press Ctrl+C to stop.")
     try:
-        for p in processes:
-            p.wait()
+        return sum(1 for p in processes if p.wait() != 0)
     except KeyboardInterrupt:
         typer.echo("Shutting down workers...")
         for p in processes:
             p.terminate()
         for p in processes:
             p.wait(timeout=5)
+        return 0
 
 
 @contextmanager
@@ -267,10 +273,13 @@ class OverlayAppBuilder:
 
             try:
                 with singleton(WORKER_SINGLETON):
-                    _run_workers(project_path, overlay_name, count, interval)
+                    failed = _run_workers(project_path, overlay_name, count, interval)
             except AlreadyRunningError as exc:
                 typer.echo(f"WARN  {exc} Stop it before starting another.")
                 raise typer.Exit(code=1) from None
+            if failed:
+                typer.echo(f"ERROR {failed} of {count} worker(s) exited non-zero.", err=True)
+                raise typer.Exit(code=1)
 
     def _register_shortcut_commands(self) -> None:
         """Register overlay-scoped workflow shortcuts."""

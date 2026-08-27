@@ -32,10 +32,15 @@ def _skill_version(path: Path) -> str | None:
 def _fix_version(path: Path, expected: str) -> bool:
     """Rewrite the version in a SKILL.md frontmatter. Returns True if modified."""
     text = path.read_text(encoding="utf-8")
-    new_text = FM_VERSION_RE.sub(f"  version: {expected}", text, count=1)
-    if new_text == text:
+    fm = FRONTMATTER_RE.match(text)
+    if not fm:
         return False
-    path.write_text(new_text, encoding="utf-8")
+    # Substitute inside the frontmatter block only: a document whose frontmatter
+    # carries no version has its FIRST `version:` line somewhere in the prose.
+    new_fm, replaced = FM_VERSION_RE.subn(f"  version: {expected}", fm.group(0), count=1)
+    if not replaced or new_fm == fm.group(0):
+        return False
+    path.write_text(new_fm + text[fm.end() :], encoding="utf-8")
     return True
 
 

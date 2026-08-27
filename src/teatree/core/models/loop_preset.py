@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.config_setting import ConfigSetting
@@ -101,9 +101,15 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         return row if row.is_active(now or timezone.now()) else None
 
     def set_override(self, preset_name: str, *, until: datetime | None = None, reason: str = "") -> "ModeOverride":
-        """Replace any existing override with a single fresh row (the ≤1-row invariant)."""
-        self.all().delete()
-        return self.create(preset_name=preset_name, until=until, reason=reason)
+        """Replace any existing override with a single fresh row (the ≤1-row invariant).
+
+        The purge and the insert share one ``atomic`` block, which SQLite opens
+        ``IMMEDIATE``: without it two writers each purge, each insert, and the
+        table holds two rows that no constraint can express.
+        """
+        with transaction.atomic():
+            self.all().delete()
+            return self.create(preset_name=preset_name, until=until, reason=reason)
 
     def clear(self) -> bool:
         deleted, _ = self.all().delete()
@@ -117,7 +123,8 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         exists. **Never overwrites an existing override** — a user ``--hold`` (or any
         live override) outranks — so it engages only when nothing is currently active.
         The override is marked auto-engaged so the re-arm path clears only its own.
-        Returns ``True`` iff it engaged.
+        Returns ``True`` iff it engaged. The outranks-check and the write share one
+        ``atomic`` block, so a ``--hold`` set between them is seen rather than purged.
         """
         if not _low_power_auto_engage_enabled():
             return False
@@ -125,9 +132,10 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         if Mode.objects.by_name(preset_name) is None:
             logger.warning("low_power_auto_engage on but preset %r is absent — not engaging", preset_name)
             return False
-        if self.current(now or timezone.now()) is not None:
-            return False
-        self.set_override(preset_name, until=resets_at, reason=_AUTO_LOW_POWER_REASON)
+        with transaction.atomic():
+            if self.current(now or timezone.now()) is not None:
+                return False
+            self.set_override(preset_name, until=resets_at, reason=_AUTO_LOW_POWER_REASON)
         return True
 
     def clear_auto_engaged_low_power(self) -> bool:
@@ -135,12 +143,14 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
 
         Returns ``True`` iff an auto-engaged low-token override was cleared. A user
         override (any other reason) is never touched — the re-arm must not undo an
-        override the operator set by hand.
+        override the operator set by hand. Only the identified row is deleted: a
+        table-wide purge takes any user override that landed beside it with it.
         """
         row = self.order_by("-set_at").first()
         if row is None or row.reason != _AUTO_LOW_POWER_REASON:
             return False
-        return self.clear()
+        deleted, _ = self.filter(pk=row.pk).delete()
+        return deleted > 0
 
 
 class ModeOverride(models.Model):

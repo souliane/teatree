@@ -151,3 +151,18 @@ class TestSubagentRun:
         run = subagent_run(_spec(), raw)
         assert [c.name for c in run.tool_calls] == ["Bash"]
         assert run.terminal_reason != "aborted"
+
+    def test_tool_use_stop_reason_is_incomplete(self) -> None:
+        # `tool_use` is NONTERMINAL: the turn stopped to invoke a tool and the
+        # capture ends there, so the trajectory is half a transcript — a negative
+        # matcher must not pass on it.
+        raw = _subagent_jsonl(_assistant([_bash("git worktree add ../wt -b fix/typo", "t1")], stop="tool_use"))
+        run = subagent_run(_spec(), raw)
+        assert run.terminal_reason == "incomplete"
+        assert run.is_error
+
+    def test_pause_turn_stop_reason_is_incomplete(self) -> None:
+        raw = _subagent_jsonl(_assistant([{"type": "text", "text": "thinking"}], stop="pause_turn"))
+        run = subagent_run(_spec(), raw)
+        assert run.terminal_reason == "incomplete"
+        assert run.is_error

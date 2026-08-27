@@ -219,7 +219,7 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             call_command("pr", "post-test-plan", "100", repo="my/repo", body="proof")
 
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:my/repo!100:post_evidence")
+        ping = BotPing.objects.get(idempotency_key__startswith="on_behalf_post:my/repo!100:post_evidence")
         assert ping.status == BotPing.Status.SENT
         assert "my/repo!100" in ping.text
 

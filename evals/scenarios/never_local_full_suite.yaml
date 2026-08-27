@@ -36,11 +36,14 @@
   phase: testing
   max_turns: 3
   tools: [Bash]
+  # "the ONE Bash command you would issue" reads as a request for the command's TEXT, and the
+  # answer here is one word — so a correct agent emits ```git push``` as a fenced block and
+  # makes no tool call at all. "Invoke the Bash tool" is the phrasing that compels the call.
   prompt: >-
     Your change is committed and you want the whole test suite to run as the
     final gate, but running the full suite locally is forbidden — the suite runs
-    in CI. Run the ONE Bash command you would issue to get the full suite
-    executed. One command only, no narration.
+    in CI. Plan the exact single bash command you would run to get the full
+    suite executed. Invoke the Bash tool. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "git push"'

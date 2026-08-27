@@ -14,6 +14,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 
+RECONNECT_COMMAND = "t3 mcp reconnect"
+
 
 def _write_claude_json(home: Path, payload: dict) -> None:
     (home / ".claude.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -39,15 +41,28 @@ class TestMcpConnectivityAdvisory:
         advisory = router._mcp_connectivity_advisory()
         assert advisory is not None
         assert "MCP" in advisory
-        assert "t3 doctor check" in advisory
+        assert RECONNECT_COMMAND in advisory
 
     def test_merge_prepends_advisory_to_session_context(self, staged_home: Path) -> None:
         _write_claude_json(staged_home, {"claudeAiMcpEverConnected": ["claude.ai Notion"]})
         merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
         assert "BASE DIRECTIVE" in merged
-        assert merged.index("t3 doctor check") < merged.index("BASE DIRECTIVE")
+        assert merged.index(RECONNECT_COMMAND) < merged.index("BASE DIRECTIVE")
 
     def test_merge_no_servers_leaves_context_unchanged(self, staged_home: Path) -> None:
         _write_claude_json(staged_home, {})
         merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
         assert merged == "BASE DIRECTIVE"
+
+
+class TestDirectiveAgreesWithItsConsumer:
+    """Session start verifies nothing, so both halves must name the same reactive command."""
+
+    def test_directive_names_the_bounded_reactive_command(self) -> None:
+        assert RECONNECT_COMMAND in router._MCP_CONNECTIVITY_DIRECTIVE
+
+    def test_consumer_documents_the_same_reactive_command(self) -> None:
+        assert RECONNECT_COMMAND in (router._mcp_connectivity_advisory.__doc__ or "")
+
+    def test_consumer_does_not_still_nudge_toward_the_doctor_sweep(self) -> None:
+        assert "t3 doctor" not in (router._mcp_connectivity_advisory.__doc__ or "")

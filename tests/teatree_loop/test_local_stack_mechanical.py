@@ -9,6 +9,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
@@ -63,6 +64,24 @@ class TestReapIdleStackHandler(TestCase):
         wt.refresh_from_db()
         assert wt.state == Worktree.State.SERVICES_UP
 
+    def test_re_verifies_idleness_under_the_row_lock_not_before_it(self) -> None:
+        # A session reviving the worktree is exactly what the re-verify guards against, so
+        # reading it before the lock is the same stale read the check exists to replace —
+        # and ``can_proceed`` cannot catch it, because a revived worktree is still in a
+        # stoppable state. The live stack would be torn down under the agent using it.
+        wt = _worktree(ticket_number="805", state=Worktree.State.SERVICES_UP)
+        depth_outside = len(connection.savepoint_ids)
+        depth_at_verify: list[int] = []
+
+        def _record_depth(**_kwargs: object) -> list[Worktree]:
+            depth_at_verify.append(len(connection.savepoint_ids))
+            return [wt]
+
+        with patch("teatree.loop.mechanical_local_stack.reapable_worktrees", _record_depth):
+            reap_idle_stack({"worktree_id": wt.pk, "overlay": "t3-heavy"})
+
+        assert depth_at_verify == [depth_outside + 1]
+
     def test_missing_worktree_id_is_a_noop(self) -> None:
         # Must not raise.
         reap_idle_stack({"overlay": "t3-heavy"})
@@ -107,7 +126,7 @@ class TestNoStrayContainerAfterReap(TestCase):
         expected_project = compose_project(wt)
         with (
             patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[wt]),
-            patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down,
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None) as down,
         ):
             reap_idle_stack({"worktree_id": wt.pk, "overlay": "t3-heavy"})
             # Run the enqueued on_commit worker synchronously to exercise the down.

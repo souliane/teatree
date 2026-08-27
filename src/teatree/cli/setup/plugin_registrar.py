@@ -29,13 +29,34 @@ _CLAUDE_CLI_TIMEOUT_S = 120
 _NPM_INSTALL_TIMEOUT_S = 300
 
 
+class ClaudeConfigUnreadableError(RuntimeError):
+    """A Claude config file exists but could not be read as a JSON object.
+
+    Distinct from "absent" on purpose: every caller writes the parsed mapping
+    straight back, so degrading an unreadable file to ``{}`` would overwrite the
+    operator's live ``settings.json`` (hooks, permissions, env) with the two keys
+    this module manages.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(
+            f"{path} exists but is not a readable JSON object — refusing to rewrite it. "
+            f"Fix or move the file, then re-run `t3 setup`."
+        )
+
+
 def _read_json(path: Path) -> dict:
-    if path.is_file():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
+    """Parse *path* as a JSON object, or ``{}`` when it does not exist."""
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ClaudeConfigUnreadableError(path) from exc
+    if not isinstance(loaded, dict):
+        raise ClaudeConfigUnreadableError(path)
+    return loaded
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -91,11 +112,18 @@ class PluginRegistrar:
         plugins so Claude Code treats it identically (namespaced skills, visible
         in ``claude plugin list``).  The ``installPath`` points directly at the
         main clone — no cache copy, always live.
+
+        An unreadable existing config is reported and SKIPPED, never rewritten:
+        the operator's own file is worth more than this registration.
         """
-        self._cleanup_legacy()
-        self._register_marketplace()
-        self.register_installed()
-        self.enable()
+        try:
+            self._cleanup_legacy()
+            self._register_marketplace()
+            self.register_installed()
+            self.enable()
+        except ClaudeConfigUnreadableError as exc:
+            typer.echo(f"WARN  {exc} Plugin registration skipped; setup continues.")
+            return False
         typer.echo(f"OK    Plugin {_PLUGIN_ID} registered (installPath: {self.repo.resolve()}).")
         return True
 
@@ -209,6 +237,14 @@ class PyrightPluginRegistrar:
 
     def install(self) -> bool:
         """Register + enable ``pyright-lsp`` via the ``claude plugin`` CLI (idempotent, offline-safe)."""
+        try:
+            return self._install()
+        except ClaudeConfigUnreadableError as exc:
+            typer.echo(f"WARN  {exc} pyright-lsp registration skipped; setup continues.")
+            return False
+
+    def _install(self) -> bool:
+        """The registration body — see :meth:`install` for the contract."""
         if _plugin_installed(_PYRIGHT_PLUGIN_ID):
             _set_enabled_plugin(_PYRIGHT_PLUGIN_ID)
             typer.echo(f"OK    Plugin {_PYRIGHT_PLUGIN_ID} already registered — enabled.")
@@ -242,11 +278,21 @@ class PyrightPluginRegistrar:
         continues, matching the other best-effort setup steps. Returns True only when
         the binary is present (already, or after a successful install).
         """
-        if not _plugin_enabled(_PYRIGHT_PLUGIN_ID):
+        try:
+            enabled = _plugin_enabled(_PYRIGHT_PLUGIN_ID)
+        except ClaudeConfigUnreadableError as exc:
+            typer.echo(f"WARN  {exc} Cannot tell whether pyright-lsp is enabled; setup continues.")
+            return False
+        if not enabled:
             return False
         if shutil.which(_PYRIGHT_LANGSERVER) is not None:
             typer.echo(f"OK    {_PYRIGHT_LANGSERVER} already on PATH — skipped npm install.")
             return True
+        return PyrightPluginRegistrar._install_langserver()
+
+    @staticmethod
+    def _install_langserver() -> bool:
+        """npm-install the ``pyright`` package into ``~/.local``; WARN and return False on any failure."""
         npm = shutil.which("npm")
         if npm is None:
             typer.echo(

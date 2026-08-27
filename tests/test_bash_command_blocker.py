@@ -102,6 +102,22 @@ class TestBlocksForbiddenCommands:
         assert deny is not None
         assert "manage.py runserver" in deny["permissionDecisionReason"]
 
+    def test_playwright_deny_names_the_route_that_needs_no_stack(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A redirect the reader cannot follow is worse than no redirect.
+
+        Every ``e2e`` route but ``in-tree`` demands a running stack or a specs
+        clone, so a bare "use ``t3 <overlay> e2e``" left the browserless lane —
+        the merge-blocking one — with nowhere to go.
+        """
+        handle_block_direct_commands(_bash_event("npx playwright test -c contrib.unit.config.ts"))
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "e2e in-tree" in deny["permissionDecisionReason"]
+        assert "--config" in deny["permissionDecisionReason"]
+
 
 class TestHostInterpreterOnARepoPythonPath:
     """`PYTHONPATH=…src python3 …` is the `.venv/bin/` bypass under another spelling.
@@ -259,6 +275,58 @@ class TestAllowsLegitimateCommands:
     ) -> None:
         result = handle_block_direct_commands(_bash_event("manage.py runserver", tool_name="Read"))
         assert result is not True
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestShellInterpreterPayloadIsScanned:
+    """A shell interpreter EXECUTES its ``-c`` argument, so quote-stripping must not erase it.
+
+    The sibling heredoc logic already keeps an interpreter-fed body scanned; the
+    ``-c`` form had the same shape and was missed, so every denylisted command
+    passed by wrapping it in ``bash -c "…"``.
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "expected_fragment"),
+        [
+            ('bash -c "pip install requests"', "pip/pipenv install"),
+            ("sh -c 'docker compose up -d'", "docker compose up/start"),
+            ('bash -lc "manage.py runserver"', "manage.py runserver"),
+            ('bash -c "git commit --no-verify -m x"', "--no-verify"),
+            ("bash -c \"sh -c 'pip install requests'\"", "pip/pipenv install"),
+            ('zsh -c "createdb scratch"', "createdb"),
+            ('env FOO=1 bash -c "npm run build"', "npm run"),
+            ("bash -c 'git -c \"core.hooksPath=/dev/null\" commit -m x'", "core.hooksPath"),
+        ],
+    )
+    def test_interpreter_payload_is_denied(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+        expected_fragment: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert expected_fragment in json.dumps(deny)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit -m \"repro with bash -c 'pip install x'\"",
+            "grep -r \"bash -c 'pip install'\" .",
+            "echo 'run bash -c \"docker compose up\" to repro'",
+            "bash -c \"git commit -m 'fix: handle pip install edge case'\"",
+            'bash -c "uv run pytest -q"',
+            "bash script.sh",
+        ],
+    )
+    def test_quoted_mention_of_an_interpreter_call_is_not_an_invocation(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command)) is not True
         assert capsys.readouterr().out.strip() == ""
 
 

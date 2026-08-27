@@ -15,6 +15,7 @@ from teatree.core.review.verdict_findings import (
     comment_carries_marker,
     findings_payload,
     marker_for,
+    readable_findings,
     render_findings_markdown,
     render_findings_text,
 )
@@ -115,3 +116,45 @@ class TestRenderers(TestCase):
 
     def test_a_non_dict_comment_carries_no_marker(self) -> None:
         assert not comment_carries_marker("not a comment", "<!-- teatree-review-verdict: pk=1 sha=x -->")
+
+
+class TestLenientRead(TestCase):
+    """The read-only sibling: a display defect degrades, it never blocks a decision (#4575)."""
+
+    def test_a_well_formed_payload_matches_the_strict_read(self) -> None:
+        verdict = _verdict(
+            [
+                {"severity": "blocker", "summary": "unbounded loop", "file": "a.py", "line": 9},
+                {"severity": "nit", "summary": "rename x"},
+            ]
+        )
+        readable = readable_findings(verdict)
+        assert readable.payload == findings_payload(verdict)
+        assert readable.error == ""
+        assert readable.recorded_count == 2
+
+    def test_a_non_object_row_degrades_and_names_the_reason(self) -> None:
+        readable = readable_findings(_verdict([{"severity": "nit", "summary": "ok"}, "just a string"]))
+        assert readable.payload == []
+        assert "finding 1 is str" in readable.error
+        assert readable.recorded_count == 2
+
+    def test_a_row_with_no_summary_degrades_and_names_the_reason(self) -> None:
+        readable = readable_findings(_verdict([{"severity": "blocker", "summary": "   ", "file": "a.py", "line": 1}]))
+        assert readable.payload == []
+        assert "empty summary" in readable.error
+
+    def test_a_non_list_payload_degrades_without_counting_its_keys(self) -> None:
+        verdict = _verdict([])
+        ReviewVerdict.objects.filter(pk=verdict.pk).update(findings={"severity": "nit", "summary": "x"})
+        verdict.refresh_from_db()
+        readable = readable_findings(verdict)
+        assert readable.payload == []
+        assert readable.error != ""
+        assert readable.recorded_count == 0
+
+    def test_an_empty_payload_is_not_an_error(self) -> None:
+        readable = readable_findings(_verdict([]))
+        assert readable.payload == []
+        assert readable.error == ""
+        assert readable.recorded_count == 0

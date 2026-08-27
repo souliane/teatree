@@ -4,16 +4,22 @@ These fitness tests parse the workflow YAML and pin the cost-urgent reversal: th
 GitHub behavioral-eval workflow defaults to the subscription OAuth credential and
 sizes the OAuth lane so a full fan-out cannot throttle the plan's usage window (a
 SINGLE effort tier, a smaller trial count), while keeping the metered key
-selectable via the knob. The GitLab cost-audit lane stays explicitly metered (its
-`--gate-cost-bounds` gate needs per-token cost). They go RED if the default
-regresses to metered-exclusive or the OAuth lane's fan-out is un-sized.
+selectable via the knob. The GitLab lane stays explicitly metered — it bills a real
+key — while carrying NO `--gate-cost-bounds`, because its `anthropic_api` backend
+reports no per-scenario cost for that gate to check. They go RED if the default
+regresses to metered-exclusive, if the OAuth lane's fan-out is un-sized, or if the
+unsatisfiable cost gate is re-attached to an unmetered lane.
 """
+# test-path: cross-cutting — a CI-workflow fitness test that parses the pipeline YAML and
+# imports the eval backend vocabulary, because "which lane carries which gate" is one
+# decision spanning both; it mirrors neither src/teatree/cli/ nor src/teatree/eval/ alone.
 
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
+from teatree.eval.backends import ANTHROPIC_API_BACKEND
 from tests._ci_config import gitlab_ci_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -120,12 +126,35 @@ class TestGitHubPrEvalRidesSubscriptionOAuth:
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
 
 
-class TestGitLabCostAuditLaneStaysMetered:
+class TestGitLabEvalLaneStaysMeteredWithoutTheUnsatisfiableCostGate:
+    """The lane bills a real key, and asks it for no cost verdict the backend cannot give."""
+
+    def _eval_suite_script(self) -> str:
+        return "\n".join(cast("list[str]", _load(_GITLAB_CI)[".eval-suite"]["script"]))
+
     def test_gitlab_explicitly_selects_the_metered_key(self) -> None:
-        # The GitLab lane runs the persisted `--gate-cost-bounds` cost audit, which
-        # needs per-token cost — so it EXPLICITLY selects the metered api_key via the
-        # knob (a subscription run bills $0 and would fail the cost gate).
+        # An unset knob resolves to subscription OAuth, which no runner holds — the miss
+        # surfaces as an opaque auth error mid-suite rather than at the credential gate.
+        assert _load(_GITLAB_CI)["variables"]["T3_AGENT_HARNESS_PROVIDER"] == "api_key"
+
+    def test_the_lane_carries_no_cost_gate_its_backend_cannot_satisfy(self) -> None:
+        # `anthropic_api` drives PydanticAiRunner, which reports no cost_usd, so every
+        # ceiling reads MISSING and an empty set reads VACUOUS — red either way, and
+        # calibrating a bound makes it worse. `t3 eval run` now exits 2 on the pairing.
+        script = self._eval_suite_script()
+        assert f"--backend {ANTHROPIC_API_BACKEND}" in script
+        assert "--gate-cost-bounds" not in script, (
+            f"--gate-cost-bounds is unsatisfiable on --backend {ANTHROPIC_API_BACKEND}: it reports no "
+            "cost, so the gate can only ever go MISSING/VACUOUS red. Move it to a cost-recording "
+            "backend, never back onto this lane."
+        )
+
+    def test_no_lane_smuggles_the_cost_gate_back_in_through_its_args(self) -> None:
+        # Every eval job extends `.eval-suite` and inherits its `anthropic_api` backend,
+        # so a per-lane LANE_ARGS carrying the flag is the same unsatisfiable pairing.
         config = _load(_GITLAB_CI)
-        assert config["variables"]["T3_AGENT_HARNESS_PROVIDER"] == "api_key"
-        joined = "\n".join(cast("list[str]", config[".eval-suite"]["script"]))
-        assert "--gate-cost-bounds" in joined, "the metered cost-audit gate must stay on the GitLab lane."
+        for name, job in config.items():
+            variables = job.get("variables", {}) if isinstance(job, dict) else {}
+            assert "--gate-cost-bounds" not in str(variables.get("LANE_ARGS", "")), (
+                f"{name} smuggles the unsatisfiable cost gate in through LANE_ARGS."
+            )

@@ -100,13 +100,19 @@ def find_python_forge_rest_urls(source: str) -> Iterator[tuple[str, str]]:
 # Write-verb signals a python REST client carries, mirroring the effective-
 # method resolution ``_publish_detection._api_effective_method`` applies to
 # ``gh``/``glab api``: an explicit client-library write call (``requests``/
-# ``httpx`` ``.post``/``.patch``), an explicit ``method=`` kwarg
-# (``urllib.request.Request``), or -- for a raw ``http.client``/socket call
+# ``httpx`` ``.post``/``.patch``/``.put``/``.delete``), an explicit ``method=``
+# kwarg (``urllib.request.Request``), or -- for a raw ``http.client``/socket call
 # with no recognised client-library name -- a write-method string literal
 # alongside a forge auth-header pattern (``Authorization``/
 # ``PRIVATE-TOKEN``), per the "raw HTTP calls with an Authorization header
 # pattern" shape.
-_PYTHON_WRITE_CALL_RE: Final[re.Pattern[str]] = re.compile(r"\b(?:requests|httpx)\.(?:post|patch)\s*\(")
+#
+# The write-verb set matches :data:`_PYTHON_WRITE_METHOD_KWARG_RE`'s: a direct
+# ``requests.put(...)`` / ``httpx.delete(...)`` carries no method STRING for the
+# literal+auth-header arm to catch, so omitting the two verbs here left a real
+# forge write (a GitLab note replace, a reviewer removal) undetected as a publish
+# and unscanned by every leak gate.
+_PYTHON_WRITE_CALL_RE: Final[re.Pattern[str]] = re.compile(r"\b(?:requests|httpx)\.(?:post|patch|put|delete)\s*\(")
 _PYTHON_WRITE_METHOD_KWARG_RE: Final[re.Pattern[str]] = re.compile(
     r"method\s*=\s*['\"](?:POST|PATCH|PUT|DELETE)['\"]",
     re.IGNORECASE,

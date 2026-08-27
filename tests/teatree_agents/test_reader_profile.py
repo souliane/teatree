@@ -6,6 +6,7 @@ hermetic scrub removes secrets from ``os.environ`` for the spawn window and rest
 """
 
 import os
+import threading
 
 from teatree.agents.reader_profile import READER_PHASE, is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
@@ -122,3 +123,30 @@ class TestReaderEnvHermetic:
     def test_a_non_secret_runtime_key_is_untouched(self) -> None:
         with reader_env_hermetic():
             assert "PATH" in os.environ
+
+    def test_an_overlapping_reader_does_not_restore_secrets_early(self) -> None:
+        # Two readers spawn concurrently in one worker process: the first to LEAVE must
+        # not hand the second's still-running child every credential back.
+        os.environ["SLACK_BOT_TOKEN"] = "xoxb-sentinel"
+        first_inside = threading.Event()
+        second_inside = threading.Event()
+        first_left = threading.Event()
+
+        def first_reader() -> None:
+            with reader_env_hermetic():
+                first_inside.set()
+                second_inside.wait(timeout=5)
+            first_left.set()
+
+        try:
+            worker = threading.Thread(target=first_reader)
+            worker.start()
+            assert first_inside.wait(timeout=5)
+            with reader_env_hermetic():
+                second_inside.set()
+                assert first_left.wait(timeout=5)
+                assert "SLACK_BOT_TOKEN" not in os.environ
+            worker.join(timeout=5)
+            assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-sentinel"
+        finally:
+            os.environ.pop("SLACK_BOT_TOKEN", None)

@@ -116,3 +116,21 @@ class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):
 
         assert mine.schedule_coding().pk != theirs.schedule_coding().pk
         assert Task.objects.filter(phase="coding").count() == 2
+
+
+class TestConsumingAPhaseTaskEndsItsSession(TestCase):
+    """Consuming an orphaned phase task must close its session, not leave a zombie."""
+
+    def test_the_direct_transition_closes_the_consumed_task_session(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/9", state=Ticket.State.CODED
+        )
+        orphan_session = Session.objects.create(ticket=ticket, agent_id="testing")
+        orphan = Task.objects.create(ticket=ticket, session=orphan_session, phase="testing")
+
+        ticket.test()
+
+        orphan.refresh_from_db()
+        orphan_session.refresh_from_db()
+        assert orphan.status == Task.Status.COMPLETED
+        assert orphan_session.ended_at is not None

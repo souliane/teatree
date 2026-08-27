@@ -19,7 +19,15 @@ from django.utils import timezone
 from teatree.core.claim_liveness import reset_driving_registry
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
-from teatree.core.models.task_claim import claim, describe_lease_loss, drive_claim, renew_lease
+from teatree.core.models.task_claim import (
+    claim,
+    claim_generation,
+    complete_claimed,
+    describe_lease_loss,
+    drive_claim,
+    fail_claimed,
+    renew_lease,
+)
 
 
 class TestClaim(TestCase):
@@ -130,6 +138,126 @@ class TestRenewLease(TestCase):
         claim(reclaimed, claimed_by="worker-B", lease_seconds=300)
         with pytest.raises(LeaseLostError):
             renew_lease(worker_a, lease_seconds=600)
+
+
+class TestCompleteClaimed(TestCase):
+    """The completion half of the claim-generation CAS ``renew_lease`` guards the heartbeat with."""
+
+    def _claimed_task(self, *, claimed_by: str = "worker") -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        claim(task, claimed_by=claimed_by, lease_seconds=300)
+        return task
+
+    def test_the_owner_completes_and_hands_the_claim_back(self) -> None:
+        task = self._claimed_task()
+
+        complete_claimed(task, result_artifact_path="artifact.md")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.claimed_by == ""
+        assert task.result_artifact_path == "artifact.md"
+
+    def test_an_expired_owner_cannot_complete_the_rivals_task(self) -> None:
+        task = self._claimed_task(claimed_by="worker-A")
+        Task.objects.filter(pk=task.pk).update(
+            status=Task.Status.PENDING, claimed_by="", claimed_at=None, lease_expires_at=None
+        )
+        rival = Task.objects.get(pk=task.pk)
+        claim(rival, claimed_by="worker-B", lease_seconds=300)
+
+        with pytest.raises(LeaseLostError):
+            complete_claimed(task, result_artifact_path="")
+
+        rival.refresh_from_db()
+        assert rival.status == Task.Status.CLAIMED
+        assert rival.claimed_by == "worker-B"
+
+    def test_a_stale_owner_cannot_complete_through_the_task_method(self) -> None:
+        task = self._claimed_task(claimed_by="worker-A")
+        Task.objects.filter(pk=task.pk).update(
+            status=Task.Status.PENDING, claimed_by="", claimed_at=None, lease_expires_at=None
+        )
+        claim(Task.objects.get(pk=task.pk), claimed_by="worker-B", lease_seconds=300)
+
+        with pytest.raises(LeaseLostError):
+            task.complete()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.CLAIMED
+
+
+class TestFailClaimed(TestCase):
+    """The failure half of the same generation guard ``complete_claimed`` puts on completion.
+
+    ``Task.fail`` had none, so a worker whose lease lapsed mid-run could land a FAILED
+    verdict — and burn the repair-loop budget — on the unit its successor was executing.
+    """
+
+    def _claimed_task(self, *, claimed_by: str = "worker-A") -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        claim(task, claimed_by=claimed_by, lease_seconds=300)
+        return task
+
+    def test_the_owner_fails_its_own_task(self) -> None:
+        task = self._claimed_task()
+
+        fail_claimed(task, reason="the coder gave up")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.failure_reason == "the coder gave up"
+
+    def test_an_expired_owner_cannot_fail_the_rivals_task(self) -> None:
+        task = self._claimed_task(claimed_by="worker-A")
+        Task.objects.filter(pk=task.pk).update(
+            status=Task.Status.PENDING, claimed_by="", claimed_at=None, lease_expires_at=None
+        )
+        claim(Task.objects.get(pk=task.pk), claimed_by="worker-B", lease_seconds=300)
+
+        with pytest.raises(LeaseLostError):
+            fail_claimed(task, reason="stale verdict")
+
+        rival = Task.objects.get(pk=task.pk)
+        assert rival.status == Task.Status.CLAIMED
+        assert rival.claimed_by == "worker-B"
+
+
+class TestClaimGeneration(TestCase):
+    """The token an out-of-process claimer proves its generation with."""
+
+    def _claimed_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        claim(task, claimed_by="worker-A", lease_seconds=300)
+        return task
+
+    def test_an_unclaimed_row_has_no_generation(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert claim_generation(task) == ""
+
+    def test_a_re_claim_mints_a_new_generation(self) -> None:
+        task = self._claimed_task()
+        first = claim_generation(task)
+        Task.objects.filter(pk=task.pk).update(
+            status=Task.Status.PENDING, claimed_by="", claimed_at=None, lease_expires_at=None
+        )
+        reclaimed = Task.objects.get(pk=task.pk)
+        claim(reclaimed, claimed_by="worker-A", lease_seconds=300)
+
+        assert claim_generation(reclaimed) != first
+
+    def test_a_fresh_read_of_the_same_claim_reproduces_the_token(self) -> None:
+        task = self._claimed_task()
+
+        assert claim_generation(Task.objects.get(pk=task.pk)) == claim_generation(task)
 
 
 class TestDescribeLeaseLoss(TestCase):

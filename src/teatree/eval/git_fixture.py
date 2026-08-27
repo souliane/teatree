@@ -203,7 +203,7 @@ def provision_e2e_sibling_repos_fixture() -> Iterator[Path]:
 
 
 def _red_boxed_png_bytes(seed: int) -> bytes:
-    """A red-box-highlighted PNG that clears ``post-test-plan``'s image gates.
+    """A red-box-highlighted PNG that clears ``write-test-plan``'s image gates.
 
     ``seed`` varies both the background pattern and the box position, so two captures
     are byte-distinct (the md5 dedup gate) while each carries a saturated-red highlight

@@ -97,6 +97,7 @@ def _repair_marketplace_json(plugins_dir: Path, target: str, now: str, *, repair
         "installLocation": target,
         "lastUpdated": now,
     }
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return RegistrationOutcome(f"repaired {path}", written=True)
 
@@ -155,12 +156,14 @@ def _ensure_plugin_registered(*, repair: bool = False) -> bool:
     """Verify t3 plugin registration, repairing it only under *repair*.
 
     Called at every ``t3 doctor check`` (and thus every Claude session start).
-    Best-effort — never fails the check if the repo or filesystem is unavailable.
+    Advisory — a filesystem failure never fails the check, but it is REPORTED
+    rather than swallowed as a successful repair.
     """
     try:
         return _do_ensure_plugin_registered(repair=repair)
-    except OSError:
-        return True
+    except OSError as exc:
+        typer.echo(f"WARN  Could not repair the {_CLAUDE_PLUGIN_ID} plugin registration: {exc}")
+        return False
 
 
 def _do_ensure_plugin_registered(*, repair: bool = False) -> bool:

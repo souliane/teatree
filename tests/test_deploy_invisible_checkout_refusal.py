@@ -96,7 +96,7 @@ class TestHostOnlyCheckoutIsRefused:
         assert DISPATCHED not in proc.stdout
         assert str(checkout) in proc.stderr
 
-    def test_the_refusal_names_the_roots_the_container_can_see(self, tmp_path: Path, home: Path) -> None:
+    def test_the_refusal_names_the_roots_a_working_directory_can_sit_under(self, tmp_path: Path, home: Path) -> None:
         fork = _build_fork(tmp_path)
         home.mkdir(parents=True, exist_ok=True)
         checkout = tmp_path / "host-only-clone"
@@ -106,6 +106,27 @@ class TestHostOnlyCheckoutIsRefused:
 
         assert str(home / "workspace" / "t3-workspaces") in proc.stderr
         assert "TEATREE_INVOCATION_CWD" in proc.stderr
+
+    def test_the_refusal_names_no_root_a_cwd_cannot_be_translated_from(self, tmp_path: Path, home: Path) -> None:
+        """Mounted is not usable-as-a-cwd: an advertised root that still refuses misleads.
+
+        The credential and session planes are bind mounts, so a file under them is
+        readable inside — but the wrapper translates only the workspace, worktree and
+        source roots, so a checkout under the others is refused exactly like this one.
+        """
+        fork = _build_fork(tmp_path)
+        home.mkdir(parents=True, exist_ok=True)
+        checkout = tmp_path / "host-only-clone"
+        (checkout / ".git").mkdir(parents=True)
+
+        proc = _run(fork, home, checkout)
+
+        # Matched as a whole LISTED line: `~/.local/share/teatree` is a prefix of the
+        # worktree root the refusal legitimately names, so a substring test cannot tell
+        # the two apart.
+        listed = {line.strip() for line in proc.stderr.splitlines()}
+        for untranslatable in (".claude/projects", ".password-store", ".gnupg", ".local/share/teatree"):
+            assert str(home / untranslatable) not in listed
 
     def test_a_subdirectory_of_the_checkout_is_refused_too(self, tmp_path: Path, home: Path) -> None:
         fork = _build_fork(tmp_path)

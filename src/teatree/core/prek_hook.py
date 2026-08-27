@@ -85,7 +85,13 @@ def _clear_redundant_hooks_path(wt_path: str) -> bool:
     default = _default_hooks_dir(wt_path)
     if default is None:
         return False
-    if Path(configured).resolve() != default:
+    # git resolves a relative ``core.hooksPath`` against the REPOSITORY, not the
+    # calling process's cwd — resolving it here made a provisioning run from
+    # elsewhere compare two unrelated dirs and preserve a redundant value.
+    configured_path = Path(configured)
+    if not configured_path.is_absolute():
+        configured_path = Path(wt_path) / configured_path
+    if configured_path.resolve() != default:
         return False  # genuine custom hooksPath — preserve the user's intent
     result = run_step(
         "git-hookspath-unset",
@@ -99,6 +105,12 @@ def _clear_redundant_hooks_path(wt_path: str) -> bool:
 
 def _is_prek_hook(path: Path) -> bool:
     return path.is_file() and _PREK_MARKER in _read(path)
+
+
+def is_foreign_config_hook(path: Path) -> bool:
+    """True when *path* is a prek shim gating the repo on a subdirectory's config."""
+    body = _read(path)
+    return _PREK_MARKER in body and _FOREIGN_CONFIG_FLAG in body
 
 
 def _read(path: Path) -> str:
@@ -169,7 +181,7 @@ def drop_foreign_config_hooks(wt_path: str) -> list[DroppedHook]:
     dropped: list[DroppedHook] = []
     for name in _HOOK_NAMES:
         hook = hooks_dir / name
-        if not _is_prek_hook(hook) or _FOREIGN_CONFIG_FLAG not in _read(hook):
+        if not is_foreign_config_hook(hook):
             continue
         dropped.append(DroppedHook(path=hook, body=_read(hook), mode=stat.S_IMODE(hook.stat().st_mode)))
         hook.unlink()

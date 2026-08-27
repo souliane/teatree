@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from teatree.cli.eval.multi_trial import run_pass_at_k_lane
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 
 
@@ -64,6 +65,7 @@ class TestTranscriptHtmlArtifact:
         out = tmp_path / "eval-transcripts.html"
         run_pass_at_k_lane(
             [_spec("alpha"), _spec("beta")],
+            backend=API_BACKEND,
             max_turns=None,
             trials=3,
             require="any",
@@ -80,6 +82,7 @@ class TestTranscriptHtmlArtifact:
         out = tmp_path / "report.html"
         run_pass_at_k_lane(
             [_spec("alpha")],
+            backend=API_BACKEND,
             max_turns=None,
             trials=3,
             require="any",
@@ -99,6 +102,7 @@ class TestTranscriptHtmlArtifact:
         out = tmp_path / "report.html"
         run_pass_at_k_lane(
             [_spec("alpha"), _spec("beta")],
+            backend=API_BACKEND,
             max_turns=None,
             trials=3,
             require="any",
@@ -113,6 +117,7 @@ class TestTranscriptHtmlArtifact:
         report = tmp_path / "report.html"
         run_pass_at_k_lane(
             [_spec("alpha")],
+            backend=API_BACKEND,
             max_turns=None,
             trials=2,
             require="any",
@@ -161,6 +166,7 @@ class TestArtifactWrittenEvenOnRedRun:
         out = tmp_path / "report.html"
         failed = run_pass_at_k_lane(
             [spec],
+            backend=API_BACKEND,
             max_turns=None,
             trials=2,
             require="any",

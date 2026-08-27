@@ -185,6 +185,52 @@ def _completed(name: str, *, throttle_retries: int = 0, is_error: bool = False) 
     )
 
 
+class _CreditCliffRunner:
+    """Three scenarios: one throttles (shrinking the ceiling), one kills the key, one must never run.
+
+    The two events sequence the pool into the guarded window: the throttled run
+    completes only once the killer holds the other permit, so releasing its own
+    permit under the halved ceiling leaves no permit free for the third scenario.
+    """
+
+    def __init__(self, *, settle_seconds: float = 0.5, join_seconds: float = 5.0) -> None:
+        self._settle_seconds = settle_seconds
+        self._join_seconds = join_seconds
+        self._lock = threading.Lock()
+        self._killer_in_flight = threading.Event()
+        self._throttled_returning = threading.Event()
+        self.ran: list[str] = []
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        with self._lock:
+            self.ran.append(spec.name)
+        if spec.name == "throttled":
+            self._killer_in_flight.wait(self._join_seconds)
+            self._throttled_returning.set()
+            return _completed(spec.name, throttle_retries=1)
+        if spec.name == "kills_the_key":
+            self._killer_in_flight.set()
+            self._throttled_returning.wait(self._join_seconds)
+            # Stay in flight while the shrunken ceiling parks the third worker in
+            # ``governor.slot()`` — the window this guards.
+            time.sleep(self._settle_seconds)
+            msg = "API credits exhausted — add credits at console.anthropic.com"
+            raise CreditExhaustedError(msg)
+        return _completed(spec.name)
+
+
+class TestNoScenarioStartsAfterTheKeyDies:
+    def test_a_worker_parked_for_a_governor_slot_never_runs_on_the_dead_key(self, tmp_path: Path) -> None:
+        # The first completion is throttled, halving the ceiling to 1, so the third
+        # spec's worker parks waiting for a permit while the second kills the key.
+        names = ["throttled", "kills_the_key", "must_not_run"]
+        specs = [_spec(tmp_path, name=name) for name in names]
+        runner = _CreditCliffRunner()
+        with pytest.raises(CreditExhaustedError):
+            run_specs(runner, specs, parallel=2)
+        assert "must_not_run" not in runner.ran
+
+
 class TestConcurrencyGovernor:
     """Layer 3: an AIMD governor backs the shared permit count off a throttle.
 

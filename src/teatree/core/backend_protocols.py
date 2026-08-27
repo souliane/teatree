@@ -136,6 +136,7 @@ class PullRequestSpec:
     target_branch: str = ""
     labels: list[str] = field(default_factory=list)
     assignee: str = ""
+    reviewers: list[str] = field(default_factory=list)
     draft: bool = False
 
 

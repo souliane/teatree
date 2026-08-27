@@ -20,8 +20,8 @@ def _sig(fn) -> inspect.Signature:
 
 
 class _ConformingMeta:
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
-        del title, description, require_sections
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True, repo: str = ""):
+        del title, description, require_sections, repo
         return {"errors": [], "warnings": []}
 
 

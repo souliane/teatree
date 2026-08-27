@@ -19,27 +19,37 @@ import shlex
 import tomllib
 from pathlib import Path, PurePosixPath
 
-#: pytest/xdist options that consume the NEXT token as their value, so the value is never
-#: mistaken for a positional path (and a marker/keyword-only run with no path is correctly
-#: seen as collecting the whole ``testpaths`` tree).
-VALUE_OPTIONS: frozenset[str] = frozenset(
+#: pytest/xdist options that never consume the next token, so a path following one is a
+#: genuine collection target rather than a value. Every other option is assumed to take a
+#: value: a plugin's options cannot be enumerated here, and over-consuming reports an
+#: unscoped run while under-consuming hides one.
+FLAG_OPTIONS: frozenset[str] = frozenset(
     {
-        "-k",
-        "-m",
-        "-p",
-        "-c",
-        "-o",
-        "-n",
-        "-W",
-        "-r",
-        "--ignore",
-        "--ignore-glob",
-        "--deselect",
-        "--maxfail",
-        "--rootdir",
-        "--durations",
-        "--dist",
-        "--tx",
+        "-q",
+        "-qq",
+        "-v",
+        "-vv",
+        "-s",
+        "-x",
+        "-l",
+        "--quiet",
+        "--verbose",
+        "--exitfirst",
+        "--failed-first",
+        "--last-failed",
+        "--lf",
+        "--ff",
+        "--nf",
+        "--no-header",
+        "--collect-only",
+        "--doctest-modules",
+        "--strict-markers",
+        "--strict-config",
+        "--reuse-db",
+        "--create-db",
+        "--no-migrations",
+        "--nomigrations",
+        "--pdb",
     }
 )
 
@@ -80,7 +90,13 @@ def pytest_argvs(text: str) -> list[list[str]]:
 
 
 def positional_args(argv: list[str]) -> list[str]:
-    """The positional (non-option, non-option-value) tokens of a pytest *argv*."""
+    """The positional (non-option, non-option-value) tokens of a pytest *argv*.
+
+    An option outside :data:`FLAG_OPTIONS` is assumed to consume the next token — a plugin
+    adds options this stdlib leaf cannot enumerate. Reading such a value as a collection
+    target is what let ``pytest --basetemp /tmp/pt`` present as scoped while it collected
+    the whole tree, so the ambiguous token is dropped and the invocation reads as unscoped.
+    """
     positionals: list[str] = []
     consume_value = False
     for tok in argv:
@@ -88,7 +104,7 @@ def positional_args(argv: list[str]) -> list[str]:
             consume_value = False
             continue
         if tok.startswith("-"):
-            consume_value = "=" not in tok and tok in VALUE_OPTIONS
+            consume_value = "=" not in tok and tok not in FLAG_OPTIONS
             continue
         positionals.append(tok)
     return positionals

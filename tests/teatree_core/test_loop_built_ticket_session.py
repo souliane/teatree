@@ -17,6 +17,7 @@ zero sessions).
 
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
@@ -50,7 +51,9 @@ class TestProvisionRollbackPreservesAttestationSessions(TestCase):
             "teatree.core.management.commands._workspace.ticket_intake.WorktreeProvisioner",
         ) as prov:
             prov.return_value.run.return_value = type("R", (), {"ok": False, "detail": "provision boom"})()
-            call_command("workspace", "ticket", "https://example.com/issues/748")
+            with pytest.raises(SystemExit) as exc:
+                call_command("workspace", "ticket", "https://example.com/issues/748")
+        assert exc.value.code == 1
 
         # The ticket-with-attestation must still exist (or the attested
         # session must survive on whatever ticket represents this issue).

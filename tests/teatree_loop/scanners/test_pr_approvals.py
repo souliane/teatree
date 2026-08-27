@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
+from django.db import DatabaseError
 from django.test import TestCase
 
 import teatree.core.signals as signals_mod
@@ -116,10 +117,45 @@ class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
         pr = self._review_requested_pr()
         publisher = _FakeReactionPublisher()
 
-        with mode_immediate_cm(), patch.object(signals_mod, "get_reaction_publisher", lambda: publisher):
+        with (
+            mode_immediate_cm(),
+            patch.object(signals_mod, "get_reaction_publisher", lambda: publisher),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             PrApprovalScanner(overlay="teatree", host=_ApprovedHost()).scan()
 
         assert publisher.approval_calls == [pr]
+
+
+class TestApprovalEffectsFollowTheCommittedState(_PrApprovalScannerTestBase):
+    """The #961 approval effects publish only once ``APPROVED`` is committed.
+
+    ``approve()`` is an in-memory FSM transition; the row is not ``APPROVED``
+    until the caller's ``save()`` commits. A ✅ posted before that lands on a PR
+    the forge still shows as review-requested, and burns the one-shot
+    ``OnBehalfApproval`` the retry would need.
+    """
+
+    def test_no_approval_effects_when_the_state_save_fails(self) -> None:
+        pr = self._review_requested_pr()
+        publisher = _FakeReactionPublisher()
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk I/O error"
+            raise DatabaseError(msg)
+
+        with (
+            mode_immediate_cm(),
+            patch.object(signals_mod, "get_reaction_publisher", lambda: publisher),
+            patch.object(PullRequest, "save", _boom),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            approved = sync_forge_approvals(_ApprovedHost(), [pr])
+
+        assert approved == []
+        assert publisher.approval_calls == []
+        pr.refresh_from_db()
+        assert pr.state == PullRequest.State.REVIEW_REQUESTED
 
 
 class TestSyncForgeApprovals(_PrApprovalScannerTestBase):

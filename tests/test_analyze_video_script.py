@@ -106,46 +106,53 @@ class TestFetchPlan:
 
     def test_gitlab_upload_uses_glab_api(self, tmp_path):
         url = f"https://gitlab.com/mygroup/myproj/uploads/{self._SECRET}/screen.mov"
-        argv, capture_stdout = av._fetch_plan(url, tmp_path / "input.mov")
-        assert argv[:2] == ["glab", "api"]
-        assert argv[-1] == f"projects/mygroup%2Fmyproj/uploads/{self._SECRET}/screen.mov"
-        assert "--hostname" not in argv
-        assert capture_stdout is True
+        plan = av._fetch_plan(url, tmp_path / "input.mov")
+        assert plan.argv[:2] == ["glab", "api"]
+        assert plan.argv[-1] == f"projects/mygroup%2Fmyproj/uploads/{self._SECRET}/screen.mov"
+        assert "--hostname" not in plan.argv
+        assert plan.capture_stdout is True
 
     def test_self_managed_gitlab_passes_hostname(self, tmp_path):
         url = f"https://gitlab.example.com/team/app/uploads/{self._SECRET}/rec.mov"
-        argv, _ = av._fetch_plan(url, tmp_path / "input.mov")
-        assert "--hostname" in argv
-        assert argv[argv.index("--hostname") + 1] == "gitlab.example.com"
+        plan = av._fetch_plan(url, tmp_path / "input.mov")
+        assert "--hostname" in plan.argv
+        assert plan.argv[plan.argv.index("--hostname") + 1] == "gitlab.example.com"
 
     def test_gitlab_upload_with_subgroups(self, tmp_path):
         url = f"https://gitlab.com/grp/sub/app/uploads/{self._SECRET}/a.mov"
-        argv, _ = av._fetch_plan(url, tmp_path / "input.mov")
-        assert argv[-1] == f"projects/grp%2Fsub%2Fapp/uploads/{self._SECRET}/a.mov"
+        plan = av._fetch_plan(url, tmp_path / "input.mov")
+        assert plan.argv[-1] == f"projects/grp%2Fsub%2Fapp/uploads/{self._SECRET}/a.mov"
 
-    def test_github_attachment_uses_authenticated_curl(self, tmp_path):
+    def test_github_attachment_authenticates_without_putting_the_token_in_argv(self, tmp_path):
+        """A process argument vector is world-readable; the token goes in over stdin."""
         url = "https://github.com/user-attachments/assets/deadbeef-1234"
-        argv, capture_stdout = av._fetch_plan(url, tmp_path / "input.mp4", gh_token="TESTTOKEN")
-        assert argv[0] == "curl"
-        assert "Authorization: Bearer TESTTOKEN" in argv
-        assert capture_stdout is False
+        plan = av._fetch_plan(url, tmp_path / "input.mp4", gh_token="TESTTOKEN")
+        assert plan.argv[0] == "curl"
+        assert not any("TESTTOKEN" in arg for arg in plan.argv)
+        assert "--config" in plan.argv
+        assert plan.stdin is not None
+        assert "Authorization: Bearer TESTTOKEN" in plan.stdin
+        assert plan.capture_stdout is False
 
     def test_github_without_token_is_plain_curl(self, tmp_path):
         url = "https://github.com/user-attachments/assets/deadbeef-1234"
-        argv, _ = av._fetch_plan(url, tmp_path / "input.mp4", gh_token=None)
-        assert argv[0] == "curl"
-        assert not any(a.startswith("Authorization") for a in argv)
+        plan = av._fetch_plan(url, tmp_path / "input.mp4", gh_token=None)
+        assert plan.argv[0] == "curl"
+        assert not any(a.startswith("Authorization") for a in plan.argv)
+        assert plan.stdin is None
 
     def test_signed_githubusercontent_is_plain_curl(self, tmp_path):
         url = "https://private-user-images.githubusercontent.com/x/y.mov?jwt=abc"
-        argv, _ = av._fetch_plan(url, tmp_path / "input.mov", gh_token="TESTTOKEN")
-        assert argv[0] == "curl"
-        assert not any(a.startswith("Authorization") for a in argv)
+        plan = av._fetch_plan(url, tmp_path / "input.mov", gh_token="TESTTOKEN")
+        assert plan.argv[0] == "curl"
+        assert not any(a.startswith("Authorization") for a in plan.argv)
+        assert plan.stdin is None
 
     def test_plain_url_uses_curl(self, tmp_path):
-        argv, capture_stdout = av._fetch_plan("https://example.com/clip.mp4", tmp_path / "input.mp4")
-        assert argv[0] == "curl"
-        assert capture_stdout is False
+        plan = av._fetch_plan("https://example.com/clip.mp4", tmp_path / "input.mp4")
+        assert plan.argv[0] == "curl"
+        assert plan.capture_stdout is False
+        assert plan.stdin is None
 
 
 def _make_clip(path: Path, *, duration: int, size: str = "320x240") -> None:

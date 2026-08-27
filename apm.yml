@@ -12,13 +12,22 @@ keywords:
 - django
 agents:
 - claude-code
+# `dependencies.apm` is the REQUIRED tier and its only declaration surface:
+# `teatree.provisioning.declared` enumerates it, `t3 setup` provisions each entry,
+# and `t3 doctor check` FAILs on any that is still absent (BLUEPRINT.md § the
+# declared-dependency provisioning gate). The three `souliane/skills` companions
+# are mandatory, not suggestions — the architectural-review scanner and the
+# `architectural_review_skill` / `review_skill` settings resolve against
+# `ac-reviewing-codebase`, so a box without it runs its periodic review with no
+# skill guidance at all. Optional, provider-specific suggestions belong in
+# `teatree.provisioning.recommended` (doctor INFO), never here.
 dependencies:
   apm:
   - obra/superpowers#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
   - souliane/teatree/skills/architecture-design
-  - souliane/skills/ac-reviewing-codebase#d0008a39e9b1b9ba905e15380ee62ef459183dfd
-  - souliane/skills/ac-python#d0008a39e9b1b9ba905e15380ee62ef459183dfd
-  - souliane/skills/ac-django#d0008a39e9b1b9ba905e15380ee62ef459183dfd
+  - souliane/skills/ac-reviewing-codebase#38a0dccf3483f4be5d9282c42d4e50d3b2ef2325
+  - souliane/skills/ac-python#38a0dccf3483f4be5d9282c42d4e50d3b2ef2325
+  - souliane/skills/ac-django#38a0dccf3483f4be5d9282c42d4e50d3b2ef2325
   - souliane/teatree
 install:
   pip: teatree

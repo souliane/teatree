@@ -6,6 +6,7 @@ that regenerate the graph keep BLUEPRINT.md architectural rather than
 bloating it with auto-generated detail.
 """
 
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -130,8 +131,56 @@ class TestDependencyGraphWritesToDedicatedFile:
         assert (repo_root / hook._GRAPH_FILE).exists(), "graph must be written under the repo root"
         assert not (elsewhere / hook._GRAPH_FILE).exists(), "graph must NOT be written relative to CWD"
         git_add_arg = git_add.call_args.args[0]
-        assert git_add_arg[:2] == ["git", "add"]
-        assert Path(git_add_arg[2]).is_absolute(), "git add path must be repo-root-anchored, not a CWD-relative path"
+        assert git_add_arg[:2] == ["git", "-C"]
+        assert git_add_arg[3:5] == ["add", "--"]
+        assert Path(git_add_arg[5]).is_absolute(), "git add path must be repo-root-anchored, not a CWD-relative path"
+
+
+class TestTachFailureIsLoud:
+    """A failed ``tach`` produces no stdout — the same shape as "nothing to draw".
+
+    Read as a skip, it leaves the committed graph silently stale while the hook
+    reports success, so the documentation-alignment gate certifies nothing.
+    """
+
+    def test_nonzero_tach_exit_fails_the_hook(self, fake_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            hook,
+            "_run_tach",
+            lambda: subprocess.CompletedProcess(args=["tach"], returncode=2, stdout="", stderr="tach: boom"),
+        )
+
+        result = hook.main()
+
+        assert result == 1
+        assert not (fake_repo / hook._GRAPH_FILE).exists()
+
+    def test_nonzero_tach_exit_reports_the_diagnostics(
+        self,
+        fake_repo: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            hook,
+            "_run_tach",
+            lambda: subprocess.CompletedProcess(args=["tach"], returncode=2, stdout="", stderr="tach: boom"),
+        )
+
+        hook.main()
+
+        assert "tach: boom" in capsys.readouterr().err
+
+    def test_successful_tach_output_is_written(self, fake_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            hook,
+            "_run_tach",
+            lambda: subprocess.CompletedProcess(args=["tach"], returncode=0, stdout="graph TD\n  A --> B\n", stderr=""),
+        )
+        monkeypatch.setattr(hook.subprocess, "run", mock.Mock(return_value=mock.Mock()))
+
+        assert hook.main() == 0
+        assert "A --> B" in (fake_repo / hook._GRAPH_FILE).read_text(encoding="utf-8")
 
 
 class TestRealBlueprintHasNoMermaid:

@@ -155,7 +155,7 @@ class SelfUpdateScannerBehaviorTests(TestCase):
         _seed_origin_with_two_commits(self.origin)
 
     def _make_tempdir(self) -> str:
-        import tempfile  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415 — test-local
 
         d = tempfile.mkdtemp(prefix="self_update_scanner_")
         self.addCleanup(_rmtree_safe, d)
@@ -324,7 +324,7 @@ class SelfUpdateCiGateTests(TestCase):
     """#1760: the CI-green fail-closed gate — only an explicit green ff-pulls."""
 
     def setUp(self) -> None:
-        import tempfile  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415 — test-local
 
         self._tmp = Path(tempfile.mkdtemp(prefix="self_update_ci_gate_"))
         self.addCleanup(_rmtree_safe, str(self._tmp))
@@ -407,7 +407,7 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
     """#1760: ``auto_update_reinstall`` queues a deferred reinstall on update only."""
 
     def setUp(self) -> None:
-        import tempfile  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415 — test-local
 
         self._tmp = Path(tempfile.mkdtemp(prefix="self_update_reinstall_q_"))
         self.addCleanup(_rmtree_safe, str(self._tmp))
@@ -452,7 +452,7 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         # A DB error while upserting the deferred-reinstall row must be
         # swallowed — the update itself already succeeded; the worst case is
         # one re-pull next tick, never a crashed tick.
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
         with patch.object(
             PendingReinstall.objects,
@@ -463,6 +463,26 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
 
         assert signals[0].kind == "self_update.updated", "the tick must still report the update"
         assert _head_sha(self.clone) != self.old_sha
+
+    def test_queue_db_error_is_surfaced_on_the_signal_and_marker(self) -> None:
+        # The clone advanced with nothing queued to re-anchor the running
+        # interpreter, and the marker it writes closes the cadence window —
+        # so a clean "updated" would hide a state only the operator can fix.
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
+
+        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — test-local
+        from teatree.loop.scanners.self_update import REINSTALL_QUEUE_FAILED_REASON  # noqa: PLC0415 — test-local
+
+        with patch.object(
+            PendingReinstall.objects,
+            "upsert_pending",
+            side_effect=RuntimeError("db gone"),
+        ):
+            signals = self._scanner(auto_update_reinstall=True).scan()
+
+        assert REINSTALL_QUEUE_FAILED_REASON in signals[0].payload["reason"]
+        marker = SelfUpdateMarker.objects.get(repo_label="teatree")
+        assert REINSTALL_QUEUE_FAILED_REASON in marker.last_reason
 
 
 class SelfUpdatePostPullSchemaTests(TestCase):
@@ -620,7 +640,7 @@ class SelfUpdateSchemaRetryTests(TestCase):
 
 
 def _rmtree_safe(path: str) -> None:
-    import shutil  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — test-local
 
     shutil.rmtree(path, ignore_errors=True)
 
@@ -630,37 +650,37 @@ class SelfUpdateScannerWiringTests(TestCase):
 
     def test_default_cadence_setting_is_one_hour(self) -> None:
         """``UserSettings.self_update_cadence_hours`` defaults to 1 hour."""
-        from teatree.config import UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
 
         settings = UserSettings()
         assert settings.self_update_cadence_hours == 1
 
     def test_self_update_disabled_setting_defaults_off(self) -> None:
         """``self_update_disabled`` defaults to ``False`` — scanner is on by default."""
-        from teatree.config import UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
 
         settings = UserSettings()
         assert settings.self_update_disabled is False
 
     def test_require_green_main_defaults_on(self) -> None:
         """``auto_update_require_green_main`` defaults ON — fail closed (#1760)."""
-        from teatree.config import UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
 
         assert UserSettings().auto_update_require_green_main is True
 
     def test_auto_update_reinstall_defaults_off(self) -> None:
         """``auto_update_reinstall`` defaults OFF — the new side-effect is opt-in (#1760)."""
-        from teatree.config import UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
 
         assert UserSettings().auto_update_reinstall is False
 
     def test_wiring_passes_ci_gate_and_reinstall_flags(self) -> None:
         """The wiring helper plumbs the CI source + both #1760 flags into the scanner."""
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
-        from teatree.loop.scanners.self_update_ci import GhMainCiStatus  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
+        from teatree.loop.scanners.self_update_ci import GhMainCiStatus  # noqa: PLC0415 — test-local
 
         settings = UserSettings(auto_update_reinstall=True, auto_update_require_green_main=False)
         with (
@@ -681,10 +701,10 @@ class SelfUpdateScannerWiringTests(TestCase):
 
     def test_wiring_builds_scanner_when_repos_available(self) -> None:
         """The wiring helper returns a scanner with the configured cadence."""
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
 
         with (
             patch(
@@ -703,10 +723,10 @@ class SelfUpdateScannerWiringTests(TestCase):
 
     def test_wiring_returns_none_when_disabled(self) -> None:
         """Escape hatch — ``self_update_disabled=True`` → no scanner."""
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
 
         with patch(
             "teatree.loop.global_scanner_factories.load_config",
@@ -717,10 +737,10 @@ class SelfUpdateScannerWiringTests(TestCase):
 
     def test_wiring_returns_none_when_no_repos(self) -> None:
         """No editable clones discovered → nothing to scan, no scanner needed."""
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
+        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
 
         with (
             patch(
@@ -737,10 +757,10 @@ class SelfUpdateScannerWiringTests(TestCase):
 
     def test_build_default_jobs_includes_self_update_when_wired(self) -> None:
         """``build_default_jobs`` wires the self-update scanner as a global job."""
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
-        from teatree.loop.scanners.self_update import SelfUpdateScanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415 — test-local
+        from teatree.loop.scanners.self_update import SelfUpdateScanner  # noqa: PLC0415 — test-local
 
         fake_scanner = SelfUpdateScanner(repos=(("teatree", Path("/x")),), cadence_hours=1)
         with patch(
@@ -765,7 +785,7 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
     """
 
     def setUp(self) -> None:
-        import tempfile  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415 — test-local
 
         self._tmp = Path(tempfile.mkdtemp(prefix="self_update_stale_notice_"))
         self.addCleanup(_rmtree_safe, str(self._tmp))
@@ -780,9 +800,9 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
         )
 
     def test_dirty_clone_skip_emits_durable_notice(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415 — test-local
 
         clone = self._tmp / "teatree"
         _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
@@ -798,9 +818,9 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
         assert skip.label == "teatree"
 
     def test_feature_branch_skip_emits_off_default_notice(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
-        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415 — test-local
 
         clone = self._tmp / "teatree"
         _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
@@ -815,7 +835,7 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
         assert skip.default_branch == "main"
 
     def test_healthy_clone_emits_no_notice(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415 — test-local
 
         clone = self._tmp / "teatree"
         _clone_up_to_date(origin=self.origin, clone=clone)
@@ -836,14 +856,17 @@ class OffDefaultReasonRoundTripTests(TestCase):
     """
 
     def test_construct_then_parse_recovers_the_default_branch(self) -> None:
-        from teatree.loop.scanners.self_update import _off_default_reason, _parse_off_default_branch  # noqa: PLC0415
+        from teatree.loop.scanners.self_update import (  # noqa: PLC0415 — test-local
+            _off_default_reason,
+            _parse_off_default_branch,
+        )
 
         for current, default_branch in [("feature", "main"), ("HEAD", "develop"), ("wip", "trunk")]:
             reason = _off_default_reason(current, default_branch)
             assert _parse_off_default_branch(reason) == default_branch, reason
 
     def test_parse_is_defensive_against_non_matching_reasons(self) -> None:
-        from teatree.loop.scanners.self_update import _parse_off_default_branch  # noqa: PLC0415
+        from teatree.loop.scanners.self_update import _parse_off_default_branch  # noqa: PLC0415 — test-local
 
         # A reason that is not the off-default shape yields "" — never a crash
         # or a misparsed branch (the dirty-tracked / CI skip reasons, etc.).
@@ -853,6 +876,6 @@ class OffDefaultReasonRoundTripTests(TestCase):
     def test_constructor_is_the_only_off_default_reason_source(self) -> None:
         # Anti-drift: the gate must build the reason via the shared helper, so a
         # future edit to the format flows to BOTH sites. Pin the exact shape.
-        from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415
+        from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415 — test-local
 
         assert _off_default_reason("feature", "main") == "branch=feature!=main"

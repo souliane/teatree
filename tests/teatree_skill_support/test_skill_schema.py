@@ -206,3 +206,30 @@ class TestPluginProvidedRequiresResolve:
         errors, _ = validate_directory(apm)
 
         assert any("requires unknown skill 'nonexistent'" in e for e in errors)
+
+
+class TestInlineListFieldIsRefused:
+    """An inline ``requires``/``companions`` loads as NO dependencies, so it must not validate.
+
+    ``requires_parser`` reads only the block sequence: a flow sequence or a bare scalar
+    resolves to an empty dependency list at load time, and every reference in it goes
+    unchecked here.
+    """
+
+    def test_a_flow_sequence_requires_is_an_error(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\nrequires: [nonexistent]\n---\n")
+        errors, _ = validate_skill_md(skill_md, known_skills=set())
+        assert any("requires must be a block list" in e for e in errors)
+
+    def test_a_scalar_companions_is_an_error(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions: nonexistent\n---\n")
+        errors, _ = validate_skill_md(skill_md, known_skills=set())
+        assert any("companions must be a block list" in e for e in errors)
+
+    def test_an_empty_block_opener_stays_valid(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\nrequires:\ncompanions:\n---\n")
+        errors, _ = validate_skill_md(skill_md, known_skills=set())
+        assert errors == []

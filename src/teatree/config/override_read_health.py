@@ -240,6 +240,17 @@ def degraded_read_report() -> DegradedReadReport | None:
     return report
 
 
+def degraded_marker_unreadable() -> bool:
+    """The marker EXISTS but does not parse — the tier's health is UNKNOWN, not healthy.
+
+    The distinction :func:`degraded_read_report` deliberately collapses: it fails open to
+    ``None`` for an absent marker AND for a corrupt one, so a resolver still gets a value.
+    A health check reading that collapsed answer as "no fault" would report a tier it never
+    established anything about, which is the state this whole module exists to end.
+    """
+    return marker_path().is_file() and _read_marker() is None
+
+
 def clear_degraded_read() -> None:
     """Drop every marker this venue can see — the operator acknowledged/repaired the fault.
 
@@ -299,6 +310,7 @@ __all__ = [
     "ConfigOverrideReadError",
     "DegradedReadReport",
     "clear_degraded_read",
+    "degraded_marker_unreadable",
     "degraded_read_report",
     "fallback_marker_path",
     "marker_path",

@@ -111,9 +111,10 @@ class S4Evidence(TypedDict):
 
 
 class S5Evidence(TypedDict):
-    """S5 repair-iteration-burn evidence."""
+    """S5 repair-iteration-burn evidence. ``attempts`` counts TERMINAL attempts only."""
 
     attempts: int
+    in_flight: int
     success_groups: int
     failed_fraction: float
 
@@ -441,8 +442,8 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
     rows = [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
-    total = len(rows)
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
+    succeeded = 0
     failed = 0
     for attempt in rows:
         # #16: classify on the explicit TaskAttempt.outcome discriminator, stamped
@@ -453,15 +454,21 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
         # success nor a failure, excluded from both.
         if attempt.outcome == TaskAttempt.Outcome.SUCCESS:
             groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
+            succeeded += 1
         elif attempt.outcome in {TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH}:
             failed += 1
     terminal_iters = [max(iters) for iters in groups.values()]
     sample = len(terminal_iters)
-    failed_fraction = failed / total if total else 0.0
-    hard_red = total >= MIN_SAMPLE and failed_fraction >= HIGH_FAILURE_FRACTION
-    reason = f"{round(failed_fraction, 3)} of {total} work attempts failed" if hard_red else ""
+    # An in-flight attempt is excluded from BOTH the numerator and the denominator:
+    # leaving it in the denominator let a window whose every terminal attempt crashed
+    # read below the hard-red threshold purely because work was still running.
+    terminal = succeeded + failed
+    failed_fraction = failed / terminal if terminal else 0.0
+    hard_red = terminal >= MIN_SAMPLE and failed_fraction >= HIGH_FAILURE_FRACTION
+    reason = f"{round(failed_fraction, 3)} of {terminal} terminal work attempts failed" if hard_red else ""
     evidence: S5Evidence = {
-        "attempts": total,
+        "attempts": terminal,
+        "in_flight": len(rows) - terminal,
         "success_groups": sample,
         "failed_fraction": round(failed_fraction, 3),
     }

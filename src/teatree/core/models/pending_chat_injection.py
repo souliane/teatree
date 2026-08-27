@@ -354,22 +354,25 @@ class PendingChatInjection(models.Model):
         answering, so it satisfies both — unlike the cycle's own
         token-cheap reply, which deliberately stamps only ``loop_replied_at``.
 
-        Single-use compare-and-swap on ``loop_replied_at IS NULL`` mirroring
-        :meth:`mark_loop_replied`: a row already loop-replied (by the cycle
-        or a prior reply) is left untouched, so a stable ``answer_kind`` is
-        never overwritten. Returns the number of rows transitioned. The
-        empty ``thread_ts`` (a top-level DM, not a reply) matches nothing
-        and returns ``0``.
+        The two gates are stamped by their OWN single-use compare-and-swaps
+        rather than one shared predicate. A row the cycle already loop-replied
+        keeps its ``answer_kind`` (the cycle's token-cheap reply is not this
+        personal answer), but its ``answered_at`` must still be stamped —
+        gating both on ``loop_replied_at IS NULL`` left exactly that row
+        unanswered forever, so the #1063 turn-end gate nagged about a question
+        the agent had just answered. Returns the number of rows the ANSWERED
+        gate transitioned. The empty ``thread_ts`` (a top-level DM, not a
+        reply) matches nothing and returns ``0``.
         """
         if not thread_ts:
             return 0
-        return int(
-            cls.objects.filter(slack_ts=thread_ts, loop_replied_at__isnull=True).update(
-                loop_replied_at=timezone.now(),
-                answered_at=timezone.now(),
-                answer_kind=cls.AnswerKind.QUESTION_REPLY,
-            )
+        now = timezone.now()
+        in_thread = cls.objects.filter(slack_ts=thread_ts)
+        in_thread.filter(loop_replied_at__isnull=True).update(
+            loop_replied_at=now,
+            answer_kind=cls.AnswerKind.QUESTION_REPLY,
         )
+        return int(in_thread.filter(answered_at__isnull=True).update(answered_at=now))
 
     @classmethod
     def agent_answered_question(cls, slack_ts: str) -> int:

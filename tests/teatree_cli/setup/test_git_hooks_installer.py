@@ -85,6 +85,19 @@ class TestGitHooksInstaller:
         assert any("already installed" in line for line in lines)
         assert not any(line.startswith("WARN") for line in lines)
 
+    def test_a_shim_bound_to_a_nested_config_is_repaired(self, repo: Path) -> None:
+        """The whole point of `drop_foreign_config_hooks`, reachable only if the probe reports a gap."""
+        _install(repo)
+        shim = repo / ".git" / "hooks" / "pre-commit"
+        shim.write_text(
+            shim.read_text(encoding="utf-8").replace("hook-impl", 'hook-impl --cd="vendor/core"'), encoding="utf-8"
+        )
+
+        _install(repo)
+
+        assert "--cd=" not in shim.read_text(encoding="utf-8")
+        assert probe_git_hooks(repo).ok
+
     def test_deliberate_hooks_path_is_left_untouched(self, repo: Path, tmp_path: Path) -> None:
         elsewhere = tmp_path / "operator-hooks"
         elsewhere.mkdir()
@@ -134,7 +147,7 @@ class TestSetupCommandInstallsHooks:
             patch.object(setup_command, "ApmInstaller"),
             patch.object(setup_command, "strip_apm_hooks", return_value=0),
             patch.object(setup_command, "install_statusline", return_value=StatuslineInstall.ALREADY_PRESENT),
-            patch.object(setup_command, "DockerAliasInstaller"),
+            patch.object(setup_command, "retire_alias"),
             patch.object(setup_command, "agent_skill_dirs", return_value=[]),
             patch.object(setup_command, "ensure_self_db_migrated", return_value=False),
             patch.object(setup_command, "seed_default_loops"),

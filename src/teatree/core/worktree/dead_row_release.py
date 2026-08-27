@@ -86,16 +86,22 @@ def plan_dead_row_release(workspace: Path) -> list[DeadRowVerdict]:
     release it. The classifier decides that SCOPE question; :func:`_verdict_for`
     then decides the row's disposition.
     """
-    refresh = RemoteRefresh()
-    verdicts: list[DeadRowVerdict] = []
-    for row in Worktree.objects.select_related("ticket").order_by("pk"):
-        checkout = _absent_directory_verdict(row, workspace=workspace) or classify_broken_checkout(
-            row, workspace=workspace, refresh=refresh
-        )
-        if checkout.state is BrokenCheckout.LIVE_CHECKOUT:
-            continue
-        verdicts.append(_verdict_for(row, workspace=workspace, checkout=checkout))
-    return verdicts
+    return _plan_rows(workspace, refresh=RemoteRefresh())
+
+
+def _plan_rows(workspace: Path, *, refresh: RemoteRefresh) -> list[DeadRowVerdict]:
+    rows = Worktree.objects.select_related("ticket").order_by("pk")
+    return [v for row in rows if (v := _classify_row(row, workspace=workspace, refresh=refresh)) is not None]
+
+
+def _classify_row(row: Worktree, *, workspace: Path, refresh: RemoteRefresh) -> DeadRowVerdict | None:
+    """One row's disposition, or ``None`` when its LIVE checkout puts it out of scope."""
+    checkout = _absent_directory_verdict(row, workspace=workspace) or classify_broken_checkout(
+        row, workspace=workspace, refresh=refresh
+    )
+    if checkout.state is BrokenCheckout.LIVE_CHECKOUT:
+        return None
+    return _verdict_for(row, workspace=workspace, checkout=checkout)
 
 
 def _absent_directory_verdict(row: Worktree, *, workspace: Path) -> BrokenCheckoutVerdict | None:
@@ -174,6 +180,14 @@ class DeadRowReleaseOutcome:
 def release_dead_rows(workspace: Path, *, dry_run: bool) -> DeadRowReleaseOutcome:
     """Release the provably-dead rows, or preview them under *dry_run*.
 
+    Each release is re-decided immediately before its delete, because the plan is
+    slow — a git probe per row and a network refresh per clone — and every gate it
+    consulted can change under it: an operator pins a row, a ticket goes busy, or
+    provisioning re-materialises the checkout. Acting on the plan's minutes-old
+    verdict would delete the registry's only handle on work that became live.
+    Revalidation deliberately holds no transaction across those probes: a write
+    lock spanning a subprocess is what wedges the SQLite control plane.
+
     The delete is a plain row delete — never ``cleanup_worktree``, whose job is to
     tear down the git worktree, the branch, the database and the docker artifacts.
     Here the checkout is already gone and the surviving on-disk directory may hold
@@ -181,14 +195,26 @@ def release_dead_rows(workspace: Path, *, dry_run: bool) -> DeadRowReleaseOutcom
     reached through ``workspace salvage``, since no automatic pass removes a
     checkout directory any more (#3912) — never to a row release.
     """
-    verdicts = tuple(plan_dead_row_release(workspace))
+    refresh = RemoteRefresh()
+    verdicts = tuple(_plan_rows(workspace, refresh=refresh))
     released: set[int] = set()
     for verdict in verdicts:
         if not verdict.releasable or dry_run:
             continue
+        if not _still_releasable(verdict, workspace=workspace, refresh=refresh):
+            continue
         Worktree.objects.filter(pk=verdict.worktree_pk).delete()
         released.add(verdict.worktree_pk)
     return DeadRowReleaseOutcome(applied=not dry_run, verdicts=verdicts, released_pks=frozenset(released))
+
+
+def _still_releasable(verdict: DeadRowVerdict, *, workspace: Path, refresh: RemoteRefresh) -> bool:
+    """Re-decide *verdict* against the live row; the memoised *refresh* keeps it one round trip."""
+    row = Worktree.objects.select_related("ticket").filter(pk=verdict.worktree_pk).first()
+    if row is None:
+        return False
+    current = _classify_row(row, workspace=workspace, refresh=refresh)
+    return current is not None and current.releasable
 
 
 __all__ = [

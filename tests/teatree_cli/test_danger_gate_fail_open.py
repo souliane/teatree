@@ -147,3 +147,26 @@ class TestDbRowIsolation:
         assert result.exit_code == 0, result.output
         assert _fail_open_value(canonical_db) is True
         assert cold_reader.read_setting("mode", scope="", db_path=canonical_db) == "auto"
+
+
+class TestEnableIsVerifiedUnderTheSwitchsOwnDefault:
+    """A failed write must not report success.
+
+    The read-back resolved the key through the default-TRUE kill-switch posture, so
+    with no canonical DB to write to, ``enable`` read back True, matched the value it
+    meant to write, and printed a success line over a switch that is still OFF.
+    """
+
+    def test_enable_without_a_writable_db_fails_loudly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent" / "db.sqlite3"))
+
+        result = CliRunner().invoke(review_app, ["gate", "fail-open", "enable"])
+
+        assert result.exit_code == 1, result.output
+        assert danger_gate_fail_open_is_enabled() is False
+
+    def test_enable_against_a_real_db_still_succeeds(self, canonical_db: Path) -> None:
+        result = CliRunner().invoke(review_app, ["gate", "fail-open", "enable"])
+
+        assert result.exit_code == 0, result.output
+        assert _fail_open_value(canonical_db) is True

@@ -110,9 +110,13 @@ there. Boot logs the switch. Notes:
 - Absence stays a no-op: a host with no key material yields an empty derived home
   and the same "no credential" diagnostics as before.
 - This covers the entrypoint's own process tree — the role process and everything
-  it spawns. A `docker exec` into a running service bypasses the entrypoint and so
-  still sees the image's `GNUPGHOME`; pass `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`
-  for a one-off `exec` that needs to decrypt.
+  it spawns. A `docker exec` bypasses the entrypoint and starts from the container
+  environment fixed at create time, so the home is re-established per invocation
+  from the evidence on disk: `deploy/t3` carries the predicate inline, and the image
+  ships it as `/etc/profile.d/10-teatree-gnupg-home.sh`, which a **login** shell
+  sources — so `docker exec <service> sh -lc 'pass show <path>'` decrypts with no
+  `-e` flag. A non-login `docker exec <service> pass show <path>` reads no profile
+  and still needs `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`.
 
 ### Staged convergence: the control plane never goes fully down (#4214)
 
@@ -634,7 +638,7 @@ Do this once as an admin on the box.
 
 | Secret | Purpose |
 | --- | --- |
-| `DEPLOY_SSH_HOST` | the box host/IP to SSH into directly (e.g. `82.25.60.50`) |
+| `DEPLOY_SSH_HOST` | the box host/IP to SSH into directly |
 | `DEPLOY_SSH_USER` | the deploy user (e.g. `teatree`) |
 | `DEPLOY_SSH_PORT` | the SSH port |
 | `DEPLOY_SSH_KEY` | the deploy **private** SSH key |
@@ -666,6 +670,20 @@ preflight and `t3 setup`.
 | --- | --- | --- |
 | `TEATREE_GH_TOKEN` | `github/souliane/pat` | `TEATREE_GH_TOKEN_PASS_PATH` |
 | `T3_ADMIN_PASSWORD` | `teatree/admin-password` | `T3_ADMIN_PASSWORD_PASS_PATH` |
+| `GITLAB_TOKEN` | `gitlab/pat` | `TEATREE_GITLAB_TOKEN_PASS_PATH` |
+| `NOTION_TOKEN` | `notion/integration-token` | `NOTION_TOKEN_PASS_PATH` |
+
+`GITLAB_TOKEN` is read on the HOST as well, by `deploy/deploy.sh` and `deploy/t3`,
+and interpolated into every service's `environment:` (`NOTION_TOKEN` rides the same
+path, resolved by `deploy/deploy.sh`). They are the secrets that
+must survive into a `docker exec`, and an entrypoint `export` cannot: an exec
+starts from the container's create-time environment, so a process launched that way
+saw an unset token while the role process had it. The baked GitLab credential helper
+then interpolated the empty value and authenticated with an EMPTY password, which
+GitLab reports as `HTTP Basic: Access denied` — a message easily read as a missing
+branch rather than a missing credential. The entrypoint's own read stays as the
+fallback for a container created with no host value (the watchdog cannot reach the
+host's pass store).
 
 An existing env value always wins; the store is the fallback. So a box that still
 carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
@@ -698,6 +716,11 @@ printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
 # Anthropic tokens follow the same store, one per account:
 printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
 ```
+
+The Notion entry is minted by its own guided walkthrough rather than by hand —
+`t3 notion setup` opens the integrations page, stores the secret, and verifies it:
+its capability checklist and per-page sharing check are the parts a bare
+`pass insert` leaves the operator to discover from a failing read.
 
 The `TEATREE_GH_TOKEN` needs a **required** set and a **recommended** set of
 permissions. `init` preflights both (#3405, #3436, #3477):
@@ -775,6 +798,26 @@ the deploy workflow never rewrites the on-disk secret file for it.
   as tight as its SSH access and never place a same-host reverse proxy in front of
   the admin.
 
+- **`t3 dashboard` / `t3 admin` from an operator's own machine:** the same loopback
+  identity, reached without an SSH tunnel. `deploy/t3` runs the CLI in the stack, so
+  the command serves nothing (`teatree-admin` already does) — it starts a one-off
+  `teatree-admin-forward-<port>` container publishing `127.0.0.1:<port>` on the HOST,
+  bridges each connection through `docker exec` into the admin's own loopback, then
+  the wrapper probes that url and opens the browser:
+
+  ```bash
+  t3 dashboard              # host 127.0.0.1:8803 by default
+  t3 dashboard --port 9111  # the published mapping follows the flag
+  ```
+
+  Only the HOST side of the mapping is pinned to `127.0.0.1`, which is what keeps the
+  dashboard local; the forwarder's own listener binds every interface because a
+  published mapping delivers to a container's interface and never to its loopback.
+  Because the last hop is `docker exec`, gunicorn's peer stays `127.0.0.1` and the
+  auto-login above applies unchanged — a published port straight onto the admin would
+  NAT the source to the docker gateway and silently lose it. An url that does not
+  answer is refused with the cause instead of opening a browser at a dead page.
+
 - **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
   up — the tunnel rides your normal SSH access.
 - **Loop notifications / questions:** this workflow provisions **no** Slack
@@ -803,15 +846,68 @@ container that shares the live DB, credential, and session mounts. Only the work
 carries the docker-socket group, so a provisioning command needs it specifically;
 the fallback is announced on stderr when it is used.
 
-`t3 setup` (run by the `init` role, and available to run on the host) installs a
-shell alias into `~/.bashrc` (and `~/.zshrc` when present) so `t3 …` on the host
-transparently invokes the containerized CLI:
+**The mechanism is a launcher, and it is the only one.** `t3 setup` writes an
+executable `t3` on `PATH` that `exec`s the main checkout's `deploy/t3`:
 
 ```bash
-# What the alias resolves to (installed automatically by `t3 setup`):
-alias t3="/home/teatree/teatree-deploy/deploy/t3"
+# ~/.local/bin/t3, written by `t3 setup`:
+#!/usr/bin/env bash
+# >>> teatree docker t3 launcher >>>
+# Managed by `t3 setup` — teatree runs only in Docker. Do not edit.
+exec "/home/teatree/teatree-deploy/deploy/t3" "$@"
 ```
 
+The checkout is baked in at install time and the launcher never consults its own
+cwd, so `t3` means the same teatree from every directory and from every caller —
+an interactive shell, a script, a git hook, cron, a sub-agent. A `PATH` executable
+already covers all of them, so **no shell alias is installed**: an alias reached
+interactive shells only and could name a different checkout than the launcher,
+which is the split-brain it appeared to solve. `t3 setup` REMOVES the managed
+alias block an earlier version wrote, touching only the fenced region — and
+`deploy/t3` does the same on the host, because that is where the operator's rc
+files are and the container running `t3 setup` cannot see them.
+
+The write is atomic and verified: the launcher is staged beside its target and
+renamed over it, so a reader resolving `t3` mid-install sees the old launcher or
+the new one and never a truncated file, and two `t3 setup` runs at once end at one
+whole launcher. Setup then reads the file back and only reports success if it
+carries the marker, is executable, and names the intended checkout. A pre-existing
+`t3` teatree did not write is never clobbered: setup WARNs with the exact `mv` to
+run and carries on.
+
+**The container writes the host launcher.** Once the uv-installed tool is retired
+there is no host CLI left to write it, which would make a relocated checkout
+unrepairable. So the compose stack bind-mounts the host's `PATH` bin dir
+(`$TEATREE_HOST_HOME/.local/bin`) at `/var/lib/teatree/host-bin` — one directory,
+purpose-built, never `$HOME` — and a containerized `t3 setup` writes the launcher
+through it, rendering the exec target from `$TEATREE_DEPLOY_CHECKOUT`, the HOST
+checkout `deploy/t3` was invoked from. That makes
+`<checkout>/vendor/teatree/deploy/t3 setup` both the bootstrap AND the repair
+command, from a fresh clone or a relocated one, on a host carrying nothing but
+Docker and bash. A container the wrapper did not start has no such mount; it says
+so and leaves the host `t3` alone rather than guessing.
+
+The mount source is `$TEATREE_HOST_HOME/.local/bin` specifically — a host that
+sets `UV_TOOL_BIN_DIR` elsewhere is not covered by the containerized repair path
+and must run `t3 setup` where that directory is reachable.
+
+**There is no supported host CLI.** A `t3` that runs on the host cannot read the
+control DB — it lives in a Docker named volume at `/var/lib/teatree/control-db`,
+a path that exists only inside the container — so every `ConfigSetting` read
+silently resolves from shipped defaults. Docker being unavailable therefore makes
+`t3` exit non-zero naming the repair; there is deliberately nothing to fall back
+to.
+
+`t3 doctor` gates on both regressions. The host `t3` not being a managed launcher
+for the current checkout is a hard FAIL — that covers the console script a
+`uv tool install`/`upgrade` restores AND a launcher left naming a checkout that
+moved or was deleted. An unreadable control-DB directory is the other; a native
+checkout pointed at its own real database passes, since the invariant is that
+config resolves from a database rather than from shipped defaults. Both name the
+repair: re-run `t3 setup` from the current checkout. The launcher gate runs on
+either side of the boundary, reading the host launcher through the bin mount when
+it runs inside a container. Override the target service with
+`TEATREE_DOCKER_CLI_SERVICE` if needed.
 `t3 doctor` verifies the wiring once you have opted in (compose stack present, the
 `deploy/t3` entry executable, `docker` on PATH, and the alias not pointing at a
 stale clone path) and WARNs with the fix — re-run `t3 setup` — when a piece is

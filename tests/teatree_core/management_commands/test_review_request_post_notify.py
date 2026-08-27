@@ -125,7 +125,7 @@ class TestReviewRequestPostAfterReceipt(_Base):
             code = self._run("--title", "fix(scope): thing")
 
         assert code == 0
-        ping = BotPing.objects.get(idempotency_key=f"on_behalf_post:{_MR_URL}:review_request_post")
+        ping = BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{_MR_URL}:review_request_post")
         assert ping.status == BotPing.Status.SENT
         assert ping.kind == BotPing.Kind.INFO
 

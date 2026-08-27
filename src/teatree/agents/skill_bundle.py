@@ -8,14 +8,20 @@ from teatree.types import SkillMetadata
 
 __all__ = [
     "DEFAULT_SKILLS_DIR",
+    "ArchitecturalReviewSkillMissingError",
     "active_overlay_companion_skills",
     "active_overlay_pr_review_companion",
     "active_overlay_review_skills",
     "active_overlay_stage_skills",
     "resolve_skill_bundle",
+    "stage_skills_for_dispatch",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class ArchitecturalReviewSkillMissingError(RuntimeError):
+    """The configured architectural-review skill resolves to no ``SKILL.md``."""
 
 
 def _active_overlay_config() -> object | None:
@@ -125,15 +131,60 @@ def active_overlay_stage_skills(phase: str) -> list[str]:
     return resolved
 
 
-def _warn_unresolvable_stage_skills(skills: list[str], phase: str) -> None:
-    from teatree.agents.skill_injection import (  # noqa: PLC0415 — deferred: keeps module import light
-        _resolve_skill_md,
-        harness_skills_dirs,
+def stage_skills_for_dispatch(phase: str) -> list[str]:
+    """The overlay's stage skills for *phase*, plus the architectural-review skill.
+
+    ``architectural_review`` is scanner-dispatched, so it appears in neither
+    ``SUBAGENT_BY_PHASE`` nor the phase→skill map and ``declared_skills_for_phase``
+    declares nothing for it: the configured skill reached the model as prose in the
+    task's ``execution_reason`` while its body never entered the bundle. The existing
+    stage-skill argument is the seam that puts it there.
+
+    Raises :class:`ArchitecturalReviewSkillMissingError` when the configured name
+    resolves to no ``SKILL.md``. The embed drops an unresolvable name in silence, so
+    a review dispatched with no guidance at all is the alternative to refusing here.
+    """
+    from teatree.core.modelkit.phases import (  # noqa: PLC0415 — deferred: keeps module import light
+        ARCHITECTURAL_REVIEW_PHASE,
+        normalize_phase,
     )
 
-    dirs = harness_skills_dirs()
+    stage_skills = active_overlay_stage_skills(phase)
+    if normalize_phase(phase) != ARCHITECTURAL_REVIEW_PHASE:
+        return stage_skills
+
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: needs a bootstrapped Django
+
+    skill = get_effective_settings().architectural_review_skill.strip()
+    if not skill or skill in stage_skills:
+        return stage_skills
+    dirs = _skill_body_dirs()
+    if _unresolvable(skill, dirs):
+        msg = (
+            f"architectural_review_skill {skill!r} resolves to no SKILL.md in {[str(d) for d in dirs]} — "
+            "the review would run with no guidance at all. Install it (`t3 setup` provisions every declared "
+            "skill dependency) or point the setting at an installed skill."
+        )
+        raise ArchitecturalReviewSkillMissingError(msg)
+    return [*stage_skills, skill]
+
+
+def _skill_body_dirs() -> list[Path]:
+    from teatree.agents.skill_injection import harness_skills_dirs  # noqa: PLC0415 — deferred: keeps import light
+
+    return harness_skills_dirs()
+
+
+def _unresolvable(name: str, dirs: list[Path]) -> bool:
+    from teatree.agents.skill_injection import _resolve_skill_md  # noqa: PLC0415 — deferred: keeps import light
+
+    return _resolve_skill_md(name, dirs) is None
+
+
+def _warn_unresolvable_stage_skills(skills: list[str], phase: str) -> None:
+    dirs = _skill_body_dirs()
     for name in skills:
-        if _resolve_skill_md(name, dirs) is None:
+        if _unresolvable(name, dirs):
             logger.warning("Stage skill %r for phase %r resolves to no SKILL.md — continuing", name, phase)
 
 

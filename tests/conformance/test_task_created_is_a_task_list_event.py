@@ -153,6 +153,7 @@ _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
         "tests/teatree_hooks/test_run_hook_outage_is_loud.py",
         "tests/test_gate_liveness_corpus.py",
         "tests/test_lockout_regression_corpus.py",
+        "tests/test_hook_router_task_created_never_blocks.py",
         "tests/test_skill_loading_code_scope.py",
         "tests/test_task_created_deny.py",
     }

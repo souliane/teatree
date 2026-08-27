@@ -48,7 +48,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 
 ### 0a. Missing Issue Reference Policy (Non-Negotiable)
 
-When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the DB-home `missing_issue_ref_policy` setting (`t3 <overlay> config_setting set missing_issue_ref_policy <value>`, `--overlay <name>` for the per-overlay scope; `T3_MISSING_ISSUE_POLICY` env var) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
+When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the DB-home `missing_issue_ref_policy` setting (set it with the `mcp__teatree__config_setting_set` MCP tool, or `t3 <overlay> config_setting set missing_issue_ref_policy <value>` when the MCP server isn't connected, `--overlay <name>` for the per-overlay scope; `T3_MISSING_ISSUE_POLICY` env var) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
 
 1. **Find the ORIGINAL existing issue first (always, every policy tier).** Before anything else, look for the issue that already covers this work — the one that introduced the bug, or the one that left the scope unimplemented. Search the repo's issues (open **and** closed) and the introducing commit's linked issue:
 
@@ -110,7 +110,24 @@ A hook runs after the stash, so `git diff --name-only` inside one reports nothin
 information is already gone by the time any hook could look. And prek prints a hook's output
 only when the hook FAILS, so a warn-only hook stays invisible unless it blocks every commit
 that carries an unstaged change. The two lines above are the signal; `git commit -a` is the
-way to avoid the split in the first place.
+way to avoid the split in the first place — on a checkout only you write to.
+
+**On a SHARED checkout that stash is a data hazard, and `git commit -a` is the wrong escape.**
+prek stashes every unstaged change in the tree, another writer's included, so your commit
+decides the fate of work you never touched. Three ways it goes wrong, all observed: `-a`
+commits their half-finished edits under your message; a run killed between the stash and the
+restore leaves the tree without them; and a write landing DURING the hook window is discarded
+whole (`Hook changes conflicted with the saved unstaged changes. Reverting the hook changes`).
+So where more than one writer shares a checkout:
+
+```bash
+git add <path>                                    # right after EVERY edit — prek stashes only what is UNSTAGED
+git commit -o -F <msg-file> -- <your paths only>  # never bare, never -a
+```
+
+prek keeps every patch it writes rather than deleting it on restore, so
+`~/.cache/prek/patches/` is a durable backup: recover a stash the tree never got back with
+`git apply ~/.cache/prek/patches/<ts>-<pid>.patch`, newest timestamp first.
 
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
@@ -171,13 +188,6 @@ Common triggers (not exhaustive):
 - New feature flag
 
 **If YES:** the same MR includes the doc update — pick the file by the trigger, then start editing it before `pr create`:
-
-| Trigger | Doc to update |
-|---|---|
-| New `t3` command / flag / env var | `README.md` (user-facing usage) |
-| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
-| New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
-| Skill behaviour change | the relevant `SKILL.md` |
 
 ```bash
 # YES path — open the matching doc to add the entry (canonical HOW; e.g. a new SKILL.md):
@@ -396,7 +406,8 @@ When a PR ships work spanning more than one numbered phase of an issue (e.g. `ph
 
 ### 6. Monitor Pipeline
 
-- Background polling for pipeline status.
+- Watch it OFF the foreground, by one of the three sanctioned shapes — arm a `Monitor` on the watch command (`gh run watch --exit-status`, `glab ci status`), dispatch a `Task` sub-agent to watch it and report back, or issue that watch as a single `Bash` call with `run_in_background: true`. A blocking foreground `gh run watch` / `glab ci status --watch` freezes the session for the length of the pipeline; the rule and the CI-gated dispatch boundary around it are [`../rules/SKILL.md`](../rules/SKILL.md) § "Background Long Operations (Non-Negotiable)".
+- Triggering the job and holding the watch is the orchestrator's own work — a sub-agent briefed to wait on CI comes to rest mid-wait and cannot be resumed with its context. Sub-agents are dispatched to FIX a confirmed failure, with the failing trace already in the brief.
 - On failure → delegate to fix-push-monitor loop (see `/t3:test`).
 
 **Not-green == red (Non-Negotiable).** When monitoring a pipeline, the *only* acceptable terminal state is every required job `success`. Any job that is **not** `success` — `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, an `allow_failure: true` job that is failing, or a gray/unknown state — is a **failure**: find the cause, fix it, re-trigger the job, and confirm it goes green. Never report a pipeline OK while any job is non-green, never "walk away" from a gray/skipped/manual job, and never treat `allow_failure: true` as "safe to ignore" — `allow_failure` keeps the *pipeline* green but the job still failed and must be investigated. A still-running/pending job is not yet a failure — wait for it to reach a terminal state, then apply this rule. (Enforced in the loop's PR scanner: `teatree.loop.scanners.my_prs._needs_attention`.)
@@ -526,7 +537,7 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 - **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
-  2. **The durable review-loop executes it**: `t3 <overlay> ticket merge <clear_id>`. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
+  2. **The durable review-loop executes it**: the `mcp__teatree__pr_merge` MCP tool, or `t3 <overlay> ticket merge <clear_id>` when the MCP server isn't connected — issuing the CLEAR in step 1 stays CLI-only. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
 
   **Keystone merge recipe (the canonical HOW).** The two `t3` steps, copy-pasteable — do X, never the raw `gh pr merge` / `glab mr merge` (mechanically refused, #863):
 

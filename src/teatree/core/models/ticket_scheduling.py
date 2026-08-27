@@ -264,13 +264,24 @@ class TicketSchedulingModel(TicketFacet):
         ``phase=phase`` filter missed a short-verb ``review`` task stored
         by the unnormalized ``tasks create <id> review`` path, leaving it
         as a zombie session.
+
+        The bulk ``UPDATE`` is deliberate — a per-row ``save()`` would re-enter
+        the ``post_save`` headless auto-enqueue — so the sessions the terminal
+        task's ``post_save`` receiver would have closed are closed here instead;
+        without that the orphaned task's session stays open forever, which is the
+        very zombie this consume exists to prevent.
         """
+        from teatree.core.models.session import Session  # noqa: PLC0415 — import cycle
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
 
-        Task.objects.pending_in_phase(phase).filter(ticket=self).update(
+        consumed = Task.objects.pending_in_phase(phase).filter(ticket=self)
+        sessions = list(Session.objects.filter(pk__in=consumed.values("session_id")))
+        consumed.update(
             status=Task.Status.COMPLETED,
             claimed_at=None,
             claimed_by="",
             lease_expires_at=None,
             heartbeat_at=None,
         )
+        for session in sessions:
+            session.close_if_idle()

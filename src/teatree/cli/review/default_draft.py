@@ -4,10 +4,10 @@ Module-level helpers kept out of :mod:`teatree.cli.review` so the
 GitLab-MR review mechanics module stays under the OOP/LOC ceiling
 (``scripts/hooks/check_module_health.py``) after the #1207 default flip:
 
-* :func:`check_live_post` — chokepoint that consumes the Slack-recorded
-    :class:`~teatree.core.models.live_post_approval.LivePostApproval`
-    when ``post_comment(..., live=True)`` is called; returns the
-    user-facing refusal message on a miss.
+* :func:`publish_live_post` — chokepoint that consumes the Slack-recorded
+    :class:`~teatree.core.models.live_post_approval.LivePostApproval` in the
+    same transaction as the ``post_comment(..., live=True)`` publish it
+    guards; returns the user-facing refusal message on a miss.
 * :func:`notify_draft_created` — fire-and-forget Slack DM with the
     clickable MR link, emitted once per MR *revision* (coalescing every
     default-draft comment against one head into a single terse line, not
@@ -21,6 +21,7 @@ import. Keeping these out of the service class keeps the per-class
 method count under the OOP cap.
 """
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -32,31 +33,39 @@ if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
 
 
-def check_live_post(*, repo: str, mr: int) -> str:
-    """Return a refusal message when ``post-comment --live`` lacks a Slack-recorded approval (#1207).
+def publish_live_post(*, repo: str, mr: int, publish: Callable[[], tuple[str, int]]) -> tuple[str, int]:
+    """Consume the single-use live-post token in ONE transaction with *publish* (#1207).
 
-    Empty string ``""`` means the gate is satisfied (a fresh,
-    unconsumed
-    :class:`~teatree.core.models.live_post_approval.LivePostApproval`
-    has been claimed single-use); a non-empty return is the user-facing
-    error the caller short-circuits with as ``(message, 1)``.
+    The token is the user's one authorisation for this live, colleague-visible
+    comment, so only a post that LANDED may burn it: a missing/stale token, a
+    raising publish, and a publish reporting ``(message, rc != 0)`` all leave it
+    unconsumed for the retry. Its own atomic is load-bearing because
+    :func:`~teatree.cli.review.on_behalf.publish_on_behalf` opens one only under a
+    BLOCKING ``on_behalf_post_mode`` — under ``immediate`` the publish runs
+    untransacted, and an eager consume there burned the approval on a failed post.
 
-    The #1207 live-post token gate is orthogonal to the on-behalf mode:
-    the colleague-visible ``--live`` publish needs an explicit, single-use
-    approval token regardless of mode. The one-step ``t3 review authorize``
-    (#126) is what mints that token in the same command that records the
-    on-behalf authorization, so a single user action satisfies both gates.
+    The #1207 live-post token gate is orthogonal to the on-behalf mode: the
+    ``--live`` publish needs an explicit, single-use approval token regardless of
+    mode. The one-step ``t3 review authorize`` (#126) mints that token in the same
+    command that records the on-behalf authorization, so a single user action
+    satisfies both gates.
     """
+    from django.db import transaction  # noqa: PLC0415 — deferred: keeps CLI startup light
+
     from teatree.core.gates.live_post_gate import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         LivePostBlockedError,
         require_live_post_approval,
     )
 
-    try:
-        require_live_post_approval(mr_url=f"{repo}!{mr}")
-    except LivePostBlockedError as blocked:
-        return str(blocked)
-    return ""
+    with transaction.atomic():
+        try:
+            require_live_post_approval(mr_url=f"{repo}!{mr}")
+        except LivePostBlockedError as blocked:
+            return str(blocked), 1
+        result = publish()
+        if result[1]:
+            transaction.set_rollback(True)
+        return result
 
 
 def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: str) -> None:

@@ -4,11 +4,13 @@ The decision is :func:`teatree.core.review.mr_triage.triage`, which is pure; thi
 module is the other half — it reads the forge and does the arithmetic the ladder
 refuses to do, then emits what it found.
 
-It SURFACES and never ACTS. Every action the ladder can name is colleague-visible
-(a group ping, a review request, a draft proposal) or a dispatch decision the owner
-has not delegated, so the scanner emits a statusline signal and stops. Nothing here
-posts, reacts, transitions a row, or queues a task — which is what makes turning the
-gate on a safe thing to try.
+It never POSTS. Every action the ladder can name is colleague-visible (a group
+ping, a review request, a draft proposal), so nothing here reaches a colleague:
+the scanner emits a statusline signal and stops. The one exception is the merge
+request the ladder finds ready for a review NOBODY HAS ASKED FOR — a statusline
+zone is where that fact goes to die, so it is put to the owner over
+:func:`~teatree.core.review.mr_state_question.ask_mr_state`, the bot→owner
+channel that carries no publishing gate and is bounded per tick.
 
 The pass is TWO-PASS because a work group is a property of the whole listing: the
 groups are built first, over the UNFILTERED global listing, and only then is each
@@ -32,8 +34,11 @@ from dataclasses import dataclass, field
 from django.utils import timezone
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.gates.review_request_guard import LiveAskRead, resolve_guard_target
 from teatree.core.models import ReviewRequestPost
+from teatree.core.review.mr_ask_state import mr_ask_state, read_asks
 from teatree.core.review.mr_ci_state import carries_pipeline_field, ci_state, ci_state_from_status
+from teatree.core.review.mr_state_question import ask_mr_state
 from teatree.core.review.mr_triage import (
     DEFAULT_THRESHOLDS,
     CiState,
@@ -45,6 +50,7 @@ from teatree.core.review.mr_triage import (
     TriageVerdict,
     triage,
 )
+from teatree.core.review.repo_exemption import is_review_exempt, review_exempt_patterns
 from teatree.core.review.work_group import group_members
 from teatree.core.review.work_group_settings import generic_scopes_from_settings
 from teatree.loop.scanners.base import ScanSignal
@@ -61,6 +67,11 @@ logger = logging.getLogger(__name__)
 #: review already happened. Emitting them would be noise, not surveillance.
 _QUIET = frozenset({TriageAction.NONE})
 
+_MISSING_REVIEW_OPTIONS = ("Post the review request", "I will ask in person", "It is not ready yet")
+_MISSING_REVIEW_REASON = (
+    "it is green and out of draft, its work group is ready, and the review channel carries no request for it."
+)
+
 
 def _is_draft(pr: RawAPIDict) -> bool:
     for name in ("draft", "work_in_progress", "isDraft"):
@@ -68,6 +79,14 @@ def _is_draft(pr: RawAPIDict) -> bool:
         if isinstance(value, bool):
             return value
     return False
+
+
+def _opened_at(pr: RawAPIDict) -> dt.datetime | None:
+    """When the forge says the merge request was opened; ``None`` when it does not say."""
+    try:
+        return dt.datetime.fromisoformat(_str_field(pr, "created_at", "createdAt"))
+    except ValueError:
+        return None
 
 
 @dataclass(slots=True)
@@ -122,6 +141,8 @@ class _Survey:
     groups: _WorkGroups
     ci: _CiReadings
     right_now: dt.datetime
+    asks: LiveAskRead | None
+    exempt_patterns: tuple[str, ...]
 
 
 @dataclass(slots=True)
@@ -158,6 +179,8 @@ class MrTriageScanner:
             verdict = triage(self._facts(pr, url=url, survey=survey), thresholds=self.thresholds)
             if verdict.action in _QUIET:
                 continue
+            if verdict.action is TriageAction.REQUEST_REVIEW:
+                ask_mr_state(mr_url=url, reason=_MISSING_REVIEW_REASON, options=_MISSING_REVIEW_OPTIONS)
             signals.append(self._signal(verdict, url=url, title=_str_field(pr, "title")))
             if len(signals) >= self.max_mrs_per_tick:
                 break
@@ -173,7 +196,21 @@ class MrTriageScanner:
             groups=self._work_groups(merge_requests, ci),
             ci=ci,
             right_now=self.now or timezone.now(),
+            asks=self._asks(merge_requests),
+            exempt_patterns=review_exempt_patterns(self.overlay_name),
         )
+
+    def _asks(self, merge_requests: dict[str, RawAPIDict]) -> LiveAskRead | None:
+        """One review-channel read for the whole listing; ``None`` leaves every verdict UNKNOWN.
+
+        The channel walk is paginated and rate-limited, so asking it per merge
+        request would spend a tick's whole Slack budget on a listing of twenty.
+        """
+        try:
+            return read_asks(merge_requests, target=resolve_guard_target(overlay_name=self.overlay_name))
+        except Exception as exc:  # noqa: BLE001 — a channel read must never crash a tick.
+            logger.warning("mr_triage: review-channel read failed: %s", exc)
+            return None
 
     def _work_groups(self, collected: dict[str, RawAPIDict], ci: _CiReadings) -> _WorkGroups:
         members_by_url = group_members(
@@ -218,19 +255,29 @@ class MrTriageScanner:
             url=url,
             repo_owner=self.repo_owner(self._slug(url)),
             draft=_is_draft(pr),
+            review_exempt=is_review_exempt(self._slug(url), patterns=survey.exempt_patterns),
             ci=survey.ci.of(pr, url),
             work_group=survey.groups.key_for(url),
             work_group_unready_members=survey.groups.unready_siblings(url),
-            # Absence of a ledger row is NOT "nobody was asked" — a review requested
-            # before the ledger existed, or in a repo whose channel nothing watches,
-            # leaves no row either. Both unreadable halves collapse to UNKNOWN, which
-            # the ladder answers with a question rather than a guess.
-            review_request=ReviewRequestState.REQUESTED if readable else ReviewRequestState.UNKNOWN,
+            review_request=self._ask_state(pr, url=url, survey=survey, readable=readable),
             approved=bool(approved) if readable else False,
             idle_since_review_requested=(
                 survey.right_now - self._requested_at(request) if readable and request is not None else dt.timedelta()
             ),
         )
+
+    @staticmethod
+    def _ask_state(pr: RawAPIDict, *, url: str, survey: _Survey, readable: bool) -> ReviewRequestState:
+        """Whether anyone has been asked — the ledger answers first, the channel earns the rest.
+
+        Absence of a ledger row is NOT "nobody was asked": a review requested
+        before the ledger existed, or in a repo whose channel nothing watches,
+        leaves no row either. So NONE comes from the channel read, which claims
+        it only over a window reaching back past this merge request's opening.
+        """
+        if url in survey.requests:
+            return ReviewRequestState.REQUESTED if readable else ReviewRequestState.UNKNOWN
+        return mr_ask_state(url, opened_at=_opened_at(pr), read=survey.asks)
 
     @staticmethod
     def _requested_at(request: ReviewRequestPost) -> dt.datetime:

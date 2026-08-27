@@ -1,9 +1,10 @@
 """The CLI forge writers route through the shared #117 scrub seam (U14).
 
-``t3 ticket comment`` and the test-plan note poster wrote to the forge with no
-public-repo leak scrub / #117 audit — laxer than the MCP surface. Both now route
-their body through :func:`teatree.core.send_proxy.route_forge_write`, so a
-SendAudit row is written before the backend call.
+``t3 ticket comment`` wrote to the forge with no public-repo leak scrub / #117
+audit — laxer than the MCP surface. It now routes its body through
+:func:`teatree.core.send_proxy.route_forge_write`, so a SendAudit row is written
+before the backend call. The MR/PR test-plan poster's own scrub is pinned by
+``tests/teatree_core/pr_command/test_post_test_plan_leak_scan.py``.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,7 +15,6 @@ from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
-from teatree.core.management.commands._test_plan import post as post_mod
 from teatree.core.models import SendAudit
 from teatree.core.send_proxy import OutboundLeakError
 from tests.teatree_core.conftest import CommandOverlay
@@ -86,21 +86,3 @@ class TicketCreateSubRoutesThroughSeam(TestCase):
         ):
             call_command("ticket", "create-sub", parent=_ISSUE_URL, title="Child", labels="SECRETCORP,ok")
         host.create_sub_issue.assert_not_called()
-
-
-class TestPlanNoteRoutesThroughSeam(TestCase):
-    def test_body_file_note_writes_a_send_audit_row(self) -> None:
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 1, "web_url": "https://gitlab.com/org/repo/-/work_items/469#n1"}
-        with (
-            patch.object(post_mod, "on_behalf_block_message", return_value=""),
-            patch.object(
-                post_mod, "require_on_behalf_approval", side_effect=lambda *, target, action, publish: publish()
-            ),
-            patch.object(post_mod, "notify_user_on_behalf_post"),
-            patch.object(post_mod, "check_blocked_body_from_config"),
-            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
-        ):
-            post_mod.post_body_file_comment(host, issue_url=_ISSUE_URL, ticket_id="T-1", body="clean note body")
-        assert SendAudit.objects.filter(destination=_ISSUE_URL, action="post_e2e_evidence").exists()

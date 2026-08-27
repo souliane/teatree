@@ -140,7 +140,7 @@ class TestMergeReactBypassClosed(TestCase):
         fake = _RouteAwareFake()
         react_merge_on_post(post, fake, host=_Host(), identities=())
         assert fake.react_routed_calls == [(_COLLEAGUE, _TS, "merge")]
-        assert BotPing.objects.filter(idempotency_key=f"on_behalf_post:{_MR}:merge_reaction").exists()
+        assert BotPing.objects.filter(idempotency_key__startswith=f"on_behalf_post:{_MR}:merge_reaction").exists()
 
 
 class TestReviewDoneReactionBypassClosed(TestCase):

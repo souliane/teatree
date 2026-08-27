@@ -132,3 +132,26 @@ class TestManagerLookups:
 
     def test_empty_required_repos_trivially_covered(self, ticket: Ticket) -> None:
         assert ReviewEvidence.objects.has_integration_review_covering(ticket, []) is True
+
+    def test_a_hold_integration_review_is_not_coverage(self, ticket: Ticket) -> None:
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+            reviewer_identity="cold-reviewer",
+            verdict="hold",
+            head_sha=_SHA,
+            repos=["org/a", "org/b"],
+        )
+        assert ReviewEvidence.objects.has_integration_review_covering(ticket, ["org/a", "org/b"]) is False
+
+    def test_a_later_clearing_review_supersedes_the_hold(self, ticket: Ticket) -> None:
+        for verdict, sha in (("hold", _SHA), ("pass", _SHA2)):
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+                reviewer_identity="cold-reviewer",
+                verdict=verdict,
+                head_sha=sha,
+                repos=["org/a", "org/b"],
+            )
+        assert ReviewEvidence.objects.has_integration_review_covering(ticket, ["org/a", "org/b"]) is True

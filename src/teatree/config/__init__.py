@@ -50,9 +50,11 @@ from teatree.config.loader import (
     default_logging,
     load_config,
     load_e2e_repos,
+    load_peer_instances,
     worktree_root,
 )
 from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
+from teatree.config.peer_instance import PeerInstance, PeerTransport, PeerTunnel
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.resolution import (
     _active_overlay_overrides,
@@ -111,6 +113,9 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "PeerInstance",
+    "PeerTransport",
+    "PeerTunnel",
     "PrReviewBackend",
     "SendProxyMode",
     "SettingHome",
@@ -147,6 +152,7 @@ __all__ = [
     "is_feature_flag",
     "load_config",
     "load_e2e_repos",
+    "load_peer_instances",
     "mr_reminder_from_table",
     "resolve_mr_reminder",
     "resolve_speak",

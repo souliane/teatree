@@ -137,3 +137,204 @@ class TestNeverLockout:
         monkeypatch.setattr(reviewer_gate, "_gate_enabled", lambda: False)
         assert router.handle_block_self_reviewer_assign(_bash("glab mr update 7624 --reviewer X")) is False
         assert _parse_deny(capsys) is None
+
+
+class TestQuotedFieldsAndLastWinsMethod:
+    """The guard reads argument VALUES off the raw command, and the LAST method flag.
+
+    Both failures let a real out-of-band reviewer write through: the routine
+    quoted spelling ``-f 'reviewer_ids=42'`` was erased with the rest of the
+    quoted spans before the field was looked for, and a leading ``-X GET``
+    masked a later real write method that ``gh``/``glab`` resolve last-wins.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api --method PUT projects/acme-eng%2Fwidget-app/merge_requests/7624 -f 'reviewer_ids=42'",
+            "gh api repos/souliane/teatree/pulls/12 -X GET -X PATCH -f 'requested_reviewers=octocat'",
+        ],
+    )
+    def test_out_of_band_reviewer_write_is_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A trailing GET is the effective method — a read, never an assignment.
+            "gh api repos/souliane/teatree/pulls/12/requested_reviewers -X POST -X GET",
+            # Prose mentioning reviewers is not a field assignment.
+            "gh api repos/souliane/teatree/issues/1/comments -f body='the reviewers are deciding'",
+        ],
+    )
+    def test_reads_and_prose_are_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is False
+        assert _parse_deny(capsys) is None
+
+
+class TestAQuotedMethodIsNotAMethod:
+    """Last-wins applies to flags the SHELL passes, not to text inside a value (#4641).
+
+    Read off the raw string, an appended `-X GET` inside any quoted field value
+    downgraded a real write to a read and opened the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api -X POST repos/souliane/teatree/pulls/12/requested_reviewers -f 'reviewers[]=octocat -X GET'",
+            "glab api -X PUT projects/1/merge_requests/7 -f 'reviewer_ids=42 --method GET'",
+        ],
+    )
+    def test_a_read_method_hidden_in_a_value_still_blocks(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+
+class TestRawCurlIsNotABypass:
+    """``curl`` reaches the same REST field the ``gh``/``glab api`` branch guards.
+
+    Requiring a forge-CLI leader left the assignment one ``curl -X PUT`` away, so
+    the gate certified a policy anyone could step around in one command.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/76 -d '{\"reviewer_ids\": [42]}'",
+            'curl --request PUT "$MR_URL" --data \'{"reviewer_ids":[42]}\'',
+            'curl -XPOST https://api.github.com/repos/o/x/pulls/7/requested_reviewers -d \'{"reviewers":["bob"]}\'',
+            # No method flag: curl's own body flag implies a POST.
+            'curl https://api.github.com/repos/o/x/pulls/7/requested_reviewers --data-raw \'{"reviewers":["bob"]}\'',
+        ],
+    )
+    def test_a_curl_reviewer_write_is_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Listing the reviewers stays permitted — the read never-lockout.
+            "curl https://api.github.com/repos/o/x/pulls/7/requested_reviewers",
+            "curl -sSL -X GET https://gitlab.com/api/v4/projects/1/merge_requests/76",
+            # ``-f`` is curl's --fail, NOT a body field: still a GET.
+            "curl -fsSL https://api.github.com/repos/o/x/pulls/7/requested_reviewers",
+            # A download whose path merely contains the word is not a field write.
+            "curl -O https://example.com/reviewers.json",
+        ],
+    )
+    def test_a_curl_read_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is False
+        assert _parse_deny(capsys) is None
+
+    def test_the_per_call_token_still_waives_a_curl_write(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/76 "
+            "-d '{\"reviewer_ids\": [42]}'  # [reviewer-ok: vetted colleague MR]"
+        )
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is False
+        assert _parse_deny(capsys) is None
+
+
+class TestTheSanctionedPolicyCommandIsNotAnAssignmentSurface:
+    """``review apply-reviewer-policy`` passes the PreToolUse guard.
+
+    Not by a carve-out: the guard fires only on a forge CLI, a REST leader, or the
+    MR-create/update MCP tools, and a ``t3`` command is none of those. Pinned here
+    so the one sanctioned path cannot regress into a block.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 acme review apply-reviewer-policy",
+            "t3 acme review apply-reviewer-policy --dry-run",
+            "t3 acme review apply-reviewer-policy --json",
+        ],
+    )
+    def test_the_policy_command_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is False
+        assert _parse_deny(capsys) is None
+
+
+class TestTheGeneralFormsStayBlockedAlongsideIt:
+    """The evidence that matters: admitting the sanctioned path widened nothing."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab mr update 76 --reviewer octocat",
+            "glab mr update 76 --reviewers octocat,someone",
+            "glab mr create --reviewer octocat",
+            "gh pr edit 12 --reviewer octocat",
+            "gh pr edit 12 --add-reviewer octocat",
+            "gh pr create -r octocat",
+            "glab api --method PUT projects/1/merge_requests/76 -f reviewer_ids=42",
+            "gh api --method POST repos/o/x/pulls/12/requested_reviewers -f 'reviewers[]=octocat'",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/76 -d '{\"reviewer_ids\": [42]}'",
+            'curl -XPOST https://api.github.com/repos/o/x/pulls/7/requested_reviewers -d \'{"reviewers":["bob"]}\'',
+        ],
+    )
+    def test_every_general_reviewer_write_is_still_denied(
+        self,
+        command: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["mcp__glab__glab_mr_update", "mcp__glab__glab_mr_create"],
+    )
+    def test_the_mcp_reviewer_args_are_still_denied(
+        self,
+        tool_name: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        call = {"session_id": "s", "tool_name": tool_name, "tool_input": {"iid": "76", "reviewer": "octocat"}}
+
+        assert router.handle_block_self_reviewer_assign(call) is True
+        assert _parse_deny(capsys) is not None
+
+    def test_the_deny_reason_names_the_sanctioned_command(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A blocked agent must be told the one path that exists, not that none does."""
+        router.handle_block_self_reviewer_assign(_bash("glab mr update 76 --reviewer octocat"))
+
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "apply-reviewer-policy" in deny["permissionDecisionReason"]
+
+
+class TestTheGateFailsClosedOnWhatItCannotRead:
+    """Two ways a reviewer write read as a GET, both fixed at the hook copy too (#4641).
+
+    An unbalanced quote (``# don't``) made ``shlex`` refuse the command and the gate
+    called it a read; and ``token.startswith("-X")`` matched the VALUE of any other
+    option, so ``-A '-X GET'`` downgraded the write the caller was actually sending.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api -X PUT 'projects/1/merge_requests/2?reviewer_ids=42'  # don't",
+            "curl -X PUT https://gitlab.com/api/v4/projects/1/merge_requests/2 -d 'reviewer_ids=42' -A '-X GET'",
+        ],
+    )
+    def test_the_write_is_still_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert router.handle_block_self_reviewer_assign(_bash(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"

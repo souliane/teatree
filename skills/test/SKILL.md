@@ -25,7 +25,7 @@ When adding a new test, default to an integration or E2E test — not a unit tes
 - **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 - **`call_command("name", ...)`** for management commands (Typer + Django glue).
 - **Real overlay against `tmp_path`** with real `git init` for provisioning, worktrees, env files.
-- **Playwright** (in `e2e/` or the project's E2E repo) for browser-visible behavior.
+- **Playwright** for browser-visible behavior. The spec goes in the project's dedicated E2E repo — a sibling checkout (`../<project>-e2e/`) when the project has one, else this repo's own `e2e/` directory. A dedicated E2E repo is exclusive: once one exists, a spec never lands anywhere inside the product repo, because a spec split across two homes is a spec the E2E suite does not run.
 - **`subprocess.run(["t3", ...])`** (mark `@pytest.mark.integration`) when only the real CLI entry point reproduces the bug.
 
 **Mock only unstoppable externals:** network calls (GitHub / GitLab / Slack / Sentry), the clock (`time_machine`), third-party subprocesses. Don't mock teatree code, Django models, filesystem under `tmp_path`, or `git` — run the real thing. If setup is painful, that usually points at a design problem, not a need for mocks.
@@ -123,8 +123,8 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 
 ### CI Pipeline Monitoring
 
-- Background polling for pipeline status.
-- Costs no tokens while waiting.
+- Watch it OFF the foreground, by one of the three sanctioned shapes — a `Monitor` armed on `gh run watch --exit-status` / `glab ci status`, a `Task` sub-agent dispatched to watch and report, or that watch as one `Bash` call with `run_in_background: true`. Canonical statement: `/t3:ship` § 6 "Monitor Pipeline"; the rule is [`../rules/SKILL.md`](../rules/SKILL.md) § "Background Long Operations (Non-Negotiable)".
+- Costs no tokens while waiting, and leaves the session free to read new input.
 
 **Not-green == red (Non-Negotiable).** A pipeline is only OK when every required job is `success`. Treat any non-`success` job as a failure to fix, re-trigger, and confirm green: `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, a failing `allow_failure: true` job, or any gray/unknown state. `allow_failure: true` keeps the *pipeline* green but the *job* still failed — investigate it, do not skip it. Never declare CI passing, and never end a monitoring loop, while any job is non-green; a still-running/pending job is not yet terminal — wait, then re-apply. Canonical statement: `/t3:ship` § 6 "Not-green == red"; enforced in code by `teatree.loop.scanners.my_prs._needs_attention`.
 

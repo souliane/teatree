@@ -87,3 +87,32 @@ class TestNonWaitsPassThrough:
     )
     def test_an_ordinary_command_is_not_flagged(self, command: str) -> None:
         assert detect_unbounded_wait(command).is_unbounded_wait is False
+
+
+class TestABoundBelongsToTheWaitItWraps:
+    """A ``timeout`` on one command does not vouch for a loop in another.
+
+    The shape was collapsed into one whole-command verdict, so any ``timeout``
+    anywhere in the shell string marked every later loop bounded — and the
+    natural way to write a runaway is to bound the setup step and not the wait.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "timeout 5 gh pr checks 1; until gh pr checks 1 | grep -q pass; do sleep 60; done",
+            "timeout 30 bash -c 'gh pr view 1' && while ! test -f /tmp/done; do sleep 10; done",
+        ],
+    )
+    def test_an_unrelated_timeout_does_not_bound_a_later_loop(self, command: str) -> None:
+        assert detect_unbounded_wait(command).is_unbounded_wait is True
+
+    def test_the_wrapped_loop_stays_bounded_alongside_an_unbounded_sibling(self) -> None:
+        # The FIRST wait is genuinely bounded; the SECOND is not, and that is
+        # what the command must be judged on.
+        command = "timeout 60 bash -c 'until test -f /tmp/a; do sleep 5; done'; until test -f /tmp/b; do sleep 5; done"
+        assert detect_unbounded_wait(command).is_unbounded_wait is True
+
+    def test_a_timeout_wrapped_loop_alone_is_still_allowed(self) -> None:
+        command = "timeout 60 bash -c 'until test -f /tmp/a; do sleep 5; done'; echo done"
+        assert detect_unbounded_wait(command).is_unbounded_wait is False

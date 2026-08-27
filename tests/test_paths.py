@@ -396,14 +396,41 @@ def test_finds_legacy_namespaced_layout(tmp_path: Path) -> None:
     assert found == sorted([stale_a, stale_b])
 
 
-def test_finds_nested_layouts(tmp_path: Path) -> None:
+def test_ignores_databases_below_the_namespaced_level(tmp_path: Path) -> None:
+    """A ``db.sqlite3`` deeper than one level belongs to a checkout, not to teatree.
+
+    Every control DB teatree itself creates under the data dir sits at the root
+    (:func:`resolve_data_dir`) or one namespaced level down (:func:`get_data_dir`,
+    :func:`find_overlay_db`). Anything deeper arrived with a tree parked under the
+    data dir — teatree's own e2e machinery checks spec repos out there — so the
+    recursive walk that used to find it reported someone else's database as stale
+    teatree state, and paid a full ``**`` descent of those checkouts to do it.
+    """
     canonical = tmp_path / "db.sqlite3"
     canonical.touch()
-    nested = tmp_path / "a" / "b" / "c" / "db.sqlite3"
-    nested.parent.mkdir(parents=True)
-    nested.touch()
+    namespaced = tmp_path / "dev" / "db.sqlite3"
+    namespaced.parent.mkdir()
+    namespaced.touch()
+    inside_a_checkout = tmp_path / "e2e-repos" / "some-repo" / "src" / "db.sqlite3"
+    inside_a_checkout.parent.mkdir(parents=True)
+    inside_a_checkout.touch()
 
-    assert list(find_stale_dbs(tmp_path, canonical=canonical)) == [nested]
+    assert list(find_stale_dbs(tmp_path, canonical=canonical)) == [namespaced]
+
+
+def test_neither_control_db_sweep_walks_the_whole_tree() -> None:
+    """The data dir is not teatree's alone, so neither sweep may pay a ``**`` descent.
+
+    Teatree's own e2e machinery checks spec repos out under the data dir; on the
+    deployed box that is 166k files. Matching the same set with a recursive pattern
+    and filtering afterwards would keep the behaviour above and lose the whole point:
+    the walk cost 4.4s on the host and 274s in the container, on the SessionStart path.
+    """
+    recursive = [
+        pattern for pattern in (*paths._CONTROL_DB_ROOT_GLOBS, *paths._CONTROL_DB_ARTIFACT_GLOBS) if "**" in pattern
+    ]
+
+    assert not recursive, f"a control-DB sweep descends the whole data dir: {recursive!r}"
 
 
 class TestFindControlDbArtifacts:
@@ -551,3 +578,25 @@ class TestPrimaryDataDirIsNotTheDatabasesParent:
         # them, which is the same isolation that keeps a worktree off the canonical DB.
         assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
         assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR
+
+
+class TestCoreRepoRoot:
+    """The core checkout the dream destination classifier probes against (#2663)."""
+
+    def test_core_repo_root_resolves_the_running_editable_checkout(self) -> None:
+        # Deliberately non-hermetic: a None here means every core-fix destination
+        # would silently fall back to the prefix predicate in CI.
+        assert paths.PathHelpers.core_repo_root() == paths.teatree_source_root()
+
+    def test_a_tree_without_both_markers_is_not_a_core_checkout(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "teatree").mkdir(parents=True)
+        (tmp_path / "src" / "teatree" / "__init__.py").touch()
+
+        assert paths.PathHelpers.core_repo_root(root=tmp_path) is None
+
+    def test_a_tree_with_both_markers_is_a_core_checkout(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "teatree").mkdir(parents=True)
+        (tmp_path / "src" / "teatree" / "__init__.py").touch()
+        (tmp_path / "pyproject.toml").touch()
+
+        assert paths.PathHelpers.core_repo_root(root=tmp_path) == tmp_path

@@ -7,7 +7,13 @@ agent and its keys stay on the host) and the container's ``glab`` has never been
 logged in. Every GitLab review write then dies on "No GitLab token found. Run:
 glab auth login" while the operator's host ``glab`` is authenticated the whole
 time. ``deploy/t3`` closes that gap: with ``GITLAB_TOKEN`` unset it resolves the
-host login and forwards it as ``--env GITLAB_TOKEN=…``.
+host login and forwards it as a BARE ``--env GITLAB_TOKEN``, which docker reads
+from the wrapper's own environment. The bare form is not a style choice: an argv
+is world-readable in the host process table, so ``--env GITLAB_TOKEN=<value>``
+published the operator's credential to every local process for the life of the
+call. The value must reach the container and must not reach the argv, and only
+asserting both together rules out a wrapper that leaks nothing by forwarding
+nothing.
 
 The wrapper is exercised for real — the genuine ``deploy/t3`` copied into a
 tmp tree, run by ``/usr/bin/env bash`` (the macOS default `bash` 3.2 is the
@@ -24,6 +30,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_forwarded_env import ENV_REPORT, argv, forwarded
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 
@@ -40,12 +47,15 @@ pytestmark = pytest.mark.skipif(
 
 # `compose ps` answers "nothing running" so the wrapper takes its one-off `run`
 # branch; that invocation reports the argv it was handed, one entry per line.
-DOCKER_STUB = """#!/usr/bin/env bash
+DOCKER_STUB = (
+    """#!/usr/bin/env bash
 for arg in "$@"; do
     [ "$arg" = ps ] && exit 0
 done
 printf 'ARG %s\\n' "$@"
 """
+    + ENV_REPORT
+)
 
 # Models `glab auth status --show-token`. GLAB_STUB_STREAM picks the stream the report
 # lands on (glab writes it to stderr on some versions, stdout on others);
@@ -118,13 +128,7 @@ def _run(
 def _invoke(tmp_path: Path, *, with_glab: bool, env_overrides: dict[str, str] | None = None) -> dict[str, str]:
     """Run the real wrapper; return the ``NAME=VALUE`` pairs it forwarded via ``--env``."""
     proc = _run(tmp_path, with_glab=with_glab, env_overrides=env_overrides)
-    return _forwarded(proc)
-
-
-def _forwarded(proc: subprocess.CompletedProcess[str]) -> dict[str, str]:
-    args = [line.removeprefix("ARG ") for line in proc.stdout.splitlines() if line.startswith("ARG ")]
-    pairs = (args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--env")
-    return dict(pair.split("=", 1) for pair in pairs if "=" in pair)
+    return forwarded(proc)
 
 
 def _glab_calls(tmp_path: Path) -> list[str]:
@@ -162,7 +166,10 @@ class TestNoHostLoginChangesNothing:
 
     def test_absent_glab_still_forwards_the_other_names(self, tmp_path: Path) -> None:
         forwarded = _invoke(tmp_path, with_glab=False, env_overrides={"T3_OVERLAY_NAME": "demo-overlay"})
-        assert forwarded == {"T3_OVERLAY_NAME": "demo-overlay"}
+        assert forwarded["T3_OVERLAY_NAME"] == "demo-overlay"
+        # Exact on the NAME set, not the values: TEATREE_DEPLOY_CHECKOUT is the
+        # wrapper's own export, and an unresolvable glab must add nothing beyond it.
+        assert set(forwarded) == {"T3_OVERLAY_NAME", "TEATREE_DEPLOY_CHECKOUT"}
 
 
 class TestTheCredentialNeverReachesATrace:
@@ -172,7 +179,7 @@ class TestTheCredentialNeverReachesATrace:
         # The `--env NAME=value` pair rides in the argv of the final `docker compose`
         # hop, so a trace restored anywhere before the dispatch prints the credential.
         proc = _run(tmp_path, with_glab=True, xtrace=True)
-        assert _forwarded(proc)["GITLAB_TOKEN"] == FAKE_TOKEN
+        assert forwarded(proc)["GITLAB_TOKEN"] == FAKE_TOKEN
         assert FAKE_TOKEN not in proc.stderr
 
     def test_the_mount_wiring_above_the_credential_region_stays_traceable(self, tmp_path: Path) -> None:
@@ -180,6 +187,27 @@ class TestTheCredentialNeverReachesATrace:
         # the part an operator runs `bash -x` for — are still traced.
         proc = _run(tmp_path, with_glab=True, xtrace=True)
         assert "TEATREE_HOST_HOME=" in proc.stderr
+
+
+class TestTheCredentialNeverEntersTheHostProcessTable:
+    """A `docker` argv is world-readable; a credential in one is published locally."""
+
+    @staticmethod
+    def _assert_delivered_but_not_in_argv(proc: subprocess.CompletedProcess[str], token: str) -> None:
+        # Both halves, together: "absent from the argv" alone is also what a wrapper
+        # that forwards nothing at all would report.
+        assert forwarded(proc)["GITLAB_TOKEN"] == token, "the container did not receive the token"
+        leaked = [arg for arg in argv(proc) if token in arg]
+        assert leaked == [], f"the token value rides in the docker argv: {leaked}"
+
+    def test_a_glab_resolved_token_reaches_the_container_without_entering_the_argv(self, tmp_path: Path) -> None:
+        self._assert_delivered_but_not_in_argv(_run(tmp_path, with_glab=True), FAKE_TOKEN)
+
+    def test_an_exported_token_reaches_the_container_without_entering_the_argv(self, tmp_path: Path) -> None:
+        # The operator-exported path assembles the same flags, so it leaks identically.
+        exported = "stub-operators-own-choice"
+        proc = _run(tmp_path, with_glab=True, env_overrides={"GITLAB_TOKEN": exported})
+        self._assert_delivered_but_not_in_argv(proc, exported)
 
 
 class TestExportedTokenWins:

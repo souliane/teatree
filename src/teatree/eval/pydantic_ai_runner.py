@@ -15,7 +15,8 @@ vocabulary every backend yields, and :func:`~teatree.eval.message_mapping.eval_r
 folds those typed messages into an :class:`~teatree.eval.models.EvalRun` unchanged.
 The matchers and judge never see the transport.
 
-The scenario's declared tools are registered as INERT stubs (:func:`build_eval_toolset`):
+The scenario's declared tools are registered as INERT stubs (:func:`build_eval_toolset`)
+advertising the production tool's parameter schema:
 the eval grades the tool CALL the model issues, never its execution — exactly like
 the clean-room ``api`` lane runs in an isolated sandbox — so a tool-call scenario is
 captured in the same ``ToolUseBlock`` vocabulary the SDK lane produces, with no real
@@ -35,6 +36,7 @@ from pydantic_ai.models.anthropic import AnthropicEffort, AnthropicModelSettings
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import FunctionToolset
 
 from teatree.agents.harness import resolve_effort
@@ -49,10 +51,11 @@ from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.resource_caps import resolve_watchdog_seconds
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
+from teatree.llm.builtin_tool_schemas import BUILTIN_TOOL_PARAMETERS
 from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
 #: The dispatch-lane header (mirrors ``teatree.agents.harness._X_LANE_HEADER``).
@@ -81,12 +84,31 @@ def _inert_tool(**_kwargs: object) -> str:
 def build_eval_toolset(tool_names: tuple[str, ...]) -> FunctionToolset[None]:
     """A ``pydantic_ai`` toolset of inert stubs, one per scenario-declared tool.
 
-    Each of *tool_names* (``EvalSpec.tools``) becomes an arbitrary-argument stub so
-    the model can issue the call the matchers grade without any real execution.
+    Each of *tool_names* (``EvalSpec.tools``) becomes a stub that advertises the
+    PRODUCTION tool's parameter schema (:data:`~teatree.llm.builtin_tool_schemas.BUILTIN_TOOL_PARAMETERS`)
+    while executing nothing, so the model can issue the call the matchers grade.
+
+    Registered from the schema rather than from ``_inert_tool``'s own signature: a
+    ``**kwargs`` body infers ZERO properties, which tells the model nothing about
+    what any tool takes. It still emits ``Bash({"command": …})`` from training
+    priors, but it cannot invent a STRUCTURED shape it was never shown, so it
+    calls ``AskUserQuestion({})`` and every ``args.questions`` matcher reds a
+    correctly-behaving agent.
+
+    ``Tool.from_schema`` validates arguments with an ``any`` schema, so the
+    advertised shape is a hint to the model and never a filter on the captured
+    call — an unmodelled tool keeps the fully permissive stub, and an argument
+    outside a curated shape still reaches the grader.
     """
     toolset: FunctionToolset[None] = FunctionToolset()
     for name in tool_names:
-        toolset.add_function(_inert_tool, name=name)
+        parameters = BUILTIN_TOOL_PARAMETERS.get(name)
+        if parameters is None:
+            toolset.add_function(_inert_tool, name=name)
+        else:
+            toolset.add_tool(
+                Tool.from_schema(_inert_tool, name=name, description=None, json_schema=parameters.json_schema())
+            )
     return toolset
 
 
@@ -96,7 +118,9 @@ def _system_prompt(spec: EvalSpec) -> str:
     Identical construction to the ``api`` lane (:mod:`teatree.eval.api_runner`) so a
     scenario grades the SAME agent definition regardless of the backend.
     """
-    clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
+    clean_room_prompt = (
+        load_agent_definition(spec.agent_path, spec.agent_sections, spec.source_path.parent) + LIVE_ENV_FRAMING
+    )
     return build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
 
 
@@ -163,8 +187,8 @@ def _model_settings(model: Model, effort: EffortLevel | None, max_tokens: int) -
 class EvalDriveCaps:
     """What bounds ONE eval drive, shared by both fresh-run lanes (composition).
 
-    *   ``turn_cap`` — an explicit ``--max-turns``; ``None`` defers to the backend's
-        per-run request-loop guardrail.
+    *   ``turn_cap`` — an explicit ``--max-turns``; ``None`` defers to the scenario's own
+        ``max_turns`` budget, tightened by the backend's per-run request-loop guardrail.
     *   ``effort`` — the lane-level representative reasoning effort, applied when a
         scenario declares no ``model@effort`` of its own (a declared effort wins).
     *   ``max_tokens`` — the per-request output-token ceiling. Defaulted rather than
@@ -232,8 +256,24 @@ class PydanticAiRunner:
         )
         return OpenAIChatModel(resolved, provider=OpenAIProvider(openai_client=client))
 
+    def _resolve_request_limit(self, spec: EvalSpec) -> int | None:
+        """An explicit ``--max-turns`` wins; else the scenario budget, tightened by the lane guardrail.
+
+        The clean-room floor mirrors the SDK lane
+        (:meth:`teatree.eval.api_runner.ApiInProcessRunner._resolve_max_turns`): honouring the raw
+        declaration would red every catalog scenario that declares ``max_turns: 3``.
+        """
+        if self._caps.turn_cap is not None:
+            return self._caps.turn_cap
+        scenario_cap = max(spec.max_turns, CLEAN_ROOM_MIN_TURNS) if spec.lane == CLEAN_ROOM_LANE else spec.max_turns
+        lane_cap = self._backend.request_limit
+        if lane_cap is None or lane_cap <= 0:
+            return scenario_cap
+        return min(scenario_cap, lane_cap)
+
     async def _drive_with_watchdog(self, spec: EvalSpec, model: Model) -> list[Message]:
-        return await asyncio.wait_for(self._drive(spec, model), timeout=resolve_watchdog_seconds())
+        watchdog = spec.watchdog_seconds if spec.watchdog_seconds is not None else resolve_watchdog_seconds()
+        return await asyncio.wait_for(self._drive(spec, model), timeout=watchdog)
 
     async def _drive(self, spec: EvalSpec, model: Model) -> list[Message]:
         variant = parse_model_variant(spec.model)
@@ -244,9 +284,7 @@ class PydanticAiRunner:
             model_settings=_model_settings(model, effort, self._caps.max_tokens),
             toolsets=[build_eval_toolset(spec.tools)],
         )
-        # An explicit ``--max-turns`` caps the request loop; else the backend
-        # per-run guardrail; else uncapped (the watchdog is the hang backstop).
-        request_limit = self._caps.turn_cap if self._caps.turn_cap is not None else self._backend.request_limit
+        request_limit = self._resolve_request_limit(spec)
         # ``async with agent`` enters the model so the provider's HTTP client closes
         # cleanly on exit rather than leaking one per run.
         async with agent:
