@@ -22,7 +22,7 @@ from pathlib import Path
 from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.models import Worktree
-from teatree.core.worktree.branch_classification import is_squash_merged
+from teatree.core.worktree.branch_classification import branch_redundancy, effective_default_target
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -115,8 +115,19 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
     commit is absent-from-all-remotes by SHA even though its WORK is shipped.
     Treating that as unique work wrongly keeps a resolved orphan. So a branch
     counts as unique unpushed work only when its commits are absent from every
-    remote AND :func:`is_squash_merged` (patch-id ``git cherry``) does NOT find
-    the work captured on ``origin/<default>``.
+    remote AND the landed ladder (:func:`branch_redundancy`) does NOT find the
+    work captured on the repo's default target.
+
+    That target is :func:`effective_default_target` — the SAME resolution
+    :func:`~teatree.core.worktree.orphan_emit._build_record` uses, so the two
+    cannot disagree about where the work would have landed (they did on a
+    ``single_branch_repos``-pinned repo, which emitted the DELETE leaf for a
+    checkout this probe had just called work-bearing). It also absorbs an
+    unresolvable default: ``git.default_branch`` raises ``RuntimeError`` on a
+    clone with no ``origin/HEAD`` and no ``origin/{main,master,development}``,
+    and raising here aborted the whole ``workspace emit`` — ledger records
+    included. One unreadable clone degrades its own orphan's verdict; it never
+    silences the surface.
 
     A named branch is probed from the shared object store (``repo``); a detached
     HEAD is meaningful only in the worktree dir, so it — and the squash check
@@ -138,4 +149,4 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
         return True
     if not absent:
         return False
-    return not is_squash_merged(probe_repo, branch, git.default_branch(repo))
+    return not branch_redundancy(probe_repo, branch, effective_default_target(repo)).redundant

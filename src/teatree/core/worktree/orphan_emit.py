@@ -24,7 +24,12 @@ from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_st
 from teatree.core.cleanup.orphan_checkouts import OrphanCheckout, discover_orphan_checkouts, orphan_has_unique_work
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from teatree.core.cleanup.working_tree_dirt import WorkingTreeDirt, working_tree_dirt
-from teatree.core.worktree.branch_classification import INCONCLUSIVE_SOURCE, branch_redundancy, effective_default_target
+from teatree.core.worktree.branch_classification import (
+    INCONCLUSIVE_SOURCE,
+    branch_redundancy,
+    effective_default_target,
+    reset_forge_probe_cache,
+)
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -39,7 +44,12 @@ def collect_orphan_emit_records(workspace: Path) -> list[CleanupEmitRecord]:
 
     A ``clean_ignore`` match is withheld exactly as the ledger pass withholds one: the
     operator has already ruled the branch never-reap, so there is nothing to route.
+
+    Opens by dropping the process-wide forge memo, like both sibling passes: this is
+    public, and inside a long-lived loop worker a previous tick's merged answer would
+    otherwise decide whether a checkout's work reaches the operator at all.
     """
+    reset_forge_probe_cache()
     scan = discover_orphan_checkouts(workspace)
     for gap in scan.gaps:
         logger.warning("orphan emit could not enumerate a clone, so its checkouts went unreported: %s", gap)

@@ -11,12 +11,16 @@ stays absent, and no emitted orphan can ever serialise as the shape the judgment
 to DELETE.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import teatree.core.management.commands._workspace.salvage as ws_salvage_mod
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
+from teatree.core.management.commands._workspace.salvage import emit_records_json
+from teatree.core.worktree import branch_classification
 from teatree.core.worktree.orphan_emit import collect_orphan_emit_records
 from teatree.utils import git as git_mod
 from teatree.utils.run import CommandFailedError
@@ -199,3 +203,90 @@ class TestUnreadableContentProbeReportsUnscanned(_OrphanEmitFixture):
         record = matches[0]
         assert record.banned_terms_status == "unknown"
         assert record.banned_terms_found == []
+
+
+class TestAnUnresolvableDefaultBranchNeverSilencesTheHandoff(_OrphanEmitFixture):
+    def test_one_clone_with_no_resolvable_default_still_renders_the_whole_emit(self) -> None:
+        """The union must lose neither side; aborting the command loses BOTH.
+
+        ``git.default_branch`` raises ``RuntimeError`` on a clone with no ``origin/HEAD`` and
+        no ``origin/{main,master,development}``, and nothing between the orphan probe and the
+        CLI catches it — so ``workspace emit`` printed nothing at all, including the ledger
+        records that always rendered before.
+        """
+        wt_path = self._add_orphan("agent-4579-no-default", files={"new.py": "WORK = 1\n"})
+        _run_git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.repo_main)
+        ledger = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree")
+
+        with (
+            patch("teatree.core.worktree.clone_paths.Path.cwd", return_value=self.repo_main),
+            patch("teatree.core.worktree.orphan_emit.is_clean_ignored", return_value=False),
+            patch.object(ws_salvage_mod, "collect_emit_records", return_value=[ledger]),
+        ):
+            rendered = json.loads(emit_records_json(self.workspace))
+
+        assert [row["path"] for row in rendered] == ["/ws/feat", str(wt_path)]
+        assert rendered[1]["content_verified"] is False, "an unprobeable base can never authorise a DELETE"
+
+
+class TestTheTwoDefaultTargetsCannotDiverge(_OrphanEmitFixture):
+    """A pinned (``single_branch_repos``) repo made the two probes measure against DIFFERENT bases.
+
+    ``orphan_has_unique_work`` resolved ``origin/<git.default_branch>`` while ``_build_record``
+    honoured the pin — so a checkout squash-landed on the PINNED branch read as work-bearing
+    (emitted) and simultaneously as redundant (``content_verified: true``, no unique commits):
+    exactly the DELETE leaf the sibling anti-vacuity control asserts is unreachable.
+    """
+
+    def _pin_the_repo_to(self, branch: str) -> None:
+        _run_git("branch", branch, "main", cwd=self.repo_main)
+        _run_git("push", "-q", "-u", "origin", branch, cwd=self.repo_main)
+
+    def _land_on(self, branch: str, name: str, content: str) -> None:
+        _run_git("checkout", "-q", branch, cwd=self.repo_main)
+        (self.repo_main / name).write_text(content, encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", f"squash: land {name} (#1)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", branch, cwd=self.repo_main)
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+
+    def test_work_landed_on_the_pinned_branch_is_absent_not_a_deletable_record(self) -> None:
+        self._pin_the_repo_to("bootstrap")
+        wt_path = self._add_orphan("agent-4579-pinned", files={"new.py": "WORK = 1\n"})
+        self._land_on("bootstrap", "new.py", "WORK = 1\n")
+
+        with patch.object(branch_classification, "_declared_single_branch_repos", return_value=("origin=bootstrap",)):
+            record = self._record_for(wt_path)
+
+        assert record is None, "both probes must measure against the pinned branch the work landed on"
+
+
+class TestTheForgeMemoIsResetLikeTheSiblingPasses(_OrphanEmitFixture):
+    def test_a_previous_ticks_merged_answer_is_not_reused(self) -> None:
+        """The memo is process-wide, so a long-lived loop worker carries it between ticks."""
+        repo, branch = str(self.repo_main), "agent-4579-memo"
+        wt_path = self._add_orphan(branch, files={"new.py": "WORK = 1\n"})
+        with patch.object(branch_classification, "probe_host_cli", return_value="7"):
+            assert branch_classification._branch_pr_is_merged(repo, branch) is True
+
+        with patch.object(branch_classification, "probe_host_cli", return_value=""):
+            assert self._record_for(wt_path) is not None
+            assert branch_classification._branch_pr_is_merged(repo, branch) is False
+
+
+class TestDetachedOrphansWithUnsquashedContentStayKept(_OrphanEmitFixture):
+    def test_a_detached_orphan_whose_content_landed_nowhere_is_emitted_and_kept(self) -> None:
+        """The negative control for the newly-authorised detached reap (#4579's squash arm).
+
+        The positive case — a detached HEAD whose content IS captured on ``origin/main`` —
+        is pinned above. Without this, running the squash check for a detached HEAD could
+        widen into reaping every detached orphan and both surfaces would still read green.
+        """
+        wt_path = self._add_orphan("agent-4579-detached-unique", files={"only-here.py": "WORK = 1\n"}, detach=True)
+
+        record = self._record_for(wt_path)
+
+        assert record is not None, "content on no remote and on no base must reach the handoff"
+        assert record.unique_commit_shas, "the commit the reaper refuses to destroy must be named"
+        reaped = self._reap(dry_run=True)
+        assert any(line.startswith("KEPT orphan") and str(wt_path) in line for line in reaped), reaped

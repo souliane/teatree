@@ -9,7 +9,11 @@ stops resolving mid-probe — neither of which either consumer's fixtures happen
 
 from unittest.mock import patch
 
+import pytest
+
 from teatree.core.cleanup.orphan_checkouts import discover_orphan_checkouts, orphan_has_unique_work
+from teatree.utils import git
+from tests.teatree_core.cleanup._shared import _run_git
 from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
 
 
@@ -38,3 +42,29 @@ class TestOrphanHasUniqueWorkFailsClosed(OrphanWorktreeFixture):
         (self.repo_main / ".git" / "refs" / "heads" / "vanishing-ref").unlink()
 
         assert orphan_has_unique_work(str(self.repo_main), "vanishing-ref", str(wt_path)) is True
+
+
+class TestAnUnresolvableDefaultBranchDegradesTheVerdict(OrphanWorktreeFixture):
+    """``git.default_branch`` raises ``RuntimeError``, which nothing on the emit path catches.
+
+    A clone with no ``origin/HEAD`` and no ``origin/{main,master,development}`` made this
+    probe raise out of ``collect_orphan_emit_records`` → ``emit_records_json`` → the CLI, so
+    ``workspace emit`` rendered nothing at all — the ``Worktree`` ledger records included.
+    An unresolvable default must degrade that one orphan's verdict, never silence the surface.
+    """
+
+    def _strand_the_default(self) -> None:
+        _run_git("update-ref", "-d", "refs/remotes/origin/main", cwd=self.repo_main)
+
+    def test_the_fixture_really_leaves_the_default_branch_unresolvable(self) -> None:
+        """The control: without it a passing probe proves nothing about this arm."""
+        self._strand_the_default()
+
+        with pytest.raises(RuntimeError, match="Could not detect default branch"):
+            git.default_branch(str(self.repo_main))
+
+    def test_an_unresolvable_default_keeps_the_orphan_instead_of_raising(self) -> None:
+        wt_path = self._add_orphan("no-default-branch", files={"new.py": "WORK = 1\n"})
+        self._strand_the_default()
+
+        assert orphan_has_unique_work(str(self.repo_main), "no-default-branch", str(wt_path)) is True

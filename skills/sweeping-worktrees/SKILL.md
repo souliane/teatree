@@ -25,10 +25,10 @@ worktree/branch/stash counterpart of `/t3:sweeping-tickets` (issues) and
 
 **Core principle — the outcome invariant.** Every stale item the sweep ACTS on (one
 the user owns and that is NOT live) ends **GONE**: salvaged-to-a-PR-then-removed, or
-removed-with-no-PR. For a `kind:"worktree"` item, "removed" means the worktree dir is
-gone via `worktree teardown` — `workspace salvage` alone only opens the PR (its
-`git branch -D` can't delete a branch checked out in a worktree), so a salvage is not
-complete until the teardown runs. Nothing the user owns is left rotting in place. The
+removed-with-no-PR. For a checkout item (`kind:"worktree"` or
+`kind:"orphan-worktree"`), "removed" means the worktree dir is gone via `worktree teardown`
+— `workspace salvage` alone only opens the PR (its `git branch -D` can't delete a branch
+checked out in a worktree), so a salvage is not complete until the teardown runs. Nothing the user owns is left rotting in place. The
 ONLY thing kept in place is a genuinely **uncertain** item — kept **with a warning**,
 never silently deleted. A colleague's item and a live item are **skipped** (deferred),
 not acted on at all.
@@ -76,12 +76,15 @@ This prints a JSON **array** of the items the CLI did NOT auto-delete — one
 | `liveness` | `""` when not live; otherwise the keep-reason phrase the CLI's liveness guard produced |
 | `owner` | the tip author identity |
 
-**`kind: "orphan-worktree"` routes the same, but DISPOSES differently (#4579).** The checkout
-has no `Worktree` row — a dispatched agent's bare `git worktree add` — so `workspace teardown`
-has nothing to tear down. Salvage is unchanged (`workspace salvage <branch>`); deletion is
-`git worktree remove <path>` in its source clone, or leave it to `clean-all`'s orphan pass.
-Only work-bearing ones are emitted, so an `orphan-worktree` record ALWAYS names work that
-exists on no remote — never route one to DELETE on the strength of the record alone.
+**`kind: "orphan-worktree"` routes AND disposes exactly like a `worktree` (#4579).** The
+checkout has no `Worktree` row — a dispatched agent's bare `git worktree add` — but that is
+not a missing disposal path: `worktree teardown --path <path>` registers the checkout on the
+spot (`resolve_worktree` → `_auto_register_from_git`, forking a synthetic `auto:<branch>`
+ticket when nothing else claims the branch) and then removes it under the same #706 guard. So
+the step-3 commands are unchanged for this kind, and `clean-all`'s orphan pass is the
+unattended alternative. Only work-bearing orphans are emitted, so an `orphan-worktree` record
+ALWAYS names work that exists on no remote — never route one to DELETE on the strength of the
+record alone.
 
 **`unique_commit_shas: []` alone proves nothing.** A worktree whose source clone
 moved away, or whose `git cherry` errored, names no commits for the same reason a
@@ -206,8 +209,8 @@ it carries banned terms, and never delete it *to avoid* cleaning.
 
 ### 3. Do the destructive step via the CLI
 
-**Salvage a worktree-kind item is TWO commands** — capture to a new PR, THEN remove the
-worktree dir. Run from the repo/clone the branch lives in:
+**Salvage a checkout item (`worktree` or `orphan-worktree`) is TWO commands** — capture to a
+new PR, THEN remove the worktree dir. Run from the repo/clone the branch lives in:
 
 ```bash
 # clean banned terms FIRST if banned_terms_status == "contains", commit, then:
@@ -244,17 +247,23 @@ means re-run salvage (a second salvage opens a SECOND PR):
 **Delete (redundant)** — shipped/superseded, no unique work to keep:
 
 ```bash
-# a redundant WORKTREE (kind == "worktree") — guarded per-worktree teardown:
+# a redundant CHECKOUT (kind == "worktree") — guarded per-worktree teardown:
 t3 <overlay> worktree teardown --path <path>       # refuses unpushed-unique work without --force
+# an UNREGISTERED checkout (kind == "orphan-worktree") — the SAME guarded verb:
+t3 <overlay> worktree teardown --path <path>       # registers the checkout first, then tears it down
 # bare redundant BRANCHES / STASHES, orphan DBs, and done worktrees in bulk:
 t3 <overlay> workspace clean-all                    # re-runs the guarded reaper; keeps anything uncertain
 ```
 
 `worktree teardown` (no `--force`) is the guarded delete — it **refuses** a worktree
 whose branch carries unpushed-unique commits, so a redundant teardown can never destroy
-real work. `clean-all` is the bulk guarded delete for bare branches (gone-remote /
-fully-merged / squash-merged-by-subject), source-gone stashes, orphan DBs, and
-done+proven-redundant worktrees; it keeps every uncertain item with a warning.
+real work. An `orphan-worktree` takes the identical command: the resolver auto-registers the
+checkout before the teardown runs, so the guard applies to it exactly as to a ledger row —
+there is no orphan-only disposal, and never a hand-rolled `git worktree remove`.
+
+`clean-all` is the bulk guarded delete for bare branches (gone-remote / fully-merged /
+squash-merged-by-subject), source-gone stashes, orphan DBs, and done+proven-redundant
+worktrees; it keeps every uncertain item with a warning.
 
 ### 4. Confirm the invariant
 
