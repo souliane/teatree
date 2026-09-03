@@ -21,6 +21,7 @@ constant, so a producer that went back to saying "failed" fails them.
 
 import json
 from collections.abc import Callable
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -58,6 +59,15 @@ def _record(**overrides: object) -> dict[str, object]:
         "dict[str, object]",
         call_command("review", "record", "1680", "souliane/teatree", **kwargs),
     )
+
+
+def _refused_record(**overrides: object) -> str:
+    """The stderr of a refused ``review record``, asserting the nonzero exit (#932)."""
+    err = StringIO()
+    with pytest.raises(SystemExit) as exc:
+        _record(stderr=err, **overrides)
+    assert exc.value.code == 1
+    return err.getvalue()
 
 
 def _status(*, head: str, checks: str = "green") -> dict[str, object]:
@@ -129,26 +139,19 @@ class TestRecordCommand(TestCase):
 
     def test_record_merge_safe_on_red_checks_is_refused(self) -> None:
         # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result (even expedited).
-        result = _record(gh_verify_result="failed")
-        assert not result["recorded"]
-        assert "never carry gh_verify_result=failed" in cast("str", result["error"])
+        assert "never carry gh_verify_result=failed" in _refused_record(gh_verify_result="failed")
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_invalid_findings_json_is_refused(self) -> None:
-        result = _record(findings_json="{not json")
-        assert not result["recorded"]
+        assert _refused_record(findings_json="{not json")
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_non_array_findings_json_is_refused(self) -> None:
-        result = _record(findings_json='{"severity": "nit"}')
-        assert not result["recorded"]
-        assert "array" in cast("str", result["error"]).lower()
+        assert "array" in _refused_record(findings_json='{"severity": "nit"}').lower()
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_with_unknown_ticket_id_is_refused(self) -> None:
-        result = _record(ticket_id=999999)
-        assert not result["recorded"]
-        assert "not found" in cast("str", result["error"]).lower()
+        assert "not found" in _refused_record(ticket_id=999999).lower()
         assert ReviewVerdict.objects.count() == 0
 
 
@@ -248,11 +251,17 @@ class TestRecordDiffScopeGate(TestCase):
         ):
             return _record(verdict="hold", findings_json=self._SRC_FINDING, **overrides)
 
-    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
-        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+    def _refused_src_finding(self, changed: ChangedFileSet, **overrides: object) -> str:
+        err = StringIO()
+        with pytest.raises(SystemExit) as exc:
+            self._record_src_finding(changed, stderr=err, **overrides)
+        assert exc.value.code == 1
+        return err.getvalue()
 
-        assert not result["recorded"]
-        assert "t3 review merge-tree" in cast("str", result["error"])
+    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
+        refusal = self._refused_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+
+        assert "t3 review merge-tree" in refusal
         assert ReviewVerdict.objects.count() == 0
 
     def test_the_merge_result_retake_flag_records_the_same_finding(self) -> None:

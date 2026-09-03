@@ -20,6 +20,7 @@ class _EchoE2E:
             "SEEN_ARTIFACTS": context.artifacts_dir,
             "SEEN_SPEC": context.spec_path,
             "SEEN_COMPOSE": context.compose_project,
+            "SEEN_BASE_URL": context.base_url,
         }
 
 
@@ -61,6 +62,13 @@ class TestTargetReachesTheSeam:
         assert env["SEEN_ARTIFACTS"] == "/tk/a"
         assert env["SEEN_SPEC"] == "e2e/login.spec.ts"
         assert env["SEEN_COMPOSE"] == "backend-wt7"
+
+    def test_resolved_base_url_reaches_env_extras(self) -> None:
+        # The seam context must carry the SAME BASE_URL the subprocess env gets —
+        # an overlay reading os.environ instead sees the host process's env, not
+        # this one, and can silently miss it (deferred fix from the last review).
+        env = _build()
+        assert env["SEEN_BASE_URL"] == "http://localhost:4200"
 
 
 class TestArtifactsRootDerivation:

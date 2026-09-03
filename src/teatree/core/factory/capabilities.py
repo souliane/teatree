@@ -57,6 +57,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         "verdict, plus `refused` when the open-file probe could not see the "
         "process table; dry-run unless --apply, and --apply on a refusal exits 1 (#4165)",
     ),
+    Capability(
+        "teatree identities bootstrap",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the derived owner handles plus the resulting user_identity_aliases; "
+        "exits 1 when every resolvable forge login is one this deployment also acts as",
+    ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree tasks create",
@@ -125,10 +132,22 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json reports whether the deferred-PR obligation was found and dropped",
     ),
     Capability(
+        "teatree review apply-reviewer-policy",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the per-MR rows; 1 when an assignment it undertook did not land",
+    ),
+    Capability(
         "teatree ticket backfill-clears",
         json_output=True,
         exit_codes=("0",),
         note="--json emits the per-CLEAR recovery rows; dry run unless --no-dry-run",
+    ),
+    Capability(
+        "teatree ticket list-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits every unconsumed CLEAR tagged live/superseded/incomplete; read-only",
     ),
     Capability(
         "teatree ticket reconcile-clears",
@@ -170,6 +189,18 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree e2e lanes", json_output=True, exit_codes=("0",), note="--json emits the {lane: [spec]} CI matrix"
+    ),
+    Capability(
+        "teatree e2e write-test-plan",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the written plan's {path, envs, action}",
+    ),
+    Capability(
+        "teatree e2e write-plan-from-seams",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the written plan's {path, envs, action}",
     ),
     Capability("teatree env show", json_output=True, exit_codes=("0", "1"), note="--format json"),
     Capability("teatree db query", json_output=True, exit_codes=("0", "1")),

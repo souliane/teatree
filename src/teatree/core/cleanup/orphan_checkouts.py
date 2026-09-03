@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
+from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged
 from teatree.core.worktree.worktree_paths import paths_match
@@ -86,8 +87,22 @@ def discover_orphan_checkouts(workspace: Path) -> OrphanScan:
 
 
 def orphan_is_dirty(wt_path: str) -> bool:
-    """Whether the worktree has uncommitted changes (a live, mid-task worktree)."""
-    return bool(git.status_porcelain(wt_path))
+    """Whether the worktree has uncommitted changes (a live, mid-task worktree).
+
+    Fails CLOSED — this gates a checkout removal, so a status that cannot be
+    read counts as dirty (keep), and both instruments (``git status`` AND
+    ``git diff HEAD``) must agree the tree holds no real work. Only the shared
+    orchestration-debris scratch is ignorable; unknown paths are real work.
+    """
+    try:
+        # ``-uall``: an untracked dir must list its files, or debris and real work collapse into one entry.
+        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
+        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
+    except CommandFailedError:
+        return True
+    entries = [_porcelain_path(line) for line in porcelain.splitlines()]
+    entries.extend(line.strip() for line in diff_head.splitlines())
+    return any(entry and not is_orchestration_debris(entry) for entry in entries)
 
 
 def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:

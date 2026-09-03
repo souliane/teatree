@@ -3,10 +3,10 @@
 pytest collects any module-level class matching ``python_classes`` (``Test*``)
 and any module-level function matching ``python_functions`` (``test*``) from a
 module it is handed. The scoped doctest step of the push gate hands it every
-changed ``src`` module, so a domain class named ``TestPlanPost`` — nothing to do
+changed ``src`` module, so a domain class named ``TestPlanWrite`` — nothing to do
 with tests — is collected, fails on its ``__init__``, and the whole step errors.
 The blast radius is every IMPORTER too, because the imported name is a
-module-level attribute of the importing module as well: ``_test_plan/post.py``
+module-level attribute of the importing module as well: ``_test_plan/write.py``
 alone errored 28 times, blocking any diff that touched it.
 
 Two cures satisfy the walk. ``__test__ = False`` in the class body fixes it at
@@ -25,7 +25,7 @@ import ast
 import tomllib
 from pathlib import Path
 
-from teatree.core.management.commands._test_plan.post import TestPlanPost
+from teatree.core.management.commands._test_plan.write import TestPlanWrite
 from teatree.utils.django_db.testdb_clone import TestDbCloneResult
 from tests.conformance._src_tree import REPO_ROOT, src_modules
 
@@ -113,10 +113,10 @@ class TestAntiVacuity:
     """The walk must go RED on the #4167 shape and GREEN on the opted-out form."""
 
     def test_domain_class_named_test_is_flagged(self) -> None:
-        assert _scan("class TestPlanPost:\n    pass\n") == ["TestPlanPost"]
+        assert _scan("class TestPlanWrite:\n    pass\n") == ["TestPlanWrite"]
 
     def test_domain_class_with_opt_out_is_clean(self) -> None:
-        assert _scan("class TestPlanPost:\n    __test__ = False\n") == []
+        assert _scan("class TestPlanWrite:\n    __test__ = False\n") == []
 
     def test_domain_class_with_annotated_opt_out_is_clean(self) -> None:
         assert _scan("class TestShapeReport:\n    __test__: ClassVar[bool] = False\n") == []
@@ -170,7 +170,7 @@ class TestOptOutSurvivesTheRealClasses:
 
     def test_dataclass_and_enum_carry_the_runtime_marker(self) -> None:
         # A slotted dataclass and an Enum both rebuild their class dict; the marker must survive it.
-        assert TestPlanPost.__test__ is False
+        assert TestPlanWrite.__test__ is False
         assert TestDbCloneResult.__test__ is False
 
 

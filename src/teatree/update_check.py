@@ -59,14 +59,33 @@ def run_update_check(*, check_updates: bool, force: bool = False) -> str | None:
     if not tag:
         return None
 
-    latest = tag.lstrip("v")
-    if latest == current:
+    if not _is_newer(tag.removeprefix("v"), current):
         _write_update_cache(cache_path, "")
         return None
 
     message = f"teatree {tag} available (you have {current}). Run: uv pip install --upgrade teatree"
     _write_update_cache(cache_path, message)
     return message
+
+
+def _release_tuple(version: str) -> tuple[int, ...] | None:
+    """*version* as a comparable dotted release, or ``None`` when it is not a plain one.
+
+    Declining to rank a pre/dev/local version is deliberate: guessing its order against a
+    release tag is how an installation ahead of the latest tag gets told to downgrade.
+    """
+    parts = version.split(".")
+    if not parts or not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    """Whether *latest* ranks above *current* — a mere difference is not an upgrade."""
+    ranked_latest, ranked_current = _release_tuple(latest), _release_tuple(current)
+    if ranked_latest is None or ranked_current is None:
+        return False
+    return ranked_latest > ranked_current
 
 
 def _write_update_cache(cache_path: Path, message: str) -> None:

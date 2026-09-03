@@ -14,7 +14,7 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.agents.model_tiering import resolve_tier
 from teatree.cli.eval.escalate import EscalationConfig
-from teatree.eval.backends import FRESH_CLAUDE_BACKENDS
+from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, UNMETERED_FRESH_BACKENDS
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
@@ -155,6 +155,53 @@ def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str 
     choices = " or ".join(f"--backend {b}" for b in FRESH_CLAUDE_BACKENDS)
     typer.echo(
         f"--trials/--models require a fresh metered run; pass {choices} instead of --backend {backend!r}.",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def require_metering_backend_for_cost_bounds(*, backend: str, gate_cost_bounds: bool) -> None:
+    """Refuse ``--gate-cost-bounds`` on a backend whose runner records no cost at all.
+
+    Every backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` drives the
+    model through ``PydanticAiRunner``, whose ``total_cost_usd`` is ``None`` for any
+    provider that surfaces no cost key — always the case for Anthropic — so
+    ``extract_cost_usd`` floors to ``$0`` on a run that genuinely executed. Against
+    :func:`~teatree.eval.cost_bounds.check_cost_bounds` that makes the gate
+    unsatisfiable in BOTH directions: an empty ceiling set is VACUOUS red, and every
+    ceiling a populated one pins is ``MISSING`` red — so calibrating a bound makes the
+    lane worse, not better.
+
+    Asking an unmetered backend for a cost verdict is therefore an OPERATOR ERROR, not a
+    cost regression, and it exits 2 here naming the backend: passing it through would
+    either reintroduce skip-as-pass or manufacture per-scenario ``MISSING`` violations
+    indistinguishable from a real cost blow-up.
+    """
+    if not gate_cost_bounds or backend not in UNMETERED_FRESH_BACKENDS:
+        return
+    typer.echo(
+        f"--gate-cost-bounds needs a backend that METERS cost, and --backend {backend!r} reports "
+        "none: it drives the model through PydanticAiRunner, which records no cost_usd, so every "
+        "pinned ceiling reads MISSING on a run that executed fine and an unpinned set reads "
+        f"VACUOUS. Run the gate on --backend {API_BACKEND} (the fresh lane that records cost_usd), "
+        "or drop --gate-cost-bounds.",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def reject_multi_trial_with_model_override(*, model: str | None, trials: int) -> None:
+    """Refuse ``--model`` with ``--trials>1``: the forced-model lane is single-trial only.
+
+    ``dispatch_resolved_run`` routes a model override straight to the single-trial
+    runner, so an accepted ``--trials``/``--require`` pair was silently dropped and
+    the operator got one trial while believing they had paid for k.
+    """
+    if model is None or trials == 1:
+        return
+    typer.echo(
+        "--model runs a single-trial pass on the forced model, so it cannot honour --trials/--require. "
+        "Drop --trials, or use --models to aggregate across trials.",
         err=True,
     )
     raise typer.Exit(code=2)

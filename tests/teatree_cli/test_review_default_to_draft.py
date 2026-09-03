@@ -44,6 +44,7 @@ from teatree.cli.review import ReviewService
 from teatree.cli.review.default_draft import notify_draft_created, resolve_reviewed_head_sha
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, ConfigSetting, LivePostApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -134,7 +135,7 @@ class TestPostCommentDefaultsToDraft:
         self.svc, self.stub = _service(monkeypatch)
 
     def test_default_creates_a_draft_note(self) -> None:
-        msg, code = self.svc.post_comment("org/repo", 7, "lgtm")
+        msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm")
 
         assert code == 0, msg
         assert "draft_note_id=77" in msg
@@ -143,13 +144,13 @@ class TestPostCommentDefaultsToDraft:
         assert any("draft_notes" in ep for ep in post_endpoints), f"expected draft_notes hit, got {post_endpoints!r}"
 
     def test_default_emits_slack_dm_with_link(self) -> None:
-        _, code = self.svc.post_comment("org/repo", 7, "lgtm")
+        _, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm")
         assert code == 0
         # The key is scoped to the MR + reviewed revision (a single
         # per-comment-free discriminator), so all draft comments on one MR
         # revision coalesce into a single DM. The bare ``_StubAPI`` returns no
         # diff_refs, so the discriminator degrades to the UTC-day fallback.
-        assert BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!7:").exists()
+        assert BotPing.objects.filter(idempotency_key__startswith=f"post_comment_draft:{OWNED_REPO}!7:").exists()
 
 
 class _RoundStubAPI(_StubAPI):
@@ -195,63 +196,63 @@ class TestDraftCommentNotificationIsOneTerseLinePerMr:
 
     def test_many_comments_in_one_pass_coalesce_to_one_message(self) -> None:
         for note in ("looks good", "clean helper here", "nice separation"):
-            _, code = self.svc.post_comment("org/repo", 6521, note)
+            _, code = self.svc.post_comment(OWNED_REPO, 6521, note)
             assert code == 0
 
-        rows = BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521:")
+        rows = BotPing.objects.filter(idempotency_key__startswith=f"post_comment_draft:{OWNED_REPO}!6521:")
         assert rows.count() == 1, [r.idempotency_key for r in rows]
-        assert rows.get().idempotency_key == "post_comment_draft:org/repo!6521:sha-round-1"
+        assert rows.get().idempotency_key == f"post_comment_draft:{OWNED_REPO}!6521:sha-round-1"
 
     def test_new_round_new_head_sha_re_notifies(self) -> None:
         # Round 1 — two comments against sha-round-1 → one DM.
         for note in ("looks good", "one more"):
-            _, code = self.svc.post_comment("org/repo", 6521, note)
+            _, code = self.svc.post_comment(OWNED_REPO, 6521, note)
             assert code == 0
         # Author pushes a fix; the reviewed head moves. Round 2 must re-notify —
         # a bare per-MR key would suppress it forever (SENT rows never expire).
         self.stub.head_sha = "sha-round-2"
-        _, code = self.svc.post_comment("org/repo", 6521, "round-two finding")
+        _, code = self.svc.post_comment(OWNED_REPO, 6521, "round-two finding")
         assert code == 0
 
         keys = sorted(
             r.idempotency_key
-            for r in BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521:")
+            for r in BotPing.objects.filter(idempotency_key__startswith=f"post_comment_draft:{OWNED_REPO}!6521:")
         )
         assert keys == [
-            "post_comment_draft:org/repo!6521:sha-round-1",
-            "post_comment_draft:org/repo!6521:sha-round-2",
+            f"post_comment_draft:{OWNED_REPO}!6521:sha-round-1",
+            f"post_comment_draft:{OWNED_REPO}!6521:sha-round-2",
         ], keys
 
     def test_falls_back_to_utc_day_when_head_sha_unavailable(self) -> None:
         self.stub.head_sha = ""  # unresolvable head → UTC-day discriminator
-        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        _, code = self.svc.post_comment(OWNED_REPO, 6521, "looks good")
         assert code == 0
 
         today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:org/repo!6521:{today}").exists()
+        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:{OWNED_REPO}!6521:{today}").exists()
 
     def test_message_is_a_single_clickable_line(self) -> None:
-        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        _, code = self.svc.post_comment(OWNED_REPO, 6521, "looks good")
         assert code == 0
 
-        row = BotPing.objects.get(idempotency_key="post_comment_draft:org/repo!6521:sha-round-1")
+        row = BotPing.objects.get(idempotency_key=f"post_comment_draft:{OWNED_REPO}!6521:sha-round-1")
         # One terse line: no per-comment breakdown, no publish/discard essay.
         assert row.text == (
-            "Posted draft comments on [org/repo!6521](https://gitlab.example.com/org/repo/-/merge_requests/6521)"
+            f"Posted draft comments on [{OWNED_REPO}!6521](https://gitlab.example.com/{OWNED_REPO}/-/merge_requests/6521)"
         )
         assert "\n" not in row.text
         for essay_marker in ("Publish:", "Discard:", "Body:", "draft_note_id", "default-draft gate"):
             assert essay_marker not in row.text
 
     def test_delivered_slack_message_has_a_clickable_mr_link(self) -> None:
-        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        _, code = self.svc.post_comment(OWNED_REPO, 6521, "looks good")
         assert code == 0
 
         # The delivered Slack payload rewrites the markdown link into Slack
         # mrkdwn ``<url|label>`` — a clickable MR reference.
         sent = " ".join(str(a) for a in self.backend.post_message.call_args.args)
         sent += " ".join(f"{k}={v}" for k, v in self.backend.post_message.call_args.kwargs.items())
-        assert "<https://gitlab.example.com/org/repo/-/merge_requests/6521|org/repo!6521>" in sent
+        assert f"<https://gitlab.example.com/{OWNED_REPO}/-/merge_requests/6521|{OWNED_REPO}!6521>" in sent
 
 
 class _RaisingAPI:
@@ -279,18 +280,18 @@ class TestResolveReviewedHeadShaDegradesOnLookupFailure:
 
     @pytest.mark.parametrize("exc", [httpx.HTTPError("boom"), ValueError("bad json")])
     def test_lookup_failure_degrades_notify_key_to_utc_day(self, exc: Exception) -> None:
-        head_sha = resolve_reviewed_head_sha(_RaisingAPI(exc), "org/repo", 6521)
+        head_sha = resolve_reviewed_head_sha(_RaisingAPI(exc), OWNED_REPO, 6521)
         assert head_sha == ""
 
         notify_draft_created(
-            repo="org/repo",
+            repo=OWNED_REPO,
             mr=6521,
-            mr_url="https://gitlab.example.com/org/repo/-/merge_requests/6521",
+            mr_url=f"https://gitlab.example.com/{OWNED_REPO}/-/merge_requests/6521",
             reviewed_head_sha=head_sha,
         )
 
         today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:org/repo!6521:{today}").exists()
+        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:{OWNED_REPO}!6521:{today}").exists()
 
 
 class TestPostCommentLiveRefusedWithoutToken:
@@ -303,7 +304,7 @@ class TestPostCommentLiveRefusedWithoutToken:
         self.svc, self.stub = _service(monkeypatch)
 
     def test_live_post_refused_without_approval(self) -> None:
-        msg, code = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
+        msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
 
         assert code == 1
         assert "approve-live-post" in msg
@@ -322,19 +323,19 @@ class TestPostCommentLiveConsumesToken:
         self.svc, self.stub = _service(monkeypatch)
 
     def test_live_proceeds_with_recorded_approval(self) -> None:
-        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
-        msg, code = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
+        msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
 
         assert code == 0, msg
         assert "OK note_id=77" in msg
 
     def test_token_is_single_use(self) -> None:
-        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
-        _, code1 = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
+        _, code1 = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
         assert code1 == 0
-        msg2, code2 = self.svc.post_comment("org/repo", 7, "lgtm again", live=True)
+        msg2, code2 = self.svc.post_comment(OWNED_REPO, 7, "lgtm again", live=True)
         assert code2 == 1
         assert "approve-live-post" in msg2
 
@@ -349,14 +350,14 @@ class TestPostCommentLiveScopedToMr:
         self.svc, self.stub = _service(monkeypatch)
 
     def test_wrong_mr_token_does_not_authorise(self) -> None:
-        LivePostApproval.record(mr_url="org/repo!1", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!1", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
-        msg, code = self.svc.post_comment("org/repo", 2, "lgtm", live=True)
+        msg, code = self.svc.post_comment(OWNED_REPO, 2, "lgtm", live=True)
 
         assert code == 1
         assert "approve-live-post" in msg
         # The matching approval for !1 is still available (NOT consumed).
-        assert LivePostApproval.objects.filter(mr_url="org/repo!1", consumed_at__isnull=True).exists()
+        assert LivePostApproval.objects.filter(mr_url=f"{OWNED_REPO}!1", consumed_at__isnull=True).exists()
 
 
 class TestPostCommentLiveTokenExpiry:
@@ -369,11 +370,13 @@ class TestPostCommentLiveTokenExpiry:
         self.svc, self.stub = _service(monkeypatch)
 
     def test_expired_token_does_not_authorise(self) -> None:
-        approval = LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        approval = LivePostApproval.record(
+            mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR"
+        )
         # Backdate the row beyond the 15-minute TTL.
         LivePostApproval.objects.filter(pk=approval.pk).update(created_at=timezone.now() - timedelta(minutes=20))
 
-        msg, code = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
+        msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
 
         assert code == 1
         assert "approve-live-post" in msg
@@ -410,12 +413,12 @@ class TestApproveLivePostCommand:
 
         result = _runner.invoke(
             app,
-            ["review", "approve-live-post", "org/repo!7", "--slack-ts", ts],
+            ["review", "approve-live-post", f"{OWNED_REPO}!7", "--slack-ts", ts],
         )
 
         assert result.exit_code == 0, result.output
         assert "OK recorded live-post approval" in result.output
-        row = LivePostApproval.objects.get(mr_url="org/repo!7")
+        row = LivePostApproval.objects.get(mr_url=f"{OWNED_REPO}!7")
         assert row.slack_ts == ts
         assert row.slack_user_id == "U-OPERATOR"
         assert row.consumed_at is None
@@ -426,7 +429,7 @@ class TestApproveLivePostCommand:
 
         result = _runner.invoke(
             app,
-            ["review", "approve-live-post", "org/repo!7", "--slack-ts", ts],
+            ["review", "approve-live-post", f"{OWNED_REPO}!7", "--slack-ts", ts],
         )
 
         assert result.exit_code == 1
@@ -439,7 +442,7 @@ class TestApproveLivePostCommand:
 
         result = _runner.invoke(
             app,
-            ["review", "approve-live-post", "org/repo!7", "--slack-ts", ts],
+            ["review", "approve-live-post", f"{OWNED_REPO}!7", "--slack-ts", ts],
         )
 
         assert result.exit_code == 1
@@ -453,7 +456,7 @@ class TestApproveLivePostCommand:
 
         result = _runner.invoke(
             app,
-            ["review", "approve-live-post", "org/repo!7", "--slack-ts", ts],
+            ["review", "approve-live-post", f"{OWNED_REPO}!7", "--slack-ts", ts],
         )
 
         assert result.exit_code == 0, result.output
@@ -465,7 +468,7 @@ class TestApproveLivePostCommand:
 
         result = _runner.invoke(
             app,
-            ["review", "approve-live-post", "org/repo!7", "--slack-ts", stale_ts],
+            ["review", "approve-live-post", f"{OWNED_REPO}!7", "--slack-ts", stale_ts],
         )
 
         assert result.exit_code == 1
@@ -482,7 +485,7 @@ class TestApproveLivePostCommand:
             [
                 "review",
                 "approve-live-post",
-                "https://gitlab.com/org/repo/-/merge_requests/7",
+                f"https://gitlab.com/{OWNED_REPO}/-/merge_requests/7",
                 "--slack-ts",
                 ts,
             ],
@@ -491,4 +494,4 @@ class TestApproveLivePostCommand:
         assert result.exit_code == 0, result.output
         # The persisted scope is the canonical token, matching what
         # ``post-comment --live <repo> <iid>`` resolves to.
-        assert LivePostApproval.objects.filter(mr_url="org/repo!7").exists()
+        assert LivePostApproval.objects.filter(mr_url=f"{OWNED_REPO}!7").exists()

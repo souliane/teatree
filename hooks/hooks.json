@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bootstrap-cli.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bootstrap-cli.sh",
+            "timeout": 10
           },
           {
             "type": "command",

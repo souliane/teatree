@@ -18,6 +18,7 @@ name the real cause instead of the login hint that changes nothing (#3794).
 import re
 from functools import lru_cache
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
@@ -28,6 +29,7 @@ from teatree.cli.review.guarded_read import ReadRefusedError
 from teatree.cli.review.mcp_seam import _build_review_service
 from teatree.cli.review.service import ReviewService
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.core.overlay_loader import OverlayConfigResolver
 
 runner = CliRunner()
 
@@ -163,15 +165,62 @@ class TestAmbientResolutionIsGone:
     """The forge-target reads no longer reach the ambient ``get_overlay()``.
 
     A behavioural assertion cannot see the difference between "resolved from the
-    URL" and "resolved ambiently and happened to be right", so this one reads the
+    repo" and "resolved ambiently and happened to be right", so this one reads the
     module: the ambient entry point must be absent from the resolution path, not
     merely shadowed by a happier default.
     """
 
     def test_the_resolver_module_never_reaches_the_ambient_overlay(self) -> None:
         source = Path(forge_target_mod.__file__).read_text(encoding="utf-8")
-        assert "get_overlay_for_url" in source
-        assert not re.search(r"\bimport get_overlay\b", source)
+        assert re.findall(r"^[ \t]*return get_overlay\(.*\)$", source, re.MULTILINE) == [
+            "    return get_overlay(owning_overlay_name(repo) or None)"
+        ]
+
+
+class TestTheDeclaredNamespaceIsTheLastTier:
+    """A repo no overlay's table lists still resolves to the overlay that declares its group."""
+
+    def test_a_repo_outside_every_table_resolves_to_its_declared_group_owner(self, multi_overlay_install) -> None:
+        multi_overlay_install["acme-overlay"].config.owned_repos = {"gitlab.com": ["acme"]}
+
+        assert forge_target_mod.owning_overlay_name("acme/never-enumerated") == "acme-overlay"
+
+    def test_an_enumerated_repo_still_wins_over_a_group_claim(self, multi_overlay_install) -> None:
+        multi_overlay_install["other-overlay"].config.owned_repos = {"gitlab.com": ["acme"]}
+
+        assert forge_target_mod.owning_overlay_name(_OWNED) == "acme-overlay"
+
+    def test_a_group_declared_on_another_forge_never_attributes_a_gitlab_post(self, multi_overlay_install) -> None:
+        multi_overlay_install["acme-overlay"].config.owned_repos = {"github.com": ["acme"]}
+
+        assert forge_target_mod.owning_overlay_name("acme/never-enumerated") == ""
+
+    def test_a_group_two_overlays_claim_resolves_to_neither(self, multi_overlay_install) -> None:
+        for overlay in multi_overlay_install.values():
+            overlay.config.owned_repos = {"gitlab.com": ["acme"]}
+
+        assert forge_target_mod.owning_overlay_name("acme/never-enumerated") == ""
+
+    def test_an_overlay_whose_scope_will_not_read_declines_the_attribution_but_is_not_fatal(
+        self,
+        multi_overlay_install,
+    ) -> None:
+        """An unreadable scope could be the second half of a tie, so nobody is named.
+
+        Skipping it instead would collapse that tie into one owner — and that
+        owner's token and base URL would then address the post.
+        """
+        multi_overlay_install["acme-overlay"].config.owned_repos = {"gitlab.com": ["acme"]}
+        real = OverlayConfigResolver.owned_repos
+
+        def read(name: str | None) -> dict[str, list[str]]:
+            if name == "other-overlay":
+                msg = "overlay config unreadable"
+                raise RuntimeError(msg)
+            return real(name)
+
+        with mock.patch.object(OverlayConfigResolver, "owned_repos", side_effect=read):
+            assert forge_target_mod.owning_overlay_name("acme/never-enumerated") == ""
 
 
 class TestMcpSeamCarriesTheRepo:

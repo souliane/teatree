@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from django.db import transaction
+
 from teatree.backends.github.ci_eval_client import (
     DEFAULT_CI_EVAL_REPO,
     EVAL_CI_HEAL_WORKFLOW,
@@ -66,6 +68,9 @@ _HALT_MARKER = "[ci-eval-heal-halt session={pk}]"
 #: A callable that escalates a HALTED session to the human. Injected so tests can
 #: spy without a DB write; the production default records a ``DeferredQuestion``.
 EscalateFn = Callable[["CiEvalHealSession"], None]
+
+#: The outcome note for an advancer that lost its step to a rival holding the same row.
+_SUPERSEDED_NOTE = "superseded by a rival advancer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,17 +161,63 @@ def _download_reds(client: GhCiEvalClient, *, run_id: int | None, head_sha: str)
         return [name for artifact in artifacts for name in red_scenario_names(_load_json(artifact))]
 
 
-def _dispatch_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient) -> AdvanceOutcome:
-    """PENDING → AWAITING_CI: dispatch the full-suite eval and record the head SHA it keys on."""
+def _advance_owned(
+    session: "CiEvalHealSession", transition: Callable[["CiEvalHealSession"], None]
+) -> "CiEvalHealSession | None":
+    """Apply one FSM transition under a row lock; ``None`` when the row moved under us.
+
+    The loop tick and ``t3 eval ci-heal advance`` both call :func:`advance_open_sessions`,
+    so two advancers routinely hold the same scanned row, and django-fsm guards on the
+    IN-MEMORY ``state`` — both pass their source check, and both act. The generation
+    compared is ``updated_at``, not ``state``: the fix branch returns to ``AWAITING_CI``,
+    so a matching state does not prove the row stood still.
+    """
+    from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+    with transaction.atomic():
+        owned = (
+            CiEvalHealSession.objects.select_for_update().filter(pk=session.pk, updated_at=session.updated_at).first()
+        )
+        if owned is None:
+            return None
+        transition(owned)
+        owned.save()
+        return owned
+
+
+def _fire_workflow(session: "CiEvalHealSession", *, client: GhCiEvalClient) -> bool:
+    """Dispatch the eval workflow for the claimed step; ``False`` when the forge refused it."""
+    try:
+        client.trigger_workflow(
+            EVAL_CI_HEAL_WORKFLOW,
+            ref=session.pr_ref,
+            inputs={"scenarios": "", "credential": _DISPATCH_CREDENTIAL, "pr_ref": session.pr_ref},
+        )
+    except Exception:
+        logger.exception("ci_eval_heal: dispatching the eval failed for %s", session.pr_ref)
+        return False
+    return True
+
+
+def _halt_dispatch(session: "CiEvalHealSession", *, escalate: EscalateFn) -> str:
+    """HALT a claimed step whose dispatch never landed — the run it awaits can never appear."""
+    return _halt(session, escalate=escalate, reason="dispatching the eval failed; there is no CI run to await")
+
+
+def _dispatch_ci(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn) -> AdvanceOutcome:
+    """PENDING → AWAITING_CI: claim the step, THEN dispatch the eval run it now owns.
+
+    Claiming first is what makes the dispatch exactly-once, and is safe only because
+    ``halt`` accepts ``AWAITING_CI`` as a source — unlike ``record_fix``'s ``PUSHED``
+    target, which is why that one still records only after its push.
+    """
     head_sha = client.resolve_head_sha(session.pr_ref)
-    client.trigger_workflow(
-        EVAL_CI_HEAL_WORKFLOW,
-        ref=session.pr_ref,
-        inputs={"scenarios": "", "credential": _DISPATCH_CREDENTIAL, "pr_ref": session.pr_ref},
-    )
-    session.trigger(ci_run_id="", head_sha=head_sha)
-    session.save()
-    return AdvanceOutcome(session.pr_ref, "pending", session.state, note=f"dispatched @ {head_sha[:12]}")
+    claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=head_sha))
+    if claimed is None:
+        return AdvanceOutcome(session.pr_ref, "pending", session.state, note=_SUPERSEDED_NOTE)
+    if not _fire_workflow(claimed, client=client):
+        return AdvanceOutcome(session.pr_ref, "pending", _halt_dispatch(claimed, escalate=escalate))
+    return AdvanceOutcome(session.pr_ref, "pending", claimed.state, note=f"dispatched @ {head_sha[:12]}")
 
 
 def _resolve_triage(
@@ -193,13 +244,19 @@ def _resolve_triage(
     return _dispatch_fix(session, client=client, escalate=escalate, fixer=fixer)
 
 
+def _halt(session: "CiEvalHealSession", *, escalate: EscalateFn, reason: str) -> str:
+    """HALT + escalate under the ownership CAS, so a rival advancer never pages the human twice."""
+    halted = _advance_owned(session, lambda owned: owned.halt(reason=reason))
+    if halted is None:
+        return session.state
+    escalate(halted)
+    return halted.state
+
+
 def _halt_red(session: "CiEvalHealSession", *, escalate: EscalateFn, detail: str) -> str:
     """HALT + escalate a session whose behavioral red is unresolved — never a false green."""
     reds = ", ".join(session.red_scenarios)
-    session.halt(reason=f"behavioral eval red(s) unresolved — {detail}: {reds}")
-    session.save()
-    escalate(session)
-    return session.state
+    return _halt(session, escalate=escalate, reason=f"behavioral eval red(s) unresolved — {detail}: {reds}")
 
 
 def _dispatch_fix(
@@ -208,52 +265,84 @@ def _dispatch_fix(
     """Dispatch ONE bounded autonomous fix — gate BEFORE publish, HALT on any refusal.
 
     ``begin_fix`` → the fixer PROPOSES a fix in a throwaway worktree (no push) → the
-    #3282 anti-cheat gate (``record_fix``) runs over the proposed paths → on a clean
-    gate the fix is PUBLISHED and the eval re-triggered; a rejected (test-editing) or
-    empty proposal, or any fixer failure, is DISCARDED and the session HALTs +
-    escalates — a red is never greened by editing its test, and the fixer never loops.
+    #3282 anti-cheat gate runs over the proposed paths → on a clean gate the fix is
+    PUBLISHED, only THEN recorded, and the eval re-triggered; a rejected (test-editing)
+    or empty proposal, a failed publish, or any fixer failure is DISCARDED and the
+    session HALTs + escalates — a red is never greened by editing its test, and the
+    fixer never loops.
+
+    ``record_fix`` lands the ``PUSHED`` transition AND consumes an attempt, and
+    ``PUSHED`` is not a source state ``halt`` accepts — so recording it before the push
+    landed stranded a failed publish as an un-haltable session claiming a fix that does
+    not exist, whose only exit is re-triggering the eval on the unfixed branch until the
+    budget burns out. The gate therefore runs on its own, ahead of the publish, and the
+    transition follows the push it describes.
     """
     from teatree.core.gates.eval_heal_anticheat_gate import (  # noqa: PLC0415 — deferred: gate registered via the model
         EvalHealCheatError,
     )
+    from teatree.core.modelkit.gate_registry import get_gate  # noqa: PLC0415 — deferred: gate registered via the model
 
-    session.begin_fix()
-    session.save()
+    claimed = _advance_owned(session, lambda owned: owned.begin_fix())
+    if claimed is None:
+        return session.state
     try:
-        proposal = fixer.propose(session)
+        proposal = fixer.propose(claimed)
     except Exception as exc:
-        logger.exception("ci_eval_heal: fixer propose failed for %s", session.pr_ref)
-        return _halt_red(session, escalate=escalate, detail=f"autonomous fixer dispatch failed: {type(exc).__name__}")
+        logger.exception("ci_eval_heal: fixer propose failed for %s", claimed.pr_ref)
+        return _halt_red(claimed, escalate=escalate, detail=f"autonomous fixer dispatch failed: {type(exc).__name__}")
     if not proposal.changed_paths:
         fixer.discard(proposal)
         return _halt_red(
-            session,
+            claimed,
             escalate=escalate,
             detail="autonomous fixer produced no change (un-fixable without editing the test)",
         )
+    changed_paths = list(proposal.changed_paths)
     try:
-        session.record_fix(changed_paths=list(proposal.changed_paths))
+        get_gate("eval_heal_anticheat")(changed_paths)
     except EvalHealCheatError as exc:
         fixer.discard(proposal)
         return _halt_red(
-            session, escalate=escalate, detail=f"autonomous fixer tried to edit the eval test — rejected ({exc})"
+            claimed, escalate=escalate, detail=f"autonomous fixer tried to edit the eval test — rejected ({exc})"
         )
-    session.save()
-    head_sha = fixer.publish(session, proposal)
-    return _retrigger(session, client=client, head_sha=head_sha)
+    try:
+        head_sha = fixer.publish(claimed, proposal)
+    except Exception as exc:
+        logger.exception("ci_eval_heal: publishing the fix failed for %s", claimed.pr_ref)
+        fixer.discard(proposal)
+        return _halt_red(claimed, escalate=escalate, detail=f"publishing the fix failed: {type(exc).__name__}")
+    claimed.record_fix(changed_paths=changed_paths)
+    claimed.save()
+    return _retrigger(claimed, client=client, escalate=escalate, head_sha=head_sha)
 
 
-def _retrigger(session: "CiEvalHealSession", *, client: GhCiEvalClient, head_sha: str) -> str:
-    """PUSHED → AWAITING_CI: re-dispatch the eval on the fixed branch (the loop back-edge)."""
+def _retrigger(session: "CiEvalHealSession", *, client: GhCiEvalClient, escalate: EscalateFn, head_sha: str) -> str:
+    """PUSHED → AWAITING_CI: claim the back-edge, then re-dispatch the eval on the fixed branch."""
     resolved = head_sha or client.resolve_head_sha(session.pr_ref)
-    client.trigger_workflow(
-        EVAL_CI_HEAL_WORKFLOW,
-        ref=session.pr_ref,
-        inputs={"scenarios": "", "credential": _DISPATCH_CREDENTIAL, "pr_ref": session.pr_ref},
-    )
-    session.trigger(ci_run_id="", head_sha=resolved)
-    session.save()
-    return session.state
+    claimed = _advance_owned(session, lambda owned: owned.trigger(ci_run_id="", head_sha=resolved))
+    if claimed is None:
+        return session.state
+    if not _fire_workflow(claimed, client=client):
+        return _halt_dispatch(claimed, escalate=escalate)
+    return claimed.state
+
+
+def _triage_result(
+    session: "CiEvalHealSession",
+    *,
+    reds: list[str],
+    client: GhCiEvalClient,
+    escalate: EscalateFn,
+    fixer: CiEvalHealFixer,
+) -> AdvanceOutcome:
+    """Record the run's red set under the ownership CAS, then resolve the triage it opens."""
+    triaging = _advance_owned(session, lambda owned: owned.receive_result(red_scenarios=reds))
+    if triaging is None:
+        return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note=_SUPERSEDED_NOTE)
+    to_state = _resolve_triage(triaging, client=client, escalate=escalate, fixer=fixer)
+    note = f"ci red: {len(reds)} scenario(s)" if reds else "ci green"
+    return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note=note)
 
 
 def _observe_ci(
@@ -267,22 +356,15 @@ def _observe_ci(
     conclusion = str(run.get("conclusion") or "")
     run_id = run.get("databaseId")
     if conclusion == "success":
-        session.receive_result(red_scenarios=[])
-        session.save()
-        to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=fixer)
-        return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="ci green")
+        return _triage_result(session, reds=[], client=client, escalate=escalate, fixer=fixer)
     reds = _download_reds(client, run_id=int(run_id) if isinstance(run_id, int) else None, head_sha=session.head_sha)
     if reds:
-        session.receive_result(red_scenarios=reds)
-        session.save()
-        to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=fixer)
-        return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note=f"ci red: {len(reds)} scenario(s)")
+        return _triage_result(session, reds=reds, client=client, escalate=escalate, fixer=fixer)
     # Non-success with NO confirmable behavioral red — an infra failure (transport,
     # throttle, cap, cancelled, or an unfetchable artifact). Never greened.
-    session.halt(reason=f"CI run concluded {conclusion or 'unknown'!r} with no confirmable behavioral red (infra)")
-    session.save()
-    escalate(session)
-    return AdvanceOutcome(session.pr_ref, "awaiting_ci", session.state, note="infra halt")
+    reason = f"CI run concluded {conclusion or 'unknown'!r} with no confirmable behavioral red (infra)"
+    to_state = _halt(session, escalate=escalate, reason=reason)
+    return AdvanceOutcome(session.pr_ref, "awaiting_ci", to_state, note="infra halt")
 
 
 def advance_session(
@@ -305,14 +387,14 @@ def advance_session(
     resolved_fixer = fixer if fixer is not None else default_fixer()
     state = session.state
     if state == CiEvalHealSession.State.PENDING:
-        return _dispatch_ci(session, client=client)
+        return _dispatch_ci(session, client=client, escalate=escalate)
     if state == CiEvalHealSession.State.AWAITING_CI:
         return _observe_ci(session, client=client, escalate=escalate, fixer=resolved_fixer)
     if state == CiEvalHealSession.State.TRIAGING:
         to_state = _resolve_triage(session, client=client, escalate=escalate, fixer=resolved_fixer)
         return AdvanceOutcome(session.pr_ref, "triaging", to_state)
     if state == CiEvalHealSession.State.PUSHED:
-        to_state = _retrigger(session, client=client, head_sha="")
+        to_state = _retrigger(session, client=client, escalate=escalate, head_sha="")
         return AdvanceOutcome(session.pr_ref, "pushed", to_state, note="re-triggered eval after fix")
     return AdvanceOutcome(session.pr_ref, state, state, note="no-op (terminal or in-flight fix)")
 

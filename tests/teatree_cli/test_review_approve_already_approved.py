@@ -22,6 +22,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -94,7 +95,7 @@ class TestApproveAlreadyApprovedIsIdempotent:
         stub = _AlreadyApprovedAPI()
         service = _service_with(stub)
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 0, msg
         assert "Already approved by souliane" in msg
@@ -104,7 +105,7 @@ class TestApproveAlreadyApprovedIsIdempotent:
         stub = _GenuineAuthFailureAPI()
         service = _service_with(stub)
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 1
         assert "Failed" in msg

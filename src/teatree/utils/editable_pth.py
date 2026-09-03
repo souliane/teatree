@@ -23,6 +23,7 @@ running env is itself partially broken.
 import os
 import shlex
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -373,10 +374,18 @@ class EditablePthHelpers:
         if not canonical_written:
             rebuilt.append(target)
 
+        # Published by rename: an in-place truncating write that dies mid-way leaves a
+        # `.pth` that resolves nothing, taking the whole editable install down with it.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{pth.name}-", dir=pth.parent)
+        tmp_path = Path(tmp_name)
         try:
-            pth.write_text(os.linesep.join(rebuilt) + os.linesep, encoding="utf-8")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(os.linesep.join(rebuilt) + os.linesep)
+            tmp_path.replace(pth)
         except OSError:
             return False
+        finally:
+            tmp_path.unlink(missing_ok=True)
         return True
 
     @staticmethod

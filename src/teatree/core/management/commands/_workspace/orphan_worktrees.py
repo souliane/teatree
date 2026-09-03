@@ -41,6 +41,7 @@ from teatree.core.cleanup.orphan_checkouts import (
 )
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.management.commands._workspace.preview import preview_line
+from teatree.core.worktree.branch_classification import reset_forge_probe_cache
 from teatree.core.worktree.venue_safe_registry import prune_worktrees
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -101,6 +102,7 @@ def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list
     refresh fails CLOSED: the clone is skipped whole and none of its orphans are
     touched, because unknown remote state must never authorise a deletion.
     """
+    reset_forge_probe_cache()
     tracked = db_tracked_worktree_paths()
     cleaned: list[str] = []
     for repo in sorted(candidate_clones(workspace)):

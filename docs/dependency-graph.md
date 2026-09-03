@@ -2,6 +2,7 @@
 
 ```mermaid
 graph TD
+    teatree.paths --> teatree.sqlite_snapshot
     teatree.project --> teatree.paths
     teatree.live_presence --> teatree.paths
     teatree.llm --> teatree.utils
@@ -40,6 +41,7 @@ graph TD
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
     teatree.core --> teatree.project
+    teatree.core --> teatree.failure_signatures
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
@@ -49,6 +51,7 @@ graph TD
     teatree.core --> teatree.slack_mrkdwn
     teatree.core --> teatree.quality
     teatree.core --> teatree.backends.types
+    teatree.core --> teatree.backends.http_retry
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
@@ -97,12 +100,14 @@ graph TD
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
+    teatree.core.models --> teatree.paths
     teatree.core.models --> teatree.core.session_identity
     teatree.core.models --> teatree.instance_id
     teatree.core.models --> teatree.url_classify
     teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
+    teatree.agents --> teatree.failure_signatures
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
@@ -221,6 +226,7 @@ graph TD
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
+    teatree.loop --> teatree.failure_signatures
     teatree.loop --> teatree.self_update
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
@@ -318,6 +324,7 @@ graph TD
     teatree.loop.scanners --> teatree.loop.review_done_reactions
     teatree.loop.scanners --> teatree.loop.review_request_tracker
     teatree.loop.scanners --> teatree.loop.pr_ticket_index
+    teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.dispatch_reducer --> teatree.url_classify
     teatree.loop.dispatch_reducer --> teatree.core.modelkit
     teatree.loop.dispatch_reducer --> teatree.loop.scanners
@@ -369,6 +376,8 @@ graph TD
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
     teatree.loop.slack_answer --> teatree.core.models
+    teatree.loop.slack_answer --> teatree.loop.inbound_classifier
+    teatree.loop.slack_answer --> teatree.loop.inbound_reading
     teatree.loop.slack_answer --> teatree.loop.self_improve
     teatree.loop.slack_answer --> teatree.loop.statusline
     teatree.loops --> teatree.agents
@@ -409,7 +418,7 @@ graph TD
     teatree.url_classify --> teatree.utils
     teatree.quality --> teatree.paths
     teatree.quality --> teatree.utils
-    teatree.paths
+    teatree.sqlite_snapshot
     teatree.request_cache
     teatree.types
     teatree.pricing

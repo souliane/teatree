@@ -155,3 +155,23 @@ class TestIsPublishCommandRecognizesPythonRestPublish:
 
     def test_unrelated_python_invocation_is_not_a_publish_command(self) -> None:
         assert not _command_parser.is_publish_command("python3 manage.py migrate")
+
+
+class TestDirectPutAndDeleteAreWrites:
+    """A direct ``requests.put``/``httpx.delete`` is a forge WRITE like ``.post``.
+
+    Only ``.post``/``.patch`` were recognised as client-library write calls. The
+    other two verbs carry no method STRING for the literal+auth-header arm to
+    catch, so a note REPLACE or a reviewer REMOVAL written this way was not a
+    publish at all — and the leak scan never ran against it, on any repo.
+    """
+
+    @pytest.mark.parametrize("call", ["requests.put", "requests.delete", "httpx.put", "httpx.delete"])
+    def test_client_library_put_and_delete_are_publish_commands(self, call: str) -> None:
+        command = f"python3 -c \"import requests, httpx; {call}('{_GITLAB_NOTE_URL}', json=body, headers=hdrs)\""
+        assert _command_parser.is_publish_command(command)
+        assert command_has_python_rest_publish_surface(command)
+
+    def test_a_read_verb_on_the_same_client_stays_a_non_publish(self) -> None:
+        command = f"python3 -c \"import requests; requests.head('{_GITLAB_NOTE_URL}')\""
+        assert not _command_parser.is_publish_command(command)

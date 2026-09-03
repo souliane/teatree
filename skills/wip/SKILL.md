@@ -49,7 +49,7 @@ only re-orders; nothing is dropped.
 - **`/t3:wip split N`** → set the WRITE lane width: `t3 <overlay> wip split N` (merge stays single-flight).
 - **`/t3:wip boost N`** → arm the pool-refill burst at a live-worker target of `N`: `t3 <overlay> wip boost N` (sets `wip = boost` and `boost_concurrency = N` in one write). Admission drains queued TODO/followup work before auto-starting new tickets.
 
-The persisted value (the DB-home `wip` setting in the `ConfigSetting` store, per-overlay overridable, `T3_WIP` env) is the resting dial the loop reads each tick. A `[teatree] wip` TOML value is ignored on read; persist it with `t3 <overlay> config_setting set wip <level>` (the `t3 <overlay> wip set` wrapper does this for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
+The persisted value (the DB-home `wip` setting in the `ConfigSetting` store, per-overlay overridable, `T3_WIP` env) is the resting dial the loop reads each tick. A `[teatree] wip` TOML value is ignored on read; persist it with the `mcp__teatree__config_setting_set` MCP tool, or `t3 <overlay> config_setting set wip <level>` when the MCP server isn't connected (the `t3 <overlay> wip set` wrapper does the same for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
 
 ## `slow` — single-worker
 
@@ -234,7 +234,7 @@ When burst work runs **interactively while the headless factory is also live**, 
 
 - **Reserve with a generic label, not a harness-specific one.** Add the `interactive-implementation` label (generic and harness-agnostic — describes *why* it's held, not *who* holds it; do not overload `needs-triage`, which means "maintainer review required"). Keeping the issue **unassigned** is the second guard: the factory's `assigned_issues` scanner auto-starts only *assigned* issues.
 - **The label is load-bearing once it is in the overlay's `exclude_labels`.** Both intakes now answer to that one list — the GitLab sync path through `LabelPolicy.admits`, the `issue_intake` scanner through the exclude rule of the `decide_intake` table (souliane/teatree#4134) — so a reserved issue is held whoever filed it. Add the label to the overlay's `exclude_labels` before relying on it; a label the list does not name still buys nothing, and *unassigned* remains the second guard.
-- **Check-first, before implementing.** Confirm no loop worktree or task already owns the ticket: `t3 teatree worktree status <ticket>` (empty = unclaimed) and `t3 teatree tasks list` (no pending/claimed task for it). If the factory already holds it, pick another ticket — never race it.
+- **Check-first, before implementing.** Confirm no loop worktree or task already owns the ticket — prefer the `mcp__teatree__worktree_status` and `mcp__teatree__task_list` MCP tools, which return the claim state as structured JSON; fall back to `t3 teatree worktree status <ticket>` (empty = unclaimed) and `t3 teatree tasks list` (no pending/claimed task for it) when the MCP server isn't connected. If the factory already holds it, pick another ticket — never race it.
 - **Release on completion.** Remove the `interactive-implementation` label once the PR merges, so the ticket rejoins the factory's view if follow-up is needed.
 
 #### Sequential by default; parallel only for disjoint files

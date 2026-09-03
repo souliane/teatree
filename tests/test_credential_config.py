@@ -446,6 +446,18 @@ class TestSelectorStickiness(TestCase):
         assert first == second == "anthropic/a/oauth"
         assert reader.calls == [], "selection reads the store, never the network"
 
+    def test_sticky_dropped_from_every_routing_list_is_not_reused(self) -> None:
+        # The operator removed the account; a healthy sticky row for it is not a licence
+        # to keep routing to an entry this install is no longer configured for.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/b/oauth"])
+        _seed_fresh_healthy_row("anthropic/a/oauth")
+        _seed_fresh_healthy_row("anthropic/b/oauth")
+        AnthropicActivePick.objects.set_pick("oauth", "", "anthropic/a/oauth")
+        reader = _FakeReader({})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/b/oauth"
+
     def test_expired_sticky_row_is_re_probed(self) -> None:
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
         stale = TokenHealthReading(

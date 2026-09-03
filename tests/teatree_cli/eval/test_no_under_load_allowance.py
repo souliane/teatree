@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.eval.multi_trial import run_pass_at_k_lane
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.models import UNDER_LOAD_LANE, EvalRun, EvalSpec, Matcher
 
 
@@ -65,6 +66,7 @@ class TestUnderLoadFailureRedsTheLane:
         monkeypatch.setattr("teatree.cli.eval.multi_trial.make_runner", lambda *a, **k: _NoToolCallRunner())
         failed = run_pass_at_k_lane(
             [_under_load_spec("drifting_under_load")],
+            backend=API_BACKEND,
             max_turns=None,
             trials=2,
             require="any",

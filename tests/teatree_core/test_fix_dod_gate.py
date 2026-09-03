@@ -19,6 +19,7 @@ from teatree.core.gates.fix_dod_gate import (
     override_reason,
 )
 from teatree.core.models import Ticket
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, validated_ticket_extra
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
@@ -113,6 +114,42 @@ class TestCheckFixRecordDod(TestCase):
         with pytest.raises(FixRecordDodError) as exc:
             check_fix_record_dod(_fix_ticket(fix_record={"root_cause": "x"}))
         assert "recurrence_fingerprint" in str(exc.value)
+
+
+class TestOneFieldDefinition(TestCase):
+    """#4520: the gate, the recorder, the envelope schema and the brief share ONE tuple."""
+
+    def test_the_gate_requires_exactly_the_declared_fields(self) -> None:
+        assert set(missing_fix_record_fields(_fix_ticket())) == set(FIX_RECORD_FIELDS)
+
+    def test_the_tuple_derives_from_the_typed_dict(self) -> None:
+        assert tuple(FixRecord.__annotations__) == FIX_RECORD_FIELDS
+
+    def test_both_keys_survive_the_validated_extra_filter(self) -> None:
+        """An undeclared key is stripped by every ``_extra()`` write-back — these must not be."""
+        raw = {"fix_record": _COMPLETE_RECORD, "fix_record_override": {"reason": "x"}, "undeclared": "y"}
+        validated = validated_ticket_extra(raw)
+        assert validated["fix_record"] == _COMPLETE_RECORD
+        assert validated["fix_record_override"] == {"reason": "x"}
+        assert "undeclared" not in validated
+
+
+class TestRefusalNamesThePositivePath(TestCase):
+    """The gate's message must not read as though the override is the only route."""
+
+    def _message(self) -> str:
+        with pytest.raises(FixRecordDodError) as exc:
+            check_fix_record_dod(_fix_ticket())
+        return str(exc.value)
+
+    def test_it_prescribes_returning_the_envelope_record(self) -> None:
+        message = self._message()
+        assert "fix_record" in message
+        assert "result envelope" in message
+
+    def test_the_envelope_route_precedes_the_override(self) -> None:
+        message = self._message()
+        assert message.index("result envelope") < message.index("fix-record-override")
 
 
 class TestMarkDeliveredFsmGate(TestCase):

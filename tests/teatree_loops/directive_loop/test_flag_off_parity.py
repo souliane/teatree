@@ -14,8 +14,10 @@ from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, DirectiveDispatch, FactoryScoreSnapshot
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
+from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop import guards
-from teatree.loops.directive_loop.tick import run_tick
+from teatree.loops.directive_loop.tick import TickSeams, run_tick
+from teatree.loops.outer_loop.guards import GuardSeams
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 
@@ -26,6 +28,15 @@ def _flag_on(*, score: bool) -> SimpleNamespace:
         directive_verify_days=7,
         directive_intake_per_tick=25,
     )
+
+
+def _seams() -> TickSeams:
+    """The tick's seams with only the budget pinned — the rest stay the real probes.
+
+    Unpinned, G4 samples the RUNNING box's RAM, so a machine past the 85% ceiling
+    refuses every arc and this file reads its own guard chain as broken.
+    """
+    return TickSeams(guards=GuardSeams(budget=BudgetVerdict.allow()))
 
 
 def _counts() -> tuple[int, int, int, int]:
@@ -53,7 +64,7 @@ class TestFlagOffParity(TestCase):
         # the counts move (the default-ON case below dispatches).
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
         before = _counts()
-        result = run_tick(settings=_flag_off())
+        result = run_tick(settings=_flag_off(), seams=_seams())
         assert result.action == "refused"
         assert result.reason == guards.FLAG_OFF
         assert _counts() == before == (0, 0, 0, 0)
@@ -63,7 +74,7 @@ class TestFlagOffParity(TestCase):
         # The shipped posture (#3895): the intake arc runs at the REAL default
         # resolution and stops at the human ratify gate, writing no config.
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
-        result = run_tick()
+        result = run_tick(seams=_seams())
         assert result.action == "interpret_dispatched"
         dispatches, configs, _questions, snapshots = _counts()
         assert (dispatches, configs, snapshots) == (1, 0, 0)
@@ -73,7 +84,7 @@ class TestFlagOffParity(TestCase):
         # #3649: the real critic probe still fails closed, and intake proceeds anyway —
         # it dispatches the interpreter and stops. No config write, no score snapshot.
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
-        result = run_tick(settings=_flag_on(score=True))
+        result = run_tick(settings=_flag_on(score=True), seams=_seams())
         assert result.action == "interpret_dispatched"
         dispatches, configs, _questions, snapshots = _counts()
         assert (dispatches, configs, snapshots) == (1, 0, 0)
@@ -89,7 +100,7 @@ class TestFlagOffParity(TestCase):
         DeferredQuestion.consume(question.pk, answer="approve")
         directive.refresh_from_db()
         directive.admit()
-        result = run_tick(settings=_flag_on(score=True))
+        result = run_tick(settings=_flag_on(score=True), seams=_seams())
         assert result.action == "refused"
         assert result.reason == guards.CRITIC_NOT_LIVE
         assert ConfigSetting.objects.count() == 0
@@ -99,7 +110,7 @@ class TestFlagOffParity(TestCase):
         # #3643 scoped the score guard to the post-admission arc: score-off no longer
         # refuses intake, and intake never writes a FactoryScoreSnapshot either way.
         Directive.objects.capture("do X", source=Directive.Source.CLI)
-        result = run_tick(settings=_flag_on(score=False))
+        result = run_tick(settings=_flag_on(score=False), seams=_seams())
         assert result.action == "interpret_dispatched"
         assert FactoryScoreSnapshot.objects.count() == 0
         assert ConfigSetting.objects.count() == 0

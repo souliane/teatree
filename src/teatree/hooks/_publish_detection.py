@@ -36,7 +36,12 @@ import re
 from itertools import starmap
 from typing import Final
 
-from teatree.hooks._parser_primitives import canonical_forge_leader, canonical_leader, strip_wrapper_prefix
+from teatree.hooks._parser_primitives import (
+    attached_api_field,
+    canonical_forge_leader,
+    canonical_leader,
+    strip_wrapper_prefix,
+)
 from teatree.hooks._shell_lexer import TokenKind, raw_substitution_sees_live, split_commands, tokenize
 
 _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
@@ -160,6 +165,9 @@ _GIT_COMMIT_MESSAGE_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message"}
 _API_BODY_FLAGS: Final[frozenset[str]] = frozenset(
     {"-f", "--field", "-F", "--raw-field", "--input", "-d", "--data"},
 )
+# Attached spellings of the WHOLE-body flags above; the field flags' attached form
+# is shared with the body/secret extractors via :func:`attached_api_field`.
+_API_BODY_ATTACHED_PREFIXES: Final[tuple[str, ...]] = ("--input=", "--data=", "-d")
 # Read-only effective HTTP methods. Every other method mutates and is a write.
 _API_READ_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
 
@@ -238,6 +246,9 @@ def _api_effective_method(words: list[str]) -> str:
     Both spaced/``=`` (``-X PUT``, ``--method=POST``) and attached
     (``-XPUT``/``-X=POST``) forms are honoured; a quoted value merely containing
     the text ``-X`` stays a single distinct token and cannot spoof the method.
+    The body flags are read the same way (:func:`_token_is_api_body_flag`), so an
+    attached ``--field=body=x`` / ``-fbody=x`` / ``-d'{…}'`` write is not
+    misclassified as the method-less GET default.
     """
     method: str | None = None
     has_body_flag = False
@@ -252,12 +263,20 @@ def _api_effective_method(words: list[str]) -> str:
         attached = _attached_value(word, "-X") or _attached_value(word, "--method=")
         if attached is not None:
             method = attached
-        if word in _API_BODY_FLAGS:
+        if _token_is_api_body_flag(word):
             has_body_flag = True
         i += 1
     if method is not None:
         return method.strip("'\"").upper()
     return "POST" if has_body_flag else "GET"
+
+
+def _token_is_api_body_flag(token: str) -> bool:
+    return (
+        token in _API_BODY_FLAGS
+        or attached_api_field(token) is not None
+        or any(_attached_value(token, prefix) is not None for prefix in _API_BODY_ATTACHED_PREFIXES)
+    )
 
 
 def segment_is_api_write(words: list[str]) -> bool:

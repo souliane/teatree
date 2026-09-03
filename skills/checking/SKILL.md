@@ -26,16 +26,16 @@ The user does NOT want a long report. Answer first; one idea per line.
 
 Load `/t3:checking` when the user wants a quick "what happened while I was away?" — phrasings like "what did I miss", "catch me up", "what changed since" — or when they want to answer the backlog from here ("ask me the questions", "shoot me the questions").
 
-The catch-up report stays read-only. The ONLY write `/checking` performs is recording the user's own answers to deferred questions via `t3 teatree questions answer`.
+The catch-up report stays read-only. The ONLY write `/checking` performs is recording the user's own answers to deferred questions — prefer the `mcp__teatree__question_answer` MCP tool, which records the answer against the `DeferredQuestion` row; fall back to `t3 teatree questions answer` when the MCP server isn't connected.
 
 ## Answering the deferred questions (no mode flip)
 
 After the report, if there are pending deferred questions, walk the user through them one at a time:
 
-1. List them: `t3 teatree questions list` (pending only).
+1. List them: prefer the `mcp__teatree__question_list` MCP tool — it returns the pending backlog as structured JSON; fall back to `t3 teatree questions list` when the MCP server isn't connected.
 2. If the list is empty, say so in one line (`No pending questions.`) and stop — do not invent a walk-through.
 3. For each pending question, in order, raise it with the `AskUserQuestion` tool (one question per call), using the stored question text and option labels. **Do NOT batch** — one decision per call, wait for the answer, then move to the next.
-4. Record each answer immediately: `t3 teatree questions answer <id> "<the user's answer text>"`. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
+4. Record each answer immediately: prefer the `mcp__teatree__question_answer` MCP tool — one call per question; fall back to `t3 teatree questions answer <id> "<the user's answer text>"` when the MCP server isn't connected. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
 5. After the last one, confirm in one line how many were answered/dismissed.
 
 **Why this renders live rather than deferring:** running `/checking` is a user-driven turn — the user just typed a prompt this session. The PreToolUse hook detects that fresh same-session prompt (`live_presence.PRESENCE.is_live_user_turn`, a short this-turn window) and lets the question render in-client instead of converting it to a new `DeferredQuestion`. Each in-client render slides that window forward (`live_presence.PRESENCE.refresh_live_turn`), so a multi-question walk-through keeps EVERY question live even across an intervening background task-notification turn (#2058). So the user answers the backlog in place, the persistent mode override is left UNCHANGED, and the loop's own autonomous questions keep deferring as before (BLUEPRINT §17.1 invariant 9). There is NO `t3 loop preset use present` flip — that is the whole point.
@@ -328,7 +328,7 @@ Before running transition checks (§9) or status check mode (§10), ensure `$T3_
     - `mkdir -p $T3_DATA_DIR/tickets/<iid>/`
     - Fetch the issue's current label/status from the issue tracker CLI.
     - Write `status.json`: `{"label": "Process::Doing", "last_checked": "<ISO timestamp>", "discovered_from": "open_mrs", "mrs": ["<mr_url>"]}`
-    - No review-message cache file is created: "review requested?" is resolved live via `t3 review-request check`/`discover` against the channel + the `ReviewRequestPost` DB row (#1084), never a JSON oracle.
+    - No review-message cache file is created: "review requested?" is resolved live — prefer the `mcp__teatree__review_request_check` MCP tool, which returns the dedup verdict plus any existing permalink, and fall back to `t3 review-request check`/`discover` when the MCP server isn't connected — against the channel + the `ReviewRequestPost` DB row (#1084), never a JSON oracle.
 
 5. **Merge, don't overwrite.** If the ticket directory already exists, only add newly discovered PR URLs to `status.json.mrs` — never overwrite existing cache data (review messages, transition history).
 
@@ -378,7 +378,7 @@ Also check for colleague comments (exclude system notes and author's own) via th
 
 **Cache PR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../platforms/references/) § "PR Reminder Cache" for the format.
 
-Populate `original_review_permalink` from the live channel: `t3 review-request check --mr-url <url>` returns the existing message `permalink` on `suppress` (or use the `review_permalink` field from `t3 review-request discover`). The live read is the source of truth — no JSON cache lookup (#1084).
+Populate `original_review_permalink` from the live channel: prefer the `mcp__teatree__review_request_check` MCP tool — it returns the existing message `permalink` on `suppress`; fall back to `t3 review-request check --mr-url <url>` when the MCP server isn't connected (or use the `review_permalink` field from `t3 review-request discover`). The live read is the source of truth — no JSON cache lookup (#1084).
 
 **Skip PRs that:** have no original review message (never sent for review), were already reminded today (`last_reminded` == today), are already approved, **already have colleague comments** (being actively reviewed), or **have a non-success pipeline** (failed, running, pending — only send review requests for green pipelines).
 
@@ -449,7 +449,7 @@ See [`references/followup-schema.md`](references/followup-schema.md) for the ful
 
 - **Label transitions are best-effort.** If the API call fails, log a warning but continue.
 - **Transition checks are idempotent.** Running them multiple times is safe — they only transition if the gate is satisfied and the ticket isn't already at the target status.
-- **Resolve "review requested?" live, never from a JSON cache.** `t3 review-request check`/`discover` read the channel + the `ReviewRequestPost` DB row; a stale or deleted cache must never cause a duplicate post (#1084).
+- **Resolve "review requested?" live, never from a JSON cache.** Prefer the `mcp__teatree__review_request_check` MCP tool — same live read, structured verdict; fall back to `t3 review-request check`/`discover` when the MCP server isn't connected. Both read the channel + the `ReviewRequestPost` DB row; a stale or deleted cache must never cause a duplicate post (#1084).
 - **PR URLs stay hidden in reminders.** Post only the permalink to the original review request — this avoids leaking PR context outside the original thread.
 - **One reminder per interval per PR.** The `last_reminded` cache prevents spamming. Interval is `T3_FOLLOWUP_INTERVAL` (default 24h).
 - **Cache aggressively.** PR metadata, review request permalinks, and approval status are cached in `$T3_DATA_DIR/mr_reminders.json`. Only re-fetch what's stale.

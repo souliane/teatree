@@ -119,6 +119,12 @@ class TestOuterTickWhenEnabled(TestCase):
         with mock.patch.object(LoopLease.objects, "acquire", return_value=False):
             assert "lease held" in _run("tick")
 
+    def test_a_guard_refusal_is_not_rendered_as_an_ok_tick(self) -> None:
+        """A refusal mutates nothing; the OK prefix read as an advanced tick."""
+        output = _run("tick")
+        assert "REFUSE" in output
+        assert "OK " not in output
+
     def test_tick_ok_line_names_the_experiment(self) -> None:
         # When the guard chain passes and a proposal is created, the OK line names
         # the experiment id (patched run_tick so the display path is exercised).

@@ -68,7 +68,7 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
         allowed_names = {lane_b_tool_name(capability) for capability in allowed}
         combined = combined.filtered(lambda _ctx, tool_def: tool_def.name in allowed_names)
 
-    gated: AbstractToolset[None] = HardDenyToolset(combined, cwd=config.fs_root)
+    gated: AbstractToolset[None] = HardDenyToolset(combined, cwd=config.fs_root, max_denials=config.max_denials)
     if soft_gated:
         gated = gated.approval_required(make_soft_gate_predicate(soft_gated))
 

@@ -37,6 +37,7 @@ from teatree.core.management.commands._review_impl import (
     RecordResult,
     StatusResult,
 )
+from teatree.core.management.commands._reviewer_policy_commands import ReviewerPolicyCommands
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
 from teatree.core.models import MergeClear, MRReviewLock, ReviewEvidence, ReviewEvidenceError, Ticket
@@ -85,7 +86,7 @@ def _project_root_or_cwd() -> str:
 
 # #4234: `record`, `record-evidence` and `lock-acquire` RETURN their refusal so a caller
 # can route on it; the base class is what restores the exit code for the shell.
-class Command(MachineOutputCommand, RefusalExitTyperCommand):
+class Command(ReviewerPolicyCommands, MachineOutputCommand, RefusalExitTyperCommand):
     """Review verdicts, evidence, comments and the per-MR review lock."""
 
     @initialize()

@@ -53,7 +53,7 @@ _SRC = _REPO_ROOT / "src" / "teatree"
 #: ``transaction.atomic()``. Pinned by name so a new pragma exemption cannot be
 #: added without a reviewed edit here — the pragma is deliberately cheap to
 #: write and must not be cheap to normalise.
-_DECLARED_CALLER_CONTRACT_SITES = frozenset({"locked_get_or_create_ticket"})
+_DECLARED_CALLER_CONTRACT_SITES = frozenset({"locked_get_or_create_ticket", "_lock_directive"})
 
 #: The sweep found 40 locked reads. A floor well under that catches a scanner
 #: that silently stops matching (a renamed AST field, a swallowed parse error)

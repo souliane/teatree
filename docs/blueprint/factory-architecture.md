@@ -75,6 +75,17 @@ A `MergeClear` row must contain all of the following fields:
 
 No partial CLEAR is actionable. A `MergeClear` row missing any field is treated as absent.
 
+**Absent to the merge decision is not absent from the ledger.** "Treated as absent" scopes to
+what may authorise a merge, and the standing-backlog population every merge-scoped reader shares
+(`core/factory/merge_backlog.unconsumed_actionable_clear_rows` — the S4 staleness trip,
+`t3 doctor check`, and `ticket reconcile-clears`) narrows to exactly that: actionable rows that no
+newer sibling or covering merge has superseded. An unconsumed row failing either test is therefore
+reported by nothing, which is the state a mis-issued CLEAR lands in — incomplete, or the original
+of a corrected reissue. `t3 <overlay> ticket list-clears [--overlay <name>] [--json]` is the
+deliberately unnarrowed read of the same scope and supersede context: every unconsumed CLEAR,
+oldest first, each tagged `live` / `superseded` / `incomplete`. It is read-only — `reconcile-clears`
+remains the only surface that spends a row, and no surface voids one.
+
 **The issuance seam.** A CLEAR is created exclusively through the guarded factory `MergeClear.issue(ClearRequest)`, exposed as `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <id> --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. This is the orchestrator's *only* merge output (§17.8 clause 3). The factory enforces the contract before any row is written and refuses (raising `ClearIssuanceError`, no partial row) when: `blast_class`/`gh_verify_result`/`host_kind` is unknown; `reviewer_identity` is empty, equals the executing-loop identity, or is a maker/coding-agent/loop role (the author cannot self-attest its own review); `reviewed_sha` is not a hex commit id (a branch ref would not bind to the reviewed tree); or `--human-authorize` is given for a non-substrate `blast_class`. The command additionally resolves the repo slug AND the forge (`MergePreconditionError`, again no row) *before* calling the factory, so neither a CLEAR pointing at no resolvable repo nor one that could never bind a transport is left behind as an unconsumable orphan ratcheting the S4 stale-CLEAR signal. The maker/loop-role predicate is shared single-source with the `reviewing`-attestation guard (§17.6 candidate 13) so the two cannot drift. It also refuses the review-AUTHORING agents by name (the holistic pass that implements its own findings and opens its own PR), and that refusal survives decoration: appending a reviewer noun to such a name does not admit it, and the refusal text never names a token to append — a refusal that publishes its own bypass is a self-service exemption, so the only escape it names is the recorded `independent_reviewer_identities` allowlist, offered only for the class that allowlist can actually admit.
 
 **A managed-repo MR with no teatree Ticket is mergeable.** `--forge` is the ticketless escape: an MR reviewed and merged outside the ticket FSM (a colleague's MR, an out-of-band fix) names its repo as the `slug` argument and its forge with `--forge`, and every §17.4.3 gate then runs unchanged. Without it such a CLEAR had nothing to resolve the forge from, so the transport silently defaulted to GitHub and the sanctioned path was closed for every GitLab MR while raw `glab mr merge` stayed (correctly) blocked.

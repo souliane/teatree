@@ -13,15 +13,17 @@ INJECTED. This module builds them:
     DETACHED (the same pattern as the Stop-hook ``t3 speak`` read) so synthesis
     never blocks the mirror.
 
-Cold-import safe: stdlib only at module top; the ``teatree.backends.slack``
-edge is a deferred import inside ``slack_http_poster``.
+Cold-import safe: stdlib plus the stdlib-only ``t3_invocation`` seam at module
+top; the ``teatree.backends.slack`` edge is a deferred import inside
+``slack_http_poster``.
 """
 
 import contextlib
 import os
 import shutil
-import subprocess  # noqa: S404 — detached best-effort spawn of the trusted `t3` CLI (dispatch_dm_audio)
 from collections.abc import Callable
+
+from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available
 
 # The mirror runs synchronously inside the hook timeout, so the client carries a
 # short per-call timeout and NO retry (a retry-with-backoff could blow the budget).
@@ -46,23 +48,16 @@ def slack_http_poster() -> SlackPoster:
 
 def dispatch_dm_audio(channel: str, text: str, thread_ts: str) -> None:
     """Spawn ``t3 speak-dm`` detached to attach audio to a delivered DM — best-effort."""
-    t3_bin = shutil.which("t3")
-    if t3_bin is None:
+    argv = t3_argv("speak-dm", "--channel", channel, "--text", text)
+    if argv is None:
         return
-    argv = [t3_bin, "speak-dm", "--channel", channel, "--text", text]
     if thread_ts:
         argv.extend(["--thread-ts", thread_ts])
     overlay = os.environ.get("T3_OVERLAY_NAME", "")
     if overlay:
         argv.extend(["--overlay", overlay])
     with contextlib.suppress(Exception):
-        subprocess.Popen(  # noqa: S603 — detached, fire-and-forget; DM audio is best-effort
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        spawn_t3_detached(argv)
 
 
 def build_dm_audio_enricher(*, slack_enabled: bool) -> AudioEnricher | None:
@@ -77,6 +72,6 @@ def build_dm_audio_enricher(*, slack_enabled: bool) -> AudioEnricher | None:
     """
     if not slack_enabled:
         return None
-    if shutil.which("say") is None or shutil.which("t3") is None:
+    if shutil.which("say") is None or not t3_available():
         return None
     return dispatch_dm_audio

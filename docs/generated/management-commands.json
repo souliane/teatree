@@ -206,20 +206,24 @@
           "name": "trigger-ci"
         },
         {
-          "help": "Post (or update) the ticket's single test-plan note from a manifest",
-          "name": "post-test-plan"
+          "help": "Run a Playwright config that lives in THIS checkout's e2e dir \u2014 no stack, no credentials",
+          "name": "in-tree"
+        },
+        {
+          "help": "Write (or update) the ticket's plan at ``test-plans/<repo>-<ticket>.md`` in the e2e repo",
+          "name": "write-test-plan"
+        },
+        {
+          "help": "Verify every capture committed under ``test-plans/evidence/`` passes the preflight",
+          "name": "verify-plan-captures"
+        },
+        {
+          "help": "Assemble the ``scenario-plan`` file from the overlay seams instead of a manifest (#3329)",
+          "name": "write-plan-from-seams"
         },
         {
           "help": "Print a manifest's authored half (run provenance stripped) for a private test repo to commit",
           "name": "tracked-manifest"
-        },
-        {
-          "help": "Withdraw the ticket's single test-plan note",
-          "name": "retract-evidence"
-        },
-        {
-          "help": "Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)",
-          "name": "post-evidence"
         }
       ]
     },
@@ -355,6 +359,10 @@
           "name": "seed"
         },
         {
+          "help": "Derive ``user_identity_aliases`` from the forge logins this venue authenticates as",
+          "name": "bootstrap"
+        },
+        {
           "help": "Add a trusted identity (idempotent on ``(platform, handle)``)",
           "name": "add"
         },
@@ -417,7 +425,7 @@
           "name": "record-review-context"
         },
         {
-          "help": "Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967)",
+          "help": "Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967)",
           "name": "record-e2e-run"
         },
         {
@@ -908,6 +916,10 @@
           "name": "findings"
         },
         {
+          "help": "Put the overlay's configured reviewers on this repo's open bot-authored MRs",
+          "name": "apply-reviewer-policy"
+        },
+        {
           "help": "Record a PR-08 review-evidence artifact for a ticket",
           "name": "record-evidence"
         },
@@ -940,7 +952,7 @@
       "subcommands": []
     },
     {
-      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no\nrecorded approval, no anti-vacuity attestation, a draft MR, an\nunreadable draft state, or a work group holding this member back).",
+      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no\nrecorded approval, no anti-vacuity attestation, a draft MR, an\nunreadable draft state, a work group holding this member back, or a\npost the transport did not land).",
       "name": "review_request_post",
       "subcommands": []
     },
@@ -1167,6 +1179,10 @@
           "name": "backfill-clears"
         },
         {
+          "help": "List every unconsumed merge authorisation, each with the standing that hides it",
+          "name": "list-clears"
+        },
+        {
           "help": "Consume every standing merge authorisation whose PR already merged or closed",
           "name": "reconcile-clears"
         },
@@ -1193,6 +1209,10 @@
         {
           "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
           "name": "integration-review-override"
+        },
+        {
+          "help": "Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520)",
+          "name": "fix-record-override"
         },
         {
           "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
@@ -1289,11 +1309,11 @@
       "subcommands": []
     },
     {
-      "help": "A ``TyperCommand`` whose handlers own stdout through :func:`emit`.\n\n``BaseCommand.execute`` replaces ``self.stdout`` with **Django's**\n``OutputWrapper`` whenever a stream is passed as ``call_command(...,\nstdout=buf)``. That wrapper has no ``disable`` flag, so django-typer's\n``print_result = False`` becomes a silent no-op and the typed return is\nwritten to stdout *after* ``emit`` already wrote the JSON there \u2014 two\ndocuments on the channel a front-end parses. Installing django-typer's\ndisable-capable wrapper here, and withholding the option Django would\nclobber it with, keeps the pin effective on every call path.\n\nThe pin itself stays per-handler (``self.print_result = False``): a sibling\nverb in the same command group may still return a human ``str`` for\ndjango-typer to print, and a class-level pin would silence it.",
+      "help": "",
       "name": "workspace",
       "subcommands": [
         {
-          "help": "Create or update a ticket and trigger worktree provisioning",
+          "help": "Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)",
           "name": "ticket"
         },
         {

@@ -1,10 +1,10 @@
-"""``teatree.utils.venv_artifacts.find_stale_uv_venv`` (souliane/teatree#2005)."""
+"""``teatree.utils.venv_artifacts`` — wrong-toolchain (#2005) and wrong-host venv artifacts."""
 
 from pathlib import Path
 
 import pytest
 
-from teatree.utils.venv_artifacts import find_stale_uv_venv
+from teatree.utils.venv_artifacts import find_stale_uv_venv, foreign_venv_interpreter
 
 
 def _make_venv(repo: Path, *, uv_built: bool, packages: tuple[str, ...] = ()) -> Path:
@@ -70,3 +70,49 @@ class TestFindStaleUvVenv:
         monkeypatch.setattr(Path, "read_text", _boom)
         assert find_stale_uv_venv(tmp_path) is None
         assert venv.exists()
+
+
+def _venv_with_home(root: Path, home: Path | str) -> Path:
+    """A ``.venv`` whose ``pyvenv.cfg`` records *home* as its interpreter directory."""
+    venv = root / ".venv"
+    venv.mkdir(parents=True, exist_ok=True)
+    (venv / "pyvenv.cfg").write_text(f"home = {home}\nversion_info = 3.13.12\nuv = 0.11.15\n", encoding="utf-8")
+    return venv
+
+
+class TestForeignVenvInterpreter:
+    """A ``.venv`` in a bind mount can record the interpreter of the other side."""
+
+    def test_absent_home_is_foreign(self, tmp_path: Path) -> None:
+        """The container-built venv seen from the host: the recorded dir is not here."""
+        venv = _venv_with_home(tmp_path, "/opt/teatree/uv/python/cpython-3.13-linux-aarch64-gnu/bin")
+        reason = foreign_venv_interpreter(venv, platform="darwin")
+        assert reason is not None
+        assert "does not exist on this host" in reason
+
+    def test_present_home_of_another_platform_is_foreign(self, tmp_path: Path) -> None:
+        """A shared mount makes the dir resolvable, so the uv platform tag has to decide."""
+        home = tmp_path / "uv" / "python" / "cpython-3.13-linux-aarch64-gnu" / "bin"
+        home.mkdir(parents=True)
+        reason = foreign_venv_interpreter(_venv_with_home(tmp_path, home), platform="darwin")
+        assert reason is not None
+        assert "is a linux interpreter; this host is darwin" in reason
+
+    def test_matching_platform_is_healthy(self, tmp_path: Path) -> None:
+        home = tmp_path / "uv" / "python" / "cpython-3.13-macos-aarch64-none" / "bin"
+        home.mkdir(parents=True)
+        assert foreign_venv_interpreter(_venv_with_home(tmp_path, home), platform="darwin") is None
+
+    def test_untagged_system_interpreter_is_not_judged(self, tmp_path: Path) -> None:
+        """A system interpreter carries no uv platform tag — absence of proof, not a repoint."""
+        home = tmp_path / "usr" / "bin"
+        home.mkdir(parents=True)
+        assert foreign_venv_interpreter(_venv_with_home(tmp_path, home), platform="darwin") is None
+
+    @pytest.mark.parametrize("body", ["", "version_info = 3.13.12\n"])
+    def test_missing_pyvenv_cfg_or_home_is_not_judged(self, tmp_path: Path, body: str) -> None:
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        if body:
+            (venv / "pyvenv.cfg").write_text(body, encoding="utf-8")
+        assert foreign_venv_interpreter(venv, platform="darwin") is None

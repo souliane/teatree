@@ -170,10 +170,25 @@ repos:
         pass_filenames: false
 
   # Phase 6 - Security & custom
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce  # v8.30.0
+  # Local, not the upstream `gitleaks/gitleaks` hook, for two measured reasons.
+  # (1) That hook is `language: golang`, so a cold cache builds gitleaks from source
+  # against proxy.golang.org and sum.golang.org — a network dependency that has failed
+  # repeatedly with `HTTP/2 stream ... INTERNAL_ERROR`. `scripts/hooks/gitleaks.py` fetches the
+  # sha256-pinned prebuilt release instead.
+  # (2) Its entry is `gitleaks git --staged`, which on a clean checkout scans the EMPTY
+  # staged set, so inside a `--all-files` CI run it is a gate over nothing. Staged-mode is
+  # the right scope for a COMMIT gate; a whole-tree `gitleaks dir` scan of committed
+  # content belongs in a CI lane of its own.
+  - repo: local
     hooks:
       - id: gitleaks
+        name: gitleaks (staged diff)
+        # Bare `python3`, not `uv run`: the bootstrap is stdlib-only on purpose, so the
+        # secret gate does not need the project venv to have been synced.
+        entry: python3 scripts/hooks/gitleaks.py git --staged --redact --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
   - repo: local
     hooks:
       - id: scripts-no-raw-sys-argv
@@ -556,6 +571,18 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
+        # Upstream's manifest sets `always_run: true`. That is safe only while this
+        # config is the repo-ROOT workspace, where `.git/COMMIT_EDITMSG` sits inside
+        # the workspace and is passed as the hook's one filename. When the config is
+        # run as a NESTED workspace (this tree vendored under another repo) the commit
+        # message file is outside the workspace root and is filtered out, yet
+        # `always_run` still fires the hook — with no filename. argparse then binds the
+        # LAST type below to the required `input` positional and the hook dies with
+        # `FileNotFoundError: 'test'` on every commit, which is how a whole repo learns
+        # to skip the hook. `always_run: false` turns that crash into a clean skip and
+        # changes nothing where this config is the root: the file is present, so the
+        # hook runs and rejects a non-conventional message exactly as before.
+        always_run: false
         args:
           - --verbose
           - build

@@ -15,12 +15,18 @@ from teatree.types import RawAPIDict
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
+# GitLab aggregates every required job into ONE pipeline status, so a red MR there
+# has no per-check name to report. This stands in as the failing-required name the
+# cross-PR report renders (#4090), so a GitLab red is legible beside a GitHub one.
+GITLAB_PIPELINE_CHECK_NAME = "pipeline"
 
 # GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
-# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
-# but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
+# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict. ``UNKNOWN`` /
 # empty is GitHub still computing mergeability — never flagged, to avoid a
-# false conflict alarm on a freshly-pushed head.
+# false conflict alarm on a freshly-pushed head. Behind-ness is NOT readable
+# here: ``mergeStateStatus`` reports one highest-precedence blocker, so a
+# behind branch reads ``BLOCKED``/``DIRTY``/``CLEAN`` far more often than
+# ``BEHIND`` (#4526) — ``pr_behind_base`` answers that question instead.
 GH_CONFLICT_MERGEABLE = "CONFLICTING"
 GH_CONFLICT_MERGE_STATE = "DIRTY"
 
@@ -83,11 +89,19 @@ class PrSummary:
     title: str = ""
     is_conflicted: bool = False
     behind_main: bool = False
+    # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is
+    # canonically fork-qualified (``owner:branch``) — see ``head_compare_ref``.
+    base_ref: str = ""
+    compare_head_ref: str = ""
     author: str = ""
     # Tri-state head-branch provenance (#3244): True = same-repo branch (trusted),
     # False = fork / cross-repo (holds for human approval), None = the forge did not
     # report it ⇒ fail closed to the identity+visibility author check.
     same_repo: bool | None = None
+    # The forge this summary was READ from, carried so every downstream live-forge
+    # read (`PrRef`) binds the same transport the listing used. A bare slug carries
+    # no host, so re-deriving it per read is what let a GitLab MR be probed on GitHub.
+    host_kind: str = "github"
 
 
 @dataclass(frozen=True, slots=True)

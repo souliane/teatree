@@ -17,7 +17,7 @@ from unittest.mock import patch
 from django.db import OperationalError
 
 from teatree.core.cleanup.checkout_registry import raw_worktree_paths
-from teatree.core.cleanup.orphan_checkouts import db_tracked_worktree_paths
+from teatree.core.cleanup.orphan_checkouts import db_tracked_worktree_paths, orphan_is_dirty
 from teatree.core.cleanup.unshipped_work import bundle_path
 from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _run_git
@@ -275,3 +275,15 @@ class TestCapturesUnshippedWorkBeforeDisposition(OrphanWorktreeFixture):
         assert kept.exists(), "the keep disposition must survive an uncapturable checkout"
         assert not reapable.exists(), "one uncapturable checkout must not abort the rest of the sweep"
         assert any("KEPT orphan" in line for line in results), results
+
+
+def test_orphan_is_dirty_fails_closed_on_an_unreadable_status(tmp_path: Path) -> None:
+    """The raw-orphan reaper's dirt probe gates a checkout removal.
+
+    A status that
+    cannot be read must count as DIRTY (keep), never as a clean tree.
+    """
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+
+    assert orphan_is_dirty(str(plain)) is True

@@ -112,6 +112,16 @@ When a session-end report names stranded work, run the command it prints for eac
 
 Deleting an item is a decision, not a default: `/t3:sweeping-worktrees` covers salvaging unmerged work to a fresh PR versus deleting something demonstrably shipped. The reaper refuses a dirty checkout for that reason, so a kept worktree is not a finished one.
 
+## A status field is a report, not the state
+
+Three readouts lie in the same direction — they say *finished* while work is live, or *fine* while nothing ran:
+
+- **`ListAgents` reports `completed` for an agent still working.** Confirm against the artifact — the worktree's dirty count, a new commit, the file it was writing.
+- **A green pipeline does not prove a lane ran.** Read the collection count. An `allow_failure: true` lane reports green having executed zero tests.
+- **A red pipeline does not prove a lane ran either.** When a metadata validator fails first and gates the rest, every real job shows `skipped` — the tests, the lint, the builds. The failure is loud and the *verification silently did not happen*, which is the more dangerous half.
+
+The rule is one line: **a status is evidence about the reporter, not about the thing.** Before repeating one to a person, name what you actually observed — the count, the SHA, the file — or say you read a status and did not confirm it.
+
 ## Skill Loading
 
 Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via slash commands (`/t3:code`), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. TeaTree's UserPromptSubmit hook surfaces only the skills a prompt's cwd/overlay context implies — framework skills (`ac-django`/`ac-python`), the active overlay's own skill, and its `companion_skills`. A PreToolUse hook blocks Python code edits until those load.

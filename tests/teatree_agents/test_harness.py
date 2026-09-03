@@ -14,7 +14,7 @@ same way :class:`FakeHarnessSession` proves it for the generic seam.
 import asyncio
 import json
 import os
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 from unittest.mock import patch
@@ -455,6 +455,62 @@ def test_pydantic_ai_num_turns_reflects_the_request_count() -> None:
 
     result = next(m for m in asyncio.run(drive()) if isinstance(m, ResultMessage))
     assert result.num_turns == 2
+
+
+def _denial_gauntlet_stream(turns: int) -> Callable[[object, AgentInfo], AsyncIterator[object]]:
+    """A streamed model that repeats a denylisted ``Bash`` call *turns* times, then yields text.
+
+    Progress is derived from how many ``RetryPromptPart``s the history already
+    carries (mirrors :func:`_tool_then_text_stream`'s returned-part probe) rather
+    than closed-over mutable state, so the double stays stateless and safe to
+    reuse across `asyncio.run` calls.
+    """
+
+    async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        denials = sum(
+            1
+            for message in (messages if isinstance(messages, list) else [])
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if type(part).__name__ == "RetryPromptPart"
+        )
+        if denials < turns:
+            args = json.dumps({"command": "rm -rf /"})
+            yield {0: DeltaToolCall(name="Bash", json_args=args, tool_call_id=f"c{denials}")}
+        else:
+            yield "survived"
+
+    return stream_fn
+
+
+class TestPydanticAiHarnessShellRetryBudget:
+    """A shell-exploration phase tolerates more corrective denials than the tight default.
+
+    Before this, pydantic-ai's own per-tool retry ceiling (unset at Agent
+    construction, defaulting to 1) and ``HardDenyToolset``'s cumulative denial cap
+    (``gating.DEFAULT_MAX_DENIALS``, 3) both aborted the WHOLE dispatch on the very
+    next corrective ``Bash`` retry — the crash behind ~28 of ``architectural_review``'s
+    ~29 scheduled dispatches. ``PydanticAiHarness.open`` now widens both via
+    ``LaneBToolConfig`` for the shell-exploration phase family, proved here through
+    the real session surface (``query``/``receive_response``) the production driver uses.
+    """
+
+    @staticmethod
+    async def _drive(phase: str, turns: int) -> ResultMessage:
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=_denial_gauntlet_stream(turns)), phase=phase)
+        async with harness.open(ClaudeAgentOptions()) as session:
+            await session.query("go")
+            messages = [message async for message in session.receive_response()]
+        return next(m for m in messages if isinstance(m, ResultMessage))
+
+    def test_default_phase_aborts_on_three_denials(self) -> None:
+        result = asyncio.run(self._drive("coding", turns=3))
+        assert result.is_error is True
+
+    def test_exploration_phase_survives_the_same_three_denials(self) -> None:
+        result = asyncio.run(self._drive("architectural_review", turns=3))
+        assert result.is_error is False
 
 
 def test_hit_max_tokens_reads_the_final_response_finish_reason() -> None:

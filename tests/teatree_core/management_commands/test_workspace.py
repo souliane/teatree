@@ -49,6 +49,7 @@ from teatree.core.management.commands.workspace import _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
+from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
@@ -58,6 +59,8 @@ from tests.teatree_core.management_commands._overlays import (
     FullProvisioning,
     _patch_overlays,
 )
+
+_NOT_REDUNDANT = RedundancyVerdict(redundant=False, forge_merged=False)
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -75,6 +78,15 @@ def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
         "teatree.core.management.commands._workspace.provision_parallel.check_provision_admission",
         return_value=ProvisionAdmissionVerdict.allow(),
     )
+
+
+def _refused_workspace_ticket(*args: object, **kwargs: object) -> str:
+    """The stderr of a refused ``workspace ticket``, asserting the nonzero exit (#932)."""
+    err = StringIO()
+    with pytest.raises(SystemExit) as exc:
+        call_command("workspace", "ticket", *args, stderr=err, **kwargs)
+    assert exc.value.code == 1
+    return err.getvalue()
 
 
 # ── Workspace helpers ──────────────────────────────────────────────
@@ -252,12 +264,9 @@ class TestWorkspaceTicketInputValidation(TestCase):
     """
 
     def test_unresolvable_bare_number_is_refused_and_creates_no_ticket(self) -> None:
-        out = StringIO()
-        with patch.object(FullOverlay, "resolve_issue_token", return_value=None), pytest.raises(SystemExit) as exc:
-            call_command("workspace", "ticket", "3274", stderr=out)
+        with patch.object(FullOverlay, "resolve_issue_token", return_value=None):
+            assert "Refused" in _refused_workspace_ticket("3274")
 
-        assert exc.value.code == 1
-        assert "Refused" in out.getvalue()
         assert Ticket.objects.filter(issue_url="3274").count() == 0
         assert Ticket.objects.count() == 0
 
@@ -383,10 +392,8 @@ class TestWorkspaceTicketAdopt(TestCase):
         git_mod.run_strict(repo=str(worktree), args=["checkout", "-q", "--detach"])
         self._enter_adopt_patches(worktree)
 
-        with pytest.raises(SystemExit) as exc:
-            call_command("workspace", "ticket", "https://example.com/issues/2275", adopt=True)
+        _refused_workspace_ticket("https://example.com/issues/2275", adopt=True)
 
-        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/2275").exists()
 
     def _patch_issue_host(self, host: MagicMock) -> None:
@@ -403,10 +410,8 @@ class TestWorkspaceTicketAdopt(TestCase):
         host.get_issue.return_value = {"state": "closed", "title": "An unrelated closed PR"}
         self._patch_issue_host(host)
 
-        with pytest.raises(SystemExit) as exc:
-            call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/89", adopt=True)
+        _refused_workspace_ticket("https://github.com/souliane/teatree/issues/89", adopt=True)
 
-        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url="https://github.com/souliane/teatree/issues/89").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -419,10 +424,8 @@ class TestWorkspaceTicketAdopt(TestCase):
         host.get_issue.side_effect = IssueNotFoundError(url)
         self._patch_issue_host(host)
 
-        with pytest.raises(SystemExit) as exc:
-            call_command("workspace", "ticket", url, adopt=True)
+        _refused_workspace_ticket(url, adopt=True)
 
-        assert exc.value.code == 1
         assert not Ticket.objects.filter(issue_url=url).exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -559,12 +562,8 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
-            with (
-                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
-                pytest.raises(SystemExit) as exc,
-            ):
-                call_command("workspace", "ticket", "https://example.com/issues/42")
-        assert exc.value.code == 1
+            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
+                _refused_workspace_ticket("https://example.com/issues/42")
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -665,11 +664,7 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_unknown_kind_is_refused_without_creating_a_ticket(self) -> None:
-        with pytest.raises(SystemExit) as exc:
-            call_command(
-                "workspace", "ticket", "https://example.com/issues/174", description="Add a thing", kind="bugfix"
-            )
-        assert exc.value.code == 1
+        _refused_workspace_ticket("https://example.com/issues/174", description="Add a thing", kind="bugfix")
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/174").exists()
 
     @_patch_overlays(FULL_OVERLAY)
@@ -2180,7 +2175,10 @@ class TestPruneBranches(TestCase):
                 return "worktree /tmp/old-worktree\nHEAD abc123\nbranch refs/heads/gone-branch\n"
             return ""
 
-        gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
+        # No merged evidence anywhere: the forge answers empty, the branch's
+        # commits are on no remote, and the landed ladder cannot prove the tip
+        # — the #706/#710 guard must keep the branch, deleting nothing.
+        forge_silent = subprocess.CompletedProcess([], 0, stdout="[]")
         with (
             patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
             patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
@@ -2194,9 +2192,11 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "unsynced_commits", return_value=["abc123 chore: cve fix"]),
+            patch.object(git_mod, "commits_absent_from_all_remotes", return_value=["abc123 chore: cve fix"]),
+            patch.object(cleanup_mod, "branch_redundancy", return_value=_NOT_REDUNDANT),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
-            patch("teatree.utils.run.subprocess.run", return_value=gh_merged),
+            patch("teatree.utils.run.subprocess.run", return_value=forge_silent),
         ):
             cleaned = ws_cleanup_mod.prune_branches("/repo")
 
@@ -2465,7 +2465,8 @@ class TestCleanupDryRunHelperPreviews(TestCase):
             Path(wt_path).mkdir()
             with (
                 patch.object(ws_cleanup_mod, "match_worktree_by_path", return_value=None),
-                patch.object(git_mod, "status_porcelain", return_value=""),
+                # The clean probe is strict now (status -uall AND diff HEAD, fail-closed).
+                patch.object(git_mod, "run_strict", return_value=""),
                 patch.object(git_mod, "unsynced_commits", return_value=[]),
                 patch.object(git_mod, "worktree_remove") as mock_remove,
             ):
@@ -2640,6 +2641,33 @@ class TestDropOrphanedStashes(TestCase):
         assert len(result) == 1
         assert "deleted-branch" in result[0]
         assert ["stash", "drop", "stash@{0}"] in calls
+
+    def test_a_failed_drop_keeps_the_stash_instead_of_reporting_it_dropped(self) -> None:
+        """The lenient runner swallowed a refused drop, so a live stash read as reaped."""
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 some work"
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return "- abc123def some work"
+            if args[:2] == ["stash", "drop"]:
+                raise utils_run_mod.CommandFailedError(["git", "stash", "drop"], 1, "", "index.lock exists")
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert result[0].startswith("Kept orphaned stash stash@{0}")
+        assert "index.lock exists" in result[0]
 
     def test_keeps_stash_for_existing_branch(self) -> None:
         stash_output = "stash@{0}: WIP on main: abc123 some work"
@@ -3033,7 +3061,8 @@ def _pg_binary_not_installed(cmd: list[str], **_kw: object) -> MagicMock:
 
 
 class TestDropOrphanDatabasesFailure(TestCase):
-    def test_returns_empty_when_psql_fails(self) -> None:
+    def test_reports_the_skip_when_psql_fails(self) -> None:
+        """A listing that never ran proves nothing — an empty return reads as "no orphans"."""
         with (
             _pg_client_present(),
             patch.object(utils_run_mod, "subprocess") as mock_sp,
@@ -3041,10 +3070,31 @@ class TestDropOrphanDatabasesFailure(TestCase):
             patch.object(db_mod, "pg_host", return_value="localhost"),
             patch.object(db_mod, "pg_user", return_value="postgres"),
         ):
-            mock_sp.run.return_value = MagicMock(returncode=1)
+            mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="connection refused")
             result = ws_cleanup_mod.drop_orphan_databases()
 
-        assert result == []
+        assert len(result) == 1
+        assert "could not list databases" in result[0]
+        assert "connection refused" in result[0]
+
+    def test_a_failed_dropdb_is_reported_as_kept_not_dropped(self) -> None:
+        Worktree.objects.all().delete()
+
+        def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+            if cmd[0] == "psql":
+                return MagicMock(returncode=0, stdout="wt_orphan|owner\n", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="database is being accessed by other users")
+
+        with (
+            _pg_client_present(),
+            patch.object(ws_cleanup_mod, "run_allowed_to_fail", side_effect=fake_run),
+            patch.object(db_mod, "pg_env", return_value={}),
+            patch.object(db_mod, "pg_host", return_value="localhost"),
+            patch.object(db_mod, "pg_user", return_value="postgres"),
+        ):
+            result = ws_cleanup_mod.drop_orphan_databases()
+
+        assert result == ["Kept orphan database wt_orphan: dropdb exited 1: database is being accessed by other users"]
 
 
 class TestDropOrphanDatabasesWithoutPostgres(TestCase):
@@ -3124,6 +3174,7 @@ class TestWorkspaceFinalize(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/91")
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-91")
 
+        out = StringIO()
         with (
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "status_porcelain", return_value=""),
@@ -3136,12 +3187,66 @@ class TestWorkspaceFinalize(TestCase):
                 "rebase",
                 side_effect=utils_run_mod.CommandFailedError(["git", "rebase"], 1, "", "conflict"),
             ),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
+            call_command("workspace", "finalize", str(ticket.pk), stdout=out)
 
-        assert "rebase failed" in result.lower()
-        assert "rebase --abort" in result
-        assert "rebase --continue" in result
+        assert exc_info.value.code == 1
+        assert "rebase failed" in out.getvalue().lower()
+        assert "rebase --abort" in out.getvalue()
+        assert "rebase --continue" in out.getvalue()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_pre_rebase_git_failure_is_not_mislabelled_a_rebase_failure(self) -> None:
+        """One broad ``except`` reported a failed commit as "rebase failed" and exited 0."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/92")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-92")
+
+        out = StringIO()
+        with (
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "status_porcelain", return_value=""),
+            patch.object(
+                git_mod,
+                "fetch",
+                side_effect=utils_run_mod.CommandFailedError(["git", "fetch"], 1, "", "no such remote"),
+            ),
+            patch.object(git_mod, "rebase") as rebase,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("workspace", "finalize", str(ticket.pk), stdout=out)
+
+        assert exc_info.value.code == 1
+        assert "finalize failed before the rebase" in out.getvalue()
+        assert "rebase failed" not in out.getvalue()
+        rebase.assert_not_called()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_default_squash_message_is_the_subject_alone_and_is_per_worktree(self) -> None:
+        """``log --oneline`` is a display format: its leading token is the squashed-away sha."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/93")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/backend", branch="feature-93")
+        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/frontend", branch="feature-93")
+        subjects = {"/tmp/backend": ("fix: backend change", ""), "/tmp/frontend": ("feat: frontend change", "")}
+
+        with (
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "status_porcelain", return_value=""),
+            patch.object(git_mod, "fetch"),
+            patch.object(git_mod, "merge_base", return_value="abc123"),
+            patch.object(git_mod, "rev_count", return_value=2),
+            patch.object(git_mod, "log_oneline", return_value="abc1234 fix: backend change\ndef5678 wip"),
+            patch.object(git_mod, "first_commit_message", side_effect=lambda repo, _range: subjects[repo]),
+            patch.object(git_mod, "soft_reset"),
+            patch.object(git_mod, "commit") as commit,
+            patch.object(git_mod, "rebase"),
+        ):
+            call_command("workspace", "finalize", str(ticket.pk), stdout=StringIO())
+
+        messages = [call.args[1] for call in commit.call_args_list]
+        assert messages == ["fix: backend change", "feat: frontend change"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

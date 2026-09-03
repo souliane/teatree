@@ -9,6 +9,7 @@ time, with no opt-in. The env var remains an optional override.
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
@@ -759,3 +760,36 @@ class TestEmbeddedTriggerIsNotAnMrMutation:
     def test_real_metadata_only_update_still_skipped(self):
         # The strip must not turn a genuine metadata-only update into a mutation.
         assert isinstance(self._fields_for("glab mr update 7624 --reviewer alice"), GateSkipped)
+
+
+class TestValidatorRunsFromAContainerVisibleCwd:
+    """The validator subprocess must never inherit the harness session directory.
+
+    The containerized ``t3`` entry point REFUSES a working directory it cannot see
+    from inside the container, so an inherited session dir makes the validator exit
+    non-zero for a reason that says nothing about the MR — and this gate fails
+    CLOSED, so that exit became a DENY on every ``glab mr create``/``update`` from
+    such a session, whatever the metadata said.
+
+    Patched at ``subprocess.run`` rather than at a module attribute so the assertion
+    holds wherever the spawn lives — the point is the cwd the process actually gets.
+    """
+
+    def _spawn(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with patch("subprocess.run") as spawn:
+            spawn.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mr_validator.run_mr_validator(["t3", "tool", "validate-mr"], "fix: x (proj#1)", "## What\nx\n## Why\ny")
+        assert spawn.call_count == 1
+        return spawn.call_args
+
+    def test_an_explicit_cwd_is_passed(self, tmp_path, monkeypatch):
+        assert self._spawn(tmp_path, monkeypatch).kwargs.get("cwd") is not None
+
+    def test_the_cwd_is_the_checkout_the_hook_lives_in(self, tmp_path, monkeypatch):
+        cwd = Path(self._spawn(tmp_path, monkeypatch).kwargs["cwd"])
+        assert (cwd / "hooks" / "scripts" / "mr_validator.py").is_file()
+
+    def test_the_cwd_is_not_inherited_from_the_caller(self, tmp_path, monkeypatch):
+        cwd = Path(self._spawn(tmp_path, monkeypatch).kwargs["cwd"]).resolve()
+        assert cwd != tmp_path.resolve()

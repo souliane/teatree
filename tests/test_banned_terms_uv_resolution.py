@@ -21,12 +21,14 @@ against whatever uv the developer machine really has.
 
 import json
 import sqlite3
-import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests._uv_stub import executable as _executable
+from tests._uv_stub import working_uv as _working_uv
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "hooks" / "check-banned-terms.sh"
@@ -46,32 +48,17 @@ exit 127
 """
 
 
-def _executable(path: Path, body: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
-
-
 def _broken_uv_shim(bindir: Path) -> Path:
     return _executable(bindir / "uv", _SHIM_BODY)
 
 
-def _working_uv(path: Path) -> Path:
-    """A real-enough ``uv``: answers ``--version`` and executes ``uv run --project``.
-
-    It translates ``uv run --project <root> python -m <mod> <args>`` into the
-    test runner's own interpreter with ``<root>/src`` on ``PYTHONPATH``, which
-    is what the hook needs from uv and nothing more.
-    """
+def _recording_uv(path: Path, log: Path) -> Path:
+    """A ``uv`` that answers ``--version`` and writes its own argv to *log*."""
     body = f"""#!/usr/bin/env bash
 set -euo pipefail
 if [ "${{1:-}}" = "--version" ]; then echo "uv 0.0.0-test"; exit 0; fi
-shift                 # run
-shift                 # --project
-project="$1"; shift   # <root>
-shift                 # python
-exec env "PYTHONPATH=${{project}}/src" {sys.executable} "$@"
+printf '%s\\n' "$@" > {log}
+exit 0
 """
     return _executable(path, body)
 
@@ -190,6 +177,34 @@ class TestBrokenUvShimDoesNotWedgeTheGate:
         assert result.returncode == _BANNED_TERM_EXIT, (
             f"the python3 fallback must run, got {result.returncode}\nstderr={result.stderr!r}"
         )
+
+
+@pytest.mark.integration
+class TestScanRunNeverResolvesDependencies:
+    """The per-scan ``uv run`` must not re-resolve the lockfile.
+
+    Resolution is the unbounded part of a scan, it runs on EVERY invocation, and it
+    is charged against the gate's own subprocess budget — so a slow venue turns it
+    into a timeout, and the gate blocks clean content. ``--no-sync`` is deliberately
+    NOT the flag: the hook redirects to its own ``UV_PROJECT_ENVIRONMENT`` that
+    nothing else provisions, so skipping the sync outright makes a fresh venue fail
+    closed permanently instead of intermittently.
+    """
+
+    def _recorded_argv(self, tmp_path: Path) -> list[str]:
+        log = tmp_path / "argv.txt"
+        override = _recording_uv(tmp_path / "elsewhere" / "uv", log)
+        db = _seed_db(tmp_path)
+        sample = _sample(tmp_path, "clean.txt", "nothing interesting here")
+        env = _hermetic_env(tmp_path, tmp_path / "bin", db, T3_UV=str(override))
+        _run(sample, env, cwd=tmp_path)
+        return log.read_text(encoding="utf-8").split()
+
+    def test_the_run_is_frozen(self, tmp_path: Path) -> None:
+        assert "--frozen" in self._recorded_argv(tmp_path)
+
+    def test_the_environment_is_still_synced(self, tmp_path: Path) -> None:
+        assert "--no-sync" not in self._recorded_argv(tmp_path)
 
 
 @pytest.mark.integration

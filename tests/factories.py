@@ -305,5 +305,6 @@ def serialized_pr_spec(title: str = "feat: the feature", branch: str = "feat/orp
         target_branch="",
         labels=[],
         assignee="",
+        reviewers=[],
         draft=False,
     )
