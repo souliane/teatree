@@ -296,7 +296,10 @@ SETTING_HELP: dict[str, str] = {
     "verbatim_paste_gate_enabled": "refuse a publish whose body reproduces the operator's own words verbatim",
     "unknown_repo_push_gate_enabled": "refuse a push to a repo teatree does not recognise",
     "user_identity_aliases": "other identities that are the same person as the operator",
-    "venv_idle_days": "days a checkout's virtualenv may sit untouched before it is evicted as cache",
+    "venv_idle_days": (
+        "days a checkout's virtualenv may sit untouched before it is evicted as cache — a ceiling that "
+        "decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it"
+    ),
     "watchdog_max_cost_usd": "dollars a watched run may spend before the watchdog stops it",
     "watchdog_max_runtime_seconds": "seconds a watched run may take before the watchdog stops it",
     "watchdog_max_turns": "turns a watched run may take before the watchdog stops it",

@@ -291,7 +291,7 @@ ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
 resource_pressure_cadence_minutes = 5 # int — minutes between resource-pressure checks
 resource_pressure_disabled = false # bool — stop checking resource pressure
 resource_pressure_min_free_interval_minutes = 30 # int — minutes before the same pressure alarm may fire again
-venv_idle_days = 2.0 # float — days a checkout's virtualenv may sit untouched before it is evicted as cache
+venv_idle_days = 2.0 # float — days a checkout's virtualenv may sit untouched before it is evicted as cache — a ceiling that decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it
 
 [teatree.Infrastructure."Resource pressure"."Destructive levers"]
 allow_destructive_disk = false # bool — allow disk reclamation to remove artifacts it cannot prove are rebuildable
