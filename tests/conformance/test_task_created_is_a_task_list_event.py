@@ -63,7 +63,8 @@ import hooks.scripts.hook_router as router
 from teatree.core import dispatch_admission as dispatch_admission_mod
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.models import InteractiveDispatch
-from tests.conformance._generated_artifacts import DURATIONS_CASSETTE
+from tests._generated_artifacts import DURATIONS_CASSETTE
+from tests._git_repo import make_git_repo, run_git
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INTERNALS_DOC = _REPO_ROOT / "docs" / "claude-code-internals.md"
@@ -578,12 +579,12 @@ class TestTheTrackedWalkExemptsTheGeneratedCassette:
 
     @staticmethod
     def _repo_tracking(tmp_path: Path, *relative: str) -> None:
+        make_git_repo(tmp_path)
         for name in relative:
             path = tmp_path / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{_ANCHOR} handle_thing\n")
-        for argv in (["git", "init", "-q"], ["git", "add", "-A"]):
-            subprocess.run(argv, cwd=tmp_path, check=True)
+        run_git(tmp_path, "add", "-A")
 
     def test_the_cassette_is_skipped_while_its_neighbour_is_still_walked(self, tmp_path: Path) -> None:
         self._repo_tracking(tmp_path, DURATIONS_CASSETTE, "dev/handwritten.py")

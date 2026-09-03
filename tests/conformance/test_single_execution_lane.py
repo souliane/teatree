@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.conformance._generated_artifacts import DURATIONS_CASSETTE
+from tests._generated_artifacts import DURATIONS_CASSETTE
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
