@@ -78,7 +78,8 @@ class TestCleanupEmitRecordSchema:
         assert record.verdict_source == "inconclusive"
 
     def test_the_provenance_and_uncommitted_fields_are_a_breaking_schema_change(self) -> None:
-        assert EMIT_SCHEMA_VERSION == 3, (
+        assert EMIT_SCHEMA_VERSION == 4, (
             "content_verified changes what an empty unique_commit_shas means, "
-            "and uncommitted_paths adds a second kind of work the record must carry"
+            "uncommitted_paths adds a second kind of work the record must carry, "
+            "and orphan-worktree is a kind a consumer switching on 'worktree' mis-routes"
         )
