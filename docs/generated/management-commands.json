@@ -1211,6 +1211,10 @@
           "name": "integration-review-override"
         },
         {
+          "help": "Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520)",
+          "name": "fix-record-override"
+        },
+        {
           "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
           "name": "plan-bypass"
         },

@@ -11,6 +11,7 @@ would pass every positive assertion.
 from django.test import SimpleTestCase
 
 from teatree.agents.envelope_refusal import (
+    MALFORMED_FIX_RECORD_PREFIX,
     NO_ENVELOPE_ERROR,
     NO_ENVELOPE_PREFIX,
     corrective_instruction,
@@ -57,6 +58,11 @@ class TestRecorderRefusal(SimpleTestCase):
 
     def test_matching_is_case_insensitive(self) -> None:
         assert is_recorder_refusal("RESULT MUST BE A JSON OBJECT")
+
+    def test_a_malformed_fix_record_is_a_recorder_refusal(self) -> None:
+        """#4520: it earns the one-shot corrective retry, not a page to a human."""
+        assert is_recorder_refusal(f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are blank: evidence")
+        assert not is_no_envelope_refusal(MALFORMED_FIX_RECORD_PREFIX)
 
     def test_the_runner_refusal_is_not_a_recorder_refusal(self) -> None:
         assert not is_recorder_refusal(NO_ENVELOPE_ERROR)
