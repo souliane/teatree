@@ -72,6 +72,12 @@ class TestTheWrapNeverBreaksTheReturnContract:
         slack_post_message(poster, "D_SELF", f"{_LONG_PROSE} \x0099\x00", bot_token="xoxb-bot")
         assert "\x0099\x00" in poster.bodies[0]["text"]
 
+    def test_a_digit_run_past_the_int_conversion_cap_still_returns_a_pair(self) -> None:
+        """The wrap sits OUTSIDE the try, so its totality is what holds the contract."""
+        poster = _CapturingPoster()
+        body = "\x00" + "1" * 4301 + "\x00"
+        assert slack_post_message(poster, "D_SELF", body, bot_token="xoxb-bot") == ("1.2", "")
+
 
 class TestOracleIsAntiVacuous:
     def test_the_unwrapped_body_would_have_failed_the_assertion(self) -> None:

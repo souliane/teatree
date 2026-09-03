@@ -176,6 +176,13 @@ class TestALiteralStashMarkerNeverBreaksTheTransport:
         _backend().post_message(channel="C_TEAM", text=self._MARKER_BODY)
         assert "\x0099\x00" in _posted_text(captured)
 
+    def test_a_digit_run_past_the_int_conversion_cap_posts_as_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: list[_Call] = []
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
+        body = "\x00" + "1" * 4301 + "\x00"
+        _backend().post_message(channel="C_TEAM", text=body)
+        assert _posted_text(captured) == body
+
 
 class TestCarveOutsSurviveVerbatim:
     """Breaking these would harm readability — the rule the issue carves out."""

@@ -473,6 +473,8 @@ _STASH_MARKER = "\x0099\x00"
 
 _OVER_WIDTH = "word " * 30
 
+_HUGE_DIGIT_MARKER = "\x00" + "1" * 4301 + "\x00"
+
 
 class TestALiteralStashMarkerIsBodyText:
     """A body may carry this module's own placeholder sequence as ordinary text.
@@ -497,6 +499,55 @@ class TestALiteralStashMarkerIsBodyText:
 
     def test_the_violations_oracle_reports_instead_of_raising(self) -> None:
         assert slack_line_violations(f"{_OVER_WIDTH}{_STASH_MARKER}") != []
+
+    def test_a_digit_run_past_the_int_conversion_cap_does_not_raise(self) -> None:
+        """CPython refuses a str->int conversion past 4300 digits.
+
+        The index guard cannot save an unbounded digit group: the conversion
+        runs first, so the range check is never reached.
+        """
+        assert wrap_slack_message(_HUGE_DIGIT_MARKER) == _HUGE_DIGIT_MARKER
+
+    def test_the_oracle_survives_a_digit_run_past_the_cap(self) -> None:
+        assert slack_line_violations(_HUGE_DIGIT_MARKER) == []
+
+
+class TestAnInRangeBodyMarkerResolvesToOurStash:
+    """Accepted, documented behaviour — NOT a guarantee, and deliberately pinned.
+
+    The range guard covers an index we never issued. An index the body supplied
+    that happens to be IN range still resolves to our stashed span, so a body
+    carrying ``NUL0NUL`` alongside any stashable span gets that span's content
+    pasted over its own text.
+
+    Closing this needs a sentinel the body cannot forge, and no in-band marker
+    can be one: sanitizing NUL out of the input would break the byte-for-byte
+    round-trip these transforms now guarantee, and stashing the body's own
+    markers first still loses when a later pattern absorbs one (a bare URL
+    matches across a placeholder). The sound fix is to carry protected spans
+    out of band instead of substituting them into the text — a restructure of
+    its own, not warranted by a defect nothing can currently trigger.
+
+    Reaching it at all needs a literal NUL in an outbound message body, which
+    nothing in teatree emits. These tests exist so the day someone changes it,
+    the change is visible rather than silent.
+    """
+
+    _MARKER = "\x000\x00"
+
+    def test_wrap_pastes_the_url_over_the_bodys_own_marker(self) -> None:
+        body = f"{self._MARKER} {_OVER_WIDTH} https://example.com/zzz"
+        assert wrap_slack_message(body).startswith("https://example.com/zzz")
+
+    def test_linkify_pastes_the_code_span_over_it(self) -> None:
+        assert slack_linkify(f"{self._MARKER} see `code` here") == "`code` see `code` here"
+
+    def test_normalize_pastes_the_code_span_over_it(self) -> None:
+        assert normalize_slack_message(f"{self._MARKER} see `code` here") == "`code` see `code` here"
+
+    def test_an_out_of_range_marker_is_still_left_alone(self) -> None:
+        """The guarded half — the contrast that shows what the guard does cover."""
+        assert slack_linkify(f"{_STASH_MARKER} see `code` here") == f"{_STASH_MARKER} see `code` here"
 
 
 class TestWrapPreservesABodyItNeedNotBreak:

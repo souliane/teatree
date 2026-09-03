@@ -42,7 +42,9 @@ _BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
 #: a phone and a narrow DM column, where a longer line wraps at an arbitrary point.
 WRAP_WIDTH = 90
 
-_PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
+# Bounded: CPython refuses a str->int conversion past 4300 digits, and the
+# conversion runs before any range check could reject the index.
+_PLACEHOLDER_RE = re.compile(r"\x00(\d{1,9})\x00")
 _LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+)")
 _NEVER_WRAPPED_PREFIXES = ("#",)
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
@@ -384,7 +386,13 @@ def _restore_placeholders(text: str, protected: list[str]) -> str:
 
     A message may legitimately contain the placeholder sequence; indexing the
     stash with the body's own number raised ``IndexError`` at a transport whose
-    callers are contracted a return value, not an exception.
+    callers are contracted a return value, not an exception. Total for any
+    ``str``: the pattern bounds the digit run, so the conversion cannot raise
+    either.
+
+    An index the body supplied that IS in range still resolves to our span —
+    see the accepted-behaviour tests. Closing that needs an unforgeable
+    sentinel, which no in-band marker can be.
     """
 
     def _restore(match: re.Match[str]) -> str:
