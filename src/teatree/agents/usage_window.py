@@ -3,7 +3,7 @@
 When a agent dispatch hits a usage-window limit (the ~5h rolling session limit or the
 7-day weekly limit), the old behaviour folded it into a terminal FAILED attempt and the
 headless plane went idle forever until a human poked it — the measured 7.8h loss. This
-module is the DARK, opt-in alternative gated by ``limit_autorecovery_enabled``:
+module is the alternative gated by ``limit_autorecovery_enabled``, which ships ON:
 
 - :func:`park_task_on_limit` records a :class:`~teatree.core.models.UsageWindowState` for
     the lane and PARKS the task (returns it to the queue with ``not_before`` at the window's
@@ -14,9 +14,10 @@ module is the DARK, opt-in alternative gated by ``limit_autorecovery_enabled``:
     covers a dispatch's lane, further LLM dispatches on that lane are parked the same way
     rather than burning attempts that will 429.
 
-Both are no-ops when the flag is OFF (the default), so the flag-off path is byte-identical
-to today. This module owns the ``LimitCause`` → horizon resolution (it imports
-``teatree.llm``); the domain model stays llm-free and only persists the resolved instant.
+Both are no-ops when the flag is OFF, so turning it off restores the pre-graduation
+terminal-FAILED behaviour byte for byte. This module owns the ``LimitCause`` → horizon
+resolution (it imports ``teatree.llm``); the domain model stays llm-free and only
+persists the resolved instant.
 """
 
 import dataclasses

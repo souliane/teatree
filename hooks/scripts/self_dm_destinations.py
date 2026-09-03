@@ -11,11 +11,13 @@ testable logic — the same bare-sibling pattern ``managed_repo`` /
 The overlay ids come from the DB-home ``overlays`` row; the global ``slack_user_id``
 mirrors ``notify.resolve_user_id``'s global fallback (also DB-home). ``resolved``
 distinguishes a READABLE config store with no ids (allow silently) from an
-UNREACHABLE one (fail-closed deny) via a config-store reachability probe.
+UNREACHABLE one (fail-closed deny) via a config-store reachability probe that, like
+the id reads beside it, counts the published host projection as a readable store.
 """
 
 import dataclasses
 import sys
+from types import ModuleType
 from typing import Any, cast
 
 from hooks.scripts.managed_repo import teatree_src_on_path
@@ -41,7 +43,9 @@ class SelfDmDestinations:
     ``resolved`` distinguishes a genuinely-empty configuration (nothing
     declared → ALLOW silently) from an unreadable/unparsable one
     (→ DENY fail-closed: the hook cannot self-identify the author without the
-    config, so a can't-read config must not let a self-DM through).
+    config, so a can't-read config must not let a self-DM through). An ABSENT
+    canonical DB is not unreadable: on a host the control DB lives in a container
+    volume, and the ids come from the published host projection instead.
     """
 
     ids: frozenset[str]
@@ -63,24 +67,40 @@ def overlay_slack_ids(overlays: dict[str, Any] | None) -> set[str]:
     return ids
 
 
+def _config_store_reachable(cold_reader: ModuleType) -> bool:
+    """Whether the store the id reads resolve could be READ at all.
+
+    Two ways to be reachable, because the id readers themselves have two: the canonical
+    DB answers the probe, OR — the ordinary host case, the control DB living in a
+    container volume — that DB file is simply ABSENT and ``read_setting`` serves the ids
+    from the published host projection. A canonical DB that is PRESENT but unreadable is
+    neither: its reads yield nothing and no projection fallback applies, so an empty id
+    set there is a read failure rather than a genuinely-empty config.
+    """
+    if cold_reader.row_exists(_CONFIG_STORE_PROBE, on_error=False):
+        return True
+    return not cold_reader.canonical_config_db().exists() and cold_reader.canonical_projection() is not None
+
+
 def read_self_dm_destinations() -> SelfDmDestinations:
     """Assemble the self-DM ids from the DB-home ``overlays`` registry + global ``slack_user_id``.
 
-    DB-only. ``resolved`` is ``False`` (fail-closed deny) only when the config store
-    is UNREACHABLE — a missing/locked/corrupt DB, an absent config table, or a
-    ``teatree`` that won't import; a reachable store with no ids is ``resolved`` +
-    empty (allow silently). The reachability probe (``SELECT count(*)`` against
-    ``teatree_config_setting``) always yields a row when the table exists — even
-    empty — so it separates "readable, nothing declared" from "unreadable" cleanly,
-    where the fail-open ``read_setting`` reads alone cannot. The overlay ids come
-    from the ``overlays`` row (``slack_dm_channel_id`` / ``slack_user_id`` per
-    overlay); the global ``slack_user_id`` mirrors ``notify.resolve_user_id``.
+    ``resolved`` is ``False`` (fail-closed deny) only when the config store is
+    UNREACHABLE — a locked/corrupt DB, an absent config table, an absent canonical DB
+    with no projection published, or a ``teatree`` that won't import; a reachable store
+    with no ids is ``resolved`` + empty (allow silently). The reachability probe
+    (``SELECT count(*)`` against ``teatree_config_setting``) always yields a row when
+    the table exists — even empty — so it separates "readable, nothing declared" from
+    "unreadable" cleanly, where the fail-open ``read_setting`` reads alone cannot. The
+    overlay ids come from the ``overlays`` row (``slack_dm_channel_id`` /
+    ``slack_user_id`` per overlay); the global ``slack_user_id`` mirrors
+    ``notify.resolve_user_id``.
     """
     try:
         with teatree_src_on_path():
             from teatree.config import cold_reader  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
-            if not cold_reader.row_exists(_CONFIG_STORE_PROBE, on_error=False):
+            if not _config_store_reachable(cold_reader):
                 return SelfDmDestinations(frozenset(), resolved=False)
             overlays = cold_reader.mapping_setting("overlays")
             global_user_id = cold_reader.str_setting("slack_user_id", default="")

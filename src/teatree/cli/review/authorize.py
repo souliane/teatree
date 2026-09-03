@@ -58,22 +58,34 @@ def resolve_live_authorization(*, scope: str, action: str = _POST_ACTION) -> str
         for ``(<scope>, <action>)`` — the durable human authorization a
         single ``t3 review authorize`` records.
 
+    The mode is read for the overlay that OWNS the scope's repo
+    (:func:`~teatree.cli.review.on_behalf.target_overlay`), so a multi-overlay
+    install judges a live post by the target's setting rather than the invoking
+    cwd's. Only an MR scope carries a repo — a ticket compound or a Slack ref
+    names none, and resolves ambiently exactly as before.
+
     The approval is matched but NOT consumed here — the chokepoints in
-    the post path (``check_on_behalf`` + ``check_live_post``) own the
-    single-use consume. This helper is the read-only decision used to
-    produce the user-facing refusal message.
+    the post path (``publish_on_behalf`` + ``publish_live_post``) own the
+    single-use consume, each atomically with the post it guards. This helper
+    is the read-only decision used to produce the user-facing refusal message.
     """
-    from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415 — lazy CLI import
-
-    if resolve_on_behalf_verdict(action) is OnBehalfVerdict.PROCEED:
-        return ""
-
+    from teatree.cli.review.on_behalf import target_overlay  # noqa: PLC0415 — lazy CLI import
     from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
         OnBehalfApproval,
         canonical_on_behalf_target,
     )
+    from teatree.on_behalf_gate import (  # noqa: PLC0415 — lazy CLI import
+        OnBehalfContext,
+        OnBehalfVerdict,
+        resolve_on_behalf_verdict,
+    )
 
     clean_scope = canonical_on_behalf_target(scope)
+    repo = clean_scope.split("!", 1)[0] if "!" in clean_scope else ""
+    context = OnBehalfContext(overlay=target_overlay(repo) if repo else None, target=repo)
+    if resolve_on_behalf_verdict(action, context) is OnBehalfVerdict.PROCEED:
+        return ""
+
     if OnBehalfApproval.objects.filter(target=clean_scope, action=action, consumed_at__isnull=True).exists():
         return ""
     return (

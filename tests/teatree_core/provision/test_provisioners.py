@@ -187,6 +187,31 @@ class TestApplySymlinks(TestCase):
             assert (outside / "keep.txt").read_text() == "must survive"
             assert mock_warn.call_count == 1
 
+    def test_refuses_a_path_whose_in_tree_parent_symlinks_outside(self) -> None:
+        # B10_core_misc-1: lexical containment alone passed ``<base>/hop/x`` while
+        # ``<base>/hop`` was a symlink out of the worktree, so the copy engine's
+        # rmtree landed on the LINK TARGET's child.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "worktree"
+            base.mkdir()
+            outside = Path(tmp) / "sibling"
+            outside.mkdir()
+            (outside / "doomed").mkdir()
+            (outside / "doomed" / "keep.txt").write_text("must survive", encoding="utf-8")
+            (base / "hop").symlink_to(outside)
+            source_dir = Path(tmp) / "src"
+            source_dir.mkdir()
+
+            with patch.object(provisioners_mod.logger, "warning") as mock_warn:
+                created = apply_symlinks(
+                    [{"path": "hop/doomed", "source": str(source_dir), "mode": "copy"}],
+                    str(base),
+                )
+
+            assert created == []
+            assert (outside / "doomed" / "keep.txt").read_text() == "must survive"
+            assert mock_warn.call_count == 1
+
     def test_allows_nested_relative_path_inside_the_worktree(self) -> None:
         """A normal nested relative path stays inside the worktree and is applied."""
         with tempfile.TemporaryDirectory() as tmp:

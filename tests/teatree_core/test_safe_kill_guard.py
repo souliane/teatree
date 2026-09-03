@@ -11,8 +11,13 @@ reads ``~/.claude/sessions`` + the Task ORM). The guard logic itself is never
 mocked, so the must-refuse cases go red if the guard is bypassed.
 """
 
+import json
+import time
+from pathlib import Path
+
 import pytest
 
+from teatree.core import safe_kill as safe_kill_module
 from teatree.core.safe_kill import Liveness, SafeKillError, TargetIdentity, evaluate_safe_kill, safe_kill
 
 _DEAD_LIVENESS = Liveness(stat="Z", cpu_sample_1=0.0, cpu_sample_2=0.0, output_advanced=False)
@@ -195,3 +200,97 @@ def _expected_signal() -> int:
     import signal  # noqa: PLC0415
 
     return signal.SIGTERM
+
+
+def _write_session_file(directory: Path, *, session_id: str, pid: int, started_at_ms: float | None) -> None:
+    payload: dict[str, object] = {"sessionId": session_id, "pid": pid}
+    if started_at_ms is not None:
+        payload["startedAt"] = started_at_ms
+    (directory / f"{session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+class TestSessionIdForPid:
+    """The production pid→session resolution must survive pid reuse (B07_core_root_b-2)."""
+
+    @pytest.fixture(autouse=True)
+    def sessions_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        monkeypatch.setattr(safe_kill_module, "_CLAUDE_SESSIONS_DIR", sessions)
+        return sessions
+
+    def test_resolves_the_session_whose_process_predates_the_record(
+        self, sessions_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started = (time.time() - 600) * 1000
+        _write_session_file(sessions_dir, session_id="sess-live", pid=4242, started_at_ms=started)
+        monkeypatch.setattr(safe_kill_module, "_process_age_seconds", lambda _pid: 600.0)
+
+        assert safe_kill_module._session_id_for_pid(4242) == "sess-live"
+
+    def test_refuses_a_reused_pid_whose_process_is_younger_than_the_record(
+        self, sessions_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started = (time.time() - 86_400) * 1000
+        _write_session_file(sessions_dir, session_id="sess-yesterday", pid=4242, started_at_ms=started)
+        monkeypatch.setattr(safe_kill_module, "_process_age_seconds", lambda _pid: 12.0)
+
+        assert safe_kill_module._session_id_for_pid(4242) == ""
+
+    def test_refuses_a_record_with_no_start_stamp_to_verify_against(
+        self, sessions_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_session_file(sessions_dir, session_id="sess-unstamped", pid=4242, started_at_ms=None)
+        monkeypatch.setattr(safe_kill_module, "_process_age_seconds", lambda _pid: 600.0)
+
+        assert safe_kill_module._session_id_for_pid(4242) == ""
+
+    def test_refuses_when_the_process_age_cannot_be_read(
+        self, sessions_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started = (time.time() - 600) * 1000
+        _write_session_file(sessions_dir, session_id="sess-live", pid=4242, started_at_ms=started)
+        monkeypatch.setattr(safe_kill_module, "_process_age_seconds", lambda _pid: None)
+
+        assert safe_kill_module._session_id_for_pid(4242) == ""
+
+
+class TestProcessAgeParsing:
+    @pytest.mark.parametrize(
+        ("etime", "expected"),
+        [("07", 7.0), ("01:30", 90.0), ("02:01:30", 7290.0), ("1-02:01:30", 93_690.0)],
+    )
+    def test_parses_every_ps_etime_shape(self, etime: str, expected: float) -> None:
+        assert safe_kill_module._parse_etime(etime) == expected
+
+    @pytest.mark.parametrize("etime", ["", "  ", "not-a-time", "1-2-3:04:05"])
+    def test_unparseable_etime_is_unknown(self, etime: str) -> None:
+        assert safe_kill_module._parse_etime(etime) is None
+
+
+class TestOutputAdvanced:
+    """The production sampler must MEASURE transcript growth, not assert it away (B07_core_root_b-1)."""
+
+    def test_reports_output_advanced_when_the_transcript_grew(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        projects = tmp_path / "projects" / "some-repo"
+        projects.mkdir(parents=True)
+        transcript = projects / "sess-live.jsonl"
+        transcript.write_text("one\n", encoding="utf-8")
+        monkeypatch.setattr(safe_kill_module, "_CLAUDE_PROJECTS_DIR", tmp_path / "projects")
+
+        before = safe_kill_module._transcript_size("sess-live")
+        transcript.write_text("one\ntwo\n", encoding="utf-8")
+        after = safe_kill_module._transcript_size("sess-live")
+
+        assert before is not None
+        assert after is not None
+        assert after > before
+
+    def test_missing_transcript_is_unknown_not_a_zero_measurement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(safe_kill_module, "_CLAUDE_PROJECTS_DIR", tmp_path / "projects")
+
+        assert safe_kill_module._transcript_size("sess-absent") is None

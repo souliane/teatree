@@ -100,10 +100,11 @@ Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 | `project` | Run E2E tests from the project's own test directory |
 | `lanes` | Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329) |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
-| `post-test-plan` | Post (or update) the ticket's single test-plan note from a manifest |
+| `in-tree` | Run a Playwright config that lives in THIS checkout's e2e dir — no stack, no credentials |
+| `write-test-plan` | Write (or update) the ticket's plan at ``test-plans/<repo>-<ticket>.md`` in the e2e repo |
+| `verify-plan-captures` | Verify every capture committed under ``test-plans/evidence/`` passes the preflight |
+| `write-plan-from-seams` | Assemble the ``scenario-plan`` file from the overlay seams instead of a manifest (#3329) |
 | `tracked-manifest` | Print a manifest's authored half (run provenance stripped) for a private test repo to commit |
-| `retract-evidence` | Withdraw the ticket's single test-plan note |
-| `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
 ## `env`
 
@@ -180,6 +181,7 @@ Hand all current work from this session to another session.
 | Subcommand | Description |
 | --- | --- |
 | `seed` | Consolidate the configured ``user_identity_aliases`` into the DB (idempotent) |
+| `bootstrap` | Derive ``user_identity_aliases`` from the forge logins this venue authenticates as |
 | `add` | Add a trusted identity (idempotent on ``(platform, handle)``) |
 | `remove` | Remove a trusted identity by ``(platform, handle)`` |
 | `list` | List all trusted identities |
@@ -212,7 +214,7 @@ Group root — forces sub-commands to be addressed by name.
 | `clear-ledger` | Clear a reused ticket's stale phase ledger (sanctioned session-retire) |
 | `record-review-skill-run` | Record durable evidence that the deep-review ``skill`` ran (#1539) |
 | `record-review-context` | Record durable evidence the referenced context was retrieved + analyzed |
-| `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
+| `record-e2e-run` | Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
 ## `loop_directive_set`
@@ -467,6 +469,7 @@ Group root — forces sub-commands to be addressed by name.
 | `record` | Persist a cold-review verdict for a PR at an exact reviewed SHA |
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
 | `findings` | Print the recorded findings for *mr_url* — the surface a HOLD is acted on through |
+| `apply-reviewer-policy` | Put the overlay's configured reviewers on this repo's open bot-authored MRs |
 | `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
 | `publish-findings` | Post a recorded verdict's findings to its PR, so the author sees them where the work is |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
@@ -589,6 +592,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
+| `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |
 | `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
 | `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
@@ -596,6 +600,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
+| `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
@@ -645,7 +650,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 
 | Subcommand | Description |
 | --- | --- |
-| `ticket` | Create or update a ticket and trigger worktree provisioning |
+| `ticket` | Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932) |
 | `provision` | Provision every worktree in the current ticket workspace, in parallel |
 | `start` | Start docker for every worktree in the current ticket workspace |
 | `ready` | Run readiness probes for every worktree in the ticket workspace |

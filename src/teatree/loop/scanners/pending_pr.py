@@ -41,18 +41,37 @@ class PendingPrDrainScanner:
         from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
 
         try:
+            retired = PendingPullRequest.objects.retire_absent()
             owed = list(PendingPullRequest.objects.order_by("deferred_at")[: self.limit])
         except (OperationalError, ProgrammingError):
             logger.info("PendingPrDrainScanner: PendingPullRequest unavailable (DB not migrated yet) — skipping")
             return []
+        signals = self._retirement_signals(retired)
         discharged = sum(1 for row in owed if self._drain_one(row))
-        if discharged == 0:
+        if discharged:
+            signals.append(
+                ScanSignal(
+                    kind="pending_pr.drained",
+                    summary=f"opened {discharged}/{len(owed)} deferred pull request(s)",
+                    payload={"discharged": discharged, "owed": len(owed)},
+                ),
+            )
+        return signals
+
+    @staticmethod
+    def _retirement_signals(retired: list[tuple[int, str, str]]) -> list[ScanSignal]:
+        """Announce the obligations whose checkout is gone — once, since the row is deleted."""
+        if not retired:
             return []
+        for pk, branch, repo_path in retired:
+            logger.warning(
+                "PendingPrDrainScanner: retired obligation %s for %s — checkout %s is gone", pk, branch, repo_path
+            )
         return [
             ScanSignal(
-                kind="pending_pr.drained",
-                summary=f"opened {discharged}/{len(owed)} deferred pull request(s)",
-                payload={"discharged": discharged, "owed": len(owed)},
+                kind="pending_pr.retired",
+                summary=f"retired {len(retired)} pull-request obligation(s) whose checkout is gone",
+                payload={"retired": [{"id": pk, "branch": branch, "repo_path": path} for pk, branch, path in retired]},
             ),
         ]
 

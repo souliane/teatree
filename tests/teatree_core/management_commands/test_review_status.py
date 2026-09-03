@@ -21,6 +21,7 @@ constant, so a producer that went back to saying "failed" fails them.
 
 import json
 from collections.abc import Callable
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from django.test import TestCase
 from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear, ReviewVerdict
+from teatree.core.review.verdict_findings import FindingsRenderError
 from tests.factories import TicketFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -57,6 +59,15 @@ def _record(**overrides: object) -> dict[str, object]:
         "dict[str, object]",
         call_command("review", "record", "1680", "souliane/teatree", **kwargs),
     )
+
+
+def _refused_record(**overrides: object) -> str:
+    """The stderr of a refused ``review record``, asserting the nonzero exit (#932)."""
+    err = StringIO()
+    with pytest.raises(SystemExit) as exc:
+        _record(stderr=err, **overrides)
+    assert exc.value.code == 1
+    return err.getvalue()
 
 
 def _status(*, head: str, checks: str = "green") -> dict[str, object]:
@@ -128,26 +139,19 @@ class TestRecordCommand(TestCase):
 
     def test_record_merge_safe_on_red_checks_is_refused(self) -> None:
         # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result (even expedited).
-        result = _record(gh_verify_result="failed")
-        assert not result["recorded"]
-        assert "never carry gh_verify_result=failed" in cast("str", result["error"])
+        assert "never carry gh_verify_result=failed" in _refused_record(gh_verify_result="failed")
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_invalid_findings_json_is_refused(self) -> None:
-        result = _record(findings_json="{not json")
-        assert not result["recorded"]
+        assert _refused_record(findings_json="{not json")
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_non_array_findings_json_is_refused(self) -> None:
-        result = _record(findings_json='{"severity": "nit"}')
-        assert not result["recorded"]
-        assert "array" in cast("str", result["error"]).lower()
+        assert "array" in _refused_record(findings_json='{"severity": "nit"}').lower()
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_with_unknown_ticket_id_is_refused(self) -> None:
-        result = _record(ticket_id=999999)
-        assert not result["recorded"]
-        assert "not found" in cast("str", result["error"]).lower()
+        assert "not found" in _refused_record(ticket_id=999999).lower()
         assert ReviewVerdict.objects.count() == 0
 
 
@@ -247,11 +251,17 @@ class TestRecordDiffScopeGate(TestCase):
         ):
             return _record(verdict="hold", findings_json=self._SRC_FINDING, **overrides)
 
-    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
-        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+    def _refused_src_finding(self, changed: ChangedFileSet, **overrides: object) -> str:
+        err = StringIO()
+        with pytest.raises(SystemExit) as exc:
+            self._record_src_finding(changed, stderr=err, **overrides)
+        assert exc.value.code == 1
+        return err.getvalue()
 
-        assert not result["recorded"]
-        assert "t3 review merge-tree" in cast("str", result["error"])
+    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
+        refusal = self._refused_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+
+        assert "t3 review merge-tree" in refusal
         assert ReviewVerdict.objects.count() == 0
 
     def test_the_merge_result_retake_flag_records_the_same_finding(self) -> None:
@@ -314,3 +324,68 @@ class TestUnreadableForgeIsNotAVerdict(TestCase):
         _status(head=HEAD_SHA_UNREADABLE)
         assert _status(head=_REVIEWED, checks="green")["state"] == "safe_to_approve"
         assert ReviewVerdict.objects.count() == 1
+
+
+class TestStatusDegradesOnUnrenderableFindings(TestCase):
+    """`review status` answers; `review findings` still refuses (#4575).
+
+    Whether a finding RENDERS is unrelated to whether the head is SAFE TO APPROVE, so an
+    unrenderable display row must not turn a read-only gate into a blocked decision. Both
+    rows below were reproduced live during a cold review; they are written past the guarded
+    factory because that is how legacy rows reached the column.
+    """
+
+    def _record_findings(self, findings: object) -> None:
+        _record()
+        ReviewVerdict.objects.filter(reviewed_sha=_REVIEWED).update(findings=findings)
+
+    def test_status_returns_its_verdict_when_a_findings_row_is_a_non_dict(self) -> None:
+        self._record_findings([{"severity": "nit", "summary": "ok"}, "just a string"])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings"] == []
+        assert result["findings_count"] == 2
+        assert "finding 1 is str" in cast("str", result["findings_error"])
+
+    def test_status_returns_its_verdict_when_a_findings_row_has_an_empty_summary(self) -> None:
+        self._record_findings([{"severity": "blocker", "summary": "   ", "file": "a.py", "line": 1}])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 1
+        assert "empty summary" in cast("str", result["findings_error"])
+
+    def test_status_returns_its_verdict_when_findings_is_not_a_list(self) -> None:
+        self._record_findings({"severity": "nit", "summary": "x"})
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 0
+        assert result["findings_error"]
+
+    def test_a_hold_over_unrenderable_findings_still_reports_not_safe(self) -> None:
+        _record(verdict="hold", gh_verify_result="failed")
+        ReviewVerdict.objects.filter(reviewed_sha=_REVIEWED).update(findings=["just a string"])
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "not_safe"
+        assert result["verdict"] == ReviewVerdict.Verdict.HOLD
+
+    def test_a_well_formed_findings_row_is_unchanged(self) -> None:
+        _record(findings_json='[{"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9}]')
+        result = _status(head=_REVIEWED, checks="green")
+        assert result["state"] == "safe_to_approve"
+        assert result["findings_count"] == 1
+        assert cast("list[dict[str, object]]", result["findings"])[0]["summary"] == "rename x"
+        assert "findings_error" not in result
+
+    def _assert_findings_refuses(self, findings: object, expected: str) -> None:
+        self._record_findings(findings)
+        with pytest.raises(FindingsRenderError) as exc:
+            call_command("review", "findings", _URL)
+        assert expected in str(exc.value)
+
+    def test_review_findings_still_raises_on_a_non_dict_row(self) -> None:
+        self._assert_findings_refuses([{"severity": "nit", "summary": "ok"}, "just a string"], "finding 1 is str")
+
+    def test_review_findings_still_raises_on_an_empty_summary_row(self) -> None:
+        self._assert_findings_refuses(
+            [{"severity": "blocker", "summary": "  ", "file": "a.py", "line": 1}], "empty summary"
+        )

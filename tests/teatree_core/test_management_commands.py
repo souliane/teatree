@@ -926,6 +926,15 @@ class TestFollowupCommands(TestCase):
         assert "prs_found" in printed
 
 
+def _refused_transition(ticket_id: int, transition_name: str) -> str:
+    """The stderr of a refused ``ticket transition``, asserting the nonzero exit (#932)."""
+    err = io.StringIO()
+    with pytest.raises(SystemExit) as exc:
+        call_command("ticket", "transition", ticket_id, transition_name, stderr=err)
+    assert exc.value.code == 1
+    return err.getvalue()
+
+
 class TestTicketCommand(TestCase):
     """Tests for the ticket management command (transition + list)."""
 
@@ -937,44 +946,29 @@ class TestTicketCommand(TestCase):
         )
         assert result["state"] == Ticket.State.SCOPED
 
-    def test_transition_unknown_returns_error(self) -> None:
+    def test_transition_unknown_exits_nonzero(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
-        result = cast(
-            "dict[str, object]",
-            call_command("ticket", "transition", ticket.pk, "nonexistent"),
-        )
-        assert "Unknown transition" in str(result["error"])
+        assert "Unknown transition" in _refused_transition(ticket.pk, "nonexistent")
 
-    def test_transition_not_found_returns_error(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command("ticket", "transition", 99999, "scope"),
-        )
-        assert "not found" in str(result["error"])
+    def test_transition_not_found_exits_nonzero(self) -> None:
+        assert "not found" in _refused_transition(99999, "scope")
 
-    def test_transition_not_allowed_returns_error(self) -> None:
+    def test_transition_not_allowed_exits_nonzero(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
-        result = cast(
-            "dict[str, object]",
-            call_command("ticket", "transition", ticket.pk, "code"),
-        )
-        assert "not allowed" in str(result["error"])
+        assert "not allowed" in _refused_transition(ticket.pk, "code")
 
-    def test_transition_dod_refusal_returns_error_not_traceback(self) -> None:
+    def test_transition_dod_refusal_exits_nonzero_not_traceback(self) -> None:
         # #1652: a ship transition whose body raises DodLocalE2EError
         # (an InvalidTransitionError, disjoint from TransitionNotAllowed)
-        # returns a refusal error carrying the reason; the FSM stays put.
+        # surfaces the reason; the FSM stays put.
         from teatree.core.gates.dod_gate import DodLocalE2EError  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
         reason = "UI-visible ticket has no local-stack E2E"
         with patch.object(Ticket, "ship", side_effect=DodLocalE2EError(reason)):
-            result = cast(
-                "dict[str, object]",
-                call_command("ticket", "transition", ticket.pk, "ship"),
-            )
-        assert "refused" in str(result["error"])
-        assert reason in str(result["error"])
+            refusal = _refused_transition(ticket.pk, "ship")
+        assert "refused" in refusal
+        assert reason in refusal
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
 

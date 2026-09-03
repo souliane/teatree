@@ -150,27 +150,40 @@ def _looks_like_duration(word: str) -> bool:
     return bool(body) and body.replace(".", "", 1).isdigit()
 
 
-def _shape_of(command: str, depth: int = 0) -> _WaitShape:
-    """The wait shape of *command*, following shell-runner nesting to ``_MAX_NESTING``."""
-    shape = _WaitShape(has_loop=False, has_sleep=False, has_bound=_has_bound_marker(command))
+def _has_unbounded_unit(command: str, depth: int = 0) -> bool:
+    """Whether any WAIT UNIT in *command* loops-and-sleeps with no bound of its own.
+
+    A unit is one shell string: this level's own segment stream, plus — one unit
+    each — every string a shell runner at this level executes. Judging units
+    separately is what stops a bound in one from vouching for a loop in another.
+    A ``timeout`` wrapper bounds ONLY the runner string it wraps (``timeout 1800
+    bash -c '<loop>'``); it cannot bound a loop at this level, because ``timeout``
+    runs a program and a shell loop keyword is not one. Merging it into a
+    whole-command verdict let ``timeout 5 <anything>; until <cond>; do sleep 1;
+    done`` — an unrelated deadline followed by a real runaway — read as bounded.
+    """
+    own = _WaitShape(has_loop=False, has_sleep=False, has_bound=_has_bound_marker(command))
     for segment in split_commands(tokenize(command)):
         words = [token.value for token in segment if token.kind is TokenKind.WORD]
         effective, timed = _strip_leading_noise(words)
-        shape = shape.merged_with(_WaitShape(has_loop=False, has_sleep=False, has_bound=timed))
         if not effective:
             continue
         head = effective[0]
-        shape = shape.merged_with(
+        own = own.merged_with(
             _WaitShape(
                 has_loop=head in _UNBOUNDED_LOOP_KEYWORDS,
                 has_sleep=head == "sleep",
                 has_bound=False,
             )
         )
-        if head in _SHELL_RUNNERS and depth < _MAX_NESTING:
-            for nested in effective[1:]:
-                shape = shape.merged_with(_shape_of(nested, depth + 1))
-    return shape
+        if (
+            not timed
+            and head in _SHELL_RUNNERS
+            and depth < _MAX_NESTING
+            and any(_has_unbounded_unit(nested, depth + 1) for nested in effective[1:])
+        ):
+            return True
+    return own.has_loop and own.has_sleep and not own.has_bound
 
 
 def _has_bound_marker(command: str) -> bool:
@@ -181,17 +194,18 @@ def _has_bound_marker(command: str) -> bool:
 def detect_unbounded_wait(command: str) -> UnboundedWaitDetection:
     """Return a detection for *command*; ``is_unbounded_wait`` True iff it waits forever.
 
-    A command is an unbounded wait when it opens an ``until``/``while`` loop whose
-    body sleeps and carries no bound in any of the recognised forms (a ``timeout``
-    wrapper, the ``SECONDS`` builtin, a ``date +%s`` epoch deadline, or a ``$PPID``
-    test tying the loop to its own session's lifetime). ``timeout`` is recognised at
-    a command position — including as the wrapper around a ``bash -c`` that holds the
-    loop — so a bounded wait written in any of those shapes passes through untouched.
+    A command is an unbounded wait when any of its wait units
+    (:func:`_has_unbounded_unit`) opens an ``until``/``while`` loop whose body
+    sleeps and carries no bound of its own in any of the recognised forms (a
+    ``timeout`` wrapper around the runner holding it, the ``SECONDS`` builtin, a
+    ``date +%s`` epoch deadline, or a ``$PPID`` test tying the loop to its own
+    session's lifetime). ``timeout`` is recognised at a command position —
+    including as the wrapper around a ``bash -c`` that holds the loop — so a
+    bounded wait written in any of those shapes passes through untouched.
     """
     if not command.strip():
         return UnboundedWaitDetection(is_unbounded_wait=False, message="")
-    shape = _shape_of(command)
-    if shape.has_loop and shape.has_sleep and not shape.has_bound:
+    if _has_unbounded_unit(command):
         return UnboundedWaitDetection(is_unbounded_wait=True, message=_BLOCK_MSG)
     return UnboundedWaitDetection(is_unbounded_wait=False, message="")
 

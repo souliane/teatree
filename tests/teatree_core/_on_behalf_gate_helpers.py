@@ -29,6 +29,13 @@ Three are exported because the direction and the consumers differ:
     env var for the lifetime of the test using pytest's ``monkeypatch``
     fixture, so an autouse fixture can call it without context-manager
     scoping.
+
+A mode is only HALF the precondition on the review surface, where the post names
+its target repo: the verdict reads the mode of the overlay that OWNS that repo,
+and a target no overlay owns has no overlay tier of its own — inheriting the
+ambient overlay's is the mis-attribution the gate closes, so a pin set for an
+overlay never reaches a throwaway ``org/repo``. :data:`OWNED_REPO` supplies the
+other half, making the pin a test sets the one the gate actually reads.
 """
 
 import os
@@ -41,6 +48,11 @@ import pytest
 _MODE_ENV = "T3_ON_BEHALF_POST_MODE"
 _MODE_IMMEDIATE_ENV = "immediate"
 _MODE_GATE_ON_ENV = "draft_or_ask"
+
+#: A review target the gate can read a mode FOR — owned by ``t3-teatree``, the
+#: in-repo overlay ``tests/conftest.py`` pins (its ``get_workspace_repos()``
+#: lists ``teatree``).
+OWNED_REPO = "souliane/teatree"
 
 
 @contextmanager

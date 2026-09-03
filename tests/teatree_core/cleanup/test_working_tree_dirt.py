@@ -90,16 +90,21 @@ class TestRealUncommittedReasons:
         boom = CommandFailedError(["git", "status"], 1, "", "index locked")
         with (
             patch("teatree.core.cleanup.working_tree_dirt.git.check", return_value=True),
-            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain_strict", side_effect=boom),
+            patch("teatree.core.cleanup.working_tree_dirt.git.run_strict", side_effect=boom),
         ):
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons == [f"could not read working-tree status ({boom}) — keeping"]
 
     def test_blank_porcelain_line_is_skipped(self, tmp_path: Path) -> None:
         wt_dir, target = _committed_worktree(tmp_path)
+
+        def fake_run_strict(*, repo: str, args: list[str]) -> str:
+            del repo
+            return "\n M real.py" if "status" in args else ""
+
         with (
             patch("teatree.core.cleanup.working_tree_dirt.git.check", return_value=True),
-            patch("teatree.core.cleanup.working_tree_dirt.git.status_porcelain_strict", return_value="\n M real.py"),
+            patch("teatree.core.cleanup.working_tree_dirt.git.run_strict", side_effect=fake_run_strict),
         ):
             reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert len(reasons) == 1
@@ -224,3 +229,43 @@ class TestDanglingHeadDirtReasons:
         reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons != []
         assert "keeping" in reasons[0]
+
+
+class TestOrchestrationDebrisClassification:
+    """Only a fixed, narrow list of known-ephemeral orchestration paths is debris.
+
+    Anything else reads as
+    debris; anything unrecognised — including everything else under ``.claude/``,
+    which holds REAL tracked skills and settings in product repos — is real work.
+    """
+
+    def test_debris_only_checkout_reads_clean(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        (wt_dir / ".claude" / "worktrees" / "agent-1").mkdir(parents=True)
+        (wt_dir / ".claude" / "worktrees" / "agent-1" / "scratch.txt").write_text("tmp\n", encoding="utf-8")
+        (wt_dir / ".secfix").mkdir()
+        (wt_dir / ".secfix" / "state.json").write_text("{}\n", encoding="utf-8")
+
+        assert real_uncommitted_reasons(str(wt_dir), target) == []
+
+    def test_claude_settings_is_real_work(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        (wt_dir / ".claude").mkdir()
+        (wt_dir / ".claude" / "settings.json").write_text("{}\n", encoding="utf-8")
+
+        assert real_uncommitted_reasons(str(wt_dir), target)
+
+    def test_nested_claude_skill_is_real_work(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        skill = wt_dir / "e2e" / ".claude" / "skills" / "commit"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# real authored skill\n", encoding="utf-8")
+
+        assert real_uncommitted_reasons(str(wt_dir), target)
+
+    def test_untracked_only_source_file_is_real_work(self, tmp_path: Path) -> None:
+        """The tenant-override-hygiene shape: a test file existing on NO ref anywhere."""
+        wt_dir, target = _committed_worktree(tmp_path)
+        (wt_dir / "test_new_behaviour.py").write_text("def test_it(): ...\n", encoding="utf-8")
+
+        assert real_uncommitted_reasons(str(wt_dir), target)

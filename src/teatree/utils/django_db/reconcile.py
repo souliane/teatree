@@ -28,18 +28,44 @@ from typing import TextIO
 RECONCILE_OK = "T3_RECONCILE_OK"
 RECONCILE_SKIP = "T3_RECONCILE_SKIP"
 
-_CONFIG_ERROR_MARKERS = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
+#: A Python module or a settings module the interpreter could not import.
+_MISSING_PYTHON_MARKERS = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
+
+#: A native shared library the loader could not open, in the four wordings the
+#: ecosystem emits: glibc's ``ld.so``, ``ctypes.util.find_library`` consumers
+#: (python-magic verbatim), ``cffi``/``ctypes.CDLL``, and macOS ``dyld``. A bare
+#: ``ImportError`` is deliberately absent — a circular import raises one too, and
+#: that is app code, not a package the image is missing.
+_MISSING_NATIVE_LIBRARY_MARKERS = (
+    "cannot open shared object file",
+    "failed to find lib",
+    "cannot load library",
+    "Library not loaded:",
+)
+
+_CONFIG_ERROR_MARKERS = _MISSING_PYTHON_MARKERS + _MISSING_NATIVE_LIBRARY_MARKERS
+
+#: A program name ``PATH`` could not resolve — the exec form of ``FileNotFoundError``
+#: (``patchy`` shelling out to ``patch`` at Django startup is the case that cost two
+#: provisions). The quoted target must be a bare name: a separator or a suffix means
+#: the APP named a data file, which is its own bug rather than a missing package.
+_MISSING_PROGRAM_RE = re.compile(r"No such file or directory: '[^'/.]+'")
 
 
 def is_config_error(combined: str) -> bool:
-    """True iff *combined* migrate output looks like an import/config failure.
+    """True iff *combined* migrate output blames the ENVIRONMENT, not the app's code.
 
-    These markers signal the interpreter could not import the app's
-    dependencies or settings — the unverified-venv signature that gates the
-    dockerized fallback, the unfakeable-migration skip, and (here) the refusal
-    to reconcile on an unverified venv.
+    The interpreter could not import the app's Python dependencies or settings,
+    could not load a native library, or could not resolve a program name — every
+    one of them an artifact the IMAGE owns. That is the unverified-venv signature
+    gating the dockerized fallback, the unfakeable-migration skip, and (here) the
+    refusal to reconcile.
+
+    Kept narrow deliberately: all three consumers read a True as "do not trust
+    this interpreter", so an app error misread as one is masked rather than
+    reported.
     """
-    return any(m in combined for m in _CONFIG_ERROR_MARKERS)
+    return any(m in combined for m in _CONFIG_ERROR_MARKERS) or bool(_MISSING_PROGRAM_RE.search(combined))
 
 
 #: Django's ``check_consistent_history`` raises ``InconsistentMigrationHistory``

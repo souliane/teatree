@@ -32,7 +32,8 @@ _TEMPLATES: dict[str, list[str]] = {
     "callout": ["> {text}", ""],
     "divider": ["---", ""],
     # A ``table`` renders as nothing itself — its ``table_row`` children carry
-    # every cell, and they are reached through the has-children walk.
+    # every cell, and they are reached through the has-children walk at the
+    # table's OWN indent, because a row is the table's content, not nested under it.
     "table": [],
 }
 
@@ -102,8 +103,9 @@ class BlockMarkdownRenderer:
         payload = cast("RawAPIDict", body) if isinstance(body, dict) else {}
         pad = "  " * indent
         rendered = [pad + line for line in self._lines_for(block_type, payload, ordinal=ordinal)]
-        if block.get("has_children") and block_type != "table":
-            nested = self.render(self._children_of(str(block.get("id", ""))), indent=indent + 1)
+        if block.get("has_children"):
+            child_indent = indent if block_type == "table" else indent + 1
+            nested = self.render(self._children_of(str(block.get("id", ""))), indent=child_indent)
             if nested:
                 rendered.append(nested)
         return rendered

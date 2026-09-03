@@ -14,7 +14,10 @@ import django.test
 from django.utils import timezone
 
 from teatree.core.factory.merge_backlog import (
+    ClearStanding,
+    OutstandingClear,
     clear_is_superseded,
+    outstanding_clear_rows,
     superseding_context,
     unconsumed_actionable_clear_rows,
     unconsumed_actionable_clears,
@@ -117,3 +120,78 @@ class BacklogRowsTests(django.test.TestCase):
 
         assert [row.pr_id for row in rows] == [row.pr_id for row in report]
         assert [row.issued_at for row in rows] == sorted(row.issued_at for row in rows)
+
+
+class OutstandingClearLedgerTests(django.test.TestCase):
+    """The unnarrowed read: a row the backlog drops must still be enumerable.
+
+    The teeth are the two negative assertions. Each case first proves the row is
+    ABSENT from ``unconsumed_actionable_clear_rows`` — the population the backlog,
+    the S4 staleness trip, ``t3 doctor check`` and ``reconcile-clears`` all share —
+    and only then that ``outstanding_clear_rows`` returns it. Without the absence
+    half the test would pass against a ledger that merely re-exported the backlog,
+    which is the exact bug it exists to pin.
+    """
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+
+    def _refs(self, rows: list[OutstandingClear]) -> set[tuple[str, ClearStanding]]:
+        return {(row.ref, row.standing) for row in rows}
+
+    def test_an_incomplete_mis_issue_is_invisible_to_the_backlog_and_listed_here(self) -> None:
+        # A CLEAR issued with no reviewer identity can never authorise a merge, so
+        # `is_actionable()` drops it — and with it every surface that reads the backlog.
+        mis_issued = MergeClearFactory(
+            ticket=None,
+            pr_id=223,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="",
+            issued_at=self.now - timedelta(hours=3),
+        )
+
+        assert mis_issued.is_actionable() is False
+        assert unconsumed_actionable_clear_rows("") == []
+
+        rows = outstanding_clear_rows("")
+        assert self._refs(rows) == {("souliane/teatree#223", ClearStanding.INCOMPLETE)}
+        assert rows[0].pk == mis_issued.pk
+
+    def test_a_superseded_reissue_is_invisible_to_the_backlog_and_listed_here(self) -> None:
+        # The corrected reissue is what the merge loop acts on; the original stands
+        # unconsumed forever and is filtered out of the backlog as "moved past".
+        superseded = MergeClearFactory(
+            ticket=None,
+            pr_id=224,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            issued_at=self.now - timedelta(hours=5),
+        )
+        reissue = MergeClearFactory(
+            ticket=None,
+            pr_id=224,
+            slug="souliane/teatree",
+            reviewed_sha="b" * 40,
+            issued_at=self.now - timedelta(hours=1),
+        )
+
+        backlog = unconsumed_actionable_clear_rows("")
+        assert [clear.pk for clear in backlog] == [reissue.pk]
+
+        rows = outstanding_clear_rows("")
+        assert [row.pk for row in rows] == [superseded.pk, reissue.pk]
+        assert rows[0].standing is ClearStanding.SUPERSEDED
+        assert rows[1].standing is ClearStanding.LIVE
+
+    def test_a_consumed_clear_is_not_outstanding(self) -> None:
+        MergeClearFactory(
+            ticket=None,
+            pr_id=240,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            issued_at=self.now - timedelta(hours=9),
+            consumed_at=self.now,
+        )
+
+        assert outstanding_clear_rows("") == []

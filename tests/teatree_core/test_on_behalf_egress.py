@@ -152,7 +152,7 @@ class TestColleagueGate(TestCase):
         )
         assert response == {"ok": True}
         assert fake.react_routed_calls == [(_COLLEAGUE, "1.1", "merge")]
-        ping = BotPing.objects.get(idempotency_key=f"on_behalf_post:{_TARGET}:merge_reaction")
+        ping = BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{_TARGET}:merge_reaction")
         assert ping.status == BotPing.Status.SENT
 
     def test_post_fires_once_and_audits_with_recorded_approval(self) -> None:
@@ -166,7 +166,7 @@ class TestColleagueGate(TestCase):
         )
         assert fake.post_routed_calls == [(_COLLEAGUE, "day-1 nag", "")]
         assert BotPing.objects.filter(
-            idempotency_key=f"on_behalf_post:{_TARGET}:review_nag_post",
+            idempotency_key__startswith=f"on_behalf_post:{_TARGET}:review_nag_post",
         ).exists()
 
     def test_approval_consumed_single_use(self) -> None:
@@ -284,7 +284,7 @@ class TestAuditOnlyOnRealSuccess(TestCase):
             action="merge_reaction",
         )
         assert BotPing.objects.filter(
-            idempotency_key=f"on_behalf_post:{_TARGET}:merge_reaction",
+            idempotency_key__startswith=f"on_behalf_post:{_TARGET}:merge_reaction",
         ).exists()
 
 

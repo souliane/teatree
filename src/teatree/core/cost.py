@@ -529,22 +529,32 @@ def _clamp_day(year: int, month: int, day: int) -> int:
     return min(max(day, 1), days_in_month)
 
 
-def project_month_end_usd(spend_to_date_usd: float, *, cycle_start_date: date, today: date) -> float:
+def project_month_end_usd(
+    spend_to_date_usd: float,
+    *,
+    cycle_start_date: date,
+    today: date,
+    anchor_day: int | None = None,
+) -> float:
     """Linear end-of-cycle projection from the spend so far.
 
     Scales the spend-to-date by ``cycle_length / days_elapsed``. The cycle
     length is the gap to the next cycle start (so a custom anchor projects
-    over its own ~month-long window, not a calendar month).
+    over its own ~month-long window, not a calendar month). *anchor_day* is the
+    CONFIGURED anchor: a cycle that began on a day a short month clamped
+    (anchor 31 → Feb 28) cannot be re-derived from its own start date, so
+    without it the next start is inferred a few days early and the projection
+    comes in low.
     """
-    next_start = _next_cycle_start(cycle_start_date)
+    next_start = _next_cycle_start(cycle_start_date, anchor_day=anchor_day)
     cycle_days = max(1, (next_start - cycle_start_date).days)
     days_elapsed = max(1, (today - cycle_start_date).days + 1)
     return spend_to_date_usd * cycle_days / days_elapsed
 
 
-def _next_cycle_start(cycle_start_date: date) -> date:
-    """The cycle start one period after *cycle_start_date* (same anchor day)."""
-    anchor = cycle_start_date.day
+def _next_cycle_start(cycle_start_date: date, *, anchor_day: int | None = None) -> date:
+    """The cycle start one period after *cycle_start_date*, on *anchor_day*."""
+    anchor = anchor_day if anchor_day is not None else cycle_start_date.day
     if cycle_start_date.month == _DECEMBER:
         year, month = cycle_start_date.year + 1, 1
     else:
@@ -579,6 +589,7 @@ class CostReport:
         credit_usd: float,
         cycle_start_date: date,
         today: date,
+        anchor_day: int | None = None,
     ) -> "CostReport":
         return cls(
             breakdown=breakdown,
@@ -589,6 +600,7 @@ class CostReport:
                 breakdown.total_usd,
                 cycle_start_date=cycle_start_date,
                 today=today,
+                anchor_day=anchor_day,
             ),
         )
 

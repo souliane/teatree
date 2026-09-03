@@ -13,12 +13,12 @@ engine must surface, never silently pass (souliane/teatree#87).
 
 import sys
 
-from teatree.quality.regression_catalog import repo_root
+from teatree.paths import teatree_source_root
 from teatree.quality.regression_scan import AstGrepUnavailableError, scan_findings
 
 
 def main() -> int:
-    blocking_dir = repo_root() / ".ast-grep" / "blocking"
+    blocking_dir = teatree_source_root() / ".ast-grep" / "blocking"
     try:
         findings = scan_findings(blocking_dir)
     except AstGrepUnavailableError as exc:

@@ -708,16 +708,27 @@ reviewed in a diff — distinct from the regression gate's mutable in-DB baselin
 Its fail-loud contract is stricter than the regression gate's no-op: a scenario
 *listed* in `cost_bounds.yaml` whose run recorded NO cost (it did not execute, or
 metered $0) is a `COST MISSING <name>` violation — RED, never skip-as-pass. A
-scenario NOT listed is un-bounded. The gate engine is the pure, unit-tested
+scenario NOT listed is un-bounded. A ceiling set listing NOTHING is the third RED
+(`COST BOUNDS VACUOUS`): with zero scenarios pinned the gate binds nothing, and the
+green it would print is one it never earned — the same vacuity `load_cost_bounds`
+already refuses for an absent file. A run whose scenarios do not overlap the config
+needs no separate rule: every configured ceiling is then `COST MISSING`. The gate engine is the pure, unit-tested
 `src/teatree/eval/cost_bounds.py` (`load_cost_bounds` + `check_cost_bounds`); the
 CLI wiring (`cli/eval/run_modes.py::CostBoundsGate`) reads the just-persisted
 run's `EvalRunRecord.costs_by_scenario()`. It needs the durable ledger, so —
 like `--gate-cost-regression`/`--baseline` — it is rejected at the `--docker`
 boundary (the ephemeral container is `--no-persist`) and with explicit
-`--no-persist`. It is wired into the PERSISTED metered path in `.gitlab-ci.yml`
-with `--local`, keeping the cost gate weekly/manual and off the per-PR path. Run
-it on the host against the accumulated ledger with
-`t3 eval run --backend api --local --gate-cost-bounds`.
+`--no-persist`.
+
+It also needs a backend that RECORDS cost, and only `--backend api` does: both
+backends in `UNMETERED_FRESH_BACKENDS` (`anthropic_api`, `pydantic_ai`) drive the
+model through `PydanticAiRunner`, whose `total_cost_usd` is `None` for a provider
+surfacing no cost key — always the case for Anthropic — so a run that executed
+perfectly records $0 and every pinned ceiling reads `COST MISSING`. That pairing is
+an operator error rather than a cost regression, so `t3 eval run` refuses it
+(exit 2, `require_metering_backend_for_cost_bounds`) instead of emitting violations
+indistinguishable from real ones. Run the gate on the host against the accumulated
+ledger with `t3 eval run --backend api --local --gate-cost-bounds`.
 
 ### Model matrix
 

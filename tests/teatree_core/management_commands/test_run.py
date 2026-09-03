@@ -1,5 +1,6 @@
 """Tests for the run management command."""
 
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -569,3 +570,36 @@ class TestDiscoverFrontendPort:
 # by ``tests/teatree_core/test_worktree_verify_runner.py`` (``test_failing_check_reported``,
 # ``test_exception_in_check_caught``). Those belong to the ``worktree verify`` surface,
 # not the ``run`` command this file mirrors, so no rewrite lands here.
+
+
+class TestRunBackendSurfacesComposeExit(TestCase):
+    """A failed ``docker compose up`` must stop the caller, not report a started backend."""
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_nonzero_compose_exit_is_exit_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+            err = io.StringIO()
+            with (
+                patch.object(run_mod, "run_streamed", return_value=1),
+                patch("teatree.config.load_config", return_value=mock_config),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "backend", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            assert "exit 1" in err.getvalue()

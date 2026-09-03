@@ -19,7 +19,7 @@ from typing import TypedDict, cast
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import PlanAdequacy
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy
 
 
 class FileChange(TypedDict, total=False):
@@ -148,6 +148,7 @@ class AgentResult(TypedDict, total=False):
     triage_recommendations: list[TriageRecommendation]
     answer: AnswerEnvelope
     work_item: WorkItemEnvelope
+    fix_record: FixRecord
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -392,6 +393,17 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "no_work_reason": {"type": "string"},
             },
         },
+        "fix_record": {
+            "type": "object",
+            "description": (
+                "A fix-ticket's Definition-of-Done record, recorded server-side onto ticket.extra "
+                "(#4520). Required on a kind=fix ticket — the DoD gate refuses DELIVERED without "
+                "one — and ignored on any other. Omit the key entirely rather than returning a "
+                "partial object: a partial record is refused, an absent one is a no-op."
+            ),
+            "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
+            "required": list(FIX_RECORD_FIELDS),
+        },
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
         "next_steps": {
@@ -437,6 +449,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   summary-only run is a silently-dropped scan (#9), refused here.
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
+#:
+#: ``fix_record`` is deliberately ABSENT from this map: it is conditional on the
+#: TICKET's kind, not the phase, so requiring it here would refuse every non-fix
+#: coding run. Its absence is a no-op and only a malformed one is refused
+#: (:mod:`teatree.agents.fix_record_recorder`).
 #:
 #: Phases not in this map carry no evidence requirement of their own.
 #: ``scoping`` and ``retro`` are intentionally lightweight and may complete on

@@ -382,15 +382,24 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         # legal (never a raw TransitionNotAllowed; never a structurally
         # impossible ship). Async default => queued, no structured gate
         # failure.
+        reset_overlay_cache()
+        self.addCleanup(reset_overlay_cache)
         ticket = _ticket(state=Ticket.State.STARTED)
         self._worktree(ticket)
         # --skip-validation still runs the deterministic MR format check
         # (#1540); supply a conforming commit so this test exercises the
-        # FSM-reconcile invariant, not the format gate.
-        with patch.object(
-            _pr_preview.git,
-            "last_commit_message",
-            return_value=("feat(ship): reconcile then ship", "## What\nx\n\n## Why\ny"),
+        # FSM-reconcile invariant, not the format gate. That check resolves the
+        # overlay from the TICKET, so 'test' has to be a registered overlay.
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": CommandOverlay()},
+            ),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("feat(ship): reconcile then ship", "## What\nx\n\n## Why\ny"),
+            ),
         ):
             result = cast(
                 "dict[str, object]",

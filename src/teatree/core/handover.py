@@ -78,6 +78,7 @@ __all__ = [
     "SelfAddressedHandoverError",
     "claim_handovers",
     "create_handover",
+    "dangling_backlog_claims",
     "mirror_path",
     "newest_mirror",
     "render_claimed_payload",
@@ -148,6 +149,29 @@ def _live_pr_lines() -> list[str]:
         f"- {pull_request.url or '(no url)'} ({pull_request.repo}!{pull_request.iid}) [{pull_request.state}]"
         for pull_request in PullRequest.objects.exclude(state__in=settled).order_by("pk")
     ]
+
+
+_BACKLOG_CLAIM = re.compile(
+    r"\b\d+\s+(?:\w+\s+){0,2}?(?:pending|outstanding|remaining|pending\s+items?|tasks?|todos?|open\s+items?)\b",
+    re.IGNORECASE,
+)
+_DURABLE_REFERENCE = re.compile(r"(?:https?://|~/|(?<![\w.])/[\w.]+/)")
+
+
+def dangling_backlog_claims(text: str) -> list[str]:
+    """Backlog counts in ``text`` with no durable reference in the same paragraph.
+
+    A hand-off saying "34 pending" is worthless if those 34 live only in the
+    authoring session's own task list, which dies with it: the receiver reads a
+    number it can never expand. Vettedness cannot catch this — it asks who wrote
+    the payload, not whether what the payload points at outlives the session.
+    """
+    dangling: list[str] = []
+    for paragraph in text.split("\n\n"):
+        if _DURABLE_REFERENCE.search(paragraph):
+            continue
+        dangling.extend(match.group().strip() for match in _BACKLOG_CLAIM.finditer(paragraph))
+    return dangling
 
 
 class PayloadSource(StrEnum):
@@ -382,19 +406,23 @@ def _update_latest_pointer(pointer: Path, unique: Path) -> None:
     a second runtime writing into the same shared dir — must not drag ``latest``
     backwards onto an older session. Prefers a relative symlink so the pointer
     moves atomically; falls back to copying the content when the filesystem
-    refuses symlinks. Best-effort: a pointer-update failure never loses the
-    already-written unique content.
+    refuses symlinks. Both forms publish through ``os.replace`` on a
+    same-directory staging path: an unlink-then-create left a window in which a
+    concurrent reader saw NO pointer at all. Best-effort: a pointer-update
+    failure never loses the already-written unique content.
     """
     target = newest_mirror(unique.parent) or unique
+    if pointer.is_symlink() and pointer.readlink().name == target.name:
+        return
+    staged = pointer.with_name(f"{pointer.name}.{os.getpid()}.tmp")
     try:
-        if pointer.is_symlink() or pointer.exists():
-            if pointer.is_symlink() and pointer.readlink().name == target.name:
-                return
-            pointer.unlink()
-        pointer.symlink_to(target.name)
+        staged.symlink_to(target.name)
+        staged.replace(pointer)
     except OSError:
+        staged.unlink(missing_ok=True)
         with contextlib.suppress(OSError):
-            shutil.copyfile(target, pointer)
+            shutil.copyfile(target, staged)
+            staged.replace(pointer)
 
 
 def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:

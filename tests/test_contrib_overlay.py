@@ -216,9 +216,19 @@ class TestGetFollowupRepos:
             "acme/sibling-overlay-e2e",
         ]
 
-    def test_excludes_non_slug_workspace_entries(self) -> None:
+    def test_keeps_a_nested_group_project_path(self) -> None:
+        """A nested GitLab path is a repo the sweep must reach, not a malformed slug (#72).
+
+        Requiring exactly two segments dropped every declared GitLab project, so the
+        list fell back to the public default and the fork's own MRs were never swept.
+        """
         overlay = TeatreeOverlay()
-        overlay.config.workspace_repos = ["teatree", "souliane/teatree", "owner/name/extra"]
+        overlay.config.workspace_repos = ["souliane/teatree", "acme-eng/platform/widget-api"]
+        assert overlay.metadata.get_followup_repos() == ["souliane/teatree", "acme-eng/platform/widget-api"]
+
+    def test_excludes_a_bare_directory_name(self) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = ["teatree", "souliane/teatree"]
         assert overlay.metadata.get_followup_repos() == ["souliane/teatree"]
 
 

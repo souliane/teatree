@@ -4,10 +4,12 @@ import pytest
 
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    EmptyFreshRunError,
     UnmeteredApiRunError,
     UnmeteredJudgeError,
     assert_api_run_was_metered,
     assert_executed_when_required,
+    assert_fresh_run_produced_output,
     assert_judge_was_metered,
 )
 
@@ -81,6 +83,18 @@ class TestAssertSdkRunWasMetered:
         # scenarios ran (executed>0) yet metered nothing — a different signal.
         assert_api_run_was_metered(backend="api", executed=0, total_cost_usd=0.0)
 
+    def test_anthropic_api_backend_is_never_cost_checked(self) -> None:
+        # MUST-NOT-FIRE. `anthropic_api` is a FRESH Claude backend, so the tempting
+        # "fix" is to widen this guard to FRESH_CLAUDE_BACKENDS — that would red every
+        # healthy run. The lane delegates its drive to PydanticAiRunner, whose terminal
+        # ResultMessage carries total_cost_usd=_router_reported_cost(...) -> None for the
+        # Anthropic provider, so extract_cost_usd() floors to 0.0 on a run that genuinely
+        # executed (verified: a TestModel-driven run yields 1 tool call, 1 text block,
+        # terminal "success", cost_usd 0.0). $0 is this backend's NORMAL state, not
+        # evidence of a vacuous run; its vacuous-green signal is an empty trajectory,
+        # which assert_fresh_run_produced_output owns.
+        assert_api_run_was_metered(backend="anthropic_api", executed=16, total_cost_usd=0.0)
+
 
 class TestAssertJudgeWasMetered:
     """A judge oracle whose every judge call skipped never actually graded.
@@ -117,3 +131,40 @@ class TestAssertJudgeWasMetered:
         message = str(exc.value).lower()
         assert "judge" in message
         assert "claude" in message or "skipped" in message
+
+
+class TestAssertFreshRunProducedOutput:
+    """The empty-trajectory guard is the vacuous-green check for the UNMETERED fresh lanes.
+
+    `assert_api_run_was_metered` keys on cost_usd, which only the CLI-backed `api`
+    backend records. `anthropic_api` and `pydantic_ai` both drive the model through
+    PydanticAiRunner and meter nothing, so the cost guard can never see them — an
+    empty trajectory (no tool calls, no text) is their equivalent signal that the run
+    never actually drove a model.
+
+    CI runs `t3 eval run --backend anthropic_api`, so an anthropic_api lane that this
+    guard skips has NO vacuous-green guard at all.
+    """
+
+    def test_anthropic_api_empty_trajectory_raises(self) -> None:
+        # MUST-FIRE: the CI backend executed scenarios yet produced not one trajectory.
+        with pytest.raises(EmptyFreshRunError) as exc:
+            assert_fresh_run_produced_output(backend="anthropic_api", executed=16, produced=0)
+        assert "anthropic_api" in str(exc.value)
+
+    def test_pydantic_ai_empty_trajectory_raises(self) -> None:
+        with pytest.raises(EmptyFreshRunError):
+            assert_fresh_run_produced_output(backend="pydantic_ai", executed=16, produced=0)
+
+    def test_anthropic_api_with_output_does_not_raise(self) -> None:
+        assert_fresh_run_produced_output(backend="anthropic_api", executed=16, produced=15)
+
+    def test_api_backend_is_left_to_the_cost_guard(self) -> None:
+        # MUST-NOT-FIRE: the CLI-backed lane DOES meter, so $0 is its own signal there.
+        assert_fresh_run_produced_output(backend="api", executed=16, produced=0)
+
+    def test_transcript_backend_is_never_checked(self) -> None:
+        assert_fresh_run_produced_output(backend="transcript", executed=16, produced=0)
+
+    def test_zero_executed_is_left_to_the_all_skipped_guard(self) -> None:
+        assert_fresh_run_produced_output(backend="anthropic_api", executed=0, produced=0)

@@ -57,9 +57,8 @@ _GLOBAL_OPTS_WITH_VALUE = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 )
 
-# ``git push <remote> <refspec>…`` — a push naming NO refspec pushes the current
-# branch under the configured push strategy, which on a compliant repo IS the
-# pinned branch, so only this many positionals carries a destination to check.
+# ``git push <remote> <refspec>…`` — fewer positionals than this names no refspec,
+# so the destination is the checked-out branch rather than an argument.
 _PUSH_POSITIONALS_WITH_REFSPEC = 2
 
 _CHECKOUT_CREATE_FLAGS = frozenset({"-b", "-B", "--orphan"})
@@ -172,8 +171,15 @@ def check_branch_admitted(branch: str, *, pinned_branch: str) -> SingleBranchFin
     return SingleBranchFinding(surface="provision", target=branch.strip())
 
 
-def find_second_branch_creation(command: str, *, pinned_branch: str) -> SingleBranchFinding | None:
-    """Return a finding when *command* creates a second branch/worktree, else None.
+def find_second_branch_creation(
+    command: str, *, pinned_branch: str, current_branch: str = ""
+) -> SingleBranchFinding | None:
+    """Return a finding when *command* creates or publishes a second branch, else None.
+
+    *current_branch* is the branch the target repo has checked out, supplied by the
+    caller that can resolve it; ``""`` means unresolved and keeps the pre-existing
+    allow. It is what makes a refspec-less ``git push`` decidable — see
+    :func:`_push_finding`.
 
     Fails OPEN (``None``) on an unparsable command and on an unpinned repo — a
     gate that blocks what it cannot read teaches its operator to disable it.
@@ -185,7 +191,7 @@ def find_second_branch_creation(command: str, *, pinned_branch: str) -> SingleBr
         if call is None:
             continue
         subcommand, args = call
-        if finding := _classify(subcommand, args, pinned_branch):
+        if finding := _classify(subcommand, args, pinned_branch, current_branch):
             return finding
     return None
 
@@ -262,7 +268,7 @@ def _safe_split(segment: str) -> list[str]:
         return []
 
 
-def _classify(subcommand: str, args: list[str], pinned_branch: str) -> SingleBranchFinding | None:
+def _classify(subcommand: str, args: list[str], pinned_branch: str, current_branch: str) -> SingleBranchFinding | None:
     if subcommand == "worktree":
         return _worktree_finding(args)
     if subcommand in {"checkout", "switch"}:
@@ -270,7 +276,7 @@ def _classify(subcommand: str, args: list[str], pinned_branch: str) -> SingleBra
     if subcommand == "branch":
         return _branch_command_finding(args, pinned_branch)
     if subcommand == "push":
-        return _push_finding(args, pinned_branch)
+        return _push_finding(args, pinned_branch, current_branch)
     return None
 
 
@@ -311,17 +317,25 @@ def _branch_command_finding(args: list[str], pinned_branch: str) -> SingleBranch
     return SingleBranchFinding(surface="branch", target=created)
 
 
-def _push_finding(args: list[str], pinned_branch: str) -> SingleBranchFinding | None:
+def _push_finding(args: list[str], pinned_branch: str, current_branch: str) -> SingleBranchFinding | None:
     """A push whose DESTINATION branch is not the pinned one.
 
     This is the seam that actually stops a second MR appearing: a side branch
     nobody pushes is local clutter, a pushed one is a merge request. The
     destination is the right-hand side of a ``src:dst`` refspec, else the refspec
-    itself. A push with no refspec pushes the current branch under the configured
-    push strategy — which on a compliant repo IS the pinned branch — so it allows.
+    itself.
+
+    A push naming NO refspec publishes the CURRENT branch, so it is decided by
+    *current_branch*: a repo declared single-branch while it still carries the side
+    branches that motivated the declaration can be brought to one by ``checkout``
+    (which creates nothing and is allowed) and then published by a bare ``git
+    push`` — the exact second MR this gate exists to stop. An unresolved
+    *current_branch* keeps the allow, so the gate never blocks what it cannot read.
     """
     positionals = [arg for arg in args if not arg.startswith("-")]
     if len(positionals) < _PUSH_POSITIONALS_WITH_REFSPEC:
+        if current_branch and current_branch != pinned_branch:
+            return SingleBranchFinding(surface="push", target=current_branch)
         return None
     for refspec in positionals[1:]:
         destination = _branch_from_ref(refspec.rpartition(":")[2] if ":" in refspec else refspec)

@@ -61,6 +61,10 @@ PROMOTED_OVERLAY_CODE_DEFAULT_KEYS: frozenset[str] = frozenset(
         "backlog_sweep_skill",
         "dogfood_smoke_skill",
         "mr_title_regex",
+        # The dashboard header mark. Promoted so an overlay's own logo is declared in
+        # the overlay's repo beside the asset it names, rather than as a DB row an
+        # operator has to re-apply on every box.
+        "dashboard_logo",
         # The repos that are ONE branch wide right now. Promoted because the
         # declaration lives in the overlay's ``overlay_settings.py`` while every
         # consumer (the Bash gate, the provisioner, branch classification) reads

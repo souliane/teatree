@@ -27,8 +27,9 @@ target cannot be read; the cost of the other choice is an unscanned public egres
 Declare an own-private repo in ``private_repos`` to keep it skip-eligible offline.
 
 The visibility verdict is resolved from the command's OWN target (the
-``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the cwd git remote
--- reusing ``publish_destination``'s resolver), then classified into
+``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the git remote of the
+dir bash would run THAT segment in -- every ``cd`` in the chain re-points it,
+:func:`_commit_repo_dir.segment_cwds`, else the ambient hook cwd), then classified into
 :class:`~teatree.hooks.leak_policy.Visibility`: an allowlisted-private slug, an internal-namespace slug,
 and a ``private``/``internal`` probe verdict resolve ``NON_PUBLIC``; a ``public``
 probe verdict on a non-allowlisted slug is ``PUBLIC``; a resolvable slug the
@@ -48,14 +49,16 @@ This lives in its own module because :mod:`teatree.hooks.publish_destination`
 and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
 """
 
+import re
 import sys
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _commit_carve_out, _repo_visibility
+from teatree.hooks import _commit_carve_out, _commit_repo_dir, _repo_visibility
 from teatree.hooks._command_parser import is_publish_command
 from teatree.hooks._gh_glab_hiding import command_segments_with_raw, raw_has_live_substitution
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
+from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks.leak_policy import Visibility, scans_on_visibility
 from teatree.hooks.publish_destination import (
     Destination,
@@ -73,6 +76,43 @@ _PUBLIC = "PUBLIC"
 _SCAN = "scan"  # forces the whole command to scan (never skip) -- anti-leak
 _SKIP_PUBLISH = "skip-publish"  # skip-eligible AND counts as a repo-targeted publish
 _SKIP_INERT = "skip-inert"  # skip-eligible, not a publish (nav/local/api-read)
+
+# A ``gh``/``glab`` executable token anywhere in a python script's text. The URL scan
+# below cannot see where a forge CLI would post, so its presence keeps the fail-closed scan.
+_FORGE_CLI_TOKEN_RE: Final = re.compile(r"(?<![\w./-])(?:gh|glab)(?![\w.-])")
+
+
+def _python_rest_segment_verdict(words: list[str], command: str, *, config_path: Path | None) -> str | None:
+    """Verdict for a python REST-publish segment, or ``None`` when the segment is not one.
+
+    :func:`publish_destination._destination_from_python_script` resolves the target out
+    of a URL literal in the segment's WORDS, which a heredoc body never reaches — bash
+    tokenises ``python3 - <<'PY'`` to three words and keeps the script text outside them.
+    So the shape the owner's own tooling posts with resolved no destination at all and
+    fell through to the fail-closed scan, blocking a post that can only ever reach a
+    project the config already declares internal.
+
+    Resolution reads the WHOLE command rather than the segment: a heredoc body cannot be
+    attributed to its segment, and a superset of targets can only make the all-targets
+    rule below stricter.
+
+    Skip-eligible only when EVERY resolved target is provably non-public — the first-match
+    resolution the words-based resolver uses would let a script posting to a private AND a
+    public project skip on the private one. A forge CLI in the script text is a destination
+    no URL scan can read, so it keeps the scan too.
+    """
+    if not words or not is_python_leader(words[0]):
+        return None
+    targets = {(forge, slug) for forge, slug in find_python_forge_rest_urls(command)}
+    if not targets:
+        return None
+    if _FORGE_CLI_TOKEN_RE.search(command):
+        return _SCAN
+    verdicts = {
+        _visibility_segment_verdict(Destination(slug=slug, via="api", forge=forge), config_path=config_path)
+        for forge, slug in targets
+    }
+    return _SKIP_PUBLISH if verdicts == {_SKIP_PUBLISH} else _SCAN
 
 
 def destination_visibility(dest: Destination, *, config_path: Path | None = None) -> Visibility:
@@ -226,7 +266,7 @@ def _live_substitution_hides_publish(raw: str) -> bool:
 
 
 def _construct_bearing_segment_verdict(
-    words: list[str], raws: list[str], cwd: Path | None, *, config_path: Path | None
+    words: list[str], raws: list[str], cwd: Path | None, *, command: str, config_path: Path | None
 ) -> str:
     """Verdict for a segment carrying a LIVE substitution or transport construct.
 
@@ -255,6 +295,9 @@ def _construct_bearing_segment_verdict(
     if segment_is_api_write(words):
         return _api_write_segment_verdict(words, config_path=config_path)
     rest = strip_cd_prefix(words)
+    python_verdict = _python_rest_segment_verdict(rest, command, config_path=config_path)
+    if python_verdict is not None:
+        return python_verdict
     dest = _destination_from_words(rest, cwd)
     if dest is not None:
         if "$" in dest.slug:
@@ -264,7 +307,7 @@ def _construct_bearing_segment_verdict(
 
 
 def _segment_visibility_verdict(
-    words: list[str], raws: list[str], cwd: Path | None, *, config_path: Path | None
+    words: list[str], raws: list[str], cwd: Path | None, *, command: str, config_path: Path | None
 ) -> str:
     """Classify one top-level segment as :data:`_SCAN` / :data:`_SKIP_PUBLISH` / :data:`_SKIP_INERT`.
 
@@ -285,12 +328,20 @@ def _segment_visibility_verdict(
     scan on a private-target post (#3357).
     """
     if _segment_carries_substitution_or_transport(words, raws):
-        return _construct_bearing_segment_verdict(words, raws, cwd, config_path=config_path)
+        return _construct_bearing_segment_verdict(words, raws, cwd, command=command, config_path=config_path)
     if segment_is_api_write(words):
         return _api_write_segment_verdict(words, config_path=config_path)
     if segment_is_api_read(words):
         return _SKIP_INERT
+    return _plain_segment_verdict(words, cwd, command=command, config_path=config_path)
+
+
+def _plain_segment_verdict(words: list[str], cwd: Path | None, *, command: str, config_path: Path | None) -> str:
+    """Verdict for a segment carrying no substitution/transport construct and no ``api`` verb."""
     rest = strip_cd_prefix(words)
+    python_verdict = _python_rest_segment_verdict(rest, command, config_path=config_path)
+    if python_verdict is not None:
+        return python_verdict
     dest = _destination_from_words(rest, cwd)
     if dest is not None:
         return _visibility_segment_verdict(dest, config_path=config_path)
@@ -310,8 +361,13 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
 
     SKIP (True) only when EVERY top-level segment is provably safe on visibility
     grounds and at least one is a repo-targeted publish: the leak gate enforces
-    on every target it cannot PROVE non-public (#1415/#1213, #3442). A segment is
-    safe when it is one of:
+    on every target it cannot PROVE non-public (#1415/#1213, #3442).
+
+    EACH segment is classified against the dir bash would run THAT segment in
+    (:func:`_commit_repo_dir.segment_cwds`), which every ``cd`` in the chain re-points
+    -- the ambient hook ``cwd`` is routinely the workspace root while the command
+    enters its own repo, and a LATER ``cd`` into a public clone must be judged on that
+    clone, never on the first ``cd``'s repo. A segment is safe when it is one of:
 
     - a ``gh``/``glab``/``t3 review`` publish whose destination is a LITERAL
         slug that is PROVABLY non-public (allowlisted-private /
@@ -354,8 +410,8 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
     if not segments:
         return False
     saw_repo_publish = False
-    for words, raws in segments:
-        verdict = _segment_visibility_verdict(words, raws, cwd, config_path=config_path)
+    for (words, raws), segment_cwd in zip(segments, _commit_repo_dir.segment_cwds(command, cwd), strict=True):
+        verdict = _segment_visibility_verdict(words, raws, segment_cwd, command=command, config_path=config_path)
         if verdict == _SCAN:
             return False
         if verdict == _SKIP_PUBLISH:

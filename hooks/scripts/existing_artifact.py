@@ -20,13 +20,13 @@ and cold-import-safe siblings only.
 """
 
 import json
-import shutil
 import subprocess  # noqa: S404 — hook code legitimately shells `t3` (mirrors coverage_gate).
 import sys
 from pathlib import Path
 from typing import Final
 
 from hooks.scripts.hook_budget import bounded_timeout_s
+from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities to ONE module object, as every
 # sibling does, so the live hook's bare import and a test's package import share globals.
@@ -70,19 +70,16 @@ def open_pr_note(repo_dir: Path | None, branch: str, *, elapsed: float) -> str:
     """
     if repo_dir is None:
         return ""
-    t3_bin = shutil.which("t3")
-    if t3_bin is None:
+    argv = t3_argv("tool", "open-pr", "--repo", str(repo_dir))
+    if argv is None:
         return ""
     timeout = bounded_timeout_s(_PROBE_TIMEOUT_S, elapsed)
     if timeout is None:
         return ""
-    argv = [t3_bin, "tool", "open-pr", "--repo", str(repo_dir)]
     if branch:
         argv += ["--branch", branch]
     try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            argv, capture_output=True, text=True, check=False, timeout=timeout, cwd=str(repo_dir)
-        )
+        result = run_t3(argv, timeout=timeout, cwd=str(repo_dir))
         probe = json.loads(result.stdout or "")
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
         return ""

@@ -29,10 +29,16 @@ def _contained_target(base: Path, path_str: str) -> Path | None:
     the worktree. ``os.path.normpath`` collapses ``..`` lexically so the
     containment check catches both without touching the filesystem; a target not
     under the resolved ``base`` returns ``None`` and the caller skips the spec.
+
+    Lexical containment alone is not enough: an in-tree PARENT that is a symlink
+    pointing out of the worktree keeps the path under ``base`` on paper while the
+    delete lands on the link target's child, so the parent chain is resolved on
+    disk too. The target ITSELF is left unresolved — replacing a symlink is the
+    documented ``symlink`` mode, and ``shutil.rmtree`` refuses one outright.
     """
     base_resolved = base.resolve()
     candidate = Path(os.path.normpath(base_resolved / path_str))
-    if not candidate.is_relative_to(base_resolved):
+    if not candidate.is_relative_to(base_resolved) or not candidate.parent.resolve().is_relative_to(base_resolved):
         logger.warning("Refusing symlink/copy target %r — escapes worktree base %s", path_str, base_resolved)
         return None
     return candidate

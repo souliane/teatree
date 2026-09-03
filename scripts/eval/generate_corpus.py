@@ -36,8 +36,10 @@ def planned_files() -> tuple[dict[Path, str], dict[Path, str]]:
 
 
 def main() -> int:
-    written = write_catalog(ALL_SCENARIOS, scenarios_dir=SCENARIOS_DIR, fixtures_dir=FIXTURES_DIR)
-    print(f"generated {len(ALL_SCENARIOS)} scenarios, {len(written)} files")
+    result = write_catalog(ALL_SCENARIOS, scenarios_dir=SCENARIOS_DIR, fixtures_dir=FIXTURES_DIR)
+    print(f"generated {len(ALL_SCENARIOS)} scenarios, {len(result.written)} files")
+    for path in result.removed:
+        print(f"removed no-longer-declared {path.relative_to(_ROOT)}")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""``ticket backfill-clears`` / ``ticket reconcile-clears`` — the CLEAR-ledger recovery surfaces.
+"""``ticket backfill-clears`` / ``reconcile-clears`` / ``list-clears`` — the CLEAR-ledger surfaces.
 
 A mixin on the ``ticket`` :class:`~django_typer.management.TyperCommand` (django-typer
 collects ``@command`` methods from every ``TyperCommand`` base in the MRO), delegating
@@ -13,6 +13,7 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
+from teatree.core.factory.merge_backlog import OutstandingClear, outstanding_clear_rows
 from teatree.core.machine_output import emit
 from teatree.core.merge.clear_backfill import ClearBackfillRow, backfill_clear_tickets
 from teatree.core.merge.clear_reconcile import reconcile_settled_clears
@@ -43,6 +44,37 @@ class ClearBackfillCommands(TyperCommand):
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human="".join(f"{line}\n" for line in report.lines()),
+        )
+        return rows
+
+    @command()
+    def list_clears(
+        self,
+        *,
+        overlay: Annotated[str, typer.Option(help="Scope to one overlay's repos; empty reads the whole ledger.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
+    ) -> list[OutstandingClear]:
+        """List every unconsumed merge authorisation, each with the standing that hides it.
+
+        The backlog surfaces answer "what can still merge?", so they narrow to the LIVE
+        rows and drop the rest. A mis-issued CLEAR is exactly what gets dropped — it is
+        incomplete, or a corrected reissue supersedes it — which left the durable
+        governance store accumulating authorisations for trees nobody reviewed with no
+        supported way to even enumerate them. This is that enumeration: unnarrowed,
+        oldest first, standing named per row.
+
+        Read-only. Nothing here consumes, voids or repairs a row; ``reconcile-clears``
+        remains the only surface that spends one.
+        """
+        rows = outstanding_clear_rows(overlay)
+        self.print_result = False
+        human = "".join(f"{row.describe()}\n" for row in rows) or "no unconsumed merge authorisation\n"
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
         )
         return rows
 

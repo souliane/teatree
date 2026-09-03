@@ -32,10 +32,17 @@ import os
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from teatree.core.selectors._helpers import _CLAUDE_SESSIONS_DIR
 
 logger = logging.getLogger(__name__)
+
+_CLAUDE_PROJECTS_DIR = Path(os.environ.get("TEATREE_CLAUDE_PROJECTS_DIR") or Path.home() / ".claude" / "projects")
+
+# ``ps`` reports elapsed time to whole seconds while the session record stamps
+# milliseconds, so a genuine match still differs by a tick or two.
+_PID_REUSE_TOLERANCE_SECONDS = 60.0
 
 # STAT codes that PROVE liveness: ``R`` running on CPU; a trailing ``+`` means a
 # foreground process group attached to a controlling terminal (a live session).
@@ -272,15 +279,35 @@ def _default_sample_liveness(pid: int) -> Liveness | None:
         except ValueError:
             return None
 
+    session_id = _session_id_for_pid(pid)
     first = _read()
     if first is None:
         return None
+    size_before = _transcript_size(session_id)
     time.sleep(0.3)
     second = _read()
     if second is None:
         return None
-    stat = second[0]
-    return Liveness(stat=stat, cpu_sample_1=first[1], cpu_sample_2=second[1], output_advanced=False)
+    size_after = _transcript_size(session_id)
+    advanced = size_before is not None and size_after is not None and size_after > size_before
+    return Liveness(stat=second[0], cpu_sample_1=first[1], cpu_sample_2=second[1], output_advanced=advanced)
+
+
+def _transcript_size(session_id: str) -> int | None:
+    """Byte size of *session_id*'s conversation transcript, ``None`` when unreadable.
+
+    Two samples of this are what ``Liveness.output_advanced`` measures. ``None``
+    (no transcript found) is "unknown", never a zero the caller could subtract
+    into a false "no progress".
+    """
+    if not session_id:
+        return None
+    for candidate in _CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"):
+        try:
+            return candidate.stat().st_size
+        except OSError:
+            return None
+    return None
 
 
 def _default_resolve_identity(pid: int) -> TargetIdentity:
@@ -299,6 +326,15 @@ def _default_resolve_identity(pid: int) -> TargetIdentity:
 
 
 def _session_id_for_pid(pid: int) -> str:
+    """The session whose state file claims *pid*, ONLY when the process predates that claim.
+
+    Pids are reused, so a state file a long-dead session left behind names a live
+    unrelated process. Matching on the pid alone resolved that innocent process to
+    the dead session's FAILED task and cleared it for signalling. The record's own
+    ``startedAt`` is the claiming session's start, so a process younger than the
+    record is a different process wearing the same pid. Unverifiable either way —
+    no stamp, or ``ps`` cannot report the age — is refused (fail closed).
+    """
     sessions_dir = _CLAUDE_SESSIONS_DIR
     if not sessions_dir.is_dir():
         return ""
@@ -307,9 +343,60 @@ def _session_id_for_pid(pid: int) -> str:
             data = json.loads(state_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        if isinstance(data, dict) and data.get("pid") == pid:
-            return str(data.get("sessionId", ""))
+        if not isinstance(data, dict) or data.get("pid") != pid:
+            continue
+        if not _process_predates_record(pid, data.get("startedAt")):
+            logger.warning("pid %d does not match session %r's start — treating as a reused pid", pid, state_file.name)
+            return ""
+        return str(data.get("sessionId", ""))
     return ""
+
+
+def _process_predates_record(pid: int, started_at_ms: object) -> bool:
+    """Whether *pid*'s process has been running at least as long as the record claims."""
+    if not isinstance(started_at_ms, (int, float)) or started_at_ms <= 0:
+        return False
+    age = _process_age_seconds(pid)
+    if age is None:
+        return False
+    import time  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    return age >= (time.time() - started_at_ms / 1000) - _PID_REUSE_TOLERANCE_SECONDS
+
+
+def _process_age_seconds(pid: int) -> float | None:
+    """Seconds *pid* has been running per ``ps -o etime=``, ``None`` when unreadable."""
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from teatree.utils.run import CommandFailedError, run_allowed_to_fail  # noqa: PLC0415 — deferred: call-time import
+
+    ps = shutil.which("ps")
+    if ps is None:
+        return None
+    try:
+        result = run_allowed_to_fail([ps, "-o", "etime=", "-p", str(pid)], expected_codes=None, timeout=10)
+    except (OSError, CommandFailedError):
+        return None
+    return _parse_etime(result.stdout) if result.returncode == 0 else None
+
+
+def _parse_etime(raw: str) -> float | None:
+    """Parse ``ps`` elapsed time (``[[DD-]HH:]MM:SS``) into seconds, ``None`` when malformed."""
+    text = raw.strip()
+    if not text:
+        return None
+    days, _, clock = text.rpartition("-")
+    parts = clock.split(":")
+    if len(parts) > 3:  # noqa: PLR2004 — DD-HH:MM:SS is the widest shape ps emits
+        return None
+    try:
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + float(part)
+        seconds += float(days or 0) * 86_400
+    except ValueError:
+        return None
+    return seconds
 
 
 def _dead_task_for_session(session_id: str) -> tuple[int | None, bool]:

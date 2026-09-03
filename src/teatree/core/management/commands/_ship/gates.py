@@ -11,7 +11,7 @@ seams keep resolving against ``pr``'s namespace).
 """
 
 import logging
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from teatree import visual_qa
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
@@ -23,9 +23,8 @@ from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Session, Ticket, Worktree
-from teatree.core.models.types import TicketExtra, VisualQASummary
+from teatree.core.models.types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.core.worktree.branch_currency import require_current_branch
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -84,8 +83,9 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
     diffs a pull request on.
 
     Blocks **only on a confirmed zero** — ``rev_count(base..branch) == 0``, or a
-    delta git proved empty — naming the branch and the base it was compared
-    against. If git introspection cannot be performed (no real repo, base
+    delta git proved empty — naming the branch, the base it was compared against,
+    and a remedy. A three-dot probe measures that the delta is empty, never WHY,
+    so neither arm names a cause. If git introspection cannot be performed (no real repo, base
     undetectable, git error) the state is *unverifiable* — distinct from the
     confirmed-zero bug — so the prior behaviour (proceed) is preserved rather
     than blocking on an unknown, which is also what an unreadable three-dot
@@ -118,8 +118,9 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
         return NoCommitsAheadError(
             error=(
                 f"Refusing to ship: branch {branch!r} carries no changes over {base} — "
-                f"its pull request would be empty, so the work it holds has already landed "
-                f"(a squash-merge, then a merge back). Nothing to ship."
+                f"its pull request would carry zero files. If work is missing, commit it on "
+                f"{branch!r} and retry `pr create`; if it already landed, tear the worktree "
+                f"down instead of shipping."
             ),
             branch=branch,
             base=base,
@@ -230,19 +231,17 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     return None
 
 
-def resolve_base_url(worktree: Worktree | None) -> str:
+def resolve_base_url(worktree: Worktree) -> str:
     """Return the frontend URL recorded by ``Worktree.verify()``.
 
     Prefers ``urls['frontend']`` (what users browse) over ``urls['backend']``.
     Falls back to ``http://127.0.0.1:8000`` when no URLs are recorded yet.
     """
-    if worktree is None:
-        return "http://127.0.0.1:8000"
     urls = worktree.get_extra().get("urls", {})
     return urls.get("frontend") or urls.get("backend") or "http://127.0.0.1:8000"
 
 
-def run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGateFailure | None:
+def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str = "") -> VisualQAGateFailure | None:
     """Run the pre-push browser sanity gate before PR creation.
 
     Records a JSON summary on ``ticket.extra['visual_qa']`` when the gate
@@ -250,16 +249,14 @@ def run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGate
     survives in the FSM history.  Returns an error dict when blocking
     findings are present so the caller can refuse PR creation, or
     ``None`` when the gate passes / is skipped.
+
+    #776 N1: the worktree is the one the caller already resolved and is about to
+    ship, handed down like every sibling gate takes it, so visual QA scans the
+    invoking workstream's repo. Re-resolving here instead re-read a hint
+    ``resolve_and_reconcile_branch`` may have just invalidated — on a multi-repo
+    ticket that raised out of the ``manage.py`` subprocess as a bare ``rc=1``.
     """
-    # #776 N1: resolve the INVOKING worktree (same root cause as the
-    # ship-branch fix) — a reused multi-workstream ticket must run visual
-    # QA against the current workstream's repo, not the stale earliest
-    # `worktrees.first()` row. The `ship_invoking_branch` hint is recorded
-    # by `create()` before the gates run, so the canonical resolver has
-    # the data here too.
-    extra = cast("TicketExtra", ticket.extra or {})
-    worktree = resolve_ship_worktree(ticket, extra)
-    repo_path = worktree.repo_path if worktree else "."
+    repo_path = worktree.repo_path
     base_url = resolve_base_url(worktree)
 
     overlay = get_overlay()
@@ -297,23 +294,22 @@ class E2EMandatoryGateFailure(TypedDict):
     error: str
 
 
-def run_e2e_mandatory_gate(ticket: Ticket) -> E2EMandatoryGateFailure | None:
+def run_e2e_mandatory_gate(ticket: Ticket, worktree: Worktree) -> E2EMandatoryGateFailure | None:
     """Refuse a customer-display-impacting ship without green E2E evidence (#1967).
 
-    Resolves the ship worktree's diff (the same ``origin/main...HEAD`` source
-    the visual-QA gate uses) and head SHA, asks the active overlay to classify
-    display impact, then runs the mandatory-E2E gate. A recorded user bypass at
-    the reviewed tree is consumed single-use here. Returns a structured failure
-    naming both remedies on a block, or ``None`` when the gate passes.
+    Reads the diff (the same ``origin/main...HEAD`` source the visual-QA gate
+    uses) and head SHA from the worktree the caller resolved and is about to
+    ship, asks the active overlay to classify display impact, then runs the
+    mandatory-E2E gate. A recorded user bypass at the reviewed tree is consumed
+    single-use here. Returns a structured failure naming both remedies on a
+    block, or ``None`` when the gate passes.
 
     When the worktree path or head SHA cannot be resolved (no real repo, git
     error) the gate cannot bind to a tree — it returns ``None`` (unverifiable,
     not a confirmed block), mirroring the inconclusive posture of
     :func:`assert_commits_ahead_of_base` / the branch-currency gate.
     """
-    extra = cast("TicketExtra", ticket.extra or {})
-    worktree = resolve_ship_worktree(ticket, extra)
-    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    repo_path = worktree.worktree_path or worktree.repo_path
     try:
         head = git.head_sha(repo=repo_path)
         diff = visual_qa.changed_files(repo=repo_path)

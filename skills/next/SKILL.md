@@ -30,9 +30,10 @@ Load `/t3:retro` and execute it. This captures lessons while the full session co
 
 **Why:** the `next_steps` JSON field is descriptive — the pipeline does NOT parse it to create follow-up tasks. Interactive task completion does NOT record a `TaskAttempt`, so `_advance_ticket()` never fires and the ticket is orphaned. The next pending task the worker picks up will be for a different ticket, and the just-completed phase stalls.
 
-**What to do:** use `t3 <overlay> tasks create` to enqueue the next-phase Task as `HEADLESS` (so a worker claims it immediately). The `--reason` body is the prompt the headless worker will see — include the locked decision from this session and the concrete implementation task list.
+**What to do:** prefer the `mcp__teatree__task_create` MCP tool to enqueue the next-phase Task as `HEADLESS` (so a worker claims it immediately) — fall back to `t3 <overlay> tasks create` when the MCP server isn't connected. The `--reason` body is the prompt the headless worker will see — include the locked decision from this session and the concrete implementation task list.
 
 ```bash
+# CLI fallback (MCP server not connected)
 t3 <overlay> tasks create <TICKET_PK> \
   --phase <next phase> \
   --reason-file <path-to-prompt>.md

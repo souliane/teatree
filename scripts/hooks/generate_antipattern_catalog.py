@@ -8,9 +8,10 @@ See: souliane/teatree#166
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+import generated_doc_staging
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -102,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     output.write_text(markdown, encoding="utf-8")
 
     if markdown != old and output == _DEFAULT_OUTPUT and not os.environ.get("ANTIPATTERN_CATALOG_NO_STAGE"):
-        subprocess.run(["git", "add", str(output)], check=False)
+        generated_doc_staging.stage(output)
         print(f"Updated {output}")
 
     return 0

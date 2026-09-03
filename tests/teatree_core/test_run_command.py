@@ -9,8 +9,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands._e2e_resolvers as _resolvers_mod
 import teatree.core.management.commands._e2e_runners as e2e_runners_mod
-import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -32,7 +32,7 @@ def _published_port_host_is_localhost() -> Iterator[None]:
     ``localhost``, which would make the ``BASE_URL`` assertion below depend on where
     the suite runs. The resolution itself is pinned in ``tests/teatree_utils``.
     """
-    with patch.object(e2e_mod, "host_published_port_host", return_value="localhost"):
+    with patch.object(_resolvers_mod, "host_published_port_host", return_value="localhost"):
         yield
 
 
@@ -107,7 +107,7 @@ class TestRunCommand(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_verify_does_not_transition_when_endpoint_fails(self) -> None:
-        """When HTTP check raises an exception, verify logs the error and does NOT advance FSM."""
+        """A failed HTTP check stops the caller (exit 1) and does NOT advance the FSM."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "backend"
@@ -144,19 +144,14 @@ class TestRunCommand(TestCase):
                     "urlopen",
                     side_effect=_fail_urlopen,
                 ),
+                pytest.raises(SystemExit) as exc_info,
             ):
-                result = cast("dict[str, object]", call_command("run", "verify", path=wt_path))
+                call_command("run", "verify", path=wt_path)
 
+            assert exc_info.value.code == 1
             worktree = Worktree.objects.get(pk=wt.pk)
             # State should remain SERVICES_UP — not advanced to READY
             assert worktree.state == Worktree.State.SERVICES_UP
-            assert result["state"] == Worktree.State.SERVICES_UP
-            # Check results contain failure info
-            checks = cast("dict[str, dict[str, object]]", result["checks"])
-            for check in checks.values():
-                assert check["ok"] is False
-                assert check["status"] == 0
-                assert "Connection refused" in str(check["error"])
 
     @override_settings(**COMMAND_SETTINGS)
     def test_services_returns_run_commands_from_overlay(self) -> None:

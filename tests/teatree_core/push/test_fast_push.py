@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.push.fast_push import (
+    EMPTY_DELTA_PR_SKIP,
     LEAK_GATES,
     FastPusher,
     FastPushOutcome,
@@ -23,7 +24,7 @@ from teatree.core.push.fast_push import (
     LeakGateScan,
     forge_for_repo,
 )
-from teatree.utils.run import run_checked
+from teatree.utils.run import CommandFailedError, run_checked
 
 
 @dataclass
@@ -532,3 +533,87 @@ class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
 
         assert outcome.ok, outcome.findings
         assert outcome.pushed
+
+
+def _branch_work_lands_on_main_then_merges_back(repo: Path) -> None:
+    """The #4429 shape: the branch's content reaches ``main`` under a different SHA.
+
+    ``feature`` is then ahead of ``origin/main`` by SHA and by nothing else, so the
+    pull request it would open carries zero files.
+    """
+    content = "def parse(text):\n    return text.strip()\n"
+    _commit(repo, "parse.py", content, "feat: parse")
+    run_checked(["git", "checkout", "main"], cwd=repo)
+    _commit(repo, "parse.py", content, "feat: parse (#1)")
+    run_checked(["git", "push", "origin", "main"], cwd=repo)
+    run_checked(["git", "checkout", "feature"], cwd=repo)
+    run_checked(["git", "merge", "origin/main", "-m", "merge origin/main into feature"], cwd=repo)
+
+
+class TestEmptyDeltaPrGuard:
+    """#4551: the third PR-opening chokepoint on the class #4550 closed two doors of."""
+
+    def test_no_pr_is_created_when_the_branch_delta_is_empty(self, repo: Path, leak_env: None) -> None:
+        _branch_work_lands_on_main_then_merges_back(repo)
+        forge = FakeForge()
+
+        outcome = run_fast_push(repo, forge, message="chore: checkpoint")
+
+        assert forge.created == []
+        assert outcome.pr_action == EMPTY_DELTA_PR_SKIP
+        assert outcome.pr_url == ""
+
+    def test_the_push_still_lands_when_the_pr_is_skipped(self, repo: Path, leak_env: None) -> None:
+        """The checkpoint is the point: a withheld pull request must never strand the work."""
+        _branch_work_lands_on_main_then_merges_back(repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+        remote_heads = run_checked(["git", "ls-remote", "--heads", "origin", "feature"], cwd=repo).stdout
+        assert "refs/heads/feature" in remote_heads
+
+    def test_a_branch_carrying_real_content_still_gets_a_pr(self, repo: Path, leak_env: None) -> None:
+        """The paired positive — a guard that refused everything would pass its own negative test."""
+        (repo / "feature.py").write_text("x = 1\n")
+        forge = FakeForge()
+
+        outcome = run_fast_push(repo, forge, message="feat: clean change")
+
+        assert outcome.pr_action == "created"
+        assert outcome.pr_skip_reason == ""
+        assert len(forge.created) == 1
+
+    def test_an_unreadable_probe_still_opens_the_pr(self, repo: Path, leak_env: None) -> None:
+        """Fail CLOSED: a probe that could not run never suppresses a pull request the branch owes."""
+        _branch_work_lands_on_main_then_merges_back(repo)
+        forge = FakeForge()
+        unreadable = CommandFailedError(["git", "diff"], 128, "", "fatal: bad revision")
+
+        with patch("teatree.core.worktree.branch_landed.git.run_strict", side_effect=unreadable):
+            outcome = run_fast_push(repo, forge, message="chore: checkpoint")
+
+        assert outcome.pr_action == "created"
+        assert len(forge.created) == 1
+
+    def test_an_existing_pr_is_still_updated_on_an_empty_delta(self, repo: Path, leak_env: None) -> None:
+        """The guard gates CREATION: the open pull request exists either way, so its body stays current."""
+        _branch_work_lands_on_main_then_merges_back(repo)
+        forge = FakeForge(existing_pr_url="https://example.invalid/pr/7")
+
+        outcome = run_fast_push(repo, forge, message="chore: checkpoint")
+
+        assert outcome.pr_action == "updated"
+        assert forge.created == []
+        assert forge.updated[0]["url"] == "https://example.invalid/pr/7"
+
+    def test_the_skip_reason_names_a_remedy_and_claims_no_unproven_cause(self, repo: Path, leak_env: None) -> None:
+        """A three-dot probe proves the delta is empty, never WHY — so the refusal may not name a cause."""
+        _branch_work_lands_on_main_then_merges_back(repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert "t3 fast-push" in outcome.pr_skip_reason
+        assert "commit it on 'feature'" in outcome.pr_skip_reason
+        assert "squash-merge" not in outcome.pr_skip_reason

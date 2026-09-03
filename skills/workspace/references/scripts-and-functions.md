@@ -2,6 +2,8 @@
 
 > Load when you need to find available `t3` commands.
 
+Prefer the `mcp__teatree__command_search` MCP tool to answer "which `t3` command does X" — it returns each matching leaf command's full path, a one-line summary, and whether it emits `--json`; fall back to this catalogue and `t3 --help` when the MCP server isn't connected. Several commands listed below also have a direct MCP tool (`worktree_status`, `worktree_teardown`, `pr_create`, `task_list`, …) — see `/t3:rules` § "Prefer the Teatree MCP Tools Over the `t3` CLI" for when the CLI is still the right call.
+
 ---
 
 ## CLI Entry Point

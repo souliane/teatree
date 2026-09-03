@@ -6,7 +6,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.fast_push import fast_push
-from teatree.core.push.fast_push import LEAK_GATES, FastPushOutcome, LeakFinding
+from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP, LEAK_GATES, FastPushOutcome, LeakFinding
 
 runner = CliRunner()
 
@@ -60,3 +60,17 @@ class TestFastPushCommand:
             result = runner.invoke(_app, ["--json"])
         assert result.exit_code == 0
         assert '"pr_action": "created"' in result.output
+
+    def test_an_empty_delta_skip_prints_its_reason(self) -> None:
+        """The remedy is only useful if it reaches the operator — no `pr_url`, so no other arm prints it."""
+        outcome = _success()
+        outcome.pr_url = ""
+        outcome.pr_action = EMPTY_DELTA_PR_SKIP
+        outcome.pr_skip_reason = "branch 'feature' carries no changes over origin/main"
+
+        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+            pusher.return_value.run.return_value = outcome
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == 0
+        assert "PR skipped: branch 'feature' carries no changes over origin/main" in result.output

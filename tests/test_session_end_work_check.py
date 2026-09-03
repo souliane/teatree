@@ -72,8 +72,8 @@ def _upstream(repo: Path, bare: Path) -> None:
 def _fake_t3(*, returncode: int, stdout: str):
     completed = subprocess.CompletedProcess(args=["t3"], returncode=returncode, stdout=stdout, stderr="")
     with (
-        patch.object(work_check.shutil, "which", return_value="/usr/bin/t3"),
-        patch.object(work_check.subprocess, "run", return_value=completed),
+        patch.object(work_check, "t3_argv", return_value=["/usr/bin/t3", "teatree", "workspace", "list-orphans"]),
+        patch.object(work_check, "run_t3", return_value=completed),
     ):
         yield
 
@@ -247,7 +247,7 @@ class TestUnpushedCounting:
 
 class TestFetchOrphans:
     def test_a_missing_t3_binary_yields_nothing(self) -> None:
-        with patch.object(work_check.shutil, "which", return_value=None):
+        with patch.object(work_check, "t3_argv", return_value=None):
             assert _REAL_FETCH_ORPHANS() == []
 
     def test_a_json_list_is_returned(self) -> None:
@@ -268,7 +268,7 @@ class TestFetchOrphans:
 
     def test_a_timing_out_invocation_yields_nothing(self) -> None:
         with (
-            patch.object(work_check.shutil, "which", return_value="/usr/bin/t3"),
-            patch.object(work_check.subprocess, "run", side_effect=subprocess.TimeoutExpired("t3", 4)),
+            patch.object(work_check, "t3_argv", return_value=["/usr/bin/t3"]),
+            patch.object(work_check, "run_t3", side_effect=subprocess.TimeoutExpired("t3", 4)),
         ):
             assert _REAL_FETCH_ORPHANS() == []

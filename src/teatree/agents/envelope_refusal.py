@@ -40,6 +40,12 @@ NO_ENVELOPE_PREFIX = "no_result_envelope: "
 #: identical fingerprint and halted a phase that was never doomed.
 NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
 
+#: Prefix the recorder stamps on a returned ``fix_record`` that parsed but cannot be
+#: written (#4520) — a non-mapping, or one leaving a required field blank. A CONSTANT
+#: so the refusal classifies stably below rather than varying with the missing fields
+#: it names; the fields themselves are appended for the agent to act on.
+MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
+
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
 #: failure, a review verdict the reviewer legitimately withheld).
@@ -48,6 +54,7 @@ _RECORDER_REFUSAL_MARKERS = (
     "unexpected keys",
     "result is not valid json",
     "result must be a json object",
+    MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
 )
 
 

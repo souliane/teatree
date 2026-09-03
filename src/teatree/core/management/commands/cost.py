@@ -81,6 +81,7 @@ class Command(MachineOutputCommand):
             credit_usd=settings.sdk_monthly_credit_usd,
             cycle_start_date=cycle_start(today, anchor_day=anchor),
             today=today,
+            anchor_day=anchor,
         )
 
         payload: CostPayload = {

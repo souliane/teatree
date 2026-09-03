@@ -10,10 +10,12 @@ from typing import Any, cast
 
 import pytest
 
+from teatree.agents.envelope_contract import allowed_keys
 from teatree.agents.result_schema import (
     PHASE_REQUIRED_EVIDENCE,
     PROSE_SUMMARY_ACCEPTED_PHASES,
     RESULT_JSON_SCHEMA,
+    AgentResult,
     DirectiveCandidateEnvelope,
     ProseSummaryPolicy,
     SingleTestResult,
@@ -21,6 +23,7 @@ from teatree.agents.result_schema import (
     check_evidence,
     required_evidence_for_phase,
 )
+from teatree.core.models.types import FIX_RECORD_FIELDS
 
 _PROPERTIES = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
 
@@ -39,6 +42,32 @@ class TestEnvelopeChannelSchema:
         answer = _PROPERTIES["answer"]
         assert set(answer["properties"]) == {"text", "thread_ref"}
         assert answer["required"] == ["text"]
+
+
+class TestFixRecordSchema:
+    """The envelope half of the fix-ticket DoD contract (#4520), derived from ONE definition."""
+
+    def test_fix_record_is_a_schema_key(self) -> None:
+        assert "fix_record" in _PROPERTIES
+
+    def test_the_key_is_taught_to_every_brief(self) -> None:
+        assert "fix_record" in allowed_keys()
+
+    def test_it_is_a_typed_member_of_the_result(self) -> None:
+        assert "fix_record" in AgentResult.__annotations__
+
+    def test_properties_and_required_both_derive_from_the_field_tuple(self) -> None:
+        schema = _PROPERTIES["fix_record"]
+        assert tuple(schema["properties"]) == FIX_RECORD_FIELDS
+        assert schema["required"] == list(FIX_RECORD_FIELDS)
+
+    def test_it_is_no_phase_required_evidence(self) -> None:
+        """Kind-conditional, not phase-conditional — requiring it would refuse every non-fix run."""
+        assert all("fix_record" not in fields for fields in PHASE_REQUIRED_EVIDENCE.values())
+
+    def test_a_coding_run_without_one_still_satisfies_the_evidence_gate(self) -> None:
+        result = {"summary": "fixed", "files_modified": [{"path": "a.py", "action": "modified"}]}
+        assert check_evidence(result, "coding") == ""
 
 
 class TestTriageRecommendationSchema:

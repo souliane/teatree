@@ -1,12 +1,11 @@
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.config import LaneBToolConfig
-from teatree.agents.lane_b.shell import ShellDeniedError, _resolve_shell, build_shell_toolset
+from teatree.agents.lane_b.shell import ShellDeniedError, ShellTimeoutError, _resolve_shell, build_shell_toolset
 
 
 def _shell(config):
@@ -29,9 +28,22 @@ class TestShellTool:
             _shell(LaneBToolConfig(fs_root=tmp_path))("rm -rf /")
 
     def test_timeout_is_enforced(self, tmp_path: Path) -> None:
+        # Raises ShellTimeoutError (a ToolInputError), NOT the raw
+        # subprocess.TimeoutExpired — the gate wrapper only converts a recognized
+        # ToolInputError family into a retryable ModelRetry (see test_gating.py's
+        # TestToolFailuresReachTheModelInsteadOfKillingTheRun); the bare stdlib
+        # exception escaped uncaught and crashed the whole dispatch three times
+        # over.
         cfg = LaneBToolConfig(fs_root=tmp_path, shell_timeout_seconds=0.5)
-        with pytest.raises(subprocess.TimeoutExpired):
+        with pytest.raises(ShellTimeoutError, match="timed out after"):
             _shell(cfg)("sleep 5")
+
+    def test_timeout_message_redacts_a_secret_in_the_command(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_timeout_seconds=0.5)
+        with pytest.raises(ShellTimeoutError) as exc_info:
+            _shell(cfg)("sleep 5 # token=super-secret-value")
+        assert "super-secret-value" not in str(exc_info.value)
+        assert "token=<redacted>" in str(exc_info.value)
 
     def test_custom_denylist_entry_matches(self, tmp_path: Path) -> None:
         cfg = LaneBToolConfig(fs_root=tmp_path, shell_denylist=("forbidden",))

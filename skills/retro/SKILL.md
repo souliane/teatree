@@ -373,7 +373,7 @@ How to discover memory and repo-level config files per platform, and the four ac
 If `T3_REVIEW_SKILL` is configured and skill files were modified during this retro:
 
 1. Suggest running the review skill (a systematic multi-phase audit for deeper quality assurance) on the changed skills (e.g., `/$T3_REVIEW_SKILL`).
-2. If `review_skill` is NOT configured, include this note in the retro output: "Consider installing a skill review tool for periodic deep quality audits. Set it with `t3 <overlay> config_setting set review_skill <skill-name>` (or the `T3_REVIEW_SKILL` env var) to enable integration."
+2. If `review_skill` is NOT configured, include this note in the retro output: "Consider installing a skill review tool for periodic deep quality audits. Set `review_skill` with the `mcp__teatree__config_setting_set` MCP tool — or `t3 <overlay> config_setting set review_skill <skill-name>` when the MCP server isn't connected, or the `T3_REVIEW_SKILL` env var — to enable integration."
 
 ### 9. Consolidation over Drift
 

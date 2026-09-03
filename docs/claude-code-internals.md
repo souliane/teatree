@@ -338,7 +338,7 @@ Anthropic replaced `TodoWrite`/`TodoRead` with a four-tool Tasks API (v2.1.19 de
 
 | Event | Fires | Exit 2 effect | Stdin fields |
 |-------|-------|---------------|-------------|
-| `TaskCreated` | Before task creation | Blocks creation | `task_id`, `task_subject`, `task_description`, `teammate_name`, `team_name` |
+| `TaskCreated` | AFTER the task row is written | **DELETES the task** — see below | `task_id`, `task_subject`, `task_description`, `teammate_name`, `team_name` |
 | `TaskCompleted` | Before marking complete | Prevents completion | Same |
 
 Neither event supports matchers — they fire on every occurrence.
@@ -355,7 +355,7 @@ Neither event supports matchers — they fire on every occurrence.
 
 ### Known Limitations
 
-- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. This is the task-LIST tool family (`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`), which is why they carry their own `TaskCreated`/`TaskCompleted` events; do NOT read it as covering the `Agent`/`Task` sub-agent dispatch tool, which does reach `PreToolUse` (matcher `Agent`).
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. This is the task-LIST tool family (`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`), which is why they carry their own `TaskCreated`/`TaskCompleted` events; do NOT read it as covering the `Agent`/`Task` sub-agent dispatch tool, which does reach `PreToolUse` (matcher `Agent`). TeaTree enforces skill-loading on the `PreToolUse` `Agent` matcher (#1488).
 - **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
 - **Task UI freezes during auto-compact** — no status updates on completed tasks
 

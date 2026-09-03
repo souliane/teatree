@@ -194,6 +194,34 @@ class TestTheCeilingSeesItsOwnAdmissions(TestCase):
             assert dispatch_admission_denied_reason(session_id="s-4129") is None
         assert InteractiveDispatch.objects.count() == 0
 
+    def test_an_agent_with_no_task_row_still_binds_the_ceiling(self) -> None:
+        # The population #4107 governs — a harness Agent/Task sub-agent — holds no Task
+        # row, so the ORM claim count alone read it as zero and the ceiling never bound.
+        # Its seat IS that row now: the caller no longer counts it and hands the number in.
+        InteractiveDispatch.objects.record_seat(session_id="s-harness")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
+            reason = dispatch_admission_denied_reason(session_id="s-other")
+        assert reason is not None
+        assert "at/over governor ceiling" in reason
+
+    def test_the_reported_count_sums_the_orm_claims_and_the_live_seats(self) -> None:
+        InteractiveDispatch.objects.record_seat(session_id="s-harness")
+        with (
+            _signals(),
+            patch.object(gate_mod, "_claimed_agent_count", return_value=998),
+            patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)),
+        ):
+            reason = dispatch_admission_denied_reason(session_id="s-other")
+        assert reason is not None
+        assert "live agents 999" in reason
+
+    def test_a_seat_population_over_the_ceiling_does_not_re_clamp_an_admitted_caller(self) -> None:
+        for _ in range(3):
+            InteractiveDispatch.objects.record_seat(session_id="s-harness")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
+            assert dispatch_admission_denied_reason(apply_ceiling=False, session_id="s-onward") is None
+        assert InteractiveDispatch.objects.live_seats().filter(session_id="s-onward").count() == 1
+
 
 class TestSeatRelease(TestCase):
     """A terminating sub-agent hands its seat back — the window is only the backstop."""

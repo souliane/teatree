@@ -481,8 +481,17 @@ t3 worker
 
 # Check the worker: live flock holder, resolved loop_runner_enabled + source, timer counts:
 t3 worker status            # --json for a machine-readable payload
-# Ensure one is running (spawns a detached worker iff enabled AND the flock is free):
+# Ensure one is running (spawns a detached worker iff enabled AND the flock is free,
+# then verifies it took the flock — a startup crash prints the child's own stderr):
 t3 worker ensure            # refuses (with the reason) when OFF or already running
+
+# Quiesce admission WITHOUT stopping anything (the deploy verb — leaves the box
+# admitting no work until a fresh container boot, or `t3 worker restart`, clears the gate):
+t3 worker drain
+# End the live worker: drain, SIGTERM the flock holder, verify the flock was released:
+t3 worker stop              # --no-drain to skip the wait; non-zero when it did not exit
+# Stop then start a fresh one, verified by the flock probe (and clears a stuck quiesce):
+t3 worker restart
 
 # Spawn a Claude Code session (registers the reactive infra loops: self-improve/slack-answer/drain-queue):
 t3 loop start
@@ -678,7 +687,7 @@ graph LR
 | `directive` | Submit a plain-English directive about how teatree itself should behave — captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline |
 | `dogfooding` | Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees |
 | `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates |
-| `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate |
+| `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate |
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |

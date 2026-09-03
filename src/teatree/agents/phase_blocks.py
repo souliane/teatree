@@ -147,6 +147,27 @@ _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
 )
 
 
+# Injected into a FIXING brief (coding/debugging) on a ``kind=fix`` ticket only (#4520):
+# the DoD gate refuses DELIVERED without a recorded FixRecord, and the envelope is the
+# only thing that writes one. Kind-conditional rather than phase-conditional, so a
+# feature-ticket brief is byte-identical to what it was. Symmetric to
+# ``_REVIEW_VERDICT_RETURN_LINES``. The fields are spelled out rather than derived from
+# ``FIX_RECORD_FIELDS`` because each carries prose no tuple can supply; drift is caught
+# mechanically instead, by the test asserting every declared field appears here.
+_FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "THIS IS A FIX TICKET — RETURN ITS FixRecord IN THE ENVELOPE (the Definition-of-Done gate",
+    "refuses DELIVERED without one, and nothing but this envelope writes it):",
+    '  "fix_record": {"root_cause": "<the DEEPEST cause, not the symptom you patched>",',
+    '                 "evidence": "<why that is the cause — what you read/ran that shows it>",',
+    '                 "regression_test": "<path::node of the RED-first test that pins it>",',
+    '                 "observed_red": "<attestation you saw that test FAIL against the pre-fix code>",',
+    '                 "recurrence_fingerprint": "<stable signature, e.g. module:condition>"}',
+    "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
+    "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
+    "A merged manifestation patch with no stated root cause is not done.",
+)
+
 _REVIEWER_LIFECYCLE_SKILL = "t3:review"
 
 
@@ -345,14 +366,30 @@ def phase_specific_lines(
     """
     phase = normalize_phase(task.phase)
     if phase == "coding":
-        return (
+        block = (
             "",
             "PHASE: coding — builder dispatch contract",
             *head_state_brief_lines(task),
             *_coding_phase_directive(skills, stage_exclude=stage_exclude),
         )
-    builder = _PHASE_BLOCK_BUILDERS.get(phase)
-    return builder(task) if builder is not None else ()
+    else:
+        builder = _PHASE_BLOCK_BUILDERS.get(phase)
+        block = builder(task) if builder is not None else ()
+    return (*block, *_fix_record_lines(task, phase))
+
+
+#: Phases whose agent is the one FIXING the defect, so it is the actor that can state
+#: the root cause. Mirrors ``transient_requeue._CORRECTIVE_PHASES``.
+_FIXING_PHASES = frozenset({"coding", "debugging"})
+
+
+def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
+    """The FixRecord return directive for a fixing phase on a ``kind=fix`` ticket, else ``()``."""
+    from teatree.core.gates.fix_dod_gate import is_fix  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    if phase not in _FIXING_PHASES or not is_fix(task.ticket):
+        return ()
+    return _FIX_RECORD_RETURN_LINES
 
 
 #: Per-phase trailing-block builders (excluding coding, which needs *skills* +

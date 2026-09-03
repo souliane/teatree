@@ -112,18 +112,18 @@ class TestSignalsAfterReceiptDm(TestCase):
 
     def test_approval_reaction_emits_after_receipt_dm(self) -> None:
         pr = self._pr()
-        with _patch_approval_publisher(lambda _p: 1):
+        with _patch_approval_publisher(lambda _p: 1), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
-        ping = BotPing.objects.get(idempotency_key=f"on_behalf_post:{pr.url}:approval_reaction")
+        ping = BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{pr.url}:approval_reaction")
         assert ping.status == BotPing.Status.SENT
         assert "approval reaction" in ping.text
 
     def test_approval_reaction_no_dm_when_nothing_reacted(self) -> None:
         """No DM when the helper reacted nothing (no review message to react on)."""
         pr = self._pr()
-        with _patch_approval_publisher(lambda _p: 0):
+        with _patch_approval_publisher(lambda _p: 0), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -153,5 +153,7 @@ class TestSignalsAfterReceiptDm(TestCase):
             ticket.mark_merged()
             ticket.save()
 
-        ping = BotPing.objects.get(idempotency_key=f"on_behalf_post:ticket:{ticket.pk}:transition_reaction:mark_merged")
+        ping = BotPing.objects.get(
+            idempotency_key__startswith=f"on_behalf_post:ticket:{ticket.pk}:transition_reaction:mark_merged"
+        )
         assert ping.status == BotPing.Status.SENT

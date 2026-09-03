@@ -7,12 +7,16 @@ All functions here are implementation details — callers import from
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+
+if TYPE_CHECKING:
+    from teatree.core.checking import CheckItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +123,48 @@ def audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) 
     return repo_in_overlay(repo_slug, scope.overlay_repos)
 
 
+def merged_entries_from_qs(
+    *,
+    since: datetime,
+    now: datetime,
+    scope: _MergedScope,
+    overlay_tag: str = "",
+) -> "list[tuple[datetime, CheckItem]]":
+    """Every scoped merge in the window as ``(merged_at, item)``, newest first.
+
+    The timestamp travels with the item so a caller spanning several overlays can
+    order the union before capping it — capping each overlay's slice first let one
+    overlay's older merges displace another's newer ones.
+    """
+    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
+    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
+
+    qs = (
+        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
+        .select_related("clear", "clear__ticket")
+        .order_by("-merged_at")
+    )
+    entries: list[tuple[datetime, CheckItem]] = []
+    for audit in qs:
+        repo_slug = resolved_repo_slug(audit.clear)
+        if not audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
+            continue
+        ticket = audit.clear.ticket
+        raw_detail = ticket.short_description if ticket else ""
+        detail = (f"{raw_detail} {overlay_tag}".strip() if raw_detail else overlay_tag) if overlay_tag else raw_detail
+        entries.append(
+            (
+                audit.merged_at,
+                CheckItem(
+                    label=f"{repo_slug or audit.clear.slug}#{audit.clear.pr_id}",
+                    url=pr_url_for(ticket, repo_slug=repo_slug, pr_id=audit.clear.pr_id, code_host=scope.code_host),
+                    detail=detail,
+                ),
+            )
+        )
+    return entries
+
+
 def merged_group_from_qs(
     *,
     since: datetime,
@@ -128,33 +174,8 @@ def merged_group_from_qs(
     overlay_tag: str = "",
 ) -> tuple[list, int]:
     """Query and scope the merged audits; return (items, total)."""
-    from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
-    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
-
-    qs = (
-        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
-        .select_related("clear", "clear__ticket")
-        .order_by("-merged_at")
-    )
-    scoped: list[tuple[MergeAudit, str]] = []
-    for audit in qs:
-        repo_slug = resolved_repo_slug(audit.clear)
-        if audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
-            scoped.append((audit, repo_slug))
-
-    items = []
-    for audit, repo_slug in scoped[:cap]:
-        ticket = audit.clear.ticket
-        raw_detail = ticket.short_description if ticket else ""
-        detail = (f"{raw_detail} {overlay_tag}".strip() if raw_detail else overlay_tag) if overlay_tag else raw_detail
-        items.append(
-            CheckItem(
-                label=f"{repo_slug or audit.clear.slug}#{audit.clear.pr_id}",
-                url=pr_url_for(ticket, repo_slug=repo_slug, pr_id=audit.clear.pr_id, code_host=scope.code_host),
-                detail=detail,
-            )
-        )
-    return items, len(scoped)
+    entries = merged_entries_from_qs(since=since, now=now, scope=scope, overlay_tag=overlay_tag)
+    return [item for _, item in entries[:cap]], len(entries)
 
 
 def motion_for_overlay(
@@ -198,7 +219,7 @@ def motion_for_overlay(
 
     attempts = (
         TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(exit_code__gt=0)
+        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
         .filter(task__ticket__overlay=overlay_name)
         .select_related("task__ticket")
         .order_by("-ended_at")

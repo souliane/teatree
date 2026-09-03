@@ -223,6 +223,7 @@ def _compute_spend_summary() -> SpendSummary | None:
             credit_usd=settings.sdk_monthly_credit_usd,
             cycle_start_date=cycle_start(today, anchor_day=anchor),
             today=today,
+            anchor_day=anchor,
         )
     except Exception:
         logger.warning("dash spend summary read failed — omitting spend chip", exc_info=True)

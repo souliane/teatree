@@ -256,6 +256,9 @@ source_secret_from_pass() {
 # override either in teatree.env when the store is laid out differently.
 source_secret_from_pass TEATREE_GH_TOKEN "${TEATREE_GH_TOKEN_PASS_PATH:-github/souliane/pat}"
 source_secret_from_pass T3_ADMIN_PASSWORD "${T3_ADMIN_PASSWORD_PASS_PATH:-teatree/admin-password}"
+# The Notion integration token, on the same terms: teatree.env is regenerated wholesale
+# on every deploy, so a line written there is reverted without a word.
+source_secret_from_pass NOTION_TOKEN "${NOTION_TOKEN_PASS_PATH:-notion/integration-token}"
 
 if [ -n "${TEATREE_GH_TOKEN:-}" ]; then
     export GH_TOKEN="$TEATREE_GH_TOKEN"
@@ -274,15 +277,18 @@ fi
 # a private overlay repo into its own workspace volume — every clone dies on
 # "HTTP Basic: Access denied" while the operator's host glab is logged in the whole
 # time.
-source_secret_from_pass TEATREE_GITLAB_TOKEN "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}"
-if [ -n "${TEATREE_GITLAB_TOKEN:-}" ]; then
-    export GITLAB_TOKEN="$TEATREE_GITLAB_TOKEN"
-    # `glab` reads GITLAB_TOKEN from the environment, but a `compose exec` process
-    # does not inherit this shell's exports — so persist the login into glab's own
-    # config too, keeping the API surface (MR reads/writes) authenticated for every
-    # process in the container, not just the role's main one.
-    printf '%s\n' "$TEATREE_GITLAB_TOKEN" |
-        glab auth login --hostname "${TEATREE_GITLAB_HOSTNAME:-gitlab.com}" --stdin >/dev/null 2>&1 || true
+#
+# This export reaches only THIS role's process tree. A `docker exec` starts from the
+# container's create-time environment and never sees it, so the compose files declare
+# GITLAB_TOKEN per service and the deploying host resolves it from the same pass key —
+# that declaration, not this read, is what an exec'd process inherits. This read stays
+# as the fallback for a container created without a host value (the watchdog cannot
+# reach the host's pass store), and returns early when compose already supplied one.
+if [ -z "${GITLAB_TOKEN:-}" ]; then
+    source_secret_from_pass TEATREE_GITLAB_TOKEN "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}"
+    if [ -n "${TEATREE_GITLAB_TOKEN:-}" ]; then
+        export GITLAB_TOKEN="$TEATREE_GITLAB_TOKEN"
+    fi
 fi
 
 # Global git identity fallback — commits and the runtime loop need one.
@@ -890,6 +896,25 @@ ensure_clone() {
     git clone "$REPO_URL" "$CLONE_DIR"
 }
 
+# Refuse to publish a `$CLONE_DIR` that is not teatree core into the SHARED uv
+# volume. `uv tool install --editable "$CLONE_DIR"` writes `/opt/teatree/uv`,
+# which every role reads, so a `$CLONE_DIR` naming the wrong tree does not fail
+# THIS container — it bricks all of them: pointed at a fork ROOT (the default
+# whenever a deploy loses TEATREE_CLONE_DIR) it publishes a `teatree.pth` naming
+# a directory that holds neither `teatree` nor `t3_bootstrap`, and every `t3` on
+# the box then dies with `ModuleNotFoundError: No module named 't3_bootstrap'` —
+# including the one an operator would reach for to diagnose it. The two modules
+# checked here are exactly what the `t3` console script imports.
+assert_core_source() {
+    local missing=""
+    [ -f "$CLONE_DIR/src/teatree/__init__.py" ] || missing="src/teatree/__init__.py"
+    [ -f "$CLONE_DIR/src/t3_bootstrap/__init__.py" ] || missing="${missing:+$missing, }src/t3_bootstrap/__init__.py"
+    [ -z "$missing" ] || {
+        echo "entrypoint: TEATREE_CLONE_DIR='$CLONE_DIR' is not a teatree core source tree (missing: $missing) - refusing the editable install, which would publish a broken 't3' into the shared /opt/teatree/uv volume for EVERY container. A fork vendoring core must export TEATREE_CLONE_DIR=<mount>/vendor/teatree (deploy/t3 and deploy/deploy.sh do; a bare 'docker compose up' does not)." >&2
+        exit 1
+    }
+}
+
 # Drain + 👀-ack inbound Slack on a cadence, SURFACING failures (#3443). The old
 # `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
 # could not boot Django looked identical to a healthy one and nobody ever saw it.
@@ -944,10 +969,17 @@ case "$ROLE" in
 init)
     init_preflight
     ensure_clone
+    assert_core_source
     # Before ANY uv install: the image exports UV_CONSTRAINT at this path, and uv errors
     # outright when a constraints file is missing, so it must exist for every role that
     # later runs `t3 update` off this shared volume.
     ensure_uv_constraints
+    # The TOOL plane, named explicitly rather than inherited (#4642). Compose points
+    # the ambient UV_PYTHON_INSTALL_DIR at the shared PROJECT root, so a bare
+    # `uv tool install --reinstall` below would rebuild the tool venvs against a
+    # host-controlled directory and couple this container's own `t3` and `prek` to
+    # it. Pinning the volume keeps a tool venv rebuilt where it was baked.
+    TOOL_PYTHON_ROOT=/opt/teatree/uv/python
     # Resolve the interpreter + editable install + prek. The self-contained image
     # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
     # box), so this is a fast no-op refresh when online and is skipped entirely when
@@ -971,7 +1003,8 @@ init)
         # and this is the original single-package install.
         set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
         require_install_headroom
-        uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
+        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" \
+            uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
             --overrides "${CLONE_DIR}/uv-overrides.txt" \
             --constraints "${CONSTRAINTS_FILE}"
         # An install that produced a venv whose CLI cannot start is an install FAILURE, not
@@ -990,7 +1023,7 @@ init)
         # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
         # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
         # /opt/teatree/uv is a named volume that shadows any image-baked install.
-        uv tool install prek==0.4.10
+        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" uv tool install prek==0.4.10
     else
         # OFFLINE: the interpreter, editable install, and prek are baked into the
         # image, so init proceeds with no cold fetch. Fail loud only if the image
@@ -1002,6 +1035,16 @@ init)
                 exit 1
             }
         done
+    fi
+    # The interpreter root is now a bind of the HOST's (#4642), so unlike the
+    # image-baked volume it can arrive EMPTY — a fresh box whose host has never
+    # run uv, booting offline, where the install above was skipped. Every later
+    # `uv run` would then rebuild every worktree venv it touches. Name the gap
+    # instead: this cannot self-heal without the network, and a refusal stating
+    # the remedy beats a silent gigabyte. Outside the network guard on purpose.
+    if ! ls -d "$UV_PYTHON_INSTALL_DIR"/cpython-* >/dev/null 2>&1; then
+        echo "entrypoint: FATAL the shared interpreter root $UV_PYTHON_INSTALL_DIR holds no cpython-* interpreter. It is a bind of the host's uv python root, so it is empty until something installs there. Run 'uv python install $(cat "${CLONE_DIR}/.python-version")' on the host (or restore connectivity and re-run Deploy), then restart this container." >&2
+        exit 1
     fi
     # Install the commit/push gate hooks on the base clone's SHARED hooks dir
     # (git links every worktree to it), so the privacy leak gate (#685), the

@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from teatree.config import AgentHarness
+from teatree.config import AgentHarness, cold_reader
 from teatree.config.agent_spawn import EFFORT_SCALE, AgentConfig, parse_effort, resolve_agent_config
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
 
 
 def _seed(db_path: Path, key: str, value: object, scope: str = "") -> None:
@@ -432,3 +434,30 @@ class TestMalformedAndMissing:
         _seed(db, "agent_session_model", "haiku")
         _point_at(monkeypatch, db)
         assert resolve_agent_config().session_model == "haiku"
+
+
+class TestEveryAgentKeyIsSettable:
+    """Every ``[agent]`` key ``resolve_agent_config`` reads must be a known config setting.
+
+    A key consumed by the resolver but absent from the registries is unreachable from
+    ``config_setting set`` (and reads as an orphan row), so the setting exists only for
+    whoever hand-writes sqlite.
+    """
+
+    def test_resolver_reads_only_registered_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        read_keys: list[str] = []
+
+        def recorder(key: str, **_kwargs: object) -> None:
+            read_keys.append(key)
+
+        monkeypatch.setattr(cold_reader, "read_setting", recorder)
+        _point_at(monkeypatch, tmp_path / "nope.sqlite3")
+        resolve_agent_config()
+
+        assert set(read_keys) - ALL_KNOWN_CONFIG_SETTINGS.keys() == set()
+
+    def test_the_session_permission_mode_write_is_validated_as_a_string(self) -> None:
+        assert validate_config_write("agent_session_permission_mode", "dontAsk") == "dontAsk"
+
+        with pytest.raises(ConfigWriteError):
+            validate_config_write("agent_session_permission_mode", raw=True)

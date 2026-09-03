@@ -11,6 +11,7 @@ binding — the existing 116 legit broad handlers must not block commits before
 the class is fully migrated.
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,10 @@ def _write(tmp_path: Path, rel: str, source: str) -> str:
 def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, staged: list[str], optout: str = "optouts: []\n") -> int:
     optout_path = tmp_path / "optout.yaml"
     optout_path.write_text(optout, encoding="utf-8")
+    # A real repo, because the hook resolves the work tree its staged names are
+    # relative to: a pre-commit hook only ever runs inside one, and the fixture
+    # must not be the only venue where it does not.
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)  # noqa: S607 — `git` from PATH deliberately: the fixture must drive the same git the hook under test resolves
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mod, "_staged_python_files", lambda: staged)
     monkeypatch.setattr(mod, "_OPTOUT_REGISTRY", optout_path)

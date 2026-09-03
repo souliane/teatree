@@ -34,18 +34,24 @@ that are pushed but not yet on main.
 
 import json
 import re
+import shutil
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from functools import lru_cache
+from dataclasses import dataclass, field, replace
+from functools import cache, lru_cache
 from typing import Any
 
 from teatree.core.forge_pr_probe import forge_cli_env
+from teatree.core.worktree.branch_landed import branch_content_landed_on_base
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # The one RedundancyVerdict.source that means no content layer decided anything.
 # Named so every consumer of the verdict's provenance reads the same token.
 INCONCLUSIVE_SOURCE = "inconclusive"
+# The source a landed verdict is DOWNGRADED to when the forge still has the branch's
+# PR open (#3093). It sits on `branch_redundancy` itself, so no caller can reach a
+# `redundant=True` that an open PR should have vetoed.
+OPEN_PR_VETO_SOURCE = "open-pr-veto"
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
@@ -103,7 +109,8 @@ class RedundancyVerdict:
     commit); they are the delta the salvage skill routes to a fresh PR when the
     branch is kept. ``source`` names the deciding layer:
     ``cherry-zero-unique`` / ``synthetic-squash`` / ``branch-merged`` /
-    ``not-redundant`` / ``inconclusive``.
+    ``content-landed`` / ``forge-merged-tip`` / ``not-redundant`` /
+    ``inconclusive`` / ``open-pr-veto`` (a landed tip whose PR is still open).
     """
 
     redundant: bool
@@ -367,6 +374,77 @@ def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, 
     return sha or ""
 
 
+def _forge_cli_available() -> bool:
+    """Whether ANY forge CLI is on PATH — the reported-degradation signal.
+
+    When neither ``gh`` nor ``glab`` exists, the forge rung of the landed ladder
+    cannot run at all, and every branch it would have cleared is held. Callers
+    report that degradation explicitly rather than letting the rung vanish
+    silently (the ladder itself already fails CLOSED either way).
+    """
+    return shutil.which("gh") is not None or shutil.which("glab") is not None
+
+
+def reset_forge_probe_cache() -> None:
+    """Drop the per-run forge-probe memo — each cleanup pass starts fresh.
+
+    The MERGED-record probes are memoized because one ``clean-all``
+    interrogates the same (repo, branch) from several passes (redundancy, the
+    #706 override, the emit record), each un-memoized probe is a network
+    round-trip, and a merged record at a given tip is immutable once written.
+    The open-PR probe is deliberately NOT cached: it reports mutable state that
+    gates a PROTECT, and a stale "no open PR" would drop that protection. The
+    memo is process-wide, so a long-lived loop process must reset it at every
+    pass entry or it would keep answering from a previous tick.
+    """
+    _branch_pr_is_merged.cache_clear()
+    _merged_pr_head_sha.cache_clear()
+
+
+@cache
+def _merged_pr_head_sha(repo: str, branch: str) -> str:
+    """The source-branch HEAD sha the forge recorded for ``branch``'s MERGED PR, or ``""``.
+
+    The one landed instrument the squash-then-base-evolved case cannot defeat:
+    a squash rewrites every SHA and later base edits erase the content from the
+    base tree, but the forge still knows exactly which source tip it merged
+    (GitHub ``headRefOid``, GitLab ``sha``). A merged record proves ONLY that
+    recorded tip — the caller must compare it to the branch's CURRENT tip, so a
+    branch that grew commits after the merge never reads as landed.
+
+    Fail-safe to ``""``: a missing CLI, a network/auth failure, or an
+    unparsable payload all answer "no record", never a positive sha.
+    """
+    sha = probe_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid", "--limit", "1"],
+        repo,
+        lambda data: data[0]["headRefOid"],
+    )
+    if sha:
+        return sha
+    return probe_host_cli(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
+        repo,
+        lambda data: data[0]["sha"],
+    )
+
+
+def forge_merged_tip_captured(repo: str, branch: str) -> bool:
+    """Whether the forge merged ``branch`` at EXACTLY its current local tip.
+
+    The forge rung of the landed ladder: authoritative for a merged branch the
+    base has since evolved past (no git-local layer can see that one), and
+    fail-CLOSED everywhere else — no record, an unreadable local tip, or a tip
+    that moved after the merge all read NOT captured.
+    """
+    recorded = _merged_pr_head_sha(repo, branch)
+    if not recorded:
+        return False
+    tip = git.run(repo=repo, args=["rev-parse", f"{branch}^{{commit}}"])
+    return bool(tip) and tip == recorded
+
+
+@cache
 def _branch_pr_is_merged(repo: str, branch: str) -> bool:
     """Whether the forge canonically reports ``branch``'s PR/MR as merged (#1578).
 
@@ -479,14 +557,24 @@ def _tree_delta_captured(repo: str, ref: str, target: str) -> bool:
 
 
 def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> RedundancyVerdict:
-    """The canonical layered verdict: is ``branch``'s CURRENT tip provably on ``target``?
+    """The canonical verdict: is ``branch``'s CURRENT tip provably on ``target`` AND done?
 
-    Three CONTENT layers decide ``redundant`` (see the module docstring):
+    A landed verdict is vetoed while the forge reports an OPEN PR (#3093): a content
+    layer can prove a live PR's tip captured, and deleting under one destroys work
+    nobody merged. It sits HERE because four callers read the verdict directly, and is
+    fail-safe — an unreachable forge skips the veto, never manufactures one.
+
+    Four CONTENT layers decide ``redundant`` (see the module docstring):
     cherry-zero (:func:`content_equivalence_blockers` empty), synthetic-squash
-    (:func:`_tree_delta_captured`), then ``git branch --merged``. The forge
-    (:func:`_branch_pr_is_merged`) is read for ``forge_merged`` but NEVER enters
-    the redundancy decision — a forge-merged tip still carrying unique content is
-    returned NOT-redundant with that content in ``unique_shas`` and surfaced via
+    (:func:`_tree_delta_captured`), ``git branch --merged``, then the
+    path-independent blob probe (:func:`branch_content_landed_on_base` — the
+    refactor case, where the base took the branch's exact bytes at another
+    path). Above them sits the one non-git rung: a forge merge record at
+    EXACTLY the current tip (:func:`forge_merged_tip_captured`) — the only
+    instrument that survives a squash whose content the base later evolved
+    past. A bare forge "merged" signal still NEVER decides anything — a
+    forge-merged tip that moved after the merge is returned NOT-redundant with
+    its content in ``unique_shas`` and surfaced via
     :attr:`RedundancyVerdict.merged_with_post_merge_work`.
 
     Fail-CLOSED on an inconclusive content probe: an erroring ``git cherry``
@@ -494,6 +582,14 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
     squash/merged layers and returns NOT-redundant, so an uncertain branch is
     kept, never deleted.
     """
+    verdict = _content_redundancy(repo, branch, target)
+    if not verdict.redundant or not _branch_has_open_pr(repo, branch):
+        return verdict
+    return replace(verdict, redundant=False, source=OPEN_PR_VETO_SOURCE)
+
+
+def _content_redundancy(repo: str, branch: str, target: str) -> RedundancyVerdict:
+    """The layered CONTENT verdict, before the open-PR veto :func:`branch_redundancy` applies."""
     forge_merged = _branch_pr_is_merged(repo, branch)
     blockers = content_equivalence_blockers(repo, branch, target)
     unique_shas = [b for b in blockers if not b.startswith("(")]
@@ -508,6 +604,16 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
         return RedundancyVerdict(
             redundant=True, forge_merged=forge_merged, unique_shas=unique_shas, source="branch-merged"
         )
+    if not inconclusive and branch_content_landed_on_base(repo, branch, target):
+        return RedundancyVerdict(
+            redundant=True, forge_merged=forge_merged, unique_shas=unique_shas, source="content-landed"
+        )
+    # Deliberately NOT gated on the git-local probes: the forge record is what
+    # survives a squash whose content the base has since evolved past.
+    if forge_merged and forge_merged_tip_captured(repo, branch):
+        return RedundancyVerdict(
+            redundant=True, forge_merged=forge_merged, unique_shas=unique_shas, source="forge-merged-tip"
+        )
     return RedundancyVerdict(
         redundant=False,
         forge_merged=forge_merged,
@@ -519,13 +625,10 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
 def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     """Whether ``branch``'s current tip is PROVABLY fully captured on ``origin/<default>``.
 
-    The boolean view of :func:`branch_redundancy` the reaper and branch-prune
-    pass share: ``True`` only when a content layer (cherry-zero / synthetic-squash
-    / branch-merged) proved the tip redundant. The forge "merged" signal NEVER
-    alone returns ``True`` — a forge-merged branch with unique current-tip content
-    is kept for salvage, not deleted (the #2763 invariant). Survives a deleted
-    local branch ref: the layers read the branch NAME, and the data-loss guards
-    downstream keep an uncertain branch.
+    The boolean view of :func:`branch_redundancy` the reaper and branch-prune pass
+    share — every rung, the #2763 forge-alone invariant and the open-PR veto are its,
+    not this wrapper's. Survives a deleted local branch ref: the layers read the branch
+    NAME, and the data-loss guards downstream keep an uncertain branch.
     """
     return branch_redundancy(repo, branch, f"origin/{default}").redundant
 

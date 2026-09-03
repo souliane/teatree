@@ -17,7 +17,13 @@ from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, HeadReview, MergeAttempt, PrSummary
+from teatree.loop.scanners.pr_sweep_types import (
+    GITLAB_PIPELINE_CHECK_NAME,
+    UV_AUDIT_CHECK_NAME,
+    HeadReview,
+    MergeAttempt,
+    PrSummary,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models.review_verdict import ReviewVerdict
@@ -105,6 +111,27 @@ def classify_sweep_ci(
     return None, False, failing
 
 
+def classify_gitlab_sweep_ci(verdict: str) -> tuple[str | None, bool, set[str]]:
+    """The sweep's CI decision on GitLab, from the head pipeline's own verdict.
+
+    GitLab exposes no branch-protection required-context set — its backend answers
+    ``[]``, which :func:`classify_required_rollup` reads as "no gate configured" and
+    classifies GREEN. Running the GitHub ladder here would therefore pass every MR
+    whatever its pipeline did, so the GitLab arm reads
+    :meth:`CodeHostQuery.required_checks_status` instead: the head pipeline's status,
+    which already aggregates the required jobs server-side and fails closed to
+    ``pending`` when no pipeline ran.
+
+    The uv-audit fallback never applies (there is no per-check verdict to compare
+    against ``main``), so the middle element is always ``False``.
+    """
+    if verdict == "green":
+        return None, False, set()
+    if verdict == "pending":
+        return "ci_pending", False, set()
+    return "ci_red", False, {GITLAB_PIPELINE_CHECK_NAME}
+
+
 def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) -> MergeAttempt:
     """Stamp the CI facts a CROSS-PR comparison needs onto *attempt* (#4090).
 
@@ -122,12 +149,17 @@ def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) 
     )
 
 
-def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:
+def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool, conflicted: bool) -> bool:
     """True iff ≥1 REQUIRED check is failing against a base that has MOVED (#4063).
 
     *failing_required* is the branch-protection-required set that is currently
-    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main* is
-    GitHub's ``mergeStateStatus == "BEHIND"``.
+    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main*
+    comes from the ``Ref.compare`` behind-by read (#4526), so it is true for a
+    behind branch whatever else is also wrong with it.
+
+    *conflicted* is why that widening is safe: a conflicted branch is behind too,
+    and it needs a human resolution, not a merge-update — so it is refused here
+    rather than relying on the upstream conflict flag to keep it away.
 
     What makes a red verdict unreliable is not WHICH check failed but that the run
     judged a base the branch has since fallen behind — so this generalises the
@@ -139,7 +171,7 @@ def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool)
     IS its own verdict: it stays a bare ``ci_red`` skip, which is what stops a
     genuinely broken PR from being update-looped.
     """
-    return bool(failing_required) and behind_main
+    return bool(failing_required) and behind_main and not conflicted
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:

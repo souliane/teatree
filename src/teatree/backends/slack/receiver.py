@@ -70,6 +70,21 @@ def _enqueue(path: Path, overlay: str, event: dict) -> None:
         f.write(line + "\n")
 
 
+def record_is_owned_by(record: dict, overlay: str) -> bool:
+    """Whether a queued record belongs to *overlay*'s consumer.
+
+    One JSONL file carries every overlay's events, so a multi-overlay tick has
+    several consumers racing the same drain; the ``overlay`` key each record
+    carries is what tells them apart. A consumer with no overlay (the
+    single-overlay wiring) and an untagged record both fall through to owned,
+    so the partition narrows nothing outside a genuine multi-overlay install.
+    """
+    if not overlay:
+        return True
+    queued_overlay = record.get("overlay")
+    return not queued_overlay or queued_overlay == overlay
+
+
 def drain_event_queue(path: Path | None = None) -> list[dict]:
     """Read queued events into memory using recover-then-drain ordering.
 
@@ -108,15 +123,29 @@ def drain_event_queue(path: Path | None = None) -> list[dict]:
     return events
 
 
-def commit_drain(path: Path | None = None) -> None:
+def commit_drain(path: Path | None = None, *, retain: list[dict] | None = None) -> None:
     """Discard the drained backing file after the caller durably persisted.
 
     Call this only once the events returned by :func:`drain_event_queue` are
     safely persisted; until then the ``.draining`` file must stay so a crash
     is recoverable.
+
+    *retain* holds the records this consumer did NOT handle — a sibling
+    overlay's, or one whose handler raised. They are appended back to the LIVE
+    queue rather than left in ``.draining``, because a leftover ``.draining``
+    blocks every later drain from claiming the live file.
     """
     path = path or default_queue_path()
+    if retain:
+        _requeue(path, retain)
     path.with_suffix(".draining").unlink(missing_ok=True)
+
+
+def _requeue(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def drain_reactions_queue(path: Path | None = None) -> list[dict]:
@@ -130,12 +159,12 @@ def drain_reactions_queue(path: Path | None = None) -> list[dict]:
     return drain_event_queue(path or default_reactions_queue_path())
 
 
-def commit_reactions_drain(path: Path | None = None) -> None:
+def commit_reactions_drain(path: Path | None = None, *, retain: list[dict] | None = None) -> None:
     """Discard the drained reactions backing file after a durable persist.
 
     Reactions counterpart of :func:`commit_drain` (#1047).
     """
-    commit_drain(path or default_reactions_queue_path())
+    commit_drain(path or default_reactions_queue_path(), retain=retain)
 
 
 def _run_single_overlay(

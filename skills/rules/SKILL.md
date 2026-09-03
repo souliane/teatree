@@ -115,6 +115,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 19b. [Read the Canonical Source Before a Structural Action](#read-the-canonical-source-before-a-structural-action-non-negotiable)
 19c. [Overlay Skills Are Scoped to Overlay Repos](#overlay-skills-are-scoped-to-overlay-repos-non-negotiable)
 25a. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
+75. [Prefer the Teatree MCP Tools Over the `t3` CLI](#prefer-the-teatree-mcp-tools-over-the-t3-cli)
 
 **Files, agents, and worktrees**
 
@@ -509,6 +510,8 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 The gate covers colleague-**VISIBLE** posts only. A **draft** (`post_draft_note`) is colleague-invisible — only the user can submit it — so it is **exempt under every mode** and never needs approval; that exemption is the whole point of the setting.
 
+An **author-side reply on the owner's OWN MR** — `t3 review reply-to-discussion`, the only surface carrying the `reply_to_discussion` action, where the MR's author is one of the owner's forge identities — is likewise exempt: answering a reviewer on your own MR is your own voice on your own work, not a colleague-facing review post. Authorship is PROVED per call by `teatree.cli.review.own_mr.owner_authored_mr` and fails CLOSED — an unreadable MR, an author-less payload, or an unresolvable identity all keep the reply gated. The carve-out is scoped by BOTH the action and the authorship, so a reply on a **colleague's** MR, and every other on-behalf surface on your own MR (`approve`, `unapprove`, `post_comment --live`, `publish_draft_notes`, `resolve_discussion`, `update_note`, `delete_discussion`), stay gated exactly as before. The receipt DM still fires on every carved-out reply — the autonomy is the absence of a pre-ask, never of visibility.
+
 `teatree.core.on_behalf_egress.OnBehalfSlackEgress` is the single owner of **every colleague-surface Slack post AND react** under the user's identity — review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post` / `notify react` CLI, and `t3 slack react`. All of them run gate→route→emit→audit in one place, so a colleague reaction can never slip past the gate; a self-DM short-circuits ungated, so a self-ack stays free.
 
 The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the other two chokepoints are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
@@ -517,7 +520,7 @@ When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent
 
 How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
 
-**Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete.
+**Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete. For the self-DM, prefer the `mcp__teatree__notify_user` MCP tool — same audited egress, and a non-delivery returns a `reason` slug plus a human `detail` instead of a bare failure; the colleague/channel shape has no MCP tool and stays on the CLI.
 
 ```bash
 # colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
@@ -528,7 +531,7 @@ t3 slack react --channel <channel> --ts <timestamp> --emoji <name>
 t3 <overlay> notify send '<body>' --idempotency-key <key>
 ```
 
-Never hand-roll the colleague egress: a raw Slack Web API call carrying your own credential, or any post/react outside that class, fails an import-guard test in the build.
+How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
 
 **Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 
@@ -561,7 +564,7 @@ A passing local test suite is not evidence. The deployed system is the only arti
 t3 <overlay> ticket e2e-bypass <ticket-id> --approver <human-user-id> --head-sha <full-40-char-sha>
 ```
 
-It is durable, single-use, and scoped to the ticket + reviewed head SHA; the next ship-gate / §17.4 CLEAR at that exact SHA consumes it once. Maker≠checker is enforced — a `--approver` that is a maker / coding-agent / loop id is refused (#1967), so the implementing agent can never authorize its own bypass. There is no `--skip-e2e` flag and no `approve-on-behalf` path for the E2E gate; `ticket e2e-bypass` with a human approver is the only one. Conversely, once a green run's evidence is POSTED, record the attestation with `t3 <overlay> lifecycle record-e2e-run <ticket-id> --spec <path> --result green --head-sha <sha> --posted-url <evidence-url>` — a run recorded WITHOUT `--posted-url` does not clear the gate.
+It is durable, single-use, and scoped to the ticket + reviewed head SHA; the next ship-gate / §17.4 CLEAR at that exact SHA consumes it once. Maker≠checker is enforced — a `--approver` that is a maker / coding-agent / loop id is refused (#1967), so the implementing agent can never authorize its own bypass. There is no `--skip-e2e` flag and no `approve-on-behalf` path for the E2E gate; `ticket e2e-bypass` with a human approver is the only one. Conversely, once a green run's evidence is POSTED, record the attestation with the `mcp__teatree__record_e2e_run` MCP tool (same seam, same gate), or `t3 <overlay> lifecycle record-e2e-run <ticket-id> --spec <path> --result green --head-sha <sha> --posted-url <evidence-url>` when the MCP server isn't connected — a run recorded WITHOUT the posted evidence URL does not clear the gate.
 
 ## Never Modify a Remote Database Without Explicit User Approval (Non-Negotiable)
 
@@ -672,6 +675,22 @@ A deterministic cross-agent worker cap HAS landed, but only for the **headless**
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
 When integrating with tools (issue trackers, CI, chat), prefer their API or CLI over scraping files. File-based approaches break on layout changes, don't handle pagination, and miss metadata.
+
+## Prefer the Teatree MCP Tools Over the `t3` CLI
+
+When an operation is served by a teatree MCP tool, **call the tool**. The `t3` CLI is the fallback, not the default. The reads return structured JSON — no text parsing, no scraping of a human-readable table that changes shape — and every write tool wraps the exact seam the CLI calls, so the same FSM / merge / on-behalf / leak gates fire either way.
+
+**An MCP write is never a gate bypass.** `pr_create` runs the full ship-gate chain, `pr_merge` is sha-bound and maker≠checker enforced, `review_post_comment` is DRAFT unless the recorded LivePostApproval exists. Reaching for the CLI to dodge a gate the tool enforces is the same refusal, reached later.
+
+**Where the tools come from.** A main session gets them from the plugin-bundled `.mcp.json` (`t3 mcp serve`). The headless dispatch injects that same stdio server into its own lifecycle sub-agents, so a dispatched coder / reviewer / shipper has them too — Claude Code forwards neither a local stdio server nor a plugin sub-agent's `mcpServers` frontmatter, so that wiring is explicit and deliberate. A general-purpose `Agent` sub-agent does NOT inherit one unless its definition declares it; that agent uses the CLI.
+
+**The CLI is the right call when:**
+
+- the MCP server is not connected — say so, never silently degrade a failed read to an empty result, or
+- no tool covers the operation — worktree/workspace provisioning, the `run` / `e2e` / `db` lanes, `doctor`, `setup`, `update`, `push`, `eval`, the loop verbs, and issuing a merge CLEAR (`ticket clear`), or
+- the tool refuses by design — `config_setting_set` refuses safety-gate keys (`*_gate_enabled`, `require_*`, feature flags, authorization/allowlist keys), which stay human/CLI-only.
+
+Tools surface as `mcp__teatree__<name>`. When no tool covers an operation, `command_search` answers which `t3` leaf command does.
 
 ## Symlink Safety
 
@@ -955,16 +974,20 @@ The mirror image of the rule above. That one governs the agent ASKING; this one 
 
 Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
 
-### Receiving a structured answer (apply X — never apply a stale Y)
+The mirror image of the rule above. That one governs the agent ASKING; this one governs the agent being ASKED. **When the user's turn is interrogative and answerable, the answer is the deliverable — acting is not answering.** Dispatching a lane and reporting the dispatch tells the asker nothing they wanted to know, so they ask again; and when someone asks _why_, work is not a substitute for an explanation.
 
-Asking is half the contract; **applying the right answer** is the other half. A structured answer arrives one of two ways: as `additionalContext` injected this turn ("Your AskUserQuestion (#N) was answered by the user on Slack: `<value>`. Apply it now.") or as the local TTY result of the call. When it arrives:
+- **Lead with the answer, then keep the action.** A yes/no question gets the polarity first ("Yes — merging it now"); a why question gets the cause ("it was blocked by `<X>` — here is the line"). Dispatching afterwards is fine, and usually right.
+- **"I do not know yet" IS an answer.** "I have not read the logs yet — fetching them now" discharges the question honestly. Silence dressed as a status update does not.
+- **Never let a delegation report stand in for the answer.** "Dispatched a lane to merge it" answers neither "are you going to merge it?" nor "why was it not mergeable?".
 
-1. **Apply ONLY the answer that cites the currently-live question** — match the cited `#N` to the question you actually have open this turn, then act on it directly (run the command with the chosen value). Do NOT re-ask a question that has already been answered.
-2. **Ignore a stale already-answered reply.** A raw Slack DM that arrives as ordinary chat ("User replied on Slack at `<ts>`: `1`") AFTER you already resolved that question locally found **no live row** — it is NOT the AskUserQuestion result. Do not switch course on the strength of it; continue the action you already started from the real answer.
-3. **Ignore a superseded-generation reply.** If you asked Q1, then replaced it with a newer Q2 (Q1 marked stale), a reply citing the OLD Q1 is dead — apply only the answer to the current Q2. The cited `#N` disambiguates which generation the answer belongs to.
-4. **One answer resolves one question.** A single injected answer applies to exactly the one question it cites — never fan it out across other open or already-closed questions.
+```text
+# do X — answer, then act:
+#   "Yes — merging it now. Dispatched a lane to run it."
+# never Y — the dispatch report AS the answer:
+#   "Dispatched a lane to merge #4001. It is queued behind the current tick."
+```
 
-The failure mode this prevents: flipping a deploy target / region mid-action because a late or superseded "1"/"yes" landed in chat after the real decision was already made and acted on. Pinned by `evals/scenarios/askuserquestion_slack_resolution.yaml` (`applies_injected_askuserquestion_answer`, `does_not_apply_stale_locally_answered_reply`, `does_not_apply_superseded_generation_reply`).
+Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
 
 ## Never Introduce Tech Debt; Reduce It (Non-Negotiable)
 
@@ -1094,6 +1117,8 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 ## Concurrent Agent Safety (Non-Negotiable)
 
 Assume another agent may be modifying the same repo concurrently. Never `git stash`, `git checkout --`, or `git restore` files you didn't change — this destroys the other agent's in-progress work. Only stage and commit files you explicitly modified.
+
+**When to stage is part of that rule, not a detail.** The commit hook stashes every UNSTAGED change in the tree, the other writer's included, so `git add` right after each edit is what keeps yours out of a stash a killed run may never restore — and `git commit -o -- <your paths>` is what keeps theirs out of your commit. A bare `git commit -a` sweeps in whatever they were mid-edit on. The stash mechanics and the recovery path are in [`../ship/SKILL.md`](../ship/SKILL.md) § "What the commit gate commits is the INDEX, not the working tree".
 
 ## Deprecated Code
 

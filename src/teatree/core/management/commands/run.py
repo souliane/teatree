@@ -29,6 +29,10 @@ class Command(TyperCommand):
 
         Discovers ports from running docker-compose containers via
         ``docker compose port``.
+
+        A failed probe exits 1 — the same contract ``workspace ready`` already
+        holds. Returning the report at exit 0 told CI and the loop that an
+        unreachable service had been verified.
         """
         worktree = resolve_worktree(path)
         project = compose_project(worktree)
@@ -66,6 +70,11 @@ class Command(TyperCommand):
             worktree.verify(urls=urls)
             worktree.save()
 
+        if not all_ok:
+            failed = sum(1 for check in results.values() if not check["ok"])
+            self.stderr.write(f"  {failed} of {len(results)} probe(s) failed")
+            raise SystemExit(1)
+
         extra = cast("dict[str, object]", worktree.extra or {})
         return {
             "state": worktree.state,
@@ -95,13 +104,18 @@ class Command(TyperCommand):
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
-        run_streamed(cmd, env=env, check=False)
+        rc = run_streamed(cmd, env=env, check=False)
+        if rc != 0:
+            self.stderr.write(f"Backend start failed (docker compose up exit {rc}).")
+            raise SystemExit(1)
         return "Backend started via docker-compose."
 
     @command(name="build-frontend")
     def build_frontend(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        *,
+        prod: bool = typer.Option(default=False, help="Run the overlay's CI production build."),
     ) -> str:
         """Build the frontend app for production/testing.
 
@@ -110,8 +124,14 @@ class Command(TyperCommand):
         stops the caller with exit 1 exactly as ``run tests`` / ``run lint`` do.
         Discarding ``ok`` here reported a green production-build gate over a build
         that never ran.
+
+        ``--prod`` launches the overlay's ``build-frontend-prod`` command instead,
+        so "does the production build pass?" has an answer that needs no raw build
+        tool; an overlay declaring no such command fails loud rather than quietly
+        building the dev configuration and reporting it as the production one.
         """
-        result = ServiceLauncher(resolve_worktree(path), "build-frontend").run()
+        service = "build-frontend-prod" if prod else "build-frontend"
+        result = ServiceLauncher(resolve_worktree(path), service).run()
         if not result.ok:
             self.stderr.write(result.detail)
             raise SystemExit(1)
