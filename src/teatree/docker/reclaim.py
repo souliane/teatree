@@ -16,19 +16,30 @@ down worktrees/DBs stays a separate, explicitly-targeted action (``workspace
 teardown`` / ``clean-all``), never bundled here.
 
 Absence and failure are different, and the difference is load-bearing. A MISSING
-docker binary (CI sandboxes, hermetic tests) yields a silent zero-reclaim
-outcome so the command never crashes where there is no daemon to talk to. A
-docker that ANSWERS and refuses — daemon down, or the socket simply not mounted
-into the container the CLI runs in — is a FAILURE: it is recorded on the step,
-marked in ``render()``, and exits the command non-zero. Reporting that as a
-clean ``0B`` is indistinguishable from "nothing left to reclaim", and tells an
+docker binary (CI sandboxes, hermetic tests) never crashes the caller. A docker
+that ANSWERS and refuses — daemon down, or the socket mounted but not granted to
+the service the CLI runs in — is a FAILURE: it is recorded on the step, marked
+in ``render()``, and exits the command non-zero. Reporting either as a clean
+``0B`` is indistinguishable from "nothing left to reclaim", and tells an
 operator under disk pressure that the sanctioned path ran when it never did.
+
+A VENUE THAT CANNOT ACT IS DECIDED UP FRONT (#4585). The daemon is probed before
+anything is planned or run, because three prunes that cannot succeed produce a
+wall of identical refusals and still no route out. What the operator on a full
+disk needs instead is one line naming where the command DOES work: the teatree
+stack mounts the docker socket into every service and grants it to
+``teatree-worker`` alone, and that service also reads the control DB — so it is
+the venue that can do both, and the refusal names it. Where no in-stack route
+applies, the three prunes are printed verbatim for a host that reaches dockerd,
+derived from the reclaim set itself so the advice can never drift from what the
+command would have run.
 """
 
 import logging
 import re
 from dataclasses import dataclass
 
+from teatree.docker.venue import DockerVenue, docker_venue
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -78,6 +89,23 @@ class ReclaimReport:
     steps: tuple[ReclaimStep, ...]
     planned: tuple[ReclaimStep, ...]
     dry_run: bool = False
+    venue: DockerVenue | None = None
+
+    @property
+    def unreachable_venue(self) -> DockerVenue | None:
+        """The venue when it cannot act, so each reader narrows once rather than per use."""
+        if self.venue is None or self.venue.reachable:
+            return None
+        return self.venue
+
+    @property
+    def venue_blocked(self) -> bool:
+        """No prune ran because this venue cannot reach dockerd.
+
+        False for a dry run: it removes nothing by construction and says so, so
+        it can never be misread as a reclaim that succeeded.
+        """
+        return self.unreachable_venue is not None and not self.dry_run
 
     @property
     def total_bytes(self) -> int:
@@ -97,14 +125,22 @@ class ReclaimReport:
         )
 
     def failure_summary(self) -> str:
+        blocked = self.unreachable_venue
+        if blocked is not None and self.venue_blocked:
+            return f"docker is not reachable from {blocked.description} — {blocked.reason}"
         detail = "; ".join(f"{label}: {reason}" for label, reason in self.failures)
         return f"docker reclaim failed on {len(self.failures)} of {len(self.steps)} steps — {detail}"
 
     def render(self) -> str:
+        blocked = self.unreachable_venue
         if self.dry_run:
             lines = ["Dry run — would reclaim (nothing removed):"]
             lines += [f"  {step.label}: {' '.join(step.argv)}" for step in self.planned]
+            if blocked is not None:
+                lines.append(f"This plan cannot execute in {blocked.description} — {blocked.reason}")
             return "\n".join(lines)
+        if blocked is not None:
+            return "\n".join(_unreachable_lines(blocked, self.planned))
         lines = [step.summary_line for step in self.steps]
         lines.append(f"Total reclaimed: {self.total_human}")
         return "\n".join(lines)
@@ -116,6 +152,32 @@ _SAFE_STEPS: tuple[tuple[list[str], str], ...] = (
     (["docker", "image", "prune", "-f"], "dangling images"),
     (["docker", "volume", "prune", "-f"], "unreferenced volumes"),
 )
+
+
+# The service `deploy/docker-compose.yml` grants the docker socket to, and which
+# also reads the control DB — the one venue that can do both.
+_GRANTED_SERVICE = "teatree-worker"
+
+
+def _unreachable_lines(venue: DockerVenue, planned: tuple[ReclaimStep, ...]) -> list[str]:
+    """The refusal, then the route out — a refusal with no route is the #4585 defect."""
+    lines = [
+        f"docker is not reachable from {venue.description} — the reclaim did not run.",
+        f"  {venue.reason}",
+        "Run it where the daemon answers:",
+    ]
+    in_stack_route = venue.containerized and venue.service_role != "worker"
+    if in_stack_route:
+        lines += [
+            f"  {_GRANTED_SERVICE} is the one service granted the docker socket, and it reads the same control DB:",
+            "    deploy/t3 <overlay> workspace reclaim-disk    # from the host — execs into the worker",
+            f"    docker compose -f deploy/docker-compose.yml exec {_GRANTED_SERVICE} \\",
+            "      t3 <overlay> workspace reclaim-disk",
+        ]
+    prefix = "  or run" if in_stack_route else "  run"
+    lines.append(f"{prefix} exactly these three, in this order and nothing else, where docker answers:")
+    lines += [f"    {' '.join(step.argv)}" for step in planned]
+    return lines
 
 
 def _parse_size(raw: str) -> int:
@@ -172,7 +234,8 @@ def reclaim_disk(*, dry_run: bool = False) -> ReclaimReport:
     ``planned`` steps carry the exact argv that would run.
     """
     planned = tuple(ReclaimStep(argv=list(argv), label=label) for argv, label in _SAFE_STEPS)
-    if dry_run:
-        return ReclaimReport(steps=(), planned=planned, dry_run=True)
+    venue = docker_venue()
+    if dry_run or not venue.reachable:
+        return ReclaimReport(steps=(), planned=planned, dry_run=dry_run, venue=venue)
     steps = tuple(ReclaimStep(argv=step.argv, label=step.label, outcome=_run_prune(step.argv)) for step in planned)
-    return ReclaimReport(steps=steps, planned=planned, dry_run=False)
+    return ReclaimReport(steps=steps, planned=planned, dry_run=False, venue=venue)
