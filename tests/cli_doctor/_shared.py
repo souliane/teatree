@@ -12,6 +12,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from teatree.cli.doctor import checks_db_integrity
+
 
 def _seed_overlays(tmp_path: Path, monkeypatch, overlays: dict[str, object]) -> Path:
     """Seed the DB-home ``overlays`` registry in a cold sqlite config DB.
@@ -51,15 +53,32 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
         judged the developer's own ``dev/.test_durations`` and failed on its real
         coverage. Both checks run for REAL against the staged tree — stubbing the
         measurements out instead is how a check quietly stops being exercised here.
+    - Points ``T3_CONTROL_DB_DIR`` at a staged readable directory. The control-DB
+        check reads the venue otherwise: inside a container it treats the default
+        volume path as in use, so a test runner with no volume mounted turns a whole
+        `doctor check` red on a fact about the runner. Staged, the check still runs
+        for real — against a directory this test owns.
     """
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_REPO", str(_stage_healthy_shard_durations(tmp_path)))
+    staged_control_db = _stage_control_db_dir(tmp_path)
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", str(staged_control_db))
+    # The canonical path is frozen at import, so the env alone moves only the EXPECTED
+    # side and the filesystem check then fails on the two snapshots disagreeing rather
+    # than on anything about the database. Pinned together, both name the staged venue.
+    monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", staged_control_db / "db.sqlite3")
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)
     monkeypatch.chdir(neutral)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
     return tmp_path
+
+
+def _stage_control_db_dir(tmp_path: Path) -> Path:
+    directory = tmp_path / "_staged_control_db"
+    directory.mkdir(exist_ok=True)
+    return directory
 
 
 #: One recorded test, comfortably inside the lane ceiling: full file coverage, no

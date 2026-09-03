@@ -20,28 +20,36 @@ def _carry_configured_values(apps, schema_editor):
     key WINS — the canonical key is authoritative — so the old row is dropped rather
     than clobbering a deliberate newer opinion, and re-running the migration is a
     no-op.
+
+    Every query names the connection being migrated, the removal through the queryset
+    rather than ``row.delete()`` (which re-asks the router). ``ConfigSettingRouter``
+    pins the model to the canonical install-wide DB it also refuses to migrate, so a
+    router-selected manager here rewrote the operator's real config store from a
+    worktree's isolated one.
     """
     ConfigSetting = apps.get_model("core", "ConfigSetting")
+    rows = ConfigSetting.objects.using(schema_editor.connection.alias)
     for old_key in _BACKEND_KEYS:
         new_key = RENAMED_SETTING_KEYS[old_key]
-        for row in ConfigSetting.objects.filter(key=old_key):
-            if not ConfigSetting.objects.filter(scope=row.scope, key=new_key).exists():
-                ConfigSetting.objects.create(
+        for row in rows.filter(key=old_key):
+            if not rows.filter(scope=row.scope, key=new_key).exists():
+                rows.create(
                     scope=row.scope,
                     key=new_key,
                     value=row.value,
                     seeded_by=row.seeded_by,
                     seed_value=row.seed_value,
                 )
-            row.delete()
-    ConfigSetting.objects.filter(key=_PROVIDER_KEY, value=_OLD_PROVIDER).update(value=_NEW_PROVIDER)
+            rows.filter(pk=row.pk).delete()
+    rows.filter(key=_PROVIDER_KEY, value=_OLD_PROVIDER).update(value=_NEW_PROVIDER)
 
 
 def _restore_provider_specific_values(apps, schema_editor):
     ConfigSetting = apps.get_model("core", "ConfigSetting")
+    rows = ConfigSetting.objects.using(schema_editor.connection.alias)
     for old_key in _BACKEND_KEYS:
-        ConfigSetting.objects.filter(key=RENAMED_SETTING_KEYS[old_key]).update(key=old_key)
-    ConfigSetting.objects.filter(key=_PROVIDER_KEY, value=_NEW_PROVIDER).update(value=_OLD_PROVIDER)
+        rows.filter(key=RENAMED_SETTING_KEYS[old_key]).update(key=old_key)
+    rows.filter(key=_PROVIDER_KEY, value=_NEW_PROVIDER).update(value=_OLD_PROVIDER)
 
 
 class Migration(migrations.Migration):

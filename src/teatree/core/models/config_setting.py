@@ -45,10 +45,14 @@ never live here (#1775).
 """
 
 from enum import StrEnum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Any TOML/JSON-shaped value a setting may hold. Recursive in principle
 # (lists/dicts nest), but the override registry only ever coerces scalars and
@@ -161,6 +165,27 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         )
         return row
 
+    def set_values(self, rows: "Sequence[tuple[str, ConfigValue, str]]") -> None:
+        """Upsert every ``(key, value, scope)`` in one transaction, judged as one SET.
+
+        A document moving a COUPLED pair (#3688) between two valid states has no
+        safe row order — whichever half lands first leaves an invalid intermediate
+        that :meth:`set_value` rejects, so a legitimate change was refused. Here the
+        rows land first and consistency is asserted against the RESULT; the assert
+        runs inside the transaction, so a genuinely invalid destination still raises
+        :class:`~django.core.exceptions.ValidationError` and rolls every row back —
+        an interrupted bulk write can never leave the store half-imported.
+        """
+        with transaction.atomic():
+            for key, value, scope in rows:
+                self.update_or_create(
+                    scope=scope,
+                    key=key,
+                    defaults={"value": value, "seeded_by": "", "seed_value": None},
+                )
+            for key, value, scope in rows:
+                self.reject_inconsistent_cross_key(key, value, scope)
+
     def seed(
         self,
         key: str,
@@ -191,6 +216,11 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         *code_default* is the pure code default (the ``UserSettings`` field
         default with no env/DB layer). Pass a sentinel that never equals a real
         value for a non-``UserSettings`` key, so such a seed is always written.
+
+        The still-owned decision is re-asserted in the ``WHERE`` of the write,
+        not merely read before it: an operator ``set_value`` landing between the
+        two clears the provenance, so the delete and the update match no row and
+        the seed reports ``PRESERVED`` instead of overwriting a fresh pin.
         """
         row = self.filter(scope=scope, key=key).first()
         equals_default = value == code_default
@@ -201,16 +231,14 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
             return SeedOutcome.CREATED
         if row.seeded_by != seeded_by or row.value != row.seed_value:
             return SeedOutcome.PRESERVED
+        still_owned = self.filter(pk=row.pk, seeded_by=seeded_by, seed_value=row.seed_value, value=row.seed_value)
         if equals_default:
-            row.delete()
-            return SeedOutcome.REMOVED
+            deleted, _ = still_owned.delete()
+            return SeedOutcome.REMOVED if deleted else SeedOutcome.PRESERVED
         if row.value == value:
             return SeedOutcome.UNCHANGED
-        row.value = value
-        row.seed_value = value
-        row.seeded_by = seeded_by
-        row.save(update_fields=["value", "seed_value", "seeded_by", "updated_at"])
-        return SeedOutcome.UPDATED
+        updated = still_owned.update(value=value, seed_value=value, seeded_by=seeded_by, updated_at=timezone.now())
+        return SeedOutcome.UPDATED if updated else SeedOutcome.PRESERVED
 
     def clear(self, key: str, scope: str = GLOBAL_SCOPE) -> bool:
         """Delete the override row for *key* in *scope*; return whether one was removed.

@@ -26,7 +26,15 @@ from teatree.dash.views.presets import (
     schedule_slot_delete,
 )
 from teatree.dash.views.sessions import sessions
-from teatree.dash.views.settings import settings, settings_group, settings_readouts, settings_restore, settings_set
+from teatree.dash.views.settings import (
+    settings,
+    settings_compare,
+    settings_group,
+    settings_readouts,
+    settings_restore,
+    settings_set,
+    settings_snapshot,
+)
 from teatree.dash.views.tickets import task_action, ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
@@ -62,10 +70,12 @@ __all__ = [
     "schedule_slot_delete",
     "sessions",
     "settings",
+    "settings_compare",
     "settings_group",
     "settings_readouts",
     "settings_restore",
     "settings_set",
+    "settings_snapshot",
     "task_action",
     "ticket_drawer",
     "ticket_transition",

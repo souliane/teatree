@@ -133,12 +133,19 @@ class CriticVerdict(models.Model):
         grader_identity: str,
         items: list[CriticItemVerdict],
     ) -> "CriticVerdict":
-        """The single guarded factory — refuses a maker-graded verdict before any write.
+        """The single guarded factory — refuses a maker-graded or itemless verdict before any write.
 
         Mirrors ``ReviewVerdict.record``'s maker≠checker refusal: a
         ``grader_identity`` that does not positively identify an independent
         checker is rejected (:class:`CriticVerdictError`). An empty identity is
         likewise refused — an anonymous verdict is unattributable.
+
+        An ITEMLESS verdict is refused too, and for the same never-fake-green
+        reason ``CriticItemVerdict.coerce`` downgrades an uncited pass: a verdict
+        that judged nothing would still COVER the head and retire its
+        :class:`CriticDispatch` terminally, so the merge-quality gate would refuse
+        every merge at that tree with no critic left to re-arm. Refusing here
+        leaves the dispatch DISPATCHED, so it expires and is re-armed.
         """
         grader = grader_identity.strip()
         if not grader:
@@ -146,6 +153,12 @@ class CriticVerdict(models.Model):
             raise CriticVerdictError(msg)
         if not is_independent_reviewer_identity(grader):
             raise CriticVerdictError(unrecognised_reviewer_message(grader, subject="a critic verdict", verb="recorded"))
+        if not items:
+            msg = (
+                "items is required — an itemless verdict judges nothing yet would cover the delivered "
+                "head and spend its dispatch claim, leaving the gate unsatisfiable at that tree"
+            )
+            raise CriticVerdictError(msg)
         normalized_head = head_sha.strip().lower()
         with transaction.atomic():
             recorded = cls.objects.create(
@@ -169,7 +182,9 @@ class CriticVerdict(models.Model):
 
         The envelope is ``{grader_identity, items: [{slug, status, citation}, …]}``.
         Item statuses pass through :meth:`CriticItemVerdict.coerce`, so an uncited
-        pass is stored as ``instrumentation_gap`` at the boundary.
+        pass is stored as ``instrumentation_gap`` at the boundary; a missing or
+        empty ``items`` reaches :meth:`record`'s itemless refusal rather than
+        recording a verdict that judged nothing.
         """
         raw_items = envelope.get("items")
         items = (

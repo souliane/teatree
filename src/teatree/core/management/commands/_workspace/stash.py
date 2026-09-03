@@ -136,7 +136,13 @@ def drop_orphaned_stashes(repo: str, *, dry_run: bool = False) -> list[str]:
                 f"no longer resolves to exactly one entry — the stash stack moved under us. Re-run clean-all."
             )
             continue
-        git.run(repo=repo, args=["stash", "drop", selector])
+        try:
+            # STRICT: the lenient runner swallows a refused drop to "", so a stash
+            # still on the stack was reported as reaped and never looked at again.
+            git.run_strict(repo=repo, args=["stash", "drop", selector])
+        except CommandFailedError as exc:
+            cleaned.append(f"Kept orphaned stash {label} (was on {branch}): `git stash drop` failed — {exc}")
+            continue
         cleaned.append(f"Dropped orphaned stash: {label} (was on {branch}; changes already merged)")
 
     return cleaned

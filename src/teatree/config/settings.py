@@ -1295,12 +1295,15 @@ class _PrePublishGateSettings:
     # outside the scan and the request was duplicated. Fail-safe positive int:
     # a non-positive / mistyped value degrades to 5. Per-overlay overridable.
     review_request_dedup_max_pages: int = 5
-    # Repo patterns whose merge requests must NEVER get a review request: the user
-    # asks for review in person there, so a posted request is noise a colleague has
-    # to dismiss. Matched by ``teatree.core.review.repo_exemption`` on the same
-    # host-stripped leading-segment-prefix grammar ``private_repos`` uses, and unioned
-    # with the overlay's own ``review_exempt_repo_slugs()``. Empty default = INERT (no
-    # repo is exempt). Per-overlay overridable (DB-home).
+    # Repo patterns whose merge requests need no review request: the user asks for
+    # review in person there, so a posted request is noise a colleague has to dismiss.
+    # Matched by ``teatree.core.review.repo_exemption`` on the same host-stripped
+    # leading-segment-prefix grammar ``private_repos`` uses. This is the PIN layer over
+    # the overlay's derived ``review_exempt_repo_slugs()`` and it wins in BOTH
+    # directions — an entry ADDS an exemption, a ``!``-prefixed one SUBTRACTS one the
+    # overlay declared, so a changed policy is a config edit rather than a merge. The
+    # deepest matching pattern decides and a tie does not exempt. Empty default =
+    # INERT (no repo is exempt). Per-overlay overridable (DB-home).
     review_exempt_repos: list[str] = field(default_factory=list)
     # Whether a review-EXEMPT merge request still gates its work group's readiness.
     # ``True`` is the conservative reading — an exempt member keeps holding the group,
@@ -1403,6 +1406,13 @@ class _PrePublishGateSettings:
     # machine name cannot be a shipped constant; the header resolves empty to the
     # hostname, so a multi-machine operator can tell two dashboards apart unconfigured.
     dashboard_instance_label: str = ""
+    # The header mark, as a STATIC path rather than a filesystem one: a static path is
+    # the same string on every box and in every checkout layout, and ``collectstatic``
+    # already reaches every installed app's ``static/`` dir on each admin boot — so an
+    # overlay ships its own logo beside its code and names it here. Promoted to an
+    # overlay code default so that declaration lives in the overlay's repo; a path no
+    # static finder resolves renders no mark rather than breaking the header.
+    dashboard_logo: str = "dash/logo.jpg"
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
     # gh/glab network call (#1540). A non-matching title is rejected with the

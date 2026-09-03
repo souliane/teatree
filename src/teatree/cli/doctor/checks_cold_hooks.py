@@ -23,6 +23,7 @@ interpreter and FAILS when a stored ``autoload = true`` produces no enforceable
 platform-skill demand.
 """
 
+import datetime as dt
 import json
 import shutil
 import subprocess  # noqa: S404 — imported only for the TimeoutExpired/SubprocessError types caught below
@@ -239,29 +240,44 @@ def _check_config_override_tier_healthy() -> bool:
     record would sit there unread, which is the state #3873 was filed about — the only
     signal was a worker log line nobody tails.
 
-    Crash-proof and fail-open: an unreadable/absent marker is "healthy". A health check
-    that reddens because it could not read its own evidence teaches operators to ignore it.
+    Crash-proof: a reader that RAISES degrades to a WARN. An ABSENT marker is healthy and
+    silent, but a marker that exists and does not parse is not — it is evidence teatree
+    wrote and can no longer read, and reading that as "no fault" is the same silence #3873
+    was filed about.
     """
     from teatree.config.override_read_health import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         MARKER_TTL_SECONDS,
+        degraded_marker_unreadable,
         degraded_read_report,
         marker_path,
     )
 
     try:
-        report = degraded_read_report()
+        unreadable = degraded_marker_unreadable()
+        report = None if unreadable else degraded_read_report()
     except Exception as exc:  # noqa: BLE001 — a doctor probe never raises out of a doctor run
         typer.echo(f"WARN  Could not read the config-tier health marker: {exc}. Tier health unverified.")
         return True
+    if unreadable:
+        typer.echo(
+            f"FAIL  The config-tier health marker at {marker_path()} exists but could not be read, so "
+            "whether the ConfigSetting override tier is degraded is UNKNOWN — not healthy. While it is "
+            "degraded the autonomy/approval gates resolve to their most RESTRICTIVE value rather than "
+            "your stored configuration. Inspect the file, then delete it to re-arm the record."
+        )
+        return False
     if report is None:
         return True
     # The caller is what makes the record actionable (#3980): the deterministic fault this tier
     # actually hit in production — a sync ORM read from inside an event loop — is settled by WHERE
     # the read was made, and the traceback at the read holds only the ORM frames.
     called_from = f" Called from: {'; '.join(report.callers)}." if report.callers else ""
+    # The FIRST failure dates the fault, which is what separates a transient lock
+    # from a degradation that has been resolving gates to defaults for days.
+    since = dt.datetime.fromtimestamp(report.first_seen, tz=dt.UTC).isoformat(timespec="seconds")
     typer.echo(
         f"FAIL  The ConfigSetting override tier FAILED to read {report.occurrences} time(s) "
-        f"(scopes: {', '.join(report.scopes)}; most recent {int(report.age_seconds)}s ago). While "
+        f"(scopes: {', '.join(report.scopes)}; first seen {since}; most recent {int(report.age_seconds)}s ago). While "
         "degraded, the autonomy/approval gates resolve to their most RESTRICTIVE value rather "
         "than your stored configuration, so the factory is running more conservatively than you "
         f"configured it to.{called_from} Typical causes are a config read reached from an async "

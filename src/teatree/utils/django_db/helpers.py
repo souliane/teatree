@@ -55,6 +55,28 @@ def url_host(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
+def split_password_from_url(url: str) -> tuple[str, str]:
+    """Return *url* with its password removed, plus that password, decoded.
+
+    A URL handed to ``pg_dump`` rides in an argv element every account on the
+    host can read from ``ps``; libpq takes the secret from ``PGPASSWORD`` instead.
+
+    >>> split_password_from_url("postgres://u:p%40ss@db.example:5432/x?sslmode=require")
+    ('postgres://u@db.example:5432/x?sslmode=require', 'p@ss')
+    >>> split_password_from_url("postgres://db.example/x")
+    ('postgres://db.example/x', '')
+    """
+    from urllib.parse import unquote, urlsplit, urlunsplit  # noqa: PLC0415 — deferred: only this path needs it
+
+    parts = urlsplit(url)
+    userinfo, at_sign, hostport = parts.netloc.rpartition("@")
+    if not at_sign or ":" not in userinfo:
+        return url, ""
+    user, _, password = userinfo.partition(":")
+    scrubbed = urlunsplit((parts.scheme, f"{user}@{hostport}", parts.path, parts.query, parts.fragment))
+    return scrubbed, unquote(password)
+
+
 def _pg_args() -> tuple[str, str, dict[str, str]]:
     # Deferred so importing the engine facade never eagerly pulls the psycopg-backed
     # ``teatree.utils.db`` stack — only the runner/config surface is wanted by most importers.

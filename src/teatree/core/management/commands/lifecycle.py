@@ -231,19 +231,20 @@ class Command(RefusalExitTyperCommand):
             str,
             typer.Option(
                 "--posted-url",
-                help="URL of the posted `e2e post-test-plan` comment; required for a green run to satisfy the gate.",
+                help="Where the evidence lives — the `test-plans/<repo>-<ticket>.md` path; required for a green run.",
             ),
         ] = "",
     ) -> "RecordE2ERunResult":
-        """Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967).
+        """Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967).
 
         Writes an :class:`~teatree.core.models.e2e_mandatory_run.E2eMandatoryRun`
         for the ticket at ``--head-sha``. A green run satisfies the mandatory-E2E
         gate at ``pr create`` and the §17.4 CLEAR **only when** ``--posted-url``
-        is given — recorded E2E evidence is not enough, it must be POSTED (the
-        SHA-bound ``e2e post-test-plan`` ticket comment). A green run at any other
-        SHA does not carry. Re-recording the same spec at the same tree updates
-        the row in place (idempotent). A red run, or a green run with no
+        is given — a run recorded only in the teatree DB is not enough, its
+        evidence must live where reviewers read it (the ticket's
+        ``test-plans/<repo>-<ticket>.md`` in the e2e repo). A green run at any other SHA
+        does not carry. Re-recording the same spec at the same tree updates the
+        row in place (idempotent). A red run, or a green run with no
         ``--posted-url``, records provenance without satisfying the gate.
         """
         from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
@@ -254,12 +255,12 @@ class Command(RefusalExitTyperCommand):
         assert_lifecycle_db_is_canonical(ticket)
         if not spec.strip():
             self.stderr.write("  record-e2e-run refused: --spec is required (the E2E spec path that ran).")
-            return {"recorded": False, "error": "--spec is required"}
+            raise SystemExit(1)
         if not is_commit_sha(head_sha):
             self.stderr.write(
                 "  record-e2e-run refused: --head-sha must be a full 40-char hex SHA of the reviewed tree."
             )
-            return {"recorded": False, "error": "--head-sha must be a full 40-char hex SHA"}
+            raise SystemExit(1)
         run = E2eMandatoryRun.record(ticket=ticket, head_sha=head_sha, spec=spec, result=result, posted_url=posted_url)
         Worktree.objects.stamp_e2e_run(int(ticket.pk))
         posted_note = "" if run.posted_url else " (UNPOSTED — does not satisfy the gate until --posted-url is set)"

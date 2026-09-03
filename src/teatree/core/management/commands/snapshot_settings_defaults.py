@@ -122,8 +122,16 @@ class Command(TyperCommand):
             raise SystemExit(1)
 
         target = cold_defaults.DEFAULTS_TOML
-        target.write_text(plan.toml, encoding="utf-8")
-        recorded = self._reconcile_ledger(question)
+        previous = target.read_text(encoding="utf-8") if target.is_file() else None
+        _atomic_write(target, plan.toml)
+        try:
+            recorded = self._reconcile_ledger(question)
+        except OSError:
+            # The defaults file and its approval ledger are one unit: a defaults
+            # file whose divergences no ledger approves fails the shipped-defaults
+            # gate closed, so roll it back rather than leave the pair half-applied.
+            _restore(target, previous)
+            raise
         self.stdout.write(f"wrote {target} ({len(plan.changes)} change(s), {recorded} approval(s) recorded).")
 
     def _reconcile_ledger(self, question: DeferredQuestion) -> int:
@@ -153,7 +161,7 @@ class Command(TyperCommand):
                     recorded_at=now,
                 )
             )
-        APPROVALS_TOML.write_text(render_approvals(entries), encoding="utf-8")
+        _atomic_write(APPROVALS_TOML, render_approvals(entries))
         return len(entries)
 
     def _print_report(self, plan: SnapshotPlan) -> None:
@@ -170,6 +178,20 @@ class Command(TyperCommand):
         write(f"overlay-scope rows reported ({len(plan.overlay_scope_rows)}):")
         for scope, key in plan.overlay_scope_rows:
             write(f"  [{scope}] {key}")
+
+
+def _atomic_write(target: Path, text: str) -> None:
+    """Write via a sibling temp file + rename, so a reader never sees a half-written file."""
+    tmp = target.with_name(f"{target.name}.t3-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(target)
+
+
+def _restore(target: Path, previous: str | None) -> None:
+    if previous is None:
+        target.unlink(missing_ok=True)
+        return
+    _atomic_write(target, previous)
 
 
 def _current_text(target: Path) -> str:

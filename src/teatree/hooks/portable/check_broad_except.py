@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils import work_tree
 
 _OPTOUT_REGISTRY = Path("src/teatree/quality/broad_except_optout.yaml")
 
@@ -32,12 +32,21 @@ _SURFACING_CALLS = frozenset({"print", "echo"})
 _SUCCESS_SENTINELS = frozenset({True})
 
 
+def _tree() -> work_tree.WorkTree:
+    """The work tree this project sits in, resolved once per working directory."""
+    return work_tree.for_cwd()
+
+
 def _staged_python_files() -> list[str]:
-    result = run_allowed_to_fail(
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"],
-        expected_codes=None,
-    )
-    return [f for f in result.stdout.strip().splitlines() if f.startswith("src/teatree/")]
+    """Staged first-party Python, named relative to THIS project's root.
+
+    Bare, git names a staged path from the work-tree TOP — a different directory
+    whenever the project is vendored inside a fork, where the ``src/teatree/``
+    prefix below then matches nothing and the hook reports clean having read no
+    file at all. :mod:`teatree.utils.work_tree` re-roots the names; prek runs
+    each project's hooks from its own root, so the cwd is the right anchor.
+    """
+    return [f for f in _tree().staged_names("--diff-filter=ACMR", "--", "*.py") if f.startswith("src/teatree/")]
 
 
 def load_optouts(registry: Path) -> set[str]:
@@ -114,13 +123,17 @@ def _violations_in_file(filepath: str, source: str) -> list[str]:
 
 
 def _staged_source(filepath: str) -> str:
-    result = run_allowed_to_fail(
-        ["git", "show", f":{filepath}"],
-        expected_codes=None,
-    )
-    if result.returncode == 0:
-        return result.stdout
-    return Path(filepath).read_text(encoding="utf-8") if Path(filepath).exists() else ""
+    """The INDEX blob for *filepath* — the version this commit carries.
+
+    The working tree is the fallback when the index carries no blob (a path
+    staged in an earlier session, a throwaway tree), and it FAILS when neither
+    resolves: a name the staged set just produced that resolves nowhere means
+    the names and the tree disagree — the re-rooting class. Degrading to ``""``
+    there scanned nothing and reported clean.
+    """
+    tree = _tree()
+    blob = tree.blob("", filepath)
+    return blob if blob is not None else tree.read(filepath)
 
 
 def main() -> int:

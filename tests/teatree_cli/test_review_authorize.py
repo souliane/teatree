@@ -40,6 +40,7 @@ from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -71,13 +72,13 @@ class TestAuthorizeCommand:
     def test_authorize_writes_one_on_behalf_approval(self) -> None:
         result = _runner.invoke(
             app,
-            ["review", "authorize", "org/repo!7", "--approver", "U-OPERATOR"],
+            ["review", "authorize", f"{OWNED_REPO}!7", "--approver", "U-OPERATOR"],
         )
 
         assert result.exit_code == 0, result.output
         assert "OK" in result.output
         # Exactly one durable on-behalf authorization scoped to the MR + post_comment.
-        approvals = OnBehalfApproval.objects.filter(target="org/repo!7", action="post_comment")
+        approvals = OnBehalfApproval.objects.filter(target=f"{OWNED_REPO}!7", action="post_comment")
         assert approvals.count() == 1
 
     def test_authorize_accepts_gitlab_url(self) -> None:
@@ -86,20 +87,20 @@ class TestAuthorizeCommand:
             [
                 "review",
                 "authorize",
-                "https://gitlab.com/org/repo/-/merge_requests/7",
+                f"https://gitlab.com/{OWNED_REPO}/-/merge_requests/7",
                 "--approver",
                 "U-OPERATOR",
             ],
         )
 
         assert result.exit_code == 0, result.output
-        assert OnBehalfApproval.objects.filter(target="org/repo!7", action="post_comment").count() == 1
+        assert OnBehalfApproval.objects.filter(target=f"{OWNED_REPO}!7", action="post_comment").count() == 1
 
     def test_authorize_refuses_self_authorizing_agent(self) -> None:
         # The executing coding-agent role can never self-authorize (maker!=checker).
         result = _runner.invoke(
             app,
-            ["review", "authorize", "org/repo!7", "--approver", "coding-agent"],
+            ["review", "authorize", f"{OWNED_REPO}!7", "--approver", "coding-agent"],
         )
 
         assert result.exit_code == 1
@@ -111,11 +112,11 @@ class TestAuthorizeCommand:
         # succeeds — no separate approve-live-post step.
         result = _runner.invoke(
             app,
-            ["review", "authorize", "org/repo!7", "--approver", "U-OPERATOR"],
+            ["review", "authorize", f"{OWNED_REPO}!7", "--approver", "U-OPERATOR"],
         )
         assert result.exit_code == 0, result.output
 
-        error = resolve_live_authorization(scope="org/repo!7", action="post_comment")
+        error = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment")
         assert error == "", error
 
 
@@ -129,32 +130,32 @@ class TestResolveLiveAuthorization:
 
     def test_recorded_authorization_returns_ok(self) -> None:
         _write_cfg(self.tmp_path, self.monkeypatch)
-        OnBehalfApproval.record(target="org/repo!7", action="post_comment", approver_id="U-OPERATOR")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="post_comment", approver_id="U-OPERATOR")
 
-        assert resolve_live_authorization(scope="org/repo!7", action="post_comment") == ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment") == ""
 
     def test_immediate_mode_returns_ok_without_any_row(self) -> None:
         # Under IMMEDIATE on-behalf mode no token is needed at all — the
         # user has globally opted into autonomous posting.
         _write_cfg(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
 
-        assert resolve_live_authorization(scope="org/repo!7", action="post_comment") == ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment") == ""
         assert LivePostApproval.objects.count() == 0
         assert OnBehalfApproval.objects.count() == 0
 
     def test_no_authorization_returns_actionable_refusal(self) -> None:
         _write_cfg(self.tmp_path, self.monkeypatch)
 
-        error = resolve_live_authorization(scope="org/repo!7", action="post_comment")
+        error = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment")
         assert error != ""
         # Refusal names the single one-step command, not the old two-step dance.
         assert "authorize" in error
 
     def test_authorization_for_other_mr_does_not_satisfy(self) -> None:
         _write_cfg(self.tmp_path, self.monkeypatch)
-        OnBehalfApproval.record(target="org/repo!1", action="post_comment", approver_id="U-OPERATOR")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!1", action="post_comment", approver_id="U-OPERATOR")
 
-        assert resolve_live_authorization(scope="org/repo!2", action="post_comment") != ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!2", action="post_comment") != ""
 
 
 class TestPostCommentLiveOneStep:
@@ -183,15 +184,15 @@ class TestPostCommentLiveOneStep:
 
         authorize = _runner.invoke(
             app,
-            ["review", "authorize", "org/repo!7", "--approver", "U-OPERATOR"],
+            ["review", "authorize", f"{OWNED_REPO}!7", "--approver", "U-OPERATOR"],
         )
         assert authorize.exit_code == 0, authorize.output
 
         service = ReviewService(token="t")
-        msg, code = service.post_comment("org/repo", 7, "LGTM, nice work", live=True)
+        msg, code = service.post_comment(OWNED_REPO, 7, "LGTM, nice work", live=True)
 
         assert code == 0, msg
-        assert published == [("org/repo", 7, "LGTM, nice work")]
+        assert published == [(OWNED_REPO, 7, "LGTM, nice work")]
 
     def test_post_comment_live_blocked_without_authorize(self) -> None:
         self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_review_shape", lambda **kwargs: "")
@@ -200,7 +201,7 @@ class TestPostCommentLiveOneStep:
         self.monkeypatch.setattr(ReviewService, "_get_api", lambda self: object())
 
         service = ReviewService(token="t")
-        msg, code = service.post_comment("org/repo", 7, "LGTM", live=True)
+        msg, code = service.post_comment(OWNED_REPO, 7, "LGTM", live=True)
 
         assert code == 1
         assert "authorize" in msg

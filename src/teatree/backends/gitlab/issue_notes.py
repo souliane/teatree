@@ -77,7 +77,7 @@ def list_issue_comments(client: GitLabAPI, *, issue_url: str) -> list[RawAPIDict
 def update_issue_comment(client: GitLabAPI, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
     """Edit a note in place on a GitLab issue / work item, or return ``{"error": ...}``.
 
-    Used by ``e2e post-test-plan`` to keep ONE test-plan note per ticket rather
+    Used by the MR/PR test-plan poster to keep ONE note per target rather
     than appending a new one on re-run.
     """
     resolved = _resolve_issue(client, issue_url)

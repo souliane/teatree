@@ -47,6 +47,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         e2e,
         env,
         followup,
+        identities,
         loop_preset,
         pr,
         questions,
@@ -61,6 +62,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     )
 
     handlers = {
+        "teatree identities bootstrap": identities.Command.bootstrap,
         "teatree queue status": queue.Command.status,
         "teatree retention prune": retention.Command.prune,
         "teatree retention scratch": retention.Command.scratch,
@@ -80,7 +82,9 @@ def _switch_handler_params() -> dict[str, set[str]]:
         # so its real ``--json`` param lives on the registered typer callback.
         "teatree signals": signals.Command.typer_app.registered_commands[0].callback,
         "teatree pr discharge-pending": pr.Command.discharge_pending,
+        "teatree review apply-reviewer-policy": review.Command.apply_reviewer_policy,
         "teatree ticket backfill-clears": ticket.Command.backfill_clears,
+        "teatree ticket list-clears": ticket.Command.list_clears,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree review record": review.Command.record,
         "teatree review record-evidence": review.Command.record_evidence,
@@ -89,6 +93,8 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree review publish-findings": review.Command.publish_findings,
         "teatree checking show": checking.Command.show,
         "teatree e2e lanes": e2e.Command.lanes,
+        "teatree e2e write-test-plan": e2e.Command.write_test_plan,
+        "teatree e2e write-plan-from-seams": e2e.Command.write_plan_from_seams,
         "teatree env show": env.Command.show,
         # ``do`` is a bare-``handle`` command (no subcommand token); django-typer
         # replaces the class ``handle`` attribute with a generic wrapper, so its

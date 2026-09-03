@@ -43,16 +43,24 @@ def write_overlay_fields(overlay: str, fields: dict[str, str]) -> None:
 
     Creates the overlay's entry when absent so ``t3 setup slack-bot`` can record
     a bot on an overlay that had no registry fields yet.
+
+    Every overlay shares ONE registry row, so the read and the write are one
+    ``atomic`` block: the control DB runs ``BEGIN IMMEDIATE``, which serializes the
+    writers and keeps a concurrent provisioning run's fields from being clobbered by
+    a stale in-memory copy of the whole document.
     """
+    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    registry = read_overlay_registry()
-    block = registry.get(overlay)
-    if not isinstance(block, dict):
-        block = {}
-        registry[overlay] = block
-    block.update(fields)
-    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, cast("ConfigValue", registry))
+    with transaction.atomic():
+        registry = read_overlay_registry()
+        block = registry.get(overlay)
+        if not isinstance(block, dict):
+            block = {}
+            registry[overlay] = block
+        block.update(fields)
+        ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, cast("ConfigValue", registry))
 
 
 def read_overlay_field(overlay: str, field: str) -> str:

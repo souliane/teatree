@@ -59,17 +59,20 @@ class ReviewEvidenceManager(models.Manager["ReviewEvidence"]):
         return self.for_ticket(ticket, ReviewEvidence.Kind.COLD_REVIEW).exists()
 
     def has_integration_review_covering(self, ticket: "Ticket", repos: list[str]) -> bool:
-        """Whether an integration-review row covers every repo in *repos*.
+        """Whether a NON-BLOCKING integration-review row covers every repo in *repos*.
 
         Coverage is set-inclusion: a single integration review must cover the
         whole combined changeset, so ``set(repos) <= set(row.repos)``. An empty
-        *repos* is trivially covered (no cross-repo obligation).
+        *repos* is trivially covered (no cross-repo obligation). A row whose
+        verdict is a HOLD is skipped — the reviewer of the combined changeset
+        said do NOT ship it, so counting it as coverage let the very finding it
+        recorded clear the close gate.
         """
         required = set(_normalize_repos(repos))
         if not required:
             return True
         for row in self.for_ticket(ticket, ReviewEvidence.Kind.INTEGRATION_REVIEW):
-            if required <= set(_normalize_repos(row.repos)):
+            if not row.is_blocking() and required <= set(_normalize_repos(row.repos)):
                 return True
         return False
 
@@ -86,6 +89,11 @@ class ReviewEvidence(models.Model):
     class Kind(models.TextChoices):
         COLD_REVIEW = "cold_review", "Cold review"
         INTEGRATION_REVIEW = "integration_review", "Integration review"
+
+    #: Free-text ``verdict`` spellings that REFUSE the changeset, mirroring
+    #: ``ReviewVerdict.Verdict.HOLD``. A gate treats a row carrying one as
+    #: recorded evidence that the review said no, never as coverage.
+    BLOCKING_VERDICTS: ClassVar[frozenset[str]] = frozenset({"hold", "block", "blocked", "reject", "rejected"})
 
     ticket = models.ForeignKey(
         Ticket,
@@ -114,6 +122,9 @@ class ReviewEvidence(models.Model):
 
     def __str__(self) -> str:
         return f"review-evidence<ticket:{self.ticket_id} {self.kind}@{self.head_sha[:8]}>"  # type: ignore[attr-defined]
+
+    def is_blocking(self) -> bool:
+        return self.verdict.strip().lower() in self.BLOCKING_VERDICTS
 
     @classmethod
     # ast-grep-ignore: ac-django-no-complexity-suppressions

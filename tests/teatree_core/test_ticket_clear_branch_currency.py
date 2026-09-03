@@ -11,6 +11,7 @@ the actual ``merge-tree`` prediction — no mocks on the git layer.
 """
 
 import subprocess
+from io import StringIO
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -175,8 +176,8 @@ class TestTicketClearBranchCurrency(TestCase):
         clone, conflicting_sha = _make_behind_conflicting_sha(self.tmp_path)
         ticket = self._attach_ticket(clone, "feature-branch")
 
-        result = cast(
-            "dict[str, object]",
+        err = StringIO()
+        with pytest.raises(SystemExit) as exc:
             call_command(
                 "ticket",
                 "clear",
@@ -187,11 +188,11 @@ class TestTicketClearBranchCurrency(TestCase):
                 gh_verify_result="green",
                 blast_class="logic",
                 ticket_id=int(ticket.pk),
-            ),
-        )
+                stderr=err,
+            )
 
-        assert result.get("issued") is False
-        error = str(result.get("error", ""))
+        assert exc.value.code == 1
+        error = err.getvalue()
         assert "conflict" in error.lower()
         assert "a.txt" in error
 

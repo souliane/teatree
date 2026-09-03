@@ -81,8 +81,13 @@ def _config_override() -> RepoMode | None:
     return RepoMode.parse(raw)
 
 
+def _cache_key(repo: str) -> str:
+    """The absolute path *repo* names — the default ``"."`` is a different repo per caller."""
+    return str(Path(repo).resolve())
+
+
 def _cache_path(repo: str) -> Path:
-    slug = hashlib.sha256(repo.encode()).hexdigest()[:12]
+    slug = hashlib.sha256(_cache_key(repo).encode()).hexdigest()[:12]
     return DATA_DIR / "repo-mode" / f"{slug}.json"
 
 
@@ -103,7 +108,7 @@ def _write_cache(repo: str, mode: RepoMode) -> None:
     cache_path = _cache_path(repo)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
-        json.dumps({"ts": time.time(), "mode": mode.value, "repo": repo}),
+        json.dumps({"ts": time.time(), "mode": mode.value, "repo": _cache_key(repo)}),
         encoding="utf-8",
     )
 

@@ -17,20 +17,31 @@ verdict, leak scrub / send-proxy) fires identically on both surfaces — the
 orchestrator-decides / loop-executes topology is preserved through the seams, not
 by withholding writes. The read tools carry ``read_only_hint``; the write tools
 name their gated seam in :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
+
+A registered overlay contributes its own tools through
+``overlay.connectors.mcp_tool_group()``, which hands over an
+:class:`~teatree.core.mcp_tool_group.McpToolGroup` — the tools themselves, not a
+registrar the server would have to trust. The server registers them on the same
+terms it registers its own: a group whose ``requires`` names an undeclared
+service is skipped, and a group carrying a write tool that names no gated seam is
+refused whole, so an overlay can no more put an ungated mutation on this surface
+than core can.
 """
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
-from mcp.types import ToolAnnotations
+from mcp.types import Icon, ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
+from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
     introspection,
@@ -43,7 +54,63 @@ from teatree.mcp import (
     write_tools,
 )
 
+logger = logging.getLogger(__name__)
+
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
+
+
+class ToolNameCollisionError(RuntimeError):
+    """A second tool claimed a name already registered on this server."""
+
+
+class _NoShadowServer(MCPServer):
+    """An ``MCPServer`` that refuses a duplicate tool name instead of dropping it.
+
+    ``ToolManager.add_tool`` keeps the incumbent and logs a warning, so a second
+    registration of a name disappears with no signal — the contributed tool is
+    absent from the surface while its instruction line still advertises it, and
+    an overlay that believes it replaced a built-in has in fact replaced nothing.
+    Refusing at build time is loud, deterministic, and names both claimants.
+    """
+
+    def __init__(self, name: str, *, instructions: str) -> None:
+        super().__init__(name, instructions=instructions)
+        self.registered_names: set[str] = set()
+
+    @override
+    def add_tool(
+        self,
+        fn: Callable[..., Any],
+        name: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        annotations: ToolAnnotations | None = None,
+        icons: list[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
+        structured_output: bool | None = None,
+    ) -> None:
+        # A callable carrying no ``__name__`` (a partial, a callable object) has no name
+        # to collide on here; mcp's own name derivation refuses it a line later.
+        tool_name = name or getattr(fn, "__name__", "")
+        if tool_name:
+            if tool_name in self.registered_names:
+                msg = (
+                    f"MCP tool name {tool_name!r} is already registered; "
+                    "a second registration would be silently dropped."
+                )
+                raise ToolNameCollisionError(msg)
+            self.registered_names.add(tool_name)
+        super().add_tool(
+            fn,
+            name=name,
+            title=title,
+            description=description,
+            annotations=annotations,
+            icons=icons,
+            meta=meta,
+            structured_output=structured_output,
+        )
+
 
 # Per-service tool groups, registered iff the service is in the union of
 # ``required_third_party_services`` across all registered overlays. Each entry
@@ -72,6 +139,69 @@ def _required_services() -> frozenset[Service]:
     if not overlays:
         return frozenset()
     return frozenset().union(*(o.config.required_third_party_services for o in overlays.values()))
+
+
+def _group_of(name: str, overlay: OverlayBase) -> McpToolGroup | None:
+    """*overlay*'s declared tool group, or ``None`` when it declares none or raises.
+
+    An overlay resolves its own credentials and imports its own handlers in this
+    hook, so it can fail for reasons that have nothing to do with the other
+    overlays sharing the server. One broken contributor loses its own tools, never
+    everyone's.
+    """
+    try:
+        return overlay.connectors.mcp_tool_group()
+    except Exception:
+        logger.exception("overlay %r: mcp_tool_group() raised; its tools are not registered", name)
+        return None
+
+
+def _admits(name: str, group: McpToolGroup, declared: frozenset[Service]) -> bool:
+    """Whether *group* may reach the surface, on the terms it declared.
+
+    Two refusals, both fail-closed and both whole-group: a service no overlay
+    declared (the per-service groups' own contract — no declaration, no tools),
+    and a write tool naming no gated seam, which is the one thing this surface
+    must never carry.
+    """
+    undeclared_services = sorted(str(service) for service in group.requires - declared)
+    if undeclared_services:
+        logger.warning(
+            "overlay %r: mcp tool group requires undeclared service(s) %s; not registered",
+            name,
+            ", ".join(undeclared_services),
+        )
+        return False
+    unguarded = group.undeclared_write_tools
+    if unguarded:
+        logger.error(
+            "overlay %r: mcp tool(s) %s are not read-only and declare no gated seam; group not registered",
+            name,
+            ", ".join(unguarded),
+        )
+        return False
+    return True
+
+
+def overlay_tool_groups(declared: frozenset[Service]) -> list[tuple[str, McpToolGroup]]:
+    """The overlay tool groups admitted onto the surface, named by overlay, in name order."""
+    return [
+        (name, group)
+        for name, overlay in sorted(get_all_overlays().items())
+        if (group := _group_of(name, overlay)) is not None and _admits(name, group, declared)
+    ]
+
+
+def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
+    """Every write tool that names a gated seam — core's plus every admitted overlay's.
+
+    The full seam allowlist for this surface: ``write_tools.TOOL_SEAMS`` is only
+    core's half, and a guard that reads it alone cannot see an overlay's tools at all.
+    """
+    seams = dict(write_tools.TOOL_SEAMS)
+    for _, group in overlay_tool_groups(declared):
+        seams |= group.seams
+    return seams
 
 
 _PREAMBLE = (
@@ -392,6 +522,7 @@ def build_server() -> MCPServer:
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     """
     declared = _required_services()
+    overlay_groups = overlay_tool_groups(declared)
     # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: both
     # its tool registration and its instruction line are appended ONLY when
     # factory_score_enabled is on (the same fail-closed contract the per-service
@@ -415,12 +546,19 @@ def build_server() -> MCPServer:
         # service declaration is not their fail-closed lever — their seam is.
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
+        + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
     )
-    server: MCPServer = MCPServer("teatree", instructions=instructions)
+    server = _NoShadowServer("teatree", instructions=instructions)
     for tool in read_tools:
         server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
         if service in declared:
             register_group(server)
     write_tools.register(server)
+    # Last, and tool by tool rather than through a registrar the overlay owns:
+    # the server is what puts a contributed tool on the surface, so a name it has
+    # already given out is refused here rather than silently discarded by mcp.
+    for _, group in overlay_groups:
+        for tool in group.tools:
+            server.add_tool(tool.handler, name=tool.name, annotations=tool.annotations)
     return server

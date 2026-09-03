@@ -6,7 +6,6 @@ DOWN on ``scanner_factories`` (the scanner constructors) and ``job_identity``.
 Carved out of the loop tick fan-out to stay under the module-health LOC cap.
 """
 
-import datetime as _dt
 import logging
 from collections.abc import Callable
 
@@ -24,6 +23,7 @@ from teatree.loop.domain_optional_scanner_jobs import (
     _triage_assessor_jobs_for_overlay,
 )
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
+from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
     _competing_url_prefixes,
@@ -421,7 +421,7 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
         # spam the channel (#1287). The dispatcher continues with the
         # other scanners — only THIS scanner is skipped for one tick.
         logger.warning("Scanner %s recoverable error: %s", label, exc)
-        _notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
+        notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
         return label, [], f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
@@ -429,27 +429,10 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     return label, signals, ""
 
 
-def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> None:
-    """DM the user that a scanner is degraded — once per day per class (#1287)."""
-    today = _dt.datetime.now(_dt.UTC).date().isoformat()
-    key = f"scanner_error:{exc.scanner}:{exc.error_class.value}:{today}"
-    overlay_tag = f" [overlay={overlay}]" if overlay else ""
-    text = (
-        f":warning: scanner *{exc.scanner}* hit *{exc.error_class.value}*"
-        f"{overlay_tag} — this scanner is skipped for one tick."
-    )
-    if exc.detail:
-        text = f"{text}\n_{exc.detail}_"
-    try:
-        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
-    except Exception:
-        logger.exception("Scanner-error notify_with_fallback failed for %s", label)
-
-
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
     """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag."""
     return [
-        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
+        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging, overlay=tag), overlay=tag),
         _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1174 applies each Slack reply to its live DeferredQuestion — the
         # scanner the two single-overlay builders had silently dropped (#23).

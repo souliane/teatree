@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, cast
 import typer
 
 from teatree.cli.notion_page import comment_app, property_app
-from teatree.cli.notion_support import fail, live_page, notion_client, object_id
+from teatree.cli.notion_setup import notion_setup
+from teatree.cli.notion_support import fail, live_page, notion_client, object_id, page_verdict
 
 if TYPE_CHECKING:  # pragma: no cover — import-time cost stays off the CLI startup path
     from teatree.backends.notion.client import NotionClient
@@ -46,6 +47,7 @@ section_app = typer.Typer(name="section", no_args_is_help=True, help="The owned-
 notion_app.add_typer(section_app, name="section")
 notion_app.add_typer(comment_app, name="comment")
 notion_app.add_typer(property_app, name="property")
+notion_app.command("setup")(notion_setup)
 
 
 def _locator(client: "NotionClient", *, heading: str, legacy: list[str] | None) -> "SectionLocator":
@@ -180,13 +182,25 @@ def append(
         client = notion_client(overlay)
         page_id = live_page(client, page).page_id
         payload = raw_blocks if raw_blocks is not None else build_blocks(markdown)
+        before = len(client.list_block_children(page_id))
         client.append_block_children(page_id, payload)
-        rendered = BlockMarkdownRenderer(client.list_block_children).render(client.list_block_children(page_id))
+        children = client.list_block_children(page_id)
         probe = _append_probe(markdown)
-        if probe and probe not in rendered:
+        if probe:
+            rendered = BlockMarkdownRenderer(client.list_block_children).render(children)
+            if probe not in rendered:
+                msg = (
+                    f"the append reported success but page {page_id} does not contain {probe!r} on "
+                    "re-fetch — treat the write as failed."
+                )
+                raise NotionWriteNotLandedError(msg)
+        # A raw-blocks payload, or Markdown with no line long enough to probe for, has no
+        # text anchor to look for — the child count is then the only evidence it landed.
+        elif len(children) - before < len(payload):
             msg = (
-                f"the append reported success but page {page_id} does not contain {probe!r} on "
-                "re-fetch — treat the write as failed."
+                f"the append reported success but page {page_id} gained "
+                f"{len(children) - before} of {len(payload)} block(s) on re-fetch — "
+                "treat the write as failed."
             )
             raise NotionWriteNotLandedError(msg)
     except NotionError as exc:
@@ -311,20 +325,10 @@ def doctor(
         typer.echo(f"token: FAIL — {exc}", err=True)
         raise fail(exc) from exc
     typer.echo(f"token: OK — {identity}")
-    try:
-        page_id = object_id(page)
-        client.get_page(page_id)
-    except NotionError as exc:
-        typer.echo(f"page:  FAIL — {exc}", err=True)
-        raise fail(exc) from exc
-    typer.echo("page:  OK — readable by this integration")
-    verdict = client.page_liveness(page_id)
-    if verdict.readable:
-        typer.echo(f"live:  OK — {verdict.detail}")
-        return
-    typer.echo(f"live:  {verdict.state.value.upper()} — {verdict.detail}", err=True)
-    typer.echo(f"       {verdict.recovery()}", err=True)
-    raise fail(verdict.as_error(page_id))
+    verdict = page_verdict(client, page)
+    verdict.echo()
+    if verdict.error is not None:
+        raise fail(verdict.error)
 
 
 def _render_comments(found: "list[RawAPIDict]", *, as_json: bool) -> str:

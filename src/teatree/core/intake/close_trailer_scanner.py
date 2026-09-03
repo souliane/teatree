@@ -78,10 +78,19 @@ def namespace_is_banned(repo: str, patterns: list[str]) -> bool:
 def apply_publish_gate(body: str, *, repo: str, patterns: list[str]) -> str:
     """Strip close trailers when *repo* matches a banned namespace pattern.
 
-    Returns the cleaned body, or *body* unchanged when the namespace
-    is not banned (or *patterns* is empty). Idempotent — running the
-    scanner over an already-clean body returns the same body.
+    *repo* is the repository IDENTITY (an ``namespace/repo`` slug or its web
+    URL), never a local checkout path — a path never matches a namespace
+    pattern, so the gate silently passed every banned repo.
+
+    Returns the cleaned body, or *body* unchanged when the namespace is not
+    banned. No configured *patterns* is the documented no-op default and always
+    returns *body*; with patterns configured, an UNIDENTIFIABLE repo (empty
+    *repo*) fails CLOSED — a gate that cannot name the destination cannot clear
+    it. Idempotent — running the scanner over an already-clean body returns the
+    same body.
     """
-    if not namespace_is_banned(repo, patterns):
+    if not patterns:
+        return body
+    if repo and not namespace_is_banned(repo, patterns):
         return body
     return strip_close_trailers(body)

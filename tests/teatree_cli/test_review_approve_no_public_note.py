@@ -28,6 +28,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import ConfigSetting, OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -102,10 +103,10 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         """On-behalf approve succeeds via the internal verdict, posting ZERO notes."""
         _immediate_gate(self.tmp_path, self.monkeypatch)
         # The internal verdict/attribution record — human-recorded, maker!=checker.
-        OnBehalfApproval.record(target="org/repo!7", action="approve", approver_id="souliane")
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="approve", approver_id="souliane")
         service, stub = _service_with_stub()
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 0, msg
         assert "OK approved" in msg
@@ -124,7 +125,7 @@ class TestApproveOnBehalfNeedsNoPublicNote:
         _immediate_gate(self.tmp_path, self.monkeypatch)
         service, stub = _service_with_stub()
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 1
         assert "review before approve" in msg
@@ -157,7 +158,7 @@ class TestApproveAcceptsDraftFootprint:
         stub = _DraftReviewStubAPI()
         monkeypatch.setattr(service, "_get_api", lambda: stub)
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 0, msg
         assert "OK approved" in msg

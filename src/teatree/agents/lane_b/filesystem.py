@@ -62,8 +62,7 @@ def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> Functio
 
     def read_file(path: str) -> str:
         """Read a UTF-8 text file under the worktree, returning its content."""
-        data = resolve_within(root, path).read_bytes()[:_MAX_READ_BYTES]
-        return data.decode("utf-8", errors="replace")
+        return _read_capped(resolve_within(root, path), errors="replace")
 
     def search_files(pattern: str, glob: str = "**/*") -> list[str]:
         """Return worktree file paths whose text contains *pattern* (substring)."""
@@ -79,18 +78,49 @@ def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> Functio
     return toolset
 
 
+def _read_capped(path: Path, *, errors: str) -> str:
+    """Decode at most :data:`_MAX_READ_BYTES` of *path* — the cap bounds the read, not a slice of it."""
+    with path.open("rb") as handle:
+        return handle.read(_MAX_READ_BYTES).decode("utf-8", errors=errors)
+
+
+def _jailed_pattern(glob: str) -> str:
+    """The ``rglob`` pattern for *glob*, refusing one that walks out of the jail.
+
+    ``rglob`` honours ``..`` segments, so an unchecked pattern enumerates the whole
+    filesystem without ever passing :func:`resolve_within`.
+    """
+    pattern = Path(glob.removeprefix("**/") or "*")
+    if pattern.is_absolute() or ".." in pattern.parts:
+        msg = f"glob {glob!r} resolves outside the worktree root"
+        raise PathTraversalError(msg)
+    return str(pattern)
+
+
+def _contained_file(root_resolved: Path, candidate: Path) -> bool:
+    """Whether *candidate* is a regular file whose real location stays inside the jail."""
+    try:
+        if not candidate.is_file():
+            return False
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    return root_resolved in resolved.parents
+
+
 def _search(root: Path, pattern: str, glob: str) -> list[str]:
     """Substring-search worktree files, capped at :data:`_MAX_SEARCH_HITS`."""
+    root_resolved = root.resolve()
     hits: list[str] = []
-    for candidate in sorted(root.rglob(glob.removeprefix("**/") or "*")):
-        if not candidate.is_file():
+    for candidate in sorted(root_resolved.rglob(_jailed_pattern(glob))):
+        if not _contained_file(root_resolved, candidate):
             continue
         try:
-            text = candidate.read_text(encoding="utf-8", errors="ignore")
+            text = _read_capped(candidate, errors="ignore")
         except OSError:
             continue
         if pattern in text:
-            hits.append(str(candidate.relative_to(root)))
+            hits.append(str(candidate.relative_to(root_resolved)))
         if len(hits) >= _MAX_SEARCH_HITS:
             break
     return hits

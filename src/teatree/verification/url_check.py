@@ -19,26 +19,35 @@ resolved address is refused when it is loopback / private / link-local / reserve
 redirects (a 3xx is itself an existence signal, and NOT following it means a
 redirect to an internal address is never fetched).
 
+The address that passed that filter is then PINNED for the connection: the
+transport is handed the vetted address rather than the hostname, so the second
+DNS answer of a rebinding host — public on the guard's lookup, ``169.254.169.254``
+on the transport's — never reaches a socket. ``Host`` and the TLS SNI / certificate
+check stay bound to the URL's hostname, so pinning costs no verification.
+
 The probe is HEAD-first (cheap) with a ranged-GET fallback for servers that
 reject HEAD; the transport (``opener``) and host resolution (``resolver``) are
 both injected so the check is exhaustively testable without network access.
 """
 
+import http.client
 import ipaddress
 import socket
+import ssl
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from http.client import HTTPResponse
 from urllib.parse import urlparse
 
 DEFAULT_TIMEOUT = 8.0
 _OK_MAX = 400  # 2xx/3xx resolve; 4xx/5xx do not.
 
-Opener = Callable[[urllib.request.Request, float], HTTPResponse]
-"""Transport seam: perform *request* with *timeout*, return the response."""
+Opener = Callable[[urllib.request.Request, float, str], HTTPResponse]
+"""Transport seam: perform *request* with *timeout* against the vetted *address*."""
 
 HostResolver = Callable[[str], list[str]]
 """SSRF-guard seam: resolve *host* to its list of IP-address strings."""
@@ -79,11 +88,64 @@ class _NoFollowRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoFollowRedirectHandler)
+def _connect_pinned(
+    pinned_address: str, target: tuple[str, int], timeout: float | None, source_address: tuple[str, int] | None
+) -> socket.socket:
+    """Open the socket to *pinned_address*, keeping only the port *target* asked for."""
+    return socket.create_connection((pinned_address, target[1]), timeout, source_address)
 
 
-def _default_opener(request: urllib.request.Request, timeout: float) -> HTTPResponse:
-    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Plain HTTP to a vetted address; ``Host`` still carries the URL's own hostname."""
+
+    def __init__(self, host: str, *, pinned_address: str, timeout: float | None = None) -> None:
+        super().__init__(host, timeout=timeout)
+        # ``HTTPConnection.__init__`` binds the socket factory per INSTANCE, so a subclass
+        # method of the same name is shadowed and never reached — rebind it here instead.
+        self._create_connection = partial(_connect_pinned, pinned_address)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a vetted address; SNI and the certificate check stay on the hostname."""
+
+    def __init__(
+        self,
+        host: str,
+        *,
+        pinned_address: str,
+        timeout: float | None = None,
+        context: ssl.SSLContext | None = None,
+    ) -> None:
+        super().__init__(host, timeout=timeout, context=context)
+        self._create_connection = partial(_connect_pinned, pinned_address)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_address: str) -> None:
+        super().__init__()
+        self._connection = partial(_PinnedHTTPConnection, pinned_address=pinned_address)
+
+    def http_open(self, req: urllib.request.Request) -> HTTPResponse:
+        return self.do_open(self._connection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_address: str) -> None:
+        self._ssl_context = ssl.create_default_context()
+        super().__init__(context=self._ssl_context)
+        self._connection = partial(_PinnedHTTPSConnection, pinned_address=pinned_address, context=self._ssl_context)
+
+    def https_open(self, req: urllib.request.Request) -> HTTPResponse:
+        return self.do_open(self._connection, req)
+
+
+def _default_opener(request: urllib.request.Request, timeout: float, address: str) -> HTTPResponse:
+    opener = urllib.request.build_opener(
+        _NoFollowRedirectHandler,
+        _PinnedHTTPHandler(address),
+        _PinnedHTTPSHandler(address),
+    )
+    return opener.open(request, timeout=timeout)
 
 
 def _default_resolver(host: str) -> list[str]:
@@ -103,8 +165,8 @@ def _address_is_non_public(ip_str: str) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
 
 
-def _reject_non_public_host(url: str, host: str, *, resolver: HostResolver) -> UrlCheckResult | None:
-    """Return a refusal result for a non-public host, or ``None`` to proceed.
+def _vet_host(url: str, host: str, *, resolver: HostResolver) -> tuple[str, UrlCheckResult | None]:
+    """The address to pin the connection to, or a refusal result to return instead.
 
     A host that resolves to any loopback/private/link-local/reserved address is
     ``UNRESOLVED`` (the caller drops it — an internal-address citation is bogus).
@@ -112,23 +174,24 @@ def _reject_non_public_host(url: str, host: str, *, resolver: HostResolver) -> U
     records rather than drops) — the same fail-open the transport already uses.
     """
     if not host:
-        return UrlCheckResult(url, UrlCheckStatus.UNRESOLVED, detail="no host in URL")
+        return "", UrlCheckResult(url, UrlCheckStatus.UNRESOLVED, detail="no host in URL")
     try:
         addresses = resolver(host)
     except (OSError, UnicodeError) as exc:
-        return UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail=f"DNS resolution failed: {exc}")
+        return "", UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail=f"DNS resolution failed: {exc}")
     if not addresses:
-        return UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail="host did not resolve")
+        return "", UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail="host did not resolve")
     if any(_address_is_non_public(address) for address in addresses):
-        return UrlCheckResult(url, UrlCheckStatus.UNRESOLVED, detail="refused: host resolves to a non-public address")
-    return None
+        detail = "refused: host resolves to a non-public address"
+        return "", UrlCheckResult(url, UrlCheckStatus.UNRESOLVED, detail=detail)
+    return addresses[0], None
 
 
-def _probe(url: str, method: str, *, timeout: float, opener: Opener) -> UrlCheckResult:
+def _probe(url: str, method: str, *, timeout: float, opener: Opener, address: str) -> UrlCheckResult:
     headers = {"Range": "bytes=0-0"} if method == "GET" else {}
     request = urllib.request.Request(url, method=method, headers=headers)  # noqa: S310 — scheme validated + host SSRF-filtered by the caller.
     try:
-        with opener(request, timeout) as response:
+        with opener(request, timeout, address) as response:
             code = int(response.status)
     except urllib.error.HTTPError as exc:
         code = int(exc.code)
@@ -154,17 +217,19 @@ def check_url(
     not drop on it). The host is SSRF-filtered BEFORE any request: a host that
     resolves to a loopback/private/link-local/reserved address is refused
     (``UNRESOLVED``), so the untrusted URL can never turn the probe into a
-    metadata/internal-service oracle. A HEAD that fails to resolve (4xx/5xx or a
-    transport error) retries once as a ranged GET — many servers reject HEAD but
-    serve GET — and the GET result governs, so a HEAD-hostile server does not
-    produce a spurious ``UNRESOLVED``.
+    metadata/internal-service oracle. The vetted address is then handed to the
+    transport, which connects to it rather than resolving the hostname a second
+    time — the window a rebinding DNS answer needs. A HEAD that fails to resolve
+    (4xx/5xx or a transport error) retries once as a ranged GET — many servers
+    reject HEAD but serve GET — and the GET result governs, so a HEAD-hostile
+    server does not produce a spurious ``UNRESOLVED``.
     """
     if not url.strip() or not url.lower().startswith(("http://", "https://")):
         return UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail="unsupported or empty URL")
-    refusal = _reject_non_public_host(url, urlparse(url).hostname or "", resolver=resolver)
+    address, refusal = _vet_host(url, urlparse(url).hostname or "", resolver=resolver)
     if refusal is not None:
         return refusal
-    head = _probe(url, "HEAD", timeout=timeout, opener=opener)
+    head = _probe(url, "HEAD", timeout=timeout, opener=opener, address=address)
     if head.ok:
         return head
-    return _probe(url, "GET", timeout=timeout, opener=opener)
+    return _probe(url, "GET", timeout=timeout, opener=opener, address=address)

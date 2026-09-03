@@ -67,6 +67,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "contribute_plugin_dir",
         "critic_gate_mode",
         "dashboard_instance_label",
+        "dashboard_logo",
         "db_backup_cadence_hours",
         "db_backup_disabled",
         "db_backup_retention_days",

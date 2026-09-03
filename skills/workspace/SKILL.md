@@ -103,7 +103,7 @@ many distinct tickets can be in those states at once for a given overlay
 — set it in the `ConfigSetting` store:
 
 ```bash
-t3 <overlay> config_setting set max_concurrent_local_stacks 1   # default 1 (single in-flight stack, headless-safe); 0 = unbounded
+t3 <overlay> config_setting set max_concurrent_local_stacks 1   # default 1 (single in-flight stack, headless-safe); 0 = unbounded (MCP: mcp__teatree__config_setting_set)
 t3 <overlay> config_setting set max_concurrent_local_stacks 1 --overlay heavy-overlay   # per-overlay override is supported
 ```
 
@@ -113,7 +113,7 @@ error naming each blocking worktree path. Resolve by tearing the
 blocker down first:
 
 ```bash
-t3 <overlay> worktree teardown <path-from-the-error>
+t3 <overlay> worktree teardown <path-from-the-error>   # MCP: mcp__teatree__worktree_teardown
 # then re-run start on the new worktree
 ```
 
@@ -193,7 +193,7 @@ A fourth field, `content_present_on_target`, is the present-tense question the o
 
 ## Cleanup Patterns
 
-`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal with a patch-id `git cherry` fallback — a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree (only projects teatree itself provisioned — those named `<repo>-wt<ticket-pk>`; the deploy stack and unrelated user projects are never candidates), reaps the auto-isolated worktree env roots **whose own stamp names a checkout this venue can see is gone** (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` — never one holding a `.git` checkout, never an unstamped one), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), REPORTS **unresolvable checkouts** as UNKNOWN and removes none (#3912 — a dir that CARRIES a `.git` entry yet fails `git rev-parse` is either a corrupted worktree or a perfectly healthy one created in another execution context, and no venue can tell those apart; a dir with NO `.git` was never a checkout and belongs to the auto-isolated env-dir reaper above), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is provably landed** (any FSM state, decided by the landed ladder — patch-id `git cherry`, synthetic-squash, is-ancestor, the path-independent blob-content probe, and the forge's merge record at the branch's EXACT tip, the one rung that survives a squash whose content the base later evolved past; a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows; a branch with an OPEN PR is always protected, and a bare forge "merged" signal never alone authorises a delete), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree (only projects teatree itself provisioned — those named `<repo>-wt<ticket-pk>`; the deploy stack and unrelated user projects are never candidates), reaps the auto-isolated worktree env roots **whose own stamp names a checkout this venue can see is gone** (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` — never one holding a `.git` checkout, never an unstamped one), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), REPORTS **unresolvable checkouts** as UNKNOWN and removes none (#3912 — a dir that CARRIES a `.git` entry yet fails `git rev-parse` is either a corrupted worktree or a perfectly healthy one created in another execution context, and no venue can tell those apart; a dir with NO `.git` was never a checkout and belongs to the auto-isolated env-dir reaper above), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
 
 **Every reaping pass captures a checkout's unshipped work first, and `restore` reads it back (#4435).** Ahead of any disposition, `core/cleanup/unshipped_work.py` writes a salvage bundle — the staged + unstaged + untracked delta, plus a patch per unpushed commit — and an `UnshippedWorkRecord` row pointing at it. Two properties make it recoverable rather than merely present: the patches are captured VERBATIM (a stripped patch is one `git apply` rejects as `corrupt patch`), and a read this venue could not complete writes its cause to a distinct `.unreadable` key instead of overwriting a good capture with zero bytes. Apply one back with:
 
@@ -354,7 +354,7 @@ t3 <overlay> worktree provision --verbose
 
 # 2. Structured per-worktree health checklist (what provisioned, what didn't)
 t3 <overlay> worktree diagnose
-t3 <overlay> worktree status        # FSM state, branch, allocated host ports
+t3 <overlay> worktree status        # FSM state, branch, allocated host ports — CLI only for the PORTS: mcp__teatree__worktree_status returns state/branch/db/staleness, no ports
 
 # 3. Cross-store drift across every worktree in the ticket (optionally --fix)
 t3 <overlay> workspace doctor
@@ -437,6 +437,20 @@ $EDITOR src/app/thing.py                            # edit here — isolated bra
 ```
 
 Before any edit, confirm you are not in the main clone: `git rev-parse --show-toplevel` must resolve to a ticket worktree path, never the main clone root.
+
+#### Branch from the FETCHED remote tip, never from the local default branch
+
+A worktree's base is the remote tip, freshly fetched. A local default branch is only as fresh as its last `git pull`, so a clone that has sat for a day branches work onto a stale base: the first CI run replays failures already fixed upstream, and the eventual merge carries a diff nobody wrote.
+
+`t3 <overlay> workspace ticket <issue-url-or-id>` is how a worktree is created — it fetches and bases the branch for you, so the freshness rule needs no hand-rolled git. Reaching for `git worktree add` yourself is the § "Fix the CLI, Never Work Around It" case: if the command will not scaffold what you need, fix the command.
+
+**Which base it resolves is configurable, and is never a hardcoded `main`.** `teatree.utils.git_branch.resolve_diff_base` is the single answer, first rung wins: the `T3_DIFF_COVERAGE_BASE` env override, then the `teatree.targetBranch` git config (what a fork whose work lands on an integration branch declares — the same key the main-clone commit guard reads), then the repo's actual `origin/HEAD`, and only as a last resort `origin/main`. So a `master`-default repo bases on `origin/master`, and a fork targeting `development` bases on `origin/development`, with no per-skill list of branch names to keep in sync. Declare a non-default target once: <!-- skill-symbol-ref: `teatree.targetBranch` is a git-config key, not an importable module -->
+
+```bash
+git config teatree.targetBranch development   # every PR in this checkout targets it
+```
+
+The same resolved base applies to the durable fix for a blocking gate below.
 
 #### Urgent relief from a misbehaving gate — kill switch, never a live clone edit
 

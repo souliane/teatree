@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from teatree.cli.eval.multi_trial import run_pass_at_k_lane
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.models import EvalRun, EvalSpec
 
 
@@ -57,7 +58,7 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestPerScenarioProgressStreaming:
     def test_emits_a_run_and_done_line_per_scenario(self, capsys: pytest.CaptureFixture[str]) -> None:
         specs = [_spec("alpha"), _spec("beta"), _spec("gamma")]
-        run_pass_at_k_lane(specs, max_turns=None, trials=1, require="any", output_format="text")
+        run_pass_at_k_lane(specs, backend=API_BACKEND, max_turns=None, trials=1, require="any", output_format="text")
         err = capsys.readouterr().err
         # Every scenario gets a bracketed, indexed RUN line BEFORE it runs and a
         # DONE line after — so a hang leaves the last RUN line as the pinpoint.
@@ -66,6 +67,8 @@ class TestPerScenarioProgressStreaming:
             assert f"DONE [{index}/3] {name}" in err
 
     def test_run_line_precedes_done_line_for_the_same_scenario(self, capsys: pytest.CaptureFixture[str]) -> None:
-        run_pass_at_k_lane([_spec("alpha")], max_turns=None, trials=1, require="any", output_format="text")
+        run_pass_at_k_lane(
+            [_spec("alpha")], backend=API_BACKEND, max_turns=None, trials=1, require="any", output_format="text"
+        )
         err = capsys.readouterr().err
         assert err.index("RUN  [1/1] alpha") < err.index("DONE [1/1] alpha")

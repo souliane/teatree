@@ -366,3 +366,39 @@ class TestExportScanTermsUnion:
 
     def test_fail_safe_to_empty_when_all_unset(self, tmp_path: Path) -> None:
         assert export_scan_terms(db_path=_empty_db(tmp_path)) == ()
+
+
+class TestMigrationReadsTheLegacyConfigNotTheRegistry:
+    """From-legacy must mean from LEGACY, even once a registry exists.
+
+    Every source was read through its dual-read resolver, which returns the
+    consolidated registry when one is present. So a rebuild copied the registry
+    back onto itself and the verification compared the registry with itself —
+    green for any registry at all, including one that drops a term.
+    """
+
+    def test_rebuild_re_derives_from_the_legacy_rows(self, tmp_path: Path) -> None:
+        db = _seed(
+            tmp_path,
+            banned_terms=["acme"],
+            banned_brands=["democorp"],
+            banned_terms_allowlist=["myorg-product"],
+            banned_term_registry={"leak": ["stale-registry-only"], "prose_collider": [], "allow": []},
+        )
+        registry = banned_term_registry.build_registry_from_legacy(db_path=db)
+        assert registry["prose_collider"] == ["acme"]
+        assert registry["leak"] == ["democorp"]
+        assert registry["allow"] == ["myorg-product"]
+        assert "stale-registry-only" not in registry["leak"]
+
+    def test_verification_catches_a_registry_that_drops_a_legacy_term(self, tmp_path: Path) -> None:
+        db = _seed(
+            tmp_path,
+            banned_terms=["acme", "widget-margin"],
+            banned_term_registry={"prose_collider": ["acme"]},
+        )
+        # The registry under verification is the SAME lossy value the DB carries;
+        # a self-referential read reports ok, a legacy read reports the drop.
+        verification = banned_term_registry.verify_migration({"prose_collider": ["acme"]}, db_path=db)
+        assert verification.ok is False
+        assert "widget-margin" in verification.dropped

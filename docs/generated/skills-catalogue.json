@@ -42,7 +42,7 @@
     },
     {
       "name": "e2e",
-      "summary": "End-to-end testing with Playwright \u2014 writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate"
+      "summary": "End-to-end testing with Playwright \u2014 writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate"
     },
     {
       "name": "e2e-review",

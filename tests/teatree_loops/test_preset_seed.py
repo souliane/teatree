@@ -12,9 +12,12 @@ import io
 import zoneinfo
 from importlib import import_module
 from pathlib import Path
+from unittest.mock import patch
 
 import django.test
+import pytest
 from django.core.management import call_command
+from django.db.utils import OperationalError
 
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.mode_resolution import resolve_active_mode
@@ -133,6 +136,18 @@ class TestSeedDefaultPresets(django.test.TestCase):
     def test_standard_schedule_uses_the_vienna_timezone(self) -> None:
         seed_default_presets_and_schedules()
         assert ModeSchedule.objects.get(name="standard").timezone == "Europe/Vienna"
+
+    def test_a_failed_slot_write_leaves_no_slotless_schedule_a_reseed_can_never_fill(self) -> None:
+        # Slots are materialised for a NEWLY-created schedule only, so a schedule that
+        # committed without them is a permanently empty calendar: every later seed sees
+        # ``made=False`` and skips the slots for good.
+        with (
+            patch.object(ModeScheduleSlot.objects, "bulk_create", side_effect=OperationalError("disk I/O")),
+            pytest.raises(OperationalError),
+        ):
+            seed_default_presets_and_schedules()
+
+        assert not ModeSchedule.objects.filter(name="standard").exists()
 
     def test_every_preset_entry_names_a_valid_loop(self) -> None:
         loop_names = {spec.name for spec in DEFAULT_LOOPS}

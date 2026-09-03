@@ -28,6 +28,7 @@ from typing import Final, TypedDict
 
 from teatree.config import cold_reader
 from teatree.hooks import git_config_offline
+from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 
@@ -308,20 +309,38 @@ def _probe_env() -> dict[str, str]:
     return {**os.environ, "PATH": _probe_search_path()}
 
 
-def _probe_gh(repo_path: str) -> str | None:
-    binary = _resolve_probe_tool("gh")
+def run_forge_tool(tool: str, args: list[str]) -> str | None:
+    """Run ``tool`` with *args* against the augmented probe PATH; stdout, or ``None``.
+
+    ``None`` covers every way the question went unasked — the tool is not
+    installed, it exited non-zero, it timed out, the OS refused to run it. A
+    caller must read it as "could not ask", never as an answer. Shared with the
+    foreign-open-MR guard (:mod:`teatree.hooks.foreign_mr_cli`) so both forge
+    probes resolve their binary and their environment identically.
+    """
+    binary = _resolve_probe_tool(tool)
     if binary is None:
         return None
     try:
         result = run_allowed_to_fail(
-            [binary, "repo", "view", repo_path, "--json", "visibility", "--jq", ".visibility"],
+            [binary, *args],
             expected_codes=(0,),
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
     except (CommandFailedError, OSError, TimeoutExpired):
         return None
-    verdict = result.stdout.strip().upper()
+    return result.stdout
+
+
+def _probe_gh(repo_path: str) -> str | None:
+    stdout = run_forge_tool(
+        FORGE_TOOL[GITHUB],
+        ["repo", "view", repo_path, "--json", "visibility", "--jq", ".visibility"],
+    )
+    if stdout is None:
+        return None
+    verdict = stdout.strip().upper()
     return verdict or None
 
 
@@ -330,20 +349,11 @@ def _probe_glab(repo_path: str) -> str | None:
     # parsed from the full project JSON in Python. Passing ``--jq`` makes glab
     # exit non-zero with "Unknown flag", silently defeating the carve-out for
     # every GitLab repo.
-    binary = _resolve_probe_tool("glab")
-    if binary is None:
+    stdout = run_forge_tool(FORGE_TOOL[GITLAB], ["api", f"projects/{repo_path.replace('/', '%2F')}"])
+    if stdout is None:
         return None
     try:
-        result = run_allowed_to_fail(
-            [binary, "api", f"projects/{repo_path.replace('/', '%2F')}"],
-            expected_codes=(0,),
-            env=_probe_env(),
-            timeout=_PROBE_TIMEOUT_S,
-        )
-    except (CommandFailedError, OSError, TimeoutExpired):
-        return None
-    try:
-        project = json.loads(result.stdout)
+        project = json.loads(stdout)
     except ValueError:
         return None
     visibility = project.get("visibility") if isinstance(project, dict) else None
@@ -360,28 +370,25 @@ def probe_visibility(slug: str) -> str | None:
     ``None`` is the fail-safe "unknown" -- the caller then treats the repo as
     NOT private and the gate stays hard-blocking.
 
-    The forge is resolved from the slug's host segment: a first ``/``-segment
-    containing a dot (``gitlab.com/...`` -> ``glab``, ``github.com/...`` ->
-    ``gh``). A BARE ``owner/repo`` slug carries no host, so callers that know
-    the forge from the publish tool qualify the slug UP to its canonical host
-    form first (:func:`forge_qualified_slug`) -- a ``glab`` post therefore
-    probes via ``glab`` instead of being mis-routed to the GitHub default.
+    The forge is resolved from the slug's host segment by the shared
+    :func:`_forge_tool.forge_and_repo_path`, so this probe and the foreign-MR
+    guard route identically. A BARE ``owner/repo`` slug carries no host, so
+    callers that know the forge from the publish tool qualify the slug UP to its
+    canonical host form first (:func:`forge_qualified_slug`) -- a ``glab`` post
+    therefore probes via ``glab`` instead of being mis-routed to the GitHub
+    default.
     """
-    parts = slug.split("/")
-    if len(parts) < _MIN_SLUG_PARTS:
-        return None
-    host = parts[0] if "." in parts[0] else ""
-    repo_path = "/".join(parts[1:]) if host else slug
-    if host.startswith("gitlab"):
+    forge, repo_path = forge_and_repo_path(slug)
+    if forge == GITLAB:
         return _probe_glab(repo_path)
-    if host.startswith("github") or not host:
+    if forge == GITHUB:
         return _probe_gh(repo_path)
     return None
 
 
 # Canonical host for each forge, used to qualify a BARE ``owner/repo`` slug UP
 # to its host-prefixed form so the host-keyed probe routes to the right tool.
-_FORGE_CANONICAL_HOST: Final[dict[str, str]] = {"github": "github.com", "gitlab": "gitlab.com"}
+_FORGE_CANONICAL_HOST: Final[dict[str, str]] = {GITHUB: "github.com", GITLAB: "gitlab.com"}
 
 
 def forge_qualified_slug(slug: str, forge: str) -> str:
@@ -480,6 +487,18 @@ def slug_namespace_matches(entry: str, slug: str) -> bool:
     entry_parts = entry_key.split("/")
     slug_parts = slug_key.split("/")
     return len(entry_parts) < len(slug_parts) and slug_parts[: len(entry_parts)] == entry_parts
+
+
+def slug_segment_depth(entry: str) -> int:
+    """How many host-stripped path segments *entry* pins — a pattern's SPECIFICITY.
+
+    ``org`` is 1 and ``org/sub/repo`` is 3, host-qualified or not, so two patterns
+    written in different forms compare on the same axis
+    :func:`slug_namespace_matches` matches on. A blank or host-root-only entry is 0,
+    below every real pattern.
+    """
+    key = _strip_host_prefix(entry.strip().lower())
+    return len([segment for segment in key.split("/") if segment])
 
 
 def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:

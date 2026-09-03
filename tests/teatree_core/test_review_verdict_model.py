@@ -267,6 +267,52 @@ class TestReviewerIdentityIdempotency(TestCase):
         )
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
 
+    def test_a_differently_cased_slug_is_the_same_forge_repo(self) -> None:
+        # Forge slugs are case-insensitive: an exact-match lookup hid the later HOLD
+        # from the gate querying the other spelling, so the merge it was recorded
+        # against went ahead on the earlier merge_safe alone.
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-b",
+        )
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="Souliane/TeaTree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="reviewer-a",
+            gh_verify_result="failed",
+        )
+
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+        assert (
+            ReviewVerdict.objects.effective_state_at(slug="souliane/teatree", pr_id=1, head_sha=_SHA)
+            is HeadVerdictState.HOLD
+        )
+
+    def test_a_differently_cased_slug_updates_the_one_row(self) -> None:
+        first = ReviewVerdict.record(
+            pr_id=1,
+            slug="Souliane/TeaTree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="reviewer-a",
+            gh_verify_result="failed",
+        )
+        second = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-a",
+        )
+
+        assert second.pk == first.pk
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
+
     def test_a_moved_head_records_a_fresh_row(self) -> None:
         ReviewVerdict.record(
             pr_id=1,

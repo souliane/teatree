@@ -14,21 +14,41 @@ sibling models at top level without the intra-package import cycle ``ticket.py``
 must dodge with function-scoped imports.
 """
 
+from django.db import transaction
+
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 
+REVIEW_PHASE = "reviewing"
+
 
 def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None) -> Task:
+    """Mint (or reuse) the reviewing Task for a reviewer-role *ticket*.
+
+    Idempotent in its side effects, the same contract
+    :func:`~teatree.loop.persistence_phase_task.create_phase_task` holds and keyed on
+    the same lock: an in-flight sibling is RETURNED rather than raced. Callers used to
+    lean on their own read-time "no active task" pre-check, which is a read-then-write —
+    two dispatchers (the FSM scheduler and the stuck-ticket repair sweep) could both
+    observe none and both mint one, giving the ticket two reviewers. Checking BEFORE the
+    ``Session`` is created is what keeps a deduped call from orphaning a session row.
+    """
     if ticket.role != Ticket.Role.REVIEWER:
         msg = f"schedule_external_review requires role=reviewer (got role={ticket.role!r})"
         raise InvalidTransitionError(msg)
-    session = Session.objects.create(ticket=ticket, agent_id="external-review")
-    return Task.objects.create(
-        ticket=ticket,
-        session=session,
-        phase="reviewing",
-        execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
-        parent_task=parent_task,
-    )
+    with transaction.atomic():
+        in_flight = (
+            Task.objects.in_flight_for_phase(ticket.overlay, REVIEW_PHASE).filter(ticket=ticket).order_by("pk").first()
+        )
+        if in_flight is not None:
+            return in_flight
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase=REVIEW_PHASE,
+            execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
+            parent_task=parent_task,
+        )

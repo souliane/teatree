@@ -11,9 +11,11 @@ failed half-done (``failed to remove directory '.../.venv/lib': Directory not
 empty``), leaving a truncated install that still imported.
 
 ``uv_project_run_prefix`` (scripts/hooks/lib/resolve-uv.sh) redirects uv to the
-hook's OWN environment when — and only when — a ``.venv`` at or above the project
-records an interpreter absent here. A cold clone and a normal checkout keep the
-pre-existing behaviour exactly, so nothing pays for a second environment.
+hook's OWN environment for every workspace MEMBER, and for a non-member only when
+a ``.venv`` at or above the project records an interpreter absent here. Membership
+alone decides for a member because the second harm needs no foreign interpreter:
+a perfectly usable shared environment still gets reconciled to the MEMBER's
+dependency set, silently uninstalling everything only the root declares.
 
 The hook runs for real, copied into a throwaway repo under ``tmp_path`` so
 ``repo_root`` resolves there and this clone is never touched. It is driven against
@@ -240,25 +242,25 @@ class TestAForeignEnvAboveTheHookSurvives:
 
 
 @pytest.mark.integration
-class TestOurOwnEnvironmentIsStillUvsToManage:
-    """No second environment is imposed on a normal checkout."""
+class TestAUsableRootEnvIsStillNotTheMembersToReconcile:
+    """Membership alone decides: the interpreter being usable does not make the env ours."""
 
-    def test_a_local_env_keeps_being_reconciled_in_place(self, tmp_path: Path) -> None:
+    def test_a_usable_root_env_keeps_the_packages_only_the_root_declares(self, tmp_path: Path) -> None:
         root, hook_repo = _throwaway_repo(tmp_path, vendored=True)
-        _plant_env(root, ".venv", usable=True)
+        canary = _plant_env(root, ".venv", usable=True) / _CANARY
 
         result = _run(tmp_path, hook_repo, f"we ship to {_BANNED_TERM} next week")
 
         assert result.returncode == _BANNED_TERM_EXIT, f"stderr={result.stderr!r}"
-        assert _log(tmp_path, "syncs.log") == [str(root / ".venv")]
-        assert not (root / ".venv-hook").exists(), "an environment uv owns must not be duplicated"
+        assert _log(tmp_path, "syncs.log") == [str(root / ".venv-hook")]
+        assert canary.exists(), "a member reconciling the root env uninstalls what only the root declares"
 
 
 @pytest.mark.integration
-class TestAColdCloneIsUnchanged:
+class TestAColdCloneStillScans:
     """Non-destructive must not be traded for a broken first run."""
 
-    def test_no_environment_at_all_still_scans_and_builds_the_projects_own(self, tmp_path: Path) -> None:
+    def test_no_environment_at_all_still_scans_and_builds_the_hooks_own(self, tmp_path: Path) -> None:
         root, hook_repo = _throwaway_repo(tmp_path, vendored=True)
         assert not (root / ".venv").exists()
 
@@ -268,7 +270,8 @@ class TestAColdCloneIsUnchanged:
             f"a cold clone must still scan, got {result.returncode}\nstdout={result.stdout!r} stderr={result.stderr!r}"
         )
         assert "BANNED TERM in" in result.stdout
-        assert _log(tmp_path, "syncs.log") == [str(root / ".venv")], "a cold clone keeps the pre-existing behaviour"
+        assert _log(tmp_path, "syncs.log") == [str(root / ".venv-hook")], "a member builds its own, never the root's"
+        assert not (root / ".venv").exists(), "the hook never creates the workspace root's environment"
 
     def test_a_cold_clone_passes_clean_text(self, tmp_path: Path) -> None:
         _, hook_repo = _throwaway_repo(tmp_path, vendored=True)

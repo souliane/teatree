@@ -48,6 +48,26 @@ def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
     return messaging_from_overlay(overlay or None)
 
 
+#: ``IncomingEvent.Meta.db_table``, as a literal because ``_meta`` is a private
+#: accessor; ``test_incoming_events_db_errors`` pins the two together.
+EVENT_TABLE = "teatree_incoming_event"
+
+
+def _is_missing_relation(exc: Exception) -> bool:
+    """Whether *exc* says the ``IncomingEvent`` table itself is absent.
+
+    SQLite words it ``no such table: <name>``, Postgres ``relation "<name>"
+    does not exist`` — both name the table, and that name is the only thing
+    separating an un-migrated install from a live failure sharing the wording
+    (``database "…" does not exist``, a dropped column after a partial
+    migration). A live failure must surface, never read as an empty queue.
+    """
+    message = str(exc).lower()
+    if EVENT_TABLE not in message:
+        return False
+    return "no such table" in message or "does not exist" in message
+
+
 def _event_forge_url(event: "IncomingEvent") -> str:
     """Best-effort forge URL/slug for *event*, for overlay resolution.
 
@@ -94,8 +114,10 @@ class IncomingEventsScanner:
             # and any other DatabaseError keep propagating to
             # `tick._run_job`, which surfaces them on the statusline.
             events = list(event_model.objects.unprocessed().order_by("received_at", "pk")[: self.limit])
-        except (OperationalError, ProgrammingError):
-            logger.info("IncomingEventsScanner: teatree_incoming_event unavailable (DB not migrated yet) — skipping")
+        except (OperationalError, ProgrammingError) as exc:
+            if not _is_missing_relation(exc):
+                raise
+            logger.info("IncomingEventsScanner: %s unavailable (DB not migrated yet) — skipping", EVENT_TABLE)
             return []
         signals: list[ScanSignal] = []
         for event in events:

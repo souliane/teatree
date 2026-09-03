@@ -65,7 +65,8 @@ def prune_dslr_snapshots(
 ) -> list[str]:
     """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
 
-    Returns a list of deleted snapshot names.
+    Returns the snapshots the tool confirmed deleted — a refused delete is reported on
+    stderr and left out, so the caller never records a snapshot that is still there.
 
     *in_use_tenants* (souliane/teatree#1306): tenants whose snapshots
     must NOT be touched because an in-flight worktree depends on them.
@@ -84,6 +85,9 @@ def prune_dslr_snapshots(
     deleted: list[str] = []
     for old in stale:
         sys.stdout.write(f"  Pruning DSLR snapshot: {old}\n")
-        run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
+        result = run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
+        if result.returncode != 0:
+            sys.stderr.write(f"  Failed to prune DSLR snapshot {old}: {result.stderr.strip()}\n")
+            continue
         deleted.append(old)
     return deleted

@@ -29,9 +29,9 @@ from teatree.eval.skip_guard import (
     UnmeteredJudgeError,
     assert_api_run_was_metered,
     assert_executed_when_required,
+    assert_fresh_run_produced_output,
     assert_judge_was_metered,
     assert_production_hooks_registered,
-    assert_pydantic_ai_run_produced_output,
 )
 from teatree.eval.surface import is_advisory
 
@@ -106,15 +106,15 @@ class RunGuards:
 
     @staticmethod
     def fresh_run_produced_output(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
-        """Fail-loud when a ``pydantic_ai`` fresh run executed but every trajectory was empty.
+        """Fail-loud when an UNMETERED fresh run executed but every trajectory was empty.
 
-        The $0-cost guard cannot see a BYOK ``pydantic_ai`` run (it meters no
-        ``cost_usd``), so the backend-appropriate vacuous-green check there is an
-        empty trajectory — see :func:`assert_pydantic_ai_run_produced_output`.
+        The $0-cost guard cannot see an ``anthropic_api`` or ``pydantic_ai`` run (neither
+        meters ``cost_usd``), so the backend-appropriate vacuous-green check there is an
+        empty trajectory — see :func:`assert_fresh_run_produced_output`.
         """
         produced = sum(1 for r in results if not r.skipped and (r.run.tool_calls or r.run.text_blocks))
         try:
-            assert_pydantic_ai_run_produced_output(backend=backend, executed=executed, produced=produced)
+            assert_fresh_run_produced_output(backend=backend, executed=executed, produced=produced)
         except EmptyFreshRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
@@ -370,28 +370,20 @@ class CostBoundsGate:
     makes an absent file a hard error precisely because "no ceilings" would make the
     gate vacuously green; a committed file pinning zero scenarios is that same
     vacuity through a different door, so a requested gate with nothing to gate is a
-    refusal, not a pass.
+    refusal, not a pass. That verdict is carried by
+    :attr:`~teatree.eval.cost_bounds.CostBoundsResult.vacuous`.
     """
 
     @staticmethod
     def check(record: "EvalRunRecord", *, enabled: bool) -> bool:
-        """Check *record*'s per-scenario cost against the ceilings; print violations; True if any."""
+        """Check *record*'s per-scenario cost against the ceilings; print failures; True if RED."""
         if not enabled:
             return False
         from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415 — lazy CLI import
 
-        config = load_cost_bounds()
-        if not config.bounds:
-            typer.echo(
-                "cost-bounds: --gate-cost-bounds was requested but evals/cost_bounds.yaml pins zero "
-                "scenarios, so the gate would certify a run it never checked. Calibrate a bound_usd "
-                "for the metered scenarios the lane runs.",
-                err=True,
-            )
-            return True
-        result = check_cost_bounds(record.costs_by_scenario(), config)
-        for violation in result.violations:
-            typer.echo(violation.render())
+        result = check_cost_bounds(record.costs_by_scenario(), load_cost_bounds())
+        for line in result.render_failures():
+            typer.echo(line)
         return result.failed
 
 

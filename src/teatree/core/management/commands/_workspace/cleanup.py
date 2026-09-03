@@ -15,13 +15,21 @@ from teatree.config import clone_root
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists, cleanup_worktree
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
-from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
+from teatree.core.worktree.branch_classification import (
+    INCONCLUSIVE_SOURCE,
+    _branch_tree_matches_squash,
+    _forge_cli_available,
+    branch_redundancy,
+    is_squash_merged,
+    reset_forge_probe_cache,
+)
 from teatree.core.worktree.clone_paths import repair_stale_clone_path, resolve_clone_path
 from teatree.core.worktree.venue_safe_registry import prune_worktrees, worktree_branches, worktree_map
-from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
+from teatree.core.worktree.worktree_env import write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
@@ -33,18 +41,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-# Regenerable artifacts a clean-working-tree probe must ignore: provisioning
-# writes the env cache into every worktree (``worktree_env.write_env_cache``).
-# In teatree's own clone these are gitignored, but an overlay repo may track
-# them as untracked, so a porcelain status that lists only these is still
-# "clean" for the gone-remote prune decision.
-_REGENERABLE_WORKTREE_PATHS = (CACHE_FILENAME, f"{CACHE_DIRNAME}/")
-
-# ``git status --porcelain`` prefixes each path with a two-char ``XY`` status
-# code plus a space, e.g. ``?? path`` or `` M path``.
-_PORCELAIN_STATUS_PREFIX_WIDTH = 3
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
@@ -96,22 +92,19 @@ def _prune_squash_merged(
 ) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
-    A branch whose tip tree matches the PR's merge commit is cleaned despite
-    unsynced commits (typical for post-merge retro/docs work that is already
-    captured by the squash).
+    Reached only after :func:`is_squash_merged` proved the CURRENT tip landed
+    (a content rung or the forge's merge record at the exact tip, open PRs
+    vetoed) — a by-SHA unsynced pre-check here would re-apply the instrument
+    the ladder supersedes and hold every squash-then-base-evolved branch
+    forever.
 
-    Honors the #706 data-loss guard (#710): even when the squash-merge
-    heuristics say "clean", a branch whose commits are absent from every remote
-    AND lacks merged-evidence is kept and a warning is returned — the safe
-    default is never to destroy the only copy of work. ``remote_ref_was_present``
-    is the caller's pre-prune sample of ``origin/<name>``'s tracking ref, the
+    Honors the #706 data-loss guard (#710): even when the landed ladder says
+    "clean", a branch whose commits are absent from every remote AND lacks
+    merged-evidence is kept and a warning is returned — the safe default is
+    never to destroy the only copy of work. ``remote_ref_was_present`` is the
+    caller's pre-prune sample of ``origin/<name>``'s tracking ref, the
     forge-CLI-free squash-merge signal threaded into the guard.
     """
-    unsynced = git.unsynced_commits(repo, name)
-    if unsynced and not _branch_tree_matches_squash(repo, name):
-        return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
-            unsynced
-        )
     refusal = _refuse_if_unpushed(repo, name, remote_ref_was_present=remote_ref_was_present)
     if refusal:
         return refusal
@@ -172,19 +165,27 @@ class WorktreeReaper:
 
 
 def _worktree_clean(wt_path: str) -> bool:
-    """Whether the worktree has no uncommitted changes (ignoring regenerable files).
+    """Whether the worktree holds no REAL uncommitted work (env cache + orchestration debris ignored).
 
-    Provisioning seeds each worktree with the env cache; a status that lists only
-    those regenerable artifacts is still clean for prune purposes. Any other dirty
-    entry — staged, modified, or untracked real work — keeps the worktree.
+    Gates a working-tree removal, so it fails CLOSED: a status that cannot be
+    read (not a checkout, corrupt index, lock contention) reads DIRTY — a
+    lenient probe degraded such an error to "" and authorised removing a
+    checkout nothing had actually examined. Two instruments must both agree the
+    tree is clean (``git status --porcelain`` AND ``git diff HEAD``), and only
+    the shared :data:`~teatree.core.cleanup.working_tree_dirt.ORCHESTRATION_DEBRIS_PREFIXES`
+    are ignorable — anything unrecognised is real work and keeps the worktree.
     """
     if not Path(wt_path).is_dir():
         return False
-    for line in git.status_porcelain(wt_path).splitlines():
-        entry = line[_PORCELAIN_STATUS_PREFIX_WIDTH:].strip()
-        if entry and not entry.startswith(_REGENERABLE_WORKTREE_PATHS):
-            return False
-    return True
+    try:
+        # ``-uall``: an untracked dir must list its files, or debris and real work collapse into one entry.
+        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
+        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
+    except CommandFailedError:
+        return False
+    entries = [_porcelain_path(line) for line in porcelain.splitlines()]
+    entries.extend(line.strip() for line in diff_head.splitlines())
+    return all(not entry or is_orchestration_debris(entry) for entry in entries)
 
 
 def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = False) -> str:
@@ -233,7 +234,11 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
     if not _worktree_clean(wt_path):
         return f"SKIPPED '{name}': worktree has uncommitted changes — keeping {wt_path}"
     unsynced = git.unsynced_commits(repo, name)
-    if unsynced and not _branch_tree_matches_squash(repo, name):
+    if (
+        unsynced
+        and not _branch_tree_matches_squash(repo, name)
+        and not branch_redundancy(repo, name, f"origin/{git.default_branch(repo)}").redundant
+    ):
         return f"SKIPPED '{name}': {len(unsynced)} commit(s) ahead of origin/main — keeping {wt_path}"
     if dry_run:
         return preview_line(f"Remove gone-remote worktree (branch kept): {name}", dry_run=True)
@@ -289,6 +294,7 @@ def prune_branches(repo: str, *, dry_run: bool = False) -> list[str]:
     skips them through the single ``name in protected`` guard rather than each
     pass re-checking the globs.
     """
+    reset_forge_probe_cache()
     cleaned: list[str] = []
     # Sample the remote tracking refs BEFORE the prune removes the stale ones: a
     # branch's prior tracking-ref presence is the forge-CLI-free proof it was once
@@ -359,9 +365,26 @@ def prune_branches(repo: str, *, dry_run: bool = False) -> list[str]:
         line.strip().removeprefix("* ").removeprefix("+ ")
         for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
     } - protected
+    # Never a raw ``rev-list`` count: SHA reachability reports N "unpushed"
+    # commits for every squash-merged branch by construction, so the number said
+    # nothing about whether work is at risk. The kept line names what the landed
+    # ladder could not prove instead.
     for name in sorted(remaining):
-        commits = git.run(repo=repo, args=["rev-list", "--count", f"{default}..{name}"])
-        cleaned.append(f"WARNING: branch '{name}' has {commits} unpushed commit(s) and no merged PR")
+        verdict = branch_redundancy(repo, name, f"origin/{default}")
+        if verdict.source == INCONCLUSIVE_SOURCE:
+            cleaned.append(
+                f"WARNING: branch '{name}' kept — content probe inconclusive; nothing verified, nothing deleted"
+            )
+        else:
+            cleaned.append(
+                f"WARNING: branch '{name}' kept — {len(verdict.unique_shas)} commit(s) whose content is "
+                f"not provably on origin/{default} and no merged PR at its tip"
+            )
+    if remaining and not _forge_cli_available():
+        cleaned.append(
+            f"NOTE: forge rung unavailable (no gh/glab CLI) — merged-MR evidence could not be "
+            f"consulted for {len(remaining)} kept branch(es); some may be reclaimable once a forge CLI is present"
+        )
 
     return cleaned
 
@@ -421,7 +444,9 @@ def drop_orphan_databases(*, dry_run: bool = False) -> list[str]:
         expected_codes=None,
     )
     if result.returncode != 0:
-        return []
+        # An empty return here is read as "no orphans"; a listing that never ran
+        # proves nothing about what is out there, so say so instead.
+        return [f"Skipped: could not list databases — psql exited {result.returncode}: {result.stderr.strip()}"]
 
     all_dbs = {line.split("|")[0] for line in result.stdout.splitlines() if line}
     wt_dbs = {db for db in all_dbs if db.startswith("wt_")}
@@ -434,11 +459,16 @@ def drop_orphan_databases(*, dry_run: bool = False) -> list[str]:
         if dry_run:
             cleaned.append(preview_line(f"Drop orphan database: {db_name}", dry_run=True))
             continue
-        run_allowed_to_fail(
+        dropped = run_allowed_to_fail(
             ["dropdb", "-h", pg_host(), "-U", pg_user(), "--if-exists", db_name],
             env=pg_env(),
             expected_codes=None,
         )
+        if dropped.returncode != 0:
+            cleaned.append(
+                f"Kept orphan database {db_name}: dropdb exited {dropped.returncode}: {dropped.stderr.strip()}"
+            )
+            continue
         cleaned.append(f"Dropped orphan database: {db_name}")
     return cleaned
 

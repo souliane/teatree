@@ -21,7 +21,7 @@ the existing row rather than stacking duplicates.
 from datetime import datetime, timedelta
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.fibonacci import fibonacci_minutes
@@ -67,11 +67,17 @@ class LocalStackQueueItemManager(models.Manager["LocalStackQueueItem"]):
         waiting — the partial UniqueConstraint guarantees at most one — so a
         re-fired ``start`` does not stack duplicates. Otherwise creates a
         fresh QUEUED row (due immediately).
+
+        The read and the create share one ``atomic`` block, which SQLite opens
+        ``IMMEDIATE``: the first writer holds the reserved lock across the pair,
+        so a rival ``start`` cannot queue its own row between them and turn the
+        promised no-op into a UniqueConstraint violation.
         """
-        existing = self.active().filter(worktree=worktree).first()
-        if existing is not None:
-            return existing
-        return self.create(overlay=worktree.overlay, worktree=worktree)
+        with transaction.atomic():
+            existing = self.active().filter(worktree=worktree).first()
+            if existing is not None:
+                return existing
+            return self.create(overlay=worktree.overlay, worktree=worktree)
 
 
 class LocalStackQueueItem(models.Model):

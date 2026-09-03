@@ -3,7 +3,7 @@ import logging
 import re
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -14,11 +14,43 @@ from teatree.core.evidence.test_plan_blocked_gate import (
     check_blocked_body,
     check_blocked_body_from_config,
 )
-from teatree.core.management.commands._test_plan import post as _test_plan
+from teatree.core.management.commands._test_plan import write as _write
+from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 from tests.teatree_core.conftest import CommandOverlay
 
-_MOCK_OVERLAY = {"test": CommandOverlay()}
+_E2E_REPO = "client-workspace"
+
+
+class _E2eRepoMetadata(OverlayMetadata):
+    def get_e2e_config(self) -> dict[str, str]:
+        return {"runner": "external", "project_path": f"org/{_E2E_REPO}", "e2e_dir": "e2e"}
+
+
+class _E2eRepoOverlay(CommandOverlay):
+    metadata = _E2eRepoMetadata()
+
+    def get_repos(self) -> list[str]:
+        return [_E2E_REPO]
+
+
+_MOCK_OVERLAY = {"test": _E2eRepoOverlay()}
+
+
+def _seed(issue_url: str, checkout: Path) -> Ticket:
+    """A ticket whose e2e-repo worktree is a real directory, so the plan path resolves."""
+    ticket = Ticket.objects.create(overlay="test", issue_url=issue_url)
+    checkout.mkdir(parents=True, exist_ok=True)
+    Worktree.objects.create(
+        ticket=ticket,
+        overlay="test",
+        repo_path=_E2E_REPO,
+        branch="123-feat-thing",
+        extra={"worktree_path": str(checkout)},
+    )
+    return ticket
+
 
 _FAKE_COLLEAGUE_URL = "https://gitlab.com/fake-corp/main-app/-/issues/123"
 _FAKE_SOLO_URL = "https://gitlab.com/fake-owner/my-solo-tool/-/issues/99"
@@ -137,6 +169,8 @@ class TestCheckBlockedBodyFromConfig:
 
 
 class TestBlockedGateAtBodyFilePath(TestCase):
+    """The free-text ``--body-file`` plan is scanned before it lands in the e2e repo."""
+
     @pytest.fixture(autouse=True)
     def _inject(
         self,
@@ -150,67 +184,39 @@ class TestBlockedGateAtBodyFilePath(TestCase):
         import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
+        monkeypatch.setattr(_write, "_resolve_worktree_or_none", lambda: None)
+        self.enterContext(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
 
-    def _host(self) -> MagicMock:
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 1, "web_url": "u"}
-        return host
+    def _write_body_file(self, *, issue_url: str, body: str) -> str:
+        _seed(issue_url, self._tmp / issue_url.rsplit("/", 1)[-1])
+        path = self._tmp / "plan.md"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def _plan_path(self, issue_url: str) -> Path:
+        number = issue_url.rsplit("/", 1)[-1]
+        repo = issue_url.split("/-/", maxsplit=1)[0].rsplit("/", 1)[-1]
+        return self._tmp / number / "test-plans" / f"{repo}-{number}.md"
+
+    def _run(self, *, issue_url: str, body: str) -> None:
+        body_file = self._write_body_file(issue_url=issue_url, body=body)
+        _write.run_write_test_plan(
+            _write.TestPlanFlags(ticket=issue_url, body_file=body_file),
+            write_err=lambda _s: None,
+        )
 
     def test_must_refuse_colleague_url_blocked_body(self) -> None:
-        host = self._host()
-        with pytest.raises(BlockedTestPlanPostError):
-            _test_plan.post_body_file_comment(
-                host,
-                issue_url=_FAKE_COLLEAGUE_URL,
-                ticket_id="123",
-                body=_BLOCKED_BODY,
-            )
-        host.post_issue_comment.assert_not_called()
+        with pytest.raises(SystemExit):
+            self._run(issue_url=_FAKE_COLLEAGUE_URL, body=_BLOCKED_BODY)
+        assert not self._plan_path(_FAKE_COLLEAGUE_URL).exists()
 
     def test_must_allow_colleague_url_clean_body(self) -> None:
-        host = self._host()
-        result = _test_plan.post_body_file_comment(
-            host,
-            issue_url=_FAKE_COLLEAGUE_URL,
-            ticket_id="123",
-            body=_CLEAN_BODY,
-        )
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
+        self._run(issue_url=_FAKE_COLLEAGUE_URL, body=_CLEAN_BODY)
+        assert self._plan_path(_FAKE_COLLEAGUE_URL).read_text(encoding="utf-8") == _CLEAN_BODY
 
     def test_must_allow_solo_url_blocked_body(self) -> None:
-        host = self._host()
-        result = _test_plan.post_body_file_comment(
-            host,
-            issue_url=_FAKE_SOLO_URL,
-            ticket_id="99",
-            body=_BLOCKED_BODY,
-        )
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
-
-    def test_run_post_test_plan_body_file_exits_nonzero_on_blocked_colleague(self) -> None:
-        host = self._host()
-        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: host)
-        self._monkeypatch.setattr(_test_plan, "_resolve_worktree_or_none", lambda: None)
-        ticket = MagicMock()
-        ticket.issue_url = _FAKE_COLLEAGUE_URL
-        ticket.ticket_number = "123"
-        self._monkeypatch.setattr("teatree.core.models.Ticket.objects.resolve", lambda *a, **kw: ticket)
-
-        from django.core.management import call_command  # noqa: PLC0415
-
-        body_path = self._tmp / "blocked.md"
-        body_path.write_text(_BLOCKED_BODY, encoding="utf-8")
-
-        with (
-            pytest.raises(SystemExit) as exc_info,
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-        ):
-            call_command("e2e", "post-test-plan", ticket=_FAKE_COLLEAGUE_URL, body_file=str(body_path))
-        assert exc_info.value.code != 0
-        host.post_issue_comment.assert_not_called()
+        self._run(issue_url=_FAKE_SOLO_URL, body=_BLOCKED_BODY)
+        assert self._plan_path(_FAKE_SOLO_URL).read_text(encoding="utf-8") == _BLOCKED_BODY
 
 
 class TestStructuredManifestRenderIsNotGated(TestCase):
@@ -223,25 +229,20 @@ class TestStructuredManifestRenderIsNotGated(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    def _inject(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
         self._monkeypatch = monkeypatch
+        self._tmp = tmp_path
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
         import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
 
-    def test_blocked_workflows_manifest_posts_to_colleague_ticket(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_FAKE_COLLEAGUE_URL)
-        host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.post_issue_comment.return_value = {"id": 5, "web_url": "u"}
-        host.repo_for_issue_url.return_value = "fake-corp/main-app"
-        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: host)
-        self._monkeypatch.setattr(
-            _test_plan, "resolve_worktree", MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none"))
-        )
+    def test_blocked_workflows_manifest_lands_in_the_colleague_ticket_plan(self) -> None:
+        checkout = self._tmp / "checkout"
+        _seed(_FAKE_COLLEAGUE_URL, checkout)
+        self._monkeypatch.setattr(_write, "_resolve_worktree_or_none", lambda: None)
         manifest = json.dumps(
             {
                 "ticket": "123",
@@ -256,9 +257,9 @@ class TestStructuredManifestRenderIsNotGated(TestCase):
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast(
                 "dict[str, object]",
-                call_command("e2e", "post-test-plan", ticket=_FAKE_COLLEAGUE_URL, manifest=manifest),
+                call_command("e2e", "write-test-plan", ticket=_FAKE_COLLEAGUE_URL, manifest=manifest),
             )
 
         assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
-        assert "**Blocked:** deploy blocked on cred" in host.post_issue_comment.call_args.kwargs["body"]
+        plan = checkout / "test-plans" / "main-app-123.md"
+        assert "**Blocked:** deploy blocked on cred" in plan.read_text(encoding="utf-8")

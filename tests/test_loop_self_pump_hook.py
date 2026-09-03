@@ -95,6 +95,26 @@ class TestLoopSelfPump:
         # Short-circuits the handler chain (a decision was emitted).
         assert result is True
 
+    def test_pump_directive_tells_the_slot_to_record_the_attempt(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim is the spawn boundary, not the finish (#786 WS1).
+
+        An Agent-tool dispatch never reaches the headless TaskAttempt flow, so
+        unless the directive says to record the outcome, nothing does: the unit
+        stays CLAIMED until its lease lapses, ``reclaim_orphaned_claims``
+        returns it to PENDING, and ``claim-next`` re-offers the same unit
+        forever. The drain then cannot terminate and the queue only grows.
+        """
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "t3:orchestrator", "phase": "coding", "issue_url": "u"}])
+
+        handle_loop_self_pump({"session_id": "owner-1"})
+
+        reason = _decision(capsys)["reason"]
+        assert "record-attempt" in reason, "directive must name the command that records the outcome"
+        assert "NOT the finish" in reason, "directive must say the claim is not the finish"
+
     def test_pump_directive_tags_tick_with_owner_session_id(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

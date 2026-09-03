@@ -4,7 +4,10 @@
 #
 # Usage: dev/test-matrix.sh [--all | <version>...]   (no args / --all = 3.13 3.14)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 IMAGE="teatree-test"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/teatree-test"

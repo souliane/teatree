@@ -45,9 +45,6 @@ class TestCheckShippingGate(TestCase):
 
 
 class TestResolveBaseUrl(TestCase):
-    def test_returns_default_when_worktree_is_none(self) -> None:
-        assert _resolve_base_url(None) == "http://127.0.0.1:8000"
-
     def test_prefers_frontend_url(self) -> None:
         ticket = Ticket.objects.create()
         worktree = Worktree.objects.create(
@@ -75,39 +72,39 @@ class TestResolveBaseUrl(TestCase):
 
 
 class TestRunVisualQAGate(TestCase):
-    def _ticket(self) -> Ticket:
+    def _ticket_and_worktree(self) -> tuple[Ticket, Worktree]:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/wt", branch="feat-x")
-        return ticket
+        worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/wt", branch="feat-x")
+        return ticket, worktree
 
     def test_skipped_run_does_not_pollute_extra(self) -> None:
-        ticket = self._ticket()
+        ticket, worktree = self._ticket_and_worktree()
         clean = visual_qa.VisualQAReport(targets=[], skipped_reason="no frontend changes")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(visual_qa, "evaluate", return_value=clean),
         ):
-            assert _run_visual_qa_gate(ticket) is None
+            assert _run_visual_qa_gate(ticket, worktree) is None
 
         ticket.refresh_from_db()
         assert "visual_qa" not in ticket.extra
 
     def test_records_summary_when_pages_checked(self) -> None:
-        ticket = self._ticket()
+        ticket, worktree = self._ticket_and_worktree()
         page = visual_qa.PageResult(url="http://x/", screenshot_path=".t3/visual_qa/00-root.png")
         report = visual_qa.VisualQAReport(targets=["/"], pages=[page], base_url="http://x")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(visual_qa, "evaluate", return_value=report),
         ):
-            assert _run_visual_qa_gate(ticket) is None
+            assert _run_visual_qa_gate(ticket, worktree) is None
 
         ticket.refresh_from_db()
         assert ticket.extra["visual_qa"]["pages_checked"] == 1
         assert ticket.extra["visual_qa"]["errors"] == 0
 
     def test_returns_error_when_findings(self) -> None:
-        ticket = self._ticket()
+        ticket, worktree = self._ticket_and_worktree()
         page = visual_qa.PageResult(
             url="http://x/",
             errors=[visual_qa.PageError(url="http://x/", kind="page", message="boom")],
@@ -117,7 +114,7 @@ class TestRunVisualQAGate(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(visual_qa, "evaluate", return_value=report),
         ):
-            result = _run_visual_qa_gate(ticket)
+            result = _run_visual_qa_gate(ticket, worktree)
 
         assert result is not None
         assert result["allowed"] is False
@@ -127,19 +124,19 @@ class TestRunVisualQAGate(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["visual_qa"]["errors"] == 1
 
-    def test_resolves_invoking_worktree_not_stale_first(self) -> None:
+    def test_scans_the_worktree_it_is_given_not_the_tickets_earliest(self) -> None:
         """#776 N1: visual QA inspects the invoking workstream's repo.
 
-        Same ``worktrees.first()`` root cause as the ship-branch fix,
-        same path, residual on the reused-multi-workstream ticket #776
-        targets. With ``ship_invoking_branch`` recorded, the gate must
-        scan the matching worktree's repo, not the stale earliest row.
+        The gate no longer re-resolves — it scans the row ``pr create`` resolved
+        and is about to ship, so a ticket whose EARLIEST row is a stale
+        already-merged workstream is never the one scanned. Which row that is
+        stays pinned end-to-end by ``test_create_invoking_cwd``.
         """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/776")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/repo-pr-a", branch="s-776-pr-a-merged")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/repo-pr-b", branch="s-776-pr-b-current")
-        ticket.extra = {"ship_invoking_branch": "s-776-pr-b-current"}
-        ticket.save(update_fields=["extra"])
+        invoking = Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="/tmp/repo-pr-b", branch="s-776-pr-b-current"
+        )
         captured: dict[str, str] = {}
 
         def fake_changed_files(*, repo: str) -> list[str]:
@@ -153,13 +150,13 @@ class TestRunVisualQAGate(TestCase):
                 visual_qa, "evaluate", return_value=visual_qa.VisualQAReport(targets=[], skipped_reason="none")
             ),
         ):
-            assert _run_visual_qa_gate(ticket) is None
+            assert _run_visual_qa_gate(ticket, invoking) is None
 
         # The invoking PR-B repo is scanned — NOT the stale PR-A first() row.
         assert captured["repo"] == "/tmp/repo-pr-b"
 
     def test_skip_reason_propagates(self) -> None:
-        ticket = self._ticket()
+        ticket, worktree = self._ticket_and_worktree()
         captured: dict[str, str] = {}
 
         def fake_evaluate(**kwargs: object) -> visual_qa.VisualQAReport:
@@ -170,7 +167,7 @@ class TestRunVisualQAGate(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(visual_qa, "evaluate", side_effect=fake_evaluate),
         ):
-            assert _run_visual_qa_gate(ticket, skip_reason="my reason") is None
+            assert _run_visual_qa_gate(ticket, worktree, skip_reason="my reason") is None
 
         assert captured["skip_reason"] == "my reason"
 

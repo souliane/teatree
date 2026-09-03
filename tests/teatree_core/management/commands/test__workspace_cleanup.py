@@ -10,16 +10,25 @@ surviving branch ref carries unpushed commits is KEPT (#706); a dir-gone row
 whose branch is safely on the remote is torn down through the ordinary guards.
 """
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace.cleanup import _fix_drift
+from teatree.core.management.commands._workspace import cleanup as wcleanup
+from teatree.core.management.commands._workspace.cleanup import _fix_drift, _worktree_clean, prune_branches
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.reconcile import Drift, EnvCacheDrift, MissingEnvCache, MissingWorktreeDir
-from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.cleanup._shared import (
+    _GIT,
+    _run_git,
+    corrupt_index,
+    forge_reporting,
+    init_pushed_main,
+    squash_then_base_evolved,
+)
 
 
 class _DirGoneRowFixture(TestCase):
@@ -133,3 +142,136 @@ class TestFixDriftSkipsVanishedRows(TestCase):
 
         # every finding references a vanished row → all three loops `continue`
         assert _fix_drift(drift) == []
+
+
+class TestWorktreeCleanFailsClosed:
+    """`_worktree_clean` gates a working-tree removal, so it fails closed.
+
+    An unanswerable status
+    must read DIRTY (keep) — a lenient probe that degraded a git error to "" read
+    a broken checkout as clean and authorised removing it.
+    """
+
+    def test_a_dir_that_is_not_a_checkout_reads_dirty(self, tmp_path: Path) -> None:
+        plain = tmp_path / "not-a-repo"
+        plain.mkdir()
+
+        assert _worktree_clean(str(plain)) is False
+
+    def test_a_corrupt_index_reads_dirty(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=repo)
+        _run_git("config", "user.email", "t@t", cwd=repo)
+        _run_git("config", "user.name", "t", cwd=repo)
+        (repo / "f.txt").write_text("x\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=repo)
+        _run_git("commit", "-q", "-m", "initial", cwd=repo)
+        wt_dir = tmp_path / "wt"
+        _run_git("worktree", "add", "-q", "-b", "feat", str(wt_dir), cwd=repo)
+        corrupt_index(wt_dir)
+
+        assert _worktree_clean(str(wt_dir)) is False
+
+    def test_debris_only_checkout_reads_clean(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=repo)
+        _run_git("config", "user.email", "t@t", cwd=repo)
+        _run_git("config", "user.name", "t", cwd=repo)
+        (repo / "f.txt").write_text("x\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=repo)
+        _run_git("commit", "-q", "-m", "initial", cwd=repo)
+        (repo / ".claude" / "worktrees" / "agent-1").mkdir(parents=True)
+        (repo / ".claude" / "worktrees" / "agent-1" / "scratch.txt").write_text("tmp\n", encoding="utf-8")
+
+        assert _worktree_clean(str(repo)) is True
+
+    def test_claude_settings_keeps_the_checkout(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=repo)
+        _run_git("config", "user.email", "t@t", cwd=repo)
+        _run_git("config", "user.name", "t", cwd=repo)
+        (repo / "f.txt").write_text("x\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=repo)
+        _run_git("commit", "-q", "-m", "initial", cwd=repo)
+        (repo / ".claude").mkdir()
+        (repo / ".claude" / "settings.json").write_text("{}\n", encoding="utf-8")
+
+        assert _worktree_clean(str(repo)) is False
+
+
+class TestPruneBranchesKeptWarning(TestCase):
+    """The kept-branch warning names what the ladder could not prove.
+
+    Never a raw
+    ``rev-list`` commit count, which reports N "unpushed" commits for every
+    squash-merged branch by construction (the squash rewrote every SHA).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def _repo_with_ahead_branch(self) -> Path:
+        work = init_pushed_main(self.tmp_path)
+        _run_git("checkout", "-q", "-b", "ahead", "main", cwd=work)
+        (work / "unique.txt").write_text("genuinely new\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-q", "-m", "feat: genuinely new", cwd=work)
+        _run_git("checkout", "-q", "main", cwd=work)
+        return work
+
+    def test_kept_branch_warning_names_the_content_verdict(self) -> None:
+        work = self._repo_with_ahead_branch()
+
+        with forge_reporting():
+            lines = prune_branches(str(work))
+
+        warning = next(line for line in lines if "'ahead'" in line)
+        assert "not provably on" in warning
+        assert "unpushed commit(s) and no merged PR" not in warning
+
+    def test_absent_forge_cli_is_a_reported_degradation(self) -> None:
+        work = self._repo_with_ahead_branch()
+
+        with forge_reporting(), patch.object(wcleanup, "_forge_cli_available", return_value=False):
+            lines = prune_branches(str(work))
+
+        assert any("forge rung unavailable" in line for line in lines)
+
+
+class TestPruneDrainsForgeProvenBranches(TestCase):
+    """The end-to-end shape of the owner's ~100 stale branches.
+
+    Squash-merged, base since evolved, source ref long pruned. With the forge's
+    merge record at the exact tip, the prune actually deletes the branch instead
+    of holding it behind the by-SHA unsynced probe that fires on every squash by
+    construction.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def test_squash_then_base_evolved_branch_is_pruned(self) -> None:
+        work, tip = squash_then_base_evolved(self.tmp_path)
+
+        with forge_reporting(merged_head_sha=tip):
+            lines = prune_branches(str(work))
+
+        assert any(line == "Pruned squash-merged branch: feature" for line in lines), lines
+        branches = subprocess.run(
+            [_GIT, "-C", str(work), "branch", "--no-color"], check=True, capture_output=True, text=True
+        ).stdout
+        assert "feature" not in branches
+
+    def test_without_forge_evidence_the_branch_is_kept_with_its_reason(self) -> None:
+        work, _tip = squash_then_base_evolved(self.tmp_path)
+
+        with forge_reporting():
+            lines = prune_branches(str(work))
+
+        assert not any(line.startswith("Pruned squash-merged branch: feature") for line in lines)
+        assert any("'feature'" in line and "not provably on" in line for line in lines), lines

@@ -263,10 +263,10 @@ def _redispatch(candidate: _Candidate) -> int:
 def _schedule_for_candidate(candidate: _Candidate) -> Task:
     """Mint the candidate's phase task through the seam that owns that phase.
 
-    The author FSM mints and :func:`create_phase_task` are CAS-guarded and return an
-    in-flight sibling rather than racing one. :func:`schedule_external_review` is not —
-    it has always leaned on its caller's open-task pre-check, which here is the
-    ``no active task`` admission predicate every candidate already passed.
+    Every seam here — the author FSM mints, :func:`create_phase_task` and
+    :func:`schedule_external_review` — is CAS-guarded and returns an in-flight sibling
+    rather than racing one, so a candidate that lost the read-time ``no active task``
+    admission predicate it passed cannot give its ticket a second reviewer.
     """
     ticket, phase = candidate.ticket, candidate.phase
     if ticket.role != Ticket.Role.REVIEWER:

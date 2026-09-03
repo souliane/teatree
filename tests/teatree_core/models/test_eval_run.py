@@ -96,6 +96,16 @@ class TestPassRates(TestCase):
         assert rates["a"].pass_rate == pytest.approx(0.5)
         assert "b" not in rates
 
+    def test_pass_at_k_aggregate_row_counts_all_its_trials(self) -> None:
+        run = _record()
+        run.record_scenario(scenario_name="a", verdict=EvalVerdict.PASS, score=2 / 3, trials=3)
+
+        rate = run.pass_rates()[0]
+
+        assert rate.total == 3
+        assert rate.passed == 2
+        assert rate.pass_rate == pytest.approx(2 / 3)
+
     def test_queryset_pass_rates_zero_total_is_zero_rate(self) -> None:
         run = _record()
         run.record_scenario(scenario_name="only_skip", verdict=EvalVerdict.SKIP)

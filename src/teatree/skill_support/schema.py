@@ -171,12 +171,21 @@ def _validate_list_field_refs(
     known_skills: set[str],
     errors: list[str],
 ) -> None:
-    """Validate that every skill named under *field_name* (``requires``/``companions``) resolves."""
+    """Validate that every skill named under *field_name* (``requires``/``companions``) resolves.
+
+    An inline value (``requires: a`` / ``requires: [a, b]``) is an ERROR rather than a
+    parse variant: :mod:`teatree.skill_support.requires_parser` reads only the block
+    sequence, so an inline one loads as NO dependencies at all — silently, and with the
+    references this gate exists to check never looked at.
+    """
     in_field = False
     for line in frontmatter.splitlines():
         stripped = line.strip()
         if not line.startswith((" ", "\t")) and ":" in stripped:
-            in_field = stripped.split(":")[0].strip() == field_name
+            key, _, inline = stripped.partition(":")
+            in_field = key.strip() == field_name
+            if in_field and inline.strip():
+                errors.append(f"{path}: {field_name} must be a block list ('- name' lines), not {inline.strip()!r}")
             continue
         if in_field and stripped.startswith("- "):
             ref = stripped.removeprefix("- ").strip().strip("'\"")

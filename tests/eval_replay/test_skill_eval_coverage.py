@@ -9,7 +9,9 @@ NOT a gap.
 import dataclasses
 from pathlib import Path
 
-from teatree.eval.coverage import render_text, skill_eval_coverage
+import pytest
+
+from teatree.eval.coverage import SkillCatalogError, render_text, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import Matcher
 
@@ -108,3 +110,21 @@ class TestShippedSkillCoverageEnforced:
             + "\n\n"
             + render_text(report)
         )
+
+
+class TestSkillCatalogIsFailLoud:
+    """A dir that yields no ``SKILL.md`` would report "0 gaps of 0 skills" — a vacuous green.
+
+    Mirrors ``discovery.ScenarioCatalogError``: ``glob`` returns ``[]`` on a
+    missing dir, so a mis-pointed path silently reports total coverage.
+    """
+
+    def test_missing_skills_dir_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(SkillCatalogError, match="missing"):
+            skill_eval_coverage(tmp_path / "absent", [])
+
+    def test_dir_holding_no_skill_md_raises(self, tmp_path: Path) -> None:
+        empty = tmp_path / "skills"
+        empty.mkdir()
+        with pytest.raises(SkillCatalogError):
+            skill_eval_coverage(empty, [])

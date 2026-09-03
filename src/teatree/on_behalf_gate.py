@@ -6,7 +6,7 @@ the user's identity to a colleague/customer surface — a PR/MR comment, an
 issue comment, a Slack channel/thread message, a Notion post, a PR/MR
 approval, or a reaction on someone else's message.
 
-The gate governs colleague-visible posts ONLY. Two carve-outs let the
+The gate governs colleague-visible posts ONLY. Three carve-outs let the
 agent proceed without an approval under the blocking modes:
 
 *   A *draft*-form action (:data:`_DRAFT_FORM_ACTIONS`, e.g.
@@ -18,10 +18,19 @@ agent proceed without an approval under the blocking modes:
     user's routine self-documentation on their OWN ticket (E2E evidence),
     not a colleague-facing voice, so the user does not have to approve
     their own evidence posts. Clearing the list re-gates those actions.
+*   An *author-side* action (:data:`_AUTHOR_SIDE_ACTIONS`, i.e.
+    ``reply_to_discussion``) on an MR the OWNER AUTHORED resolves to
+    PROCEED. Answering a reviewer on one's own MR is the owner's own
+    voice on the owner's own work, not a colleague-facing review post,
+    and the owner recorded that it posts autonomously. The carve-out is
+    keyed on ``own_mr``, which the CALLER must PROVE from the forge (the
+    MR's author versus the configured identity) — it defaults ``False``,
+    so every caller that cannot prove it stays gated.
 
 Those carve-outs are the whole purpose of the ``on_behalf_post_mode``
 setting: it keeps the user in control of their colleague-visible voice
-while letting the agent draft freely and self-document on its own work.
+while letting the agent draft freely, self-document on its own work, and
+answer reviewers on the owner's own MRs.
 
 The DB-home ``on_behalf_post_mode`` setting (default
 :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, per-overlay
@@ -60,9 +69,59 @@ The resolver returns one of three :class:`OnBehalfVerdict` values:
     exempt under every blocking mode, not just the default).
 """
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.config import OnBehalfPostMode, get_effective_settings
+
+
+@dataclass(frozen=True, slots=True)
+class OnBehalfContext:
+    """What the verdict knows about a post's DESTINATION, beyond its action.
+
+    *overlay* is the overlay the post is addressed to — its ``on_behalf_post_mode``
+    is the one that governs. Resolved ambiently instead, the mode is the invoking
+    cwd's: on a multi-overlay install nothing resolves, the shipped
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` applies, and a repo whose
+    owning overlay is pinned :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` is
+    refused by an overlay with no claim on it.
+
+    *target* is the repo the post addresses, ``""`` when the caller names none.
+    It is what separates "no target" (ambient resolution, unchanged) from a NAMED
+    target no single overlay owns — an unowned target and a tie between overlays
+    alike. That case has no PER-OVERLAY tier of its own to read, so it drops that
+    one tier (see :attr:`scope`) instead of inheriting an ``immediate`` pin from an
+    overlay with no claim on it; the recorded-approval channel is still its satisfier.
+
+    *own_mr* is the caller's PROVED owner-authorship of the target MR. Every field
+    defaults to the value that changes nothing, so an unset one never widens the gate.
+    """
+
+    overlay: str | None = None
+    own_mr: bool = False
+    target: str = ""
+
+    @property
+    def target_unowned(self) -> bool:
+        """A NAMED target that resolved to no single overlay."""
+        return bool(self.target) and not self.overlay
+
+    @property
+    def scope(self) -> str | None:
+        """The overlay whose per-overlay tier the mode is read from, if any.
+
+        ``""`` for an unowned NAMED target: the name of no overlay, which
+        :func:`~teatree.config.get_effective_settings` resolves as "only the global
+        DB scope applies". Dropping THAT ONE TIER is the whole of what "unowned"
+        means — env still applies (a ``T3_ON_BEHALF_POST_MODE`` the operator set for
+        the session is not an overlay's opinion, and silently retiring it is the
+        #3895 failure in miniature, permissively as readily as restrictively), the
+        global scope still applies (a workspace default has a claim on every repo),
+        and with neither set the shipped ``DRAFT_OR_ASK`` is what remains.
+
+        ``None`` — the ambient resolution — when no target is named at all.
+        """
+        return "" if self.target_unowned else self.overlay
 
 
 class OnBehalfVerdict(StrEnum):
@@ -86,6 +145,19 @@ class OnBehalfVerdict(StrEnum):
 _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 
 
+# Actions that are the MR AUTHOR answering a reviewer on their own thread.
+# Exempt from the gate ONLY when the caller has PROVED the owner authored
+# the MR (``own_mr=True``) — the owner recorded (2026-07-23) that
+# author-side replies on their own MRs post autonomously, with no
+# draft-first and no per-reply approval. The two conditions are
+# independent locks: an action outside this set stays gated even with
+# ``own_mr=True`` (an approve/unapprove/live comment on one's own MR is
+# NOT covered), and an action inside it stays gated whenever authorship
+# is unproven. The receipt DM (``notify_on_post_on_behalf``) is untouched
+# — autonomy here is the absence of a pre-ask, never of visibility.
+_AUTHOR_SIDE_ACTIONS: frozenset[str] = frozenset({"reply_to_discussion"})
+
+
 # The agent-driven review-request post action (mirrors ``_ACTION`` in
 # ``teatree.core.management.commands.review_request_post``). When the resolved
 # ``review_request_post_disabled`` is true (the ``notify`` tier sets it, or the
@@ -94,10 +166,10 @@ _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 _REVIEW_REQUEST_POST_ACTION: str = "review_request_post"
 
 
-def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
+def resolve_on_behalf_verdict(action: str, context: OnBehalfContext | None = None) -> OnBehalfVerdict:
     """Return the verdict for *action* under the effective on-behalf mode.
 
-    The gate covers colleague-**VISIBLE** posts only. Two carve-outs proceed
+    The gate covers colleague-**VISIBLE** posts only. Three carve-outs proceed
     without an approval even under the blocking modes:
 
     *   an action in the resolved ``on_behalf_auto_actions`` allowlist
@@ -112,6 +184,14 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
         draft autonomously and DM the user the publish/delete commands),
         and :attr:`OnBehalfVerdict.PROCEED` under
         :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
+    *   an author-side action (one of :data:`_AUTHOR_SIDE_ACTIONS`) with
+        ``context.own_mr`` PROVED true → :attr:`OnBehalfVerdict.PROCEED`: the owner
+        answering a reviewer on the owner's own MR. *own_mr* is a fact only
+        the caller can establish (a forge read of the MR's author against the
+        configured identity) and defaults ``False``, so an unproven or
+        unprovable authorship keeps the post gated. It is inert for every
+        action outside the set — passing ``own_mr=True`` for ``approve``
+        still BLOCKs.
 
     For every other colleague-visible action:
 
@@ -122,8 +202,21 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
         :attr:`OnBehalfVerdict.BLOCK`.
 
     Resolution follows the standard env (``T3_ON_BEHALF_POST_MODE``) →
-    active-overlay → global → default chain via
-    :func:`teatree.config.get_effective_settings`.
+    target-overlay → global → default chain via
+    :func:`teatree.config.get_effective_settings`. The env layer applies on BOTH
+    branches (``apply_env=True``): a named overlay otherwise drops it, which would
+    silently retire ``T3_ON_BEHALF_POST_MODE`` — including an ``ask`` override,
+    which must never stop applying.
+
+    *context* carries what the caller knows about the post's destination (see
+    :class:`OnBehalfContext`) — chiefly WHICH overlay's mode governs, via
+    :attr:`OnBehalfContext.scope`. Omitted, the mode resolves ambiently, exactly as
+    before; a NAMED target no single overlay owns drops the PER-OVERLAY tier only,
+    landing on env → global → the shipped ``DRAFT_OR_ASK``. Forcing that case to
+    ``DRAFT_OR_ASK`` outright would be the same silent retirement the paragraph
+    above forbids, reintroduced one branch further down: a target no overlay
+    enumerates is the COMMON case on a single-overlay install, so an operator's
+    ``T3_ON_BEHALF_POST_MODE`` would stop applying almost everywhere.
 
     One mode-independent override sits above the table: when the resolved
     ``review_request_post_disabled`` is true, the single action
@@ -138,7 +231,9 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     explicit per-overlay pin always wins. It is scoped to that one action — every
     other colleague-visible post resolves through the table below unchanged.
     """
-    settings = get_effective_settings()
+    context = context or OnBehalfContext()
+    settings = get_effective_settings(context.scope, apply_env=True)
+    mode = settings.on_behalf_post_mode
     # Mode-independent override: review-request posting is BLOCKed when the
     # resolved ``review_request_post_disabled`` is true (the ``notify`` tier sets
     # it, or the user pinned it), so this one action BLOCKs even under an
@@ -146,12 +241,17 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     # ``review_request_post`` — it never collapses any other action.
     if action == _REVIEW_REQUEST_POST_ACTION and settings.review_request_post_disabled:
         return OnBehalfVerdict.BLOCK
-    if settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE:
+    if mode is OnBehalfPostMode.IMMEDIATE:
         return OnBehalfVerdict.PROCEED
     # Auto-proceed actions are the user's routine self-documentation on their
     # OWN ticket (E2E evidence) — not a colleague-facing voice — so they need
     # no per-post approval and proceed directly under every blocking mode.
     if action in settings.on_behalf_auto_actions:
+        return OnBehalfVerdict.PROCEED
+    # The owner answering a reviewer on the owner's OWN MR — their own voice
+    # on their own work, exempted by owner decision (2026-07-23). Both
+    # conditions must hold, so neither half can widen the carve-out alone.
+    if context.own_mr and action in _AUTHOR_SIDE_ACTIONS:
         return OnBehalfVerdict.PROCEED
     # Draft-form actions are colleague-invisible — exempt from the gate
     # under every blocking mode (ASK and DRAFT_OR_ASK alike). They never
@@ -161,7 +261,7 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     return OnBehalfVerdict.BLOCK
 
 
-def on_behalf_post_will_block(action: str) -> bool:
+def on_behalf_post_will_block(action: str, context: OnBehalfContext | None = None) -> bool:
     """Whether *action* WILL BLOCK under the effective mode — the proactive pre-check.
 
     The forward-looking companion to :func:`resolve_on_behalf_verdict`: a caller
@@ -176,6 +276,7 @@ def on_behalf_post_will_block(action: str) -> bool:
 
     ``True`` iff the verdict is :attr:`OnBehalfVerdict.BLOCK`; a draft-form action
     (AUTO_DRAFT) and an :attr:`OnBehalfVerdict.PROCEED` action both return
-    ``False`` — neither needs a pre-ask.
+    ``False`` — neither needs a pre-ask. *context* must be the one the publish
+    will pass, or the pre-check and the verdict disagree about the same post.
     """
-    return resolve_on_behalf_verdict(action) is OnBehalfVerdict.BLOCK
+    return resolve_on_behalf_verdict(action, context) is OnBehalfVerdict.BLOCK
