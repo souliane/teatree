@@ -22,6 +22,7 @@ from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
 from teatree.core.models.review_verdict import Finding, FindingDict
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
+from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.verdict_findings import (
     FindingsRenderError,
     findings_payload,
@@ -174,6 +175,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
             lock_holder=request.lock_holder,
             changed_files=changed_file_set_for_findings(findings, slug=request.slug, pr_id=request.pr_id),
             merge_result_retake=request.merge_result_retake,
+            live_checks=live_checks_at,
         )
     except ReviewVerdictError as exc:
         _refuse(command, f"record refused: {exc}")
