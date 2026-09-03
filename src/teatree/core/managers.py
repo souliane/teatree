@@ -197,10 +197,15 @@ class TicketQuerySet(models.QuerySet):
         Intake discovers candidates from forge queries, so a row failing
         :meth:`~teatree.core.models.ticket.Ticket.is_admissible` can never be
         admitted, claimed, or found again — it is the only surviving record of a
-        request someone was told is tracked. The doctor WARN and ``ticket
-        dead-rows`` share this one selector so the surface that reports the rows
-        and the command that enumerates them can never disagree about which rows
-        those are.
+        request someone was told is tracked. A row that already recorded where its
+        work went is EXCLUDED: a Slack lane's bookkeeping row is non-admissible by
+        design, so without that stamp the mechanism reports its own successes and
+        buries the genuinely dead rows under one entry per inbound DM.
+
+        The doctor WARN and ``ticket dead-rows`` share this one selector, so they
+        can never disagree about WHICH rows are unfindable; the doctor additionally
+        withholds a row younger than its grace period, which is a reporting choice
+        layered on top of this set, not a second definition of it.
 
         ``is_admissible`` is applied in Python, not as a query: it is the single
         predicate every promise-time surface consults, and a hand-written SQL twin
@@ -216,7 +221,7 @@ class TicketQuerySet(models.QuerySet):
             .annotate(oldest_task=Min("tasks__created_at"))
             .order_by("pk")
         )
-        unfindable = [ticket for ticket in rows if not ticket.is_admissible()]
+        unfindable = [ticket for ticket in rows if not (ticket.is_admissible() or ticket.work_placed_elsewhere())]
         return sorted(unfindable, key=lambda row: (row.oldest_task is not None, row.oldest_task))
 
 

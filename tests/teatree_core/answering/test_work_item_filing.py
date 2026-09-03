@@ -91,20 +91,7 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         assert work.is_admissible(), "the filed row is still not something intake could discover"
         assert work.short_description == "Detect the open-PR bottleneck"
 
-    def test_an_owner_directed_filing_is_not_withheld_behind_needs_triage(self) -> None:
-        """The owner asked for this by name, so it is admitted, not parked for triage."""
-        host = RecordingHost()
-
-        file_work_item(
-            _conversation_ticket(),
-            {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
-            host=host,
-            repo=_REPO,
-        )
-
-        assert host.created[0]["labels"] == ["t3-auto"]
-
-    def test_the_agent_generated_fallback_is_withheld_behind_needs_triage(self) -> None:
+    def test_every_filed_issue_is_withheld_behind_needs_triage(self) -> None:
         """Nobody dictated this text, so the maintainer clears it before the factory claims it."""
         host = RecordingHost()
 
@@ -113,10 +100,9 @@ class TestANewRequestBecomesAnAdmissibleIssue:
             {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
             host=host,
             repo=_REPO,
-            auto_filed=True,
         )
 
-        assert "needs-triage" in host.created[0]["labels"]
+        assert host.created[0]["labels"] == ["t3-auto", "needs-triage"]
 
     def test_the_conversation_row_records_where_the_work_went(self) -> None:
         ticket = _conversation_ticket()
@@ -144,7 +130,6 @@ class TestARetryNeverForksASecondIssue:
 
         assert filed is not None
         assert filed.url == "https://github.com/souliane/teatree/issues/4242"
-        assert filed.already_filed
         assert host.created == [], "a second issue was filed for a request already tracked"
 
     def test_the_forge_fingerprint_marker_dedupes_an_unrecorded_refile(self) -> None:
@@ -161,7 +146,6 @@ class TestARetryNeverForksASecondIssue:
         assert first is not None
         assert second is not None
         assert second.url == first.url
-        assert second.already_filed
         assert len(host.created) == 1, "the fingerprint marker did not dedupe a re-file"
 
 

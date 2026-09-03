@@ -8,6 +8,7 @@ from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
+from teatree.core.models.types import SlackAnswerContext
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 if TYPE_CHECKING:
@@ -145,10 +146,21 @@ class TicketIntrospectionModel(TicketFacet):
         for, so every surface that reports one has to show that text or the report
         names a number nobody can act on.
         """
+        recorded = str(self._slack_answer().get("question") or "")
+        return recorded or self.short_description or "(no recorded text)"
+
+    def work_placed_elsewhere(self) -> bool:
+        """Whether this conversation row already recorded the findable row it became (#4527).
+
+        A Slack lane's bookkeeping row is non-admissible by design, so admissibility alone
+        cannot tell a dropped request from a handled one — this stamp is the difference.
+        """
+        return bool(self._slack_answer().get("work_issue_url"))
+
+    def _slack_answer(self) -> SlackAnswerContext:
         extra = self.extra if isinstance(self.extra, dict) else {}
         origin = extra.get("slack_answer")
-        recorded = str(origin.get("question") or "") if isinstance(origin, dict) else ""
-        return recorded or self.short_description or "(no recorded text)"
+        return cast("SlackAnswerContext", origin) if isinstance(origin, dict) else SlackAnswerContext()
 
     def has_shippable_diff(self) -> bool:
         """Return True iff at least one worktree has commits ahead of its base branch.

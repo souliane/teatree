@@ -296,7 +296,7 @@ def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) 
 
     if normalize_phase(phase or task.phase) != "answering":
         return ""
-    return missing_work_item_error(task, dict(result))
+    return missing_work_item_error(task, result)
 
 
 def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -565,7 +565,6 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
     )
 
 
-#: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.
 def _record_failure(
     task: Task,
     *,

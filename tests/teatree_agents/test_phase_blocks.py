@@ -152,3 +152,28 @@ class TestBuildReviewerDispatchPrompt(TestCase):
         with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
             out = build_reviewer_dispatch_prompt(review_instruction="REVIEW-BODY-MARKER")
         assert out.index("/code-review") < out.index("REVIEW-BODY-MARKER")
+
+
+class TestAnsweringWorkItemBlock(TestCase):
+    """The ``work_item`` mandate reaches the brief only on a task that owes one (#4527)."""
+
+    def _answering_task(self, *, implies_work: bool) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR,
+            state=Ticket.State.STARTED,
+            extra={"slack_answer": {"slack_ts": "1.0", "question": "q", "implies_work": implies_work}},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="answering")
+        return Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+    def test_a_work_implying_request_is_told_to_return_a_work_item(self) -> None:
+        lines = phase_specific_lines(self._answering_task(implies_work=True), [])
+
+        assert any("work_item" in line for line in lines), (
+            "the phase refuses a missing work_item but the brief never asked for one"
+        )
+
+    def test_an_ordinary_question_is_not_asked_for_one(self) -> None:
+        lines = phase_specific_lines(self._answering_task(implies_work=False), [])
+
+        assert not any("work_item" in line for line in lines)

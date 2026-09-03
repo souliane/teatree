@@ -12,6 +12,8 @@ The refusal reads as a recorder-side envelope refusal
 re-dispatch reopens the task with the contract restated instead of parking it.
 """
 
+from collections.abc import Mapping
+
 from teatree.core.models import Task, Ticket
 
 _SLACK_ANSWER_KEY = "slack_answer"
@@ -24,7 +26,7 @@ def owes_work_item(ticket: Ticket) -> bool:
     return isinstance(origin, dict) and origin.get("implies_work") is True
 
 
-def missing_work_item_error(task: Task, result: dict) -> str:
+def missing_work_item_error(task: Task, result: Mapping[str, object]) -> str:
     """The refusal for an answering run that owed a work item and returned none, else ``""``.
 
     Phrased with the shared "missing required evidence" marker so

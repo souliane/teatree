@@ -3,11 +3,16 @@
 The whole ticket in one assertion. Drive the real path end to end: an owner DM
 implies work, the reactive cycle dispatches a lane, the shell-denied answering
 agent hands back its ``answer`` + ``work_item``, the recorder files, and the row
-that results is one :func:`decide_issue_intake` ADMITS.
+that results is one :func:`decide_issue_intake` REACHES.
 
 The pre-fix path produced a ``Ticket`` with a blank ``issue_url`` — nothing the
 forge-scoped intake queries could ever return — so the request was announced as
 tracked and then lost. That is what this asserts can no longer happen.
+
+Reached is not the same as claimed: the issue text is the agent's paraphrase of a
+message a deliberately fail-open reader called work-implying, so it carries
+``needs-triage`` and intake withholds it for the maintainer. The distinction is the
+whole point — the pre-fix row was invisible, this one is on the board and waiting.
 """
 
 from dataclasses import dataclass, field
@@ -16,7 +21,7 @@ from unittest import mock
 import pytest
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL, decide_issue_intake
+from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL, IntakeVerdict, decide_issue_intake
 from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
@@ -94,7 +99,7 @@ def _dispatch_the_owners_request(slack: FakeSlack) -> Task:
 class TestARequestTheLoopAnsweredIsAlsoARequestIntakeCanFind:
     """The end-to-end contract: answered AND admissible, never one without the other."""
 
-    def test_the_filed_row_is_admitted_by_intake(self) -> None:
+    def test_the_filed_row_reaches_intake_and_waits_for_the_maintainer(self) -> None:
         slack = FakeSlack()
         forge = FakeForge()
         task = _dispatch_the_owners_request(slack)
@@ -118,13 +123,17 @@ class TestARequestTheLoopAnsweredIsAlsoARequestIntakeCanFind:
 
         work = Ticket.objects.get(issue_url=_FILED)
         assert work.is_admissible(), "the request is answered but still invisible to intake"
+        labels = forge.created[0]["labels"]
+        assert DEFAULT_ADMIT_LABEL in labels, f"the label-scoped intake query cannot return it: {labels}"
         verdict = decide_issue_intake(
-            {"labels": forge.created[0]["labels"], "body": forge.created[0]["body"]},
+            {"labels": labels, "body": forge.created[0]["body"]},
             author_trusted=False,
             work_exists=False,
             admit_label=DEFAULT_ADMIT_LABEL,
         )
-        assert verdict.acts, f"intake declined the issue the owner was promised: {verdict}"
+        assert verdict is IntakeVerdict.IGNORE_NEEDS_TRIAGE, (
+            f"the factory would claim an issue no maintainer has cleared: {verdict}"
+        )
 
     def test_the_owner_is_told_where_the_work_went(self) -> None:
         slack = FakeSlack()

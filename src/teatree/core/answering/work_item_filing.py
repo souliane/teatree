@@ -19,10 +19,15 @@ whole change is about — only an explicit ``no_work_reason`` returns ``None``.
 """
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL
 from teatree.core.models import NEEDS_TRIAGE_LABEL, Ticket
+from teatree.core.models.types import SlackAnswerContext
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_forge_urls
@@ -88,43 +93,41 @@ class UntrackableIssueError(WorkItemFilingError):
         super().__init__(f"the forge accepted the issue for {repo} but returned no URL to track it by")
 
 
+class ForgeRefusedError(WorkItemFilingError):
+    """The forge rejected the create — a 403, a rate limit, a network fault, the posting gate."""
+
+    def __init__(self, repo: str, cause: Exception) -> None:
+        super().__init__(f"the forge refused the issue for {repo}: {cause}")
+
+
 @dataclass(frozen=True, slots=True)
 class FiledWorkItem:
     """Where an owner request ended up — or why it went nowhere."""
 
     url: str
-    already_filed: bool = False
     withheld: bool = False
     withheld_reason: str = ""
 
 
 def file_work_item(
     ticket: Ticket,
-    envelope: dict,
+    envelope: Mapping[str, object],
     *,
     host: "CodeHostBackend",
     repo: str,
-    auto_filed: bool = False,
 ) -> FiledWorkItem | None:
-    """File (or attach to) the forge issue *envelope* names; ``None`` only for declared no-work.
-
-    *auto_filed* is the souliane-account caveat the retro filer already carries: the
-    factory files as the maintainer's own account, so the author-keyed auto-triage
-    Action cannot tell an agent-generated issue from a human one. An owner-DIRECTED
-    request is admitted straight away; the fallback path, whose text nobody dictated,
-    self-applies ``needs-triage`` so the maintainer clears it first.
-    """
+    """File (or attach to) the forge issue *envelope* names; ``None`` only for declared no-work."""
     if envelope.get("no_work_reason"):
         return None
     recorded = _recorded_work_url(ticket)
     if recorded:
-        return FiledWorkItem(url=recorded, already_filed=True)
+        return FiledWorkItem(url=recorded)
     existing = str(envelope.get("existing_issue_url") or "").strip()
     if existing:
         return _attach(ticket, _validated_forge_url(existing))
     if not str(envelope.get("title") or "").strip():
         raise EmptyWorkItemError
-    return _file_new(ticket, envelope, host=host, repo=repo, auto_filed=auto_filed)
+    return _file_new(ticket, envelope, host=host, repo=repo)
 
 
 def filing_repo(overlay: str) -> str:
@@ -133,29 +136,19 @@ def filing_repo(overlay: str) -> str:
     Raises rather than guessing: filing into a repo nobody declared would put the
     owner's request somewhere neither they nor intake is looking.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: import cycle
-    from teatree.core.overlay_repos import owned_repo_slugs  # noqa: PLC0415 — deferred: import cycle
-
     slugs = owned_repo_slugs(get_overlay(overlay or None))
     if not slugs:
         raise NoFilingRepoError(overlay)
     return slugs[0]
 
 
-def _file_new(
-    ticket: Ticket,
-    envelope: dict,
-    *,
-    host: "CodeHostBackend",
-    repo: str,
-    auto_filed: bool,
-) -> FiledWorkItem:
+def _file_new(ticket: Ticket, envelope: Mapping[str, object], *, host: "CodeHostBackend", repo: str) -> FiledWorkItem:
     title = str(envelope.get("title") or "").strip()
     body = str(envelope.get("body") or "").strip()
     fingerprint = _fingerprint(ticket)
     already = _existing_by_fingerprint(host, repo=repo, fingerprint=fingerprint)
     if already:
-        return _attach(ticket, already, already_filed=True)
+        return _attach(ticket, already)
     stamped = f"{body}\n\n<!-- {_marker(fingerprint)} -->"
     forge = forge_from_url(f"https://github.com/{repo}")
     try:
@@ -163,20 +156,28 @@ def _file_new(
         clean_body = route_forge_write(forge=forge, repo=repo, text=stamped, action=_ACTION, target=repo)
     except OutboundBlockedError as exc:
         return FiledWorkItem(url="", withheld=True, withheld_reason=str(exc))
-    raw = host.create_issue(repo=repo, title=clean_title, body=clean_body, labels=_labels(auto_filed=auto_filed))
+    try:
+        raw = host.create_issue(repo=repo, title=clean_title, body=clean_body, labels=_labels())
+    except Exception as exc:  # every transport fails differently, and any escape takes the reply with it
+        raise ForgeRefusedError(repo, exc) from exc
     url = _issue_url(raw)
     if not url:
         raise UntrackableIssueError(repo)
     return _attach(ticket, url, title=clean_title)
 
 
-def _labels(*, auto_filed: bool) -> list[str]:
-    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — deferred: import cycle
+def _labels() -> list[str]:
+    """The admit label plus the maintainer gate every issue this filer opens must carry.
 
-    return [DEFAULT_ADMIT_LABEL, NEEDS_TRIAGE_LABEL] if auto_filed else [DEFAULT_ADMIT_LABEL]
+    Nobody dictated this text — it is the agent's paraphrase of a message a deliberately
+    fail-open reader called work-implying — and the factory files as the maintainer's own
+    account, so the author-keyed auto-triage Action cannot supply the gate. Without
+    ``needs-triage`` the implementer scanner claims the issue before anyone reviews it.
+    """
+    return [DEFAULT_ADMIT_LABEL, NEEDS_TRIAGE_LABEL]
 
 
-def _attach(ticket: Ticket, url: str, *, already_filed: bool = False, title: str = "") -> FiledWorkItem:
+def _attach(ticket: Ticket, url: str, *, title: str = "") -> FiledWorkItem:
     """Mint (or reuse) the ADMISSIBLE work ticket for *url* and stamp the conversation row.
 
     The ticket is created here rather than left to the next forge poll so the work is
@@ -192,7 +193,7 @@ def _attach(ticket: Ticket, url: str, *, already_filed: bool = False, title: str
         },
     )
     _record_work_url(ticket, url)
-    return FiledWorkItem(url=url, already_filed=already_filed)
+    return FiledWorkItem(url=url)
 
 
 def _existing_by_fingerprint(host: "CodeHostBackend", *, repo: str, fingerprint: str) -> str:
@@ -229,10 +230,10 @@ def _validated_forge_url(candidate: str) -> str:
     return urls[0]
 
 
-def _slack_answer(ticket: Ticket) -> dict:
+def _slack_answer(ticket: Ticket) -> SlackAnswerContext:
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     origin = extra.get(_SLACK_ANSWER_KEY)
-    return origin if isinstance(origin, dict) else {}
+    return cast("SlackAnswerContext", origin) if isinstance(origin, dict) else SlackAnswerContext()
 
 
 def _fingerprint(ticket: Ticket) -> str:
@@ -261,6 +262,7 @@ __all__ = [
     "FINGERPRINT_MARKER",
     "EmptyWorkItemError",
     "FiledWorkItem",
+    "ForgeRefusedError",
     "NoCodeHostError",
     "NoFilingRepoError",
     "UnresolvableIssueRefError",

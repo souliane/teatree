@@ -43,6 +43,23 @@ class TestTicketQuerySet(TestCase):
 
         assert Ticket.objects.unfindable() == [never_dispatched, dispatched]
 
+    def test_a_conversation_row_that_placed_its_work_is_not_a_dead_row(self) -> None:
+        """The lane succeeded: it filed the findable issue and recorded where it went.
+
+        The bookkeeping row stays non-admissible by design, so without this the mechanism
+        reports its own successes and the WARN grows with every inbound DM until the
+        genuinely dead rows are buried in it.
+        """
+        handled = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            short_description="answered and filed",
+            extra={"slack_answer": {"work_issue_url": "https://github.com/souliane/teatree/issues/7100"}},
+        )
+        dropped = Ticket.objects.create(state=Ticket.State.STARTED, short_description="answered, filed nothing")
+
+        assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
+        assert handled not in Ticket.objects.unfindable()
+
 
 class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_delivered_and_ignored_tickets(self) -> None:

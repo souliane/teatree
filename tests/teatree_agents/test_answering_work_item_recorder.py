@@ -14,6 +14,7 @@ from django.test import TestCase
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.core.models import Session, Task, Ticket
 from teatree.types import RawAPIDict
+from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import slack_conversation_anchor
 
 _CHANNEL = "D-owner"
@@ -36,8 +37,11 @@ class RecordingHost:
     """Code host that hands back one filed issue URL and records the request."""
 
     created: list[dict] = field(default_factory=list)
+    refusal: Exception | None = None
 
     def create_issue(self, *, repo: str, title: str, body: str, labels: list[str] | None = None) -> RawAPIDict:
+        if self.refusal is not None:
+            raise self.refusal
         self.created.append({"repo": repo, "title": title, "body": body, "labels": list(labels or [])})
         return {"html_url": _FILED, "body": body}
 
@@ -111,6 +115,23 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         assert _FILED in body, f"the owner cannot reach the issue that tracks the request: {body!r}"
         assert f"<{_FILED}|#7100>" in body, f"the reference is not a clickable Slack link: {body!r}"
 
+    def test_the_filed_issue_carries_the_maintainer_gate(self) -> None:
+        """The gate that makes the fail-open work-implying reader safe.
+
+        ``IssueImplementerScanner`` skips ``needs-triage``; without it the factory claims an
+        issue whose text an agent wrote from a message nobody confirmed was a request.
+        """
+        self._record(
+            {
+                "answer": {"text": "On it."},
+                "work_item": {"title": "Detect the open-PR bottleneck", "body": "Alert when open PRs stall."},
+            }
+        )
+
+        assert "needs-triage" in self.host.created[0]["labels"], (
+            f"the recorder filed a claimable issue with no maintainer gate: {self.host.created[0]['labels']}"
+        )
+
     def test_a_declared_no_work_reply_files_nothing_and_promises_nothing(self) -> None:
         self._record({"answer": {"text": "Already covered."}, "work_item": {"no_work_reason": "nothing to build"}})
 
@@ -123,3 +144,15 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
 
         body = self.backend.replies[0][2]
         assert "could not file" in body.lower(), f"the filing failed and the owner was told nothing: {body!r}"
+
+    def test_a_forge_refusal_is_stated_in_the_thread_and_never_destroys_the_answer(self) -> None:
+        """A non-zero ``gh`` exit — 403, rate limit, the posting gate — must not eat the reply."""
+        self.host.refusal = CommandFailedError(
+            cmd=["gh"], returncode=1, stdout="", stderr="HTTP 403: refused by the posting gate"
+        )
+
+        self._record({"answer": {"text": "On it."}, "work_item": {"title": "t", "body": "b"}})
+
+        body = self.backend.replies[0][2]
+        assert "could not file" in body.lower(), f"the forge refused and the owner was told nothing: {body!r}"
+        assert "403" in body, f"the stated reason does not carry what the forge said: {body!r}"

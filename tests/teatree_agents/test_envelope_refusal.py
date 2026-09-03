@@ -94,6 +94,13 @@ class TestRequiredKeysPhrase(SimpleTestCase):
     def test_an_unknown_phase_degrades_to_summary_rather_than_raising(self) -> None:
         assert required_keys_phrase("not-a-real-phase") == "`summary`"
 
+    def test_a_phase_with_a_task_conditional_key_names_it_and_says_when(self) -> None:
+        # The corrective re-dispatch is the only place a refused answerer learns what it
+        # omitted, so dropping `work_item` here restates the contract without the mandate.
+        assert required_keys_phrase("answering") == (
+            "`summary` and `answer` (plus `work_item` when the request implies work)"
+        )
+
 
 class TestCorrectiveInstruction(SimpleTestCase):
     def test_it_demands_the_envelope_last_and_unfenced(self) -> None:

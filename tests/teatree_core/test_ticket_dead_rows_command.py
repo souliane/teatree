@@ -6,12 +6,14 @@ exist is a finding nobody can act on. Read-only by design — each row records a
 someone was told is tracked, so re-file-or-retire stays the operator's call.
 """
 
+import io
 import json
 from typing import cast
 
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.machine_output import call_command_streamed
 from teatree.core.management.commands._ticket_show import DeadRowResult
 from teatree.core.models import Ticket
 from teatree.utils.url_slug import slack_conversation_anchor
@@ -62,3 +64,12 @@ class TicketDeadRowsTest(TestCase):
 
         assert [row["ticket_id"] for row in rows] == [row["ticket_id"] for row in _rows()]
         assert json.dumps(rows), "the rows must be JSON-serialisable for the --json path"
+
+    def test_json_leaves_stdout_a_pure_data_channel(self) -> None:
+        """A front-end shells to `--json` and parses stdout, so no human byte may land there."""
+        _conversation_row(slack_ts="100.0", question="make the token get this permission")
+        out = io.StringIO()
+
+        call_command_streamed("ticket", "dead-rows", "--json", stream=out)
+
+        assert json.loads(out.getvalue())[0]["held_text"] == "make the token get this permission"

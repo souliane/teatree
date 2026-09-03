@@ -7,12 +7,12 @@ grow. Holds ``show`` (per-phase ``attempt N/max`` budget over the ticket's
 (the rows no forge query can reach, #4527).
 """
 
-import json
-from typing import Annotated, TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import TaskAttempt, Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -95,6 +95,12 @@ def render_ticket_show(result: TicketShowResult) -> str:
     return "\n".join(lines)
 
 
+def _render_dead_rows(rows: list[DeadRowResult]) -> str:
+    if not rows:
+        return "  no unfindable ticket rows\n"
+    return "".join(f"  ticket {row['ticket_id']} ({row['state']}): {row['held_text']}\n" for row in rows)
+
+
 class TicketShowCommands(TyperCommand):
     """The ``ticket show`` command, mounted via MRO inheritance (#2009).
 
@@ -152,14 +158,14 @@ class TicketShowCommands(TyperCommand):
             }
             for ticket in Ticket.objects.unfindable()
         ]
-        if as_json:
-            self.stdout.write(json.dumps(rows, indent=2))
-            return rows
-        if not rows:
-            self.stdout.write("  no unfindable ticket rows")
-            return rows
-        for row in rows:
-            self.stdout.write(f"  ticket {row['ticket_id']} ({row['state']}): {row['held_text']}")
+        self.print_result = False
+        emit(
+            rows,
+            json_output=as_json,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_dead_rows(rows),
+        )
         return rows
 
     @command()
