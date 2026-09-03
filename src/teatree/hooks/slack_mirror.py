@@ -38,6 +38,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -195,8 +196,12 @@ def slack_post_message(poster: Poster, channel: str, text: str, *, bot_token: st
     ``chat.postMessage`` is NOT idempotent (``idempotent=False``): a lost
     response after Slack accepted the post must not be replayed into a
     double-post — the hardened poster surfaces the failure rather than retry.
+
+    The #3809 wrap is applied here rather than inherited: this transport posts
+    through an injected ``Poster``, so it never reaches ``SlackBotBackend._post``
+    where the in-app wrap seam lives.
     """
-    body: dict[str, str] = {"channel": channel, "text": text}
+    body: dict[str, str] = {"channel": channel, "text": wrap_slack_message(text)}
     if thread_ts:
         body["thread_ts"] = thread_ts
     try:

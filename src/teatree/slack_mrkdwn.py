@@ -37,6 +37,14 @@ _PROSE_SPLIT_MIN_SENTENCES = 2
 _PROSE_SPLIT_MANY_SENTENCES = 3
 _INITIAL_TOKEN_LEN = 2
 _BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
+
+#: Maximum rendered line length for an outbound Slack message (#3809). Sized for
+#: a phone and a narrow DM column, where a longer line wraps at an arbitrary point.
+WRAP_WIDTH = 90
+
+_PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
+_LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+)")
+_NEVER_WRAPPED_PREFIXES = ("#",)
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
 # Lowercased abbreviation guard. Honorifics (Dr./Mr./Mrs./Ms./Prof./St.)
 # are deliberately NOT in this set: it is matched case-insensitively, so
@@ -311,4 +319,116 @@ def _make_token_rewriter(sigil: str, resolver: TokenResolver) -> Callable[[re.Ma
     return _rewrite
 
 
-__all__ = ["TokenResolver", "normalize_slack_message", "slack_linkify"]
+def wrap_slack_message(text: str, *, width: int = WRAP_WIDTH) -> str:
+    """Return *text* with every wrappable line broken to at most *width* chars (#3809).
+
+    Applied at the Slack transport rather than at a composition seam, so a new
+    sender inherits the rule instead of having to remember a helper.
+
+    Left intact because breaking them harms readability rather than helping it:
+    fenced code, inline code spans, mrkdwn links, bare URLs, table rows,
+    headings, and any single whitespace-free token wider than *width*.
+
+    A ``- ``/``* `` bullet's continuation lines are indented under the marker and
+    a ``> `` quote's keep the quote prefix, so Slack still renders the structure.
+
+    Idempotent: lines are only ever broken at existing whitespace and never
+    rejoined, so every output line is already within *width* (bar the intact
+    spans above) and a second application is a no-op.
+    """
+    if not text:
+        return text
+    protected: list[str] = []
+    stashed = _stash_unwrappable(text, protected)
+    wrapped = "\n".join(_wrap_line(line, protected, width) for line in stashed.splitlines())
+    return _restore_placeholders(wrapped, protected)
+
+
+def slack_line_violations(text: str, *, width: int = WRAP_WIDTH) -> list[str]:
+    """Return the lines of *text* that exceed *width* and that wrapping could fix.
+
+    The oracle behind the #3809 acceptance test. It shares
+    :func:`wrap_slack_message`'s implementation rather than re-deriving the
+    carve-outs, so the test and the transform cannot disagree about what counts
+    as a sanctioned exception: a line the wrapper leaves alone is by definition
+    one it judged unbreakable.
+    """
+    if not text:
+        return []
+    protected: list[str] = []
+    stashed = _stash_unwrappable(text, protected)
+    return [
+        _restore_placeholders(line, protected)
+        for line in stashed.splitlines()
+        if _display_len(line, protected) > width and _wrap_line(line, protected, width) != line
+    ]
+
+
+def _stash_unwrappable(text: str, protected: list[str]) -> str:
+    """Replace every never-broken span with a NUL placeholder, longest form first.
+
+    Order is load-bearing: a mrkdwn link embeds a URL, so stashing links after
+    bare URLs would leave the link's own ``|label`` half exposed to the splitter.
+    """
+
+    def _stash(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00{len(protected) - 1}\x00"
+
+    for pattern in (_CODE_FENCE_RE, _INLINE_CODE_RE, _MRKDWN_LINK_RE, _BARE_URL_RE):
+        text = pattern.sub(_stash, text)
+    return text
+
+
+def _restore_placeholders(text: str, protected: list[str]) -> str:
+    return _PLACEHOLDER_RE.sub(lambda m: protected[int(m.group(1))], text)
+
+
+def _display_len(text: str, protected: list[str]) -> int:
+    """Length of *text* as Slack renders it — placeholders count as their content."""
+    return len(_restore_placeholders(text, protected))
+
+
+def _wrap_line(line: str, protected: list[str], width: int) -> str:
+    """Break one line at whitespace; return it unchanged when it must not be broken."""
+    if _display_len(line, protected) <= width:
+        return line
+    stripped = line.lstrip()
+    # A table row's columns are space-aligned, so any break destroys the alignment.
+    if not stripped or stripped.startswith(_NEVER_WRAPPED_PREFIXES) or "|" in line:
+        return line
+    indent = line[: len(line) - len(stripped)]
+    marker, body = _split_list_or_quote_marker(stripped)
+    atoms = body.split()
+    if not atoms:
+        return line
+    # A quote's continuation stays quoted; a bullet's aligns under the marker.
+    continuation = indent + ("> " if marker.startswith(">") else " " * len(marker))
+    out: list[str] = []
+    current = indent + marker + atoms[0]
+    for atom in atoms[1:]:
+        trial = f"{current} {atom}"
+        if _display_len(trial, protected) <= width:
+            current = trial
+        else:
+            out.append(current)
+            current = continuation + atom
+    out.append(current)
+    return "\n".join(out)
+
+
+def _split_list_or_quote_marker(stripped: str) -> tuple[str, str]:
+    match = _LIST_OR_QUOTE_MARKER_RE.match(stripped)
+    if not match:
+        return "", stripped
+    return match.group(1), stripped[match.end() :]
+
+
+__all__ = [
+    "WRAP_WIDTH",
+    "TokenResolver",
+    "normalize_slack_message",
+    "slack_line_violations",
+    "slack_linkify",
+    "wrap_slack_message",
+]
