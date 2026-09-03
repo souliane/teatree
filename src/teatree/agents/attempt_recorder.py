@@ -49,6 +49,7 @@ from teatree.core.models import (
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
+from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -384,6 +385,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             lock_holder=target.lock_holder,
             changed_files=changed_file_set_for_findings(findings, slug=target.slug, pr_id=target.pr_id),
             merge_result_retake=bool(envelope.get("merge_result_retake")),
+            live_checks=live_checks_at,
         )
     except ReviewVerdictError as exc:
         # The one refusal class a re-dispatch can never satisfy at this head is latched;
@@ -462,7 +464,7 @@ def _refusal_question(target: ReviewTarget, *, reason: str) -> str:
     return (
         f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] This head has used all "
         f"{MAX_DISPATCH_ATTEMPTS} auto-review attempts, and the last one returned a merge_safe verdict "
-        f"over required checks the same reviewer reported RED, which cannot be recorded: {reason} "
+        f"over checks a LIVE workflow-run read at this head confirms are RED: {reason} "
         f"Auto-review is done for this head — not because the tree is unreviewable, but because the "
         f"retries are spent. A new push re-arms review by itself. Fix the red checks and push, land a "
         f"human verdict, or close the PR?"

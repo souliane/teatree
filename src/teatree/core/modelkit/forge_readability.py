@@ -23,6 +23,7 @@ operator reads, never the posture.
 """
 
 from dataclasses import dataclass
+from typing import Protocol
 
 HEAD_SHA_UNREADABLE = "\x00_teatree_head_sha_unreadable\x00"
 """Sentinel head SHA — the forge declined to answer, so it named no head at all.
@@ -86,3 +87,37 @@ class LiveHeadRead:
         """Classify a raw ``fetch_live_head_sha`` result."""
         unreadable = head_sha_unreadable(raw)
         return cls(sha="" if unreadable else raw, unreadable=unreadable)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveChecksRead:
+    """One live CI read at ONE commit: the verdict, plus the evidence for it.
+
+    The sibling of :class:`LiveHeadRead` for the checks question. ``status`` speaks the
+    same green/pending/failed/:data:`CHECKS_UNREADABLE` vocabulary every gate already
+    reads, so a reading can be handed straight to a caller that compares against
+    :data:`REFUSING_CHECK_VERDICTS`. ``detail`` carries what was read (or why it could not
+    be), because a refusal that names its evidence is the difference between an operator
+    retrying a read and burning a re-review.
+    """
+
+    status: str
+    detail: str = ""
+
+    @classmethod
+    def unreadable(cls, reason: str) -> "LiveChecksRead":
+        return cls(status=CHECKS_UNREADABLE, detail=reason)
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status == CHECKS_FAILED
+
+    @property
+    def is_unreadable(self) -> bool:
+        return self.status == CHECKS_UNREADABLE
+
+
+class LiveChecksProbe(Protocol):
+    """Reads CI at one commit. Injected, so no model ever owns the network call."""
+
+    def __call__(self, *, slug: str, head_sha: str) -> LiveChecksRead: ...

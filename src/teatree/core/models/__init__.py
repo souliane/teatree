@@ -6,6 +6,7 @@ from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.branch_update_attempt import BranchUpdateAttempt
+from teatree.core.models.checks_admission import ChecksContradictionError, ReviewVerdictError
 from teatree.core.models.ci_eval_heal_session import CiEvalHealSession, CiEvalHealSessionManager
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.compliance_snapshot import (
@@ -107,13 +108,7 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import (
-    ChecksContradictionError,
-    Finding,
-    ReviewVerdict,
-    ReviewVerdictError,
-    Severity,
-)
+from teatree.core.models.review_verdict import Finding, ReviewVerdict, Severity
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
