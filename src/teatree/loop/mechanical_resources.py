@@ -62,6 +62,7 @@ from teatree.core.cleanup.venv_eviction import VenvEvictionPlan, evict_venvs, pl
 from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.reclaim_yield import pressure_idle_days, reclaim_yield_steps
 from teatree.loop.worktree_gc import GcSurvey, collect, survey_worktrees
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -136,6 +137,8 @@ def _free_resources_inner(payload: ActionPayload) -> None:
     marker = ResourcePressureMarker.load()
     _persist_plan(marker, plan)
     _execute_plan(plan, payload, survey)
+    if resource == "disk":
+        plan.steps.extend(reclaim_yield_steps(marker, reclaimed_gb=plan.reclaimed_gb, payload=payload))
     _persist_plan(marker, plan)
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
@@ -424,7 +427,7 @@ def _surveyed_worktrees(payload: ActionPayload) -> GcSurvey:
 
 def _surveyed_venvs(payload: ActionPayload) -> VenvEvictionPlan:
     try:
-        return plan_venv_eviction(worktree_root(), idle_days=float(payload.get("venv_idle_days", 2)))
+        return plan_venv_eviction(worktree_root(), idle_days=pressure_idle_days(payload))
     except Exception as exc:
         logger.exception("free_resources: venv survey failed — swallowed")
         return VenvEvictionPlan(refusal=f"the venv survey raised ({exc})")
