@@ -63,6 +63,7 @@ import hooks.scripts.hook_router as router
 from teatree.core import dispatch_admission as dispatch_admission_mod
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.models import InteractiveDispatch
+from tests.conformance._generated_artifacts import DURATIONS_CASSETTE
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INTERNALS_DOC = _REPO_ROOT / "docs" / "claude-code-internals.md"
@@ -160,7 +161,7 @@ _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
 )
 
 
-def _tracked_files() -> list[Path]:
+def _tracked_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
     """Tracked files, minus this one — the guard must be free to name what it forbids.
 
     Never ``check=True``: a git failure at COLLECTION time is an ERROR carrying no
@@ -168,15 +169,17 @@ def _tracked_files() -> list[Path]:
     """
     out = subprocess.run(
         ["git", "ls-files"],  # noqa: S607 — repo-relative git, no user input
-        cwd=_REPO_ROOT,
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert out.returncode == 0, f"`git ls-files` failed in {_REPO_ROOT}: {out.stderr.strip()}"
-    here = Path(__file__).resolve()
-    tracked = (_REPO_ROOT / line for line in out.stdout.splitlines() if line)
-    return [path for path in tracked if path.is_file() and path.resolve() != here]
+    assert out.returncode == 0, f"`git ls-files` failed in {repo_root}: {out.stderr.strip()}"
+    # The durations cassette goes too: it records node ids, so it spells every symbol
+    # scanned for below without referencing any of them.
+    exempt = {Path(__file__).resolve(), (repo_root / DURATIONS_CASSETTE).resolve()}
+    tracked = (repo_root / line for line in out.stdout.splitlines() if line)
+    return [path for path in tracked if path.is_file() and path.resolve() not in exempt]
 
 
 def _anchor_spans(text: str, anchor: str, radius: int) -> list[tuple[int, int]]:
@@ -568,6 +571,25 @@ class TestEveryRegisteredHandlersDenyTextIsPinned:
             f"{name} tells the operator their task-list entry was a {phrase!r}. This event has ONE "
             f"producer, so the remedy that reason names does not exist here.\n{text}\n"
         )
+
+
+class TestTheTrackedWalkExemptsTheGeneratedCassette:
+    """Control: exactly one generated file is exempt, not the directory holding it."""
+
+    @staticmethod
+    def _repo_tracking(tmp_path: Path, *relative: str) -> None:
+        for name in relative:
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{_ANCHOR} handle_thing\n")
+        for argv in (["git", "init", "-q"], ["git", "add", "-A"]):
+            subprocess.run(argv, cwd=tmp_path, check=True)
+
+    def test_the_cassette_is_skipped_while_its_neighbour_is_still_walked(self, tmp_path: Path) -> None:
+        self._repo_tracking(tmp_path, DURATIONS_CASSETTE, "dev/handwritten.py")
+        walked = {p.relative_to(tmp_path).as_posix() for p in _tracked_files(tmp_path)}
+        assert DURATIONS_CASSETTE not in walked
+        assert "dev/handwritten.py" in walked
 
 
 class TestTheRetiredSymbolsAreGone:

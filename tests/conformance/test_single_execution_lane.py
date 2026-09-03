@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.conformance._generated_artifacts import DURATIONS_CASSETTE
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Where a retired name could plausibly come back. Migrations record history and are
@@ -23,8 +25,9 @@ _SEARCH_ROOTS = ("src", "hooks", "tests", "e2e", "skills", "agents", "docs", "de
 _SKIP_PARTS = frozenset({".git", "__pycache__", "migrations", "generated", "fixtures"})
 _SKIP_SUFFIXES = frozenset({".jsonl", ".png", ".svg", ".ico", ".lock", ".woff2", ".pyc"})
 
-#: This file names every retired token by construction, so it excludes itself.
-_SELF = Path(__file__).relative_to(_REPO_ROOT).as_posix()
+#: This file names every retired token by construction, so it excludes itself. The
+#: generated durations cassette names them too, by recording node ids.
+_EXEMPT = frozenset({Path(__file__).relative_to(_REPO_ROOT).as_posix(), DURATIONS_CASSETTE})
 
 _RETIRED = (
     "agent_runtime",
@@ -50,7 +53,7 @@ def _searchable_files(repo_root: Path) -> list[Path]:
                 continue
             if _SKIP_PARTS & set(path.parts):
                 continue
-            if path.relative_to(repo_root).as_posix() == _SELF:
+            if path.relative_to(repo_root).as_posix() in _EXEMPT:
                 continue
             files.append(path)
     return files
@@ -99,6 +102,11 @@ class TestTheSweepCanActuallyGoRed:
     def test_migration_history_stays_exempt(self, tmp_path: Path) -> None:
         self._plant(tmp_path, "src/migrations/0067_drop.py")
         assert _hits_for("execution_target", tmp_path) == []
+
+    def test_the_durations_cassette_is_exempt_and_its_neighbours_are_not(self, tmp_path: Path) -> None:
+        self._plant(tmp_path, DURATIONS_CASSETTE)
+        self._plant(tmp_path, "dev/handwritten.py")
+        assert _hits_for("execution_target", tmp_path) == ["dev/handwritten.py"]
 
 
 class TestInteractiveSkillSurvives:
