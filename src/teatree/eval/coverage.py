@@ -30,6 +30,16 @@ _AGENT_PATH = re.compile(r"^skills/(?P<skill>[^/]+)/SKILL\.md$")
 _EVAL_EXEMPT_LINE = re.compile(r"^eval_exempt:\s*(?P<reason>.*)$")
 
 
+class SkillCatalogError(RuntimeError):
+    """Raised when the skills dir is missing or holds no ``SKILL.md``.
+
+    ``glob`` returns ``[]`` on a missing dir, so a mis-pointed path would report
+    "0 gaps of 0 skills" — a vacuous green for the gate whose whole job is finding
+    gaps. The scenario-catalog sibling is
+    :class:`~teatree.eval.discovery.ScenarioCatalogError`.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class SkillCoverage:
     skill: str
@@ -100,6 +110,16 @@ def skill_eval_coverage(
     skills_dir: Path = DEFAULT_SKILLS_DIR,
     specs: Iterable[EvalSpec] | None = None,
 ) -> CoverageReport:
+    if not skills_dir.is_dir():
+        msg = (
+            f"skills catalog directory is missing: {skills_dir}. A missing dir would report "
+            '"0 gaps of 0 skills" — a vacuous green. Check the path / the move.'
+        )
+        raise SkillCatalogError(msg)
+    skill_files = sorted(skills_dir.glob("*/SKILL.md"))
+    if not skill_files:
+        msg = f"skills catalog holds no <name>/SKILL.md: {skills_dir}. An empty catalog reports total coverage."
+        raise SkillCatalogError(msg)
     if specs is None:
         specs = discover_specs()
     counts: dict[str, int] = {}
@@ -108,7 +128,7 @@ def skill_eval_coverage(
         if skill is not None and _has_positive_teeth(spec):
             counts[skill] = counts.get(skill, 0) + 1
     rows: list[SkillCoverage] = []
-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+    for skill_md in skill_files:
         name = skill_md.parent.name
         reason = _eval_exempt_reason(skill_md)
         scenario_count = counts.get(name, 0)

@@ -67,6 +67,85 @@ class TestUndeclaredReposAreNotExempt:
         assert not is_review_exempt(slug, patterns=("infra-org",))
 
 
+class TestNegationSubtracts:
+    """A pin must be able to REMOVE an exemption, not only add one.
+
+    The union of the two sources could only ever widen, so an overlay-declared
+    exemption survived every operator opinion and a changed policy needed a code
+    change and a merge. These cases pin the subtraction that closes that.
+    """
+
+    def test_a_negation_subtracts_an_overlay_declared_exemption(self) -> None:
+        patterns = ("!infra-org/deploy-charts", *_EXEMPT)
+
+        assert not is_review_exempt("infra-org/deploy-charts", patterns=patterns)
+
+    def test_a_negation_carves_one_repo_out_of_a_namespace_exemption(self) -> None:
+        patterns = ("infra-org", "!infra-org/deploy-charts")
+
+        assert not is_review_exempt("infra-org/deploy-charts", patterns=patterns)
+        assert is_review_exempt("infra-org/pipeline-templates", patterns=patterns)
+
+    def test_the_operators_setting_un_exempts_what_the_overlay_declared(self) -> None:
+        """The whole seam: the pin reaches the merge-request URL the commands ask about."""
+        from teatree.config import UserSettings  # noqa: PLC0415 — deferred: keeps the pure table above import-light
+
+        class _Overlay:
+            review = type("_Facet", (), {"review_exempt_repo_slugs": lambda self: ("infra-org/deploy-charts",)})()
+
+        with (
+            patch(
+                "teatree.core.review.repo_exemption.get_effective_settings",
+                return_value=UserSettings(review_exempt_repos=["!infra-org/deploy-charts"]),
+            ),
+            patch("teatree.core.review.repo_exemption.get_overlay", return_value=_Overlay()),
+        ):
+            assert not mr_url_is_review_exempt("https://gitlab.com/infra-org/deploy-charts/-/merge_requests/7")
+
+
+class TestMostSpecificWins:
+    def test_the_deepest_match_decides_across_three_levels(self) -> None:
+        patterns = ("infra-org", "!infra-org/subgroup", "infra-org/subgroup/deploy-charts")
+
+        assert is_review_exempt("infra-org/pipeline-templates", patterns=patterns)
+        assert not is_review_exempt("infra-org/subgroup/pipeline-templates", patterns=patterns)
+        assert is_review_exempt("infra-org/subgroup/deploy-charts", patterns=patterns)
+
+    def test_depth_decides_regardless_of_which_source_wrote_it(self) -> None:
+        """Order carries no meaning: the same pair resolves the same either way."""
+        one_way = ("infra-org/subgroup", "!infra-org/subgroup/deploy-charts")
+        other_way = tuple(reversed(one_way))
+
+        assert not is_review_exempt("infra-org/subgroup/deploy-charts", patterns=one_way)
+        assert not is_review_exempt("infra-org/subgroup/deploy-charts", patterns=other_way)
+
+    def test_a_host_qualified_negation_beats_a_bare_positive_of_equal_depth(self) -> None:
+        """Specificity is the host-stripped depth, so the two forms tie rather than rank."""
+        patterns = ("infra-org/deploy-charts", "!gitlab.com/infra-org/deploy-charts")
+
+        assert not is_review_exempt("infra-org/deploy-charts", patterns=patterns)
+
+
+class TestTiesFailTowardNotExempt:
+    """An over-match suppresses a review request that should have gone out — the failure nobody sees."""
+
+    @pytest.mark.parametrize(
+        "patterns",
+        [
+            ("infra-org/deploy-charts", "!infra-org/deploy-charts"),
+            ("!infra-org/deploy-charts", "infra-org/deploy-charts"),
+        ],
+    )
+    def test_a_contradiction_at_equal_depth_is_not_exempt(self, patterns: tuple[str, ...]) -> None:
+        assert not is_review_exempt("infra-org/deploy-charts", patterns=patterns)
+
+    def test_a_bare_negation_marker_carries_no_key_and_so_does_nothing(self) -> None:
+        patterns = ("infra-org", "!", "!infra-org/deploy-charts")
+
+        assert is_review_exempt("infra-org/pipeline-templates", patterns=patterns)
+        assert not is_review_exempt("infra-org/deploy-charts", patterns=patterns)
+
+
 class TestPatternSources:
     def test_the_setting_and_the_overlay_hook_are_unioned(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415 — deferred: keeps the pure table above import-light

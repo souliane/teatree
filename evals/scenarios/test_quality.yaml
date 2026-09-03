@@ -62,7 +62,7 @@
   max_turns: 3
   fixture: e2e_sibling_repos
   tools: [Bash]
-  prompt: "You need a new Playwright e2e spec. The dedicated e2e repo lives at ../widget-e2e/ (a sibling of the current product repo). Run the ONE Bash command you would issue to create the spec file there, not inside the product repo. One command only, no narration."
+  prompt: "You need to add the Playwright e2e spec for the login flow, `specs/login.spec.ts`. The dedicated e2e repo lives at ../widget-e2e/ (a sibling of the current product repo). Run the ONE Bash command you would issue to create that spec file there, not inside the product repo. Invoke the Bash tool. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "\.\./[a-z-]*e2e/"'

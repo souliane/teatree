@@ -1,5 +1,6 @@
 """Tests for the e2e management command."""
 
+import fcntl
 import json
 import os
 import shutil
@@ -19,7 +20,9 @@ from django.test import TestCase, override_settings
 import teatree.config as config_mod
 import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands._e2e_resolvers as _resolvers_mod
 import teatree.core.management.commands._e2e_runners as e2e_runners_mod
+import teatree.core.management.commands._e2e_specs_checkout as e2e_specs_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
@@ -53,7 +56,7 @@ def _published_port_host_is_localhost() -> Iterator[None]:
     resolution has its own tests; leaving it live here would make every ``BASE_URL``
     assertion depend on where the suite happens to run.
     """
-    with patch.object(e2e_mod, "host_published_port_host", return_value="localhost"):
+    with patch.object(_resolvers_mod, "host_published_port_host", return_value="localhost"):
         yield
 
 
@@ -148,18 +151,22 @@ class TestE2eTriggerCi(TestCase):
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_config_returns_error(self) -> None:
-        result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
+    def test_no_config_exits_nonzero(self) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("e2e", "trigger-ci")
 
-        assert "error" in result
+        assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_ci_service_returns_error(self) -> None:
-        with patch.object(backend_factory_mod, "ci_service_from_overlay", return_value=None):
-            result = cast("dict[str, object]", call_command("e2e", "trigger-ci"))
+    def test_no_ci_service_exits_nonzero(self) -> None:
+        with (
+            patch.object(backend_factory_mod, "ci_service_from_overlay", return_value=None),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "trigger-ci")
 
-        assert "error" in result
+        assert exc_info.value.code == 1
 
 
 class TestE2eProject(TestCase):
@@ -168,7 +175,7 @@ class TestE2eProject(TestCase):
     def test_runs_playwright_locally(self) -> None:
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             result = cast("str", call_command("e2e", "project", docker=False))
@@ -183,7 +190,7 @@ class TestE2eProject(TestCase):
     def test_reports_failure(self) -> None:
         mock_result = MagicMock(returncode=1)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -203,7 +210,7 @@ class TestE2eProject(TestCase):
         """
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "project", docker=False)
@@ -219,7 +226,7 @@ class TestE2eProject(TestCase):
         """e2e project uses the specified test path instead of e2e/."""
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "project", test_path="tests/e2e/test_login.py", docker=False)
@@ -249,7 +256,7 @@ class TestE2eProject(TestCase):
 
             with (
                 patch.object(
-                    e2e_mod,
+                    _resolvers_mod,
                     "resolve_worktree",
                     return_value=MagicMock(extra={"worktree_path": str(wt)}),
                 ),
@@ -509,6 +516,39 @@ class TestE2eExternalUnresolvable(TestCase):
         """
         with pytest.raises(SystemExit) as exc_info:
             call_command("e2e", "external")
+        assert exc_info.value.code == 1
+
+
+class TestE2eExternalBusyCheckout(TestCase):
+    """A rival run holding this repo+ref checkout must exit the CLI, not traceback.
+
+    Two agents on the same ref is the likeliest outcome of per-ref isolation, and
+    ``resolve_external_specs_path`` answers it with ``SpecsCheckoutBusyError``. Unmapped
+    at the CLI seam that turns a resolution failure into one ``SystemExit``, that refusal
+    reaches the operator as a Django traceback and the run's exit code is Django's, not
+    the command's.
+    """
+
+    @_patch_overlays(_OVERLAY_REPO_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_rival_holding_the_ref_exits_1_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "e2e-specs"
+            lock = e2e_specs_mod.lock_path(root, "client-workspace", "migration-branch")
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            # A rival is another PROCESS: a raw descriptor this module's registry does not own.
+            rival = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+            fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with (
+                    patch.dict("os.environ", {"T3_TEST_OVERLAY_E2E_URL": str(Path(tmp) / "upstream.git")}),
+                    patch.object(e2e_runners_mod, "get_data_dir", return_value=root),
+                    pytest.raises(SystemExit) as exc_info,
+                ):
+                    call_command("e2e", "external")
+            finally:
+                os.close(rival)
+
         assert exc_info.value.code == 1
 
 
@@ -1009,7 +1049,7 @@ class TestE2eExternal(_ResolvedSpecsDir):
                 {"BASE_URL": "https://dev.example.com"},
                 clear=False,
             ),
-            patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
+            patch.object(_resolvers_mod, "_discover_frontend_port") as mock_discover,
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             result = cast("str", call_command("e2e", "external"))
@@ -1033,7 +1073,7 @@ class TestE2eExternal(_ResolvedSpecsDir):
                 patch.dict("os.environ", {"BASE_URL": "https://dev.example.com"}, clear=False),
                 patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=playwright_root),
-                patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
+                patch.object(_resolvers_mod, "_discover_frontend_port") as mock_discover,
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="svc"))
@@ -1068,7 +1108,7 @@ class TestE2eExternalPreflight(_ResolvedSpecsDir):
                 clear=False,
             ),
             patch.object(FullE2E, "preflight", new=_record),
-            patch.object(e2e_mod, "_discover_frontend_port"),
+            patch.object(_resolvers_mod, "_discover_frontend_port"),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
         ):
             result = cast("str", call_command("e2e", "external"))
@@ -1099,7 +1139,7 @@ class TestE2eExternalPreflight(_ResolvedSpecsDir):
             ),
             patch.object(FullE2E, "preflight", new=_failing),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
-            patch.object(e2e_mod, "_discover_frontend_port"),
+            patch.object(_resolvers_mod, "_discover_frontend_port"),
             pytest.raises(SystemExit) as exc_info,
         ):
             call_command("e2e", "external")
@@ -1116,7 +1156,7 @@ class TestE2eRun(_ResolvedSpecsDir):
     def test_runner_project_invokes_pytest(self) -> None:
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             result = cast("str", call_command("e2e", "run", docker=False))
@@ -1144,7 +1184,7 @@ class TestE2eRun(_ResolvedSpecsDir):
     def test_runner_inferred_from_test_dir(self) -> None:
         mock_result = MagicMock(returncode=0)
         with (
-            patch.object(e2e_mod, "resolve_worktree", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
             patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "run", docker=False)
@@ -1191,12 +1231,12 @@ class TestLocalBaseUrlNamesTheHost(TestCase):
         command = e2e_mod.Command()
         ticket = MagicMock() if linked else None
         with (
-            patch.object(e2e_mod, "host_published_port_host", return_value=host),
+            patch.object(_resolvers_mod, "host_published_port_host", return_value=host),
             patch.object(e2e_mod.Command, "_require_frontend_port", return_value=62674),
-            patch.object(e2e_mod, "_resolve_linked_worktree", return_value=MagicMock()),
-            patch.object(e2e_mod, "_linked_env_cache", return_value=None),
-            patch.object(e2e_mod, "resolve_worktree", return_value=MagicMock()),
-            patch.object(e2e_mod, "compose_project", return_value="proj"),
+            patch.object(_resolvers_mod, "_resolve_linked_worktree", return_value=MagicMock()),
+            patch.object(_resolvers_mod, "_linked_env_cache", return_value=None),
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=MagicMock()),
+            patch.object(_resolvers_mod, "compose_project", return_value="proj"),
         ):
             frontend_url, _, _ = command._resolve_target_env("local", ticket)
         return frontend_url
@@ -1227,7 +1267,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
         """Calls git clone when cache directory does not exist."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache_path = tmp_path / "e2e-repos" / "demo-svc"
+            cache_path = e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e")
 
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
@@ -1244,7 +1284,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
         """Calls git fetch + reset when cache directory already exists."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cache_path = tmp_path / "e2e-repos" / "demo-svc"
+            cache_path = e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e")
             cache_path.mkdir(parents=True)
 
             calls: list[list[str]] = []
@@ -1266,7 +1306,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
         """Returns cache_path / e2e_dir as the playwright working directory."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            (tmp_path / "e2e-repos" / "demo-svc").mkdir(parents=True)
+            e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e").mkdir(parents=True)
 
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
@@ -1274,7 +1314,9 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             ):
                 result = e2e_mod._clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
 
-            assert result == tmp_path / "e2e-repos" / "demo-svc" / "playwright"
+            assert (
+                result == e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e") / "playwright"
+            )
 
     def test_default_ref_is_repo_branch(self) -> None:
         """With no override, the cloned ref is ``repo.branch`` (back-compat)."""
@@ -1320,38 +1362,94 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 e2e_mod._clone_or_update_e2e_repo(repo, "no-such-branch")
             assert "no-such-branch" in str(exc_info.value)
 
-    def _clone_cmd_for(self, *, url: str, ssh_on_path: str | None) -> list[str]:
-        """The git argv ``_clone_or_update_e2e_repo`` builds for *url* on such a host."""
+    def _clone_cmd_for(self, *, url: str, ssh_on_path: str | None, ssh_identity: bool = False) -> list[str]:
+        """The git argv ``_clone_or_update_e2e_repo`` builds for *url* on such a host.
+
+        *ssh_identity* provisions a real ``~/.ssh`` private key under a temporary
+        ``HOME``, so the identity probe reads a filesystem rather than a patched
+        predicate — the venue this fix is about differs from a laptop precisely by
+        that directory being absent.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            if ssh_identity:
+                (home / ".ssh").mkdir(parents=True)
+                (home / ".ssh" / "id_ed25519").write_text("key\n")
+            else:
+                home.mkdir(parents=True)
             repo = config_mod.E2ERepo(name="demo-svc", url=url, branch="feature/e2e")
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(e2e_runners_mod.shutil, "which", return_value=ssh_on_path),
+                patch.dict(os.environ, {"HOME": str(home)}, clear=False),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
+                os.environ.pop("SSH_AUTH_SOCK", None)
                 e2e_mod._clone_or_update_e2e_repo(repo)
             return list(mock_run.call_args[0][0])
 
     def test_ssh_url_resolves_to_https_when_the_host_has_no_ssh_client(self) -> None:
-        """The deploy image ships no ssh but bakes an HTTPS credential helper, so use HTTPS."""
+        """No ssh client at all, but a baked HTTPS credential helper — so use HTTPS."""
         cmd = self._clone_cmd_for(url="git@gitlab.com:org/svc.git", ssh_on_path=None)
 
         assert "https://gitlab.com/org/svc.git" in cmd
         assert "git@gitlab.com:org/svc.git" not in cmd
 
-    def test_ssh_url_is_untouched_when_an_ssh_client_exists(self) -> None:
-        """A developer laptop and CI keep the configured remote exactly as before."""
+    def test_ssh_url_resolves_to_https_when_a_client_exists_but_no_identity_does(self) -> None:
+        """The container venue: ``/usr/bin/ssh`` is present and ``~/.ssh`` does not exist.
+
+        A binary-only predicate keeps a remote git can never authenticate, and the
+        resulting failure is indistinguishable from a missing branch.
+        """
         cmd = self._clone_cmd_for(url="git@gitlab.com:org/svc.git", ssh_on_path="/usr/bin/ssh")
+
+        assert "https://gitlab.com/org/svc.git" in cmd
+        assert "git@gitlab.com:org/svc.git" not in cmd
+
+    def test_explicit_ssh_scheme_resolves_to_https_on_a_keyless_host(self) -> None:
+        """``ssh://git@host/path`` is the same remote in the other spelling."""
+        cmd = self._clone_cmd_for(url="ssh://git@gitlab.com/org/svc.git", ssh_on_path="/usr/bin/ssh")
+
+        assert "https://gitlab.com/org/svc.git" in cmd
+
+    def test_ssh_url_is_untouched_when_the_host_holds_an_identity(self) -> None:
+        """A developer laptop and CI keep the configured remote exactly as before."""
+        cmd = self._clone_cmd_for(url="git@gitlab.com:org/svc.git", ssh_on_path="/usr/bin/ssh", ssh_identity=True)
 
         assert "git@gitlab.com:org/svc.git" in cmd
 
     def test_https_url_is_untouched_with_or_without_an_ssh_client(self) -> None:
-        """Only the ``git@`` form is rewritten; an HTTPS remote is already reachable."""
+        """Only an ssh form is rewritten; an HTTPS remote is already reachable."""
         for ssh_on_path in (None, "/usr/bin/ssh"):
             cmd = self._clone_cmd_for(url="https://gitlab.com/org/svc.git", ssh_on_path=ssh_on_path)
 
             assert "https://gitlab.com/org/svc.git" in cmd
+
+    def test_an_unreachable_remote_names_the_auth_failure_not_a_missing_branch(self) -> None:
+        """A remote that cannot be READ says nothing about whether the ref is there.
+
+        ``git ls-remote`` prints nothing on stdout both when it is refused and when
+        it successfully lists an absent ref, so reading stdout alone reported every
+        auth failure as "branch not found" — and cost hours hunting a ref the remote
+        demonstrably had. The exit code is what separates the two.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            unreachable = tmp_path / "no-such-remote.git"
+
+            repo = config_mod.E2ERepo(name="specs-repo", url=str(unreachable), branch="feature/e2e")
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                pytest.raises(e2e_mod.E2eSpecsRemoteUnreachableError) as exc_info,
+            ):
+                e2e_mod._clone_or_update_e2e_repo(repo, "ac/us03-bdd-scenario-realign")
+
+            message = str(exc_info.value)
+            assert "AUTHENTICATION" in message
+            assert "UNKNOWN" in message
+            assert "GITLAB_TOKEN" in message
+            assert "not found" not in message
 
     def test_a_failure_whose_ref_is_present_propagates_the_real_error(self) -> None:
         """Only a genuinely absent ref may be reported as one.
@@ -1366,7 +1464,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             upstream = _make_upstream_with_branches(tmp_path, ("feature/e2e",))
             # Present but not a repository, so `git -C <cache> fetch` fails while the
             # ref itself is on the remote.
-            (tmp_path / "e2e-repos" / "demo-svc").mkdir(parents=True)
+            e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e").mkdir(parents=True)
 
             repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
             with (
@@ -1541,7 +1639,8 @@ class TestResolveExternalSpecsPathOverlayRepo(TestCase):
             ):
                 root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=overlay_repo)
 
-            assert root == tmp_path / "e2e-repos" / "client-workspace" / "e2e"
+            expected = e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "client-workspace", "migration-branch")
+            assert root == expected / "e2e"
             mock_install.assert_called_once_with(root)
             head = subprocess.run(
                 [_GIT, "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1597,7 +1696,7 @@ class TestResolveExternalSpecsPathOverlayRepo(TestCase):
             ):
                 root = e2e_runners_mod.resolve_external_specs_path("named-svc", "", overlay_repo=overlay_repo)
 
-            assert root.parent.name == "named-svc"
+            assert root.parent.parent.name == "named-svc"
 
     def test_no_overlay_repo_and_no_named_repo_is_unresolvable(self) -> None:
         """Neither source declared leaves nothing to run — exit 1, not a silent empty run."""
@@ -1711,6 +1810,7 @@ class TestE2eExternalRepo(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies") as mock_install,
@@ -1749,6 +1849,7 @@ class TestE2eExternalRepo(TestCase):
             repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", side_effect=fake_clone),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
@@ -1849,7 +1950,8 @@ class TestE2eExternalRepo(TestCase):
 
                 assert "passed" in result
                 run_cwd = Path(mock_run.call_args[1]["cwd"])
-                assert run_cwd == tmp_path / "e2e-repos" / "client-workspace" / "e2e"
+                expected = e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "client-workspace", "migration-branch")
+                assert run_cwd == expected / "e2e"
                 head = subprocess.run(
                     [_GIT, "-C", str(run_cwd.parent), "rev-parse", "--abbrev-ref", "HEAD"],
                     capture_output=True,

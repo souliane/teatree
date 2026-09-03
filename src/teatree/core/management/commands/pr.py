@@ -7,14 +7,13 @@ returns the PR URL once the worker completes.
 """
 
 import re
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import ClassVar, cast
 
 from django_typer.management import command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
 from teatree.core.gates.orphan_guard import classify_branch
-from teatree.core.invocation_cwd import invocation_cwd
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
 from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, skip_for_classified
@@ -27,7 +26,11 @@ from teatree.core.management.commands._pr_preview import (
     validate_pr_metadata,
 )
 from teatree.core.management.commands._pr_ticket_resolve import TicketNotFoundError, resolve_ticket_or_refusal
-from teatree.core.management.commands._pr_worktree import WorktreeMissingError, _resolve_or_adopt_worktree
+from teatree.core.management.commands._pr_worktree import (
+    WorktreeMissingError,
+    _resolve_or_adopt_worktree,
+    resolve_ship_target,
+)
 from teatree.core.management.commands._shared_code_host import no_code_host_error
 from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
@@ -55,7 +58,7 @@ from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_g
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
-from teatree.core.management.commands._test_plan.post import TestPlanMediaError as _TestPlanMediaError
+from teatree.core.management.commands._test_plan.mr_post import TestPlanMediaError as _TestPlanMediaError
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
@@ -63,15 +66,10 @@ from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
-from teatree.core.public_identity import MergeResult
-from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-
-if TYPE_CHECKING:
-    from teatree.core.models.types import TicketExtra
 
 # The host create/update-comment response shape returned by the comment commands.
 type CommentResult = dict[str, object]
@@ -191,13 +189,13 @@ def _run_ship_gates(
     # a teatree task id is not an issue number. Raises SystemExit on a
     # closed/missing target; warns (non-blocking) on an unrelated title.
     run_closes_issue_crosscheck(ticket, worktree)
-    visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
+    visual_qa_error = _run_visual_qa_gate(ticket, worktree, skip_reason=skip_visual_qa)
     if visual_qa_error is not None:
         return visual_qa_error
     # #1967: a customer-display-impacting change needs green E2E evidence at the
     # reviewed tree (or a single-use user bypass). Runs after the diff-rendering
     # visual-QA gate so both see the post-branch-currency tree.
-    e2e_error = _run_e2e_mandatory_gate(ticket)
+    e2e_error = _run_e2e_mandatory_gate(ticket, worktree)
     if e2e_error is not None:
         return e2e_error
     return validate_pr_metadata(ticket, worktree, title=title)
@@ -368,31 +366,11 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         # on-disk worktree as a new row (guarded) and continue through the
         # managed path; without it (or on a never-provisioned ticket), refuse.
         resolved = _resolve_or_adopt_worktree(ticket, adopt_worktree=adopt_worktree)
+        if isinstance(resolved, Worktree):
+            resolved = resolve_ship_target(ticket, resolved)
         if not isinstance(resolved, Worktree):
             return resolved
-        worktree = resolved
-
-        # #776: a ticket can span multiple PRs (one branch per
-        # workstream). Record the INVOKING worktree's current git branch
-        # so ShipExecutor ships THIS branch, not the earliest (often
-        # already-merged) `worktrees.first()` row. Read from the cwd the
-        # CLI was invoked in (the worktree the user ran `pr create` from) —
-        # which under `deploy/t3` only the DECLARED value knows (#4281).
-        invoking_branch = git.current_branch(repo=str(invocation_cwd()))
-        if invoking_branch and invoking_branch not in {"HEAD", "main", "master"}:
-            # #800 N3: canonical locked RMW (was a blind whole-extra
-            # overwrite from a stale read — clobbered the ship worker's
-            # pr_urls / visual_qa).
-            ticket.merge_extra(set_keys={"ship_invoking_branch": invoking_branch})
-
-        # #1587: reconcile the recorded branch to the worktree's ACTUAL git
-        # branch BEFORE any gate reads `worktree.branch` — the single chokepoint
-        # shared with `ShipExecutor` so a renamed branch can no longer reach a
-        # gate range query that fails fail-soft.
-        ship_worktree = resolve_ship_worktree(ticket, cast("TicketExtra", ticket.extra or {})) or worktree
-        repo_path = (ship_worktree.extra or {}).get("worktree_path", "") or ship_worktree.repo_path
-        if repo_path:
-            resolve_and_reconcile_branch(ticket, ship_worktree, repo_path)
+        ship_worktree = resolved
 
         # #788: refuse a hollow ship — the branch ShipExecutor will
         # actually push (the #776/#800 canonical resolver, so the check
@@ -499,7 +477,7 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
             return {"allowed": True, "target_phase": canonical_target}
 
     @command(name="merge")
-    def merge(self, pr: int, slug: str, *, repo_path: str = "", auto: bool = False) -> MergeResult:
+    def merge(self, pr: int, slug: str, *, repo_path: str = "", auto: bool = False) -> None:
         """REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone.
 
         The old LOCAL-squash/server-side path bypassed ``MergeClear``
@@ -510,14 +488,14 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         Use ``ticket clear`` then ``ticket merge`` instead.
         """
         _ = (repo_path, auto)
-        error = (
+        self.stderr.write(
             f"`t3 <overlay> pr merge` is removed: FSM-incoherent post-#863 (no MergeClear "
             f"validation / SHA-binding / audit / mark_merged). Use the sanctioned keystone: "
             f"`t3 <overlay> ticket clear {pr} {slug} --reviewed-sha <sha> --reviewer-identity "
             f"<independent-reviewer> --blast-class <substrate|logic|docs>` then `t3 <overlay> "
             f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). §17.1 inv 8 / §17.4."
         )
-        return MergeResult(merged=False, pr=pr, slug=slug, auto=auto, error=error)
+        raise SystemExit(1)
 
     @command(name="fetch-issue")
     def fetch_issue(self, issue_url: str) -> dict[str, object]:

@@ -71,6 +71,17 @@ class TestRendering:
 
         assert "<equation> E=mc^2" in rendered
 
+    def test_a_tables_rows_are_rendered_at_the_tables_own_indent(self) -> None:
+        table = {"id": "b-table", "type": "table", "table": {}, "has_children": True}
+        rows = [
+            {"id": "r1", "type": "table_row", "table_row": {"cells": [[_span("Field")], [_span("Type")]]}},
+            {"id": "r2", "type": "table_row", "table_row": {"cells": [[_span("rate")], [_span("decimal")]]}},
+        ]
+
+        rendered = _render([table], {"b-table": rows})
+
+        assert rendered.splitlines() == ["| Field | Type |", "| rate | decimal |"]
+
 
 class TestPlainText:
     def test_annotations_are_dropped_for_the_matching_key(self) -> None:

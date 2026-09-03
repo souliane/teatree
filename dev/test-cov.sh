@@ -10,7 +10,10 @@
 # percentage. Semantics here are pinned (tests/test_coverage_floor_guard.py and
 # other PRs depend on the exact flags); do not change them.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
 # change — so a memory-capped container spawns host-many workers and dies as an opaque

@@ -1,7 +1,7 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
 import dataclasses
-from typing import Annotated, TypedDict
+from typing import Annotated, NoReturn, TypedDict
 
 import typer
 from django.db import transaction
@@ -61,7 +61,6 @@ class ClearIssueResult(TypedDict, total=False):
     human_authorizer: str
     ticket_id: int
     recorded_verdict_id: int
-    error: str
 
 
 class DodOverrideResult(TypedDict, total=False):
@@ -141,16 +140,13 @@ class Command(
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state; see ``--help`` for the allowed names."""
         if transition_name not in ALLOWED_TRANSITIONS:
-            return {"error": f"Unknown transition: {transition_name}"}
+            self._refuse(f"Unknown transition: {transition_name}")
 
-        try:
-            ticket = Ticket.objects.get(pk=ticket_id)
-        except Ticket.DoesNotExist:
-            return {"error": f"Ticket {ticket_id} not found"}
+        ticket = self._resolve_ticket(ticket_id)
 
         method = getattr(ticket, transition_name, None)
         if method is None:
-            return {"error": f"Invalid transition: {transition_name}"}
+            self._refuse(f"Invalid transition: {transition_name}")
 
         try:
             with transaction.atomic():
@@ -164,12 +160,12 @@ class Command(
             # `review` transition, else the generic not-allowed message.
             context_refusal = review_context_refusal(ticket, transition_name)
             generic = f"Transition '{transition_name}' not allowed from state '{ticket.state}'"
-            return {"error": context_refusal or generic}
+            self._refuse(context_refusal or generic)
         except InvalidTransitionError as exc:
             # Dirty-worktree / missing-E2E DoD refusals: the FSM stays put
-            # (the gate keeps blocking) and the refusal reason is surfaced
-            # to the caller instead of a raw traceback.
-            return {"error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}"}
+            # (the gate keeps blocking) and the refusal reason reaches the caller
+            # instead of a raw traceback.
+            self._refuse(f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}")
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
 
@@ -258,18 +254,16 @@ class Command(
             "approver": approval.approver_id,
         }
 
-    def _resolve_ticket(self, ticket_id: int) -> Ticket:
-        """Fetch a ticket or abort the subcommand with a nonzero exit (#932).
+    def _refuse(self, reason: str) -> NoReturn:
+        """Stop on *reason* with a nonzero exit — an ``{"error": …}`` return prints and exits 0 (#932)."""
+        self.stderr.write(f"  {reason}")
+        raise SystemExit(1)
 
-        A missing ticket is a real failure — returning an ``{"error": …}`` dict
-        would print and exit 0, so a scripted caller could not tell success from
-        "ticket not found". ``raise SystemExit(1)`` is the sibling refusal convention.
-        """
+    def _resolve_ticket(self, ticket_id: int) -> Ticket:
         try:
             return Ticket.objects.get(pk=ticket_id)
         except Ticket.DoesNotExist:
-            self.stderr.write(f"  Ticket {ticket_id} not found")
-            raise SystemExit(1) from None
+            self._refuse(f"Ticket {ticket_id} not found")
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -367,25 +361,17 @@ class Command(
         if not reviewed_sha.strip():
             # #1231: ``--reviewed-sha`` is the canonical named option; the
             # default keeps ``call_command`` happy, this guard enforces it.
-            self.stderr.write("  CLEAR refused: --reviewed-sha is required (hex commit id of the reviewed tree)")
-            raise SystemExit(1)
+            self._refuse("CLEAR refused: --reviewed-sha is required (hex commit id of the reviewed tree)")
         try:
             require_current_schema()
         except SelfDbMigrationError as exc:
-            self.stdout.write(f"  CLEAR refused: {exc}")
-            return {"issued": False, "error": str(exc)}
+            self._refuse(f"CLEAR refused: {exc}")
 
-        resolved_ticket = None
-        if ticket_id:
-            try:
-                resolved_ticket = Ticket.objects.get(pk=ticket_id)
-            except Ticket.DoesNotExist:
-                return {"issued": False, "error": f"Ticket {ticket_id} not found"}
+        resolved_ticket = self._resolve_ticket(ticket_id) if ticket_id else None
 
         preflight_refusal = clear_preflight_refusal(reviewed_sha, resolved_ticket)
         if preflight_refusal is not None:
-            self.stdout.write(f"  CLEAR refused: {preflight_refusal}")
-            return {"issued": False, "error": preflight_refusal}
+            self._refuse(f"CLEAR refused: {preflight_refusal}")
 
         request = ClearRequest(
             pr_id=pr_id,
@@ -447,8 +433,7 @@ class Command(
                     expedited=bool(clear.expedite_authorizer),
                 )
         except (MergePreconditionError, ClearIssuanceError) as exc:
-            self.stdout.write(f"  CLEAR refused: {exc}")
-            return {"issued": False, "error": str(exc)}
+            self._refuse(f"CLEAR refused: {exc}")
 
         # ``--ticket-id`` is optional and no caller passes it, so a CLEAR is routinely
         # born with no ticket for the merge keystone to advance. The PR knows its own

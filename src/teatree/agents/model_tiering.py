@@ -479,12 +479,13 @@ def resolve_spawn_effort(phase: str, *, harness: AgentHarness | str | None = Non
     no per-skill effort axis: unlike :func:`resolve_spawn_model`, skill floors and
     the honesty escalation raise only the MODEL, never the phase's effort tier.
 
-    *harness* threads straight through to :func:`resolve_tier_effort` (default:
-    the resolved ``agent_harness`` setting), so the caller building
-    ``ClaudeAgentOptions`` for the CURRENTLY ACTIVE harness — whichever backend
-    :func:`teatree.agents.harness.resolve_harness` will hand those options to —
-    always gets a value that harness understands.
+    *harness* threads straight through to :func:`resolve_tier_effort`. Its default is
+    the ``agent_harness`` setting run through :func:`resolve_phase_harness` — the SAME
+    resolution :func:`teatree.agents.harness.resolve_harness` performs — so a
+    verification phase pinned off the configured harness is validated against the
+    vocabulary of the backend that actually receives the spawn.
     """
+    harness = harness if harness is not None else resolve_phase_harness(get_effective_settings().agent_harness, phase)
     overrides = _load_phase_model_overrides()
     if phase in overrides:
         value = overrides[phase].strip()

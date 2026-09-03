@@ -82,7 +82,7 @@ eager ORM import here would defeat the lazy chain and crash the CLI with
 from collections.abc import Callable
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict, resolve_on_behalf_verdict
 
 
 def format_on_behalf_block_message(target: str, action: str) -> str:
@@ -134,6 +134,7 @@ def require_on_behalf_approval[PublishResult](
     action: str,
     publish: Callable[[], PublishResult],
     taint: str | None = None,
+    context: OnBehalfContext | None = None,
 ) -> PublishResult:
     """Gate one on-behalf post against the tri-state mode and run it atomically.
 
@@ -144,7 +145,10 @@ def require_on_behalf_approval[PublishResult](
     blocking modes (ASK and DRAFT_OR_ASK) a colleague-VISIBLE action — any
     action NOT in :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` —
     BLOCKs when no recorded approval matches; a draft-form action is exempt
-    and AUTO_DRAFTs.
+    and AUTO_DRAFTs. *context* is what the caller knows about the post's
+    destination (:class:`~teatree.on_behalf_gate.OnBehalfContext`): the overlay
+    whose mode governs, and the PROVED owner-authorship that exempts an
+    author-side reply. Omitted, both resolve as they did before it existed.
 
     *   PROCEED / AUTO_DRAFT → run ``publish`` and return its result (no
         consume, no audit; AUTO_DRAFT also emits the autodraft DM first).
@@ -163,7 +167,7 @@ def require_on_behalf_approval[PublishResult](
     """
     if taint is None:
         taint = _default_owner_taint()
-    verdict = resolve_on_behalf_verdict(action)
+    verdict = resolve_on_behalf_verdict(action, context)
     if verdict is OnBehalfVerdict.PROCEED:
         return publish()
     if verdict is OnBehalfVerdict.AUTO_DRAFT:
@@ -191,7 +195,9 @@ def require_on_behalf_approval[PublishResult](
         return result
 
 
-def on_behalf_block_message(target: str, action: str, *, taint: str | None = None) -> str:
+def on_behalf_block_message(
+    target: str, action: str, *, taint: str | None = None, context: OnBehalfContext | None = None
+) -> str:
     """Return the blocked-post message, or ``""`` when the post may proceed.
 
     The *non-consuming* peek: it never consumes an approval, writes an audit,
@@ -206,11 +212,12 @@ def on_behalf_block_message(target: str, action: str, *, taint: str | None = Non
     unconsumed matching approval → ``""``. BLOCK + the #119 dial graduated the
     class for this *taint* → ``""`` (the real publish grants it by policy).
     BLOCK + no approval + no graduation → the actionable
-    :class:`OnBehalfPostBlockedError` message.
+    :class:`OnBehalfPostBlockedError` message. *context* must be the one the
+    publish will pass, or the peek and the publish disagree about the same post.
     """
     if taint is None:
         taint = _default_owner_taint()
-    verdict = resolve_on_behalf_verdict(action)
+    verdict = resolve_on_behalf_verdict(action, context)
     if verdict is not OnBehalfVerdict.BLOCK:
         return ""
 

@@ -40,6 +40,7 @@ from typing import Protocol
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+from teatree.utils.url_slug import project_slug_from_ref, repo_namespaced_key
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +58,10 @@ class PrLister(Protocol):
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]: ...
 
 
-# Match a ``#<number>`` issue reference in a PR title/body — the squash-merge
-# ``(#N)`` convention as well as a ``Closes #N`` / ``Fixes #N`` form.
-_ISSUE_REF = re.compile(r"#(\d+)")
+# A ``#<number>`` issue reference in a PR title/body — the squash-merge ``(#N)``
+# convention as well as a ``Closes #N`` / ``Fixes #N`` form — optionally carrying
+# the forge's cross-repo ``<owner>/<repo>#N`` prefix.
+_ISSUE_REF = re.compile(r"(?:(?P<slug>[\w.-]+(?:/[\w.-]+)+)\s*)?#(?P<number>\d+)")
 
 
 class IssueDisposition(StrEnum):
@@ -121,13 +123,13 @@ class OpenPullRequest:
     """One of the operator's open PRs/MRs, as the survey records it.
 
     ``url`` is the canonical identity (never a bare iid). ``referenced_issues``
-    is the set of ``#N`` issue numbers named in the title/body, so the survey can
-    tie a PR to the issues it advances.
+    is the set of repo-namespaced ``<slug>#N`` keys named in the title/body, so
+    the survey can tie a PR to the issues it advances.
     """
 
     url: str
     title: str
-    referenced_issues: frozenset[int]
+    referenced_issues: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -224,10 +226,19 @@ def survey_worktrees(worktree_paths: list[Path]) -> list[WorktreeState]:
     return states
 
 
-def _referenced_issues(raw: RawAPIDict) -> frozenset[int]:
-    """Extract the ``#N`` issue numbers a PR's title + body name."""
+def _referenced_issues(raw: RawAPIDict) -> frozenset[str]:
+    """The repo-namespaced ``<slug>#N`` keys a PR's title + body name.
+
+    A bare ``#N`` belongs to the PR's OWN repo, which is what makes the key
+    collision-free: matching on the number alone marked an issue DONE because a
+    merged PR in an unrelated repo happened to cite the same number. A reference
+    on a PR whose own slug is unresolvable is dropped rather than guessed — the PR
+    still reaches the planner through ``open_prs``.
+    """
     text = f"{raw.get('title', '')}\n{raw.get('body', '')}\n{raw.get('description', '')}"
-    return frozenset(int(m) for m in _ISSUE_REF.findall(text))
+    own_slug = project_slug_from_ref(_pr_url(raw))
+    keys = {f"{match['slug'] or own_slug}#{match['number']}" for match in _ISSUE_REF.finditer(text)}
+    return frozenset(key for key in keys if not key.startswith("#"))
 
 
 def _pr_url(raw: RawAPIDict) -> str:
@@ -271,13 +282,13 @@ class MergedPrLister(Protocol):
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]: ...
 
 
-def survey_merged_pr_issue_numbers(host: MergedPrLister, *, author: str) -> tuple[frozenset[int], list[str]]:
-    """Gather the issue numbers named by the operator's *merged* PRs.
+def survey_merged_pr_issue_keys(host: MergedPrLister, *, author: str) -> tuple[frozenset[str], list[str]]:
+    """Gather the repo-namespaced issue keys named by the operator's *merged* PRs.
 
-    Returns ``(numbers, warnings)`` — the set feeds
-    :func:`classify_issue`'s DONE/close path (an open issue whose work already
-    shipped). A forge that fails to list degrades to a warning rather than
-    crashing intake, exactly like :func:`survey_open_prs`.
+    Returns ``(keys, warnings)`` — the set feeds :func:`classify_issue`'s
+    DONE/close path (an open issue whose work already shipped). A forge that
+    fails to list degrades to a warning rather than crashing intake, exactly
+    like :func:`survey_open_prs`.
     """
     warnings: list[str] = []
     try:
@@ -285,52 +296,49 @@ def survey_merged_pr_issue_numbers(host: MergedPrLister, *, author: str) -> tupl
     except Exception as exc:  # noqa: BLE001 — any forge error degrades to a warning, never aborts intake
         warnings.append(f"could not list merged PRs for {author}: {exc}")
         return frozenset(), warnings
-    numbers: set[int] = set()
+    keys: set[str] = set()
     for raw in raw_prs:
-        numbers |= _referenced_issues(raw)
-    return frozenset(numbers), warnings
-
-
-def _issue_number(issue_url: str) -> int | None:
-    """The trailing issue number in a forge issue URL, or ``None``."""
-    match = re.search(r"/(\d+)/?$", issue_url)
-    return int(match.group(1)) if match else None
+        keys |= _referenced_issues(raw)
+    return frozenset(keys), warnings
 
 
 def classify_issue(
     issue: RawAPIDict,
     *,
     open_prs: list[OpenPullRequest],
-    merged_pr_issue_numbers: frozenset[int],
+    merged_pr_issue_keys: frozenset[str],
 ) -> IssueRecommendation:
     """Classify one open issue against the in-flight PR landscape.
 
     The mechanical floor: a *merged* PR naming the issue ⇒ DONE/close; an *open*
     PR naming it ⇒ PARTIAL/merge (finish that PR, don't start fresh); otherwise
     OPEN/keep. The planner refines; the survey guarantees the signal is surfaced.
+
+    Identity is the repo-namespaced ``<slug>#N`` key (#2293), never the bare
+    number two repos share.
     """
     issue_url = str(issue.get("url") or issue.get("web_url") or issue.get("html_url") or "")
     title = str(issue.get("title", ""))
-    number = _issue_number(issue_url)
+    key = repo_namespaced_key(issue_url)
 
-    if number is not None and number in merged_pr_issue_numbers:
+    if key and key in merged_pr_issue_keys:
         return IssueRecommendation(
             issue_url=issue_url,
             title=title,
             disposition=IssueDisposition.DONE,
             action=RecommendedAction.CLOSE,
-            evidence=f"merged PR references #{number}",
+            evidence=f"merged PR references {key}",
         )
 
-    if number is not None:
+    if key:
         for pr in open_prs:
-            if number in pr.referenced_issues:
+            if key in pr.referenced_issues:
                 return IssueRecommendation(
                     issue_url=issue_url,
                     title=title,
                     disposition=IssueDisposition.PARTIAL,
                     action=RecommendedAction.MERGE,
-                    evidence=f"open PR {pr.url} references #{number}",
+                    evidence=f"open PR {pr.url} references {key}",
                 )
 
     return IssueRecommendation(
@@ -347,7 +355,7 @@ def survey_landscape(
     author: str,
     worktree_paths: list[Path],
     open_issues: list[RawAPIDict],
-    merged_pr_issue_numbers: frozenset[int] = frozenset(),
+    merged_pr_issue_keys: frozenset[str] = frozenset(),
 ) -> LandscapeSurvey:
     """Assemble the full intake landscape for the planner to consume.
 
@@ -356,15 +364,15 @@ def survey_landscape(
     degrade to ``warnings`` rather than aborting — intake must not be blocked by
     a transient forge outage, only made honest about what it could not see.
 
-    ``merged_pr_issue_numbers`` is the set of issue numbers named by *merged*
-    PRs (the §1b resolved-but-open signal, gathered by the caller from the forge
-    search); passing it lets the survey mark already-shipped issues DONE/close.
+    ``merged_pr_issue_keys`` is the set of repo-namespaced issue keys named by
+    *merged* PRs (the §1b resolved-but-open signal, gathered by the caller from
+    the forge search); passing it lets the survey mark already-shipped issues
+    DONE/close.
     """
     worktrees = survey_worktrees(worktree_paths)
     open_prs, warnings = survey_open_prs(host, author=author)
     recommendations = [
-        classify_issue(issue, open_prs=open_prs, merged_pr_issue_numbers=merged_pr_issue_numbers)
-        for issue in open_issues
+        classify_issue(issue, open_prs=open_prs, merged_pr_issue_keys=merged_pr_issue_keys) for issue in open_issues
     ]
     return LandscapeSurvey(
         worktrees=worktrees,

@@ -15,8 +15,13 @@
       args.content: '~ "(?i)### *E2E test plan|Acceptance scenarios"'
     - tool_call: Write
       args.content: '~ "(?i)(observable assertion|user action|flow ?/ ?page)"'
+    # The vacuous assertion is "the page renders" FULL STOP — a bare `page renders`
+    # substring also matches "the login page renders the remember-me checkbox", so it
+    # punished the specificity the positive matchers demand.
     - no_tool_call_matching:
-        Write.content: '~ "(?i)(loads 200|page renders|returns 200|no E2E scenarios|no UI surface)"'
+        Write.content: >-
+          ~ "(?i)(loads 200|returns 200|page renders(?: (?:successfully|correctly|fine|as expected|without
+          (?:an )?error))?\s*[.\n]|no E2E scenarios|no UI surface)"
 
 - name: planner_skips_e2e_plan_for_backend_ticket
   scenario: "the plan emits an explicit no-UI-surface skip note and fabricates NO scenarios for a pure-backend ticket"

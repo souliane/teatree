@@ -3,6 +3,7 @@
 import socket
 from typing import TYPE_CHECKING, TypedDict
 
+from django.contrib.staticfiles import finders
 from django.shortcuts import render
 
 from teatree.config import get_effective_settings
@@ -32,6 +33,17 @@ class NavContext(TypedDict):
     nav_items: tuple[tuple[str, str], ...]
     nav_active: str
     instance_label: str
+    brand_logo: str | None
+
+
+def brand_logo() -> str | None:
+    """The header mark's static path, or ``None`` when no static finder resolves it.
+
+    An overlay or operator naming a file this checkout does not carry gets a header with
+    no mark — the wordmark alone — rather than a broken image, and never a 500.
+    """
+    configured = get_effective_settings().dashboard_logo
+    return configured if configured and finders.find(configured) else None
 
 
 def instance_label() -> str:
@@ -45,8 +57,13 @@ def instance_label() -> str:
 
 
 def nav_context(active: str) -> NavContext:
-    """Nav bar context — the item list, which one is active, and which box this is."""
-    return {"nav_items": NAV_ITEMS, "nav_active": active, "instance_label": instance_label()}
+    """Nav bar context — the item list, which one is active, which box this is, and its mark."""
+    return {
+        "nav_items": NAV_ITEMS,
+        "nav_active": active,
+        "instance_label": instance_label(),
+        "brand_logo": brand_logo(),
+    }
 
 
 def is_htmx(request: "HttpRequest") -> bool:

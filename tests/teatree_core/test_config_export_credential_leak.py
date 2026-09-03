@@ -19,7 +19,10 @@ from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.secret_guard import redaction_reason
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Mode
+
+#: A credential COORDINATE — it names where a secret lives; obviously fake, like every value here.
+_SYNTHETIC_COORDINATE = "fake-store/not-a-real-entry"
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -107,3 +110,53 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         result = self._export()
         assert _teatree(result.toml)["mode"] == "auto"
         assert self._reason_for(result.redacted, "mode") is None
+
+
+class TestTheGuardReachesInsideAValueNotJustItsKey(TestCase):
+    """Three of the four withhold classes read the KEY, and a config value is often a TABLE.
+
+    So the container's own name decides nothing: an ``overlays`` registry row holds overlay
+    definitions and a preset's ``entries`` holds setting values, and a coordinate inside either
+    is exactly as unshareable as one stored under its own key.
+    """
+
+    def _export(self) -> object:
+        return export_db_to_toml(scan_terms=())
+
+    def test_a_coordinate_inside_the_overlays_registry_never_reaches_the_dump(self) -> None:
+        ConfigSetting.objects.set_value("overlays", {"box": {"gitlab_token_pass_key": _SYNTHETIC_COORDINATE}})
+        result = self._export()
+        assert _SYNTHETIC_COORDINATE not in result.toml
+        assert any(row.reason == "credential-coordinate" for row in result.redacted)
+
+    def test_a_coordinate_inside_a_preset_entry_never_reaches_the_dump(self) -> None:
+        Mode.objects.create(name="withheld-probe", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
+        result = self._export()
+        assert _SYNTHETIC_COORDINATE not in result.toml
+        assert ("modes.withheld-probe", "entries", "credential-coordinate") in [
+            (row.scope, row.key, row.reason) for row in result.redacted
+        ]
+
+    def test_the_withheld_seed_field_is_dropped_whole_so_an_import_never_deletes_the_rest(self) -> None:
+        Mode.objects.create(
+            name="withheld-probe",
+            description="a preset the guard trims",
+            entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE},
+        )
+        emitted = tomllib.loads(self._export().toml)["modes"]["withheld-probe"]
+        assert "entries" not in emitted
+        assert emitted["description"] == "a preset the guard trims"
+
+    def test_include_private_still_carries_the_seed_field(self) -> None:
+        Mode.objects.create(name="withheld-probe", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
+        result = export_db_to_toml(include_private=True, scan_terms=())
+        assert tomllib.loads(result.toml)["modes"]["withheld-probe"]["entries"] == {
+            "gitlab_token_pass_key": _SYNTHETIC_COORDINATE
+        }
+        assert result.redacted == ()
+
+    def test_a_preset_carrying_no_coordinate_still_exports_its_entries(self) -> None:
+        Mode.objects.create(name="ordinary-probe", entries={"merge_wip": True})
+        result = self._export()
+        assert tomllib.loads(result.toml)["modes"]["ordinary-probe"]["entries"] == {"merge_wip": True}
+        assert result.redacted == ()

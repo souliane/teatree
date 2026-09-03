@@ -27,6 +27,10 @@ class BootSweepCounts:
     reaped_claims: int = 0
     reclaimed_leases: int = 0
 
+    @property
+    def changed_rows(self) -> int:
+        return self.replayed_transitions + self.reclaimed_claims + self.reaped_claims + self.reclaimed_leases
+
 
 def run_boot_sweeps() -> BootSweepCounts:
     """Run the sweeps in rescue-before-fail order and return per-sweep counts."""

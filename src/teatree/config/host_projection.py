@@ -27,6 +27,7 @@ Five properties define the artifact:
     print, instead of quietly serving values whose freshness it cannot vouch for.
 """
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -41,6 +42,7 @@ from typing import cast
 
 PROJECTION_FILENAME = "host-projection.json"
 HIGHWATER_FILENAME = ".host-projection-generation"
+HIGHWATER_LOCK_FILENAME = ".host-projection-generation.lock"
 
 #: The global-scope ``teatree_config_setting`` row carrying the generation counter.
 #: It lives in the source so the counter is a property of the database, and every
@@ -280,6 +282,10 @@ class ProjectionReader:
     def highwater_path(self) -> Path:
         return self.data_dir / HIGHWATER_FILENAME
 
+    @property
+    def highwater_lock_path(self) -> Path:
+        return self.data_dir / HIGHWATER_LOCK_FILENAME
+
     def read(self) -> ProjectionRead:
         try:
             payload = json.loads(self.target.read_text(encoding="utf-8"))
@@ -358,17 +364,33 @@ class ProjectionReader:
             return 0
 
     def _record_highwater(self, generation: int) -> None:
-        """Ratchet the observed generation — best effort; a read-only data dir must still read."""
-        if generation <= self._highwater():
-            return
+        """Ratchet the observed generation — best effort; a read-only data dir must still read.
+
+        Every reader on this host races here, and an unlocked read-compare-write ratchets
+        BACKWARD whenever a reader holding an older generation lands its write after a
+        newer one: the file then names a generation this host has already passed, so the
+        next genuinely stale projection reads as FRESH. The compare and the write are
+        therefore one critical section under an exclusive ``flock`` on a sibling file, so
+        the loser re-reads the winner's value and skips.
+        """
         try:
-            fd, tmp_name = tempfile.mkstemp(prefix=".highwater-", suffix=".tmp", dir=self.data_dir)
-            tmp_path = Path(tmp_name)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(f"{generation}\n")
-            tmp_path.replace(self.highwater_path)
+            with self.highwater_lock_path.open("a", encoding="utf-8") as lock_handle:
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+                try:
+                    self._write_highwater(generation)
+                finally:
+                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
         except OSError:
             return
+
+    def _write_highwater(self, generation: int) -> None:
+        if generation <= self._highwater():
+            return
+        fd, tmp_name = tempfile.mkstemp(prefix=".highwater-", suffix=".tmp", dir=self.data_dir)
+        tmp_path = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"{generation}\n")
+        tmp_path.replace(self.highwater_path)
 
 
 _warned: set[str] = set()

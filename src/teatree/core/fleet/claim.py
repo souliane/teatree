@@ -219,10 +219,14 @@ def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: flo
     """Re-point the ref to a fresh commit via CAS against the caller's OWN sha.
 
     Returns the refreshed :class:`Claim` when the CAS lands (the ref still held
-    this instance's sha). Returns :class:`ClaimLost` when it does not — the ref
-    no longer points at ``claim.sha``, so another instance stole it. The CAS is
-    against ``claim.sha`` (this instance's own token), so a heartbeat can never
-    clobber a rival's steal.
+    this instance's sha). Returns :class:`ClaimLost` only once the ref is READ
+    BACK off ``claim.sha`` — mirroring :func:`acquire`'s own failed-push read: a
+    push a pre-receive hook or a permission blip rejected leaves the ref on our
+    own token, and reporting that as a steal marked a still-owned marker
+    ABANDONED. An unchanged ref raises :class:`FleetClaimUnavailableError` so
+    the caller leaves the marker live for the next tick. The CAS is against
+    ``claim.sha`` (this instance's own token), so a heartbeat can never clobber
+    a rival's steal.
     """
     ts = _resolve_now(now)
     with _ephemeral_odb(repo, remote) as scope:
@@ -230,11 +234,15 @@ def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: flo
         landed = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
     if landed:
         return replace(claim, sha=new_sha, claimed_at=ts)
+    observed = _ls_remote_sha(repo, remote, claim.ref)
+    if observed == claim.sha:
+        msg = f"heartbeat push for {claim.ref} failed but the ref still holds our sha (remote unwritable)"
+        raise FleetClaimUnavailableError(msg)
     return ClaimLost(
         work_key=claim.work_key,
         ref=claim.ref,
         expected_sha=claim.sha,
-        observed_sha=_ls_remote_sha(repo, remote, claim.ref),
+        observed_sha=observed,
     )
 
 

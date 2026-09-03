@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -31,8 +32,10 @@ from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneCon
 from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
 from teatree.core.models import ConfigSetting
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
-from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner
+from teatree.eval.discovery import SCENARIOS_DIR
+from teatree.eval.loader import load_eval_yaml
+from teatree.eval.models import CLEAN_ROOM_MIN_TURNS, EvalSpec, Matcher
+from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner, build_eval_toolset
 from teatree.eval.report import evaluate
 
 
@@ -48,6 +51,10 @@ def _spec(matcher: Matcher, *, tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
         model="claude-sonnet-5",
         tools=tools,
     )
+
+
+def _catalog_specs() -> list[EvalSpec]:
+    return [spec for path in sorted(SCENARIOS_DIR.glob("*.yaml")) for spec in load_eval_yaml(path)]
 
 
 def _tool_call_then_text(command: str, text: str) -> FunctionModel:
@@ -264,6 +271,42 @@ class TestEvalToolset:
         run = runner.run(spec)
         assert {c.name for c in run.tool_calls} == {"Bash", "Edit", "Read"}
 
+    @staticmethod
+    def _advertised(name: str) -> dict[str, Any]:
+        return build_eval_toolset((name,)).tools[name].function_schema.json_schema
+
+    def test_a_structured_tool_advertises_the_parameters_it_really_takes(self) -> None:
+        # A stub whose only parameter is `**kwargs` advertises ZERO properties, so the
+        # model is never told what `AskUserQuestion` takes and emits `AskUserQuestion({})`
+        # — every `args.questions` matcher then reds a correctly-behaving agent.
+        assert "questions" in self._advertised("AskUserQuestion")["properties"]
+
+    def test_an_unmodelled_tool_still_registers_permissively(self) -> None:
+        schema = self._advertised("Frobnicate")
+        assert schema["properties"] == {}
+        assert schema["additionalProperties"] is True
+
+    def test_every_tool_the_catalog_declares_carries_a_schema(self) -> None:
+        declared = {tool for spec in _catalog_specs() for tool in spec.tools}
+        assert {t for t in declared if not self._advertised(t)["properties"]} == set()
+
+    def test_an_argument_outside_the_advertised_schema_still_flows_through(self) -> None:
+        # `additionalProperties: true` is what keeps the schema a HINT, not a filter:
+        # a key the curated shape does not model must still reach the captured call.
+        state = {"turn": 0}
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+            await asyncio.sleep(0)
+            state["turn"] += 1
+            if state["turn"] == 1:
+                yield {0: DeltaToolCall(name="Bash", json_args='{"command": "ls", "undeclared": 1}')}
+            else:
+                yield "listed"
+
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="ls"))
+        run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
+        assert run.tool_calls[0].input == {"command": "ls", "undeclared": 1}
+
 
 class TestWatchdog:
     def test_a_hang_yields_an_error_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,3 +350,60 @@ class TestProviderFailureFoldsIntoTheRun:
         assert run.is_error is True
         assert run.terminal_reason == "error_during_execution"
         assert not evaluate(spec, run).passed, "a run that never happened must never grade green"
+
+
+def _tool_calls_then_text(*, tool_turns: int) -> FunctionModel:
+    """A model that issues one Bash call per turn for *tool_turns* turns, then finishes."""
+    state = {"turn": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        state["turn"] += 1
+        if state["turn"] <= tool_turns:
+            yield {0: DeltaToolCall(name="Bash", json_args='{"command": "echo hi"}')}
+        else:
+            yield "done"
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+class TestScenarioCapsBindThisLane:
+    """A scenario's own ``max_turns`` / ``watchdog_seconds`` cap this lane, as they do the SDK lane."""
+
+    _MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")
+
+    def test_the_scenario_turn_budget_caps_the_request_loop(self) -> None:
+        spec = dataclasses.replace(_spec(self._MATCHER), max_turns=CLEAN_ROOM_MIN_TURNS)
+        run = PydanticAiRunner(model=_tool_calls_then_text(tool_turns=CLEAN_ROOM_MIN_TURNS + 5)).run(spec)
+        assert run.terminal_reason == "error_max_turns"
+        assert len(run.tool_calls) <= CLEAN_ROOM_MIN_TURNS
+
+    def test_a_tight_clean_room_budget_is_floored_like_the_sdk_lane(self) -> None:
+        # Parity guard, not a regression: many catalog scenarios declare `max_turns: 3`,
+        # so honouring the raw declaration would red every one of them on this lane.
+        spec = dataclasses.replace(_spec(self._MATCHER), max_turns=3)
+        run = PydanticAiRunner(model=_tool_calls_then_text(tool_turns=5)).run(spec)
+        assert run.terminal_reason != "error_max_turns"
+        assert len(run.tool_calls) == 5
+
+    def test_the_lane_request_guardrail_still_binds_when_tighter(self) -> None:
+        spec = dataclasses.replace(_spec(self._MATCHER), max_turns=CLEAN_ROOM_MIN_TURNS)
+        runner = PydanticAiRunner(
+            model=_tool_calls_then_text(tool_turns=CLEAN_ROOM_MIN_TURNS),
+            backend=OpenAICompatibleLaneConfig(lane=LANE_EVAL, request_limit=2),
+        )
+        run = runner.run(spec)
+        assert run.terminal_reason == "error_max_turns"
+        assert len(run.tool_calls) <= 2
+
+    def test_the_scenario_watchdog_overrides_the_lane_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.eval.pydantic_ai_runner.resolve_watchdog_seconds", lambda: 30.0)
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+            await asyncio.sleep(1.0)
+            yield "too late"
+
+        spec = dataclasses.replace(_spec(self._MATCHER), watchdog_seconds=0.05)
+        run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
+        assert run.is_error is True
+        assert run.terminal_reason == "timeout"

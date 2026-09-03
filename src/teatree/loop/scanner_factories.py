@@ -35,9 +35,11 @@ from teatree.loop.scanners import (
     CallCommandMergeKeystone,
     ClaudeSelfPrReviewScanner,
     CodexReviewScanner,
+    ForgePrApiClient,
     GhCodexPrApi,
     GhPrApiClient,
     GlabGhMrStateClassifier,
+    GlabPrApiClient,
     IssueDispositionScanner,
     IssueIntakeScanner,
     MrConflictScanner,
@@ -160,6 +162,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     if not repos:
         return None
     github_token = overlay.config.get_github_token()
+    gitlab_token = overlay.config.get_gitlab_token()
     notifier: SlackMergeNotifier | NullMergeNotifier
     if backend.messaging is not None and slack_user_id:
         notifier = SlackMergeNotifier(backend=backend.messaging, user_id=slack_user_id)
@@ -178,7 +181,12 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     reconcile_settled_clears_best_effort()
     return PrSweepScanner(
         repos=repos,
-        api=GhPrApiClient(token=github_token),
+        # #72: a bare slug carries no host, so routing per slug is what stops a GitLab
+        # project being probed with the GitHub CLI and read as "no open MRs".
+        api=ForgePrApiClient(
+            github=GhPrApiClient(token=github_token),
+            gitlab=GlabPrApiClient(token=gitlab_token),
+        ),
         keystone=CallCommandMergeKeystone(),
         notifier=notifier,
         overlay=backend.name,

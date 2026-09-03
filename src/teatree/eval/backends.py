@@ -67,6 +67,27 @@ KNOWN_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND, TRANSCRIPT_BACKEND, PYDANT
 #: (non-Claude, the OpenAI-compatible backend) lanes are neither.
 FRESH_CLAUDE_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND)
 
+#: The fresh-run backends that RUN a model but record NO ``cost_usd``. Both drive the
+#: model through :class:`~teatree.eval.pydantic_ai_runner.PydanticAiRunner`, whose
+#: terminal ``ResultMessage`` carries ``total_cost_usd=_router_reported_cost(run_usage)``
+#: — ``None`` for every provider that does not surface a cost key, which is the common
+#: case and always the case for Anthropic — so ``extract_cost_usd`` floors to ``0.0`` on
+#: a run that genuinely executed. ``$0`` is therefore these lanes' NORMAL state, NOT the
+#: vacuous-green signal it is on ``api``: their equivalent signal is an EMPTY trajectory
+#: (see :func:`~teatree.eval.skip_guard.assert_fresh_run_produced_output`). Widening the
+#: ``$0`` guard (:func:`~teatree.eval.skip_guard.assert_api_run_was_metered`) to
+#: :data:`FRESH_CLAUDE_BACKENDS` looks like the obvious fix for a missed backend and
+#: would red EVERY healthy ``anthropic_api`` run — the CI eval lane's own backend.
+UNMETERED_FRESH_BACKENDS = (ANTHROPIC_API_BACKEND, PYDANTIC_AI_BACKEND)
+
+#: Every backend that can produce a NEW trial: the union of the two fresh-run sets above
+#: (``api``, ``anthropic_api``, ``pydantic_ai``), order-preserving and deduped. Its
+#: complement in :data:`KNOWN_BACKENDS` is exactly :data:`TRANSCRIPT_BACKEND` — the one
+#: lane that only REPLAYS an already-recorded run and so genuinely cannot re-run a
+#: scenario. The escalate-on-fail re-run keys on this: it MIRRORS a caller's backend
+#: that is in here and rewrites only a transcript lane onto :data:`API_BACKEND`.
+FRESH_RUN_BACKENDS = tuple(dict.fromkeys((*FRESH_CLAUDE_BACKENDS, *UNMETERED_FRESH_BACKENDS)))
+
 
 class EvalRunner(Protocol):
     """Anything that turns an :class:`EvalSpec` into an :class:`EvalRun`."""

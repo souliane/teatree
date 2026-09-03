@@ -1121,16 +1121,31 @@ class TestEvalCostBoundsGate:
         assert "COST MISSING beta" in result.output
         assert "COST OVER BOUND" not in result.output
 
-    def test_an_empty_ceiling_set_refuses_rather_than_certifying(self, tmp_path: Path) -> None:
-        # `load_cost_bounds` makes an ABSENT file a hard error precisely because no
-        # ceilings would make the gate vacuously green. A committed file pinning
-        # zero scenarios is the same vacuity by another door, so a requested gate
-        # with nothing to gate is a refusal — not a $99 run passing.
+    def test_empty_ceilings_file_fails_loud_instead_of_gating_nothing(self, tmp_path: Path) -> None:
+        # The ceilings file pins NOTHING, so the gate binds nothing and a green here
+        # would be one it never earned — the same vacuity `load_cost_bounds` already
+        # refuses for an ABSENT file. A committed file pinning zero scenarios is that
+        # vacuity by another door, so a requested gate with nothing to gate is a
+        # refusal — not a $99 run passing.
         specs = [_spec("alpha")]
         with self._bounds_file(tmp_path, "default_margin: 0.25\nscenarios: {}\n"):
             result = self._run_candidate(specs, cost_usd=99.0)
         assert result.exit_code == 1, result.output
-        assert "pins zero scenarios" in result.output
+        assert "COST BOUNDS VACUOUS" in result.output
+
+    def test_unpinned_scenario_in_the_run_is_unbounded(self, tmp_path: Path) -> None:
+        # `alpha` is pinned and pays; `beta` is un-pinned, so its cost is not gated.
+        specs = [_spec("alpha"), _spec("beta")]
+        body = "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 1.00\n"
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ApiInProcessRunner", _per_scenario_cost_runner({"alpha": 0.20, "beta": 99.0})),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+            self._bounds_file(tmp_path, body),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "api", "--gate-cost-bounds"])
+        assert result.exit_code == 0, result.output
+        assert "COST BOUNDS VACUOUS" not in result.output
 
     def test_rejected_in_docker(self) -> None:
         with (

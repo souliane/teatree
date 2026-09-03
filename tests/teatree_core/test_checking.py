@@ -586,6 +586,33 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         question_items = [item for item in report.needs_you.items if item.label.startswith("Q")]
         assert len(question_items) == 1
 
+    def test_merged_rows_are_globally_ordered_and_totalled_across_overlays(self) -> None:
+        # B06_core_root_a-9: the cap belongs to the MERGED report, not to each
+        # overlay's slice of it — a per-overlay cap let one overlay's older
+        # merges crowd out another's newer ones and under-reported the total.
+        ticket_a = self._ticket(number=1)
+        for index in range(4):
+            self._merge(ticket_a, pr_id=100 + index, slug="acme/widgets", hours_ago=10 + index)
+        ticket_b = self._ticket_b(number=2)
+        self._merge_b(ticket_b, pr_id=200, hours_ago=1)
+
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", ["acme/widgets"]),
+            self.OVERLAY_B: ("github", ["beta/core"]),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs, cap=3)
+
+        assert report.merged.total == 5
+        assert [item.label for item in report.merged.items] == [
+            "beta/core#200",
+            "acme/widgets#100",
+            "acme/widgets#101",
+        ]
+
     def test_all_overlays_report_is_dataclass(self) -> None:
         overlay_windows = {self.OVERLAY: (self.since, self.now)}
         overlay_configs = {self.OVERLAY: ("github", [])}

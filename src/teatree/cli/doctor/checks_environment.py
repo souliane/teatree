@@ -8,6 +8,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.docker.workflow import launcher_bin_dir
+
 
 def _check_single_db() -> bool:
     """Warn if any ``db.sqlite3`` other than the canonical path exists under DATA_DIR."""
@@ -305,6 +307,39 @@ def _check_stale_uv_venv() -> bool:
     return ok
 
 
+def _check_venv_interpreter_is_this_host() -> bool:
+    """FAIL when a repo's ``.venv`` records an interpreter this host cannot run.
+
+    A ``.venv`` inside a bind mount is written by whichever side ran ``uv`` last, so it
+    can come to record the other side's interpreter. Nothing then reports a broken
+    environment: the next ``uv run`` silently DELETES and rebuilds it, and on the mount
+    that removal can fail half-done (``Directory not empty``) and leave a truncated
+    install that still imports — the repoint surfaces as unrelated gates going red. A
+    FAIL rather than a WARN because this check deliberately does not repair: the repair
+    (``uv sync`` at the workspace root) is the very operation that destroys the
+    environment when it is run without intent.
+    """
+    import sys  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.venv_artifacts import foreign_venv_interpreter  # noqa: PLC0415 — deferred: lazy CLI import
+
+    ok = True
+    for _name, repo in _collect_repos():
+        reason = foreign_venv_interpreter(repo / ".venv", platform=sys.platform)
+        if reason is None:
+            continue
+        typer.echo(
+            f"FAIL  {repo}/.venv was built for another host — {reason}. `uv run` will not "
+            "repair it, it will DELETE and rebuild it, and on a bind mount that can fail "
+            "half-done and leave a truncated environment that still imports. Rebuild it "
+            "deliberately with `uv sync` at the workspace root (retry if the VM still holds "
+            "a file), then re-run `t3 doctor check`."
+        )
+        ok = False
+    return ok
+
+
 def _check_legacy_overlay_alias() -> None:
     """Warn (never rewrite) on a stale legacy alias entry in the DB overlays registry.
 
@@ -341,9 +376,7 @@ def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
 
     resolved_env = env if env is not None else dict(os.environ)
     path_dirs = [Path(d) for d in resolved_env.get("PATH", "").split(os.pathsep) if d]
-    home = Path(resolved_env.get("HOME", str(Path.home())))
-    uv_tool_bin_dir_str = resolved_env.get("UV_TOOL_BIN_DIR")
-    uv_bin_dir = Path(uv_tool_bin_dir_str) if uv_tool_bin_dir_str else home / ".local" / "bin"
+    uv_bin_dir = launcher_bin_dir(resolved_env)
     uv_bin_dir_resolved = uv_bin_dir.resolve()
 
     uv_pos = next(
@@ -371,7 +404,9 @@ def _configured_review_skill_gaps() -> list[str]:
 
     Enumerates every registered overlay's effective ``architectural_review_skill``
     (only when the always-on cadence is not disabled for that overlay),
-    ``review_skill`` (only when the project opted in by setting it non-empty), and
+    ``review_skill`` (only when the project opted in by setting it non-empty — but an
+    EMPTY primary alongside configured alternates is itself a FAIL, since an alternate
+    substitutes for a primary and cannot stand in for one nobody set), and
     each ``review_skill_alternates`` entry, then confirms each name resolves to an
     installed ``SKILL.md`` in the canonical skill set — the same enumeration
     :mod:`teatree.skill_support.ref_validator` uses for dangling references. A name
@@ -397,18 +432,28 @@ def _configured_review_skill_gaps() -> list[str]:
     gaps: list[str] = []
     for overlay_name in overlay_names:
         settings = get_effective_settings(overlay_name)
-        configured: list[tuple[str, str]] = [("review_skill", settings.review_skill.strip())]
-        configured.extend(("review_skill_alternates", name.strip()) for name in settings.review_skill_alternates)
+        primary = settings.review_skill.strip()
+        alternates = [name.strip() for name in settings.review_skill_alternates if name.strip()]
+        configured: list[tuple[str, str]] = [("review_skill", primary)]
+        configured.extend(("review_skill_alternates", name) for name in alternates)
         if not settings.architectural_review_disabled:
             configured.append(("architectural_review_skill", settings.architectural_review_skill.strip()))
         scope = overlay_name or "(active overlay)"
+        if not primary and alternates:
+            gaps.append(
+                f"FAIL  Configured review_skill is EMPTY (overlay {scope}) while review_skill_alternates "
+                f"names {', '.join(repr(name) for name in alternates)} — an alternate substitutes for a "
+                f"primary reviewer, so an unset primary leaves the gate resting on a fallback nobody chose. "
+                f"Fix: set `review_skill` for this overlay, or clear its alternates, then re-run "
+                f"`t3 doctor check`."
+            )
         for label, skill in configured:
             if skill and not resolves_to_canonical(skill, canonical):
                 gaps.append(
                     f"FAIL  Configured {label}={skill!r} (overlay {scope}) resolves to no installed skill — "
-                    f"the review discipline that depends on it dispatches empty. Install it with "
-                    f"`apm install souliane/skills/{skill}` (or re-run `t3 setup` with `apm` present), "
-                    "then re-run `t3 doctor check`."
+                    f"the review discipline that depends on it dispatches empty. Fix: re-run `t3 setup`, "
+                    f"which installs both the manifest-declared skills and everything the overlays' "
+                    f"declared skill sources publish, then re-run `t3 doctor check`."
                 )
     return gaps
 

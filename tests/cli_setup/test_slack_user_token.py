@@ -121,8 +121,8 @@ class TestStoreAndVerify:
         granted = list(REQUIRED_USER_SCOPES)
         with (
             self._patch_fetch(granted),
-            patch("teatree.cli.slack.token_store.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
         ):
             actual, added = _store_and_verify("xoxp-good", previous_scopes=["chat:write"], echo=lambda _m: None)
         assert actual == granted
@@ -133,8 +133,8 @@ class TestStoreAndVerify:
         granted = list(REQUIRED_USER_SCOPES)
         with (
             self._patch_fetch(granted),
-            patch("teatree.cli.slack.token_store.read_pass", return_value="xoxp-prioruser"),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.read_pass", return_value="xoxp-prioruser"),
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
             pytest.raises(TokenScopeError, match="must start with 'xoxp-'"),
         ):
             _store_and_verify("xoxb-WRONG", previous_scopes=[], echo=lambda _m: None)
@@ -145,9 +145,9 @@ class TestStoreAndVerify:
         writes: list[tuple[str, str]] = []
         with (
             self._patch_fetch(granted),
-            patch("teatree.cli.slack.token_store.read_pass", return_value="xoxp-prioruser"),
+            patch("teatree.utils.secrets.read_pass", return_value="xoxp-prioruser"),
             patch(
-                "teatree.cli.slack.token_store.write_pass",
+                "teatree.utils.secrets.write_pass",
                 side_effect=lambda key, value: writes.append((key, value)) or True,
             ),
         ):
@@ -165,8 +165,8 @@ class TestStoreAndVerify:
         granted = list(REQUIRED_USER_SCOPES)
         with (
             self._patch_fetch(granted),
-            patch("teatree.cli.slack.token_store.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=False),
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=False),
             pytest.raises(TokenScopeError, match="pass insert"),
         ):
             _store_and_verify("xoxp-good", previous_scopes=[], echo=lambda _m: None)
@@ -184,8 +184,8 @@ class TestCliWalkthrough:
         granted = list(REQUIRED_USER_SCOPES)
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open"),
         ):
@@ -197,8 +197,8 @@ class TestCliWalkthrough:
         granted = [s for s in REQUIRED_USER_SCOPES if s != "reactions:write"]
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open"),
         ):
@@ -241,8 +241,8 @@ class TestCliWalkthrough:
         granted = list(REQUIRED_USER_SCOPES)
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value="xoxp-old"),
-            patch("teatree.cli.slack.token_store.read_pass", return_value="xoxp-old"),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value="xoxp-old"),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup._derive_app_id_from_bot", return_value=""),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open"),
@@ -259,8 +259,8 @@ class TestDetectAndBackupXoxbMisInstall:
 
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
         ):
             messages: list[str] = []
             _detect_and_backup_xoxb_mis_install(echo=messages.append)
@@ -273,7 +273,7 @@ class TestDetectAndBackupXoxbMisInstall:
 
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
         ):
             _detect_and_backup_xoxb_mis_install(echo=lambda _msg: None)
         write.assert_not_called()
@@ -284,7 +284,7 @@ class TestDetectAndBackupXoxbMisInstall:
 
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
         ):
             _detect_and_backup_xoxb_mis_install(echo=lambda _msg: None)
         write.assert_not_called()
@@ -296,9 +296,9 @@ class TestDetectAndBackupXoxbMisInstall:
         writes: list[tuple[str, str]] = []
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
             patch(
-                "teatree.cli.slack.token_store.write_pass",
+                "teatree.utils.secrets.write_pass",
                 side_effect=lambda key, value: writes.append((key, value)) or True,
             ),
         ):
@@ -384,8 +384,8 @@ class TestNewIntegrationsInWalkthrough:
 
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True) as write,
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open"),
         ):
@@ -399,8 +399,8 @@ class TestNewIntegrationsInWalkthrough:
         opens: list[str] = []
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value="xoxp-existing"),
-            patch("teatree.cli.slack.token_store.read_pass", return_value="xoxp-existing"),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value="xoxp-existing"),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup._derive_app_id_from_bot", return_value="AABCDEF"),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open", side_effect=opens.append),
@@ -414,8 +414,8 @@ class TestNewIntegrationsInWalkthrough:
         opens: list[str] = []
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value="xoxp-existing"),
-            patch("teatree.cli.slack.token_store.read_pass", return_value="xoxp-existing"),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value="xoxp-existing"),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup._derive_app_id_from_bot", return_value=""),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open", side_effect=opens.append),
@@ -431,8 +431,8 @@ class TestNewIntegrationsInWalkthrough:
         opens: list[str] = []
         with (
             patch("teatree.cli.slack.user_token_setup.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.read_pass", return_value=""),
-            patch("teatree.cli.slack.token_store.write_pass", return_value=True),
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
             patch("teatree.cli.slack.user_token_setup.fetch_token_scopes", return_value=granted),
             patch("teatree.cli.slack.user_token_setup.webbrowser.open", side_effect=opens.append),
         ):

@@ -87,8 +87,7 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
                 spec=HTTPProbeSpec(
                     url=f"http://127.0.0.1:{port}/hooks/slack/",
                     expected_status=405,
-                    retries=20,
-                    retry_delay=0.25,
+                    retries=6,
                     timeout_seconds=2.0,
                 ),
             ),

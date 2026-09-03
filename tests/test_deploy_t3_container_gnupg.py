@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 _SH = shutil.which("sh") or "sh"
 
-PROLOGUE_NAME = "CONTAINER_GNUPG_PROLOGUE"
+PROLOGUE_NAME = "CONTAINER_CREDENTIAL_PROLOGUE"
 
 
 def _extract_single_quoted_assignment(name: str) -> str:
@@ -145,6 +145,41 @@ class TestWrapperUsesThePrologue:
         # The host `t3` is the forbidden path — the sanctioned wrapper pointing at it
         # is what keeps host processes holding descriptors on the control DB.
         assert "~/.local/bin/t3" not in WRAPPER.read_text(encoding="utf-8")
+
+
+class TestPrologueAgreesWithTheImageProfile:
+    """The predicate lives in two venues and must answer identically in both.
+
+    The wrapper runs a non-login ``sh -c``, so it carries the prologue inline; a
+    hand-issued ``docker exec … sh -lc`` reads ``/etc/profile.d`` instead. Two
+    copies of one decision is exactly where drift hides, so they are pinned by
+    behaviour rather than by matching text.
+    """
+
+    PROFILE_SCRIPT = WRAPPER.parent / "profile-gnupg-home.sh"
+
+    def _sourced_gnupg_home(self, runtime_dir: Path, baked_home: str) -> str:
+        proc = subprocess.run(
+            [_SH, "-c", '. "$1"; printf "%s" "${GNUPGHOME:-<unset>}"', "sh", str(self.PROFILE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"GNUPGHOME": baked_home, "TEATREE_GNUPG_RUNTIME_DIR": str(runtime_dir), "PATH": "/usr/bin:/bin"},
+        )
+        return proc.stdout.strip()
+
+    @pytest.mark.parametrize("populate", ["derived_with_keys", "no_runtime_dir_contents", "empty_derived"])
+    def test_both_venues_resolve_the_same_home(self, tmp_path: Path, populate: str) -> None:
+        runtime_dir = tmp_path / "run"
+        if populate == "derived_with_keys":
+            _derived_home_with_key_material(runtime_dir)
+        elif populate == "empty_derived":
+            (runtime_dir / "gnupg").mkdir(parents=True)
+        else:
+            runtime_dir.mkdir()
+        assert self._sourced_gnupg_home(runtime_dir, "/home/teatree/.gnupg") == _run_prologue(
+            runtime_dir, "/home/teatree/.gnupg"
+        )
 
 
 if __name__ == "__main__":

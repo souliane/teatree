@@ -1474,6 +1474,104 @@ class TestLeadingCdNamesTheLandingRepo:
         assert _commit_repo_dir.leading_cd_dir("cd ~/a && cd b && git commit -m x") == str(tmp_path / "a" / "b")
 
 
+class TestSegmentCwdsTracksEveryCd:
+    """``segment_cwds`` answers WHERE each segment runs, not where the command started.
+
+    Resolving ONE dir for the whole command -- the leading ``cd``, or the ambient hook
+    cwd -- grades every later segment against the FIRST dir, so a second ``cd`` into
+    another repo publishes under the first one's verdict. The fail-closed answer is
+    ``None``, which every consumer reads as "no provable destination" and scans on.
+    """
+
+    def test_each_segment_gets_the_dir_bash_would_run_it_in(self, tmp_path: Path) -> None:
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        command = f"cd {first} && glab mr create --title x && cd {second} && gh issue create --title y"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path, first, first, second]
+
+    def test_a_cd_onto_no_real_directory_poisons_the_rest(self, tmp_path: Path) -> None:
+        command = f"cd {tmp_path / 'missing'} && gh issue create --title y"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path, None]
+
+    def test_navigation_after_a_subshell_opener_is_unprovable(self, tmp_path: Path) -> None:
+        # The lexer emits ``(`` but glues ``)`` onto its neighbour, so the group's
+        # extent -- and whether the inner ``cd`` survives it -- cannot be read back.
+        inner = tmp_path / "inner"
+        inner.mkdir()
+        command = f"glab mr create --title x && (cd {inner} && gh issue create --title y)"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path, tmp_path, None]
+
+    def test_a_subshell_with_no_navigation_leaves_the_cwd_alone(self, tmp_path: Path) -> None:
+        # The guard is scoped to navigation: a command that never moves the shell has
+        # no scope to lose, so parentheses alone must not cost a provable dir.
+        command = "(gh issue create --title y)"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path]
+
+    def test_a_relative_cd_hangs_off_the_running_dir(self, tmp_path: Path) -> None:
+        nested = tmp_path / "outer" / "inner"
+        nested.mkdir(parents=True)
+        command = f"cd {tmp_path / 'outer'} && cd inner && gh issue create --title y"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path, tmp_path / "outer", nested]
+
+    def test_popd_names_no_dir_so_it_is_unprovable(self, tmp_path: Path) -> None:
+        command = "popd && gh issue create --title y"
+
+        assert _commit_repo_dir.segment_cwds(command, tmp_path) == [tmp_path, None]
+
+
+class TestCarveOutSeesTheRepoTheChainNavigatedInto:
+    """A ``cd`` into a PUBLIC clone must defeat the private-post downgrade.
+
+    ``carve_out_applies`` proves the whole command is a pure PRIVATE post. Resolving a
+    flagless post's target from the RAW ambient cwd let a command that starts in the
+    private repo and ``cd``s into a public clone inherit the private verdict -- the
+    gate correctly refused to skip, and the carve-out then downgraded the block anyway.
+    """
+
+    def test_a_post_from_a_navigated_public_clone_is_not_downgraded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        session = _repo_with_remote(tmp_path / "session", _PRIV_REMOTE)
+        public = _repo_with_remote(tmp_path / "public", f"git@github.com:{_PUBLIC_SLUG}.git")
+        command = f'cd {public} && gh issue create --title t --body "{_TERM}"'
+
+        assert publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg) is False
+
+    def test_the_same_post_without_the_cd_is_still_downgraded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The grant control: the assertion above is False because the chain LEFT the
+        # private repo, not because this fixture can no longer downgrade anything.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        session = _repo_with_remote(tmp_path / "session", _PRIV_REMOTE)
+        command = f'gh issue create --title t --body "{_TERM}"'
+
+        assert publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg) is True
+
+    def test_a_commit_chained_with_a_navigated_public_post_keeps_the_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The same defect through the commit chain proof, whose per-segment target
+        # check shares the resolver: the ``cd`` segment is publish-inert, so only the
+        # post's own dir can tell the gate the chain left the private repo.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        session = _repo_with_remote(tmp_path / "session", _PRIV_REMOTE)
+        public = _repo_with_remote(tmp_path / "public", f"git@github.com:{_PUBLIC_SLUG}.git")
+        command = f'git commit -m "{_TERM}" && cd {public} && gh issue create --title t --body "{_TERM}"'
+
+        assert publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg) is False
+
+
 class TestOwnSlugTermDowngrades:
     """A commit tripping on its OWN repo-slug term (#126 follow-up).
 

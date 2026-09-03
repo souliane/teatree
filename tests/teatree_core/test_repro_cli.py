@@ -9,6 +9,7 @@ ancestry gate is genuinely wired (same passing command, but the green tree is
 not a descendant of the red tree, so record-green is refused).
 """
 
+import inspect
 import os
 import subprocess
 from pathlib import Path
@@ -68,6 +69,11 @@ class TestReproCommandWiring(TestCase):
         assert {"recorded", "provenance_ok"} <= set(ReproRecordResult.__annotations__)
         assert {"waived", "approver_id"} <= set(ReproWaiveResult.__annotations__)
 
+    def test_record_verbs_expose_no_caller_chosen_tree(self) -> None:
+        """``--cwd`` would let the agent pick the tree whose HEAD and exit code get stamped."""
+        for name in ("record_red", "record_green"):
+            assert "cwd" not in inspect.signature(getattr(Command, name)).parameters
+
 
 class TestReproCliRealGit(TestCase):
     def setUp(self) -> None:
@@ -76,31 +82,37 @@ class TestReproCliRealGit(TestCase):
     def _run(self, sub: str, *flags: str) -> dict[str, object]:
         return cast("dict[str, object]", call_command("repro", sub, str(self.ticket.pk), *flags))
 
+    def _dispatch_repo(self, marker: str = "broken") -> Path:
+        """A real repo registered as the ticket's dispatch worktree — the only tree repro runs in."""
+        repo = _init_repo(self._tmp(), marker=marker)
+        Worktree.objects.create(ticket=self.ticket, repo_path=str(repo), extra={"worktree_path": str(repo)})
+        return repo
+
     def test_genuine_red_then_green_with_proper_ancestry_passes(self) -> None:
-        repo = _init_repo(self._tmp())
-        red = self._run("record-red", "--command", _CMD, "--cwd", str(repo))
+        repo = self._dispatch_repo()
+        red = self._run("record-red", "--command", _CMD)
         assert red["recorded"] is True
 
         # Commit the fix on top of the RED tree (a proper descendant).
         (repo / "marker.txt").write_text("fixed\n", encoding="utf-8")
         _git(repo, "commit", "-aq", "-m", "fix")
 
-        green = self._run("record-green", "--command", _CMD, "--cwd", str(repo))
+        green = self._run("record-green", "--command", _CMD)
         assert green["recorded"] is True
         assert green["provenance_ok"] is True
         assert ReproEvidence.objects.has_valid_repro(self.ticket) is True
 
     def test_fabricated_red_that_passes_is_refused(self) -> None:
-        repo = _init_repo(self._tmp(), marker="fixed")  # command exits 0 -> not a failing repro
-        result = self._run("record-red", "--command", _CMD, "--cwd", str(repo))
-        assert result["recorded"] is False
-        assert "exited 0" in cast("str", result["error"])
+        self._dispatch_repo(marker="fixed")  # command exits 0 -> not a failing repro
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("record-red", "--command", _CMD)
+        assert exc_info.value.code == 1
         assert not ReproEvidence.objects.filter(ticket=self.ticket).exists()
 
     def test_green_on_a_divergent_tree_is_refused_by_real_ancestry(self) -> None:
-        repo = _init_repo(self._tmp())
+        repo = self._dispatch_repo()
         base_sha = _git(repo, "rev-parse", "HEAD~1")
-        self._run("record-red", "--command", _CMD, "--cwd", str(repo))
+        self._run("record-red", "--command", _CMD)
 
         # A SIBLING commit off the base: it fixes the marker but is NOT a
         # descendant of the RED commit, so merge-base --is-ancestor is False.
@@ -109,17 +121,22 @@ class TestReproCliRealGit(TestCase):
         _git(repo, "add", ".")
         _git(repo, "commit", "-q", "-m", "sibling fix")
 
-        result = self._run("record-green", "--command", _CMD, "--cwd", str(repo))
-        assert result["recorded"] is False
-        assert "ancestor" in cast("str", result["error"])
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("record-green", "--command", _CMD)
+        assert exc_info.value.code == 1
         assert ReproEvidence.objects.has_valid_repro(self.ticket) is False
 
-    def test_record_red_falls_back_to_the_dispatch_worktree(self) -> None:
-        # No --cwd: _resolve_cwd resolves the ticket's dispatch worktree.
-        repo = _init_repo(self._tmp())
-        Worktree.objects.create(ticket=self.ticket, repo_path=str(repo), extra={"worktree_path": str(repo)})
+    def test_record_red_runs_in_the_dispatch_worktree(self) -> None:
+        self._dispatch_repo()
         result = self._run("record-red", "--command", _CMD)
         assert result["recorded"] is True
+
+    def test_record_red_refuses_a_ticket_with_no_dispatch_worktree(self) -> None:
+        """Naming the tree IS naming the SHA, so there is no caller-supplied tree to fall back to."""
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("record-red", "--command", _CMD)
+        assert exc_info.value.code == 1
+        assert not ReproEvidence.objects.filter(ticket=self.ticket).exists()
 
     def test_waive_records_a_human_waiver(self) -> None:
         result = self._run("waive", "--approver", "souliane", "--reason", "hardware-timing race")
@@ -127,13 +144,14 @@ class TestReproCliRealGit(TestCase):
         assert ReproWaiver.objects.filter(ticket=self.ticket).exists()
 
     def test_waive_refuses_a_maker_approver(self) -> None:
-        result = self._run("waive", "--approver", "coding-agent", "--reason", "race")
-        assert result["waived"] is False
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("waive", "--approver", "coding-agent", "--reason", "race")
+        assert exc_info.value.code == 1
         assert not ReproWaiver.objects.filter(ticket=self.ticket).exists()
 
     def test_status_reports_evidence_and_waiver_state(self) -> None:
-        repo = _init_repo(self._tmp())
-        self._run("record-red", "--command", _CMD, "--cwd", str(repo))
+        self._dispatch_repo()
+        self._run("record-red", "--command", _CMD)
         ReproWaiver.record(ticket=self.ticket, approver_id="souliane", reason="race")
         output = cast("str", call_command("repro", "status", str(self.ticket.pk)))
         assert "WAIVER by souliane" in output

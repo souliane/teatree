@@ -26,6 +26,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -69,8 +71,11 @@ def sync_forge_approvals(host: "CodeHostBackend", prs: "Iterable[PullRequest]") 
             state = host.get_mr_approvals(repo=row.repo, pr_iid=pr_iid)
             if state["approvals_left"] > 0:
                 continue
-            row.approve()
-            row.save()
+            # The transition's ✅ post is deferred to this block's commit, so an
+            # autocommit `approve()` would publish before the state ever landed.
+            with transaction.atomic():
+                row.approve()
+                row.save()
         except Exception:
             logger.exception("forge-approval sync failed for %s — skipping", row.url)
             continue

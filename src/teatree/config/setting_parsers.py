@@ -58,12 +58,27 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
 _DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
 
 
+_ENV_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_BOOL_FALSE = frozenset({"", "0", "false", "no", "off"})
+
+
 def _parse_env_bool(raw: str) -> bool:
     """Coerce a ``T3_*`` env string to a bool for ``ENV_SETTING_OVERRIDES``.
 
-    Truthy set ``1``/``true``/``yes``/``on`` (case-insensitive); else ``False``.
+    Truthy ``1``/``true``/``yes``/``on``, falsy ``0``/``false``/``no``/``off`` (and the
+    empty string, which is how a shell clears the flag) — case-insensitive. Anything else
+    RAISES, like the ``Mode.parse`` / ``Wip.parse`` enum entries beside it: coercing an
+    unrecognised token to ``False`` let a typo (``T3_ENFORCE_REGULATED_PATH=treu``) silently
+    disable the very control the operator was reaching for.
     """
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    token = raw.strip().lower()
+    if token in _ENV_BOOL_TRUE:
+        return True
+    if token in _ENV_BOOL_FALSE:
+        return False
+    accepted = sorted(_ENV_BOOL_TRUE | (_ENV_BOOL_FALSE - {""}))
+    msg = f"Invalid boolean env value {raw!r}; expected one of {accepted} (or empty to clear)"
+    raise ValueError(msg)
 
 
 # A default-ON ``T3_*`` env flag: present-and-off-value disables, anything else

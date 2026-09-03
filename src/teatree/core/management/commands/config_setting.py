@@ -7,8 +7,9 @@ authoritative source (the DB), never a file.
 
 The pilot is scoped to keys registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (the
 ``UserSettings`` partition the resolver's DB tier consults) plus the
-``REGISTRY_SETTINGS`` keys (``overlays`` / ``e2e_repos`` — the non-``UserSettings``
-registries ``loader._inject_db_registries`` injects into ``config.raw``), so an admin
+``REGISTRY_SETTINGS`` keys (``overlays`` / ``e2e_repos`` / ``peer_instances`` — the
+non-``UserSettings`` registries ``loader._inject_db_registries`` injects into
+``config.raw``), so an admin
 cannot stash a row no reader would consult. The ``value`` is parsed as JSON, so a bool
 kill-switch (``true``/``false``), a string (``'"ready"'``), an int (``3``), or a
 list (``'["a","b"]'``) all round-trip into the store.

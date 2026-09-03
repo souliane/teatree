@@ -206,22 +206,14 @@ def _offending_exit_contract_returns(source: str) -> list[tuple[str, int, str]]:
 _KNOWN_EXIT_CONTRACT_OFFENDERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("core/management/commands/_merge_keystone_commands.py", "merge"),
-        ("core/management/commands/_rubric_commands.py", "rubric_set"),
-        ("core/management/commands/e2e.py", "trigger_ci"),
         ("core/management/commands/followup.py", "discover_mrs"),
-        ("core/management/commands/lifecycle.py", "record_e2e_run"),
         ("core/management/commands/pr.py", "post_test_plan"),
         ("core/management/commands/pr.py", "sweep"),
-        ("core/management/commands/repro.py", "record_green"),
-        ("core/management/commands/repro.py", "record_red"),
-        ("core/management/commands/repro.py", "waive"),
         ("core/management/commands/review.py", "lock_acquire"),
         ("core/management/commands/review.py", "record_evidence"),
-        ("core/management/commands/ticket.py", "clear"),
         ("core/management/commands/ticket.py", "comment"),
         ("core/management/commands/ticket.py", "create_sub"),
         ("core/management/commands/ticket.py", "e2e_bypass"),
-        ("core/management/commands/ticket.py", "transition"),
     },
 )
 

@@ -150,6 +150,25 @@ def _gh_conflict_state(data: RawAPIDict) -> MergeConflictState:
     return MergeConflictState.UNKNOWN
 
 
+def _glab_conflict_state(mr: RawAPIDict) -> MergeConflictState:
+    """Map GitLab's ``has_conflicts`` + ``merge_status`` pair onto the conflict axis.
+
+    ``has_conflicts`` is the direct answer and is computed independently of why
+    else a merge request may be unmergeable, so a draft or an unapproved merge
+    request still reports its real conflict state. ``merge_status`` supplies the
+    *was it computed* half: GitLab reports ``checking``/``unchecked`` while the
+    background job runs, during which ``has_conflicts`` is a default rather than a
+    finding. Only ``can_be_merged`` alongside a false ``has_conflicts`` is clean.
+    """
+    conflicts = mr.get("has_conflicts")
+    merge_status = str(mr.get("merge_status") or "").lower()
+    if conflicts is True or merge_status == "cannot_be_merged":
+        return MergeConflictState.CONFLICTED
+    if conflicts is False and merge_status == "can_be_merged":
+        return MergeConflictState.CLEAN
+    return MergeConflictState.UNKNOWN
+
+
 class GhMergeRpc:
     """GitHub ``gh`` merge-RPC argv + payload parsing — raw I/O for one host."""
 

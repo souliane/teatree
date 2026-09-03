@@ -325,11 +325,19 @@ class TestStartCommandPinsUnattendedPermissionMode(TestStartCommandSessionPins):
 
 
 class TestStopCommand:
-    def test_stop_explains_unregister(self) -> None:
+    """The durable loops are worker-driven; PR-28 retired the native ``/loop`` cron mirror.
+
+    Naming a ``/loop`` slot here sent the operator to unregister something that does
+    not control the running loops — they keep ticking and the operator concludes the
+    stop command is broken. ``loop_runner_enabled`` is the actual kill-switch.
+    """
+
+    def test_stop_names_the_kill_switch_that_actually_stops_the_loops(self) -> None:
         result = runner.invoke(loop_app, ["stop"])
 
         assert result.exit_code == 0
-        assert "/loop unregister t3-loop" in result.stdout
+        assert "loop_runner_enabled" in result.stdout
+        assert "/loop unregister" not in result.stdout
 
 
 class TestClaimNextCommand:

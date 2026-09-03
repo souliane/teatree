@@ -35,7 +35,8 @@ def pr_diff_is_substrate(pr: PrSummary) -> bool:
     substrate diff lets the merge proceed.
     """
     try:
-        paths = CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).pr_changed_paths()
+        ref = PrRef(slug=pr.slug, pr_id=pr.number, host_kind=pr.host_kind)
+        paths = CodeHostQuery.for_ref(ref).pr_changed_paths()
     except Exception:
         logger.exception("pr_sweep changed-paths fetch failed for %s#%d — holding", pr.slug, pr.number)
         return True

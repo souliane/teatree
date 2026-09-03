@@ -25,7 +25,9 @@ class _CapturingPoster:
 
     def __call__(self, method: str, *, token: str, json: dict, idempotent: bool) -> dict:
         self.bodies.append(json)
-        return {"ok": self._ok, "ts": "1.2"}
+        if self._ok:
+            return {"ok": True, "ts": "1.2"}
+        return {"ok": False, "error": "channel_not_found"}
 
 
 class TestMirrorWraps:
@@ -44,13 +46,13 @@ class TestMirrorWraps:
         slack_post_message(poster, "D_SELF", _LONG_PROSE, bot_token="xoxb-bot", thread_ts="9.9")
         assert poster.bodies[0]["thread_ts"] == "9.9"
 
-    def test_returns_the_posted_ts(self) -> None:
+    def test_returns_the_posted_ts_and_no_error(self) -> None:
         poster = _CapturingPoster()
-        assert slack_post_message(poster, "D_SELF", "short", bot_token="xoxb-bot") == "1.2"
+        assert slack_post_message(poster, "D_SELF", "short", bot_token="xoxb-bot") == ("1.2", "")
 
-    def test_not_ok_still_degrades_to_empty(self) -> None:
+    def test_not_ok_returns_no_ts_and_names_the_slack_error(self) -> None:
         poster = _CapturingPoster(ok=False)
-        assert slack_post_message(poster, "D_SELF", _LONG_PROSE, bot_token="xoxb-bot") == ""
+        assert slack_post_message(poster, "D_SELF", _LONG_PROSE, bot_token="xoxb-bot") == ("", "channel_not_found")
 
 
 class TestOracleIsAntiVacuous:

@@ -61,6 +61,7 @@ CREDENTIAL_REFERENCE_RE = re.compile(r"(pass_path|pass_paths|pass_key|token_ref|
 #: export. Kept explicit because there is no derivable rule for "this is personal" (F2).
 PERSONAL_IDENTIFIERS: frozenset[str] = frozenset(
     {
+        "self_forge_identities",
         "slack_user_channel",
         "slack_user_id",
     }

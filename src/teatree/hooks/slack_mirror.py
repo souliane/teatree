@@ -53,6 +53,11 @@ class Poster(Protocol):
     def __call__(self, method: str, *, token: str, json: dict, idempotent: bool) -> dict: ...
 
 
+# The Slack errors that PROVE the cached DM channel is the problem and that the
+# message was not delivered — the only ones a non-idempotent re-post may follow.
+_STALE_CHANNEL_ERRORS: frozenset[str] = frozenset({"channel_not_found", "is_archived"})
+
+
 # Audio enrichment for the mirrored question (#2171 TTS parity). Called
 # ``(channel, text, question_ts)`` AFTER the text question DM lands, so the
 # spoken rendition reaches the user's phone the same way ``notify_user`` DMs
@@ -186,16 +191,20 @@ def slack_open_dm(poster: Poster, bot_token: str, user_id: str) -> str:
     return _str_field(_sub_mapping(resp, "channel"), "id")
 
 
-def slack_post_message(poster: Poster, channel: str, text: str, *, bot_token: str, thread_ts: str = "") -> str:
-    """Post ``text`` to ``channel``. Return the posted ``ts`` (``""`` on failure).
+def slack_post_message(
+    poster: Poster, channel: str, text: str, *, bot_token: str, thread_ts: str = ""
+) -> tuple[str, str]:
+    """Post ``text`` to ``channel``. Return ``(posted ts, slack error)``.
 
-    The truthiness contract is preserved for callers that branch on the
-    result (a non-empty ts is truthy, ``""`` is falsy), and the ts is the
-    (tool_use_id, slack_ts) link the #1174 reply matcher needs.
+    A successful post returns its ts and no error; a failure returns ``("", …)``.
+    The ts is the (tool_use_id, slack_ts) link the #1174 reply matcher needs.
 
-    ``chat.postMessage`` is NOT idempotent (``idempotent=False``): a lost
-    response after Slack accepted the post must not be replayed into a
-    double-post — the hardened poster surfaces the failure rather than retry.
+    ``chat.postMessage`` is NOT idempotent (``idempotent=False``), so the error
+    is load-bearing rather than diagnostic: it is the only thing separating a
+    post that provably did NOT land — Slack answered and named the reason — from
+    one that MAY have landed, where the response was lost after Slack accepted
+    it. A caller may re-post only in the first case. A transport failure
+    therefore carries an EMPTY error: nothing came back, so nothing is known.
 
     The #3809 wrap is applied here rather than inherited: this transport posts
     through an injected ``Poster``, so it never reaches ``SlackBotBackend._post``
@@ -206,21 +215,27 @@ def slack_post_message(poster: Poster, channel: str, text: str, *, bot_token: st
         body["thread_ts"] = thread_ts
     try:
         resp = poster("chat.postMessage", token=bot_token, json=body, idempotent=False)
-    except Exception:  # noqa: BLE001 — a Slack API failure degrades to empty
-        return ""
+    except Exception:  # noqa: BLE001 — the response was lost; the post may still have landed
+        return "", ""
     if resp.get("ok") is not True:
-        return ""
-    return _str_field(resp, "ts")
+        return "", _str_field(resp, "error")
+    return _str_field(resp, "ts"), ""
 
 
 def slack_post_dm(poster: Poster, bot_token: str, user_id: str, text: str) -> str:
     """Post ``text`` to ``user_id``'s DM AT ROOT. Resolves channel via cache when possible.
 
     Cache hit → single ``chat.postMessage`` call (sub-second on a normal
-    connection, fits inside the hook timeout). Cache miss or
-    ``channel_not_found`` → open the DM, cache the channel id, retry.
-    Returns the posted ``ts`` (``""`` on failure) — the ``DeferredQuestion``
-    mirror ts a later Slack reply is bound to (#1174).
+    connection, fits inside the hook timeout). Cache miss or a cached channel
+    Slack answers :data:`_STALE_CHANNEL_ERRORS` on → open the DM, cache the
+    channel id, retry. Returns the posted ``ts`` (``""`` on failure) — the
+    ``DeferredQuestion`` mirror ts a later Slack reply is bound to (#1174).
+
+    Any OTHER cached-channel failure ends the attempt rather than re-posting.
+    ``chat.postMessage`` is not idempotent, so a re-post is safe only where the
+    first post provably did not land — which is exactly what a stale-channel
+    error says and what a rate limit, a transport error, or a lost response do
+    not. Retrying those turned one undelivered question into two delivered ones.
 
     Never threaded. This ``ts`` is the reply-binding identity, and
     Slack stamps a thread reply with the ROOT message's ts, never the
@@ -232,13 +247,15 @@ def slack_post_dm(poster: Poster, bot_token: str, user_id: str, text: str) -> st
     """
     cached = read_dm_channel_cache(user_id)
     if cached:
-        ts = slack_post_message(poster, cached, text, bot_token=bot_token)
+        ts, error = slack_post_message(poster, cached, text, bot_token=bot_token)
         if ts:
             return ts
+        if error not in _STALE_CHANNEL_ERRORS:
+            return ""
     channel = slack_open_dm(poster, bot_token, user_id)
     if not channel:
         return ""
-    ts = slack_post_message(poster, channel, text, bot_token=bot_token)
+    ts, _error = slack_post_message(poster, channel, text, bot_token=bot_token)
     if ts:
         write_dm_channel_cache(user_id, channel)
     return ts

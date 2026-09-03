@@ -160,7 +160,7 @@ class TestF3SlackMentionsCursorPersistedWhenDrainedNoSignals(TestCase):
                 ),
                 patch(
                     "teatree.backends.slack.receiver.commit_drain",
-                    side_effect=lambda: commit_drain_called.append(True),
+                    side_effect=lambda **_kwargs: commit_drain_called.append(True),
                 ),
                 patch.object(sm_mod, "_write_cursors", side_effect=_track_write_cursors),
             ):

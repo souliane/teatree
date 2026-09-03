@@ -29,17 +29,20 @@ import pytest
 from teatree.quality import skill_cli_ratchet
 from teatree.quality.skill_cli_ratchet import (
     ALLOW_PRAGMA,
+    T3_MCP_COVERED,
     Ledger,
     RatchetConfig,
     RatchetReport,
     RawCall,
     build_report,
     find_raw_calls,
+    is_already_migrated,
     is_prohibition,
     load_config,
     raw_calls_in,
     run,
     signatures_in_fragment,
+    t3_signatures_in_fragment,
     update_baseline,
 )
 
@@ -362,3 +365,126 @@ class TestPathAndPrefixProbesDetected:
     )
     def test_probe_form_is_detected(self, body: str) -> None:
         assert "gh pr list" in [c.signature for c in raw_calls_in(body, "skills/x.md")]
+
+
+class TestT3Lane:
+    """The narrow lane over teatree's OWN CLI: only MCP-served pairs are findings."""
+
+    def test_mcp_served_pair_is_flagged(self, tmp_path: Path) -> None:
+        _plant_skill(tmp_path, "probe/SKILL.md", "```bash\nt3 teatree ticket merge 42\n```\n")
+        report = build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset()))
+        assert [call.key for call in report.unknown_calls] == ["skills/probe/SKILL.md::t3 ticket merge"]
+
+    @pytest.mark.parametrize(
+        "invocation",
+        ["t3 ticket merge 42", "t3 teatree ticket merge 42", "t3 <overlay> ticket merge <clear_id>"],
+    )
+    def test_the_overlay_word_never_shifts_the_match(self, invocation: str) -> None:
+        body = f"```bash\n{invocation}\n```\n"
+        assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["t3 ticket merge"]
+
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "t3 teatree worktree provision --ticket 42",
+            "t3 doctor check",
+            "t3 teatree run tests",
+            "t3 teatree db refresh",
+            "t3 teatree ticket clear 42",
+            "t3 setup",
+        ],
+    )
+    def test_a_pair_with_no_mcp_twin_is_not_a_finding(self, invocation: str) -> None:
+        """The anti-over-reach proof: most of the `t3` CLI must stay a shell-out."""
+        assert raw_calls_in(f"```bash\n{invocation}\n```\n", "skills/x.md") == []
+
+    def test_every_mapped_tool_name_is_snake_case_and_unprefixed(self) -> None:
+        for pair, tool in T3_MCP_COVERED.items():
+            assert not tool.startswith("mcp__"), f"{pair} maps to a prefixed name; the message adds the prefix"
+            assert tool == tool.lower()
+
+    def test_message_names_the_tool_and_asks_for_a_demotion(self, tmp_path: Path) -> None:
+        _plant_skill(tmp_path, "probe/SKILL.md", "```bash\nt3 teatree notify send 'hi'\n```\n")
+        report = build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset()))
+        message = report.summary_lines()[0]
+        assert "mcp__teatree__notify_user" in message
+        assert "demote it rather than delete it" in message
+
+    def test_prohibition_example_is_not_a_t3_finding(self, tmp_path: Path) -> None:
+        body = "```bash\nt3 teatree ticket merge 42   # FORBIDDEN — never run this by hand\n```\n"
+        _plant_skill(tmp_path, "probe/SKILL.md", body)
+        assert build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset())).raw_calls == ()
+
+    def test_allow_pragma_excludes_a_t3_line(self, tmp_path: Path) -> None:
+        body = f"```bash\nt3 teatree tasks list  <!-- {ALLOW_PRAGMA}: ratified -->\n```\n"
+        _plant_skill(tmp_path, "probe/SKILL.md", body)
+        assert build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset())).raw_calls == ()
+
+    def test_prose_mention_outside_code_is_not_an_invocation(self) -> None:
+        assert raw_calls_in("the t3 ticket merge step is gated\n", "skills/x.md") == []
+
+    def test_inline_backticked_call_is_detected(self) -> None:
+        line = "Read the queue with `t3 <overlay> tasks list` before dispatching.\n"
+        assert [c.signature for c in raw_calls_in(line, "skills/x.md")] == ["t3 tasks list"]
+
+    def test_signature_helper_returns_empty_for_an_uncovered_fragment(self) -> None:
+        assert t3_signatures_in_fragment("t3 doctor check") == []
+
+
+class TestAlreadyMigrated:
+    """An MCP-first line keeping its CLI fallback is DONE — never ledgered as debt."""
+
+    def test_line_naming_the_tool_is_not_a_finding(self) -> None:
+        line = "Read it with `mcp__teatree__task_list`; fall back to `t3 <overlay> tasks list` if not connected.\n"
+        assert raw_calls_in(line, "skills/x.md") == []
+
+    def test_line_naming_a_different_tool_is_still_a_finding(self) -> None:
+        line = "Use `mcp__teatree__task_list`, then merge it with `t3 <overlay> ticket merge <id>`.\n"
+        assert [c.signature for c in raw_calls_in(line, "skills/x.md")] == ["t3 ticket merge"]
+
+    def test_migration_removes_the_finding_so_the_floor_shrinks(self, tmp_path: Path) -> None:
+        _plant_skill(tmp_path, "probe/SKILL.md", "Queue: `t3 <overlay> tasks list`.\n")
+        before = build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset()))
+        assert [c.key for c in before.unknown_calls] == ["skills/probe/SKILL.md::t3 tasks list"]
+
+        _plant_skill(tmp_path, "probe/SKILL.md", "Queue: `mcp__teatree__task_list`, else `t3 <overlay> tasks list`.\n")
+        after = build_report(root=tmp_path, config=RatchetConfig(grandfathered=frozenset()))
+        assert after.raw_calls == ()
+
+    def test_is_already_migrated_ignores_an_unmapped_signature(self) -> None:
+        assert not is_already_migrated("`mcp__teatree__task_list` and `gh pr list`", "gh pr list")
+
+    def test_mcp_sentence_above_a_fenced_block_clears_the_site(self) -> None:
+        """The house style cannot put an MCP name inside a ```bash fence — it is not shell."""
+        body = (
+            "Prefer the `mcp__teatree__pr_create` MCP tool; fall back to the CLI when it is not connected:\n"
+            "\n"
+            "```bash\n"
+            "t3 <overlay> pr create <ticket-id>\n"
+            "```\n"
+        )
+        assert raw_calls_in(body, "skills/x.md") == []
+
+    def test_a_tool_name_too_far_above_does_not_clear_the_site(self) -> None:
+        body = "`mcp__teatree__pr_create`\n" + "\nfiller\n" * 6 + "```bash\nt3 <overlay> pr create x\n```\n"
+        assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["t3 pr create"]
+
+    def test_one_sentence_above_a_fence_clears_every_command_in_it(self) -> None:
+        """Lookback is measured from the fence opener, so a long block is not half-cleared."""
+        body = (
+            "Prefer the `mcp__teatree__config_setting_set` MCP tool; else the CLI:\n"
+            "\n"
+            "```bash\n"
+            "t3 <overlay> config_setting set a 1\n"
+            "t3 <overlay> config_setting set b 2\n"
+            "t3 <overlay> config_setting set c 3\n"
+            "t3 <overlay> config_setting set d 4\n"
+            "t3 <overlay> config_setting set e 5\n"
+            "t3 <overlay> config_setting set f 6\n"
+            "```\n"
+        )
+        assert raw_calls_in(body, "skills/x.md") == []
+
+    def test_a_different_tool_above_does_not_clear_the_site(self) -> None:
+        body = "Prefer `mcp__teatree__task_list`.\n\n```bash\nt3 <overlay> pr create x\n```\n"
+        assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["t3 pr create"]

@@ -44,7 +44,13 @@ class CommentPostResult:
 
 
 class CommentPoster:
-    """Post a page comment at most once per marker, verifying that it landed."""
+    """Post a page comment once per marker, verifying that it landed.
+
+    The dedup is a read of the page's open discussions taken before the create,
+    which is the strongest guard the API offers: Notion has neither a
+    create-if-absent nor a comment delete, so two writers racing the same marker
+    each land a copy.
+    """
 
     def __init__(self, client: NotionClient) -> None:
         self._client = client

@@ -79,9 +79,20 @@ UNAVAILABLE_BODY_SOURCE_MARKER: str = "<unavailable-publish-body-source>"
 # ``format_scanner_unavailable_message`` for it.
 SCANNER_UNAVAILABLE_MARKER: str = "<banned-terms-scanner-unavailable>"
 
-# How long to wait for the shell scanner before failing closed. A hook that
-# hangs blocks the user, so the budget is deliberately tight.
-_SCAN_TIMEOUT_S = 10
+# Marker returned when the scanner was KILLED at the budget below rather than
+# failing on its own. It BLOCKS exactly like the marker above; it is separate
+# because the two call for opposite remedies — widen the budget vs repair the
+# install — and one shared string reported a burst of load-driven timeouts as ten
+# broken interpreters, sending operators to reinstall a healthy uv.
+SCANNER_TIMEOUT_MARKER: str = "<banned-terms-scanner-timeout>"
+
+# How long to wait for the shell scanner before failing closed. The harness
+# SIGKILLs a hook at its ``hooks.json`` timeout (30s) and a killed hook returns no
+# verdict at all, so the default stays well under that ceiling; a venue slower than
+# a dev laptop (a contended CI runner) widens it through the env seam instead of
+# presenting its own load as a broken scanner.
+SCAN_TIMEOUT_DEFAULT_S = 10
+SCAN_TIMEOUT_ENV = "T3_BANNED_TERMS_SCAN_TIMEOUT_S"
 
 # DB-home term key and the ``T3_BANNED_TERMS`` env override that WINS over the DB
 # (mirroring ``banned_terms_cli``). The allowlist carve-out is read via
@@ -310,6 +321,28 @@ def _configured_or_unreadable(config_path: Path | None) -> bool | None:
         return None
 
 
+def _scan_timeout_s() -> int:
+    """Return the effective scanner budget: the env seam when usable, else the default."""
+    raw = os.environ.get(SCAN_TIMEOUT_ENV, "").strip()
+    return int(raw) if raw.isdecimal() and int(raw) > 0 else SCAN_TIMEOUT_DEFAULT_S
+
+
+def _marker_for_scanner_failure(exc: Exception, timeout: int) -> str:
+    """Name which failure class stopped the scanner on stderr, and map it to its marker."""
+    if isinstance(exc, TimeoutExpired):
+        sys.stderr.write(
+            f"[teatree] NOTE: banned-terms scanner timed out after {timeout}s. Failing CLOSED. "
+            f"If this venue is simply slower than the budget assumes, widen it with "
+            f"{SCAN_TIMEOUT_ENV}=<seconds> rather than treating the load as a broken scanner.\n"
+        )
+        return SCANNER_TIMEOUT_MARKER
+    sys.stderr.write(
+        f"[teatree] NOTE: banned-terms scanner could not run ({type(exc).__name__}: {exc}). "
+        "Failing CLOSED rather than reporting a clean scan.\n"
+    )
+    return SCANNER_UNAVAILABLE_MARKER
+
+
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
@@ -350,6 +383,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
         fh.write(text)
         scan_file = Path(fh.name)
     env = {**os.environ, "T3_CONFIG_DB": str(config_path)} if config_path is not None else None
+    timeout = _scan_timeout_s()
     try:
         # check-banned-terms.sh contract: exit 0 = clean, exit 1 = banned term
         # found (with a BANNED TERM report on stdout), exit 2 = the scanner
@@ -360,11 +394,11 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
         result = run_allowed_to_fail(
             [str(script), str(scan_file)],
             expected_codes=(0, 1),
-            timeout=_SCAN_TIMEOUT_S,
+            timeout=timeout,
             env=env,
         )
-    except (TimeoutExpired, CommandFailedError, OSError):
-        return SCANNER_UNAVAILABLE_MARKER
+    except (TimeoutExpired, CommandFailedError, OSError) as exc:
+        return _marker_for_scanner_failure(exc, timeout)
     finally:
         scan_file.unlink(missing_ok=True)
 
@@ -508,20 +542,42 @@ def format_scanner_unavailable_message() -> str:
     )
 
 
+def format_scanner_timeout_message() -> str:
+    """Render the PreToolUse deny reason when the scanner was killed at its budget.
+
+    Separate from :func:`format_scanner_unavailable_message` because the remedy is
+    the opposite one: nothing is broken, the venue is slower than the budget
+    assumes, so the message names the budget and the seam that widens it instead of
+    sending the operator to reinstall a healthy interpreter.
+    """
+    return (
+        f"BLOCKED: banned-terms posting gate (#1415/#1954). The scanner did not finish within its "
+        f"{_scan_timeout_s()}s budget and was killed — a LOAD signal, not a broken install, so "
+        f"reinstalling uv or a Python will not help. Retry, or give this venue a wider budget with "
+        f"{SCAN_TIMEOUT_ENV}=<seconds> (keep it under the harness's own 30s hook ceiling, or the "
+        f"hook is killed before it can report at all). Failing closed: an unscanned body is not "
+        f"allowed onto a public surface."
+    )
+
+
 def marker_deny_message(term: str) -> str | None:
     """Return the deny reason for a fail-closed marker, or ``None`` for a real term.
 
     ``scan_text`` returns either a configured banned term or one of the
-    fail-closed markers (an unavailable body source, an unresolvable body, an
-    unavailable scanner). The markers are NOT configured terms, so the caller
-    must render a dedicated message instead of ``format_block_message``. A real
-    term returns ``None`` here so the caller takes its destination-aware
-    banned-term path.
+    fail-closed markers (an unavailable body source, an unresolvable body, a
+    timed-out scanner, an unavailable scanner). The markers are NOT configured
+    terms, so the caller must render a dedicated message instead of
+    ``format_block_message``. A real term returns ``None`` here so the caller takes
+    its destination-aware banned-term path — which means every marker MUST be
+    routed here: an unrouted one would be mistaken for a configured term and pick
+    up that path's private-destination downgrade, failing OPEN.
     """
     if term == UNAVAILABLE_BODY_SOURCE_MARKER:
         return format_unavailable_body_source_message()
     if term == UNRESOLVABLE_BODY_MARKER:
         return format_unresolvable_body_message()
+    if term == SCANNER_TIMEOUT_MARKER:
+        return format_scanner_timeout_message()
     if term == SCANNER_UNAVAILABLE_MARKER:
         return format_scanner_unavailable_message()
     return None

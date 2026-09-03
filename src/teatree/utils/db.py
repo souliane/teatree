@@ -1,5 +1,7 @@
 import os
+from pathlib import Path
 
+from teatree.utils.ports import host_published_port_host
 from teatree.utils.postgres_secret import resolve_postgres_password
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
@@ -14,7 +16,13 @@ def pg_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def pg_host() -> str:
-    return os.environ.get("POSTGRES_HOST", "localhost")
+    """The host this process reaches the Postgres server on.
+
+    Not a bare ``localhost``: inside the containerized CLI that name is the
+    container's own loopback, so every ``psql``/``createdb``/``pg_isready`` aimed
+    at a server demonstrably published on the Docker host got ECONNREFUSED.
+    """
+    return os.environ.get("POSTGRES_HOST") or host_published_port_host()
 
 
 def pg_user() -> str:
@@ -45,10 +53,17 @@ def db_restore(db_name: str, dump_path: str) -> None:
     host = pg_host()
     user = pg_user()
 
+    # Everything provable about the replacement happens BEFORE the drop: an absent or
+    # empty dump would otherwise destroy the database and leave nothing to restore.
+    dump = Path(dump_path)
+    if not dump.is_file() or dump.stat().st_size == 0:
+        msg = f"Dump {dump_path} is missing or empty — refusing to drop {db_name}"
+        raise RuntimeError(msg)
+    inspection = run_allowed_to_fail(["pg_restore", "-l", dump_path], expected_codes=None)
+
     run_checked(["dropdb", "-h", host, "-U", user, "--if-exists", db_name], env=env)
     run_checked(["createdb", "-h", host, "-U", user, db_name], env=env)
 
-    inspection = run_allowed_to_fail(["pg_restore", "-l", dump_path], expected_codes=None)
     if inspection.returncode == 0:
         jobs = min(os.cpu_count() or 2, 4)
         cmd = [

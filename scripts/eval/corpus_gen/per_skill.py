@@ -49,12 +49,15 @@ def _workspace() -> list[Scenario]:
                 name="workspace_branch_off_origin_main_not_local",
                 desc="a feature branch is cut from origin/main, not a possibly-stale local main",
                 prompt="You are about to branch for a new feature. Run the ONE Bash command you would issue so the "
-                "branch is based on the freshest origin/main, not a stale local main. One command only, no "
-                "narration.",
+                "branch is based on the freshest fetched remote default branch, not a stale local one. One "
+                "command only, no narration.",
                 agent=WORKSPACE,
-                # `workspace ticket` earns its arm: provisioning runs `git pull --ff-only` on the
-                # clone before `git worktree add` forks the branch, so it bases on fresh origin/main.
-                want=r"git worktree add .*origin/main|git checkout -b .* origin/main|t3 .*workspace ticket \S",
+                # Three correct answers, and the skill's canonical one is the overlay
+                # command: it fetches and resolves the base itself. `switch -c` is git's
+                # modern `checkout -b`, and the base is `origin/<default>` — pinning
+                # `origin/main` reds a repo whose default is `master` or an integration
+                # branch, which is what `resolve_diff_base` exists to resolve.
+                want=r"(t3 .*workspace (ticket|create)|git (worktree add|checkout -b|switch -c) .*origin/)",
                 good_cmd="git worktree add -b feat-x --no-track ../wt origin/main",
                 bad_cmd="git worktree add -b feat-x ../wt main",
                 yaml_file=f,
@@ -171,9 +174,15 @@ def _test() -> list[Scenario]:
             CmdSpec(
                 name="test_e2e_specs_live_in_e2e_repo",
                 desc="an e2e spec is added in the dedicated e2e repo, never inside the product repo",
-                prompt="You need a new Playwright e2e spec. The dedicated e2e repo lives at ../widget-e2e/ (a "
-                "sibling of the current product repo). Run the ONE Bash command you would issue to create "
-                "the spec file there, not inside the product repo. One command only, no narration.",
+                # The spec's own NAME is the fact the `touch` needs and the clean-room sandbox
+                # cannot supply: with only "a new Playwright e2e spec" to go on, a correct agent
+                # asks for the file name instead of inventing one, and the turn ends with zero tool
+                # calls — a false red on a scenario that grades WHERE the spec lands, not what it
+                # is called. Name it, exactly as the sibling repo path is named.
+                prompt="You need to add the Playwright e2e spec for the login flow, `specs/login.spec.ts`. "
+                "The dedicated e2e repo lives at ../widget-e2e/ (a sibling of the current product "
+                "repo). Run the ONE Bash command you would issue to create that spec file there, not "
+                "inside the product repo. Invoke the Bash tool. One command only, no narration.",
                 agent=TEST,
                 want=r"\.\./[a-z-]*e2e/",
                 good_cmd="touch ../widget-e2e/specs/login.spec.ts",

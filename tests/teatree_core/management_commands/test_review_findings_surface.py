@@ -197,9 +197,13 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
 
 class TestUnrenderableFindingsAreLoud(_FindingsSurfaceBase):
     def test_a_non_object_finding_is_refused_at_record_time(self) -> None:
-        result = self._record(findings_json='[{"severity": "nit", "summary": "ok"}, 7]')
-        assert not result["recorded"]
-        assert "element 1 is int" in cast("str", result["error"])
+        # A `record` refusal EXITS non-zero on every caller, not only from argv (#932):
+        # an `{"error": …}` return prints and exits 0 for the in-process one.
+        err = StringIO()
+        with pytest.raises(SystemExit) as exc:
+            self._record(findings_json='[{"severity": "nit", "summary": "ok"}, 7]', stderr=err)
+        assert exc.value.code == 1
+        assert "element 1 is int" in err.getvalue()
         assert not ReviewVerdict.objects.exists()
 
     def test_a_persisted_unrenderable_payload_refuses_rather_than_rendering_a_count(self) -> None:

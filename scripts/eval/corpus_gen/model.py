@@ -51,6 +51,9 @@ class Expect:
     scenario for the ``_pass`` fixture; ``fail_call`` is the call that violates
     it for the ``_fail`` fixture. For an ``any_of`` disjunction, ``branches``
     holds the positive alternatives and ``pass_call`` satisfies one of them.
+
+    ``unless`` renders a negative's ``unless: '<arg> op "value"'`` exemption — a
+    predicate on another argument of the SAME call that excuses it.
     """
 
     kind: str
@@ -61,6 +64,7 @@ class Expect:
     branches: tuple[Branch, ...] = ()
     pass_call: Call | None = None
     fail_call: Call | None = None
+    unless: Branch | None = None
 
     @property
     def is_positive(self) -> bool:
@@ -84,9 +88,15 @@ def positive(target: Branch, *, pass_call: Call, fail_call: Call) -> Expect:
     )
 
 
-def negative(target: Branch, *, fail_call: Call) -> Expect:
+def negative(target: Branch, *, fail_call: Call, unless: Branch | None = None) -> Expect:
     return Expect(
-        kind=NEGATIVE, tool=target.tool, arg=target.arg, op=target.op, value=target.value, fail_call=fail_call
+        kind=NEGATIVE,
+        tool=target.tool,
+        arg=target.arg,
+        op=target.op,
+        value=target.value,
+        fail_call=fail_call,
+        unless=unless,
     )
 
 
@@ -189,10 +199,19 @@ def _matcher_yaml(expect: Expect, indent: str) -> list[str]:
             f"{indent}- tool_call: {expect.tool}",
             f"{indent}  args.{expect.arg}: {_op_expr(expect.op, expect.value)}",
         ]
-    return [
+    lines = [
         f"{indent}- no_tool_call_matching:",
         f"{indent}    {expect.tool}.{expect.arg}: {_op_expr(expect.op, expect.value)}",
     ]
+    if expect.unless is not None:
+        lines.append(f"{indent}  unless: {_unless_expr(expect.unless)}")
+    return lines
+
+
+def _unless_expr(unless: Branch) -> str:
+    """YAML-safe ``'<arg> op "value"'`` scalar for a negative matcher's exemption."""
+    escaped = unless.value.replace("'", "''")
+    return f"'{unless.arg} {unless.op} \"{escaped}\"'"
 
 
 def infer_tier_or_phase(agent_path: str) -> str:

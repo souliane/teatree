@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import tomlkit
+from django.db import transaction
 
 from teatree.config import effective_default
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
@@ -35,6 +36,8 @@ from teatree.config.stored_row_health import is_operator_configuration, stored_r
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.document_layout import (
     GLOBAL_SCOPE,
+    OVERLAYS_TABLE,
+    TABLE_REGISTRY_KEYS,
     import_candidates,
     registry_value,
     sorted_table,
@@ -123,11 +126,10 @@ def export_db_to_toml(
 
     Global-scope settings render under ``[teatree]``; each overlay renders under
     ``[overlays.<name>]`` (its registry DEFINITIONS merged with its per-overlay SETTING
-    scope rows); the ``e2e_repos`` registry renders as ``[e2e_repos.<name>]`` tables. The
-    two registry keys are NEVER dumped under ``[teatree]`` (they are not ``UserSettings``
-    fields). With *overlay* the dump is scoped to that one overlay's ``[overlays.<name>]``
-    table; omitted, it dumps the global scope plus every overlay scope plus the e2e-repos
-    registry.
+    scope rows); every other registry key renders as its own ``[<key>.<name>]`` tables. No
+    registry key is EVER dumped under ``[teatree]`` (they are not ``UserSettings`` fields).
+    With *overlay* the dump is scoped to that one overlay's ``[overlays.<name>]`` table;
+    omitted, it dumps the global scope plus every overlay scope plus every other registry.
 
     Two INDEPENDENT filters widen the dump, both off by default so an unfiltered call
     emits exactly the rows it always has (the nesting below re-shapes how they RENDER,
@@ -170,8 +172,7 @@ def export_db_to_toml(
     if include_private:
         mark_private_backup(document)
     all_global = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
-    overlays_registry = registry_value(all_global, "overlays")
-    e2e_repos_registry = registry_value(all_global, "e2e_repos")
+    overlays_registry = registry_value(all_global, OVERLAYS_TABLE)
 
     if overlay is not None:
         scoped_registry = {overlay: overlays_registry[overlay]} if overlay in overlays_registry else {}
@@ -206,11 +207,18 @@ def export_db_to_toml(
             .distinct()
         )
         _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
-        _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
-    emit_seed_tables(document, sorted_table)
+        for key in TABLE_REGISTRY_KEYS:
+            _emit_registry_tables(document, key, registry_value(all_global, key), guard=guard)
+    _emit_seed_tables(document, guard=guard)
     return ConfigExport(
         tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted), private_backup=include_private
     )
+
+
+def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: _ExportGuard) -> None:
+    """The seed half, under the same guard — a withheld field rides back as a `RedactedRow`."""
+    withheld = emit_seed_tables(document, sorted_table, terms=guard.terms, withhold_secrets=not guard.include_private)
+    guard.redacted.extend(RedactedRow(one.scope, one.field, one.reason) for one in withheld)
 
 
 def _shipped_file_text() -> str:
@@ -297,30 +305,31 @@ def _emit_overlay_tables(
         document["overlays"] = overlays
 
 
-def _emit_e2e_repos_tables(
+def _emit_registry_tables(
     document: tomlkit.TOMLDocument,
-    e2e_repos_registry: dict[str, Any],
+    key: str,
+    registry: dict[str, Any],
     *,
     guard: _ExportGuard,
 ) -> None:
-    """Attach an ``[e2e_repos.<name>]`` sub-table per registered E2E repo.
+    """Attach a ``[<key>.<name>]`` sub-table per entry of the *key* registry.
 
-    The inverse of ``load_e2e_repos`` reading ``raw["e2e_repos"]`` — each entry's
-    ``url`` / ``branch`` / ``e2e_dir`` rendered as its own table. The super-table is
-    added only when a repo has rows surviving the secret guard.
+    The inverse of a registry loader reading ``raw[key]`` — each entry's own fields
+    rendered as its own table. The super-table is added only when an entry has rows
+    surviving the secret guard.
     """
-    repos = tomlkit.table(is_super_table=True)
+    entries = tomlkit.table(is_super_table=True)
     emitted = False
-    for name in sorted(e2e_repos_registry):
-        entry = e2e_repos_registry[name]
+    for name in sorted(registry):
+        entry = registry[name]
         if not isinstance(entry, dict):
             continue
-        rows = _exportable_rows(entry, f"e2e_repos.{name}", guard=guard)
+        rows = _exportable_rows(entry, f"{key}.{name}", guard=guard)
         if rows:
-            repos[name] = sorted_table(rows)
+            entries[name] = sorted_table(rows)
             emitted = True
     if emitted:
-        document["e2e_repos"] = repos
+        document[key] = entries
 
 
 # ---- import (the inverse of export) -----------------------------------------------------
@@ -502,10 +511,10 @@ def import_toml_to_db(
             (), tuple(skipped), tuple(folded), tuple(rejected), dry_run, tuple(unchanged), policy.private_backup
         )
     if not dry_run:
-        for row in to_write:
-            ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
-        for entry in seed_writes:
-            write_seed_field(entry.table, entry.name, entry.field, entry.value)
+        with transaction.atomic():
+            ConfigSetting.objects.set_values([(row.key, row.value, row.scope) for row in to_write])
+            for entry in seed_writes:
+                write_seed_field(entry.table, entry.name, entry.field, entry.value)
     # Seed rows keep the default is_private=False deliberately: `redaction_reason` is a rule
     # about SETTINGS keys, and a seed field is a [loops]/[modes]/[schedules] entry, not one.
     written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))

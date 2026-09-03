@@ -93,12 +93,15 @@ class FailureKind(models.TextChoices):
     LEASE_LOST = "lease_lost", "Lease lost to another worker"
     LEASE_EXPIRED = "lease_expired", "Lease expired and was reaped"
     RUNTIME_CEILING = "runtime_ceiling", "Runtime ceiling exceeded"
-    USAGE_LIMIT_PARKED = "usage_limit_parked", "Parked on a usage window"
+    USAGE_LIMIT_PARKED = "usage_limit_parked", "Halted on a usage window"
     CREDENTIAL_EXHAUSTED = "credential_exhausted", "Credentials exhausted"
+    CREDENTIAL_MISSING = "credential_missing", "No credential configured"
     HARNESS_CONFIG_INVALID = "harness_config_invalid", "Invalid harness configuration"
+    OVERLAY_UNKNOWN = "overlay_unknown", "Overlay not installed or misnamed"
     HARNESS_CRASH = "harness_crash", "Harness crashed"
     OUTAGE = "outage", "Network or API outage"
     RESULT_ERROR = "result_error", "Run ended without a clean result"
+    RESULT_SCHEMA_INVALID = "result_schema_invalid", "Result envelope violated the schema"
     PROVISION_FAILED = "provision_failed", "Worktree provisioning failed"
     LANDING_UNVERIFIED = "landing_unverified", "Work never landed"
     NO_RESULT_ENVELOPE = "no_result_envelope", "No result envelope produced"
@@ -146,17 +149,22 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.EVIDENCE_MISSING: Recovery(_CORRECT, environmental=False),
     FailureKind.RECORDING_REFUSED: Recovery(_CORRECT, environmental=False),
     FailureKind.HARNESS_CONFIG_INVALID: Recovery(_CORRECT, environmental=False),
+    FailureKind.RESULT_SCHEMA_INVALID: Recovery(_CORRECT, environmental=False),
     # Environmental, yet reopening races whoever already owns the work, or a window that has not
     # reset — so these page a human instead.
     FailureKind.LEASE_LOST: Recovery(_HALT, environmental=True),
     FailureKind.LEASE_EXPIRED: Recovery(_HALT, environmental=True),
     FailureKind.USAGE_LIMIT_PARKED: Recovery(_HALT, environmental=True),
     FailureKind.CREDENTIAL_EXHAUSTED: Recovery(_HALT, environmental=True),
+    # An exhausted account frees itself on a window reset; an UNCONFIGURED one never does, so it is
+    # neither environmental nor retried — that pairing is the retry-into-the-same-wall it caused.
+    FailureKind.CREDENTIAL_MISSING: Recovery(_HALT, environmental=False),
     # A defect, a deliberate stop, or a failure this vocabulary cannot name: never auto-reopened.
     # PLAN_MISSING is HALT because re-running the SAME implementing phase reproduces it exactly —
     # the remedy is a different phase (planning), which `unplanned_ticket_redispatch` schedules off
     # this very name rather than off the reason text (souliane/teatree#4578).
     FailureKind.PLAN_MISSING: Recovery(_HALT, environmental=False),
+    FailureKind.OVERLAY_UNKNOWN: Recovery(_HALT, environmental=False),
     FailureKind.UNRECORDED: Recovery(_HALT, environmental=False),
     FailureKind.UNCLASSIFIED: Recovery(_HALT, environmental=False),
     FailureKind.RUNTIME_CEILING: Recovery(_HALT, environmental=False),
@@ -175,6 +183,15 @@ _CAUSELESS: frozenset[str] = frozenset(
         FailureKind.RUNTIME_CEILING,
     },
 )
+
+#: Environmental kinds whose repeated TEXT still says nothing about the work, so two
+#: identical ones are one outage repeated rather than one defect recurring. Deliberately
+#: NARROWER than :data:`RECOVERY`'s environmental axis, the operator-DISPLAY axis: ``result_error`` /
+#: ``provision_failed`` / ``landing_unverified`` / the lease kinds carry defect-specific
+#: text, so the fingerprint check still discriminates them. ``harness_crash`` is out for the
+#: same reason — a traceback names a code path, so a verbatim repeat of one is a defect
+#: recurring, and #4505 made it retryable, which is what put it in front of the stall at all.
+_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE})
 
 #: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
 #: unrelated failures rather than one repeating defect. See the module docstring on why
@@ -198,7 +215,14 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.AGENT_ABANDONED, (AGENT_ABANDONED_PREFIX,)),
     (FailureKind.LEASE_LOST, ("stuck_loop: lease lost",)),
     (FailureKind.RUNTIME_CEILING, ("stuck_loop:",)),
-    (FailureKind.USAGE_LIMIT_PARKED, ("limit_parked:",)),
+    # The four ``LimitCause`` markers a limit-killed run records (``LimitMatch.as_reason``),
+    # plus the legacy ``usage_limit:`` spelling still on stored rows. API-credit exhaustion
+    # is a drained CREDENTIAL, not a usage window — its remedy is billing, not waiting.
+    (FailureKind.CREDENTIAL_EXHAUSTED, ("api_credit:",)),
+    (
+        FailureKind.USAGE_LIMIT_PARKED,
+        ("limit_parked:", "subscription_session:", "subscription_weekly:", "rate_limit:", "usage_limit:"),
+    ),
     (FailureKind.OUTAGE, ("outage_death:",)),
     (FailureKind.RESULT_ERROR, ("result_error:",)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
@@ -206,14 +230,18 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
+    # ``CredentialSpec._missing_message`` — both its branches carry this phrase.
+    (FailureKind.CREDENTIAL_MISSING, ("credential available",)),
     (FailureKind.HARNESS_CONFIG_INVALID, ("is not valid for agent_harness", "agent_harness_provider=")),
+    # Ahead of the traceback matcher: an ``ImproperlyConfigured`` overlay lookup arrives AS a
+    # traceback, and calling it a crash hides a config defect behind an environmental name.
+    (FailureKind.OVERLAY_UNKNOWN, ("unknown overlay ", "not found. available:")),
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
-    # The recorder's other three refusals of a parsed-but-unusable envelope were unnamed until
-    # #4505; leaving them ``unclassified`` denied them the correction their sibling earns.
     (
-        FailureKind.RECORDING_REFUSED,
-        ("recording refused", "unexpected keys", "result is not valid json", "result must be a json object"),
+        FailureKind.RESULT_SCHEMA_INVALID,
+        ("unexpected keys", "result is not valid json", "result must be a json object"),
     ),
+    (FailureKind.RECORDING_REFUSED, ("recording refused",)),
     (FailureKind.HARNESS_CRASH, HARNESS_CRASH_MARKERS),
 )
 
@@ -270,8 +298,18 @@ def stall_fingerprints(kind_fingerprints: Iterable[tuple[str, str]]) -> list[str
 
     The single builder every ``last_two_fingerprints`` caller shares, so a causeless
     failure can never be dropped on one repair path and counted on another.
+
+    :data:`_TEXT_UNINFORMATIVE` kinds are dropped here too — an outage or a harness
+    traceback repeated verbatim is one outage repeated, so freezing on its text is a halt
+    the environment caused. That set is NARROWER than :func:`is_environmental`: a
+    verbatim-repeating ``landing_unverified`` names a deterministic defect, and retrying
+    it to the cap is the repair storm this stall check exists to prevent.
     """
-    return [fingerprint for kind, fingerprint in kind_fingerprints if fingerprint and not is_causeless(kind)]
+    return [
+        fingerprint
+        for kind, fingerprint in kind_fingerprints
+        if fingerprint and not is_causeless(kind) and kind not in _TEXT_UNINFORMATIVE
+    ]
 
 
 def stall_kinds(kinds: Iterable[str]) -> list[str]:

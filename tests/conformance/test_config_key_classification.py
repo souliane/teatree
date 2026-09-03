@@ -28,6 +28,7 @@ reader names — ``agent_session_permission_mode`` among them — stayed outside
 """
 
 import ast
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +177,10 @@ class ConfigKeyScan:
                     sites.setdefault(key, set()).add(f"{module}:{matched.call.lineno}")
         return sites
 
+    def products(self) -> "tuple[_Sites, dict[_Shape, set[str]]]":
+        """Both derived views at once, so a caller can bind these and drop the trees they came from."""
+        return self.keys(), self.shapes()
+
     def shapes(self) -> dict[_Shape, set[str]]:
         """``{(surface, form): modules}`` — which receiver shapes the walk actually matched."""
         found: dict[_Shape, set[str]] = {}
@@ -285,9 +290,10 @@ def _arguments_bound_to(tree: ast.Module, function: str, *, position: int, keywo
 class TestEveryConfigSettingKeyIsClassified:
     """A key the tree stores must land in a bucket — the exemption cannot be INCOMPLETE."""
 
-    _SCANNED = ConfigKeyScan.of_src()
-    SCAN = _SCANNED.keys()
-    SHAPES = _SCANNED.shapes()
+    # Bound as PRODUCTS, never as the scan: holding the instance keeps one `ast.Module`
+    # per `src/teatree` file alive for the whole process (measured 305 MB), which every
+    # later module's collection then stacks on top of.
+    SCAN, SHAPES = ConfigKeyScan.of_src().products()
 
     @staticmethod
     def _classified() -> set[str]:
@@ -332,3 +338,42 @@ class TestEveryConfigSettingKeyIsClassified:
         # parameter as a key would demand a declaration for the string "key" itself.
         assert "key" not in self.SCAN
         assert "setting" not in self.SCAN
+
+
+class TestTheScanIsNotRetainedPastCollection:
+    """The scan runs at IMPORT, so whatever it leaves bound is held for the whole process.
+
+    Binding the instance rather than its products keeps one parsed ``ast.Module`` per
+    ``src/teatree`` file alive — measured 305 MB above this module's own floor, carried
+    through every later module's collection and multiplied by each xdist worker, which is
+    how a shard dies on memory before it can emit a collection count.
+    """
+
+    def _retainers(self) -> list[str]:
+        module = sys.modules[__name__]
+        owners: list[tuple[str, dict[str, object]]] = [(__name__, vars(module))]
+        owners += [
+            (f"{__name__}.{name}", dict(vars(value))) for name, value in vars(module).items() if isinstance(value, type)
+        ]
+        return sorted(
+            f"{owner}.{name}"
+            for owner, namespace in owners
+            for name, value in namespace.items()
+            if isinstance(value, ConfigKeyScan)
+        )
+
+    def test_no_module_or_class_attribute_holds_the_scan(self) -> None:
+        retained = self._retainers()
+        assert retained == [], (
+            f"{retained} bind a ConfigKeyScan, so its parsed trees outlive collection. "
+            "Bind `ConfigKeyScan.of_src().products()` and keep the products only."
+        )
+
+    def test_the_guard_sees_a_planted_retainer(self) -> None:
+        # Anti-vacuity: without this the guard above passes on a module that never had a scan.
+        # An EMPTY scan is enough — the guard keys on the type, so the control need not re-parse.
+        TestTheScanIsNotRetainedPastCollection._planted = ConfigKeyScan(trees={}, constants={}, imports={})
+        try:
+            assert self._retainers() != []
+        finally:
+            del TestTheScanIsNotRetainedPastCollection._planted

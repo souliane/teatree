@@ -102,6 +102,58 @@ class TestFindBlindGitRestore:
         assert core.find_blind_git_restore("git checkout -- src/module.py", was_read=lambda _p: False) is None
 
 
+class TestGitGlobalOptionsDoNotHideTheRestore:
+    """A global option sits BETWEEN ``git`` and its subcommand — the verb scan must walk past it.
+
+    ``git -C <dir> checkout -- <config>`` clobbers the config exactly as the bare
+    form does, so reading the token after ``git`` as the subcommand let every
+    redirected restore through the gate untouched.
+    """
+
+    def test_dash_c_dir_still_fires(self) -> None:
+        finding = core.find_blind_git_restore(
+            "git -C /repo checkout -- ~/.appconfig.toml",
+            was_read=lambda _p: False,
+        )
+        assert finding is not None
+        assert finding.path == "~/.appconfig.toml"
+
+    def test_attached_git_dir_still_fires(self) -> None:
+        finding = core.find_blind_git_restore(
+            "git --git-dir=/repo/.git restore .config/nvim/init.lua",
+            was_read=lambda _p: False,
+        )
+        assert finding is not None
+        assert finding.path == ".config/nvim/init.lua"
+
+    def test_config_override_still_fires(self) -> None:
+        assert (
+            core.find_blind_git_restore(
+                "git -c core.pager=cat restore -- ~/.zshrc",
+                was_read=lambda _p: False,
+            )
+            is not None
+        )
+
+    def test_a_global_options_own_value_is_not_the_clobbered_path(self) -> None:
+        # ``-C ~/.config/nvim`` names the repo, not an operand the restore rewrites.
+        finding = core.find_blind_git_restore(
+            "git -C ~/.config/nvim restore ~/.zshrc",
+            was_read=lambda _p: False,
+        )
+        assert finding is not None
+        assert finding.path == "~/.zshrc"
+
+    def test_a_later_restore_in_a_chain_still_fires(self) -> None:
+        assert (
+            core.find_blind_git_restore(
+                "git status && git restore ~/.appconfig.toml",
+                was_read=lambda _p: False,
+            )
+            is not None
+        )
+
+
 class TestDenyReason:
     def test_write_reason_names_the_path_and_read_first(self) -> None:
         msg = core.deny_reason(core.ConfigOverwriteFinding(path="/Users/x/.appconfig.toml", kind="write"))

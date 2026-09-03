@@ -34,6 +34,8 @@ import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
+from django.db import transaction
+
 from teatree.config.seed_defaults import shipped_seed_table
 
 _MODES_TABLE = "modes"
@@ -132,17 +134,21 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
 
     schedules_created = 0
     for spec in default_schedule_specs():
-        schedule, made = ModeSchedule.objects.get_or_create(
-            name=spec.name, defaults={"description": spec.description, "timezone": spec.timezone}
-        )
-        schedules_created += int(made)
-        if made:
-            ModeScheduleSlot.objects.bulk_create(
-                ModeScheduleSlot(
-                    schedule=schedule, days=slot.days, start_time=slot.start_time, preset_name=slot.preset_name
-                )
-                for slot in spec.slots
+        # One transaction per schedule: slots are materialised for a NEWLY-created
+        # schedule only, so a schedule that committed without its slots is a permanently
+        # empty calendar no re-seed ever fills in.
+        with transaction.atomic():
+            schedule, made = ModeSchedule.objects.get_or_create(
+                name=spec.name, defaults={"description": spec.description, "timezone": spec.timezone}
             )
+            if made:
+                ModeScheduleSlot.objects.bulk_create(
+                    ModeScheduleSlot(
+                        schedule=schedule, days=slot.days, start_time=slot.start_time, preset_name=slot.preset_name
+                    )
+                    for slot in spec.slots
+                )
+        schedules_created += int(made)
 
     # A fresh sentinel never equals a real schedule name, so the provenance seed
     # always CREATES the pin when no row exists and PRESERVES an operator's switch.

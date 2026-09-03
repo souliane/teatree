@@ -120,6 +120,29 @@ class TestExpireStaleReadyJobs:
         assert retired == {}
         assert DBTaskResult.objects.get().status == TaskResultStatus.RUNNING
 
+    def test_a_job_claimed_between_the_scan_and_the_write_is_not_clobbered(self) -> None:
+        # ``set_failed`` is an unconditional save, so retiring the instance the SCAN read
+        # rewrites a job an executor claimed in between — a RUNNING body reported FAILED
+        # while it is still going. "Still READY" has to be re-proved at the write, which
+        # is what retiring the first row while the second is claimed exercises.
+        refresh_followup_snapshot.enqueue()
+        refresh_followup_snapshot.enqueue()
+        _backdate(50)
+        first, second = sorted(DBTaskResult.objects.values_list("id", flat=True), key=str)
+        real_set_failed = DBTaskResult.set_failed
+
+        def _claim_the_other(job: DBTaskResult, exc: BaseException) -> None:
+            other = second if job.id == first else first
+            DBTaskResult.objects.filter(id=other).update(status=TaskResultStatus.RUNNING)
+            real_set_failed(job, exc)
+
+        with patch.object(DBTaskResult, "set_failed", _claim_the_other):
+            retired = expire_stale_ready_jobs(threshold_hours=24)
+
+        assert retired == {"refresh_followup_snapshot": 1}
+        statuses = set(DBTaskResult.objects.values_list("status", flat=True))
+        assert statuses == {TaskResultStatus.FAILED, TaskResultStatus.RUNNING}
+
 
 class TestExpireStaleDefaultJobs:
     """``expire_stale_default_jobs`` scopes the sweep to the ``default`` queue only (PR-28).

@@ -208,7 +208,10 @@ class RubricCommands(TyperCommand):
         try:
             criteria = parse_criteria(criteria_json, criteria_file)
             if criteria is None:
-                return {"error": "No criteria: pass --criteria-json or --criteria-file with a JSON array"}
+                self.stderr.write(
+                    "  rubric-set refused: no criteria — pass --criteria-json or --criteria-file with a JSON array"
+                )
+                raise SystemExit(1)
             rubric = set_rubric(ticket, criteria)
         except (RubricCommandError, RubricError) as exc:
             self.stderr.write(f"  rubric-set refused: {exc}")

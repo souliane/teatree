@@ -48,6 +48,7 @@ from teatree.hooks._inline_body_resolution import resolve_inline_body_value
 from teatree.hooks._parser_primitives import (
     FAIL_CLOSED_SENTINEL,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    attached_api_field,
     attached_value,
     canonical_forge_leader,
     is_fail_closed_sentinel,
@@ -97,11 +98,11 @@ __all__ = [
 # publish (the false positive). ``gh``/``glab api`` stays WRITE-only / token-aware
 # (:func:`_publish_detection.segment_is_api_write`, effective method ≠ GET, #1530).
 
-# t3 sub-commands that publish on the user's behalf. The overlay segment
-# between ``t3`` and the verb is arbitrary (one of the registered
-# overlays), so we match the verb-segment substring directly — e.g.
-# ``review post-comment`` matches both ``t3 teatree review post-comment``
-# and the equivalent per-overlay variant.
+# t3 sub-commands that publish on the user's behalf. The segment between ``t3``
+# and the verb varies — an overlay name for the overlay-scoped verbs, nothing at
+# all for the top-level review ones — so we match the verb-segment substring
+# directly: ``review post-comment`` matches ``t3 review post-comment`` whatever
+# precedes the verb.
 _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "notify send",
     "review post-comment",
@@ -289,6 +290,12 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
 def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
     """Extract ``-f``/``-F``/``--field``/``--raw-field`` ``body=`` assignments.
 
+    Both the spaced (``-f body=x``) and attached (``--field=body=x``,
+    ``-fbody=x``) spellings are read, via
+    :func:`_parser_primitives.attached_api_field` — detection classified the
+    attached form a publish while extraction yielded nothing, so every
+    body-based leak gate scanned an empty string.
+
     Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
     and ``--input <missing>`` (fail closed). Field assignments other than
     ``body=`` are ignored. ``raws`` (parallel to ``words``) carries each token's
@@ -311,6 +318,9 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
         attached = attached_value(word, "--input=")
         if attached is not None:
             _handle_api_input(attached, payloads)
+        attached_field = attached_api_field(word)
+        if attached_field is not None:
+            _handle_field_assignment(attached_field, payloads, base, raws[i])
         i += 1
 
 
@@ -446,7 +456,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     ctx = BodyFileContext(
         heredoc_files=heredoc_files_map(command, tokens),
         fail_closed_body_file=fail_closed_body_file,
-        base=commit_body_file_base(command, cwd) or command_body_file_base(command) or cwd,
+        base=commit_body_file_base(command, cwd) or command_body_file_base(command, cwd) or cwd,
         stdin_piped_body=piped_stdin_writer_body(tokens),
         has_unredirected_heredoc=bool(unredirected_heredocs),
     )
@@ -485,7 +495,9 @@ def _api_field_values(words: list[str]) -> list[str]:
     The body extractor keeps only ``body=`` assignments; a secret can equally
     live in a ``-f title=`` or any other field of a ``gh api`` / ``glab api``
     call, so the secret scan reads every field value (the part after ``=``)
-    regardless of field name. Bare values (no ``=``) are kept as-is.
+    regardless of field name. Bare values (no ``=``) are kept as-is. The attached
+    spelling (``--field=title=…``, ``-ftitle=…``) is read through the same
+    :func:`_parser_primitives.attached_api_field` grammar as the walkers above.
     """
     field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
     values: list[str] = []
@@ -497,6 +509,9 @@ def _api_field_values(words: list[str]) -> list[str]:
             values.append(words[i + 1].partition("=")[2] or words[i + 1])
             i += 2
             continue
+        attached = attached_api_field(word)
+        if attached is not None:
+            values.append(attached.partition("=")[2] or attached)
         i += 1
     return values
 

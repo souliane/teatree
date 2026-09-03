@@ -213,6 +213,7 @@ class TeatreeSettingsSchema(BaseSettings):
     contribute_plugin_dir: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     critic_gate_mode: Annotated[CriticGateMode, BeforeValidator(CriticGateMode.parse), _DEFAULT_OVERLAY]
     dashboard_instance_label: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    dashboard_logo: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     db_backup_cadence_hours: Annotated[int, BeforeValidator(_parse_overridable_positive_int(24)), _DEFAULT_OVERLAY]
     db_backup_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     db_backup_retention_days: Annotated[int, BeforeValidator(_parse_overridable_positive_int(7)), _DEFAULT_OVERLAY]
@@ -421,6 +422,7 @@ class TeatreeSettingsSchema(BaseSettings):
     low_power_preset_name: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_COLD]
     overlay_leak_terms: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
     private_repos: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
+    self_forge_identities: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     slack_user_channel: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     slack_user_id: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     timeouts: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
@@ -436,6 +438,7 @@ class TeatreeSettingsSchema(BaseSettings):
     deny_circuit_breaker_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     deny_circuit_breaker_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     dispatch_quote_gate_on_task_create_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    general_purpose_agent_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     glab_stale_base_remote_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     git_add_all_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     hook_validator_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
@@ -461,9 +464,10 @@ class TeatreeSettingsSchema(BaseSettings):
     verbatim_paste_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     unknown_repo_push_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
 
-    # --- REGISTRY_SETTINGS (overlays + e2e_repos definition registries) ---
+    # --- REGISTRY_SETTINGS (the overlays / e2e_repos / peer_instances definition registries) ---
     e2e_repos: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_REGISTRY] = {}
     overlays: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_REGISTRY] = {}
+    peer_instances: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_REGISTRY] = {}
 
 
 def setting_meta(key: str) -> SettingMeta:

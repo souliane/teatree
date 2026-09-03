@@ -408,15 +408,22 @@ class EvalScenarioResultQuerySet(models.QuerySet["EvalScenarioResult"]):
         return self.exclude(verdict__in=(EvalVerdict.SKIP, EvalVerdict.ERROR))
 
     def pass_rates(self) -> list[ScenarioPassRate]:
-        scores: dict[tuple[str, str], list[float]] = {}
-        for name, model, score in self.graded().values_list("scenario_name", "model", "score"):
-            scores.setdefault((name, model), []).append(score)
-        rates: list[ScenarioPassRate] = []
-        for (name, model), values in sorted(scores.items()):
-            total = len(values)
-            passed = round(sum(values))
-            rates.append(ScenarioPassRate(scenario_name=name, model=model, total=total, passed=passed))
-        return rates
+        """Per-(scenario, model) pass tallies, weighted by each row's ``trials``.
+
+        A pass@k aggregate row carries ``trials=k`` and ``score`` = the pass-rate
+        over those k trials, so it contributes k to the denominator and
+        ``score * k`` passes — counting it as one trial rounds 2-of-3 up to a
+        clean 1/1. A single-trial row (``trials=1``, ``score`` 1.0/0.0) is the
+        same arithmetic, which is what lets both shapes aggregate together.
+        """
+        tallies: dict[tuple[str, str], tuple[int, float]] = {}
+        for name, model, score, trials in self.graded().values_list("scenario_name", "model", "score", "trials"):
+            total, passed = tallies.get((name, model), (0, 0.0))
+            tallies[name, model] = (total + trials, passed + score * trials)
+        return [
+            ScenarioPassRate(scenario_name=name, model=model, total=total, passed=round(passed))
+            for (name, model), (total, passed) in sorted(tallies.items())
+        ]
 
 
 EvalScenarioResultManager = models.Manager.from_queryset(EvalScenarioResultQuerySet)

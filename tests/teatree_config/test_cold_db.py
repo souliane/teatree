@@ -246,7 +246,10 @@ class TestRowExists:
         assert row_exists(q, on_error=True, db_path=db) is True
         assert row_exists(q, on_error=False, db_path=db) is False
 
-    def test_locked_db_returns_on_error(self, tmp_path: Path) -> None:
+    def test_locked_db_returns_on_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # This pins the give-up VERDICT on a lock nothing will release, not how long the wait is,
+        # so it need not sit out the production budget twice over.
+        monkeypatch.setattr(cold_db, "_BUSY_TIMEOUT_MS", 10)
         db = tmp_path / "db.sqlite3"
         _make_config_db(db, [("", "mode", "auto")])
         writer = sqlite3.connect(db)
