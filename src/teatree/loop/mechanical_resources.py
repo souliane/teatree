@@ -302,11 +302,16 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
     ``-a``/``system prune``, so a running container's images are never reaped.
     A failure (no docker daemon, a prune error) is swallowed and recorded so
     the freeing pass continues; the per-step reclaimed bytes land in the plan.
+    A venue that cannot reach dockerd ran nothing, so it says so rather than
+    logging a 0B reclaim the next reader takes for "nothing to reclaim" (#4585).
     """
     try:
         report = reclaim_disk()
     except Exception:
         logger.exception("free_resources: docker disk reclaim failed — swallowed")
+        return 0.0
+    if report.venue_blocked:
+        plan.steps.append(f"  → docker reclaim did not run: {report.failure_summary()}")
         return 0.0
     reclaimed_gb = report.total_bytes / _GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
