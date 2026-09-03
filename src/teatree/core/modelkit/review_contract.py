@@ -40,6 +40,7 @@ VERDICT_CHECKS_RULE: Final[str] = (
     'failing, that is a complete and recordable review: set "verdict" to "hold", report '
     '"gh_verify_result" as "failed", and name the failing check in "findings". A "merge_safe" carrying '
     '"gh_verify_result": "failed" contradicts itself and is REFUSED — nothing is recorded, your whole run '
-    "is discarded, and review of this head stops until a human intervenes. Report the checks as you found "
+    "is discarded, and a live CI read at the reviewed SHA decides whether this head then stops for a human. "
+    "Report the checks as you found "
     "them; the verdict follows from them, never the other way round."
 )

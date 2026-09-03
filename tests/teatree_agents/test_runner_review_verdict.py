@@ -12,15 +12,18 @@ and the lock releases.
 """
 
 import datetime as dt
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents import attempt_recorder
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead
 from teatree.core.models import (
     AutoReviewDispatch,
     CodexReviewMarker,
@@ -29,12 +32,16 @@ from teatree.core.models import (
     ReviewVerdict,
     Session,
     Task,
+    TaskAttempt,
     Ticket,
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -400,11 +407,34 @@ def _envelope_with(**overrides: object) -> dict[str, object]:
 def _contradiction_envelope(**overrides: object) -> dict[str, object]:
     """A ``merge_safe`` verdict over required checks the reviewer itself reports RED.
 
-    The structurally unrecordable combination §17.8 clause 3 refuses — not a format slip
-    and not a reviewer bound to the wrong tree, but a self-contradictory judgement about a
-    tree whose checks stay red however many reviewers are sent at it.
+    The combination §17.8 clause 3 refuses. Whether that refusal is the terminal-eligible
+    contradiction is decided by the LIVE read at the reviewed SHA (#4554), which the
+    module-scoped ``_live_ci_is_red`` fixture holds at "the forge confirms red" — the case
+    every latch test here is about.
     """
     return _envelope_with(gh_verify_result="failed", **overrides)
+
+
+def _reading(status: str, detail: str) -> "Callable[..., LiveChecksRead]":
+    def probe(*, slug: str, head_sha: str) -> LiveChecksRead:
+        return LiveChecksRead(status=status, detail=detail)
+
+    return probe
+
+
+_LIVE_RED = _reading("failed", "failing workflow run(s): test (3.13)")
+_LIVE_GREEN = _reading("green", "7 workflow run(s) concluded green")
+_LIVE_UNREADABLE = _reading(CHECKS_UNREADABLE, "the workflow-run read failed (rc=1)")
+
+
+@pytest.fixture(autouse=True)
+def _live_ci_is_red(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold the live read at RED, and off the network, for every test in this module.
+
+    The heads these tests describe genuinely were red, so corroboration is the honest
+    default; the cases where the forge says otherwise patch it per test.
+    """
+    monkeypatch.setattr(attempt_recorder, "live_checks_at", _LIVE_RED)
 
 
 def _expire_every_claim(*, pr_id: int = _PR_ID) -> None:
@@ -565,6 +595,99 @@ class TestAContradictedChecksVerdictLatchesTheSPENTHead(TestCase):
 
         assert rearmed is not None
         assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
+
+
+class TestTheLatchNeedsALiveConfirmedRed(TestCase):
+    """#4554: the terminal is decided against the forge, never against the envelope alone.
+
+    ``gh_verify_result`` is self-asserted, so a refusal decided on it describes the
+    reviewer. Only a red the workflow-run read confirms at the reviewed SHA may spend the
+    head's terminal; a live green and a live UNREADABLE are distinct outcomes that each
+    keep the ordinary retry, because latching an unverified report is the false refusal
+    this ticket removes and admitting one would vouch for a tree nobody could vote on.
+    """
+
+    def _spent_head(self) -> AutoReviewDispatch:
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
+        return dispatch
+
+    def _assert_refused_but_not_latched(self, dispatch: AutoReviewDispatch, attempt: TaskAttempt) -> None:
+        assert "recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert _pending_refusal_questions() == []
+
+    def test_a_live_confirmed_red_still_latches_the_spent_head(self) -> None:
+        dispatch = self._spent_head()
+
+        attempt = record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
+
+        assert "CONFIRMS red" in attempt.error
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.REFUSED
+        assert len(_pending_refusal_questions()) == 1
+
+    def test_a_live_green_refuses_the_verdict_but_spends_no_terminal(self) -> None:
+        dispatch = self._spent_head()
+
+        with patch.object(attempt_recorder, "live_checks_at", _LIVE_GREEN):
+            attempt = record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
+
+        self._assert_refused_but_not_latched(dispatch, attempt)
+        assert "concluded green" in attempt.error
+
+    def test_an_unreadable_live_read_spends_no_terminal_either(self) -> None:
+        dispatch = self._spent_head()
+
+        with patch.object(attempt_recorder, "live_checks_at", _LIVE_UNREADABLE):
+            attempt = record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
+
+        self._assert_refused_but_not_latched(dispatch, attempt)
+        assert "UNVERIFIED" in attempt.error
+
+    def test_the_probe_reads_the_dispatch_head_the_verdict_binds_to(self) -> None:
+        dispatch = self._spent_head()
+        seen: list[tuple[str, str]] = []
+
+        def probe(*, slug: str, head_sha: str) -> LiveChecksRead:
+            seen.append((slug, head_sha))
+            return LiveChecksRead(status="failed", detail="failing workflow run(s): test (3.13)")
+
+        with patch.object(attempt_recorder, "live_checks_at", probe):
+            record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
+
+        assert seen == [(_SLUG, _HEAD)]
+
+    def test_a_hold_on_red_checks_never_reaches_the_forge(self) -> None:
+        # AC4: the path that recovered 3 of the 9 heads must not gain a network dependency.
+        task, dispatch = _reviewing_task_via_dispatch()
+        seen: list[str] = []
+
+        def probe(*, slug: str, head_sha: str) -> LiveChecksRead:
+            seen.append(head_sha)
+            return LiveChecksRead(status="failed", detail="")
+
+        envelope = _contradiction_envelope(
+            verdict="hold",
+            findings=[{"severity": "high", "summary": "required check `test (3.13)` is red"}],
+        )
+        with patch.object(attempt_recorder, "live_checks_at", probe):
+            attempt = record_result_envelope(task, envelope, phase="reviewing")
+
+        assert attempt.error == ""
+        assert seen == []
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.RESOLVED
+
+
+def task_of(dispatch: AutoReviewDispatch) -> Task:
+    task = dispatch.task
+    assert task is not None
+    return task
 
 
 class TestARefusalTouchesOnlyTheClaimThatArmedIt(TestCase):

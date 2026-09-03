@@ -30,7 +30,7 @@ head.
 ``mark_refused`` is the OTHER terminal (#4522, #4530). A reviewer can return a
 verdict the recorder refuses outright — a ``merge_safe`` judgement over required
 checks the SAME reviewer reported RED
-(:class:`~teatree.core.models.review_verdict.ChecksContradictionError`). Nothing
+(:class:`~teatree.core.models.checks_admission.ChecksContradictionError`). Nothing
 lands, so the head keeps no verdict, so the post-``deadline`` re-acquire below arms
 another reviewer. That burn was always BOUNDED by :data:`MAX_DISPATCH_ATTEMPTS`
 like any other failing dispatch, and the retries are not waste: 6 of the 9 heads
@@ -224,7 +224,7 @@ class AutoReviewDispatch(models.Model):
 
         Returns ``True`` iff a row transitioned. Called when the recorder refuses a returned
         verdict with a
-        :class:`~teatree.core.models.review_verdict.ChecksContradictionError`. Unlike
+        :class:`~teatree.core.models.checks_admission.ChecksContradictionError`. Unlike
         :meth:`mark_resolved` this asserts NO verdict — it renames an already-spent claim
         from "the retries ran out" to "the last reviewer contradicted its own checks
         report", which is the difference between a cause the owner can act on and a count.

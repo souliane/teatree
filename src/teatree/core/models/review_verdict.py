@@ -33,8 +33,9 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.diff_scope import ChangedFileSet, out_of_scope_refusal
-from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, head_sha_unreadable
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveChecksProbe, head_sha_unreadable
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
+from teatree.core.models.checks_admission import ReviewVerdictError, assert_checks_admit_merge_safe, live_checks_reader
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
@@ -47,39 +48,6 @@ from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-
-class ReviewVerdictError(ValueError):
-    """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
-
-
-class ChecksContradictionError(ReviewVerdictError):
-    """A reviewer's verdict contradicted its OWN checks report (#4522, #4530).
-
-    A ``merge_safe`` verdict carrying ``gh_verify_result=failed`` is refused outright by
-    §17.8 clause 3, and that refusal is right. What it is NOT is a statement about the
-    tree. ``gh_verify_result`` is self-asserted — :func:`_assert_checks_admit_merge_safe`
-    reads the string the reviewer put in its own envelope and this module makes no network
-    call — so the contradiction is between two fields ONE reviewer wrote in ONE envelope.
-
-    An earlier revision of this docstring claimed the head itself made a recordable verdict
-    impossible. The control DB refutes it: of the 9 heads that ever raised this, 6 recorded
-    a verdict at that SAME head afterwards, and 3 of those were a ``hold`` over checks that
-    genuinely were red — which is exactly the recordable outcome
-    :data:`~teatree.core.modelkit.review_contract.VERDICT_CHECKS_RULE` asks reviewers for.
-    A red head does not make a verdict impossible; it makes ``merge_safe`` impossible.
-
-    So this class does NOT short-circuit the retry. It is typed rather than string-matched
-    only so the claim's TERMINAL
-    (:meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`) can
-    tell an exhausted budget spent on this from an exhausted budget spent on crashed
-    reviewers — a distinction the operator needs and a saturated row cannot make. Every
-    attempt before the bound is left alone.
-
-    The PENDING branch of :func:`_assert_checks_admit_merge_safe` deliberately does not
-    raise this: a queued check is not a red one, and both an expedite waiver and the checks
-    simply finishing make that same head recordable.
-    """
 
 
 class HeadVerdictState(enum.Enum):
@@ -164,26 +132,6 @@ def _known_choice(value: str, choices: type[models.TextChoices], *, field: str) 
         msg = f"Unknown {field} {value!r}; valid: {sorted(valid)}"
         raise ReviewVerdictError(msg)
     return normalized
-
-
-def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) -> None:
-    """The §17.8 clause-3 invariant a merge_safe verdict's checks snapshot must satisfy."""
-    if normalized_verify == MergeClear.VerifyResult.FAILED:
-        msg = (
-            f"a merge_safe verdict can never carry gh_verify_result=failed (got "
-            f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
-            f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
-            f"a failed CLEAR)"
-        )
-        raise ChecksContradictionError(msg)
-    if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
-        msg = (
-            f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
-            f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
-            f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
-            f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
-        )
-        raise ReviewVerdictError(msg)
 
 
 #: Every per-HEAD review claim a RECORDED verdict retires. Both, because a verdict is a
@@ -455,6 +403,7 @@ class ReviewVerdict(models.Model):
         lock_holder: str = "",
         changed_files: ChangedFileSet | None = None,
         merge_result_retake: bool = False,
+        live_checks: LiveChecksProbe | None = None,
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -467,9 +416,13 @@ class ReviewVerdict(models.Model):
         A ``merge_safe`` verdict must NOT carry a FAILED ``gh_verify_result`` — the
         same maker≠checker invariant that refuses a FAILED CLEAR (§17.8 clause 3):
         a recorded HOLD on red checks can never be promoted to merge-safe by a
-        later live re-check. A PENDING snapshot is accepted on a ``merge_safe``
-        verdict ONLY when ``expedited`` is set (the sibling record of the
-        human-authorized, SHA-bound expedite waiver ``MergeClear.issue`` records).
+        later live re-check. Supplying ``live_checks`` decides WHICH refusal
+        that is: only a red the forge confirms at the reviewed SHA raises the
+        terminal-eligible ``ChecksContradictionError`` (see
+        :mod:`teatree.core.models.checks_admission`). A PENDING snapshot is
+        accepted on a ``merge_safe`` verdict ONLY when ``expedited`` is set (the
+        sibling record of the human-authorized, SHA-bound expedite waiver
+        ``MergeClear.issue`` records).
 
         Supplying ``changed_files`` arms the #4251 diff-scope gate: a blocking
         finding citing a path the PR provably does not touch is refused, because
@@ -483,7 +436,11 @@ class ReviewVerdict(models.Model):
         normalized_blast = _known_choice(blast_class, MergeClear.BlastClass, field="blast_class")
         normalized_verify = _known_choice(gh_verify_result, MergeClear.VerifyResult, field="gh_verify_result")
         if normalized_verdict == cls.Verdict.MERGE_SAFE:
-            _assert_checks_admit_merge_safe(normalized_verify, expedited=expedited)
+            assert_checks_admit_merge_safe(
+                normalized_verify,
+                expedited=expedited,
+                read_live=live_checks_reader(live_checks, slug=slug, head_sha=reviewed_sha),
+            )
 
         reviewer = _validated_reviewer(reviewer_identity)
         _assert_full_sha(reviewed_sha)

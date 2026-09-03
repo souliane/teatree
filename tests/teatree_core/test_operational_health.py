@@ -15,8 +15,10 @@ from django.db import OperationalError
 from django.utils import timezone
 
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.cleanup.reclaim_pressure import ZERO_YIELD_ALARM_PASSES
 from teatree.core.factory import operational_health
 from teatree.core.factory.operational_health import (
+    HealthReport,
     HealthSignal,
     HealthStatus,
     SignalCollection,
@@ -25,6 +27,7 @@ from teatree.core.factory.operational_health import (
     _fleet_loop_policy_signals,
     _harness_provider_consistency_signals,
     _overlay_health_signals,
+    _reclaim_stall_signals,
     _stale_tick_signals,
     _status_from_issues,
     collect_signals,
@@ -34,6 +37,7 @@ from teatree.core.factory.operational_health import (
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.core.models.known_issue import KnownIssue
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.utils.throttled_log import reset_throttle
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -426,3 +430,61 @@ class TestUnreadCollectorNeverAutoResolves:
 
         assert collection.unread == ("_cannot_read",)
         assert collection.complete is False
+
+
+class TestReclaimStallRaisesANamedCritical:
+    """#4644 — a reclaim that frees nothing on a full disk must SAY so, not tick silently.
+
+    The box that produced this issue ticked 23 times taking 0 actions and reached
+    100% full with nothing red anywhere, because a pass that reclaims nothing and
+    a pass that never ran look identical from outside.
+    """
+
+    def _marker(self, *, streak: int, free_gb: float | None) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.zero_yield_passes = streak
+        marker.last_disk_free_gb = free_gb
+        marker.save(update_fields=["zero_yield_passes", "last_disk_free_gb"])
+
+    def _reconcile(self) -> HealthReport:
+        with patch.object(operational_health, "_COLLECTORS", (_reclaim_stall_signals,)):
+            return reconcile_health()
+
+    def test_three_zero_yield_passes_below_the_floor_are_one_critical_row(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=0.2)
+
+        for _ in range(3):
+            report = self._reconcile()
+
+        assert report.status is HealthStatus.RED
+        rows = KnownIssue.objects.open().filter(kind="reclaim_stalled")
+        assert [row.fingerprint for row in rows] == ["reclaim-stalled:disk"]
+        assert rows.get().severity == KnownIssue.Severity.CRITICAL
+
+    def test_the_row_auto_resolves_when_free_space_recovers(self) -> None:
+        """Gating on the live reading, not the streak — the streak never resets once the pass stops."""
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=0.2)
+        self._reconcile()
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=200.0)
+
+        report = self._reconcile()
+
+        assert not KnownIssue.objects.open().filter(kind="reclaim_stalled").exists()
+        assert report.status is HealthStatus.GREEN
+
+    def test_a_streak_below_the_threshold_emits_nothing(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES - 1, free_gb=0.2)
+
+        assert _reclaim_stall_signals().signals == ()
+
+    def test_an_unmeasurable_disk_emits_nothing(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=None)
+
+        assert _reclaim_stall_signals().signals == ()
+
+    def test_an_unreadable_marker_names_itself_unread(self) -> None:
+        with patch.object(ResourcePressureMarker, "load", side_effect=OperationalError(_DB_LOCKED)):
+            collection = _reclaim_stall_signals()
+
+        assert collection.signals == ()
+        assert collection.unread == ("_reclaim_stall_signals",)
