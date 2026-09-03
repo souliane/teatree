@@ -514,6 +514,12 @@ colleague_facing = false
 default_enabled = false
 description = "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row."
 
+[loops.ratchet_repair]
+delay_seconds = 1800
+colleague_facing = false
+default_enabled = false
+description = "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair (#4451). Observe-only: it writes nothing and opens nothing. Default-OFF."
+
 [loops.memory_skim]
 delay_seconds = 604800
 colleague_facing = false
@@ -615,6 +621,7 @@ dream = false
 outer_loop = false
 directive_loop = false
 ci_eval_heal = false
+ratchet_repair = false
 memory_skim = false
 
 [modes.off]
@@ -647,6 +654,7 @@ dream = false
 outer_loop = false
 directive_loop = false
 ci_eval_heal = false
+ratchet_repair = false
 memory_skim = false
 
 [schedules.standard]

@@ -291,6 +291,15 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "ratchet_repair",
+        1800,
+        None,
+        None,
+        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair (#4451). Observe-only: it writes nothing and opens nothing. Default-OFF.",
+        False,
+        False,
+    ),
+    (
         "memory_skim",
         604800,
         None,

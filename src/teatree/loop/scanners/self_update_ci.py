@@ -52,7 +52,7 @@ class GhMainCiStatus:
 
     *token* — when non-empty — is exported as ``GH_TOKEN`` so a private
     overlay repo can be queried under that overlay's PAT, exactly as
-    :class:`teatree.loop.scanners.pr_sweep.GhPrApiClient` does.
+    :class:`teatree.loop.scanners.pr_sweep_adapters.GhPrApiClient` does.
     """
 
     def __init__(self, *, token: str = "") -> None:

@@ -31,81 +31,22 @@ nothing is removed.
 import logging
 from pathlib import Path
 
-from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
+from teatree.core.cleanup.checkout_registry import candidate_clones
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.orphan_checkouts import (
+    db_tracked_worktree_paths,
+    orphan_checkouts_for_clone,
+    orphan_has_unique_work,
+    orphan_is_dirty,
+)
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
-from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.management.commands._workspace.preview import preview_line
-from teatree.core.models import Worktree
-from teatree.core.worktree.branch_classification import is_squash_merged, reset_forge_probe_cache
+from teatree.core.worktree.branch_classification import reset_forge_probe_cache
 from teatree.core.worktree.venue_safe_registry import prune_worktrees
-from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
-
-
-def _db_tracked_paths() -> list[str]:
-    """On-disk paths of every git worktree teatree has a ``Worktree`` row for.
-
-    Returned unresolved so :func:`paths_match` can apply its full symlink-variant
-    set per comparison (a bare ``.resolve()`` set misses the ``/private`` literal
-    twin a ``git worktree list`` path may carry).
-    """
-    return [wt.worktree_path for wt in Worktree.objects.all() if wt.worktree_path]
-
-
-def _branch_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
-    """Whether ``branch`` carries unmerged work absent from every remote (data loss on removal).
-
-    The #706 primitive (``commits_absent_from_all_remotes``) reports a commit as
-    "absent" whenever its SHA is on no remote. A squash-merge rewrites the
-    branch's commits into ONE new SHA on the default branch and the source branch
-    is typically deleted on merge — the dominant teatree case — so the original
-    commit is absent-from-all-remotes by SHA even though its WORK is shipped.
-    Treating that as unique work wrongly keeps a resolved orphan. So a branch
-    counts as unique unpushed work only when its commits are absent from every
-    remote AND :func:`is_squash_merged` (patch-id ``git cherry``) does NOT find
-    the work captured on ``origin/<default>``.
-
-    A named branch is probed from the shared object store (``repo``); a detached
-    HEAD is meaningful only in the worktree dir, so it is probed there. Fails
-    CLOSED — an inconclusive absence probe (corrupt repo, unknown ref) reads as
-    "has unique work" so the worktree is kept, never reaped on uncertainty.
-
-    Assumes the caller has already refreshed ``repo``'s remote-tracking refs
-    (:func:`reap_orphan_raw_worktrees` does). Called against stale refs this
-    returns ``False`` for work that exists on no remote at all — the misread
-    that reaps unmerged branches.
-    """
-    probe_repo = wt_path if branch == git.DETACHED_HEAD else repo
-    try:
-        absent = bool(git.commits_absent_from_all_remotes(probe_repo, branch))
-    except CommandFailedError:
-        return True
-    if not absent:
-        return False
-    return not (branch != git.DETACHED_HEAD and is_squash_merged(repo, branch, git.default_branch(repo)))
-
-
-def _is_dirty(wt_path: str) -> bool:
-    """Whether the worktree has uncommitted changes (a live, mid-task worktree).
-
-    Fails CLOSED — this gates a checkout removal, so a status that cannot be
-    read counts as dirty (keep), and both instruments (``git status`` AND
-    ``git diff HEAD``) must agree the tree holds no real work. Only the shared
-    orchestration-debris scratch is ignorable; unknown paths are real work.
-    """
-    try:
-        # ``-uall``: an untracked dir must list its files, or debris and real work collapse into one entry.
-        porcelain = git.run_strict(repo=wt_path, args=["status", "--porcelain", "--untracked-files=all"])
-        diff_head = git.run_strict(repo=wt_path, args=["diff", "HEAD", "--name-only"])
-    except CommandFailedError:
-        return True
-    entries = [_porcelain_path(line) for line in porcelain.splitlines()]
-    entries.extend(line.strip() for line in diff_head.splitlines())
-    return any(entry and not is_orchestration_debris(entry) for entry in entries)
 
 
 def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
@@ -132,9 +73,9 @@ def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = Fa
         capture_unshipped_work(Path(wt_path), branch=branch)
     if is_clean_ignored(branch):
         return f"SKIPPED orphan '{label}': matches clean_ignore — keeping"
-    if _is_dirty(wt_path):
+    if orphan_is_dirty(wt_path):
         return f"KEPT orphan '{label}': uncommitted changes — never reaped"
-    if _branch_has_unique_work(repo, branch, wt_path):
+    if orphan_has_unique_work(repo, branch, wt_path):
         return f"KEPT orphan '{label}': unpushed work not on any remote — push it to salvage, never reaped"
     if dry_run:
         return preview_line(f"Reap orphan worktree (work already on remote): {label}", dry_run=True)
@@ -162,19 +103,14 @@ def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list
     touched, because unknown remote state must never authorise a deletion.
     """
     reset_forge_probe_cache()
-    tracked = _db_tracked_paths()
+    tracked = db_tracked_worktree_paths()
     cleaned: list[str] = []
     for repo in sorted(candidate_clones(workspace)):
         try:
-            worktrees = raw_worktree_paths(repo)
+            orphans = orphan_checkouts_for_clone(repo, tracked)
         except CommandFailedError as exc:
             cleaned.append(f"SKIPPED clone {repo}: could not list worktrees ({exc})")
             continue
-        orphans = [
-            (wt_path, branch)
-            for wt_path, branch in sorted(worktrees.items())
-            if not any(paths_match(wt_path, t) for t in tracked)
-        ]
         if not orphans:
             continue
         if not git.fetch_all_prune(repo):
@@ -183,6 +119,5 @@ def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list
                 f"keeping {len(orphans)} orphan(s), nothing reaped"
             )
             continue
-        for wt_path, branch in orphans:
-            cleaned.append(_reap_one_orphan(repo, wt_path, branch, dry_run=dry_run))
+        cleaned.extend(_reap_one_orphan(repo, orphan.path, orphan.branch, dry_run=dry_run) for orphan in orphans)
     return cleaned
