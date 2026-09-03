@@ -126,7 +126,24 @@ class TestItSurfacesAVerdictPerMr(TestCase):
 
     def test_an_approved_mr_needs_nothing(self) -> None:
         _seed_request(5, days_idle=30.0)
-        host = FakeCodeHost(user="alice", my_prs=[_green(5)], approvals={"approved_by": [{"user": {"username": "bo"}}]})
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[_green(5)],
+            approvals={"approvals_left": 0, "approved_by": [{"user": {"username": "bo"}}]},
+        )
+
+        signals = MrTriageScanner(host=host).scan()
+
+        assert signals == []
+
+    def test_a_github_shaped_approval_with_an_empty_approved_by_list_needs_nothing(self) -> None:
+        """GitHub's ``get_mr_approvals`` hard-codes ``approved_by=[]`` always (#8).
+
+        Only ``approvals_left`` carries the real verdict there. Reading ``approved_by``
+        truthiness misreads every GitHub-backed approval as unapproved and keeps re-pinging it.
+        """
+        _seed_request(38, days_idle=30.0)
+        host = FakeCodeHost(user="alice", my_prs=[_green(38)], approvals={"approvals_left": 0, "approved_by": []})
 
         signals = MrTriageScanner(host=host).scan()
 
