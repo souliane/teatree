@@ -947,8 +947,11 @@ jobs:
             gh pr create \
               --title "chore(ci): refresh test shard durations" \
               --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green." \
-              --base main \
-              --label "ci"
+              --base main
+            # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
+            # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
+            # no PR (#4483). The PR is the deliverable; the label is decoration, never a gate.
+            gh pr edit "$BRANCH" --add-label infra || true
           fi
 
   # MAINTENANCE HONESTY (#4262): "the scheduled run passed" and "the maintenance job ran"

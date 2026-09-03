@@ -9,6 +9,13 @@ CI-2: the refresh PR must be created/pushed with a token that TRIGGERS the requi
 ``test (3.13)`` check (a PAT, ``TEATREE_GH_TOKEN``) — the default ``GITHUB_TOKEN`` never
 fires it, so such a PR could never merge unaided. The step also fails LOUD when that
 token is unset rather than silently opening an un-mergeable PR.
+
+#4483: the branch is force-pushed BEFORE the PR is opened, so anything that exits
+non-zero between the two leaves a refreshed commit with no PR and nothing to review.
+``gh pr create --label <name>`` does exactly that when the label is absent from the
+repo (measured on run 32864127275: ``could not add label: 'ci' not found`` sank the
+step after all twelve shard artifacts had merged cleanly). Labelling is decoration;
+it must never gate the deliverable.
 """
 
 from pathlib import Path
@@ -39,6 +46,25 @@ def _checkout_step() -> dict[str, Any]:
     matches = [s for s in _steps() if "actions/checkout" in str(s.get("uses", ""))]
     assert matches, "refresh-durations must have an actions/checkout step."
     return matches[0]
+
+
+def _pr_step_commands() -> str:
+    """The step's shell minus comment lines, so prose can neither satisfy nor trip an assertion."""
+    lines = str(_pr_step().get("run", "")).splitlines()
+    return "\n".join(line for line in lines if not line.strip().startswith("#"))
+
+
+def _gh_pr_create_invocation() -> str:
+    """The ``gh pr create`` command with its backslash continuations."""
+    lines = _pr_step_commands().splitlines()
+    starts = [i for i, line in enumerate(lines) if "gh pr create" in line]
+    assert starts, "refresh-durations must still open the PR with `gh pr create`."
+    collected = [lines[starts[0]]]
+    index = starts[0]
+    while collected[-1].rstrip().endswith("\\"):
+        index += 1
+        collected.append(lines[index])
+    return "\n".join(collected)
 
 
 class TestRefreshBranchIsStable:
@@ -91,3 +117,26 @@ class TestRefreshPrTriggersCi:
         )
         assert 'if [ -z "${GH_TOKEN:-}" ]' in run, guard_msg
         assert "exit 1" in run, guard_msg
+
+
+class TestLabellingNeverGatesTheRefreshPr:
+    """#4483: a missing label must not sink the refresh after the branch is pushed."""
+
+    def test_pr_create_does_not_pass_label(self) -> None:
+        assert "--label" not in _gh_pr_create_invocation(), (
+            "`gh pr create --label <name>` exits 1 when the label is absent from the repo, and "
+            "the step runs under `set -e` AFTER the refresh branch is already force-pushed — so "
+            "a renamed or missing label strands the refreshed commit with no PR (#4483). Apply "
+            "the label in its own non-fatal call instead."
+        )
+
+    def test_label_is_applied_non_fatally(self) -> None:
+        labelling = [line for line in _pr_step_commands().splitlines() if "--add-label" in line]
+        assert labelling, (
+            "The refresh PR should still be labelled — apply it with `gh pr edit --add-label` "
+            "after creation, so the label is decoration rather than a gate (#4483)."
+        )
+        assert all("||" in line for line in labelling), (
+            f"Every `--add-label` call must be non-fatal (`|| true`), else it re-introduces the "
+            f"#4483 failure under `set -e`. Found: {labelling!r}"
+        )

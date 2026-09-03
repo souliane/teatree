@@ -324,6 +324,7 @@ install -d \
     "$HOME/.local/share/teatree" \
     "$HOME/.local/share/teatree-worktrees" \
     "$HOME/workspace/t3-workspaces" \
+    "$HOME/.local/share/uv/python" \
     "$HOME/.claude/projects" \
     "$HOME/.local/bin"
 

@@ -1,10 +1,10 @@
-"""``t3 <overlay> ticket bulk-close`` / ``fold`` / ``fold-check`` / ``integration-review-override``.
+"""``t3 <overlay> ticket bulk-close`` / ``fold`` / ``fold-check`` / the two gate overrides.
 
 Factored out of ``ticket.py`` as a :class:`CloseCommands` mixin (the module-health
 LOC cap), exactly like ``RubricCommands`` / ``ContextCommands``: django-typer
 collects ``@command`` methods from every ``TyperCommand`` base in the MRO, so
 these mount under ``t3 <overlay> ticket bulk-close`` / ``fold`` / ``fold-check`` /
-``integration-review-override`` with the CLI surface unchanged.
+``integration-review-override`` / ``fix-record-override`` with the CLI surface unchanged.
 
 ``bulk-close`` closes (``ignore``) a batch of tickets behind the no-bulk-close
 guard (:func:`teatree.core.gates.bulk_close_gate.check_bulk_close`); ``fold`` and
@@ -12,7 +12,9 @@ guard (:func:`teatree.core.gates.bulk_close_gate.check_bulk_close`); ``fold`` an
 posture (#4344) — a member's body moves into its host verbatim, and the host is
 re-read and proved to carry it before the standalone row is retired;
 ``integration-review-override`` records the audited escape hatch for the
-cross-repo integration-review gate.
+cross-repo integration-review gate, and ``fix-record-override`` the one for the
+fix-ticket FixRecord DoD gate — which prescribed this command from #1661 while
+nothing implemented it, so its documented exception was unreachable.
 """
 
 from pathlib import Path
@@ -47,6 +49,11 @@ class FoldCheckResult(TypedDict, total=False):
 
 
 class IntegrationReviewOverrideResult(TypedDict, total=False):
+    ticket_id: int
+    reason: str
+
+
+class FixRecordOverrideResult(TypedDict, total=False):
     ticket_id: int
     reason: str
 
@@ -188,6 +195,30 @@ class CloseCommands(TyperCommand):
         ticket = self._resolve(ticket_id)
         ticket.merge_extra(set_keys={"integration_review_override": {"reason": reason.strip()}})
         self.stdout.write(f"  recorded integration-review override for ticket {ticket_id}")
+        return {"ticket_id": ticket_id, "reason": reason.strip()}
+
+    @command(name="fix-record-override")
+    def fix_record_override(
+        self,
+        ticket_id: int,
+        *,
+        reason: Annotated[str, typer.Option("--reason", help="Why this fix needs no FixRecord.")] = "",
+    ) -> FixRecordOverrideResult:
+        """Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520).
+
+        The ROUTE through that gate is the fixing agent's ``fix_record`` result-envelope
+        member, which ``agents.fix_record_recorder`` validates and writes. This is the
+        EXCEPTION beside it — a fix the kind heuristic mis-classifies, or a genuinely
+        trivial one with no root cause to state. A blank reason is refused: a
+        self-authored exception that names no reason is indistinguishable from a bypass.
+        """
+        if not reason.strip():
+            self.stderr.write("  fix-record-override refused: --reason is required")
+            raise SystemExit(1)
+        ticket = self._resolve(ticket_id)
+        ticket.record_fix_record_override(reason.strip())
+        self.print_result = False
+        self.stdout.write(f"  recorded FixRecord override for ticket {ticket_id}")
         return {"ticket_id": ticket_id, "reason": reason.strip()}
 
     def _read(self, path: str) -> str:

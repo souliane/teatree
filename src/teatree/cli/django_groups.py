@@ -362,6 +362,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "integration-review-override",
                 "Record the audited escape hatch for the cross-repo integration-review gate.",
             ),
+            ("fix-record-override", "Record the audited exception for the fix-ticket FixRecord DoD gate."),
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),

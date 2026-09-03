@@ -14,6 +14,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import UserSettings
+from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import Ticket
 
 
@@ -101,3 +102,40 @@ class TicketIntegrationReviewOverrideTest(TestCase):
             call_command("ticket", "integration-review-override", str(ticket.pk), "--reason", "  ")
         ticket.refresh_from_db()
         assert "integration_review_override" not in (ticket.extra or {})
+
+
+class TicketFixRecordOverrideTest(TestCase):
+    """``fix-record-override`` — the audited exception the FixRecord DoD gate's message names.
+
+    The gate has prescribed this command since #1661 while nothing implemented it, so its
+    documented exception was unreachable: a legitimately-exempt fix had no way through at
+    all. #4520 supplies the ROUTE (the agent's ``fix_record`` envelope member); this is the
+    exception beside it, so the refusal message finally names something that exists.
+    """
+
+    def test_records_override_reason(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "fix-record-override", str(ticket.pk), "--reason", "one-char typo, no root cause"),
+        )
+        ticket.refresh_from_db()
+        assert ticket.extra["fix_record_override"]["reason"] == "one-char typo, no root cause"
+        assert result["ticket_id"] == int(ticket.pk)
+
+    def test_the_override_unblocks_delivery(self) -> None:
+        """The whole point: the gate passes on a fix-ticket carrying no FixRecord."""
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX, state=Ticket.State.RETROSPECTED)
+        with pytest.raises(FixRecordDodError):
+            ticket.mark_delivered()
+        call_command("ticket", "fix-record-override", str(ticket.pk), "--reason", "mis-classified: pure docs change")
+        ticket.refresh_from_db()
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_blank_reason_exits_nonzero(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX)
+        with pytest.raises(SystemExit):
+            call_command("ticket", "fix-record-override", str(ticket.pk), "--reason", "  ")
+        ticket.refresh_from_db()
+        assert "fix_record_override" not in (ticket.extra or {})

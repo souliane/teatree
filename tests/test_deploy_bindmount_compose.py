@@ -82,8 +82,16 @@ CREDENTIAL_PLANE = {
 SESSION_PLANE = {
     f"{CONTAINER_HOME}/.claude/projects",
 }
+# The interpreter plane: the ONE uv python root both venues name identically
+# (#4642). A pyvenv.cfg records an ABSOLUTE interpreter path, so a venv under the
+# path-identical worktree bind is valid in both venues only where its interpreter
+# root is path-identical too — otherwise each venue deletes and rebuilds the
+# other's environment, ~1 GB a flip. The TOOL plane stays on `teatree_uv`.
+INTERPRETER_PLANE = {
+    f"{CONTAINER_HOME}/.local/share/uv/python",
+}
 # The mounts whose SOURCE is their TARGET rebased on the host home.
-PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
+PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE | INTERPRETER_PLANE
 # The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
 # A PAIR by construction: the open-file guard is read from a process table, so the
 # temp root and the table describing its holders must name the same namespace.
