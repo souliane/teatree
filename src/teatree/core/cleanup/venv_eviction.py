@@ -19,6 +19,13 @@ the measurement that produced this issue exactly one such checkout had a live
 agent attached and would have had the floor pulled out from under it. Idleness
 only ever narrows the candidate set; a live process is what decides.
 
+**How much it narrows is a function of disk pressure (#4644).** A checkout some
+other process rewrites hourly never ages past a fixed ``venv_idle_days``, so it
+was ineligible on every pass forever however full the disk got. The caller
+therefore scales the requirement with measured free space and passes ``None``
+below the critical floor, where age stops gating and liveness is the sole guard —
+:mod:`teatree.core.cleanup.reclaim_pressure` holds that policy.
+
 That makes the process table load-bearing rather than advisory, so an unreadable
 one refuses the whole pass (:mod:`teatree.core.cleanup.process_table` explains
 the venue that produced it). This is stricter than
@@ -59,8 +66,9 @@ from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 #: The virtualenv directory names teatree provisions into a checkout.
 _VENV_NAMES = (".venv", ".venv-hook")
 
-#: How many venvs one pass may evict. A bound on the blast radius and on the
-#: sizing walk, not a coverage claim — the count dropped is reported.
+#: How many venvs one pass may evict. A bound on the blast radius, not a coverage
+#: claim — what it defers is reported, and the eligible set is ranked by size
+#: first so a capped pass returns the most bytes rather than the first 25 walked.
 _MAX_EVICTIONS_PER_PASS = 25
 
 
@@ -97,14 +105,19 @@ class EvictionOutcome:
     refusal: str = ""
 
 
-def plan_venv_eviction(workspace: Path, *, idle_days: float) -> VenvEvictionPlan:
-    """Which dormant venvs this pass may evict — empty with a ``refusal`` when it may not."""
+def plan_venv_eviction(workspace: Path, *, idle_days: float | None) -> VenvEvictionPlan:
+    """Which venvs this pass may evict — empty with a ``refusal`` when it may not.
+
+    ``idle_days=None`` means dormancy does not gate at all, which is what disk
+    pressure below the critical floor buys (:mod:`teatree.core.cleanup.reclaim_pressure`).
+    Liveness is unaffected by it.
+    """
     table = read_process_table()
     if refusal := table.refuse_reason():
         return VenvEvictionPlan(refusal=refusal)
     registry = live_checkout_paths(workspace)
-    cutoff = timezone.now().timestamp() - idle_days * 86400
-    candidates: list[VenvCandidate] = []
+    cutoff = None if idle_days is None else timezone.now().timestamp() - idle_days * 86400
+    eligible: list[VenvCandidate] = []
     kept: list[str] = []
     considered = 0
     for checkout in one_spelling_each(registry.paths):
@@ -113,11 +126,24 @@ def plan_venv_eviction(workspace: Path, *, idle_days: float) -> VenvEvictionPlan
             reason = _keep_reason(venv, checkout=checkout, table=table, cutoff=cutoff)
             if reason:
                 kept.append(f"{venv}: {reason}")
-            elif len(candidates) < _MAX_EVICTIONS_PER_PASS:
-                candidates.append(VenvCandidate(venv, checkout, _dir_size_bytes(venv)))
             else:
-                kept.append(f"{venv}: over the {_MAX_EVICTIONS_PER_PASS}-per-pass cap, deferred to the next pass")
-    return VenvEvictionPlan(tuple(candidates), tuple(kept), registry.gaps, considered)
+                eligible.append(VenvCandidate(venv, checkout, _dir_size_bytes(venv)))
+    ranked = sorted(eligible, key=lambda candidate: candidate.size_bytes, reverse=True)
+    kept.extend(_deferred_lines(ranked[_MAX_EVICTIONS_PER_PASS:]))
+    return VenvEvictionPlan(tuple(ranked[:_MAX_EVICTIONS_PER_PASS]), tuple(kept), registry.gaps, considered)
+
+
+def _deferred_lines(deferred: list[VenvCandidate]) -> list[str]:
+    """Name each venv the cap held back, then the total it left on the disk."""
+    if not deferred:
+        return []
+    lines = [
+        f"{candidate.venv}: over the {_MAX_EVICTIONS_PER_PASS}-per-pass cap, deferred to the next pass"
+        for candidate in deferred
+    ]
+    total = sum(candidate.size_bytes for candidate in deferred)
+    lines.append(f"deferred to the next pass: {len(deferred)} venv(s), {total} bytes")
+    return lines
 
 
 def evict_venvs(plan: VenvEvictionPlan) -> EvictionOutcome:
@@ -144,11 +170,13 @@ def _venvs_in(checkout: Path) -> list[Path]:
     return [venv for name in _VENV_NAMES if (venv := checkout / name).is_dir()]
 
 
-def _keep_reason(venv: Path, *, checkout: Path, table: ProcessTable, cutoff: float) -> str:
+def _keep_reason(venv: Path, *, checkout: Path, table: ProcessTable, cutoff: float | None) -> str:
     """Why *venv* survives this pass, or ``""`` when nothing keeps it."""
-    return _in_use_reason(venv, checkout=checkout, table=table) or _dormancy_reason(
-        venv, checkout=checkout, cutoff=cutoff
-    )
+    if in_use := _in_use_reason(venv, checkout=checkout, table=table):
+        return in_use
+    if cutoff is None:
+        return ""
+    return _dormancy_reason(venv, checkout=checkout, cutoff=cutoff)
 
 
 def _in_use_reason(venv: Path, *, checkout: Path, table: ProcessTable) -> str:

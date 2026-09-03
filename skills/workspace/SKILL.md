@@ -240,9 +240,17 @@ On a "free disk space" request, run `t3 <overlay> workspace reclaim-disk` — TH
 
 It reports per-step and total reclaimed bytes. `--dry-run` plans the set without removing anything. Running stacks, tagged application images, and attached DB volumes backing a live worktree all survive. The danger this forecloses: `docker image prune -af` (the `-a`) reaps every unused image including the application images (forcing full rebuilds), and pruning right after a stack is stopped makes that stack's images "unused" so `-af` reaps them — the auto-mode classifier blocks `clean-all` but does **not** guard raw `docker image prune -af`. Removing application images or tearing down worktrees/DBs stays a separate, explicitly-targeted action (`workspace teardown` / `clean-all`), never bundled into `reclaim-disk`.
 
-**It fails loud, and `0B` means `0B`.** A prune that docker actively refuses (daemon down, or no `/var/run/docker.sock` in the container the CLI runs in) is marked `FAILED — <reason>` on its step and exits the command **non-zero**. Every step still runs, so one refusal never forfeits the reclaim the others can do. Only an *absent* docker binary (CI sandboxes) stays silent. So a clean exit reporting `Total reclaimed: 0B` genuinely means there was nothing left to reclaim — treat it as such, and never read a `FAILED` line as "already clean".
+**It fails loud, and `0B` means `0B`.** A prune that docker actively refuses is marked `FAILED — <reason>` on its step and exits the command **non-zero**. Every step still runs, so one refusal never forfeits the reclaim the others can do. So a clean exit reporting `Total reclaimed: 0B` genuinely means there was nothing left to reclaim — treat it as such, and never read a `FAILED` line as "already clean".
 
-**When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so `deploy/deploy.sh` re-resolves the socket gid — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
+**A venue that cannot reach docker refuses UP FRONT and names the route (#4585).** The daemon is probed before anything is planned or run, so a venue that cannot act attempts no prune, prints no `Total reclaimed:` line, and exits **non-zero** — a reclaim that never happened can no longer read as one that found nothing. That covers an absent docker CLI too: three `reclaimed 0B` lines and a clean exit used to be indistinguishable from a genuinely clean box.
+
+The refusal carries the route out, because the venue split is real but not absolute:
+
+- `deploy/docker-compose.yml` mounts `/var/run/docker.sock` into **every** service and grants it — via `group_add` — to **`teatree-worker` alone**. So in `teatree-admin` the socket node is present and every connect on it is denied.
+- `deploy/t3` prefers `teatree-worker` and falls back to `teatree-admin`, which is how an operator lands in the socket-less one.
+- `teatree-worker` reaches **both** the daemon and the control DB, so it is the venue that can do the whole job. A refusal in any other service names it: `deploy/t3 <overlay> workspace reclaim-disk` from the host, or `docker compose -f deploy/docker-compose.yml exec teatree-worker t3 <overlay> workspace reclaim-disk`.
+
+Refused **inside** the worker, the grant itself is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container). Fix the grant — re-deploy so `deploy/deploy.sh` re-resolves the socket gid — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on a host that reaches dockerd, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
 
 ### The checkout pool's retention policy (#4244)
 
@@ -258,6 +266,19 @@ The policy is enforced by the `resource_pressure` loop, not by a human running a
   sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
   the tree, the commits and every uncommitted change live outside the venv. Set the
   retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+- **That retention is a CEILING, decayed by how full the disk is (#4644).** It applies in
+  full at or above `disk_warn_free_gb`, decays linearly between the two disk thresholds
+  (at 17.5 GB free with the shipped 25/10 it is one day, not two), and below
+  `disk_crit_free_gb` age stops gating at all. Without that a checkout some other process
+  rewrites hourly could never age into eligibility — it was immune on every pass, forever,
+  however full the box got. No new setting: the shape is read from the two thresholds the
+  pressure ladder already uses, and an unmeasurable reading never relaxes anything.
+- **A capped pass returns the most bytes.** Eligible venvs are ranked by size before the
+  per-pass cap applies, and the plan names what it deferred.
+- **A reclaim that keeps freeing nothing on a full disk goes RED.** Three consecutive passes
+  below the critical floor that return zero bytes raise the `reclaim-stalled:disk` health
+  signal — a pass that reclaimed nothing and a pass that never ran are otherwise
+  indistinguishable. It resolves itself once the disk recovers.
 - **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
   candidate set; a live process decides. The guard reads the HOST's process table
   (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it

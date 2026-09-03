@@ -62,6 +62,7 @@ from teatree.core.cleanup.venv_eviction import VenvEvictionPlan, evict_venvs, pl
 from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.reclaim_yield import pressure_idle_days, reclaim_yield_steps
 from teatree.loop.worktree_gc import GcSurvey, collect, survey_worktrees
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -136,6 +137,8 @@ def _free_resources_inner(payload: ActionPayload) -> None:
     marker = ResourcePressureMarker.load()
     _persist_plan(marker, plan)
     _execute_plan(plan, payload, survey)
+    if resource == "disk":
+        plan.steps.extend(reclaim_yield_steps(marker, reclaimed_gb=plan.reclaimed_gb, payload=payload))
     _persist_plan(marker, plan)
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
@@ -299,11 +302,16 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
     ``-a``/``system prune``, so a running container's images are never reaped.
     A failure (no docker daemon, a prune error) is swallowed and recorded so
     the freeing pass continues; the per-step reclaimed bytes land in the plan.
+    A venue that cannot reach dockerd ran nothing, so it says so rather than
+    logging a 0B reclaim the next reader takes for "nothing to reclaim" (#4585).
     """
     try:
         report = reclaim_disk()
     except Exception:
         logger.exception("free_resources: docker disk reclaim failed — swallowed")
+        return 0.0
+    if report.venue_blocked:
+        plan.steps.append(f"  → docker reclaim did not run: {report.failure_summary()}")
         return 0.0
     reclaimed_gb = report.total_bytes / _GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
@@ -424,7 +432,7 @@ def _surveyed_worktrees(payload: ActionPayload) -> GcSurvey:
 
 def _surveyed_venvs(payload: ActionPayload) -> VenvEvictionPlan:
     try:
-        return plan_venv_eviction(worktree_root(), idle_days=float(payload.get("venv_idle_days", 2)))
+        return plan_venv_eviction(worktree_root(), idle_days=pressure_idle_days(payload))
     except Exception as exc:
         logger.exception("free_resources: venv survey failed — swallowed")
         return VenvEvictionPlan(refusal=f"the venv survey raised ({exc})")

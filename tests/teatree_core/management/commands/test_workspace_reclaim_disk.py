@@ -17,6 +17,7 @@ from django.test import TestCase
 import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands.workspace as workspace_mod
 from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
+from teatree.docker.venue import DockerVenue
 
 
 def _stub_report(*, dry_run: bool = False) -> ReclaimReport:
@@ -50,6 +51,13 @@ def _failed_report() -> ReclaimReport:
         ),
     )
     return ReclaimReport(steps=steps, planned=steps)
+
+
+def _venue_blocked_report(*, has_cli: bool = True, reason: str = "permission denied") -> ReclaimReport:
+    """Nothing ran: the venue cannot reach dockerd, so no step was even attempted."""
+    planned = (ReclaimStep(argv=["docker", "builder", "prune", "-af"], label="build cache"),)
+    venue = DockerVenue(reachable=False, reason=reason, has_cli=has_cli, containerized=True, service_role="admin")
+    return ReclaimReport(steps=(), planned=planned, venue=venue)
 
 
 class ReclaimDiskCommandTests(TestCase):
@@ -106,3 +114,40 @@ class ReclaimDiskCommandTests(TestCase):
     def test_successful_reclaim_still_exits_zero(self) -> None:
         with patch.object(workspace_mod, "reclaim_disk", return_value=_stub_report()):
             call_command("workspace", "reclaim-disk")  # no SystemExit
+
+    def test_exits_non_zero_when_the_venue_cannot_reach_docker(self) -> None:
+        """The prescribed remedy for a full disk must never report a reclaim it did not do."""
+        stdout, stderr = StringIO(), StringIO()
+        with (
+            patch.object(workspace_mod, "reclaim_disk", return_value=_venue_blocked_report()),
+            pytest.raises(SystemExit) as raised,
+        ):
+            call_command("workspace", "reclaim-disk", stdout=stdout, stderr=stderr)
+        assert raised.value.code == 1
+        assert "did not run" in stdout.getvalue()
+        assert "Total reclaimed" not in stdout.getvalue()
+        assert "permission denied" in stderr.getvalue()
+
+    def test_absent_docker_cli_no_longer_exits_zero_on_a_reclaim_that_never_ran(self) -> None:
+        """The last silent success: three ``reclaimed 0B`` lines and exit 0 with nothing done."""
+        with (
+            patch.object(
+                workspace_mod,
+                "reclaim_disk",
+                return_value=_venue_blocked_report(has_cli=False, reason="no docker CLI here"),
+            ),
+            pytest.raises(SystemExit) as raised,
+        ):
+            call_command("workspace", "reclaim-disk", stdout=StringIO(), stderr=StringIO())
+        assert raised.value.code == 1
+
+    def test_venue_blocked_output_names_a_runnable_route(self) -> None:
+        stdout = StringIO()
+        report = _venue_blocked_report()
+        with (
+            patch.object(workspace_mod, "reclaim_disk", return_value=report),
+            pytest.raises(SystemExit),
+        ):
+            call_command("workspace", "reclaim-disk", stdout=stdout, stderr=StringIO())
+        assert "teatree-worker" in stdout.getvalue()
+        assert "docker builder prune -af" in stdout.getvalue()
