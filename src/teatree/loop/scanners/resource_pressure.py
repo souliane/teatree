@@ -391,6 +391,11 @@ class ResourcePressureScanner:
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
                 "allow_destructive_disk": self.allow_destructive_disk,
                 "venv_idle_days": self.venv_idle_days,
+                # The freeing pass scales its reclaim criterion by how far below
+                # these the box actually is (#4644), so it needs the shape of the
+                # ladder it was dispatched from, not just the reading.
+                "disk_warn_free_gb": self.disk_warn_free_gb,
+                "disk_crit_free_gb": self.disk_crit_free_gb,
                 "worktree_stale_days": self.worktree_stale_days,
                 "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,
