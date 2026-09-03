@@ -39,8 +39,7 @@ class TestSlackPostMessageInjectsPoster:
 
     def test_post_message_posts_chat_postmessage_non_idempotent(self) -> None:
         poster = MagicMock(return_value={"ok": True, "ts": "1700.0001"})
-        ts = slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok")
-        assert ts == "1700.0001"
+        assert slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok") == ("1700.0001", "")
         poster.assert_called_once_with(
             "chat.postMessage", token="tok", json={"channel": "D1", "text": "hi"}, idempotent=False
         )
@@ -51,13 +50,15 @@ class TestSlackPostMessageInjectsPoster:
         _name, kwargs = poster.call_args
         assert kwargs["json"] == {"channel": "D1", "text": "hi", "thread_ts": "1700.0000"}
 
-    def test_post_message_empty_on_not_ok(self) -> None:
+    def test_post_message_names_the_slack_error_on_not_ok(self) -> None:
         poster = MagicMock(return_value={"ok": False, "error": "channel_not_found"})
-        assert slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok") == ""
+        assert slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok") == ("", "channel_not_found")
 
-    def test_post_message_empty_on_transport_error(self) -> None:
+    def test_post_message_reports_no_error_on_transport_failure(self) -> None:
+        # Nothing came back, so nothing is known — including whether Slack
+        # accepted the post. The empty error is what stops a caller re-posting.
         poster = MagicMock(side_effect=RuntimeError("down"))
-        assert slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok") == ""
+        assert slack_mirror.slack_post_message(poster, "D1", "hi", bot_token="tok") == ("", "")
 
 
 class TestDmChannelCache:
@@ -88,7 +89,7 @@ class TestSlackPostDm:
         slack_mirror.write_dm_channel_cache("U1", "D-cached")
         with (
             patch.object(slack_mirror, "slack_open_dm") as mock_open,
-            patch.object(slack_mirror, "slack_post_message", return_value="1700.1") as mock_post,
+            patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")) as mock_post,
         ):
             slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
         mock_open.assert_not_called()
@@ -100,7 +101,7 @@ class TestSlackPostDm:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         with (
             patch.object(slack_mirror, "slack_open_dm", return_value="D-new") as mock_open,
-            patch.object(slack_mirror, "slack_post_message", return_value="1700.1") as mock_post,
+            patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")) as mock_post,
         ):
             slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
         mock_open.assert_called_once()
@@ -113,7 +114,9 @@ class TestSlackPostDm:
         slack_mirror.write_dm_channel_cache("U1", "D-stale")
         with (
             patch.object(slack_mirror, "slack_open_dm", return_value="D-fresh") as mock_open,
-            patch.object(slack_mirror, "slack_post_message", side_effect=["", "1700.1"]) as mock_post,
+            patch.object(
+                slack_mirror, "slack_post_message", side_effect=[("", "channel_not_found"), ("1700.1", "")]
+            ) as mock_post,
         ):
             slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
         mock_open.assert_called_once()
@@ -123,7 +126,7 @@ class TestSlackPostDm:
     def test_cache_hit_posts_at_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         slack_mirror.write_dm_channel_cache("U1", "D-cached")
-        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1") as mock_post:
+        with patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")) as mock_post:
             slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
         assert mock_post.call_args.kwargs == {"bot_token": "xoxb-tok"}
 
@@ -131,7 +134,7 @@ class TestSlackPostDm:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         with (
             patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
-            patch.object(slack_mirror, "slack_post_message", return_value="1700.1") as mock_post,
+            patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")) as mock_post,
         ):
             slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
         assert mock_post.call_args.kwargs == {"bot_token": "xoxb-tok"}
@@ -154,7 +157,7 @@ class TestAudioEnrichment:
         slack_mirror.write_dm_channel_cache("U1", "D-cached")
         monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
         enrich = MagicMock()
-        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+        with patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")):
             slack_mirror.perform_slack_post(
                 ("ref", "U1"),
                 [{"question": "Ship?"}],
@@ -172,7 +175,7 @@ class TestAudioEnrichment:
         enrich = MagicMock()
         with (
             patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
-            patch.object(slack_mirror, "slack_post_message", return_value="1700.1"),
+            patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")),
         ):
             slack_mirror.perform_slack_post(
                 ("ref", "U1"),
@@ -186,7 +189,7 @@ class TestAudioEnrichment:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         slack_mirror.write_dm_channel_cache("U1", "D-cached")
         monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
-        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+        with patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")):
             ts = slack_mirror.perform_slack_post(("ref", "U1"), [{"question": "Ship?"}], poster=MagicMock())
         assert ts == "1700.1"  # just the text post, no enricher, no raise
 
@@ -196,7 +199,7 @@ class TestAudioEnrichment:
         enrich = MagicMock()
         with (
             patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
-            patch.object(slack_mirror, "slack_post_message", return_value=""),
+            patch.object(slack_mirror, "slack_post_message", return_value=("", "")),
         ):
             slack_mirror.perform_slack_post(
                 ("ref", "U1"),
@@ -211,7 +214,7 @@ class TestAudioEnrichment:
         slack_mirror.write_dm_channel_cache("U1", "D-cached")
         monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
         enrich = MagicMock(side_effect=RuntimeError("synthesis blew up"))
-        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+        with patch.object(slack_mirror, "slack_post_message", return_value=("1700.1", "")):
             ts = slack_mirror.perform_slack_post(
                 ("ref", "U1"),
                 [{"question": "Ship?"}],
@@ -300,3 +303,54 @@ class TestPerformSlackPostInjectsDependencies:
         passed_poster, bot_token, user_id, _text = mock_dm.call_args.args
         assert passed_poster is poster
         assert (bot_token, user_id) == ("xoxb-tok", "U1")
+
+
+class TestAFailedCachedPostIsNotBlindlyReposted:
+    """``chat.postMessage`` is not idempotent — a re-post needs proof of non-delivery.
+
+    Any empty ts from the cached channel triggered a second, brand-new post. A
+    transport failure or a lost response is exactly the case where Slack may have
+    accepted the first one, so the retry turned an undelivered question into two
+    delivered ones. Only a stale-channel error proves nothing landed.
+    """
+
+    def test_a_transport_failure_on_the_cached_channel_does_not_repost(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        with (
+            patch.object(slack_mirror, "slack_open_dm") as mock_open,
+            patch.object(slack_mirror, "slack_post_message", return_value=("", "")) as mock_post,
+        ):
+            ts = slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello")
+        assert ts == ""
+        assert mock_post.call_count == 1
+        mock_open.assert_not_called()
+
+    def test_a_rate_limit_on_the_cached_channel_does_not_repost(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        with (
+            patch.object(slack_mirror, "slack_open_dm") as mock_open,
+            patch.object(slack_mirror, "slack_post_message", return_value=("", "ratelimited")) as mock_post,
+        ):
+            assert slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello") == ""
+        assert mock_post.call_count == 1
+        mock_open.assert_not_called()
+
+    def test_an_archived_channel_is_reopened_and_reposted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-stale")
+        with (
+            patch.object(slack_mirror, "slack_open_dm", return_value="D-fresh"),
+            patch.object(
+                slack_mirror, "slack_post_message", side_effect=[("", "is_archived"), ("1700.9", "")]
+            ) as mock_post,
+        ):
+            assert slack_mirror.slack_post_dm(MagicMock(), "xoxb-tok", "U1", "hello") == "1700.9"
+        assert mock_post.call_count == 2

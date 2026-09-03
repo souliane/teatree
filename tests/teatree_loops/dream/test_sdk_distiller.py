@@ -71,6 +71,18 @@ class SdkDistillerParseTestCase(SimpleTestCase):
         assert clusters[0].is_binding is True
         assert clusters[0].source_files == ["/feedback_x.md"]
 
+    def test_drops_a_cluster_whose_is_binding_is_not_a_json_boolean(self) -> None:
+        # ``bool("false")`` is True, so a stringified reply used to mark every cluster
+        # BINDING — and a BINDING ``ConsolidatedMemory`` refuses to expire or retire,
+        # permanently. The shape is not the contract, so the entry is dropped like any
+        # other malformed one.
+        payload = (
+            '[{"rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":"false","verified_citation":"the mistake","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            assert sdk_distiller.sdk_distiller(_extract_with_one_snippet()) == []
+
     def test_parses_json_embedded_in_prose(self) -> None:
         payload = (
             "Here is the result:\n"

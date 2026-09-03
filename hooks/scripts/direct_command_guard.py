@@ -80,6 +80,14 @@ _READONLY_CMD_PREFIX_RE = re.compile(
     r"^(?:echo|printf|cat|grep|rg|awk|sed|head|tail|less|wc|file|#)",
 )
 
+# ``git`` takes its own global options between the program word and the
+# subcommand, so a contiguous ``git push`` match misses ``git -c k=v push``.
+# The trailing group backtracks so a value-less option does not swallow ``push``.
+_GIT_GLOBAL_OPTS = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
+# The four spellings git accepts for one push option, all scheduling the same
+# auto-merge: ``-o V``, ``-oV``, ``--push-option V``, ``--push-option=V``.
+_AUTO_MERGE_PUSH_OPTION = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
+
 # Forbidden command patterns → deny messages.  Each entry is
 # (compiled regex matching the Bash command, human-readable deny reason).
 # Patterns that match a VALUE or CONFIG TOKEN that can legitimately appear
@@ -102,14 +110,9 @@ _RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         # F8: ``git push -o merge_request.merge_when_pipeline_succeeds`` schedules
         # a GitLab auto-merge, bypassing the FSM keystone transition
-        # (``t3 <overlay> ticket merge``). The ``--push-option=`` long form is
-        # equivalent.  The push-option value can appear quoted on the command
-        # line, so scan raw.
-        re.compile(
-            r"\bgit\s+push\b.*"
-            r"(?:-o\s+['\"]?merge_request\.merge_when_pipeline_succeeds"
-            r"|--push-option=['\"]?merge_request\.merge_when_pipeline_succeeds)"
-        ),
+        # (``t3 <overlay> ticket merge``).  The push-option value can appear
+        # quoted on the command line, so scan raw.
+        re.compile(rf"\bgit\s+{_GIT_GLOBAL_OPTS}push\b.*{_AUTO_MERGE_PUSH_OPTION}"),
         (
             "BLOCKED: `git push -o merge_request.merge_when_pipeline_succeeds` "
             "schedules an auto-merge bypassing the FSM keystone — "
@@ -171,7 +174,12 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\b(?:npx\s+)?playwright\s+test\b"),
-        "BLOCKED: `playwright test` — use `t3 <overlay> e2e` instead.",
+        (
+            "BLOCKED: `playwright test` — for a lane whose Playwright config lives in THIS checkout "
+            "(a browserless unit/static-analysis lane: no stack, no tenant, no credentials) use "
+            "`t3 <overlay> e2e in-tree [--test-path <spec>] [--config <cfg>]`; for a browser suite "
+            "against a running stack use `t3 <overlay> e2e run`."
+        ),
     ),
     (
         re.compile(r"\bnpm\s+run\b"),
@@ -269,6 +277,18 @@ _HEREDOC_BODY_RE = re.compile(
     re.DOTALL,
 )
 
+# A shell interpreter EXECUTES its ``-c`` argument, so that argument is command
+# TEXT the denylist must scan rather than a quoted literal to strip — the same
+# reasoning that keeps an interpreter-fed heredoc body scanned above. Only a match
+# whose interpreter word sits OUTSIDE every quoted span is an invocation, so a
+# ``git commit -m "repro with bash -c 'pip install x'"`` message stays data.
+_INTERPRETER_C_PAYLOAD_RE = re.compile(
+    r"(?:\S*/)?(?:sh|bash|zsh|dash|ksh)\s+(?:-\S+\s+)*-\S*c\S*\s+(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\")"
+)
+# ``bash -c "sh -c '…'"`` is a real shape; an unbounded walk is not, and a hook
+# must never hang.
+_MAX_INTERPRETER_NESTING = 4
+
 # Command separators that end one command and begin the next.
 _CMD_SEP_SPLIT_RE = re.compile(r"\|\||&&|[;|&\n]")
 
@@ -364,21 +384,32 @@ def _headed_browser_deny(command: str) -> str | None:
     return None
 
 
-def deny_match(command: str) -> str | None:
-    """Return a deny reason for *command*, or None if it should pass through."""
-    # Checked FIRST — even before t3/read-only bypass — because agents must
-    # never opt in to remote pg_dump regardless of the surrounding command.
-    if _REMOTE_DUMP_ENV_RE.search(command):
-        return _REMOTE_DUMP_DENY_REASON
-    if headed := _headed_browser_deny(command):
-        return headed
-    stripped = command.lstrip()
-    # F6: only honor the readonly/t3 prefix allowlist when there is no shell
-    # chaining operator in the command. ``grep x /dev/null; pip install y``
-    # starts with a read-only prefix but chains a blocked write — the gate
-    # must inspect the full command rather than short-circuiting on the prefix.
-    if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
-        return None
+def _interpreter_payloads(command: str) -> list[str]:
+    """The command texts a shell interpreter would EXECUTE from a ``-c`` argument.
+
+    A match whose interpreter word starts inside a quoted span is that span's
+    text, not an invocation, so it contributes nothing.
+    """
+    payloads: list[str] = []
+    pending = [command]
+    for _ in range(_MAX_INTERPRETER_NESTING):
+        found: list[str] = []
+        for text in pending:
+            quoted = [(m.start(), m.end()) for m in _QUOTED_LITERAL_RE.finditer(text)]
+            found.extend(
+                match.group("sq") or match.group("dq") or ""
+                for match in _INTERPRETER_C_PAYLOAD_RE.finditer(text)
+                if not any(start <= match.start() < end for start, end in quoted)
+            )
+        pending = [payload for payload in found if payload]
+        if not pending:
+            break
+        payloads.extend(pending)
+    return payloads
+
+
+def _denylist_reason(command: str) -> str | None:
+    """The two-phase denylist verdict: RAW scan for value/config, quote-stripped for tools."""
     # A heredoc feeding a gh/glab/git posting command is the PR/commit BODY —
     # pure data. Blank those bodies before the denylist scans so a blocked-tool
     # phrase documented in a body (``docker compose up`` in a PR description) is
@@ -399,6 +430,31 @@ def deny_match(command: str) -> str | None:
     for pattern, reason in _QUOTE_STRIPPED_BLOCKED:
         if pattern.search(_executing_segments(quote_stripped)):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
+    return None
+
+
+def deny_match(command: str) -> str | None:
+    """Return a deny reason for *command*, or None if it should pass through."""
+    # Checked FIRST — even before t3/read-only bypass — because agents must
+    # never opt in to remote pg_dump regardless of the surrounding command.
+    if _REMOTE_DUMP_ENV_RE.search(command):
+        return _REMOTE_DUMP_DENY_REASON
+    if headed := _headed_browser_deny(command):
+        return headed
+    stripped = command.lstrip()
+    # F6: only honor the readonly/t3 prefix allowlist when there is no shell
+    # chaining operator in the command. ``grep x /dev/null; pip install y``
+    # starts with a read-only prefix but chains a blocked write — the gate
+    # must inspect the full command rather than short-circuiting on the prefix.
+    if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
+        return None
+    if reason := _denylist_reason(command):
+        return reason
+    # The quote-stripping above erases the payload of a `bash -c "…"`, which the
+    # interpreter EXECUTES — so each payload gets the same two-phase scan.
+    for payload in _interpreter_payloads(command):
+        if reason := _denylist_reason(payload):
+            return reason
     return None
 
 

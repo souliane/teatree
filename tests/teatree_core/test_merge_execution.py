@@ -925,7 +925,13 @@ class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
         # CLEAR for the SAME (slug, pr_id) — a head-move re-review's orphaned older
         # CLEAR is consumed in the same atomic block, so it can no longer ratchet
         # S4 stale-RED. A different PR's CLEAR is untouched.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        # A workstream slug resolves its repo from the ticket before the running
+        # clone's origin, so the issue_url is what keeps this hermetic in any clone.
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url="https://github.com/souliane/teatree/pull/555",
+        )
         older = MergeClear.objects.create(
             ticket=ticket,
             pr_id=555,

@@ -159,6 +159,40 @@ class TestRawGitSeamRefuses:
         assert find_second_branch_creation(command, pinned_branch="") is None
 
 
+class TestRefspecLessPushPublishesTheCheckedOutBranch:
+    """``checkout`` creates nothing, so a pre-existing side branch reaches a bare ``git push``.
+
+    A repo is declared single-branch precisely because it already carries the side
+    branches that motivated the declaration, so "on a compliant repo the current
+    branch IS the pinned one" is false exactly when the gate matters: check one
+    out, ``git push``, and the second MR appears with nothing refused.
+    """
+
+    @pytest.mark.parametrize("command", ["git push", "git push origin", "git push -u origin"])
+    def test_a_bare_push_from_a_side_branch_is_refused(self, command: str) -> None:
+        finding = find_second_branch_creation(command, pinned_branch=_PINNED, current_branch="feat/x")
+
+        assert finding is not None, command
+        assert (finding.surface, finding.target) == ("push", "feat/x")
+
+    @pytest.mark.parametrize("command", ["git push", "git push origin", "git push --force-with-lease"])
+    def test_a_bare_push_from_the_pinned_branch_allows(self, command: str) -> None:
+        assert find_second_branch_creation(command, pinned_branch=_PINNED, current_branch=_PINNED) is None, command
+
+    def test_an_unresolved_current_branch_allows(self) -> None:
+        # A detached HEAD or an unreadable repo must never become a false refusal.
+        assert find_second_branch_creation("git push", pinned_branch=_PINNED, current_branch="") is None
+
+    def test_an_explicit_pinned_refspec_still_allows_from_a_side_branch(self) -> None:
+        # ANTI-VACUOUS: the current branch decides only the refspec-LESS form.
+        assert (
+            find_second_branch_creation(
+                f"git push origin HEAD:{_PINNED}", pinned_branch=_PINNED, current_branch="feat/x"
+            )
+            is None
+        )
+
+
 class TestDenyMessageNamesTheRule:
     @pytest.mark.parametrize("surface", ["worktree", "branch", "push", "provision"])
     def test_every_surface_names_the_pinned_branch_and_the_way_out(self, surface: str) -> None:

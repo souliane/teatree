@@ -107,7 +107,27 @@ class TestOffLiveTickDriver(django.test.TestCase):
         with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _timeout):
             result = off_live_tick_driver.drive_off_live_tick_loops.func()
 
-        assert result == {"driven": 3, "timed_out": 3}
+        assert result == {"driven": 3, "timed_out": 3, "failed": 0}
+
+    def test_counts_a_nonzero_exit_as_failed_rather_than_a_healthy_drive(self) -> None:
+        # These counts are the pass's only record, so a tick command that ran and exited
+        # nonzero must not be indistinguishable from one that did its work.
+        def _exit_one(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            return {"timed_out": False, "returncode": 1}
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _exit_one):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"driven": 3, "timed_out": 0, "failed": 3}
+
+    def test_counts_a_runner_that_never_started_as_failed(self) -> None:
+        def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            raise _ExplodingTickError(label)
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _explode):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"driven": 0, "timed_out": 0, "failed": 3}
 
     def test_the_driver_is_the_real_deadlined_subprocess_runner(self) -> None:
         # The production seam, unstubbed: the driver calls the shared deadlined runner.

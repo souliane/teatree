@@ -14,7 +14,8 @@ Pass 2 drains the ledger. Every consolidated rule splits in two:
     has a bug. It must be fixed in code, and the memory retired once that fix lands.
 
 So Pass 2 triages each untriaged row (:func:`triage_disposition`, an injected seam
-defaulting to the ``durable_destination``-hint classifier), files a deduped teatree
+defaulting to the ``durable_destination`` classifier grounded against the core
+checkout — :mod:`teatree.loops.dream.destination`), files a deduped teatree
 backlog ticket for the core-generic ones (:func:`file_core_gap_tickets` — the same
 durable, reversible move that converted harness TODOs into ``backlog`` issues),
 and retires the prose once the linked ticket closes (:func:`retire_resolved_memories`).
@@ -40,6 +41,7 @@ from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
+from teatree.loops.dream.destination import classify_destination
 from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.types import RawAPIDict
 
@@ -60,12 +62,6 @@ UMBRELLA_ISSUE_URL = "https://github.com/souliane/teatree/issues/2663"
 #: the review-findings fingerprint marker.
 _GAP_MARKER = "dream-memory-gap"
 
-#: A consolidated rule whose durable home points at teatree's own code/skills is a
-#: core-generic workflow gap (fix in code); any other home (a personal topic file,
-#: or no home) is user-specific and stays a memory. These are the prefixes the
-#: default classifier reads as "this belongs in teatree core".
-_CORE_DESTINATION_PREFIXES = ("skills/", "src/teatree", "teatree/", "scripts/", "blueprint", "agents/")
-
 
 class MemoryDisposition(Enum):
     """The two kinds a consolidated rule's lesson splits into during Pass-2 triage."""
@@ -80,30 +76,29 @@ class MemoryDisposition(Enum):
 MemoryClassifier = Callable[[ConsolidatedMemory], MemoryDisposition]
 
 
-def points_at_core_fix(destination: str) -> bool:
-    """Whether *destination* names a teatree-core fix path (skills / src / scripts / BLUEPRINT / …).
-
-    The single classifier behind Pass-2 triage (:func:`triage_disposition`) and the
-    compliance recurrence redirect
-    (:func:`teatree.loops.dream.compliance._is_memory_only`): a home under teatree's
-    own code/skills is a core-generic gap to fix in code; any other home — or no
-    home — is user-specific and stays a memory.
-    """
-    home = destination.strip().lower()
-    return bool(home) and home.startswith(_CORE_DESTINATION_PREFIXES)
-
-
 def triage_disposition(row: ConsolidatedMemory) -> MemoryDisposition:
     """Classify a consolidated rule as user-specific or a core-generic teatree gap.
 
     Reads the ``durable_destination`` hint the distiller already computed via the
-    shared :func:`points_at_core_fix` classifier: a home under teatree's own
-    skills/source/scripts/BLUEPRINT is core-generic doctrine to fix in code; any
-    other home — or no home — is user-specific and stays a memory. Conservative on
-    the empty case: an unclassifiable row is kept as memory, never auto-ticketed.
+    shared :func:`~teatree.loops.dream.destination.classify_destination` grounding: a
+    home the core checkout has a real place for is core-generic doctrine to fix in
+    code; any other home — or no home — is user-specific and stays a memory.
+    Conservative on the empty case: an unclassifiable row is kept as memory, never
+    auto-ticketed. A destination that LOOKS like core but grounds nowhere in the tree
+    takes that same conservative path, loudly — the alternative, leaving it untriaged,
+    re-warns every pass forever and never drains.
     """
-    if points_at_core_fix(row.durable_destination):
+    verdict = classify_destination(row.durable_destination)
+    if verdict.in_core_tree:
         return MemoryDisposition.CORE_GAP
+    if verdict.reason and row.durable_destination.strip():
+        logger.warning(
+            "dream: keeping cluster %s as memory — its destination %r is ungrounded: %s (rule=%r).",
+            row.cluster_key,
+            row.durable_destination,
+            verdict.reason,
+            row.rule[:120],
+        )
     return MemoryDisposition.USER_SPECIFIC
 
 
@@ -113,8 +108,8 @@ class TicketOutcome:
 
     ``filed`` is True only when a NEW issue was created; ``ticket_url`` is the
     linked issue (newly filed OR a reused open dedup match). ``withheld`` is True
-    when the rendered body would leak a banned term / bare reference and the issue
-    was deliberately NOT filed.
+    when the gap was deliberately NOT promoted — the rendered body would leak a
+    banned term / bare reference, or its destination grounds nowhere in the core tree.
     """
 
     cluster_key: str
@@ -190,8 +185,27 @@ def _promote_one_gap(
     upserted under the umbrella (deduped by ``cluster_key``) and a coding task is
     scheduled for the fix (deduped by the same key). The banned-term / bare-reference
     withholding is enforced inside ``promote_gap`` against the rendered title.
+
+    The destination is re-grounded HERE and not only at triage, because the
+    ``needs_ticket()`` drain promotes rows a PRIOR pass classified without re-running
+    the classifier — so this is the one chokepoint every promoted gap passes through.
     """
     from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    verdict = classify_destination(row.durable_destination)
+    if not verdict.in_core_tree:
+        logger.warning(
+            "dream: refusing to promote cluster %s — its destination %r is ungrounded: %s.",
+            row.cluster_key,
+            row.durable_destination,
+            verdict.reason,
+        )
+        return TicketOutcome(
+            cluster_key=row.cluster_key,
+            filed=False,
+            withheld=True,
+            reason=f"ungrounded destination: {verdict.reason}",
+        )
 
     outcome = umbrella_ledger.promote_gap(
         host,
@@ -352,7 +366,6 @@ __all__ = [
     "TicketOutcome",
     "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
-    "points_at_core_fix",
     "retire_resolved_memories",
     "triage_disposition",
 ]

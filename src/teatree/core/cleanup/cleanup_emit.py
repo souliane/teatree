@@ -47,7 +47,8 @@ and "no probe could run" — and the skill routed both to DELETE, so an unresolv
 clone or an erroring ``git cherry`` emitted a record byte-identical to a shipped
 one. It is now ``false`` for every verdict nothing proved, and ``verdict_source``
 names which layer decided (``cherry-zero-unique`` / ``synthetic-squash`` /
-``branch-merged`` / ``not-redundant``) or why none could (``inconclusive`` /
+``branch-merged`` / ``content-landed`` / ``forge-merged-tip`` /
+``not-redundant``) or why none could (``inconclusive`` /
 ``clone-unresolvable``). An unverified record routes to KEEP, never DELETE.
 """
 

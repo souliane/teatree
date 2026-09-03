@@ -18,7 +18,7 @@ dependencies = [
 scripts = { t3 = "teatree.cli:main" }
 
 [project.entry-points."teatree.overlays"]
-{{project_name}} = "{{package_name}}.settings"
+{{project_name}} = "{{overlay_app}}.overlay:{{overlay_class}}Overlay"
 
 [dependency-groups]
 dev = [
@@ -35,7 +35,7 @@ dev = [
 ]
 
 [tool.uv.build-backend]
-module-name = ["{{overlay_app}}", "{{package_name}}"]
+module-name = ["{{overlay_app}}"]
 module-root = "src"
 
 [tool.ruff]
@@ -87,9 +87,9 @@ addopts = """
 --color=yes --exitfirst --failed-first
 --strict-config --strict-markers --verbose --log-cli-level=INFO
 --cov --cov-report=term-missing:skip-covered --cov-branch
---ds={{package_name}}.settings
+--ds=teatree.settings
 """
-DJANGO_SETTINGS_MODULE = "{{package_name}}.settings"
+DJANGO_SETTINGS_MODULE = "teatree.settings"
 django_find_project = false
 pythonpath = [".", "src"]
 testpaths = ["tests"]
@@ -109,10 +109,10 @@ partial_branches = []
 
 [tool.coverage.run]
 branch = true
-source = ["src/{{overlay_app}}", "src/{{package_name}}"]
+source = ["src/{{overlay_app}}"]
 
 [tool.importlinter]
-root_packages = ["{{overlay_app}}", "{{package_name}}", "tests"]
+root_packages = ["{{overlay_app}}", "tests"]
 include_external_packages = true
 exclude_type_checking_imports = false
 

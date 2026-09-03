@@ -105,7 +105,7 @@ def _declared_scope_hosts(repo_slug: str) -> list[str]:
     ]
 
 
-def _declared_scope_forge(repo_slug: str) -> str:
+def declared_scope_forge(repo_slug: str) -> str:
     """The single forge whose declared scope owns *repo_slug*, or ``""``.
 
     Two distinct forges claiming the same namespace is an ambiguity the merge
@@ -138,7 +138,7 @@ def resolve_host_kind(clear: object, *, repo_slug: str = "") -> str:
     equals *repo_slug* (the repo the merge resolved) — see
     :func:`_running_clone_forge`.
     (4) the forge host an overlay's ``owned_repos`` declares for *repo_slug*'s
-    namespace — see :func:`_declared_scope_forge`.
+    namespace — see :func:`declared_scope_forge`.
 
     Raises :class:`MergePreconditionError` naming the actionable fix when none
     yields a forge. Accepts both a :class:`~teatree.core.models.ClearRequest`
@@ -155,7 +155,7 @@ def resolve_host_kind(clear: object, *, repo_slug: str = "") -> str:
         return from_ticket
     if from_clone := _running_clone_forge(repo_slug):
         return from_clone
-    if declared := _declared_scope_forge(repo_slug):
+    if declared := declared_scope_forge(repo_slug):
         return declared
     slug = repo_slug or str(getattr(clear, "slug", "") or "")
     pr_id = getattr(clear, "pr_id", "?")
@@ -169,3 +169,15 @@ def resolve_host_kind(clear: object, *, repo_slug: str = "") -> str:
         f"`t3 <overlay> ticket clear {pr_id} {slug} --forge <github|gitlab> ...`"
     )
     raise MergePreconditionError(msg)
+
+
+def forge_for_repo_slug(repo_slug: str) -> str:
+    """The forge hosting *repo_slug* from host-BEARING evidence alone, or ``""``.
+
+    The CLEAR-free half of :func:`resolve_host_kind`, for a caller that holds only a
+    slug: the running clone's ``origin`` when that clone IS the repo, then the forge
+    host an overlay's ``owned_repos`` declares for the namespace. Both are
+    declarations, never inferences — a bare ``owner/repo`` carries no host, so an
+    undeclared namespace answers ``""`` and the caller refuses rather than guessing.
+    """
+    return _running_clone_forge(repo_slug) or declared_scope_forge(repo_slug)

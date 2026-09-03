@@ -47,8 +47,16 @@ def _source(clone: Path) -> SkillSourceClone:
     return SkillSourceClone(label="team/skills", paths=[str(clone)])
 
 
+# Every module that binds the registry, not just where it is defined: `skill_sources`
+# imports the name at module load, so patching only the definition site leaves the
+# drift gate reading this box's REAL overlays — which on a box whose overlay declares
+# a skill source is a leak that decides the assertion.
+_OVERLAY_REGISTRY_BINDINGS = ("teatree.core.overlay_loader", "teatree.core.skill_sources")
+
+
 def _pin_overlays(monkeypatch: pytest.MonkeyPatch, overlays: dict[str, object]) -> None:
-    monkeypatch.setattr("teatree.core.overlay_loader.get_all_overlays", lambda: overlays)
+    for module in _OVERLAY_REGISTRY_BINDINGS:
+        monkeypatch.setattr(f"{module}.get_all_overlays", lambda: overlays)
 
 
 @pytest.fixture
@@ -252,6 +260,9 @@ class TestCheckSkillSourceDrift:
             msg = "overlay registry unreachable"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.core.overlay_loader.get_all_overlays", _boom)
+        for module in _OVERLAY_REGISTRY_BINDINGS:
+            monkeypatch.setattr(f"{module}.get_all_overlays", _boom)
         assert _check_skill_source_drift() is True
-        assert "WARN" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "crashed" in out

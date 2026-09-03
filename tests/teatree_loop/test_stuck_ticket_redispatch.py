@@ -491,6 +491,40 @@ class TestFailingCandidates(TestCase):
         assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
         assert DeferredQuestion.objects.count() == 0
 
+    def test_two_verbatim_identical_environmental_failures_are_redispatched_not_frozen(self) -> None:
+        # The text stall runs BEFORE the named-cause one, and compared every failure's
+        # text — so an environmental fault that repeats VERBATIM (one harness traceback,
+        # one unconfigured credential) froze the ticket at two, the exact halt the
+        # named-cause check drops environmental kinds to refuse.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for _ in range(2):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error="outage_death: unable to connect to api",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_two_verbatim_identical_deterministic_failures_still_halt(self) -> None:
+        # The other side of the same edit: dropping only the environmental rows must not
+        # weaken the text stall for a defect that reproduces verbatim.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for _ in range(2):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error="the review found a real defect in the diff",
+            )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
     def test_repeated_unclassified_failures_are_not_a_named_cause_stall(self) -> None:
         # ``unclassified`` is the ABSENCE of a name, so two unrelated failures both land
         # there. Treating that as one repeating defect would halt on a coincidence — the

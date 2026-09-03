@@ -26,19 +26,37 @@ class SessionInfo:
     status: str  # "finished", "interrupted", "active", "unknown"
 
 
+_TAIL_WINDOW_BYTES = 64 * 1024
+
+
+def _last_jsonl_record(conv_file: Path) -> bytes:
+    """The file's final line, read from the tail — a transcript grows to hundreds of MB."""
+    with conv_file.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        window = _TAIL_WINDOW_BYTES
+        while True:
+            start = max(0, size - window)
+            handle.seek(start)
+            tail = handle.read().rstrip()
+            idx = tail.rfind(b"\n")
+            if idx >= 0:
+                return tail[idx + 1 :]
+            if start == 0:
+                return tail
+            window *= 2
+
+
 def _session_end_status(conv_file: Path) -> str:
     """Determine how a session ended by reading the last JSONL entry.
 
     Returns ``"finished"``, ``"interrupted"``, ``"active"``, or ``"unknown"``.
     """
     try:
-        raw = conv_file.read_bytes()
+        last_line = _last_jsonl_record(conv_file)
     except OSError:
         return "unknown"
 
-    end = raw.rstrip()
-    idx = end.rfind(b"\n")
-    last_line = end[idx + 1 :] if idx >= 0 else end
     try:
         entry = json.loads(last_line)
     except (json.JSONDecodeError, ValueError):

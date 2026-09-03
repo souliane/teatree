@@ -21,7 +21,7 @@ from teatree.core.management.commands._ensure_pr import (
     defer_unreadable_pr_state,
     skip_for_classified,
 )
-from teatree.core.models import ConfigSetting, PullRequest, Ticket, Worktree
+from teatree.core.models import ConfigSetting, PendingPullRequest, PullRequest, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME
 from tests.teatree_core.cleanup._shared import _run_git
@@ -765,3 +765,33 @@ class TestEnsurePrReadsTheControlDbTopologyFirst(TestCase):
 
         assert "/merge_requests/1" in str(result["url"])
         host.create_pr.assert_not_called()
+
+
+class TestAnUnreadableProbeNeverCreates(TestCase):
+    """An UNKNOWN open-PR probe must not be read as "no PR" by the CREATE path.
+
+    ``find_open_pr_for_branch`` is a tri-state precisely so a fail-closed caller can
+    tell "no PR" from "could not look". Collapsing UNKNOWN to absent made the pre-push
+    hook open a duplicate MR on a branch that already had one, and GitLab answered 409 —
+    so the push failed on every branch whose MR already existed.
+    """
+
+    def test_an_unknown_probe_owes_the_pr_instead_of_creating_it(self) -> None:
+        # The unreadable probe is carried by the classification itself: `classify_branch`
+        # returns PR_UNKNOWN rather than an orphan status, so the mapper never has to
+        # re-derive it from a side flag.
+        report = BranchReport(repo="org/repo", branch="feature", status=BranchStatus.PR_UNKNOWN, ahead_count=1)
+
+        answered = skip_for_classified(report, "/tmp/repo", "feature")
+
+        assert answered is not None
+        # A skip that owes nothing would ship the branch with no PR and no retry: the
+        # probe stays unreadable while the forge CLI is missing, so every push skips.
+        assert answered.get("owed") is True
+        assert answered.get("skipped") == PR_UNKNOWN_DEFERRAL
+        assert PendingPullRequest.objects.filter(branch="feature").exists()
+
+    def test_a_genuine_orphan_still_creates(self) -> None:
+        report = BranchReport(repo="org/repo", branch="feature", status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
+
+        assert skip_for_classified(report, "/tmp/repo", "feature") is None

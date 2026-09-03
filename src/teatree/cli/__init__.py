@@ -68,6 +68,7 @@ from teatree.cli.notion import notion_app
 from teatree.cli.outer import outer_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
+from teatree.cli.peer import peer_app
 from teatree.cli.prompts import prompts_app
 from teatree.cli.recover import recover_app
 from teatree.cli.review import mcp_seam as _review_mcp_seam
@@ -183,6 +184,7 @@ app.command(name="fast-push")(_fast_push.fast_push)
 app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
 app.command()(_admin.admin)
+app.command()(_admin.dashboard)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")
@@ -213,6 +215,7 @@ app.add_typer(dream_app, name="dream")
 app.add_typer(mutation_app, name="mutation")
 app.add_typer(outer_app, name="outer")
 app.add_typer(directive_app, name="directive")
+app.add_typer(peer_app, name="peer")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────
@@ -412,8 +415,20 @@ def _ensure_editable_if_contributing() -> None:
         logger.debug("editable check skipped", exc_info=True)
 
 
+def _serving_mcp_stdio() -> bool:
+    """True when argv asks for the MCP stdio server.
+
+    The MCP client times out the ``initialize`` handshake, so this entry point must
+    reach the stdio loop promptly and must not reinstall packages underneath a
+    waiting client (souliane/teatree — the editable dance cost 6.5s per invocation
+    and pushed the handshake past the client's startup timeout).
+    """
+    return sys.argv[1:3] == ["mcp", "serve"]
+
+
 def main() -> None:  # pragma: no cover — console-script entry point (Typer dispatch glue)
     """Entry point for the ``t3`` console script."""
-    _ensure_editable_if_contributing()
+    if not _serving_mcp_stdio():
+        _ensure_editable_if_contributing()
     register_overlay_commands()
     app(standalone_mode=True)

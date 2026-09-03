@@ -68,6 +68,8 @@ broken control plane must interrupt the user, not silence them.
 
 ## CLI surface
 
+The deferred-question verbs below have MCP twins — prefer `mcp__teatree__question_list` (the bare pending backlog) and `mcp__teatree__question_answer`; the block is the CLI fallback for a session whose MCP server isn't connected, and `--all` has no MCP filter.
+
 ```bash
 # The active mode, the layer that decided it, and the per-loop verdict table.
 t3 loop preset show

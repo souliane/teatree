@@ -1,13 +1,18 @@
-# Grandfathered raw gh/glab/sentry-cli calls in skills -- the skill-cli-ratchet ledger.
-# Each line is `<skill file>::<command signature>` for a raw 3rd-party-CLI call the skills still
-# make (a documented CLI fallback lane, a bootstrap exception, or a call site with no MCP tool yet).
+# Grandfathered CLI calls in skills -- the skill-cli-ratchet ledger.
+# Each line is `<skill file>::<command signature>` for a call the skills still make from a CLI an
+# MCP tool could serve: a raw 3rd-party call (gh/glab/sentry-cli), or a `t3 <sub> <verb>` pair the
+# teatree MCP already covers. A documented CLI fallback lane, a bootstrap exception, or a call site
+# with no MCP tool yet all belong here rather than being migrated.
 # MCP-not-connected fallbacks -- e.g. `gh issue list` / `gh pr list` when the MCP server is down --
 # are intentional documented fallback lanes: ledgered here rather than migrated.
 # The gate is RED on any LIVE raw call NOT listed here (a NEW shell-out, named) and RED on any listed
 # key that no longer occurs (forced banking -- remove it once migrated). Per-item, set-union mergeable.
 # Regenerate the exact live set with: python -m teatree.quality.skill_cli_ratchet --update-baseline
+skills/ac-reviewing-codebase/SKILL.md::t3 pr create
+skills/answerer/SKILL.md::t3 config_setting set
 skills/checking/SKILL.md::gh api user
 skills/checking/SKILL.md::glab auth status
+skills/checking/SKILL.md::t3 tasks list
 skills/contribute/SKILL.md::gh pr create
 skills/contribute/references/upstream-issue.md::gh auth status
 skills/contribute/references/upstream-issue.md::gh issue create
@@ -17,6 +22,10 @@ skills/dogfooding/SKILL.md::gh issue create
 skills/e2e-review/SKILL.md::gh pr approve
 skills/e2e-review/SKILL.md::gh pr review
 skills/e2e-review/SKILL.md::glab mr approve
+skills/internals/SKILL.md::t3 config_setting set
+skills/internals/SKILL.md::t3 pr create
+skills/internals/SKILL.md::t3 worktree status
+skills/internals/SKILL.md::t3 worktree teardown
 skills/platforms/references/github.md::gh api
 skills/platforms/references/github.md::gh api title
 skills/platforms/references/github.md::gh auth status
@@ -47,6 +56,8 @@ skills/platforms/references/gitlab.md::glab mr note
 skills/platforms/references/gitlab.md::glab mr update
 skills/platforms/references/gitlab.md::glab mr view
 skills/platforms/references/gitlab.md::glab prints first
+skills/platforms/references/slack.md::t3 review-request check
+skills/review-request/SKILL.md::t3 review-request post
 skills/review/SKILL.md::gh issue view
 skills/review/SKILL.md::gh pr diff
 skills/review/SKILL.md::gh pr list
@@ -55,9 +66,13 @@ skills/review/SKILL.md::glab issue view
 skills/review/SKILL.md::glab mr diff
 skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
+skills/review/SKILL.md::t3 config_setting set
+skills/review/SKILL.md::t3 lifecycle visit-phase
+skills/review/SKILL.md::t3 review post-comment
 skills/review/references/giving-review-investigation.md::gh issue view
 skills/review/references/giving-review-investigation.md::glab api
 skills/review/references/giving-review-investigation.md::glab issue view
+skills/review/references/posting-review-comments.md::t3 review post-comment
 skills/rules/SKILL.md::gh api
 skills/rules/SKILL.md::gh issue create
 skills/rules/SKILL.md::gh issue view
@@ -69,15 +84,26 @@ skills/rules/SKILL.md::glab api
 skills/rules/SKILL.md::glab ci status
 skills/rules/SKILL.md::glab issue view
 skills/rules/SKILL.md::glab mr view
+skills/rules/SKILL.md::t3 config_setting set
+skills/rules/SKILL.md::t3 review post-comment
+skills/rules/SKILL.md::t3 slack react
+skills/rules/references/on-behalf-posting.md::t3 slack react
 skills/rules/references/worked-dispatch-examples.md::gh pr create
 skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
+skills/setup/SKILL.md::t3 config_setting set
+skills/setup/references/agent-mode-and-mcp-config.md::t3 config_setting set
 skills/setup/references/recommended-automode-authorizations.md::gh pr merge
+skills/setup/references/recommended-automode-authorizations.md::t3 config_setting set
+skills/setup/references/recommended-automode-authorizations.md::t3 lifecycle visit-phase
+skills/setup/references/recommended-automode-authorizations.md::t3 ticket merge
 skills/ship/SKILL.md::gh issue list
 skills/ship/SKILL.md::gh pr create
 skills/ship/SKILL.md::gh pr list
 skills/ship/SKILL.md::gh pr view
+skills/ship/SKILL.md::gh run watch
+skills/ship/SKILL.md::glab ci status
 skills/ship/SKILL.md::glab issue create
 skills/ship/SKILL.md::glab issue list
 skills/ship/SKILL.md::glab mr
@@ -85,15 +111,25 @@ skills/ship/SKILL.md::glab mr create
 skills/ship/SKILL.md::glab mr list
 skills/ship/SKILL.md::glab mr update
 skills/ship/SKILL.md::glab mr view
+skills/ship/SKILL.md::t3 config_setting set
+skills/ship/SKILL.md::t3 lifecycle visit-phase
+skills/ship/SKILL.md::t3 pr create
+skills/ship/SKILL.md::t3 ticket list
+skills/ship/SKILL.md::t3 ticket merge
 skills/ship/references/pr-siblings-and-bundling.md::gh pr list
+skills/ship/references/review-gate-fsm.md::t3 lifecycle visit-phase
 skills/sweeping-prs/SKILL.md::gh pr view
 skills/sweeping-prs/SKILL.md::glab mr view
+skills/sweeping-prs/SKILL.md::t3 ticket merge
 skills/sweeping-tickets/SKILL.md::gh issue close
 skills/sweeping-tickets/SKILL.md::gh issue edit
 skills/sweeping-tickets/SKILL.md::gh issue list
 skills/sweeping-tickets/SKILL.md::gh issue view
 skills/sweeping-tickets/SKILL.md::gh pr list
+skills/sweeping-worktrees/SKILL.md::t3 worktree teardown
 skills/test/SKILL.md::gh pr view
+skills/test/SKILL.md::gh run watch
+skills/test/SKILL.md::glab ci status
 skills/test/SKILL.md::glab mr view
 skills/ticket/SKILL.md::gh issue list
 skills/ticket/SKILL.md::gh issue view
@@ -108,6 +144,11 @@ skills/triaging-issues/SKILL.md::gh issue edit
 skills/wip/SKILL.md::gh issue list
 skills/wip/SKILL.md::glab issue list
 skills/workspace/SKILL.md::gh pr list
+skills/workspace/SKILL.md::t3 config_setting set
+skills/workspace/references/scripts-and-functions.md::t3 pr create
+skills/workspace/references/scripts-and-functions.md::t3 review post-draft-note
+skills/workspace/references/scripts-and-functions.md::t3 worktree status
+skills/workspace/references/scripts-and-functions.md::t3 worktree teardown
 skills/workspace/references/troubleshooting.md::gh api
 skills/workspace/references/troubleshooting.md::gh api name
 skills/workspace/references/troubleshooting.md::gh pr create

@@ -29,16 +29,22 @@ _LIVE_WORKER_SESSION = "live-worker"
 _REUSED_PID = 4242
 #: The live worker's own distinct pid.
 _WORKER_PID = 100
+#: The lease TTL every claim in this module is taken under.
+_TTL_SECONDS = 1800
 
 
 def _seed(slot: str, *, session_id: str, owner_pid: int | None, expires_delta_seconds: int) -> None:
-    now = timezone.now()
+    # ``acquired_at`` is derived, never hardcoded: every winning claim write stamps
+    # ``lease_expires_at = acquired_at + ttl_seconds``, and it is the heartbeat anchor an
+    # unverifiable owner is judged on (``UNVERIFIABLE_OWNER_GRACE``), so a row that dates
+    # the claim independently of its expiry is one no claim path can produce.
+    expires_at = timezone.now() + dt.timedelta(seconds=expires_delta_seconds)
     LoopLease.objects.create(
         name=slot,
         session_id=session_id,
         owner_pid=owner_pid,
-        acquired_at=now - dt.timedelta(seconds=1800),
-        lease_expires_at=now + dt.timedelta(seconds=expires_delta_seconds),
+        acquired_at=expires_at - dt.timedelta(seconds=_TTL_SECONDS),
+        lease_expires_at=expires_at,
     )
 
 
@@ -55,7 +61,7 @@ class TestPerLoopDeadSessionReusedPid:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("teatree.utils.singleton.pid_alive", _pid_alive({_REUSED_PID, _WORKER_PID}))
             won, owner = LoopLease.objects.claim_ownership(
-                _PER_LOOP_SLOT, session_id=_LIVE_WORKER_SESSION, owner_pid=_WORKER_PID, ttl_seconds=1800
+                _PER_LOOP_SLOT, session_id=_LIVE_WORKER_SESSION, owner_pid=_WORKER_PID, ttl_seconds=_TTL_SECONDS
             )
 
         assert won is True, "a live worker must reclaim a per-loop lease whose owning session is dead"
@@ -84,7 +90,7 @@ class TestPerLoopLiveOwnerNotStolen:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("teatree.utils.singleton.pid_alive", _pid_alive({_REUSED_PID, _WORKER_PID}))
             won, owner = LoopLease.objects.claim_ownership(
-                _PER_LOOP_SLOT, session_id=_LIVE_WORKER_SESSION, owner_pid=_WORKER_PID, ttl_seconds=1800
+                _PER_LOOP_SLOT, session_id=_LIVE_WORKER_SESSION, owner_pid=_WORKER_PID, ttl_seconds=_TTL_SECONDS
             )
 
         assert won is False, "a fresh-heartbeat live owner must never be stolen (duplicate-run hazard)"
@@ -103,7 +109,12 @@ class TestPerLoopLiveOwnerNotStolen:
 
 
 class TestPerLoopIndeterminateOwnerTTL:
-    """A null-pid (indeterminate) owner falls back to the TTL: reclaimed once expired, kept while fresh."""
+    """A null-pid (indeterminate) owner is judged on its heartbeat: reclaimed once stale, kept while fresh.
+
+    ``acquired_at`` is that heartbeat — the per-tick re-claim stamps it — so an owner
+    still inside ``UNVERIFIABLE_OWNER_GRACE`` is kept and one past it is reclaimed even
+    with TTL left, the bound ``loop_lease_liveness`` exists to impose.
+    """
 
     def test_expired_null_pid_is_reclaimed(self) -> None:
         _seed(_PER_LOOP_SLOT, session_id=_DEAD_SESSION, owner_pid=None, expires_delta_seconds=-60)
@@ -132,7 +143,7 @@ class TestMasterSlotBusyOwnerPreserved:
             mp.setattr("teatree.utils.singleton.pid_alive", _pid_alive({_REUSED_PID}))
             reclaimed = LoopLease.objects.reclaim_dead_owner_leases()
             won, owner = LoopLease.objects.claim_ownership(
-                _MASTER_SLOT, session_id="fresh", owner_pid=_WORKER_PID, ttl_seconds=1800
+                _MASTER_SLOT, session_id="fresh", owner_pid=_WORKER_PID, ttl_seconds=_TTL_SECONDS
             )
 
         assert reclaimed == [], "a busy t3-master owner (alive pid) must be preserved past its TTL"

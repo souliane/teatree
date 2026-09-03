@@ -155,8 +155,15 @@ class TestArmedReviewSurvivesSelfAuthoredSweep(TestCase):
 
     def test_mixed_ticket_reaps_only_the_stray(self) -> None:
         """Granularity is per task, not per ticket — the stray goes, the armed review stays."""
-        url, ticket, armed = _arm_auto_review(3887)
-        stray = schedule_external_review(ticket)
+        # The stray must PREDATE the arming: ``schedule_external_review`` returns an
+        # in-flight sibling rather than minting a second reviewer, so arming first
+        # would hand back the armed task itself and the test would assert nothing.
+        # That order is also how the deadlock arose — the #1321 task was already
+        # sitting there when the ship loop armed its review.
+        url = f"https://github.com/{_SLUG}/pull/3887"
+        stray = schedule_external_review(Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER))
+        _url, ticket, armed = _arm_auto_review(3887)
+        assert armed.pk != stray.pk, "the mixed ticket needs two distinct reviewing tasks"
 
         reviewer_task_self_authored({"ticket_id": ticket.pk, "url": url})
 

@@ -59,8 +59,11 @@ pytestmark = pytest.mark.filterwarnings(
 _A_SHA = "a" * 40
 
 #: Command groups the ratchet must still find a structured refusal in. A scan
-#: that stops matching would otherwise pass an empty set silently.
-_GROUPS_WITH_STRUCTURED_REFUSALS = frozenset({"e2e", "followup", "lifecycle", "pr", "repro", "review", "ticket"})
+#: that stops matching would otherwise pass an empty set silently. `e2e`,
+#: `lifecycle` and `repro` left the set when this fork converted their returned
+#: refusals to `raise SystemExit` — a shrink is the ratchet working, so the
+#: anti-vacuity floor moves with it rather than pinning groups now clean.
+_GROUPS_WITH_STRUCTURED_REFUSALS = frozenset({"followup", "pr", "review", "ticket"})
 
 
 def _is_command_decorator(decorator: ast.expr) -> bool:

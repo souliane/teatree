@@ -36,9 +36,11 @@ kill-switch.
 import datetime as dt
 import logging
 import os
+import uuid
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import SuspiciousOperation
+from django.db import transaction
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import BaseExpression
 from django.db.utils import OperationalError
@@ -166,15 +168,40 @@ def a_worker_is_running() -> bool:
     return flock_is_held(WORKER_SINGLETON)
 
 
+def _fail_if_still_ready(job_pk: uuid.UUID, reason: StaleQueueJobError, *, name: str) -> bool:
+    """Mark one job FAILED only while it is STILL ``READY``. Returns True iff it retired it.
+
+    ``set_failed`` is an unconditional ``save``, so retiring the instance the SCAN read
+    clobbers a job an executor claimed in between — a RUNNING job rewritten to FAILED
+    while its body is mid-flight. Re-reading the row inside the write transaction turns
+    that read-then-write into a compare-and-swap: SQLite opens in ``IMMEDIATE`` mode, so
+    the first writer holds the reserved lock for the whole block.
+    """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    try:
+        with transaction.atomic():
+            still_ready = DBTaskResult.objects.filter(pk=job_pk, status=TaskResultStatus.READY).first()
+            if still_ready is None:
+                return False
+            still_ready.set_failed(reason)
+    except OperationalError as exc:
+        logger.warning("Could not expire stale job %s (%s): %s", job_pk, name, exc)
+        return False
+    return True
+
+
 def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:
     """Retire READY jobs older than the threshold, returning a count by task name.
 
     Conservative by design: only ``READY`` jobs whose ``enqueued_at`` predates
     ``now - threshold`` are touched; RUNNING/finished jobs and fresh READY jobs
-    are left alone. Each retired job is marked ``FAILED`` via ``set_failed`` —
-    the queue's terminal non-run state — carrying a :class:`StaleQueueJobError`
-    so the reason is recorded and the row stays inspectable/re-enqueueable. No
-    hard delete.
+    are left alone — and "still READY" is re-proved under a row lock at the write
+    (:func:`_fail_if_still_ready`), not merely at the scan. Each retired job is marked
+    ``FAILED`` via ``set_failed`` — the queue's terminal non-run state — carrying a
+    :class:`StaleQueueJobError` so the reason is recorded and the row stays
+    inspectable/re-enqueueable. No hard delete.
 
     ``queue_name`` scopes the sweep to one queue when given. The worker's
     startup + hourly expiry pass the ``default`` queue (via
@@ -198,10 +225,7 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
             f"Expired READY job {job.id} ({name}): enqueued {job.enqueued_at.isoformat()}, "
             f"older than the {hours}h stale threshold; retired without running."
         )
-        try:
-            job.set_failed(reason)
-        except OperationalError as exc:
-            logger.warning("Could not expire stale job %s (%s): %s", job.id, name, exc)
+        if not _fail_if_still_ready(job.pk, reason, name=name):
             continue
         retired[name] = retired.get(name, 0) + 1
     if retired:

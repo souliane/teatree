@@ -61,9 +61,13 @@ def harness_surfaced_deny_text(payload: Mapping[str, object], stderr: str, *, ex
 
     ``continue``/``stopReason`` are deliberately absent from this model: they set
     ``preventContinuation``, which the task-creation consumer never reads.
+    ``systemMessage`` is read at ANY exit code — it is the only channel that is
+    visible without also deleting the row the tool already persisted.
     """
     if payload.get("decision") == "block":
         return str(payload.get("reason") or _HARNESS_DEFAULT_BLOCK_REASON)
+    if message := str(payload.get("systemMessage") or ""):
+        return message
     if exit_code >= DENY_EXIT_CODE:
         return stderr.strip()
     return ""

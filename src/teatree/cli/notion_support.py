@@ -15,6 +15,7 @@ from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:  # pragma: no cover — import-time cost stays off the CLI startup path
     from teatree.backends.notion.client import NotionClient
+    from teatree.backends.notion.errors import NotionError
     from teatree.backends.notion.liveness import LivenessVerdict
 
 
@@ -38,6 +39,64 @@ def fail(exc: Exception) -> typer.Exit:
 
     typer.echo(str(exc), err=True)
     return typer.Exit(code=exc.exit_code if isinstance(exc, NotionError) else 1)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class VerdictLine:
+    """One rendered triage line, and whether it belongs on stderr."""
+
+    text: str
+    err: bool = False
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PageVerdict:
+    """Whether one page is reachable AND live for this integration, with its rendered lines."""
+
+    page_id: str
+    lines: tuple[VerdictLine, ...]
+    error: "NotionError | None" = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+    @property
+    def headline(self) -> str:
+        """The whole verdict on ONE line, for a caller reporting a table of pages."""
+        return "readable and live" if self.error is None else str(self.error)
+
+    def echo(self) -> None:
+        for line in self.lines:
+            typer.echo(line.text, err=line.err)
+
+
+def page_verdict(client: "NotionClient", reference: str) -> PageVerdict:
+    """The reachable-and-live stages of the triage, rendered but never exited on.
+
+    Shared by ``t3 notion doctor`` (which exits on the verdict) and
+    ``t3 notion setup`` (which reports one line per page and keeps going), so the
+    two surfaces cannot drift on what exit 6 means or on what a ``live:`` line says.
+    """
+    from teatree.backends.notion.errors import NotionError  # noqa: PLC0415 — deferred: lazy CLI import
+
+    try:
+        page_id = object_id(reference)
+        client.get_page(page_id)
+    except NotionError as exc:
+        return PageVerdict(reference, (VerdictLine(f"page:  FAIL — {exc}", err=True),), exc)
+    lines = [VerdictLine("page:  OK — readable by this integration")]
+    verdict = client.page_liveness(page_id)
+    if verdict.readable:
+        lines.append(VerdictLine(f"live:  OK — {verdict.detail}"))
+        return PageVerdict(page_id, tuple(lines))
+    lines.extend(
+        (
+            VerdictLine(f"live:  {verdict.state.value.upper()} — {verdict.detail}", err=True),
+            VerdictLine(f"       {verdict.recovery()}", err=True),
+        )
+    )
+    return PageVerdict(page_id, tuple(lines), verdict.as_error(page_id))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

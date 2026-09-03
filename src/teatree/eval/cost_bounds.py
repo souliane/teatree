@@ -18,10 +18,25 @@ nothing is fail-loud, never skip-as-pass — that is the whole point of pinning 
 A scenario absent from the config is un-bounded (the run carries scenarios the
 config does not pin). The config is checked in, so the ceiling survives a DB
 reset and every change is reviewed in a diff.
+
+A ceiling set that pins NO scenario is the third RED. It binds nothing, so the
+gate would report a green it never earned — the identical vacuity
+:func:`load_cost_bounds` already refuses for an ABSENT file, which an EMPTY one
+otherwise walks straight through.
+
+All three REDs presuppose a backend that RECORDS cost — ``--backend api`` alone.
+Every backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` reports
+none, so a healthy run there records ``$0`` and every ceiling below reads
+``MISSING``: the gate is unsatisfiable in both directions and a calibration makes it
+worse. That pairing is refused at the CLI boundary
+(:func:`~teatree.cli.eval.app_helpers.require_metering_backend_for_cost_bounds`)
+rather than handled here, so no run is billed to produce violations that cannot mean
+what they say.
 """
 
 import dataclasses
 import enum
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -34,6 +49,14 @@ COST_BOUNDS_PATH = Path(__file__).resolve().parents[3] / "evals" / "cost_bounds.
 
 #: Applied to a scenario that pins a ``bound_usd`` but omits its own ``margin``.
 _FALLBACK_DEFAULT_MARGIN = 0.25
+
+#: Rendered when the ceiling set bound nothing — a requested gate that checked zero
+#: scenarios is RED, never skip-as-pass.
+VACUOUS_RENDER = (
+    "COST BOUNDS VACUOUS: evals/cost_bounds.yaml pins no scenarios, so --gate-cost-bounds "
+    "bound nothing and any green it reports is unearned. Pin a calibrated bound_usd for at "
+    "least one scenario, or drop --gate-cost-bounds from the lane."
+)
 
 
 class CostBoundsError(ValueError):
@@ -103,17 +126,30 @@ class CostBoundsResult:
     checked: int
 
     @property
+    def vacuous(self) -> bool:
+        """No ceiling bound anything, so this check earned no verdict to report."""
+        return self.checked == 0
+
+    @property
     def failed(self) -> bool:
-        return bool(self.violations)
+        return self.vacuous or bool(self.violations)
+
+    def render_failures(self) -> list[str]:
+        """Every line the gate prints — per-scenario violations, then vacuity if it bound nothing."""
+        lines = [violation.render() for violation in self.violations]
+        if self.vacuous:
+            lines.append(VACUOUS_RENDER)
+        return lines
 
 
 def load_cost_bounds(path: Path | None = None) -> CostBoundsConfig:
     """Parse ``cost_bounds.yaml`` into a typed :class:`CostBoundsConfig`.
 
     Raises :class:`CostBoundsError` on a malformed file (so a typo'd ceiling is a
-    hard RED at gate time, never a silently-dropped bound). A missing file is a
-    configuration error, not an empty config — an absent ceiling set would make
-    the gate vacuously green.
+    hard RED at gate time, never a silently-dropped bound), and on a missing file —
+    an absent ceiling set would make the gate vacuously green. An EMPTY file parses
+    clean here (reading the current ceilings is not gating them); the same vacuity is
+    caught at gate time by :attr:`CostBoundsResult.vacuous`.
     """
     bounds_path = path or COST_BOUNDS_PATH
     if not bounds_path.is_file():
@@ -168,7 +204,13 @@ def _coerce_float(value: object, *, path: Path, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         msg = f"{path}: {field} must be a number, got {value!r}"
         raise CostBoundsError(msg)
-    return float(value)
+    number = float(value)
+    # YAML's `.inf` / `.nan` parse to floats no recorded cost can ever exceed, so
+    # accepting one disarms this scenario's ceiling while the gate still reads green.
+    if not math.isfinite(number):
+        msg = f"{path}: {field} must be a finite number, got {value!r}"
+        raise CostBoundsError(msg)
+    return number
 
 
 def check_cost_bounds(recorded_costs: dict[str, float], config: CostBoundsConfig) -> CostBoundsResult:
@@ -182,7 +224,10 @@ def check_cost_bounds(recorded_costs: dict[str, float], config: CostBoundsConfig
 
     Scenarios present in the run but absent from the config are un-bounded and
     ignored. The result's :attr:`~CostBoundsResult.failed` is ``True`` when any
-    violation exists.
+    violation exists, AND when the config pinned no scenario at all
+    (:attr:`~CostBoundsResult.vacuous`) — a check that bound nothing has no green to
+    report. A run sharing NO scenario with a non-empty config needs no special case:
+    every configured ceiling is then ``MISSING``, which is already RED.
     """
     violations: list[CostBoundViolation] = []
     for name in sorted(config.scenario_names):

@@ -52,6 +52,7 @@ def _page_context() -> InterchangeContext:
         "nav_items": nav["nav_items"],
         "nav_active": nav["nav_active"],
         "instance_label": nav["instance_label"],
+        "brand_logo": nav["brand_logo"],
         "sections": EXPORT_SECTIONS,
         "confirm_phrase": SAFETY_CONFIRM_PHRASE,
         "changed_sections": (),

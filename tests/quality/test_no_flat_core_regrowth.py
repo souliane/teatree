@@ -226,33 +226,57 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
 # ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
 # owns "what did this interpreter load".
-# 110: -fast_push.py (C1 leak-gate fix follow-up) — fast_push.py (the leak-gated fast
-# delivery lane hub, #67 above) gained a second module, push_range.py (the range the leak
-# gates now scan — the whole push range, not just the staged delta), and the pair collapsed
-# into the subpackage core/push/ instead of landing push_range.py flat at the root beside
-# it. Mirrors retention/'s own history (#102 above): a flat hub becomes a subpackage once it
-# grows a second module, rather than each one separately arguing for a root slot. One root
-# leaf leaves (fast_push.py) and the new helper never lands at the root, netting -1 against
-# the pre-existing baseline of 111.
-# 111: +overlay_repos.py (#4515) — the one derivation of "which forge repos does this
-# overlay work in?". Both the intake scanner (which issues to claim, via
-# loop/scanner_factories) and the external-outcome measure (which repos' merges count as
-# output) read the same slug set, and a second derivation would let the two disagree about
-# what the factory's own repos are. That shared readership is what keeps it at the root:
-# intake/ cannot own it without factory/ reaching across, and factory/ cannot own it
-# without intake/ doing the same. Same shape as claim_liveness.py (#4164) above — a small
-# ORM-free derivation two subpackages consult, so it belongs to neither.
-# 112: +admission_pressure.py (#4508) — the one scalar the admission decision reads, plus the
-# vocabulary it is expressed in (QuotaSignal, MachineSignal, PressureBand, AdmissionPressure).
-# It imports nothing from teatree — math, dataclasses, enum — so it is a pure value-and-predicate
-# layer that could sit anywhere without a cycle; what keeps it at the root is its readership.
-# Two flat siblings consult it (admission_governor.py derives the verdict, agent_admission.py
-# applies it per lane), factory/operational_health.py reports the band, and cli/doctor reads it
-# to explain a refusal. factory/ cannot own it without both root siblings reaching across, and
-# neither root sibling can own it without the other importing its peer. Same shape as
-# claim_liveness.py (#4164) and overlay_repos.py (#4515) above — a small dependency-free
-# derivation several consumers share, so it belongs to none of them.
-PINNED_FLAT_CORE_MODULES = 112
+# 112: +mcp_tool_group.py — the overlay MCP tool-group seam types (McpTool + McpToolGroup),
+# the exact sibling of e2e_scenario.py and failed_e2e_watcher.py: an OverlayConnectors seam
+# value type that overlay.py returns and teatree.mcp consumes. It cannot live under
+# teatree/mcp/ (that is the integration layer, and teatree.core may not import upward) nor in
+# the foundation leaf teatree/types.py (which has no deps and may not reach
+# teatree.backends.types for the Service vocabulary the group declares); no existing
+# subpackage owns an overlay-seam value type.
+# 113: +setting_control.py — the ONE derivation of what control a setting key needs (kind,
+# admissible options, how its values render), composed by the dashboard's editable grid and by
+# core/settings_snapshot/. It lands at the root beside the sibling it belongs with,
+# config_display.py, for the identical reason that leaf is there: the Django admin depends on
+# this vocabulary and the domain layer may not import the interface-layer dash. Filing it under
+# settings_snapshot/ would name a snapshot concern something the grid composes too, and put dash
+# on the snapshot package to satisfy a counter.
+# 114: +skill_sources.py — the one place an overlay's declared skill source is both MEASURED
+# (the doctor's drift gate) and PROVISIONED (`t3 setup`'s install), so a source cannot be gated
+# on without being installed. A genuine root concern bridging core/overlay_loader (the
+# declaration) and teatree.provisioning (the acts), read by two interface-layer callers:
+# core/provision/ is worktree provisioning — db anchors, step runners, postconditions — not the
+# box's skill supply, and no other subpackage owns an overlay-declaration-to-platform seam.
+# 115: +identity_wiring.py — the pure judgement over the two identity facts that decide
+# whether a deployment can ship at all: which forge handles are admissible as an independent
+# reviewer, and whose credential a given remote's MRs are actually written under. It lands at
+# the root beside the identity leaves already there (session_identity.py, public_identity.py,
+# account_fingerprint.py, account_switch.py). review/ owns only half of it: the authoring half
+# is a ship concern, and filing it there would name an authoring rule a review rule to satisfy
+# a counter. It is also stdlib-only on purpose, so core/overlay.py can import it at module
+# level and the doctor check can reach it without the Django app.
+# 116: +peer_forward.py — the resolving half of opening a peer's loopback forward: what the
+# forward lands on, and the command that opens it, written where the host wrapper reads it.
+# It is a root concern because the act itself is not core's to perform — the transports and
+# their credentials live on the operator's machine — so this leaf owns only the plan, and its
+# two readers sit on opposite sides of that boundary (cli/peer.py and deploy/peer-forward.sh).
+# It lands at the root beside the registry vocabulary it reads, config/peer_instance.py:
+# fleet/ is the task-claim wire between workers, provision/ is worktree provisioning, and no
+# subpackage owns reaching ANOTHER box.
+# The vendor sync to 6cc7801e9 adds upstream's own net +1 on top of that: -fast_push.py (it
+# and its new push_range.py sibling collapsed into core/push/, mirroring retention/'s history),
+# +overlay_repos.py (#4515, the one derivation of "which forge repos does this overlay work
+# in?", read by both intake/ and factory/ so it belongs to neither) and +admission_pressure.py
+# (#4508, the one scalar the admission decision reads, consulted by two root siblings, factory/
+# and cli/doctor — same shape as claim_liveness.py and overlay_repos.py).
+# 118: +overlay_ownership.py — the two-tier "does this declaration own that slug"
+# relation carved out of overlay_loader.py, which had crossed the 500-LOC module-health
+# ceiling. It answers one question (which declaration a slug belongs to) and is read
+# beside its own examples rather than at the far end of the loader. It lands at the root
+# beside the overlay_* leaves it belongs with (overlay_loader, overlay_name_resolution,
+# overlay_metadata, overlay_repos, overlay_url); core/overlays/ is the namespace +
+# code-defaults provider package, not the loader's own resolution seam, so filing it
+# there would separate it from its siblings to satisfy a counter.
+PINNED_FLAT_CORE_MODULES = 118
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

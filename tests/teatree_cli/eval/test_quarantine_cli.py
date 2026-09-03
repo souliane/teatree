@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.eval.multi_trial import run_pass_at_k_lane
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.quarantine import load_quarantine
@@ -244,6 +245,7 @@ class TestQuarantineNeverReachesARunVerdict:
         monkeypatch.setattr("teatree.cli.eval.multi_trial.make_runner", lambda *a, **k: _NoToolCallRunner())
         assert run_pass_at_k_lane(
             [spec],
+            backend=API_BACKEND,
             max_turns=None,
             trials=1,
             require="any",

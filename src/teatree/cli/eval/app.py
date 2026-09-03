@@ -12,9 +12,11 @@ from teatree.cli.eval.app_helpers import (
     EVAL_CREDENTIALS,
     RunReportPaths,
     apply_credential_override,
+    reject_multi_trial_with_model_override,
     reject_unsupported_run_output,
     require_api_backend_for_fresh_run,
     require_effort,
+    require_metering_backend_for_cost_bounds,
     resolve_benchmark_selection,
     resolve_escalation,
 )
@@ -22,7 +24,7 @@ from teatree.cli.eval.catalog_selection import select_specs
 from teatree.cli.eval.full_suite_command import register_full_suite_callback
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
-from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
+from teatree.cli.eval.run_docker import DEFAULT_JUDGE_BUDGET, RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
 from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
@@ -181,7 +183,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "evals/cost_bounds.yaml (calibrated bound x (1 + margin)). A scenario over its "
             "ceiling — OR a configured scenario the run recorded no cost for (fail-loud, never "
             "skip-as-pass) — exits non-zero. The absolute-ceiling counterpart of "
-            "--gate-cost-regression (relative drift vs the mutable DB baseline)."
+            "--gate-cost-regression (relative drift vs the mutable DB baseline). Needs a "
+            "backend that RECORDS cost: --backend anthropic_api/pydantic_ai report none, so "
+            "this exits 2 there rather than reading every ceiling as MISSING."
         ),
     ),
     judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -190,7 +194,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help="Grade scenarios that opt in (a `judge:` block) with an LLM judge in addition to matchers.",
     ),
     judge_budget: int = typer.Option(
-        20,
+        DEFAULT_JUDGE_BUDGET,
         "--judge-budget",
         help="Max number of LLM-judge calls per run (cost cap).",
     ),
@@ -420,6 +424,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         benchmark=benchmark, model=model, models=models, preset=preset, html_out=transcript_html
     )
     models = selection.models
+    reject_multi_trial_with_model_override(model=selection.model_override, trials=trials)
     # --benchmark (the 3-tier matrix), --model (force one model), and --preset
     # (a named tier profile) all run a fresh metered pass, so the metered api
     # backend is implied — a transcript grade of a freshly-forced/preset model is
@@ -444,6 +449,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         gate_cost_regression=gate_cost_regression,
         gate_cost_bounds=gate_cost_bounds,
     )
+    # Checked on the RESOLVED backend (--benchmark/--model/--preset force api above),
+    # and before docker routing, so the refusal costs no container and no model call.
+    require_metering_backend_for_cost_bounds(backend=backend, gate_cost_bounds=gate_cost_bounds)
     route_to_docker_if_needed(
         RunDockerArgs(
             name=name,
@@ -471,6 +479,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             preset=preset,
             escalate_on_fail=escalate_on_fail,
             escalate_trials=escalate_trials,
+            judge=judge,
+            judge_budget=judge_budget,
+            transcript_dir=transcript_dir,
         ),
         docker=docker,
         local=local,

@@ -29,7 +29,7 @@ per skill.
 """
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -77,6 +77,42 @@ class SkillDrift:
         return not (self.stale or self.absent or self.unmeasurable)
 
 
+@dataclass(frozen=True, slots=True)
+class PublishedSkills:
+    """What a source clone publishes at its reviewed ref — resolved ONCE, shared.
+
+    The drift gate and the installer must agree on three things or they cannot
+    converge: which clone is the source, which ref is reviewed, and which skills
+    that ref publishes under which install names. Resolving them here, once, is
+    what makes "install it" and "it is installed" the same question. A source that
+    cannot be resolved carries *unmeasurable* and no names — the gate reports it
+    UNVERIFIED and the installer declines, neither guessing.
+    """
+
+    label: str
+    repo: Path | None = None
+    ref: str = ""
+    #: ``SKILL.md`` path at *ref* → the install name its front matter declares.
+    names: dict[str, str] = field(default_factory=dict)
+    unmeasurable: str = ""
+
+
+def resolve_published_skills(clone: SkillSourceClone) -> PublishedSkills:
+    """Locate *clone*, pick its reviewed ref, and read the skills it publishes there."""
+    label = clone.label or (clone.paths[0] if clone.paths else "skill source")
+    repo = _first_existing_clone(clone.paths)
+    if repo is None:
+        listed = ", ".join(clone.paths) or "(none declared)"
+        return PublishedSkills(label=label, unmeasurable=f"no clone at any declared path ({listed})")
+    ref = _resolve_ref(repo, clone.ref)
+    if not ref:
+        return PublishedSkills(label=label, repo=repo, unmeasurable=f"no reviewed ref resolves in {repo}")
+    names = _source_names(repo, ref)
+    if not names:
+        return PublishedSkills(label=label, repo=repo, ref=ref, unmeasurable=f"{ref} in {repo} lists no {_SKILL_FILE}")
+    return PublishedSkills(label=label, repo=repo, ref=ref, names=names)
+
+
 def _git(repo: Path, *args: str) -> str:
     """Run a read-only git command in *repo*; empty string on any failure."""
     result = run_allowed_to_fail(
@@ -113,19 +149,41 @@ def _resolve_ref(repo: Path, declared: str) -> str:
 
 
 def _source_blobs(repo: Path, ref: str) -> dict[str, str]:
-    """``SKILL.md`` path → blob sha at *ref*, symlink entries dropped."""
+    """Every non-symlink path → blob sha at *ref*.
+
+    The whole tree, not the ``SKILL.md`` files alone: a skill installs as its entire
+    directory, so a merged fix that lands only in ``references/`` is drift the install
+    still has to hear about.
+    """
     blobs: dict[str, str] = {}
     for line in _git(repo, "ls-tree", "-r", ref).splitlines():
         meta, _, path = line.partition("\t")
         fields = meta.split()
         expected_fields = 3
-        if len(fields) != expected_fields or not path.endswith(_SKILL_FILE):
+        if len(fields) != expected_fields:
             continue
         mode, _kind, sha = fields
         if mode == _SYMLINK_MODE:
             continue
         blobs[path] = sha
     return blobs
+
+
+def _files_by_skill(blobs: dict[str, str], skill_md_paths: list[str]) -> dict[str, dict[str, str]]:
+    """``SKILL.md`` path → that skill's own files, keyed relative to its directory.
+
+    Longest prefix wins, so a skill nested inside another owns its files rather than
+    counting as drift in its parent.
+    """
+    by_prefix = {path: path.removesuffix(_SKILL_FILE) for path in skill_md_paths}
+    deepest_first = sorted(by_prefix, key=lambda path: len(by_prefix[path]), reverse=True)
+    owned: dict[str, dict[str, str]] = {path: {} for path in skill_md_paths}
+    for path, sha in blobs.items():
+        for skill_md_path in deepest_first:
+            if path.startswith(by_prefix[skill_md_path]):
+                owned[skill_md_path][path.removeprefix(by_prefix[skill_md_path])] = sha
+                break
+    return owned
 
 
 def _source_names(repo: Path, ref: str) -> dict[str, str]:
@@ -161,40 +219,29 @@ def _git_blob_sha(path: Path) -> str:
     return hashlib.sha1(header + data, usedforsecurity=False).hexdigest()
 
 
-def _installed_skill_md(name: str, search_dirs: list[Path]) -> Path | None:
-    """The ``SKILL.md`` an agent would actually load for *name* — first dir wins."""
+def _installed_skill_dir(name: str, search_dirs: list[Path]) -> Path | None:
+    """The directory an agent would actually load *name* from — first dir wins."""
     for search_dir in search_dirs:
-        candidate = search_dir / name / _SKILL_FILE
-        if candidate.is_file():
-            return candidate
+        if (search_dir / name / _SKILL_FILE).is_file():
+            return search_dir / name
     return None
 
 
 def measure_skill_drift(clone: SkillSourceClone, *, search_dirs: list[Path]) -> SkillDrift:
     """Compare every skill *clone* publishes against the copy installed here."""
-    label = clone.label or (clone.paths[0] if clone.paths else "skill source")
-    repo = _first_existing_clone(clone.paths)
-    if repo is None:
-        listed = ", ".join(clone.paths) or "(none declared)"
-        return SkillDrift(label=label, unmeasurable=f"no clone at any declared path ({listed})")
-    ref = _resolve_ref(repo, clone.ref)
-    if not ref:
-        return SkillDrift(label=label, unmeasurable=f"no reviewed ref resolves in {repo}")
+    published = resolve_published_skills(clone)
+    if published.unmeasurable or published.repo is None:
+        return SkillDrift(label=published.label, ref=published.ref, unmeasurable=published.unmeasurable)
+    label, repo, ref, names = published.label, published.repo, published.ref, published.names
 
     blobs = _source_blobs(repo, ref)
-    if not blobs:
-        return SkillDrift(label=label, ref=ref, unmeasurable=f"{ref} in {repo} lists no {_SKILL_FILE}")
-    names = _source_names(repo, ref)
-
+    owned = _files_by_skill(blobs, list(names))
     stale: list[str] = []
     absent: list[str] = []
-    for path, sha in sorted(blobs.items()):
-        name = names.get(path)
-        if not name:
-            continue
-        installed = _installed_skill_md(name, search_dirs)
+    for path, name in sorted(names.items()):
+        installed = _installed_skill_dir(name, search_dirs)
         if installed is None:
             absent.append(name)
-        elif _git_blob_sha(installed) != sha:
+        elif any(_git_blob_sha(installed / rel) != sha for rel, sha in owned[path].items()):
             stale.append(name)
     return SkillDrift(label=label, ref=ref, stale=tuple(sorted(stale)), absent=tuple(sorted(absent)))

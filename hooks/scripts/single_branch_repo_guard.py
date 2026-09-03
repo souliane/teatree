@@ -129,6 +129,24 @@ def _target_repo_slug(command: str, cwd: "Path | None") -> str:
         return ""
 
 
+def _current_branch(repo_dir: "Path | None") -> str:
+    """The branch *repo_dir* has checked out, or ``""`` when unresolvable/detached.
+
+    The one fact a refspec-less ``git push`` needs to be decidable; ``""`` keeps
+    the core's allow, so an unreadable repo never turns into a false refusal.
+    """
+    if repo_dir is None:
+        return ""
+    try:
+        with teatree_src_on_path():
+            from teatree.utils.run import run_checked  # noqa: PLC0415 — deferred: cold-hook import
+
+            result = run_checked(["git", "-C", str(repo_dir), "symbolic-ref", "--quiet", "--short", "HEAD"])
+    except Exception:  # noqa: BLE001 — detached HEAD, not a repo, or git unavailable → unresolved.
+        return ""
+    return result.stdout.strip()
+
+
 def _push_branch_is_local_to(repo_dir: "Path | None", branch: str) -> bool:
     """Whether *branch* is a real local ref in *repo_dir* — the push gate's premise check.
 
@@ -167,7 +185,7 @@ def _finding(core, data: dict) -> "tuple[SingleBranchFinding, str, str] | None":
     pinned = core.resolve_pinned_branch(repo, entries)
     if not pinned:
         return None
-    found = core.find_second_branch_creation(command, pinned_branch=pinned)
+    found = core.find_second_branch_creation(command, pinned_branch=pinned, current_branch=_current_branch(repo_dir))
     # A push is the one surface whose premise can be CHECKED rather than inferred.
     if found is None or (found.surface == "push" and not _push_branch_is_local_to(repo_dir, found.target)):
         return None

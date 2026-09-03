@@ -102,7 +102,15 @@ class TestSettingsPageContext(TestCase):
     def test_the_page_context_carries_the_editor_beside_the_readouts_and_the_nav(self) -> None:
         assert SettingsPageContext.__annotations__["editor"] is SettingsEditorView
         ctx = _page_context()
-        assert set(ctx) == {"nav_items", "nav_active", "instance_label", "readouts", "editor", "confirm_phrase"}
+        assert set(ctx) == {
+            "nav_items",
+            "nav_active",
+            "instance_label",
+            "brand_logo",
+            "readouts",
+            "editor",
+            "confirm_phrase",
+        }
         assert ctx["nav_active"] == "dash:settings"
         assert ctx["confirm_phrase"] == SAFETY_CONFIRM_PHRASE
 
@@ -394,8 +402,18 @@ class TestSafetyPostureConfirm(TestCase):
 
 
 class TestSettingsRestore(TestCase):
-    def _restore(self, key: str):
-        return self.client.post(reverse("dash:settings_restore", args=[key]), **_LOOPBACK)
+    def _restore(self, key: str, data: dict[str, str] | None = None):
+        return self.client.post(reverse("dash:settings_restore", args=[key]), data or {}, **_LOOPBACK)
+
+    def test_restore_refuses_a_safety_posture_key_without_the_confirm_phrase(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        assert self._restore("enforce_regulated_path").status_code == 400
+        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is True
+
+    def test_restore_deletes_a_safety_posture_key_with_the_confirm_phrase(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        self._restore("enforce_regulated_path", {"confirm": SAFETY_CONFIRM_PHRASE})
+        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is None
 
     def test_restore_deletes_the_db_row(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -699,9 +717,11 @@ class TestConstrainedTypesRenderAsSelects(TestCase):
             assert f'value="&quot;{member}&quot;"' in row
 
     def test_the_options_come_from_the_schema_rather_than_a_list_kept_beside_it(self) -> None:
-        with patch("teatree.dash.settings_editor.setting_choices", return_value=("only-this",)):
-            row = build_setting_row("autonomy")
-        assert [choice.label for choice in row.choices] == ["only-this"]
+        # Patched at the ONE derivation the grid composes, so the row cannot be offering a
+        # second list of its own: teatree.core.setting_control is the only source of options.
+        # Read inside the patch because a row's options are derived on access, not stored.
+        with patch("teatree.core.setting_control.setting_choices", return_value=("only-this",)):
+            assert [choice.label for choice in build_setting_row("autonomy").choices] == ["only-this"]
 
 
 class TestTheNavCountsDriftedSettings(TestCase):

@@ -45,8 +45,10 @@ class _IssueUrlFirstLineMetadata(OverlayMetadata):
     the preflight against the title it will actually use.
     """
 
-    def validate_pr(self, title: str, description: str, *, require_sections: bool = True) -> _ValidationResult:
-        _ = description, require_sections
+    def validate_pr(
+        self, title: str, description: str, *, require_sections: bool = True, repo: str = ""
+    ) -> _ValidationResult:
+        _ = description, require_sections, repo
         if "/-/issues/" not in title:
             return _ValidationResult(
                 errors=[f"PR title must reference a GitLab issue URL (got: {title!r})"],

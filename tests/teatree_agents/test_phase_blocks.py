@@ -11,10 +11,11 @@ from teatree.agents.phase_blocks import (
     phase_specific_lines,
 )
 from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
+from teatree.core.models.types import FIX_RECORD_FIELDS
 
 
-def _task(phase: str) -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
@@ -28,6 +29,29 @@ class TestPhaseSpecificLinesDispatch(TestCase):
     def test_shipping_carries_the_auto_review_gate(self) -> None:
         lines = phase_specific_lines(_task("shipping"), [])
         assert "PHASE: shipping — auto-review gate" in lines
+
+
+class TestFixRecordDirective(TestCase):
+    """#4520: the FixRecord directive is KIND-conditional, so a feature brief is unchanged."""
+
+    def _brief(self, phase: str, kind: Ticket.Kind) -> str:
+        return "\n".join(phase_specific_lines(_task(phase, kind=kind), []))
+
+    def test_a_fix_ticket_coding_brief_names_every_field(self) -> None:
+        brief = self._brief("coding", Ticket.Kind.FIX)
+        assert "THIS IS A FIX TICKET" in brief
+        for field in FIX_RECORD_FIELDS:
+            assert field in brief
+
+    def test_a_fix_ticket_debugging_brief_carries_it_too(self) -> None:
+        assert "THIS IS A FIX TICKET" in self._brief("debugging", Ticket.Kind.FIX)
+
+    def test_a_feature_ticket_coding_brief_is_unchanged(self) -> None:
+        feature = phase_specific_lines(_task("coding", kind=Ticket.Kind.FEATURE), [])
+        assert all("fix_record" not in line for line in feature)
+
+    def test_a_non_fixing_phase_carries_no_directive(self) -> None:
+        assert "THIS IS A FIX TICKET" not in self._brief("reviewing", Ticket.Kind.FIX)
 
 
 class TestIntakeSurveyJson(TestCase):

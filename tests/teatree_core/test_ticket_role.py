@@ -41,6 +41,36 @@ class TestScheduleExternalReview(TestCase):
         with pytest.raises(InvalidTransitionError):
             schedule_external_review(ticket)
 
+    def test_returns_the_in_flight_reviewing_task_instead_of_minting_a_rival(self) -> None:
+        # The FSM scheduler and the stuck-ticket repair sweep both call this behind their
+        # own read-time "no active task" pre-check, which is a read-then-write: without a
+        # guard at the mint, two dispatchers give one PR two reviewers.
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/pr/7",
+            role=Ticket.Role.REVIEWER,
+        )
+
+        first = schedule_external_review(ticket)
+        second = schedule_external_review(ticket)
+
+        assert second.pk == first.pk
+        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 1
+        assert ticket.sessions.count() == 1  # a deduped call orphans no session row
+
+    def test_a_terminal_review_task_does_not_suppress_a_fresh_one(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/pr/8",
+            role=Ticket.Role.REVIEWER,
+        )
+        first = schedule_external_review(ticket)
+        first.fail(reason="the reviewer sub-agent crashed")
+
+        second = schedule_external_review(ticket)
+
+        assert second.pk != first.pk
+
 
 class TestScheduleCodingRefusesReviewer(TestCase):
     def test_schedule_coding_blocks_reviewer_role(self) -> None:

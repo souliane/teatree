@@ -201,7 +201,7 @@ class TestOverlayScopedAmbientGithub:
         monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
         overlay = _build_overlay()
         _stub_token(overlay)
-        assert isinstance(_host_backend(overlay, "github"), GitHubCodeHost)
+        assert isinstance(_host_backend(overlay, "github", "git@github.com:org/repo.git"), GitHubCodeHost)
 
     def test_no_ambient_and_no_token_stays_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Regression guard: the no-auth path is unchanged when ambient gh is absent."""
@@ -210,7 +210,7 @@ class TestOverlayScopedAmbientGithub:
         _stub_token(overlay)
         assert get_code_hosts(overlay) == []
         assert get_code_host(overlay) is None
-        assert _host_backend(overlay, "github") is None
+        assert _host_backend(overlay, "github", "git@github.com:org/repo.git") is None
 
     def test_explicit_token_builds_single_host_not_duplicated_by_ambient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An explicit token authors the sole host — the ambient path never duplicates it."""
@@ -516,6 +516,43 @@ class TestGetCodeHostForRepo:
         path.mkdir()
         subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
         assert isinstance(get_code_host_for_repo(overlay, str(path)), GitLabCodeHost)
+
+
+class TestGitlabTokenIsScopedToTheRemote:
+    """The GitLab host is built with the token the overlay picks FOR THAT remote.
+
+    An overlay may author on one repo under a different identity (the bot that
+    lets a human approve the MR); the resolver must hand it the origin remote so
+    it can decide, and must not silently fall back to the overlay-wide token.
+    """
+
+    @staticmethod
+    def _scoped_overlay(privileged_slug: str) -> OverlayBase:
+        overlay = _build_overlay()
+        _stub_token(overlay, gitlab="ordinary-token")
+
+        def scoped(remote: str) -> str:
+            return "scoped-token" if privileged_slug in remote else "ordinary-token"
+
+        overlay.config.get_gitlab_token_for_remote = scoped  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        return overlay
+
+    def test_repo_resolution_passes_the_origin_remote_through(self, tmp_path: Path) -> None:
+        overlay = self._scoped_overlay("group/privileged")
+        repo = _git_repo_with_origin(tmp_path / "privileged", "git@gitlab.com:group/privileged.git")
+        host = cast("GitLabCodeHost", get_code_host_for_repo(overlay, repo))
+        assert host.client.token == "scoped-token"
+
+    def test_an_unprivileged_repo_still_gets_the_ordinary_token(self, tmp_path: Path) -> None:
+        overlay = self._scoped_overlay("group/privileged")
+        repo = _git_repo_with_origin(tmp_path / "ordinary", "git@gitlab.com:group/ordinary.git")
+        host = cast("GitLabCodeHost", get_code_host_for_repo(overlay, repo))
+        assert host.client.token == "ordinary-token"
+
+    def test_host_backend_takes_the_remote(self) -> None:
+        overlay = self._scoped_overlay("group/privileged")
+        backend = cast("GitLabCodeHost", _host_backend(overlay, "gitlab", "git@gitlab.com:group/privileged.git"))
+        assert backend.client.token == "scoped-token"
 
 
 class TestGetCodeHostForRepoGithubAmbientAuth:

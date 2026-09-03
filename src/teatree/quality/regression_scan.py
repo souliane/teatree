@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from teatree.quality.regression_catalog import repo_root
+from teatree.paths import teatree_source_root
 from teatree.utils.run import run_allowed_to_fail
 
 ASTGREP_PIN = "0.42.3"
@@ -74,7 +74,7 @@ def scan_findings(config_dir: Path, root: Path | None = None, *, paths: Sequence
     """
     if paths is not None and len(paths) == 0:
         return []
-    base = root or repo_root()
+    base = root or teatree_source_root()
     rule_ids = _declared_rule_ids(config_dir)
     if not rule_ids:
         reason = f"no ast-grep rules under {config_dir}"

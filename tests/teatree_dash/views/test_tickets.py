@@ -1,5 +1,11 @@
 """Ticket drawer, the legal-only FSM-transition POST, and the phase-enqueue POST (#3162, #4085)."""
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.db import transaction
 from django.http import HttpResponse
 from django.test import Client, TestCase
 from django.urls import reverse
@@ -55,6 +61,33 @@ class TicketTransitionPostTestCase(TestCase):
         csrf_client = Client(enforce_csrf_checks=True)
         resp = csrf_client.post(self.url, {"action": "scope"})
         assert resp.status_code == 403
+
+
+def _transaction_committing(write: Callable[[], None]) -> SimpleNamespace:
+    """A ``transaction`` stand-in whose ``atomic`` lands *write* at the BEGIN boundary.
+
+    A competing request commits exactly in the window between reading the ticket's state
+    and writing the transition, which is the window the view has to close.
+    """
+
+    @contextmanager
+    def atomic() -> Iterator[None]:
+        write()
+        with transaction.atomic():
+            yield
+
+    return SimpleNamespace(atomic=atomic)
+
+
+class TicketTransitionRaceTestCase(TestCase):
+    def test_a_state_change_committed_before_the_write_is_not_overwritten(self) -> None:
+        ticket = TicketFactory(state=State.NOT_STARTED)
+        competitor = _transaction_committing(lambda: Ticket.objects.filter(pk=ticket.pk).update(state=State.STARTED))
+        with patch("teatree.dash.views.tickets.transaction", competitor):
+            response = self.client.post(reverse("dash:ticket_transition", args=[ticket.pk]), {"action": "scope"})
+        ticket.refresh_from_db()
+        assert ticket.state == State.STARTED
+        assert response.status_code == 400
 
 
 class TicketDrawerGetTestCase(TestCase):

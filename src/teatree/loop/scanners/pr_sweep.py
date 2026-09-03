@@ -25,7 +25,9 @@ Decision ladder per open PR:
     other than ``uv-audit`` → skip, EXCEPT when the branch is BEHIND main:
     that red judged a base the branch has fallen behind, so the verdict is
     UNKNOWN and the sweep merge-updates the branch (#4063, generalising
-    #2045's repo-state-only rule).
+    #2045's repo-state-only rule). BEHIND is computed from the two commits
+    (``Ref.compare`` behind-by, #4526) — ``mergeStateStatus`` names only the
+    highest-precedence blocker, so it never says BEHIND when this rung fires.
 6. only red check is ``uv-audit`` AND ``main`` is also red on
     ``uv-audit`` → ``--fallback-uv-audit``
 7. all required checks green → merge through the keystone
@@ -57,6 +59,7 @@ from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
+    classify_gitlab_sweep_ci,
     classify_sweep_ci,
     has_independent_cold_review,
     head_review_state,
@@ -308,7 +311,7 @@ class PrSweepScanner:
         a plain skip — that is what keeps a broken PR from being update-looped.
         """
         if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
-            failing, behind_main=pr.behind_main
+            failing, behind_main=pr.behind_main, conflicted=pr.is_conflicted
         ):
             return with_ci_context(_skip(pr, reason=reason), pr=pr, failing=failing)
         remedy = branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
@@ -320,17 +323,22 @@ class PrSweepScanner:
         )
 
     def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
-        """Delegate to :func:`classify_sweep_ci` over the live branch-protection required set.
+        """Delegate to the CI classifier of the forge *pr* was READ from.
 
-        The core green/pending/failed verdict routes through the SAME
+        On GitHub the core green/pending/failed verdict routes through the SAME
         :func:`classify_required_rollup` the §17.4.3 keystone uses, scoped to the
         SAME required set (:meth:`CodeHostQuery.required_context_names`) — so the
-        sweep and the keystone can never re-diverge (#12). Shared by the CLEAR path
+        sweep and the keystone can never re-diverge (#12). GitLab has no such
+        required set and answers the whole question with the head pipeline's status,
+        so it takes :func:`classify_gitlab_sweep_ci` (#72). Shared by the CLEAR path
         and the solo-overlay bypass so the two gates cannot drift apart.
         """
+        query = CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number, host_kind=pr.host_kind))
+        if pr.host_kind == "gitlab":
+            return classify_gitlab_sweep_ci(query.required_checks_status())
         return classify_sweep_ci(
             list(pr.rollup),
-            CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).required_context_names(),
+            query.required_context_names(),
             main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
         )
 

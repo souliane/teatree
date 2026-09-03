@@ -44,51 +44,82 @@ def refuse_finalize_on_main_clone_default(repo_dir: str, default_br: str) -> Non
     raise SystemExit(msg)
 
 
+def _squash_message(repo_dir: str, range_spec: str, count: int, requested: str) -> str:
+    """The message a squash commit carries: the caller's, else the branch's own subject.
+
+    Sourced from ``first_commit_message`` — the subject alone — because
+    ``log --oneline`` is a DISPLAY format whose leading token is the abbreviated
+    sha of the commit being squashed away, and that sha ended up in the message.
+    """
+    if requested:
+        return requested
+    subject, _ = git.first_commit_message(repo_dir, range_spec)
+    return subject or f"Squash {count} commits"
+
+
+def _finalize_one(worktree: Worktree, *, message: str, write: Callable[[str], None]) -> tuple[list[str], bool]:
+    """Squash + rebase ONE worktree; return its report lines and whether it failed."""
+    repo = worktree.repo_path
+    repo_dir = (worktree.extra or {}).get("worktree_path") or repo
+    default_br = git.default_branch(repo)
+    results: list[str] = []
+    try:
+        status = git.status_porcelain(repo_dir)
+        if status:
+            return [f"{repo}: SKIPPED — uncommitted changes:\n{status}"], False
+
+        refuse_finalize_on_main_clone_default(repo_dir, default_br)
+        git.fetch(repo_dir, "origin", default_br)
+
+        base = git.merge_base(repo_dir, f"origin/{default_br}")
+        range_spec = f"{base}..HEAD"
+        count = git.rev_count(repo_dir, range_spec)
+        log = git.log_oneline(repo_dir, range_spec)
+        if log:
+            write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
+
+        if count > 1:
+            git.soft_reset(repo_dir, base)
+            git.commit(repo_dir, _squash_message(repo_dir, range_spec, count, message))
+            results.append(f"{repo}: squashed {count} commits")
+        else:
+            results.append(f"{repo}: single commit, no squash needed")
+    except CommandFailedError as exc:
+        return [f"{repo}: finalize failed before the rebase — {exc}"], True
+
+    try:
+        git.rebase(repo_dir, f"origin/{default_br}")
+    except CommandFailedError as exc:
+        results.extend(
+            [
+                f"{repo}: rebase failed — {exc}",
+                f"  To abort: git -C {repo_dir} rebase --abort",
+                f"  To resolve: fix conflicts, git add, then: git -C {repo_dir} rebase --continue",
+            ]
+        )
+        return results, True
+    results.append(f"{repo}: rebased on {default_br}")
+    return results, False
+
+
 def run_finalize(ticket: Ticket, *, message: str, write: Callable[[str], None]) -> str:
     """Squash each worktree's commits into one, then rebase on the default branch.
 
     The engine for ``workspace finalize``: per worktree, skip on a dirty tree,
     refuse a main-clone default-branch finalize, squash >1 commit into ``message``
-    (or the first subject), then rebase on ``origin/<default>``. A rebase failure
-    is reported with the abort/continue recipe and never aborts the other
-    worktrees. Returns the joined per-worktree result lines.
+    (or the branch's own first subject), then rebase on ``origin/<default>``. A
+    failure never aborts the other worktrees, but the command exits 1 once every
+    worktree has been attempted — a swallowed git failure reported finalize as
+    complete over a tree that was never squashed or rebased.
     """
     results: list[str] = []
+    failed = False
     for worktree in Worktree.objects.for_ticket(ticket):
-        repo = worktree.repo_path
-        repo_dir = (worktree.extra or {}).get("worktree_path") or repo
-        default_br = git.default_branch(repo)
-        try:
-            status = git.status_porcelain(repo_dir)
-            if status:
-                results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
-                continue
-
-            refuse_finalize_on_main_clone_default(repo_dir, default_br)
-            git.fetch(repo_dir, "origin", default_br)
-
-            base = git.merge_base(repo_dir, f"origin/{default_br}")
-            count = git.rev_count(repo_dir, f"{base}..HEAD")
-            log = git.log_oneline(repo_dir, f"{base}..HEAD")
-            if log:
-                write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
-
-            if count > 1:
-                message = message or (log.splitlines()[0] if log else f"Squash {count} commits")
-                git.soft_reset(repo_dir, base)
-                git.commit(repo_dir, message)
-                results.append(f"{repo}: squashed {count} commits")
-            else:
-                results.append(f"{repo}: single commit, no squash needed")
-
-            git.rebase(repo_dir, f"origin/{default_br}")
-            results.append(f"{repo}: rebased on {default_br}")
-        except CommandFailedError as exc:
-            results.extend(
-                [
-                    f"{repo}: rebase failed — {exc}",
-                    f"  To abort: git -C {repo_dir} rebase --abort",
-                    f"  To resolve: fix conflicts, git add, then: git -C {repo_dir} rebase --continue",
-                ]
-            )
-    return "\n".join(results)
+        lines, worktree_failed = _finalize_one(worktree, message=message, write=write)
+        results.extend(lines)
+        failed = failed or worktree_failed
+    report = "\n".join(results)
+    if failed:
+        write(report)
+        raise SystemExit(1)
+    return report

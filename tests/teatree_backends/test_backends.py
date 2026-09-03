@@ -26,6 +26,26 @@ def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) ->
     assert sent["json"] == {"text": "TeaTree ready"}
 
 
+def test_slack_incoming_webhook_answers_plain_text_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An incoming webhook's success body is the literal ``ok``, which is not JSON."""
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        return httpx.Response(200, text="ok", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
+
+    assert slack.post_webhook_message("https://hooks.slack.test/123", "TeaTree ready") == {"ok": True}
+
+
+def test_slack_incoming_webhook_surfaces_a_plain_text_error_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        return httpx.Response(200, text="invalid_payload", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
+
+    assert slack.post_webhook_message("https://hooks.slack.test/1", "x") == {"ok": False, "error": "invalid_payload"}
+
+
 def test_notion_backend_fetches_page_with_version_header(monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyClient:
         def __init__(self, *, headers: dict[str, str], timeout: float) -> None:

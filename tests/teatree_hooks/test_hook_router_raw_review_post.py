@@ -1,9 +1,10 @@
+# test-path: cross-cutting — tests hook_router.py (hooks/), which has no single src/teatree/ mirror.
 """Tests for the raw-review-post deny gate in hook_router (#1164).
 
 Sub-agents have repeatedly posted MR/PR review comments by shelling out to a
 raw forge REST POST (``glab api .../merge_requests/<n>/discussions -X POST``,
 ``.../notes``, or the GitHub ``.../pulls/<n>/comments``), bypassing the
-sanctioned ``t3 <overlay> review post-comment`` / ``post-draft-note`` path
+sanctioned top-level ``t3 review post-comment`` / ``post-draft-note`` path
 (draft-default + dedup + on-behalf approval). This gate HARD-DENIES those
 writes at the Bash boundary while letting plain GET reads through.
 

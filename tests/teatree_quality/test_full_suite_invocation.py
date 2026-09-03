@@ -56,6 +56,20 @@ class TestFullSuiteMatcher:
             f"{invocation!r} is genuinely scoped and must be allowed"
         )
 
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "pytest --basetemp /tmp/pt",
+            "uv run pytest --junitxml build/report.xml",
+            "uv run pytest --cov-report term-missing",
+            "pytest --basetemp /tmp/pt -q",
+        ],
+    )
+    def test_an_option_value_is_never_read_as_a_scoped_path(self, invocation: str) -> None:
+        # Every one of these collects the whole testpaths tree; the token after the
+        # option is its value, and reading it as a positional path hid the full run.
+        assert runs_full_suite(invocation, _TESTPATHS_ROOTS), f"{invocation!r} runs the whole suite but was not caught"
+
     def test_commented_invocation_is_not_an_invocation(self) -> None:
         # A `#`-commented mention documents the forbidden shape; it is not a run.
         assert not runs_full_suite("# never do `uv run pytest tests/` on the push path", _TESTPATHS_ROOTS)

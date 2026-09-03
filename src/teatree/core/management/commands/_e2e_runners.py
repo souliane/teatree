@@ -12,17 +12,22 @@ import shutil
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from pathlib import Path
 
 import typer
 
+import teatree.core.management.commands._e2e_specs_checkout as _specs
 from teatree.config import E2ERepo, load_e2e_repos
 from teatree.core.e2e_scenario import E2eExtrasContext
 from teatree.core.intake.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
+from teatree.core.management.commands._e2e_specs_checkout import SpecsCheckoutBusyError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME
 from teatree.paths import get_data_dir
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked, run_streamed
+
+__all__ = ["SpecsCheckoutBusyError"]
 
 #: The out-of-repo capture directory the runner exports as
 #: ``T3_E2E_ARTIFACTS_DIR`` (#3331): ``<ticket_dir>/.t3-cache/artifacts`` — a
@@ -37,6 +42,9 @@ _ARTIFACTS_SUBDIR = "artifacts"
 #: CI run leaves it unset — parity comes from omission, not from each overlay
 #: remembering to inject it.
 CAPTURE_EVIDENCE_ENV = "T3_E2E_CAPTURE_EVIDENCE"
+
+#: The explicit-scheme ssh remote spelling, alongside the scp-like ``git@host:path``.
+_SSH_SCHEME = "ssh://"
 
 
 class ArtifactsDirInRepoError(RuntimeError):
@@ -96,15 +104,44 @@ class PlaywrightOptions:
         return args
 
 
-class E2eBranchNotFoundError(RuntimeError):
+class E2eSpecsRemoteError(RuntimeError):
+    """A specs clone failed for a reason the remote itself explains."""
+
+    def __init__(self, message: str, *, ref: str) -> None:
+        super().__init__(message)
+        self.ref = ref
+
+
+class E2eBranchNotFoundError(E2eSpecsRemoteError):
     """The requested E2E specs ref does not exist on the remote."""
 
     def __init__(self, *, name: str, ref: str, url: str) -> None:
         super().__init__(
             f"E2E specs branch '{ref}' not found on repo '{name}' ({url}). "
             "Pass an existing --branch/--ref, or check the open MR's source branch name.",
+            ref=ref,
         )
-        self.ref = ref
+
+
+class E2eSpecsRemoteUnreachableError(E2eSpecsRemoteError):
+    """The specs remote refused or could not be contacted, so ref existence is UNKNOWN.
+
+    Never conflate this with :class:`E2eBranchNotFoundError`: a failed ``git
+    ls-remote`` prints nothing on stdout, exactly like a successful listing of an
+    absent ref, so the two are indistinguishable without the exit code — and
+    reporting an auth failure as "branch not found" sends the reader hunting a ref
+    the remote demonstrably has.
+    """
+
+    def __init__(self, *, name: str, ref: str, url: str, detail: str) -> None:
+        super().__init__(
+            f"E2E specs remote '{name}' ({url}) could not be reached: git AUTHENTICATION or "
+            f"network failure, so whether '{ref}' exists there is UNKNOWN — this is NOT a "
+            "missing branch. TeaTree authenticates an https remote with GITLAB_TOKEN through "
+            "git's credential helper; confirm that variable is set and valid in THIS venue "
+            f"(a container does not inherit the host's login). git said:\n{detail}",
+            ref=ref,
+        )
 
 
 class E2eSpecsResolutionError(RuntimeError):
@@ -167,6 +204,11 @@ def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
     On first run: ``git clone --branch <ref> --depth 1 <url> <cache_path>``.
     On subsequent runs: ``git fetch origin <ref>`` + ``git reset --hard FETCH_HEAD``.
 
+    The checkout is keyed by repo AND ref, so a run never resets a tree another
+    run is executing against; :func:`_specs.hold_for_process`, claimed by
+    :func:`resolve_external_specs_path` before this runs, serialises the residual
+    case of two runs on the SAME ref.
+
     Raises :class:`E2eBranchNotFoundError` when the ref does not exist on the
     remote, so a typo'd or stale branch fails with a clear message rather than
     an opaque git error.
@@ -175,7 +217,10 @@ def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
     """
     ref = branch_override or repo.branch
     url = _fetchable_url(repo.url)
-    cache_path = get_data_dir("e2e-repos") / repo.name
+    specs_root = get_data_dir(_specs.SPECS_NAMESPACE)
+    cache_path = _specs.checkout_path(specs_root, repo.name, ref)
+    _specs.prune_stale_checkouts(specs_root, repo.name)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         if not cache_path.exists():
             run_checked(["git", "clone", "--branch", ref, "--depth", "1", url, str(cache_path)])
@@ -185,39 +230,75 @@ def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
             run_checked(["git", "-C", str(cache_path), "fetch", url, ref])
             run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
     except CommandFailedError as exc:
-        if _remote_lacks_ref(url, ref):
+        state, detail = _remote_ref_state(url, ref)
+        if state is _RefState.UNREACHABLE:
+            raise E2eSpecsRemoteUnreachableError(name=repo.name, ref=ref, url=repo.url, detail=detail) from exc
+        if state is _RefState.ABSENT:
             raise E2eBranchNotFoundError(name=repo.name, ref=ref, url=repo.url) from exc
         raise
     return cache_path / repo.e2e_dir
 
 
 def _fetchable_url(url: str) -> str:
-    """The configured URL, or its HTTPS form on a host with no ssh client.
+    """The configured URL, or its HTTPS form on a host that cannot authenticate over ssh.
 
-    The deploy image ships no ssh client, but it bakes an HTTPS credential helper
-    (deploy/Dockerfile, ``git config --system``) fed by the ``GITLAB_TOKEN`` the wrapper
-    forwards. An ssh-form remote consults neither: git dies on "cannot run ssh: No
-    such file or directory" while the very same repo is one Authorization header away
-    over HTTPS. A host that HAS ssh keeps the configured URL untouched, so a developer
-    laptop and CI behave exactly as before.
+    A container venue runs git with an HTTPS credential helper (deploy/Dockerfile,
+    ``git config --system``) fed by ``GITLAB_TOKEN``, and carries no key material at
+    all. An ssh-form remote consults neither, so git dies on "Host key verification
+    failed" while the same repo is one Authorization header away over HTTPS. The
+    predicate is the IDENTITY, never the binary: the image ships ``ssh`` as a
+    transitive package dependency and still has no ``~/.ssh``, which is exactly the
+    venue this rewrite exists for. A host holding a key keeps its configured remote,
+    so a developer laptop and CI behave as before.
     """
-    if not url.startswith("git@") or shutil.which("ssh"):
+    host, path = _split_ssh_url(url)
+    if host is None or _ssh_identity_available():
         return url
-
-    host, _, path = url.partition(":")
-    return f"https://{host.removeprefix('git@')}/{path}"
+    return f"https://{host}/{path}"
 
 
-def _remote_lacks_ref(url: str, ref: str) -> bool:
-    """Whether *ref* is absent from *url*, so a failure is a bad ref rather than anything else.
+def _split_ssh_url(url: str) -> tuple[str | None, str]:
+    """``(host, path)`` for either ssh spelling, ``(None, "")`` for any other scheme."""
+    if url.startswith("git@"):
+        host, _, path = url.partition(":")
+        return host.removeprefix("git@"), path
+    if url.startswith(_SSH_SCHEME):
+        authority, _, path = url.removeprefix(_SSH_SCHEME).partition("/")
+        return authority.rpartition("@")[2], path
+    return None, ""
 
-    Without this check every ``CommandFailedError`` -- an auth failure, a network
-    blip, a corrupt cache -- is reported as "branch not found", which sends the
-    reader hunting a ref that is demonstrably on the remote while the real git
-    stderr is discarded.
+
+def _ssh_identity_available() -> bool:
+    """Whether this host can actually authenticate over ssh — a client AND an identity.
+
+    ``shutil.which("ssh")`` alone answers the wrong question, which is how a venue
+    with a binary and no key kept an unusable remote.
+    """
+    if not shutil.which("ssh"):
+        return False
+    if os.environ.get("SSH_AUTH_SOCK"):
+        return True
+    ssh_dir = Path.home() / ".ssh"
+    return any(ssh_dir.glob("id_*")) or (ssh_dir / "config").is_file()
+
+
+class _RefState(Enum):
+    PRESENT = auto()
+    ABSENT = auto()
+    UNREACHABLE = auto()
+
+
+def _remote_ref_state(url: str, ref: str) -> tuple[_RefState, str]:
+    """Whether *ref* is on *url*, plus git's stderr when the remote could not be read.
+
+    The exit code is the whole point: a refused ``ls-remote`` and a successful one
+    listing an absent ref both print nothing, so stdout alone cannot tell an auth
+    failure from a missing branch and reports every one of them as the latter.
     """
     listing = run_allowed_to_fail(["git", "ls-remote", "--heads", "--tags", url, ref], expected_codes=None)
-    return not listing.stdout.strip()
+    if listing.returncode != 0:
+        return _RefState.UNREACHABLE, "\n".join((listing.stderr or "").strip().splitlines()[-5:])
+    return (_RefState.PRESENT if listing.stdout.strip() else _RefState.ABSENT), ""
 
 
 def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
@@ -306,22 +387,42 @@ def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo
     ``--branch``/``--ref`` override winning so an open MR's branch can be run.
 
     Raises :class:`E2eSpecsResolutionError` (carrying the CLI exit code) on any
-    misconfiguration so the caller maps one exception to one ``SystemExit``.
+    misconfiguration, and :class:`SpecsCheckoutBusyError` when a live run already
+    holds this repo+ref checkout. The caller maps each to a ``SystemExit``.
+    """
+    specs_repo = resolve_specs_repo(repo, overlay_repo=overlay_repo)
+    # Claimed for the whole process, not just this call: the caller hands the returned
+    # path to Playwright and runs for minutes, which is precisely the window a rival
+    # run's `reset --hard` would land in.
+    _specs.hold_for_process(
+        get_data_dir(_specs.SPECS_NAMESPACE),
+        specs_repo.name,
+        branch or specs_repo.branch,
+    )
+    return _clone_specs_repo(specs_repo, branch)
+
+
+def resolve_specs_repo(repo: str, *, overlay_repo: E2ERepo | None = None) -> E2ERepo:
+    """Which :class:`E2ERepo` the ``external`` runner sources specs from.
+
+    Split out of :func:`resolve_external_specs_path` because the process-lifetime
+    claim is keyed by the repo's name and ref, so the caller has to know WHICH
+    repo before anything touches the disk.
     """
     if repo:
         repos_by_name = {r.name: r for r in load_e2e_repos()}
         if repo not in repos_by_name:
             raise E2eSpecsResolutionError.repo_not_in_config(repo)
-        return _clone_specs_repo(repos_by_name[repo], branch)
+        return repos_by_name[repo]
     if overlay_repo is None:
         raise E2eSpecsResolutionError.no_specs_source()
-    return _clone_specs_repo(overlay_repo, branch)
+    return overlay_repo
 
 
 def _clone_specs_repo(specs_repo: E2ERepo, branch: str) -> Path:
     try:
         playwright_root = clone_or_update_e2e_repo(specs_repo, branch)
-    except E2eBranchNotFoundError as exc:
+    except E2eSpecsRemoteError as exc:
         raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
     ensure_external_e2e_dependencies(playwright_root)
     return playwright_root
@@ -363,13 +464,15 @@ def build_e2e_env(
     exports ``T3_E2E_CAPTURE_EVIDENCE`` on a managed run (opt out with
     ``--no-evidence``); a plain / CI run leaves it unset.
 
-    The resolved target, spec path, artifacts dir and compose project are handed
-    to :meth:`OverlayE2E.env_extras` as a frozen :class:`E2eExtrasContext`, so an
-    overlay's extras key off the *same* target core routed at — never a re-derived
-    ``BASE_URL`` host regex. Overlay-specific env vars (e.g. ``CUSTOMER``) come
-    from that seam — core only knows about ``BASE_URL``, ``T3_E2E_TARGET``,
-    ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH``, ``T3_E2E_ARTIFACTS_DIR``,
-    ``T3_E2E_CAPTURE_EVIDENCE`` and ``CI``.
+    The resolved target, spec path, artifacts dir, compose project and base URL
+    are handed to :meth:`OverlayE2E.env_extras` as a frozen :class:`E2eExtrasContext`,
+    so an overlay's extras key off the *same* values core resolved for the child
+    process — never a re-derivation from ``os.environ``, which still holds the
+    host process's env at the point ``env_extras`` runs (the constructed *env*
+    dict above is local until the subprocess is spawned). Overlay-specific env
+    vars (e.g. ``CUSTOMER``) come from that seam — core only knows about
+    ``BASE_URL``, ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH``,
+    ``T3_E2E_ARTIFACTS_DIR``, ``T3_E2E_CAPTURE_EVIDENCE`` and ``CI``.
     """
     env = {**os.environ}
     context = context or E2eEnvContext()
@@ -395,6 +498,7 @@ def build_e2e_env(
         spec_path=context.test_path,
         artifacts_dir=context.artifacts_dir,
         compose_project=context.compose_project or "",
+        base_url=env.get("BASE_URL", ""),
     )
     for key, value in get_overlay().e2e.env_extras(env_cache, context=extras_context).items():
         env.setdefault(key, value)

@@ -8,7 +8,7 @@ anything is pushed. Tracking the whole file therefore churns it every run.
 ``strip_run_provenance`` produces the *tracked* half — the authored manifest
 with the top-level ``dev``/``local`` provenance blocks removed — so the file a
 private test repo commits is stable across runs. The full manifest (with
-provenance) stays out-of-repo for ``post-test-plan``.
+provenance) stays out-of-repo for ``write-test-plan``.
 """
 
 import json

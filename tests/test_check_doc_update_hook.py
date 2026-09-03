@@ -11,6 +11,7 @@ those belong to the skill prose in ``/t3:ship`` § Documentation Discipline.
 
 import pytest
 
+from scripts.hooks import check_doc_update
 from scripts.hooks.check_doc_update import (
     Finding,
     detect_loop_lease_added,
@@ -287,39 +288,56 @@ class TestMain:
         assert main() == 0
 
 
-class TestSubprocessWrappers:
-    def test_staged_diff_returns_stdout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestStagedReadsAreProjectRelative:
+    """The staged reads name paths relative to THIS project, not the work-tree top.
+
+    Every trigger literal in the hook (``src/teatree/cli/__init__.py``,
+    ``README.md``) is project-relative. Read from a bare ``git diff`` inside a
+    fork that vendors the project, the names arrive prefixed, no trigger prefix
+    matches, and the gate passes having detected nothing.
+    """
+
+    @staticmethod
+    def _git(repo, *args: str) -> None:
         import subprocess  # noqa: PLC0415
 
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)  # noqa: S607 — `git` from PATH deliberately: the fixture must drive the same git the hook under test resolves
+
+    def _vendored(self, tmp_path):
+        """A fork work tree with the project vendored under ``vendor/core/``."""
+        project = tmp_path / "vendor" / "core"
+        (project / "src" / "teatree" / "cli").mkdir(parents=True)
+        (tmp_path / "overlay").mkdir()
+        self._git(tmp_path, "init", "-q", "-b", "main")
+        self._git(tmp_path, "config", "user.email", "t@example.com")
+        self._git(tmp_path, "config", "user.name", "t")
+        return project
+
+    def test_names_are_stripped_of_the_vendoring_prefix(self, tmp_path, monkeypatch) -> None:
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
-        def _fake_run(_cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(args=_cmd, returncode=0, stdout="diff content", stderr="")
+        project = self._vendored(tmp_path)
+        (project / "src" / "teatree" / "cli" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "overlay" / "other.py").write_text("y = 1\n", encoding="utf-8")
+        self._git(tmp_path, "add", "vendor/core/src/teatree/cli/__init__.py", "overlay/other.py")
+        monkeypatch.setattr(mod, "_REPO_ROOT", project)
 
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        assert mod._staged_diff() == "diff content"
+        assert mod._staged_files() == ["src/teatree/cli/__init__.py"]
+        assert mod._added_files() == ["src/teatree/cli/__init__.py"]
+        assert "+++ b/src/teatree/cli/__init__.py" in mod._staged_diff()
 
-    def test_staged_files_splits_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import subprocess  # noqa: PLC0415
-
+    def test_names_are_stripped_from_a_linked_worktree_too(self, tmp_path, monkeypatch) -> None:
+        # Git exports GIT_DIR to a hook fired from a linked worktree; with it set
+        # and no work tree named, git calls the CWD the top of the work tree.
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
-        def _fake_run(_cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(args=_cmd, returncode=0, stdout="a.py\nb.py\n\n", stderr="")
+        project = self._vendored(tmp_path)
+        (project / "src" / "teatree" / "cli" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        self._git(tmp_path, "add", "vendor/core/src/teatree/cli/__init__.py")
+        monkeypatch.setattr(mod, "_REPO_ROOT", project)
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / ".git"))
 
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        assert mod._staged_files() == ["a.py", "b.py"]
-
-    def test_added_files_splits_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import subprocess  # noqa: PLC0415
-
-        import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
-
-        def _fake_run(_cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(args=_cmd, returncode=0, stdout="new.py\n", stderr="")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        assert mod._added_files() == ["new.py"]
+        assert mod._staged_files() == ["src/teatree/cli/__init__.py"]
 
 
 class TestGitFailureFailsLoud:
@@ -327,7 +345,7 @@ class TestGitFailureFailsLoud:
 
     The old wrappers used check=False, so a git failure returned '' and main()
     early-exited 0 — every doc-update trigger silently skipped (fake-green). The
-    wrappers now raise CalledProcessError on a non-zero git exit.
+    reads now raise ``WorkTreeError`` on a non-zero git exit.
     """
 
     def _fail_run(self, returncode: int = 128, stderr: str = "fatal: corrupt index"):
@@ -344,7 +362,7 @@ class TestGitFailureFailsLoud:
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
         monkeypatch.setattr(subprocess, "run", self._fail_run())
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(check_doc_update.work_tree.WorkTreeError):
             mod._staged_diff()
 
     def test_staged_files_raises_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,7 +371,7 @@ class TestGitFailureFailsLoud:
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
         monkeypatch.setattr(subprocess, "run", self._fail_run())
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(check_doc_update.work_tree.WorkTreeError):
             mod._staged_files()
 
     def test_added_files_raises_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -362,7 +380,7 @@ class TestGitFailureFailsLoud:
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
         monkeypatch.setattr(subprocess, "run", self._fail_run())
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(check_doc_update.work_tree.WorkTreeError):
             mod._added_files()
 
     def test_main_propagates_git_failure_instead_of_exiting_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,5 +391,5 @@ class TestGitFailureFailsLoud:
         import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
 
         monkeypatch.setattr(subprocess, "run", self._fail_run())
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(check_doc_update.work_tree.WorkTreeError):
             mod.main()

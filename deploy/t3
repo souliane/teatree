@@ -115,9 +115,10 @@ export TEATREE_DOCKER_SOCKET_GID
 # mount (deploy.sh pre-creates the same set for the same reason). Credential-plane
 # dirs are mode 700, as pass and gpg require.
 #
-# Named once, because these same host roots are the whole answer to "can the
-# container see this path?" — the reachability check below reads them, so the
-# diagnostic can never drift from what is actually mounted.
+# Named once HERE, because these same host roots are the whole answer to "can the
+# container see this path?" and the reachability check below reads them. They are a
+# second copy of docker-compose.yml's own bind sources, which is what actually gets
+# mounted; tests/test_deploy_bindmount_compose.py pins the two in sync.
 CREDENTIAL_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.password-store"
     "$TEATREE_HOST_HOME/.gnupg"
@@ -125,11 +126,78 @@ CREDENTIAL_MOUNT_SOURCES=(
 DATA_MOUNT_SOURCES=(
     "$TEATREE_HOST_HOME/.local/share/teatree"
     "$TEATREE_HOST_HOME/.local/share/teatree-worktrees"
+    # The uv interpreter root both venues name identically, so a venv under the
+    # worktree bind stays valid in each and is never rebuilt (#4642).
+    "$TEATREE_HOST_HOME/.local/share/uv/python"
     "$TEATREE_HOST_HOME/workspace/t3-workspaces"
+    # The host WORKSPACE root — the off-box host-identity overlay mounts it whole
+    # so the container can resolve source clones (a linked worktree's gitdir
+    # names its clone by the HOST's absolute path) and clean-all verdicts are
+    # verifiable instead of clone-unresolvable.
+    "$TEATREE_HOST_HOME/workspace"
     "$TEATREE_HOST_HOME/.claude/projects"
+    "$TEATREE_HOST_HOME/.local/bin"
 )
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
 install -d "${DATA_MOUNT_SOURCES[@]}"
+
+# THE SUPERSEDED SHELL ALIAS, retired from the HOST rc files (#3232). An earlier
+# `t3 setup` wrote a marker-fenced `alias t3=...` block; a PATH launcher reaches
+# interactive AND non-interactive shells, so the alias only ever added a second,
+# independently-stale answer to "which t3" — the split-brain itself. The removal
+# lives HERE because the container that now runs `t3 setup` cannot see the
+# operator's rc files: this wrapper is the only layer that executes on the host.
+# The markers are the strings teatree.docker.workflow defines;
+# tests/test_deploy_alias_retirement.py pins the two spellings together.
+ALIAS_MARKER_BEGIN='# >>> teatree docker t3 alias >>>'
+ALIAS_MARKER_END='# <<< teatree docker t3 alias <<<'
+
+retire_managed_alias_block() {
+    local rc line out drop closed
+    for rc in "$TEATREE_HOST_HOME/.bashrc" "$TEATREE_HOST_HOME/.zshrc"; do
+        [ -f "$rc" ] || continue
+        case "$(<"$rc")" in
+        *"$ALIAS_MARKER_BEGIN"*) ;;
+        *) continue ;;
+        esac
+        out=""
+        drop=0
+        closed=1
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+            "$ALIAS_MARKER_BEGIN")
+                drop=1
+                closed=0
+                continue
+                ;;
+            "$ALIAS_MARKER_END")
+                drop=0
+                closed=1
+                continue
+                ;;
+            esac
+            [ "$drop" = 1 ] || out="$out$line"$'\n'
+        done <"$rc"
+        # An unclosed BEGIN leaves `drop` set to end-of-file, so writing `out` would
+        # delete every line the operator wrote after it. Their rc file is not ours to
+        # guess at: report it and change nothing.
+        if [ "$closed" = 0 ]; then
+            echo "deploy/t3: $rc opens a managed t3 alias block that is never closed by '$ALIAS_MARKER_END'." >&2
+            echo "          Leaving it untouched — removing to end-of-file would take your own lines with it." >&2
+            echo "          Close the block or delete it by hand, then re-run \`t3 setup\`." >&2
+            continue
+        fi
+        # Written THROUGH the path, never renamed over it: an rc file is commonly a
+        # symlink into a dotfiles repo, and a rename would replace the link itself.
+        printf '%s' "$out" >"$rc"
+        echo "deploy/t3: retired the superseded managed t3 alias block from $rc — the PATH launcher replaces it." >&2
+    done
+}
+
+# Only on `setup`: it is a one-off repair, not work every `t3` call should redo.
+if [ "${1:-}" = setup ]; then
+    retire_managed_alias_block
+fi
 
 # Run the WORKING TREE the wrapper was invoked from when teatree is installed
 # BENEATH a host project — the `<host>/vendor/teatree/deploy/t3` layout. The tree
@@ -203,15 +271,25 @@ fi
 # the command would resolve from the image WORKDIR again — the exact failure this
 # block exists to remove, reappearing only on some hosts. `-P` on a path that is
 # already physical is a no-op, so the common case is unchanged.
-# The host roots the container can see. Shared by the invisible-checkout refusal
-# below and the unreachable-argument note further down, so the two can never name
-# different sets — they are answering the same question.
+# The host roots the container can see — every mount. That is the whole answer for
+# an unreachable path ARGUMENT below: a file under any of them is readable inside.
 print_visible_host_roots() {
     local root
     for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
         if [ -n "$root" ]; then
             echo "             $root" >&2
         fi
+    done
+}
+
+# The narrower set a WORKING DIRECTORY may sit under. Being mounted is not enough:
+# the cwd must also TRANSLATE, and only the MOUNT_PAIRS built below do. Naming the
+# visible set in the refusal advertised ~/.claude/projects and the credential roots
+# as somewhere to work, then refused a checkout under them all the same.
+print_translatable_host_roots() {
+    local pair
+    for pair in "${MOUNT_PAIRS[@]}"; do
+        echo "             ${pair%%:*}" >&2
     done
 }
 
@@ -242,8 +320,8 @@ refuse_invisible_checkout() {
     echo "           The container carries its OWN copy of the teatree source (a Docker" >&2
     echo "           volume, a separate tree from this one), so dispatching from here would" >&2
     echo "           silently operate on that copy instead of the checkout you are in." >&2
-    echo "           The container sees only these host roots:" >&2
-    print_visible_host_roots
+    echo "           A working directory must sit under one of these host roots:" >&2
+    print_translatable_host_roots
     echo "           Fix: work from a checkout under one of them — \`t3 <overlay> workspace" >&2
     echo "           ticket <id>\` creates one — or export TEATREE_INVOCATION_CWD to the" >&2
     echo "           container-side path when you know this tree is reachable there." >&2
@@ -364,7 +442,9 @@ warn_unreachable_host_paths "$@"
 compose() { docker compose "${COMPOSE_ARGS[@]}" "$@"; }
 
 # The first control-DB route that is actually running, preferring $SERVICE. Echoes
-# its name; non-zero when none of them is up.
+# its name; non-zero when none of them is up. A route is "running" only when it has a
+# SERVICE container: `running_service_container` skips the ephemeral one-offs compose
+# lists under the same service name, which `exec` can never target.
 first_running_service() {
     local svc seen=""
     for svc in $SERVICE $CLI_SERVICE_FALLBACKS; do
@@ -372,7 +452,7 @@ first_running_service() {
         *" $svc "*) continue ;;
         esac
         seen="$seen $svc"
-        if [ -n "$(compose ps --status running --quiet "$svc" 2>/dev/null)" ]; then
+        if [ -n "$(running_service_container "$svc")" ]; then
             printf '%s' "$svc"
             return 0
         fi
@@ -396,6 +476,33 @@ deploy_lock_held() {
     grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
 }
 
+
+# THE CONTAINER `exec` WILL ACTUALLY TARGET. Compose lists an ephemeral `run --rm`
+# one-off under the SAME service name as the service container, so on a paused stack
+# `ps --status running` answered with the one-off while `exec` resolved the paused
+# worker and died — leaving the one-off fallback, which works, unreachable for as long
+# as any one-off existed. The mount guard reads the same answer, so it cleared a drift
+# on a container the command never runs in.
+#
+# The `oneoff` label is the only thing separating them; compose still does the listing,
+# so no project name is assumed. Only a PROVEN one-off is skipped, so a daemon that
+# cannot answer degrades to the previous choice, never to a fallback on every call.
+running_service_container() {
+    local id oneoff svc="${1:-$SERVICE}"
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        oneoff="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+            "$id" 2>/dev/null)" || oneoff=""
+        if [ "$oneoff" != True ]; then
+            printf '%s\n' "$id"
+            return 0
+        fi
+    done <<<"$(compose ps --status running --quiet "$svc" 2>/dev/null || true)"
+    return 0
+}
+
+SERVICE_CONTAINER="$(running_service_container)"
+
 # WHICH TREE THE RUNNING CONTAINER ACTUALLY EXECUTES. `TEATREE_SOURCE_MOUNT` above
 # resolves the host project this wrapper was invoked from, so the container runs the
 # code being edited here — but that value reaches a container only through `up` /
@@ -413,14 +520,12 @@ deploy_lock_held() {
 # (warn_unreachable_host_paths). An answer the daemon cannot give is not evidence of
 # divergence, so an unreadable inspect stays silent rather than inventing a drift.
 warn_source_mount_drift() {
-    local container mounted running_type running_source resolved
+    local mounted running_type running_source resolved
     [ -n "${TEATREE_SOURCE_MOUNT:-}" ] || return 0
-    container="$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" || return 0
-    container="${container%%$'\n'*}"
-    [ -n "$container" ] || return 0
+    [ -n "$SERVICE_CONTAINER" ] || return 0
     mounted="$(docker inspect --format \
         "{{range .Mounts}}{{if eq .Destination \"$CONTAINER_SOURCE_DIR\"}}{{.Type}} {{.Source}}{{end}}{{end}}" \
-        "$container" 2>/dev/null)" || return 0
+        "$SERVICE_CONTAINER" 2>/dev/null)" || return 0
     [ -n "$mounted" ] || return 0
     running_type="${mounted%% *}"
     running_source="${mounted#* }"
@@ -443,7 +548,8 @@ warn_source_mount_drift() {
 
 warn_source_mount_drift
 
-# THE GPG HOME AN EXEC'D PROCESS MUST ADOPT, decided INSIDE the container.
+# WHAT AN EXEC'D PROCESS MUST REPAIR FOR ITSELF, decided INSIDE the container: the
+# GPG home, and then the GitLab token that home is what makes readable.
 #
 # gpg-agent and keyboxd bind their `S.*` sockets inside GNUPGHOME. When the host's
 # `~/.gnupg` mount cannot host a unix socket (Docker Desktop for Mac serves it over
@@ -468,9 +574,19 @@ warn_source_mount_drift
 # GNUPGHOME is left exactly as the image set it. An empty derived home is never
 # adopted — that would replace a readable home with an unusable one.
 #
+# THE TOKEN READ RIDES ALONG, and must come after that repair — `pass` cannot decrypt
+# until GNUPGHOME points at a home gpg can bind its sockets in. `deploy/entrypoint.sh`
+# exports GITLAB_TOKEN into the ROLE's process tree only, so an exec'd process starts
+# from the container's create-time environment and the baked https credential helper
+# interpolates an EMPTY password — which GitLab reports as `HTTP Basic: Access denied`,
+# indistinguishable from a branch that does not exist. The host side below resolves the
+# token too, but only where a host `pass`/`glab` answers; this covers the venues where
+# neither runs — a `compose exec` an operator typed, and the one-off `run --rm`.
+# An already-set value always wins, so a forwarded or entrypoint-set token is untouched.
+#
 # Single-quoted, and passed as the `sh -c` PROGRAM so the HOST shell never expands
 # it: `$0` is the label, `$@` the command to run.
-CONTAINER_GNUPG_PROLOGUE='derived="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
+CONTAINER_CREDENTIAL_PROLOGUE='derived="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
 for key in "$derived"/private-keys-v1.d/*.key; do
     if [ -f "$key" ]; then
         GNUPGHOME="$derived"
@@ -478,6 +594,10 @@ for key in "$derived"/private-keys-v1.d/*.key; do
         break
     fi
 done
+if [ -z "${GITLAB_TOKEN:-}" ]; then
+    GITLAB_TOKEN="$(pass show "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}" 2>/dev/null | head -n1)"
+    export GITLAB_TOKEN
+fi
 exec "$@"'
 
 # Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
@@ -495,6 +615,11 @@ FORWARD_ENV_NAMES=(
     GITLAB_TOKEN
     GITLAB_URL
     GITHUB_TOKEN
+    # The launcher `t3 setup` writes through the host-bin mount execs THIS
+    # checkout's deploy/t3. An `exec` inherits the environment the stack came up
+    # with, so without forwarding it a relocated checkout would repair itself to
+    # the path the running container was started from — the stale one.
+    TEATREE_DEPLOY_CHECKOUT
 )
 if [ -n "${TEATREE_FORWARD_ENV:-}" ]; then
     IFS=',' read -r -a EXTRA_ENV_NAMES <<<"$TEATREE_FORWARD_ENV"
@@ -513,10 +638,10 @@ fi
 # resolves empty, so the name is simply not forwarded and the container is left with
 # whatever its own environment holds.
 #
-# The resolved value crosses as a `docker compose --env` argument, so it is visible in
-# the host process table for the life of the call — the SAME exposure the exported
-# GITLAB_TOKEN forwarding above already carries, not a new class, but it is now reached
-# without the operator having typed a token, so name it rather than let it pass silently.
+# The resolved value crosses as a BARE `--env GITLAB_TOKEN`, read by docker from this
+# process's environment — see the ENV_ARGS assembly below. It is never an argv token, so
+# it is never in the host process table, which matters most here: this path reaches a
+# credential the operator never typed.
 host_gitlab_token() {
     command -v glab >/dev/null 2>&1 || return 0
     # The EXTRACTION RULE mirrors `ReviewService.get_gitlab_token()`: the text after the
@@ -542,26 +667,170 @@ host_gitlab_token() {
     return 0
 }
 
-# Everything from here on either resolves or carries the credential — the resolution,
-# the `--env` assembly, and every `docker compose` hop whose argv holds the assembled
-# `--env NAME=value`. xtrace is therefore switched OFF for the remainder of the script
-# and never restored, so `bash -x t3` cannot print a secret; only the mount/layout
-# wiring above stays traceable, which is the part worth tracing. Restoring it before
-# the dispatch would put the token straight back into the trace.
+# Everything from here on resolves the credential into a shell variable, and xtrace
+# prints an assignment's value. It is therefore switched OFF for the remainder of the
+# script and never restored, so `bash -x t3` cannot print a secret; only the
+# mount/layout wiring above stays traceable, which is the part worth tracing. Restoring
+# it before the dispatch would put the token straight back into the trace.
 set +x
 
+# The host's OWN pass store, read FIRST — before the `glab` fallback above. It is
+# the operator-chosen key, whereas `glab auth status` answers with whatever token
+# that CLI happens to hold, which need not be the one the overlay's repos are
+# granted on. The container's entrypoint reads the same default key, so both sides
+# resolve one credential from one place. Value captured, never echoed.
+host_gitlab_token_from_pass() {
+    command -v pass >/dev/null 2>&1 || return 0
+    pass show "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}" 2>/dev/null | head -n1
+    return 0
+}
+
+if [ -z "${GITLAB_TOKEN:-}" ]; then
+    GITLAB_TOKEN="$(host_gitlab_token_from_pass)"
+fi
 if [ -z "${GITLAB_TOKEN:-}" ]; then
     GITLAB_TOKEN="$(host_gitlab_token)"
 fi
+# EXPORTED, not merely assigned: compose interpolates `${GITLAB_TOKEN:-}` in
+# docker-compose.yml from this process's ENVIRONMENT, so the one-off `run --rm`
+# fallback below would otherwise create a token-less container even though the
+# `--env` forward carries it for the exec path.
+export GITLAB_TOKEN
 
+# BARE NAME, never `NAME=value`. docker reads a bare `--env NAME` from THIS process's
+# environment, so the credential crosses the boundary without ever entering an argv —
+# and an argv is world-readable in the host process table for the life of the call, so
+# `NAME=value` handed every local process the operator's GitLab token. `export` is what
+# makes the value readable there: a name merely ASSIGNED above would forward as empty.
 ENV_ARGS=()
 for ENV_NAME in "${FORWARD_ENV_NAMES[@]}"; do
     if [ -n "${!ENV_NAME:-}" ]; then
-        ENV_ARGS+=(--env "$ENV_NAME=${!ENV_NAME}")
+        export "${ENV_NAME?}"
+        ENV_ARGS+=(--env "$ENV_NAME")
     fi
 done
 # `set -u` treats an empty array's plain expansion as an unbound-variable error on
 # bash 3.2 (the macOS default), so every use below takes the empty-safe form.
+
+# THE TWO VERBS WHOSE DELIVERABLE IS A PAGE IN THE OPERATOR'S BROWSER. Everything else
+# the containerized CLI can finish by itself; these two cannot. The image carries no
+# browser and no $BROWSER, so `webbrowser.open` inside it opens nothing — and the CLI's
+# own `127.0.0.1` is the CONTAINER's, so it can neither reach nor prove the host url it
+# just published. This wrapper is the only layer executing on the host, so it owns the
+# last two steps: prove the url answers, then open it.
+#
+# The url is READ from the file the CLI wrote, never rebuilt here: a second copy of the
+# port in bash is free to disagree with `--port`, which is the same unreachable-url bug
+# in a different place. `teatree.cli.admin.BROWSE_URL_FILE` names the file;
+# tests/test_deploy_admin_browser_handoff.py pins the two spellings together.
+ADMIN_BROWSE_URL_FILE="$TEATREE_HOST_HOME/.local/share/teatree/admin-browse-url"
+# The same handoff shape for `t3 peer`: the CLI resolves each forward from the
+# `peer_instances` registry (which only it can read — the control DB is a named volume) and
+# writes the plan here; opening the forward is a HOST act, because the transport binaries and
+# their credentials are the operator's and the near end must bind the loopback the dashboard's
+# fetch actually means. `teatree.core.peer_forward.PLAN_FILE` names the file;
+# tests/test_deploy_peer_forward_handoff.py pins the two spellings together.
+PEER_FORWARD_PLAN_FILE="$TEATREE_HOST_HOME/.local/share/teatree/peer-forward-plan"
+PEER_FORWARD_RUNNER="$SCRIPT_DIR/peer-forward.sh"
+
+wants_host_browser() {
+    case "${1:-}" in
+    admin | dashboard) ;;
+    *) return 1 ;;
+    esac
+    local arg
+    for arg in "$@"; do
+        if [ "$arg" = --no-browser ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+open_host_browser() {
+    local url="$1"
+    if command -v open >/dev/null 2>&1; then
+        open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url"
+    else
+        echo "deploy/t3: no browser opener on this host — open $url yourself." >&2
+    fi
+}
+
+# A REFUSAL, not a browser at a dead page. ERR_CONNECTION_REFUSED tells an operator
+# nothing about which of the stack, the forward or the publish failed; this names it.
+refuse_unreachable_admin() {
+    echo "deploy/t3: refusing to open a browser — $1 does not answer from this host." >&2
+    echo "           The admin gunicorn binds the CONTAINER's loopback, so a forward" >&2
+    echo "           container must publish it on the host. Check it is up:" >&2
+    echo "             docker ps --filter name=teatree-admin-forward" >&2
+    echo "           and that the stack's admin is running:" >&2
+    echo "             docker compose "${COMPOSE_ARGS[@]}" ps teatree-admin" >&2
+    exit 1
+}
+
+# Any HTTP answer is a healthy one — a redirect to the login page proves reachability
+# just as well as a 200, and only a connection-level failure is the defect here.
+dispatch_then_open_browser() {
+    local rc=0 url=""
+    : >|"$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true
+    docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$(first_running_service)" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    url="$(cat "$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true)"
+    if [ -z "$url" ]; then
+        echo "deploy/t3: the CLI recorded no browse url — not opening a browser." >&2
+        exit 1
+    fi
+    if command -v curl >/dev/null 2>&1 && ! curl --silent --output /dev/null --max-time 15 "$url"; then
+        refuse_unreachable_admin "$url"
+    fi
+    open_host_browser "$url"
+    exit 0
+}
+
+# The forward verbs take the same host hop, for the same reason and with the same shape: the
+# CLI resolves the plan in the container, the wrapper carries it out here. Whatever the runner
+# reports is this command's own result, so its exit code is the wrapper's.
+#
+# `open` is here rather than with the browser verbs because its FIRST step is a forward — the
+# page it wants does not answer until one is up, so probing the url before opening it, as the
+# browser hop does, would refuse every peer whose forward is merely not open yet.
+wants_host_forward() {
+    [ "${1:-}" = peer ] || return 1
+    case "${2:-}" in
+    up | down | status | open) return 0 ;;
+    esac
+    return 1
+}
+
+dispatch_then_run_forward() {
+    local rc=0 url=""
+    : >|"$PEER_FORWARD_PLAN_FILE" 2>/dev/null || true
+    : >|"$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true
+    docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$(first_running_service)" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    if [ ! -s "$PEER_FORWARD_PLAN_FILE" ]; then
+        echo "deploy/t3: the CLI recorded no forward plan — nothing to open." >&2
+        exit 1
+    fi
+    bash "$PEER_FORWARD_RUNNER" "$PEER_FORWARD_PLAN_FILE" || exit $?
+    url="$(cat "$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true)"
+    [ -n "$url" ] && open_host_browser "$url"
+    exit 0
+}
+
+if [ -n "$(first_running_service || true)" ] && wants_host_browser "$@"; then
+    dispatch_then_open_browser "$@"
+fi
+
+if [ -n "$(first_running_service || true)" ] && wants_host_forward "$@"; then
+    dispatch_then_run_forward "$@"
+fi
 
 RUNNING_SERVICE="$(first_running_service || true)"
 
@@ -600,9 +869,9 @@ if [ -n "$RUNNING_SERVICE" ]; then
     # (`exec: compose: not found`), so the final hop inlines `docker compose`
     # directly instead of calling through the function.
     if [ -t 0 ]; then
-        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
     fi
-    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
 fi
 
 # Nothing running. Two different worlds reach this line: a merely STOPPED stack,
@@ -643,16 +912,19 @@ if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null
     refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
 fi
 
-# Bypassing the entrypoint is also what makes this container credential-less: the
-# entrypoint is where GH_TOKEN is exported and git's credential helper is wired, so a
-# push from here fails on `could not read Username` — a failure of the venue, not of the
-# branch. Announced BEFORE the dispatch, on stderr so a `--json` consumer is unaffected;
-# said afterwards it arrives as one more opaque rc=1 (#4076).
+# Bypassing the entrypoint is what leaves this container short of the worker's own
+# environment: GH_TOKEN is exported there, so a GitHub push from here fails on `could
+# not read Username` — a failure of the venue, not of the branch. GitLab is covered
+# either way (the https credential helper is baked at the SYSTEM level in the image and
+# the prologue resolves the token), so only the GitHub half is worth saying. Announced
+# BEFORE the dispatch, on stderr so a `--json` consumer is unaffected; said afterwards
+# it arrives as one more opaque rc=1 (#4076).
 echo "deploy/t3: the teatree worker is not running — dispatching in a one-off container." >&2
-echo "           It shares the mounts but not the worker's environment: git has no credential" >&2
-echo "           helper there, so a push cannot authenticate. Start the stack first for a push:" >&2
+echo "           It shares the mounts but not the worker's environment: no GitHub credential" >&2
+echo "           reaches it, so a GitHub push cannot authenticate. Start the stack first:" >&2
 echo "           $REPO_ROOT/deploy/deploy.sh" >&2
 
-# `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
-# directly, not a server.
-exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"
+# `--entrypoint sh` bypasses the TEATREE_ROLE dispatcher so we run the CLI directly,
+# not a server — through the same prologue the exec paths use, so this venue repairs
+# its own GPG home and resolves its own GitLab token rather than inheriting neither.
+exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"

@@ -14,6 +14,7 @@ from django.utils import timezone
 from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
 from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, DirectiveDispatch, Ticket
+from teatree.core.models.directive_dispatch import MAX_INTERPRET_ATTEMPTS
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop import guards
@@ -127,6 +128,26 @@ class TestIntakeBranches(TestCase):
         DeferredQuestion.consume(question.pk, answer="approve")
         result = run_tick(settings=_open_settings(), seams=_seams())
         assert result.action == "admitted"
+
+    def test_the_rearm_stops_at_the_attempt_budget(self) -> None:
+        # The exhausted budget PARKS the directive and reports its own action: an
+        # interpreter nothing can read must not be re-armed every tick forever.
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        for _ in range(MAX_INTERPRET_ATTEMPTS):
+            assert run_tick(settings=_open_settings(), seams=_seams()).action == "interpret_dispatched"
+            task = DirectiveDispatch.objects.get(directive=directive).task
+            assert task is not None
+            task.fail(reason="missing required evidence: bad envelope")
+
+        with self.assertLogs("teatree.loops.directive_loop.tick", level="WARNING") as logs:
+            result = run_tick(settings=_open_settings(), seams=_seams())
+        assert result.action == "interpret_exhausted"
+        assert result.advanced == 1
+        assert str(MAX_INTERPRET_ATTEMPTS) in result.reason
+        assert any(str(directive.pk) in line for line in logs.output)
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.REJECTED
+        assert run_tick(settings=_open_settings(), seams=_seams()).action == "idle"
 
     def test_clarifying_waits_then_reinterprets_when_answered(self) -> None:
         directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)

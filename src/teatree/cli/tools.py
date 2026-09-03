@@ -63,6 +63,33 @@ def _deny_with_errors(errors: list[str]) -> None:
     raise typer.Exit(code=1)
 
 
+_REGISTRY_DEGRADED_DENIAL = (
+    "validate-mr: the overlay registry read is DEGRADED, so no overlay could be resolved and the "
+    "metadata was NOT checked — denying rather than reporting a clean check. Repair the config store "
+    "(`t3 doctor check`), or re-run with --repo <target-slug> to key the verdict to the MR's target."
+)
+
+
+def _overlay_registry_degraded() -> bool:
+    """Whether an empty overlay set is a READ FAILURE rather than an unconfigured install.
+
+    The same confirming read :func:`teatree.config.loader._inject_db_registries` makes: an
+    unreadable store answers the registry lookup with the identical empty value a fresh
+    install gives, so without it the skip arm cannot tell "nothing to check" from "could not
+    check" — and a green from this command means the config was unreadable.
+
+    Fails safe to NOT degraded: a probe that itself raises must not become a second outage on
+    a command the pre-push hook runs.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: Django-free store read at call time
+    from teatree.config.registries import REGISTRY_OVERLAYS  # noqa: PLC0415 — deferred with its cold-read sibling
+
+    try:
+        return not cold_reader.read_setting_confirmed(REGISTRY_OVERLAYS).readable
+    except Exception:  # noqa: BLE001 — a health probe never becomes the failure it reports
+        return False
+
+
 @tool_app.command("validate-mr")
 def validate_mr(
     title: str = typer.Option("", "--title", help="MR/PR title"),
@@ -124,10 +151,16 @@ def validate_mr(
 
     require_sections = not sections_optional
     if repo:
+        from teatree.utils.git import remote_slug  # noqa: PLC0415 — deferred: call-time import
+
         target_overlay = get_overlay_for_repo(repo)
         if target_overlay is not None:
             errors = _validation_errors_fail_closed(
-                target_overlay, title, description, require_sections=require_sections
+                target_overlay,
+                title,
+                description,
+                require_sections=require_sections,
+                repo=remote_slug(repo=repo),
             )
             if errors:
                 _deny_with_errors(errors)
@@ -146,6 +179,8 @@ def validate_mr(
 
     overlays = get_all_overlays()
     if not overlays:
+        if _overlay_registry_degraded():
+            _deny_with_errors([_REGISTRY_DEGRADED_DENIAL])
         typer.echo("validate-mr: no overlay resolvable for this repo; skipping metadata check.", err=True)
         return
 
@@ -159,24 +194,24 @@ def validate_mr(
 
 
 def _validation_errors(
-    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True, repo: str = ""
 ) -> list[str]:
     """Return the overlay's ``validate_pr`` errors for ``title``/``description``.
 
-    ``require_sections`` is always forwarded (#3526). Conditionally forwarding it
-    "only when it deviates from the default" hid a non-conforming overlay's
-    ``validate_pr(title, description)`` on the common path and crashed it on the
-    rarely-taken one — the inverse of safe. An overlay that cannot accept the
-    documented keyword is rejected loudly at registration by
+    ``require_sections`` and ``repo`` are always forwarded (#3526). Conditionally
+    forwarding "only when it deviates from the default" hid a non-conforming
+    overlay's ``validate_pr(title, description)`` on the common path and crashed
+    it on the rarely-taken one — the inverse of safe. An overlay that cannot
+    accept a documented keyword is rejected loudly at registration by
     ``overlay_signature_violations``; forwarding unconditionally keeps the call
     site honest to the documented signature.
     """
-    result = overlay.metadata.validate_pr(title, description, require_sections=require_sections)
+    result = overlay.metadata.validate_pr(title, description, require_sections=require_sections, repo=repo)
     return list(result.get("errors", []))
 
 
 def _validation_errors_fail_closed(
-    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True, repo: str = ""
 ) -> list[str]:
     """Target-keyed verdict that FAILS CLOSED when the overlay's validator crashes.
 
@@ -187,7 +222,7 @@ def _validation_errors_fail_closed(
     lockout-inverse this gate exists to prevent.
     """
     try:
-        return _validation_errors(overlay, title, description, require_sections=require_sections)
+        return _validation_errors(overlay, title, description, require_sections=require_sections, repo=repo)
     except Exception as exc:  # noqa: BLE001 — fail closed on any validator fault.
         return [f"validate-mr: target overlay validator failed ({exc}); denying (fail closed)."]
 

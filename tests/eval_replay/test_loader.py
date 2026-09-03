@@ -503,6 +503,67 @@ class TestLoadEvalYaml:
         )
         assert evaluate(spec, before).passed is False
 
+    def _exempt_spec(self, tmp_path: Path):
+        body = (
+            "- name: exempt_neg\n"
+            "  scenario: a sleep-loop waiter is forbidden only in the foreground\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "check_job"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "(while|until) .*sleep"\n'
+            "      unless: 'run_in_background ~ \"(?i)true\"'\n"
+        )
+        return load_eval_yaml(_write(tmp_path, body))[0]
+
+    def test_parses_exemption_unless(self, tmp_path: Path) -> None:
+        matcher = self._exempt_spec(tmp_path).matchers[1]
+        assert matcher.kind == "negative"
+        assert matcher.has_exemption is True
+        assert matcher.unless_arg_path == "run_in_background"
+        assert matcher.unless_operator == "~"
+        assert matcher.unless_value == "(?i)true"
+
+    def test_unless_malformed_fails_loud(self, tmp_path: Path) -> None:
+        body = (
+            "- name: exempt_neg\n"
+            "  scenario: malformed exemption\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "sleep"\n'
+            "      unless: 'run_in_background'\n"
+        )
+        with pytest.raises(EvalSpecError, match="unless"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_exempt_negative_passes_when_the_same_call_satisfies_unless(self, tmp_path: Path) -> None:
+        spec = self._exempt_spec(tmp_path)
+        run = _run(
+            EvalToolCall(
+                name="Bash",
+                input={"command": "until check_job; do sleep 5; done", "run_in_background": True},
+                turn=0,
+            )
+        )
+        assert evaluate(spec, run).passed is True
+
+    def test_exempt_negative_still_fails_the_unexcused_call(self, tmp_path: Path) -> None:
+        # The control for the pass above: the identical command WITHOUT the exempting
+        # arg must still red, else `unless` would have disarmed the matcher outright.
+        spec = self._exempt_spec(tmp_path)
+        run = _run(EvalToolCall(name="Bash", input={"command": "until check_job; do sleep 5; done"}, turn=0))
+        assert evaluate(spec, run).passed is False
+
+    def test_exempt_negative_does_not_excuse_a_different_call(self, tmp_path: Path) -> None:
+        spec = self._exempt_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "check_job --wait", "run_in_background": True}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "while ! check_job; do sleep 5; done"}, turn=1),
+        )
+        assert evaluate(spec, run).passed is False
+
     def test_rejects_empty_expect(self, tmp_path: Path) -> None:
         body = "- name: bad\n  scenario: bad\n  prompt: do the thing\n  expect: []\n"
         with pytest.raises(EvalSpecError):
@@ -620,6 +681,35 @@ class TestLoadEvalYaml:
         with pytest.raises(EvalSpecError) as exc:
             load_eval_yaml(_write(tmp_path, body))
         assert "expect" in str(exc.value) or "mapping" in str(exc.value)
+
+
+class TestUnknownTopLevelKeyFailsLoud:
+    """A key the parser never reads is a typo whose declaration is silently dropped.
+
+    ``watchdog_second: 30`` leaves the scenario on the lane default and
+    ``max_turn: 3`` leaves it on the generous one — a cap the author wrote that
+    never applied, with nothing red at load time to say so.
+    """
+
+    def test_typoed_optional_key_is_rejected(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  watchdog_second: 30\n")
+        with pytest.raises(EvalSpecError, match=r"unknown spec key\(s\) \['watchdog_second'\]"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_refusal_lists_the_permitted_keys(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  max_turn: 3\n")
+        with pytest.raises(EvalSpecError, match=r"permitted: .*\bmax_turns\b"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_a_spec_using_only_parsed_keys_still_loads(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace(
+            "  prompt: do the thing\n",
+            "  prompt: do the thing\n  tier: frontier\n  lane: under_load\n"
+            "  context_preamble: noisy\n  watchdog_seconds: 30\n  production_hooks: true\n",
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.watchdog_seconds == 30
+        assert spec.production_hooks is True
 
 
 class TestJudgeBlock:
@@ -761,3 +851,55 @@ class TestFinalStateMatcher:
         matchers = load_eval_yaml(_write(tmp_path, body))[0].matchers
         assert len(matchers) == 2
         assert isinstance(matchers[1], FinalStateMatcher)
+
+
+class TestUnknownTopLevelKeys:
+    """A key the loader does not know is a spec error, never a silently-ignored typo."""
+
+    def test_a_typoed_optional_key_is_rejected(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  max_turn: 3\n")
+        with pytest.raises(EvalSpecError, match="max_turn"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_the_error_names_the_permitted_keys(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  watchdog_second: 30\n")
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "watchdog_seconds" in str(exc.value)
+
+    def test_every_known_key_still_loads(self, tmp_path: Path) -> None:
+        body = (
+            "- name: full\n"
+            "  scenario: every supported key at once\n"
+            "  agent_path: skills/code/SKILL.md\n"
+            "  agent_sections: ['## Workflow']\n"
+            "  prompt: do the thing\n"
+            "  model: claude-sonnet-5\n"
+            "  tier: cheap\n"
+            "  phase: coding\n"
+            "  max_turns: 4\n"
+            "  tools: [Bash]\n"
+            "  fixture: git_repo\n"
+            "  lane: under_load\n"
+            "  surface: interactive\n"
+            "  context_preamble: noise\n"
+            "  max_budget_usd: 0.5\n"
+            "  watchdog_seconds: 30\n"
+            "  available_skills: [t3:code]\n"
+            "  cli_stubs: [t3]\n"
+            "  production_hooks: false\n"
+            "  single_action: true\n"
+            "  judge:\n"
+            "    rubric: grade it\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.name == "full"
+        assert spec.max_turns == 4
+
+    def test_the_shipped_catalog_loads_under_the_strict_check(self) -> None:
+        from teatree.eval.discovery import discover_specs  # noqa: PLC0415 — deferred: needs the app registry
+
+        assert discover_specs()

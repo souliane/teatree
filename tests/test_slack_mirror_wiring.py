@@ -29,43 +29,44 @@ class TestBuildEnricher:
 
 
 class TestDispatchDmAudio:
+    """The spawn itself is the ``t3_invocation`` seam's (detached, cwd-pinned there)."""
+
     def test_spawns_detached_speak_dm(self, monkeypatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         with (
             patch.object(wiring.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(wiring.subprocess, "Popen") as popen,
+            patch.object(wiring, "spawn_t3_detached") as spawn,
         ):
             wiring.dispatch_dm_audio("D-USER", "Ship it?", "1700.1")
-        argv = popen.call_args.args[0]
+        argv = spawn.call_args.args[0]
         assert argv[:2] == ["/usr/local/bin/t3", "speak-dm"]
         assert argv[argv.index("--channel") + 1] == "D-USER"
         assert argv[argv.index("--text") + 1] == "Ship it?"
         assert argv[argv.index("--thread-ts") + 1] == "1700.1"
-        assert popen.call_args.kwargs["start_new_session"] is True
 
     def test_includes_overlay_when_set(self, monkeypatch) -> None:
         monkeypatch.setenv("T3_OVERLAY_NAME", "acme")
         with (
             patch.object(wiring.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(wiring.subprocess, "Popen") as popen,
+            patch.object(wiring, "spawn_t3_detached") as spawn,
         ):
             wiring.dispatch_dm_audio("D", "hi", "")
-        argv = popen.call_args.args[0]
+        argv = spawn.call_args.args[0]
         assert argv[argv.index("--overlay") + 1] == "acme"
         assert "--thread-ts" not in argv  # omitted when empty
 
     def test_noop_without_t3_binary(self) -> None:
         with (
             patch.object(wiring.shutil, "which", return_value=None),
-            patch.object(wiring.subprocess, "Popen") as popen,
+            patch.object(wiring, "spawn_t3_detached") as spawn,
         ):
             wiring.dispatch_dm_audio("D", "hi", "")
-        popen.assert_not_called()
+        spawn.assert_not_called()
 
-    def test_popen_failure_is_swallowed(self) -> None:
+    def test_spawn_failure_is_swallowed(self) -> None:
         with (
             patch.object(wiring.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(wiring.subprocess, "Popen", side_effect=OSError("no fork")),
+            patch.object(wiring, "spawn_t3_detached", side_effect=OSError("no fork")),
         ):
             wiring.dispatch_dm_audio("D", "hi", "")  # must not raise
 

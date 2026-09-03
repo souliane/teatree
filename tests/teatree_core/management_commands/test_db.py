@@ -2,6 +2,7 @@
 
 import io
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -14,6 +15,7 @@ from django.test import TestCase, override_settings
 import teatree.core.management.commands.db as db_mod
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.types import ProvisionStep
 from teatree.utils.approval import ApprovalRefusedError
 from tests.teatree_core.management_commands._overlays import (
     APP_MIGRATE_OVERLAY,
@@ -564,3 +566,93 @@ class TestDbApproveCommand(TestCase):
             stdout=stdout,
         )
         assert DbApproval.objects.get().consumed_at is not None
+
+
+class TestDbRefreshStepFailures(TestCase):
+    """A post-DB / password step that exits non-zero must stop the refresh (#932)."""
+
+    @staticmethod
+    def _ready_worktree(wt_dir: Path) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/test",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+        worktree.provision()
+        worktree.start_services(services=["backend"])
+        worktree.verify(urls={})
+        worktree.save()
+        return worktree
+
+    @_patch_overlays(FAILED_APP_MIGRATE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_failing_post_db_step_stops_before_the_fsm_advances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            worktree = self._ready_worktree(wt_dir)
+
+            err = io.StringIO()
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "refresh", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            assert "django-migrate" in err.getvalue()
+            worktree.refresh_from_db()
+            assert worktree.state == Worktree.State.READY
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_failing_reset_passwords_step_stops_before_the_fsm_advances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            worktree = self._ready_worktree(wt_dir)
+            overlay = get_overlay()
+            failing = ProvisionStep(
+                name="reset-passwords",
+                callable=lambda: subprocess.CompletedProcess(args=["reset"], returncode=2),
+            )
+
+            err = io.StringIO()
+            with (
+                patch.object(overlay.provisioning, "reset_passwords_command", return_value=failing),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("db", "refresh", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            assert "reset-passwords" in err.getvalue()
+            worktree.refresh_from_db()
+            assert worktree.state == Worktree.State.READY
+
+
+class TestDbRestoreCiSkipsTheDslrFastPath(TestCase):
+    """``force`` alone re-restores the stale local snapshot — only ``slow_import`` re-reads the dump."""
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_restore_ci_requests_a_slow_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+            overlay = get_overlay()
+
+            with patch.object(overlay.provisioning, "db_import", return_value=True) as db_import:
+                call_command("db", "restore-ci", path=str(wt_dir))
+
+            assert db_import.call_args.kwargs["force"] is True
+            assert db_import.call_args.kwargs["slow_import"] is True

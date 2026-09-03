@@ -24,6 +24,7 @@ import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt
+from teatree.loop import worker_lifecycle
 from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
 from teatree.loops.loop_staleness import Admission, LoopHealth
@@ -688,3 +689,63 @@ class TestTimerCountsCoverTheChainSet(django.test.TestCase):
         Loop.objects.filter(name="inbox").update(enabled=True)
         Mode.objects.filter(name="preset-4185").update(entries={"inbox": False})
         assert "inbox" not in worker_cli._timer_counts()
+
+
+class TestStopAndRestartHeartbeat(django.test.TestCase):
+    """`stop` / `restart` speak while they drain — the silence that read as a hung restart.
+
+    `t3 worker restart` on the running box produced ZERO bytes over 7m21s and never
+    reached its SIGTERM: `WorkerStopper` dropped the `on_progress` sink that #3983 gave
+    `t3 worker drain`, so the wait went silent for its full 1800s budget with two live
+    CLAIMED agent runs in flight. A restart that neither restarts nor reports is
+    indistinguishable from a wedged one, so the operator kills it and reaches for docker.
+    """
+
+    @staticmethod
+    def _drain_emitting(samples: list[DrainProgress]) -> Callable[..., DrainReport]:
+        def _drain(*, on_progress: Callable[[DrainProgress], None] | None = None, **_kwargs: object) -> DrainReport:
+            assert on_progress is not None, "the stopper must hand drain_worker a progress sink"
+            for sample in samples:
+                on_progress(sample)
+            return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=samples[-1].waited_seconds)
+
+        return _drain
+
+    @staticmethod
+    def _seams() -> object:
+        held = [True]
+
+        def _terminate(_pid: int) -> None:
+            held[0] = False
+
+        return worker_lifecycle.LifecycleSeams(
+            flock_held=lambda: held[0],
+            holder_pid=lambda: 4242 if held[0] else None,
+            terminate=_terminate,
+            sleep=lambda _s: None,
+            monotonic=lambda: 0.0,
+        )
+
+    def test_stop_reports_the_drain_wait_instead_of_going_silent(self) -> None:
+        samples = [DrainProgress(waited_seconds=120.0, still_claimed=[7, 9])]
+        with (
+            mock.patch("teatree.loop.worker_lifecycle.drain_worker", side_effect=self._drain_emitting(samples)),
+            mock.patch.object(worker_lifecycle, "LifecycleSeams", return_value=self._seams()),
+        ):
+            result = runner.invoke(worker_app, ["stop"])
+
+        assert "2 task(s) still in flight after 120s" in result.stderr
+
+    def test_restart_reports_the_drain_wait_instead_of_going_silent(self) -> None:
+        samples = [DrainProgress(waited_seconds=120.0, still_claimed=[7])]
+        started = StartReport(started=True, holder_pid=999, waited_seconds=1.0)
+        with (
+            mock.patch("teatree.loop.worker_lifecycle.drain_worker", side_effect=self._drain_emitting(samples)),
+            mock.patch.object(worker_lifecycle, "LifecycleSeams", return_value=self._seams()),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("spawned", "spawned a detached worker")),
+            mock.patch("teatree.loop.worker_lifecycle.wait_for_new_holder", return_value=started),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+
+        assert result.exit_code == 0
+        assert "1 task(s) still in flight after 120s" in result.stderr

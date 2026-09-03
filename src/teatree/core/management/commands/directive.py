@@ -1,9 +1,9 @@
 """``manage.py directive`` — capture, drive, and inspect directives (north-star PR-6 + PR-7).
 
 ``capture`` records a plain-language directive as a ``CAPTURED`` :class:`Directive`
-verbatim — always available, even while the loop is dark, because it is the EXPLICIT
-operator path (the ``DIRECTIVE``-intent router stays parity-off until
-``directive_loop_enabled`` is on). ``tick`` (PR-7) is the off-live-tick entry the
+verbatim — available whatever the loop's guards say, because it is the EXPLICIT operator
+path and the only one: ambient ``DIRECTIVE``-intent routing is deleted (#105), so this
+command is the sole ``Directive`` producer. ``tick`` (PR-7) is the off-live-tick entry the
 worker's ``drive_off_live_tick_loops`` chain fires: it
 advances the oldest active directive ONE guarded FSM step only when the
 ``directive_loop`` :class:`Loop` row is enabled AND its cadence has elapsed, behind the

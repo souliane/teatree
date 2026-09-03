@@ -107,3 +107,73 @@ class TestReadPassOrDefault:
         with patch("teatree.utils.secrets.read_pass", return_value=""), caplog.at_level("WARNING"):
             assert secrets.read_pass_or_default("acme/token", "fallback") == "fallback"
         assert "acme/token" in caplog.text
+
+
+class TestWritePassWithBackup:
+    """The shared safe-overwrite primitive: back up the prior value, or refuse to clobber."""
+
+    def test_writes_straight_through_when_no_prior_value_exists(self) -> None:
+        written: list[tuple[str, str]] = []
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", side_effect=lambda k, v: written.append((k, v)) or True),
+        ):
+            backup = secrets.write_pass_with_backup("acme/token", "abc", echo=lambda _: None)
+
+        assert backup == ""
+        assert written == [("acme/token", "abc")]
+
+    def test_copies_the_prior_value_to_a_stamped_backup_before_overwriting(self) -> None:
+        written: list[tuple[str, str]] = []
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value="previous"),
+            patch("teatree.utils.secrets.write_pass", side_effect=lambda k, v: written.append((k, v)) or True),
+        ):
+            backup = secrets.write_pass_with_backup("acme/token", "abc", echo=lambda _: None)
+
+        assert backup.startswith("acme/token.bak-")
+        assert written == [(backup, "previous"), ("acme/token", "abc")], "the backup must precede the overwrite"
+
+    def test_announces_the_backup_key_it_wrote(self) -> None:
+        said: list[str] = []
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value="previous"),
+            patch("teatree.utils.secrets.write_pass", return_value=True),
+        ):
+            backup = secrets.write_pass_with_backup("acme/token", "abc", echo=said.append)
+
+        assert any(backup in line for line in said)
+
+    def test_a_failed_backup_raises_and_never_overwrites_the_original(self) -> None:
+        written: list[tuple[str, str]] = []
+
+        def refuse_backup(key: str, value: str) -> bool:
+            written.append((key, value))
+            return ".bak-" not in key
+
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value="previous"),
+            patch("teatree.utils.secrets.write_pass", side_effect=refuse_backup),
+            pytest.raises(secrets.SecretStoreError, match="acme/token"),
+        ):
+            secrets.write_pass_with_backup("acme/token", "abc", echo=lambda _: None)
+
+        assert all(".bak-" in key for key, _ in written), "the original must stay untouched when the backup fails"
+
+    def test_a_failed_insert_raises_rather_than_reporting_a_write_that_did_not_happen(self) -> None:
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value=""),
+            patch("teatree.utils.secrets.write_pass", return_value=False),
+            pytest.raises(secrets.SecretStoreError, match="acme/token"),
+        ):
+            secrets.write_pass_with_backup("acme/token", "abc", echo=lambda _: None)
+
+    def test_an_empty_value_is_refused_before_any_write(self) -> None:
+        with (
+            patch("teatree.utils.secrets.read_pass", return_value="previous"),
+            patch("teatree.utils.secrets.write_pass", return_value=True) as write,
+            pytest.raises(secrets.SecretStoreError, match="empty"),
+        ):
+            secrets.write_pass_with_backup("acme/token", "   ", echo=lambda _: None)
+
+        assert write.call_count == 0

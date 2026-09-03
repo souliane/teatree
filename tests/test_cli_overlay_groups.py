@@ -62,19 +62,11 @@ def test_lifecycle_subcommands_map_to_real_command_methods() -> None:
         assert hasattr(LifecycleCommand, name.replace("-", "_")), name
 
 
-def test_e2e_group_exposes_deprecated_post_evidence_alias() -> None:
-    # The Django management command defines a hidden deprecated alias
-    # ``post-evidence``; without a bridge entry in DJANGO_GROUPS the alias
-    # is unreachable via ``t3 <overlay> e2e post-evidence``.
-    assert "post-evidence" in _e2e_subcommands()
-
-
-def test_e2e_group_exposes_retract_evidence() -> None:
-    # ``retract-evidence`` is defined on the e2e management command but was
-    # absent from DJANGO_GROUPS, so ``t3 <overlay> e2e retract-evidence`` was
-    # unreachable from the installed CLI even though the command exists — the
-    # class of regression this table guards.
-    assert "retract-evidence" in _e2e_subcommands()
+def test_e2e_group_exposes_write_plan_from_seams() -> None:
+    # ``write-plan-from-seams`` is defined on the e2e management command; without
+    # a bridge entry in DJANGO_GROUPS it would be unreachable from the installed
+    # CLI even though the command exists — the class of regression this guards.
+    assert "write-plan-from-seams" in _e2e_subcommands()
 
 
 def test_e2e_group_exposes_tracked_manifest() -> None:

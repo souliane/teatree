@@ -21,9 +21,11 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
 from teatree.core.models import Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
+from teatree.core.worktree import worktree_done
 from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import (
     ChangeAnalysis,
@@ -34,7 +36,7 @@ from teatree.core.worktree.worktree_done import (
     reap_done_worktrees,
     worktree_is_done,
 )
-from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
+from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git, forge_reporting, squash_then_base_evolved
 
 
 class _ReaperFixture(TestCase):
@@ -120,6 +122,16 @@ class _ReaperFixture(TestCase):
 
     def _reap(self, worktree: Worktree, *, dry_run: bool = False) -> object:
         return reap_done_worktree(worktree, workspace=self.workspace, dry_run=dry_run)
+
+    def _tip(self) -> str:
+        result = subprocess.run(
+            [_GIT, "-C", str(self.wt_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        )
+        return result.stdout.strip()
 
 
 class TestMergedDeletedRefWiped(_ReaperFixture):
@@ -227,7 +239,8 @@ class TestReapTocTouGuard(_ReaperFixture):
             outcome = self._reap(worktree)
 
         assert outcome.action == "kept", outcome.label
-        assert "HEAD moved" in outcome.label
+        assert "changed during analysis" in outcome.label
+        assert self._tip() in outcome.label, "the refusal names the tip the late commit moved HEAD to"
         assert self.wt_path.exists(), "a commit landing during analysis must not be force-wiped"
 
 
@@ -337,6 +350,49 @@ class TestMergedPrDoesNotWipePostMergeWork(_ReaperFixture):
         assert Worktree.objects.filter(pk=worktree.pk).exists()
 
 
+class TestWipeRechecksTheWholeWorktreeNotJustHead(_ReaperFixture):
+    """The pre-wipe TOCTOU re-check covers uncommitted work, not only the tip.
+
+    ``cleanup_worktree(force=True)`` bypasses every data-loss guard, so anything
+    written between the analysis and the wipe is destroyed unexamined. An agent
+    saving a file mid-sweep moves no commit, so a tip-only bracket waved it through.
+    The real analysis still decides redundancy here — only the timing of the
+    concurrent write is injected.
+    """
+
+    def _reap_with_a_write_during_the_analysis(self, worktree: Worktree, filename: str) -> object:
+        real_analyze = worktree_done.analyze_worktree_changes
+
+        def _analyze_then_an_agent_writes(wt: Worktree, *, workspace: Path) -> ChangeAnalysis:
+            analysis = real_analyze(wt, workspace=workspace)
+            (self.wt_path / filename).write_text("work in flight\n", encoding="utf-8")
+            return analysis
+
+        with patch.object(worktree_done, "analyze_worktree_changes", _analyze_then_an_agent_writes):
+            return self._reap(worktree)
+
+    def test_an_edit_written_during_the_analysis_is_never_force_wiped(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap_with_a_write_during_the_analysis(worktree, "wip.txt")
+
+        assert outcome.action == "kept", outcome.label
+        assert (self.wt_path / "wip.txt").exists(), "an edit written mid-sweep must survive"
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
+    def test_a_regenerable_env_cache_write_still_wipes(self) -> None:
+        """The bracket must not turn the reaper into a no-op on ordinary churn."""
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap_with_a_write_during_the_analysis(worktree, ".t3-env.cache")
+
+        assert outcome.action == "wiped", outcome.label
+
+
 class TestDoneWipeTearsDownDockerVolumes(_ReaperFixture):
     """The done-wipe runs ``docker compose down --volumes`` for the worktree's stack."""
 
@@ -367,6 +423,55 @@ def test_docker_compose_down_emits_volumes_flag_when_requested() -> None:
 
     assert "--volumes" in calls[0]
     assert "--volumes" not in calls[1]
+
+
+_DOCKER = "docker"
+
+
+class TestDockerComposeDownReportsItsOutcome:
+    """The down tells the caller whether the containers actually went away."""
+
+    class _Failed:
+        returncode = 1
+        stderr = "network in use\nError response from daemon: conflict"
+
+    class _Down:
+        returncode = 0
+        stderr = ""
+
+    def test_a_clean_down_reports_no_failure(self) -> None:
+        with patch.object(worktree_start, "run_allowed_to_fail", lambda *_a, **_kw: self._Down()):
+            assert worktree_start.docker_compose_down("proj") is None
+
+    def test_a_nonzero_exit_reports_the_reason(self) -> None:
+        with patch.object(worktree_start, "run_allowed_to_fail", lambda *_a, **_kw: self._Failed()):
+            failure = worktree_start.docker_compose_down("proj")
+
+        assert failure is not None
+        assert "exit 1" in failure
+        assert "conflict" in failure
+
+    def test_a_timeout_reports_the_reason(self) -> None:
+        expired = worktree_start.TimeoutExpired(_DOCKER, 30)
+
+        def _time_out(*_args: object, **_kwargs: object) -> None:
+            raise expired
+
+        with patch.object(worktree_start, "run_allowed_to_fail", _time_out):
+            failure = worktree_start.docker_compose_down("proj", timeout=30)
+
+        assert failure is not None
+        assert "timed out" in failure
+
+    def test_an_absent_docker_binary_is_not_a_failure(self) -> None:
+        """No daemon means no containers survive the call — nothing was left running."""
+        absent = FileNotFoundError(_DOCKER)
+
+        def _no_docker(*_args: object, **_kwargs: object) -> None:
+            raise absent
+
+        with patch.object(worktree_start, "run_allowed_to_fail", _no_docker):
+            assert worktree_start.docker_compose_down("proj") is None
 
 
 class TestDryRunAndCleanIgnore(_ReaperFixture):
@@ -734,3 +839,31 @@ def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Pat
     wiping it.
     """
     assert _effective_default_target(tmp_path / "not-a-repo") == "origin/main"
+
+
+class TestUnpushedCommitReasonsLadder:
+    """The wipe-analysis commit proof consults the full landed ladder.
+
+    A
+    squash-then-base-evolved branch (patch-id and tree both stale) is proven
+    redundant by the forge's merge record at the exact tip — and by nothing less.
+    """
+
+    def _target(self, work: Path) -> _EffectiveTarget:
+        return _EffectiveTarget(ref="feature", probe_repo=str(work), branch_to_delete="feature", label="feature")
+
+    def test_forge_merged_at_the_exact_tip_proves_redundant(self, tmp_path: Path) -> None:
+        work, tip = squash_then_base_evolved(tmp_path)
+
+        with forge_reporting(merged_head_sha=tip):
+            reasons = worktree_done._unpushed_commit_reasons(work, self._target(work), default_target="origin/main")
+
+        assert reasons == []
+
+    def test_no_forge_evidence_keeps_the_reason(self, tmp_path: Path) -> None:
+        work, _tip = squash_then_base_evolved(tmp_path)
+
+        with forge_reporting():
+            reasons = worktree_done._unpushed_commit_reasons(work, self._target(work), default_target="origin/main")
+
+        assert reasons, "no evidence anywhere — the branch must stay kept, with its reason"

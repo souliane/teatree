@@ -101,6 +101,7 @@ def dispatch_resolved_run(
     if run.models is not None:
         run_model_matrix_lane(
             specs,
+            backend=run.backend,
             models=run.models,
             max_turns=run.max_turns,
             trials=run.trials,
@@ -155,6 +156,7 @@ def dispatch_resolved_run(
     if run.trials > 1:
         run_pass_at_k_lane(
             specs,
+            backend=run.backend,
             max_turns=run.max_turns,
             trials=run.trials,
             require=run.require,

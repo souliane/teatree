@@ -151,7 +151,22 @@ def _add_approval_reaction_on_transition(
     name: str,
     **_kwargs: object,
 ) -> None:
-    """Post a ✅ on the requester's review message when a PR is approved (#961).
+    """Defer the ✅ approval effects until the ``APPROVED`` state commits (#961).
+
+    ``post_transition`` fires while the new state is still only in memory, so
+    publishing here would post a colleague-visible ✅ — and burn the one-shot
+    ``OnBehalfApproval`` the retry needs — for a PR whose row the caller may yet
+    fail to save. The same ``on_commit`` deferral every other transition
+    receiver in this module uses is what keeps the state change and its
+    published effects landing together.
+    """
+    if name != "approve":
+        return
+    transaction.on_commit(lambda: _publish_approval_effects(instance))
+
+
+def _publish_approval_effects(instance: PullRequest) -> None:
+    """Post a ✅ on the requester's review message and close the ledger rows (#961).
 
     The reaction is itself a post on the user's behalf, so it routes
     through the same recorded-approval gate every other on-behalf post
@@ -162,8 +177,6 @@ def _add_approval_reaction_on_transition(
     and the next approve transition publishes. The FSM transition itself
     is never blocked — only the on-behalf post is.
     """
-    if name != "approve":
-        return
     target = _approval_reaction_target(instance)
     try:
         reacted = require_on_behalf_approval(

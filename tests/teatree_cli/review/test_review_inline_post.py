@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.cli.review.post_impl import post_comment_impl
-from teatree.core.models import OutboundClaim
+from teatree.core.models import BotPing, OutboundClaim
 
 # Every case here is all-mock and costs ~0.1s; the 53.9s recorded against the first of
 # them is the session-scoped `django_db_setup` template build (tests/conftest.py), which
@@ -107,6 +107,33 @@ class TestInlinePostVerifiesNewPath:
         assert OutboundClaim.objects.filter(
             idempotency_key__startswith="gitlab_note:org/repo!7:",
         ).exists(), "record_note_claim must run on the degraded path to keep a retry idempotent"
+
+
+class TestReceiptNeverClaimsAnAnchorTheVerdictRefused:
+    """The #949 after-receipt DM fires before the anchor verdict, so its wording must follow it."""
+
+    _RECEIPT_KEY_PREFIX = "on_behalf_post:org/repo!7:post_comment"
+
+    def _post(self, note: dict) -> None:
+        service = _make_service()
+        service._get_api.return_value = _make_api(note=note)
+        with _patch_position():
+            post_comment_impl(service, "org/repo", 7, "nit", file="src/foo.py", line=42)
+
+    def test_degraded_post_receipt_reports_an_mr_level_note(self) -> None:
+        self._post({"type": "Note", "id": 55, "position": None, "web_url": "u"})
+
+        text = BotPing.objects.get(idempotency_key__startswith=self._RECEIPT_KEY_PREFIX).text
+        assert "inline comment" not in text, f"the receipt claims an anchor GitLab dropped: {text!r}"
+        assert "MR-LEVEL" in text
+        assert "src/foo.py:42" in text
+
+    def test_anchored_post_receipt_reports_an_inline_comment(self) -> None:
+        self._post(
+            {"type": "DiffNote", "id": 61, "position": {"new_path": "src/foo.py", "new_line": 42}, "web_url": "u"},
+        )
+
+        assert "posted inline comment" in BotPing.objects.get(idempotency_key__startswith=self._RECEIPT_KEY_PREFIX).text
 
 
 class TestInlinePostSucceedsOnAnchoredLine:

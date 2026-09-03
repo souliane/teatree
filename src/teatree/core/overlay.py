@@ -14,6 +14,8 @@ from teatree.backends.types import Service
 from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
 from teatree.core.failed_e2e_watcher import FailedE2EWatcher
 from teatree.core.gates.merge_guard import MergeGuard
+from teatree.core.identity_wiring import AuthoringIdentity, classify_authoring_identity
+from teatree.core.mcp_tool_group import McpTool, McpToolGroup
 from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
@@ -57,6 +59,8 @@ __all__ = [
     "E2eExtrasContext",
     "FailedE2EWatcher",
     "HealthCheck",
+    "McpTool",
+    "McpToolGroup",
     "MergeGuard",
     "OverlayBase",
     "OverlayConfig",
@@ -126,6 +130,10 @@ class OverlayConfig(BaseModel):
     teardown_removes_pass_entries: bool = False
     known_variants: list[str] = Field(default_factory=list)
     pr_auto_labels: list[str] = Field(default_factory=list)
+    # The standing reviewer policy: usernames set as REVIEWERS in the same POST that
+    # opens the PR, so no agent ever reaches the direct-assignment surfaces the
+    # self-reviewer-assign gate refuses. Empty in core.
+    pr_auto_reviewers: list[str] = Field(default_factory=list)
     frontend_repos: list[str] = Field(default_factory=list)
     workspace_repos: list[str] = Field(default_factory=list)
     protected_branches: list[str] = Field(default_factory=list)
@@ -195,6 +203,9 @@ class OverlayConfig(BaseModel):
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfood-smoke"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+    # The dashboard header mark, as a static path; an overlay ships its own logo in
+    # its package's ``static/`` dir and names it here.
+    dashboard_logo: str = "dash/logo.jpg"
     # ``<repo-slug>=<branch>`` entries; empty means the gate is inert here. The
     # field must exist even for an overlay that declares nothing, because the
     # provider reads every promoted key off the config in one comprehension and
@@ -300,6 +311,51 @@ class OverlayConfig(BaseModel):
     def get_gitlab_token(self) -> str:
         return self._read_secret("gitlab_token")
 
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        """The GitLab credential to act as on *remote*, defaulting to the overlay-wide one.
+
+        An overlay overrides this only where one repo must be written under a
+        DIFFERENT identity than the rest — an MR the human reviewer has to be
+        eligible to approve cannot be authored by that human.
+        """
+        del remote
+        return self.get_gitlab_token()
+
+    def authoring_identity_on(self, remote: str) -> AuthoringIdentity:
+        """Whose credential *remote*'s MRs are actually written under, three-valued.
+
+        The boolean below cannot separate "the scoped credential resolved to the owner's" from
+        "it did not resolve at all", so a venue that cannot reach its bot reads exactly like a
+        repo the owner authors by design. ``t3 doctor check`` needs them apart.
+        """
+        if not remote:
+            return AuthoringIdentity.OWNER
+        return classify_authoring_identity(
+            owner_token=self.get_gitlab_token(), scoped_token=self.get_gitlab_token_for_remote(remote)
+        )
+
+    def acts_as_distinct_identity_on(self, remote: str) -> bool:
+        """Whether MRs on *remote* are authored by someone other than the owner.
+
+        The one question the override above exists to answer, asked directly: a
+        repo handed its own credential is written by a non-human the owner stays
+        eligible to review and approve; every other repo is written as the owner
+        himself. Anything that makes the owner a CHECKER — the standing
+        ``pr_auto_reviewers`` policy, the catch-up pass that applies it to MRs
+        already open — is scoped by this, so it can never name the owner as
+        reviewer of his own MR.
+
+        Fails conservative, as it always claimed to: only a credential that RESOLVED to something
+        other than the owner's answers ``True``. An unresolvable one used to answer ``True`` (it is
+        merely unequal), assigning the owner as reviewer of an MR no credential could author.
+        """
+        if not remote:
+            return False
+        identity = classify_authoring_identity(
+            owner_token=self.get_gitlab_token(), scoped_token=self.get_gitlab_token_for_remote(remote)
+        )
+        return identity is AuthoringIdentity.DISTINCT
+
     def get_gitlab_username(self) -> str:
         return self._read_secret("gitlab_username")
 
@@ -367,7 +423,24 @@ class OverlayProvisioning:
     """Worktree setup + environment concern — ``overlay.provisioning``."""
 
     def repo_clone_url(self, repo_name: str) -> str:
-        """The remote to clone *repo_name* from when no local clone exists yet."""
+        """The remote to clone *repo_name* from when no local clone exists yet.
+
+        This is what makes a runtime with an EMPTY clone root able to provision:
+        the containerized stack owns its own workspace volume and has no operator
+        pre-seeded checkouts, so provisioning materialises each repo from its
+        remote on first use. A host-native run with the clone already present
+        never reaches this hook.
+
+        The default declares no remote (``""``), which keeps the pre-existing
+        behaviour: a missing clone fails loud with "No git clone found" rather
+        than cloning something the overlay never named. Overlays that know their
+        repos' canonical remotes override it.
+
+        Return a URL git can clone WITHOUT an embedded secret — authentication is
+        the runtime's credential-helper concern (``deploy/entrypoint.sh`` wires
+        ``gh``/``glab`` as https helpers), never a token pasted into the URL,
+        which would persist in the new clone's ``.git/config``.
+        """
         return ""
 
     def env_extra(self, worktree: "Worktree") -> dict[str, str]:
@@ -536,6 +609,15 @@ class OverlayConnectors:
     def mcp_provider_expectations(self) -> dict[str, str]:
         """``{mcp_server_name: provider}`` for the #2282 connectivity check; default empty."""
         return {}
+
+    def mcp_tool_group(self) -> McpToolGroup | None:
+        """The overlay's own tools for the teatree MCP server; none by default.
+
+        The group is registered only on the terms it declares: every service in
+        ``requires`` declared by some overlay, and every write tool naming its
+        gated seam.
+        """
+        return None
 
     def manifest(self) -> list["ConnectorRequirement"]:
         """Overlay's required-vs-optional claude.ai connectors by NAME; default none (PR-19)."""

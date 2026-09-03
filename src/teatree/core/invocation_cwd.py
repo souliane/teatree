@@ -36,12 +36,15 @@ container (``config.discovery._registry_project_path``). This module is the same
 lesson for the invocation cwd.
 """
 
+import logging
 import os
 from pathlib import Path
 
 #: Set by ``deploy/t3`` to the CONTAINER-side path of the operator's host cwd.
 #: Never a host path — translating is the wrapper's job, not the reader's.
 INVOCATION_CWD_ENV = "TEATREE_INVOCATION_CWD"
+
+_log = logging.getLogger(__name__)
 
 
 def declared_invocation_cwd() -> Path | None:
@@ -55,13 +58,24 @@ def declared_invocation_cwd() -> Path | None:
 
     A declared path that does not resolve to a directory here is ignored rather
     than trusted — a stale or untranslated value must not silently redirect a
-    command to a path that means something different on this side.
+    command to a path that means something different on this side. Discarding it
+    is logged, because the fallback is exactly the pre-#776 process cwd whose
+    wrongness this module exists to fix, and the refusals that tell operators to
+    export this variable are unreadable if a bad value discards without a word.
     """
     declared = os.environ.get(INVOCATION_CWD_ENV, "").strip()
     if not declared:
         return None
     candidate = Path(declared)
-    return candidate if candidate.is_dir() else None
+    if candidate.is_dir():
+        return candidate
+    _log.warning(
+        "%s=%r is not a directory in this runtime — ignoring it and falling back to the process cwd. "
+        "It must name the CONTAINER-side path of your checkout, not the host path.",
+        INVOCATION_CWD_ENV,
+        declared,
+    )
+    return None
 
 
 def invocation_cwd() -> Path:

@@ -9,7 +9,13 @@ import logging
 
 import pytest
 
-from teatree.backends.slack.dm_history import _MAX_THREAD_PAGES, read_single_message, read_thread_replies, read_user_dms
+from teatree.backends.slack.dm_history import (
+    _MAX_DM_PAGES,
+    _MAX_THREAD_PAGES,
+    read_single_message,
+    read_thread_replies,
+    read_user_dms,
+)
 from teatree.types import RawAPIDict
 
 
@@ -110,6 +116,75 @@ class TestReadThreadReplies:
 
         assert len(replies) == _MAX_THREAD_PAGES
         assert "hit the" in caplog.text
+
+    def test_a_refused_page_mid_walk_returns_no_replies(self) -> None:
+        """Half a thread reads as "my answer is not there", and the caller re-posts it."""
+        pages: dict[str, RawAPIDict] = {
+            "": _page([{"ts": "root.ts"}, {"ts": "r1"}], next_cursor="c1"),
+            "c1": {"ok": False, "error": "ratelimited"},
+        }
+
+        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
+            return pages[str(params.get("cursor", ""))]
+
+        assert read_thread_replies(get=get, channel="D1", thread_ts="root.ts") == []
+
+
+class TestReadUserDmsWindow:
+    """A bounded poll is read whole; an unbounded one stays on the newest page."""
+
+    def test_a_bounded_poll_reads_every_page_of_the_window(self) -> None:
+        pages = {
+            "": _page([{"ts": "3.0"}, {"ts": "2.9"}], next_cursor="c1"),
+            "c1": _page([{"ts": "2.8"}]),
+        }
+
+        def get(method: str, params: dict[str, str | int]) -> RawAPIDict:
+            assert method == "conversations.history"
+            assert params["oldest"] == "2.0"
+            return pages[str(params.get("cursor", ""))]
+
+        messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+
+        assert [m["ts"] for m in messages] == ["3.0", "2.9", "2.8"]
+
+    def test_an_unbounded_poll_never_walks_back_through_the_whole_history(self) -> None:
+        cursors: list[str] = []
+
+        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
+            cursors.append(str(params.get("cursor", "")))
+            return _page([{"ts": "3.0"}], next_cursor="c1")
+
+        messages = read_user_dms(get=get, channel="D1", since="", identity=None)
+
+        assert cursors == [""]
+        assert [m["ts"] for m in messages] == ["3.0"]
+
+    def test_a_refused_page_mid_walk_abandons_the_read(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The caller advances its cursor off what it read, so a partial page-1 read strands page 2."""
+        pages: dict[str, RawAPIDict] = {
+            "": _page([{"ts": "3.0"}], next_cursor="c1"),
+            "c1": {"ok": False, "error": "ratelimited"},
+        }
+
+        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
+            return pages[str(params.get("cursor", ""))]
+
+        with caplog.at_level(logging.WARNING):
+            messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+
+        assert messages == []
+        assert "abandoned" in caplog.text
+
+    def test_the_bounded_page_cap_logs_and_stops(self, caplog: pytest.LogCaptureFixture) -> None:
+        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
+            return _page([{"ts": str(params.get("cursor", "start"))}], next_cursor="more")
+
+        with caplog.at_level(logging.WARNING):
+            messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+
+        assert len(messages) == _MAX_DM_PAGES
+        assert "truncated" in caplog.text
 
 
 class TestReadUserDmsThreadFanout:

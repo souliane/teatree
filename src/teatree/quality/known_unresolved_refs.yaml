@@ -96,6 +96,8 @@ python_prose:
   src/teatree/core/modelkit/diff_scope.py:
   - src/other_paths.py
   - src/paths.py
+  src/teatree/core/models/mechanism_sketch.py:
+  - src/teatree/../overlays/x.py
   src/teatree/core/models/merge_clear.py:
   - src/teatree/core/merger/
   src/teatree/core/models/review_verdict.py:
