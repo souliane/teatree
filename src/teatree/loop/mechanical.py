@@ -16,6 +16,7 @@ from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_ci_eval_heal import advance_ci_eval_heal
 from teatree.loop.mechanical_db_backup import run_db_backup
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
+from teatree.loop.mechanical_ratchet_staleness import report_ratchet_staleness
 from teatree.loop.mechanical_resources import free_resources
 from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
 from teatree.utils.url_slug import pr_ref_from_url
@@ -457,4 +458,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     # #3201 PR-3a CI-eval self-healing loop — advance every open heal session one
     # FSM step (dispatch / poll / GREEN / HALT+escalate). Observe-only, never a fix.
     "advance_ci_eval_heal": advance_ci_eval_heal,
+    # #4451 reference-ratchet staleness — surface the core clone's stale pins and the
+    # one-command repair. Observe-only: it writes nothing, opens nothing.
+    "report_ratchet_staleness": report_ratchet_staleness,
 }

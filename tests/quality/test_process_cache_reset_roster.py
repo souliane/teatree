@@ -212,6 +212,12 @@ EXEMPT: dict[str, str] = {
         "the same live _REPO_ROOT and no test mutates src/teatree or hooks/ during a run, so "
         "resetting it would only re-walk an identical tree — it isolates no test state"
     ),
+    "teatree.quality.ref_baseline:_reported_cached": (
+        "@lru_cache keyed by (ratchet, repo_root) over the same live tree as build_repo_index above, "
+        "and no test mutates the scanned packages during a run. It memoises the SCAN only — the pinned "
+        "baseline is re-read from disk on every load_baseline call — so a test pointing at its own "
+        "baseline file still gets a fresh answer and resetting this would only re-walk an identical tree"
+    ),
 }
 
 
