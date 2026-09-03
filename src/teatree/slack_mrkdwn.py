@@ -122,10 +122,7 @@ def slack_linkify(
     if issue_resolver is not None:
         text = _BARE_ISSUE_RE.sub(_make_token_rewriter("#", issue_resolver), text)
 
-    def _restore(match: re.Match[str]) -> str:
-        return protected[int(match.group(1))]
-
-    return re.sub(r"\x00(\d+)\x00", _restore, text)
+    return _restore_placeholders(text, protected)
 
 
 def normalize_slack_message(text: str) -> str:
@@ -172,10 +169,7 @@ def normalize_slack_message(text: str) -> str:
     text = _split_glued_prose(text)
     text = _EXCESS_BLANK_RE.sub("\n\n", text)
 
-    def _restore(match: re.Match[str]) -> str:
-        return protected[int(match.group(1))]
-
-    return re.sub(r"\x00(\d+)\x00", _restore, text)
+    return _restore_placeholders(text, protected)
 
 
 def _normalize_bullets(text: str) -> str:
@@ -334,14 +328,19 @@ def wrap_slack_message(text: str, *, width: int = WRAP_WIDTH) -> str:
 
     Idempotent: lines are only ever broken at existing whitespace and never
     rejoined, so every output line is already within *width* (bar the intact
-    spans above) and a second application is a no-op.
+    spans above) and a second application is a no-op. A body with no line to
+    break comes back byte for byte, trailing newline and CRLF included: only a
+    bare LF is ever treated as a line boundary.
     """
     if not text:
         return text
     protected: list[str] = []
     stashed = _stash_unwrappable(text, protected)
-    wrapped = "\n".join(_wrap_line(line, protected, width) for line in stashed.splitlines())
-    return _restore_placeholders(wrapped, protected)
+    lines = stashed.split("\n")
+    wrapped = [_wrap_line(line, protected, width) for line in lines]
+    if wrapped == lines:
+        return text
+    return _restore_placeholders("\n".join(wrapped), protected)
 
 
 def slack_line_violations(text: str, *, width: int = WRAP_WIDTH) -> list[str]:
@@ -359,7 +358,7 @@ def slack_line_violations(text: str, *, width: int = WRAP_WIDTH) -> list[str]:
     stashed = _stash_unwrappable(text, protected)
     return [
         _restore_placeholders(line, protected)
-        for line in stashed.splitlines()
+        for line in stashed.split("\n")
         if _display_len(line, protected) > width and _wrap_line(line, protected, width) != line
     ]
 
@@ -381,7 +380,18 @@ def _stash_unwrappable(text: str, protected: list[str]) -> str:
 
 
 def _restore_placeholders(text: str, protected: list[str]) -> str:
-    return _PLACEHOLDER_RE.sub(lambda m: protected[int(m.group(1))], text)
+    """Put every stashed span back, leaving an index we never issued as body text.
+
+    A message may legitimately contain the placeholder sequence; indexing the
+    stash with the body's own number raised ``IndexError`` at a transport whose
+    callers are contracted a return value, not an exception.
+    """
+
+    def _restore(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return protected[index] if index < len(protected) else match.group(0)
+
+    return _PLACEHOLDER_RE.sub(_restore, text)
 
 
 def _display_len(text: str, protected: list[str]) -> int:

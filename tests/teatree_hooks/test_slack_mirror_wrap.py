@@ -55,6 +55,24 @@ class TestMirrorWraps:
         assert slack_post_message(poster, "D_SELF", _LONG_PROSE, bot_token="xoxb-bot") == ("", "channel_not_found")
 
 
+class TestTheWrapNeverBreaksTheReturnContract:
+    """The docstring promises a ``(ts, error)`` pair on every path, never a raise.
+
+    A body carrying the wrapper's own ``NUL<n>NUL`` stash marker used to raise
+    ``IndexError`` out of the wrap, so the hook process crashed where the
+    contract says a transport failure returns an empty error.
+    """
+
+    def test_a_literal_stash_marker_still_returns_a_pair(self) -> None:
+        poster = _CapturingPoster()
+        assert slack_post_message(poster, "D_SELF", f"{_LONG_PROSE} \x0099\x00", bot_token="xoxb-bot") == ("1.2", "")
+
+    def test_the_marker_reaches_slack_as_text(self) -> None:
+        poster = _CapturingPoster()
+        slack_post_message(poster, "D_SELF", f"{_LONG_PROSE} \x0099\x00", bot_token="xoxb-bot")
+        assert "\x0099\x00" in poster.bodies[0]["text"]
+
+
 class TestOracleIsAntiVacuous:
     def test_the_unwrapped_body_would_have_failed_the_assertion(self) -> None:
         assert slack_line_violations(_LONG_PROSE) == [_LONG_PROSE]

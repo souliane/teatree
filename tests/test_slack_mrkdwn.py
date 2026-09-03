@@ -12,7 +12,9 @@ to real newline-prefixed ``- `` list items.
 
 import re
 
-from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
+import pytest
+
+from teatree.slack_mrkdwn import normalize_slack_message, slack_line_violations, slack_linkify, wrap_slack_message
 
 
 def _pipes_outside_mrkdwn(line: str) -> int:
@@ -465,3 +467,61 @@ class TestNormalizeSlackMessageProseSplitting:
         once = normalize_slack_message(text)
         twice = normalize_slack_message(once)
         assert once == twice
+
+
+_STASH_MARKER = "\x0099\x00"
+
+_OVER_WIDTH = "word " * 30
+
+
+class TestALiteralStashMarkerIsBodyText:
+    """A body may carry this module's own placeholder sequence as ordinary text.
+
+    Every transform stashes never-broken spans behind ``NUL<n>NUL`` and restores
+    them by indexing the stash list. An index the body supplied itself is out of
+    range, and indexing it raised ``IndexError`` at a transport contracted to
+    degrade rather than raise.
+    """
+
+    def test_linkify_leaves_it_alone(self) -> None:
+        assert slack_linkify(f"see {_STASH_MARKER} here") == f"see {_STASH_MARKER} here"
+
+    def test_normalize_leaves_it_alone(self) -> None:
+        assert _STASH_MARKER in normalize_slack_message(f"see {_STASH_MARKER} here")
+
+    def test_wrap_leaves_it_alone(self) -> None:
+        assert wrap_slack_message(f"see {_STASH_MARKER} here") == f"see {_STASH_MARKER} here"
+
+    def test_wrap_leaves_it_alone_on_an_over_width_line(self) -> None:
+        assert _STASH_MARKER in wrap_slack_message(f"{_OVER_WIDTH}{_STASH_MARKER}")
+
+    def test_the_violations_oracle_reports_instead_of_raising(self) -> None:
+        assert slack_line_violations(f"{_OVER_WIDTH}{_STASH_MARKER}") != []
+
+
+class TestWrapPreservesABodyItNeedNotBreak:
+    """A body with no over-width line comes back byte for byte.
+
+    ``splitlines()`` + newline-join silently rewrote every message: a trailing
+    newline vanished, CRLF and a lone CR collapsed to LF, and the vertical tab,
+    form feed, U+2028 and U+0085 all became hard line breaks.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "done",
+            "Deploy done.\n\nNext: watch CI.\n",
+            "first line\r\nsecond line",
+            "carriage\rreturn",
+            "vertical\x0btab",
+            "form\x0cfeed",
+            "line\u2028separator",
+            "next\u0085line",
+        ],
+    )
+    def test_returned_byte_for_byte(self, text: str) -> None:
+        assert wrap_slack_message(text) == text
+
+    def test_a_trailing_newline_survives_a_real_wrap(self) -> None:
+        assert wrap_slack_message(f"{_OVER_WIDTH}\n").endswith("\n")

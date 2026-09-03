@@ -56,7 +56,12 @@ Slack's mrkdwn is not Markdown. When assembling message text:
 
 Every outbound message is wrapped to a **maximum line length of 90 characters**, so it stays readable on a phone and in a narrow DM column.
 
-You do not call anything to get this. The wrap is applied at the Slack transport — `SlackBotBackend._post`, the single funnel every in-app `chat.postMessage` passes through, and `teatree.hooks.slack_mirror` for the hook process's question mirror — so a **new sender inherits it by construction** rather than having to remember a helper. Composing a message with `notify_user`, `post_routed`, `post_reply`, or a raw `post_message` all get the same treatment.
+You do not call anything to get this. The wrap is applied at each Slack transport that carries a message body, so a **new sender inherits it by construction** rather than having to remember a helper:
+
+- `SlackBotBackend._post` — the single funnel every in-app `chat.postMessage` passes through, so `notify_user`, `post_routed`, `post_reply` and a raw `post_message` all get the same treatment,
+- `teatree.hooks.slack_mirror` — the hook process's question mirror, which posts through an injected `Poster` and never reaches the funnel above,
+- `audio_upload.upload_audio_dm` — the audio DM's `initial_comment`; with `speak.slack` on, the whole DM goes out this way and never touches `chat.postMessage`,
+- `client.post_webhook_message` — the incoming-webhook post, raw `httpx` outside the backend transport.
 
 Exceeding 90 is fine where breaking would hurt. These are never broken and never count as a violation:
 
@@ -67,7 +72,7 @@ Exceeding 90 is fine where breaking would hurt. These are never broken and never
 
 Structure survives: a `-`/`*` bullet's continuation lines indent under the marker, a `>` quote's keep the quote prefix. Block Kit `blocks` are **never** rewritten — Block Kit lays itself out, and the `text` field remains the notification preview and degradation fallback.
 
-The transform is idempotent (it only breaks at existing whitespace and never rejoins), so pre-wrapping at a composition seam is harmless.
+The transform is idempotent (it only breaks at existing whitespace and never rejoins), so pre-wrapping at a composition seam is harmless. A body with no over-width line comes back byte for byte.
 
 The one sanctioned escape is a call-site `wrap_exempt_reason` — a reason string, visible in a diff, not a bare boolean:
 
@@ -75,7 +80,7 @@ The one sanctioned escape is a call-site `wrap_exempt_reason` — a reason strin
 backend.post_message(channel=channel, text=body, wrap_exempt_reason="pre-formatted ASCII diagram")
 ```
 
-`tests/quality/test_slack_wrap_chokepoint.py` refuses a blank or computed reason, and turns red if any new module reaches `chat.postMessage` outside the wrap path. The primitives are `wrap_slack_message` / `slack_line_violations` / `WRAP_WIDTH` in `teatree.slack_mrkdwn`.
+`tests/quality/test_slack_wrap_chokepoint.py` refuses a blank or computed reason, and turns red if any new module reaches a text-bearing Slack method, or opens a raw `httpx` call inside the Slack backend, outside the wrap path. The primitives are `wrap_slack_message` / `slack_line_violations` / `WRAP_WIDTH` in `teatree.slack_mrkdwn`.
 
 ## CLI tables
 
