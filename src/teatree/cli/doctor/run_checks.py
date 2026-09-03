@@ -72,6 +72,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_liveness,
     _check_teatree_mcp_registration,
 )
+from teatree.cli.doctor.checks_merge_gate_enforcement import _check_merge_gates_enforced
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
 from teatree.cli.doctor.checks_notion import _check_notion_credentials
 from teatree.cli.doctor.checks_overlay_claims import _check_repos_claimed_by_disagreeing_overlays
@@ -581,6 +582,15 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # override (#3274) and the stored rows still shadowing a shipped default (#4074).
     # Both read the ORM, so they run post-ensure_django; neither gates the exit code.
     _run_config_posture_advisories()
+
+    # CI-workflow GATE jobs branch protection does not require: the workflow's own
+    # legend promises "Gate: exits non-zero on failure -> PR cannot merge", but a job
+    # so labelled and absent from the live required-status-check set never blocks —
+    # #4641 merged with `module-health-gate` FAILING and landed exactly the ratchet
+    # violation that gate exists to catch. Live `gh api` probe of THIS repo's own
+    # branch protection; surfacing-only (never gates the exit code) — widening branch
+    # protection changes what blocks every future PR, an owner decision.
+    _check_merge_gates_enforced()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it

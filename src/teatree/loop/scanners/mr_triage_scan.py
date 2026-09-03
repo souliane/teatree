@@ -306,7 +306,10 @@ class MrTriageScanner:
         except Exception as exc:  # noqa: BLE001 — an approval probe must never crash a tick.
             logger.warning("mr_triage: approval probe failed for %s: %s", url, exc)
             return None
-        return bool(state.get("approved_by"))
+        # ``approvals_left`` — not ``approved_by`` — is the field both backends populate
+        # correctly: GitHub hard-codes ``approved_by=[]`` unconditionally (#8), so reading
+        # its truthiness misreads every GitHub-backed approval as unapproved forever.
+        return state.get("approvals_left", 1) <= 0
 
     @staticmethod
     def _slug(url: str) -> str:

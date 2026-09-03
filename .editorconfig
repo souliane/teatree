@@ -17,6 +17,11 @@ indent_size = 4
 [tests/teatree_eval/test_loader_production_hooks.py]
 indent_size = unset
 
+# Embeds a ci.yml-shaped job-key fixture as a Python string; the 2-space GitHub
+# Actions indentation is what the test asserts against and is load-bearing.
+[tests/teatree_cli/doctor/test_merge_gate_enforcement_check.py]
+indent_size = unset
+
 # Embeds a unified git diff inside a YAML block scalar. A diff's leading column is
 # the context/add/remove MARKER, so a context line sits at block-indent + 1 and can
 # never be a multiple of 2 — the odd column is the data, not a formatting slip.

@@ -157,7 +157,14 @@ dev = [
   "pytest-playwright-visual>=2.1.2",
   "pytest-timeout>=2.4",
   "pytest-xdist>=3.5",
-  "ruff>=0.14.2",
+  # Pinned EXACT (not a floating floor) — the same #3236 runner-version-gap fix
+  # applied to ``prek`` above, never applied to ruff. ``lint.select = ["ALL"]``
+  # means a floating floor silently activates every NEW rule the next release
+  # ships, so `uv run ruff check` (the local/agent lint measure) drifted to
+  # reporting 5000+ errors the CI-gating ``ruff-pre-commit`` hook (pinned to
+  # v0.15.1 in .pre-commit-config.yaml) never enforces. Bump in lockstep with
+  # that hook's rev.
+  "ruff==0.15.1",
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
