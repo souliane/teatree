@@ -54,7 +54,7 @@ def repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     monkeypatch.setattr(guard, "_gate_enabled", lambda: True)
     return {
         "pinned": _make_repo(tmp_path, "pinned-repo", "pinned-org/pinned-repo", "a-second-branch"),
-        "other": _make_repo(tmp_path, "other-repo", "other-org/other-repo", "8680-feature"),
+        "other": _make_repo(tmp_path, "other-repo", "other-org/other-repo", "7311-feature"),
     }
 
 
@@ -68,11 +68,11 @@ class TestDoesNotOverBlockAnotherReposPush:
         self, repos: dict[str, Path]
     ) -> None:
         """The reported false positive: an unrelated repo's push refused as a second branch here."""
-        assert _finding("git push -u origin 8680-feature", repos["pinned"]) is None
+        assert _finding("git push -u origin 7311-feature", repos["pinned"]) is None
 
     def test_push_of_another_repos_branch_with_an_explicit_git_c_is_allowed(self, repos: dict[str, Path]) -> None:
         """Naming the repo explicitly must not be the only way through — but it must still work."""
-        command = f"git -C {repos['other']} push -u origin 8680-feature"
+        command = f"git -C {repos['other']} push -u origin 7311-feature"
         assert _finding(command, repos["pinned"]) is None
 
     def test_push_of_a_branch_no_repo_holds_is_allowed(self, repos: dict[str, Path]) -> None:

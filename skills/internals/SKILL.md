@@ -61,6 +61,7 @@ cron/headless run. `t3 notion` is the replacement: the public Notion API under a
 else `pass show notion/integration-token`). Agents call `t3`, never the API directly.
 
 ```bash
+t3 notion setup --page <url>           # mint, store and verify the token; then report each page's sharing
 t3 notion whoami                       # verify the token; print the integration pages must be shared with
 t3 notion doctor <page>                # triage one page: token present? valid? shared? still LIVE?
 t3 notion fetch <page> --comments      # page as Markdown, plus its open discussions (--json for raw blocks)
@@ -150,12 +151,12 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 
 | Facet | Methods |
 |---|---|
-| `provisioning` | `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
+| `provisioning` | `repo_clone_url(repo_name)`, `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
 | `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
 | `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
-| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()` |
+| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()`, `mcp_tool_group()` |
 
 There is no `get_gitlab_url()` anywhere: the URL is a pydantic field on `OverlayConfig`, not a
 method. Reaching for one is the reliable sign a doc predates the facet split.
@@ -183,6 +184,20 @@ A refusal that an in-process caller must route on (the `mcp` write tools, the lo
 - A command that has no in-process consumer of its failure still uses `raise SystemExit(N)` — that is simpler and stays the default.
 - The guard is `tests/teatree_core/management_commands/test_exit_contract_seam.py`: an AST ratchet refuses a `{"error": …}` return in a class that does not inherit the seam, and a non-zero int return anywhere in the command tree — the `ast.Constant`, `ast.IfExp`, `ast.UnaryOp` (`return -1`) and `ast.BoolOp` (`return failures and 1 or 0`) shapes — plus a live `run_from_argv` case per refusing subcommand. Static AST scanning cannot see a computed/variable return, so this is a strong low-false-positive backstop, not a proof the anti-pattern can never recur — the tree is clean *as far as that ratchet reads*, which is the only claim to make about it; its constant-only first cut scored `return 0 if ok else 1` as clean and let an `env` site through, so widen the detector before reading a green as coverage of a new return shape.
 - The ratchet only reads a literal `{"error": …}` at the `@command`-decorated method's own `return`. A refusal computed in a private helper and handed back through a `Call` — `return json.dumps(self._run(...))`, `return self._helper(...)` — is invisible to it in both directions (dict-shaped *or* wrapped-to-`str`), which is exactly how `retro review-findings` escaped both this guard and the runtime seam (a cold review of #4235 found it: `_run`'s five `{"error": …}` sites reach the CLI through a `json.dumps` that turns the return into a `str`, so `refusal_exit_code`'s `isinstance(result, Mapping)` check never fires either). Fixed there by routing `refusal_exit_code` by hand at the one call site rather than widening the shared ratchet — a broader helper-method walk also flags `handover.py`'s list-nested `error` key and `tasks.py`'s `routing_error` substring match, both already-accepted non-escapes, so it is not a safe default to reach for. A new command that wraps its own refusal the same way needs the same local, hand-routed check; the base class alone does not catch it. **Write the payload before you raise.** The base class raises from `execute()`, *after* `super().execute()` has already printed the result, so its refusals reach the shell with the `error` payload on stdout. A hand-routed check raises from inside the command method, which lands before any write — a first cut of the `retro` fix exited 1 with both streams empty, which is worse than the exit 0 it replaced: the operator gets a failure with no reason and every machine consumer loses the payload. `t3 <overlay> retro review-findings` is the reference shape (`self.stdout.write(json.dumps(result))`, then `raise SystemExit(code)`).
+
+### Capturing a child command's output: `call_command_streamed`, never `stdout=`
+
+`BaseCommand.execute` REPLACES `self.stdout`/`self.stderr` with **Django's** `OutputWrapper` whenever a stream is passed as `call_command(..., stdout=buf)`. That wrapper neither casts nor honours `disable`, and `execute` then writes the handler's truthy return through it — so `msg.endswith(ending)` runs on the raw value. A child returning anything but a `str` therefore crashes the CALLER, not itself: `t3 <overlay> do` died with `AttributeError: 'int' object has no attribute 'endswith'` right after its intake step succeeded, because `workspace ticket` hands back the new ticket pk (#4467).
+
+```python
+# do X — the wrapper is installed on the command, the option Django clobbers it with is withheld:
+from teatree.core.machine_output import call_command_streamed
+result = call_command_streamed("workspace", "ticket", ref, stream=err)
+# never Y — Django swaps in its own wrapper and prints the child's return through it:
+result = call_command(*argv, stdout=err, stderr=err)   # FORBIDDEN — crashes on any non-`str` return
+```
+
+Two complementary pins, both needed: subclass `MachineOutputCommand` so `print_result = False` survives on the CALLEE side, and use `call_command_streamed` on the CALLER side. A handler returning a bare non-`str` scalar without the pin is caught by `teatree.quality.machine_output_seam`'s `NON_STR_SCALAR_RETURN_UNPINNED` — annotation-based, so a value computed in a helper and handed back through a call is caught too; its shrink-only baseline is `UNPINNED_SCALAR_RETURNS` in `tests/quality/test_machine_output_seam.py`.
 
 ### Annotated typer options must have defaults for `call_command`
 

@@ -19,7 +19,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.core.worktree import branch_classification as bc
-from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
+from tests.teatree_core.cleanup._shared import (
+    _GIT,
+    _clean_env,
+    _run_git,
+    forge_reporting,
+    init_pushed_main,
+    squash_then_base_evolved,
+)
 
 
 def _init(tmp: Path) -> tuple[Path, Path]:
@@ -58,7 +65,17 @@ def _no_forge() -> AbstractContextManager[object]:
 
 
 def _forge_merged() -> AbstractContextManager[object]:
-    return patch.object(bc, "probe_host_cli", return_value="42")
+    """A forge reporting a MERGED PR and no open one.
+
+    Answering every probe alike would also answer the open-PR veto `branch_redundancy`
+    consults, vetoing the very verdict these cases are about.
+    """
+
+    def fake(cmd: list[str], repo: str, extract: object, *, timeout: float = 30.0) -> str:
+        del repo, extract, timeout
+        return "42" if "merged" in " ".join(cmd) else ""
+
+    return patch.object(bc, "probe_host_cli", side_effect=fake)
 
 
 def test_squash_merged_via_b_when_forge_absent_is_redundant(tmp_path: Path) -> None:
@@ -192,3 +209,118 @@ def test_genuinely_ahead_branch_is_not_redundant(tmp_path: Path) -> None:
     assert verdict.redundant is False
     assert verdict.source == "not-redundant"
     assert verdict.unique_shas, "the unique commit must be reported for salvage"
+
+
+class TestSquashThenBaseEvolved:
+    """The squash-then-base-evolved case that defeated clean-all for months.
+
+    Squash-merged, then the base
+    edited the same lines again. Every git-local instrument (cherry patch-id,
+    synthetic-squash, is-ancestor, blob-content) reads NOT landed; only the
+    forge's own merge record — at the branch's exact tip — proves it did.
+    """
+
+    def test_every_git_local_layer_fails_here(self, tmp_path: Path) -> None:
+        work, _tip = squash_then_base_evolved(tmp_path)
+
+        with _no_forge():
+            verdict = bc.branch_redundancy(str(work), "feature")
+
+        assert verdict.redundant is False, "anti-vacuity: the fixture must defeat every git-local layer"
+
+    def test_forge_merged_at_the_exact_tip_lands(self, tmp_path: Path) -> None:
+        work, tip = squash_then_base_evolved(tmp_path)
+
+        with forge_reporting(merged_head_sha=tip):
+            verdict = bc.branch_redundancy(str(work), "feature")
+
+        assert verdict.redundant is True
+        assert verdict.source == "forge-merged-tip"
+
+    def test_a_merged_mr_proves_only_the_recorded_tip(self, tmp_path: Path) -> None:
+        work, merged_tip = squash_then_base_evolved(tmp_path)
+        _run_git("checkout", "-q", "feature", cwd=work)
+        (work / "after.txt").write_text("work pushed after the merge\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-q", "-m", "feat: post-merge follow-up", cwd=work)
+        _run_git("checkout", "-q", "main", cwd=work)
+
+        with forge_reporting(merged_head_sha=merged_tip):
+            verdict = bc.branch_redundancy(str(work), "feature")
+
+        assert verdict.redundant is False
+        assert verdict.merged_with_post_merge_work is True
+
+
+def test_content_landed_under_a_different_path_is_redundant(tmp_path: Path) -> None:
+    """The refactor case.
+
+    The base took the branch's exact bytes at ANOTHER path,
+    so every patch-id layer misses it and only the blob-content probe (#3977) sees it.
+    """
+    work = init_pushed_main(tmp_path)
+    _run_git("checkout", "-q", "-b", "feature", "main", cwd=work)
+    (work / "old").mkdir()
+    (work / "old" / "module.py").write_text("VALUE = 42\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "feat: add module", cwd=work)
+    _run_git("checkout", "-q", "main", cwd=work)
+    (work / "new").mkdir()
+    (work / "new" / "module.py").write_text("VALUE = 42\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "feat: land module under the new layout", cwd=work)
+    _run_git("push", "-q", "origin", "main", cwd=work)
+    _run_git("fetch", "-q", "origin", cwd=work)
+
+    with _no_forge():
+        verdict = bc.branch_redundancy(str(work), "feature")
+
+    assert verdict.redundant is True
+    assert verdict.source == "content-landed"
+
+
+def test_open_pr_vetoes_is_squash_merged(tmp_path: Path) -> None:
+    """#3093, extended to the branch-prune chokepoint.
+
+    An OPEN PR protects the
+    branch even when a content layer proves its tip captured on the target.
+    """
+    work = init_pushed_main(tmp_path)
+    _run_git("checkout", "-q", "-b", "feature", "main", cwd=work)
+    (work / "f.txt").write_text("work\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "feat: work", cwd=work)
+    _run_git("checkout", "-q", "main", cwd=work)
+    _run_git("merge", "-q", "--ff", "feature", cwd=work)
+    _run_git("push", "-q", "origin", "main", cwd=work)
+    _run_git("fetch", "-q", "origin", cwd=work)
+
+    with forge_reporting(open_pr=True):
+        assert bc.is_squash_merged(str(work), "feature", "main") is False
+
+
+def test_open_pr_vetoes_branch_redundancy_itself(tmp_path: Path) -> None:
+    """The veto is the VERDICT's, not one boolean wrapper's (#3093).
+
+    Four callers — worktree_done, both workspace cleanup passes and core cleanup — read
+    `branch_redundancy` directly, so a veto living in `is_squash_merged` left an open
+    PR's branch reaching `cleanup_worktree(force=True)` on a landed content layer.
+    """
+    work = init_pushed_main(tmp_path)
+    _run_git("checkout", "-q", "-b", "feature", "main", cwd=work)
+    (work / "f.txt").write_text("work\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "feat: work", cwd=work)
+    _run_git("checkout", "-q", "main", cwd=work)
+    _run_git("merge", "-q", "--ff", "feature", cwd=work)
+    _run_git("push", "-q", "origin", "main", cwd=work)
+    _run_git("fetch", "-q", "origin", cwd=work)
+
+    with forge_reporting(open_pr=True):
+        vetoed = bc.branch_redundancy(str(work), "feature")
+    with _no_forge():
+        landed = bc.branch_redundancy(str(work), "feature")
+
+    assert landed.redundant is True, "the content layers must prove the tip captured, or this pins nothing"
+    assert vetoed.redundant is False
+    assert vetoed.source == bc.OPEN_PR_VETO_SOURCE

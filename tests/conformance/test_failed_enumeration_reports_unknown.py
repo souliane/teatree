@@ -91,11 +91,27 @@ def _is_neutral_empty(value: ast.expr | None) -> bool:
     return isinstance(value, _NEUTRAL_EMPTIES) and not getattr(value, "elts", getattr(value, "keys", None))
 
 
-def _consumed_forge_reads(tree: ast.AST) -> list[int]:
-    """Lines where a ``gh`` call's result is USED outside the ``_gh_json`` chokepoint.
+#: ``gh`` verbs that MUTATE. A call carrying one is not an enumeration, so consuming
+#: its result cannot produce the silent-empty this rule exists to forbid — it is how a
+#: write reports which items the forge refused, which is the opposite failure mode.
+_WRITE_VERBS = frozenset({"close", "comment", "create", "delete", "edit", "reopen", "transfer"})
 
-    A read whose result is discarded (the ``issue edit`` / ``issue close`` writes)
-    cannot reach a verdict; a read whose result is bound or returned can.
+
+def _is_forge_write(node: ast.Call) -> bool:
+    """True iff *node*'s argv literally names a mutating ``gh`` verb."""
+    argv = node.args[0] if node.args else None
+    if not isinstance(argv, ast.List):
+        return False
+    return any(isinstance(el, ast.Constant) and el.value in _WRITE_VERBS for el in argv.elts)
+
+
+def _consumed_forge_reads(tree: ast.AST) -> list[int]:
+    """Lines where a ``gh`` READ's result is USED outside the ``_gh_json`` chokepoint.
+
+    A read whose result is discarded cannot reach a verdict; a read whose result is
+    bound or returned can, and that is the route back to the silent-empty. A WRITE is
+    exempt whether or not its result is consumed: it enumerates nothing, and consuming
+    it is how the caller reports the items the forge refused.
     """
     chokepoint = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == _CHOKEPOINT)
     discarded = {
@@ -109,6 +125,7 @@ def _consumed_forge_reads(tree: ast.AST) -> list[int]:
         and _RUNNER in ast.unparse(node.func)
         and node.lineno not in discarded
         and node.lineno not in inside
+        and not _is_forge_write(node)
     )
 
 

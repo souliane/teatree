@@ -250,6 +250,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # coercer (a non-positive or mistyped value degrades to the default), so the
     # "keep a week of backups" bound cannot be configured away to 0.
     "dashboard_instance_label": _parse_strict_str,
+    "dashboard_logo": _parse_strict_str,
     "db_backup_disabled": _parse_strict_bool,
     "db_backup_cadence_hours": _parse_overridable_positive_int(24),
     "db_backup_retention_days": _parse_overridable_positive_int(7),

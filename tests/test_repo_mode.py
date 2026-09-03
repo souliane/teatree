@@ -143,6 +143,22 @@ class TestResolveRepoMode:
             _commit(repo, "bob", n=30)  # now COLLABORATIVE
             assert resolve_repo_mode(str(repo)) is RepoMode.COLLABORATIVE
 
+    def test_default_repo_argument_caches_per_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Every caller passing the default ``repo="."`` must still get its OWN verdict:
+        # keying the cache on the literal argument makes one repo's mode answer for all.
+        solo, shared = tmp_path / "solo", tmp_path / "shared"
+        for root, authors in ((solo, [("alice", 10)]), (shared, [("alice", 5), ("bob", 5)])):
+            root.mkdir()
+            _git("init", "-q", "-b", "main", cwd=root)
+            _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
+            for author, count in authors:
+                _commit(root, author, n=count)
+        with patch("teatree.repo_mode.DATA_DIR", tmp_path / "cache"):
+            monkeypatch.chdir(solo)
+            assert resolve_repo_mode() is RepoMode.SOLO
+            monkeypatch.chdir(shared)
+            assert resolve_repo_mode() is RepoMode.COLLABORATIVE
+
     def test_refresh_flag_bypasses_fresh_cache(self, repo: Path, tmp_path: Path) -> None:
         _commit(repo, "alice", n=10)
         cache_dir = tmp_path / "cache"

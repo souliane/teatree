@@ -27,6 +27,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import BotPing, ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -82,7 +83,7 @@ class _StubAPI:
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         return {
             "id": 11,
-            "web_url": "https://gitlab.example/org/repo/-/mr/7#note_11",
+            "web_url": f"https://gitlab.example/{OWNED_REPO}/-/mr/7#note_11",
             "notes": [{"type": "DiffNote", "id": 11}],
         }
 
@@ -134,7 +135,7 @@ class TestReviewServiceAfterReceiptDm:
         self.svc = _service(monkeypatch)
 
     def _ping(self, action: str) -> BotPing:
-        return BotPing.objects.get(idempotency_key=f"on_behalf_post:org/repo!7:{action}")
+        return BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{OWNED_REPO}!7:{action}")
 
     def test_post_comment_emits_after_receipt_dm(self) -> None:
         # Default ``post_comment`` is a DRAFT under #1207 — the after-receipt
@@ -142,33 +143,33 @@ class TestReviewServiceAfterReceiptDm:
         # path (gated on a recorded ``LivePostApproval``) to exercise it.
         from teatree.core.models import LivePostApproval  # noqa: PLC0415
 
-        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
-        _, code = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        _, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
         assert code == 0
         assert self._ping("post_comment").status == BotPing.Status.SENT
 
     def test_reply_to_discussion_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.reply_to_discussion("org/repo", 7, "d1", "thanks")
+        _, code = self.svc.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
         assert code == 0
         assert self._ping("reply_to_discussion").status == BotPing.Status.SENT
 
     def test_resolve_discussion_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.resolve_discussion("org/repo", 7, "d1")
+        _, code = self.svc.resolve_discussion(OWNED_REPO, 7, "d1")
         assert code == 0
         assert self._ping("resolve_discussion").status == BotPing.Status.SENT
 
     def test_update_note_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.update_note("org/repo", 7, 11, "edited")
+        _, code = self.svc.update_note(OWNED_REPO, 7, 11, "edited")
         assert code == 0
         assert self._ping("update_note").status == BotPing.Status.SENT
 
     def test_delete_discussion_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.delete_discussion("org/repo", 7, 11)
+        _, code = self.svc.delete_discussion(OWNED_REPO, 7, 11)
         assert code == 0
         assert self._ping("delete_discussion").status == BotPing.Status.SENT
 
     def test_publish_draft_notes_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.publish_draft_notes("org/repo", 7)
+        _, code = self.svc.publish_draft_notes(OWNED_REPO, 7)
         assert code == 0
         assert self._ping("publish_draft_notes").status == BotPing.Status.SENT
 
@@ -181,8 +182,8 @@ class TestReviewServiceAfterReceiptDm:
         """
         _write_cfg(self.tmp_path, self.monkeypatch, mode="draft_or_ask")
 
-        _, code = self.svc.post_draft_note("org/repo", 7, "nit")
+        _, code = self.svc.post_draft_note(OWNED_REPO, 7, "nit")
 
         assert code == 0
-        assert BotPing.objects.filter(idempotency_key="on_behalf_autodraft:org/repo!7:post_draft_note").exists()
+        assert BotPing.objects.filter(idempotency_key=f"on_behalf_autodraft:{OWNED_REPO}!7:post_draft_note").exists()
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()

@@ -9,8 +9,9 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 Every setting lives in the teatree DB — the `ConfigSetting` store — set with
 `t3 <overlay> config_setting set <key> <json>` (`--overlay <name>` scopes a value
 to one overlay; omit it for the global default). There is no config file to edit.
-The overlay-definition registry (`overlays`) and the external-E2E registry
-(`e2e_repos`) are DB-home too — each is one JSON-dict `ConfigSetting` row that
+The definition registries (`REGISTRY_SETTINGS` — the overlay registry `overlays`,
+the external-E2E registry `e2e_repos`, and the peer-instance registry
+`peer_instances`) are DB-home too — each is one JSON-dict `ConfigSetting` row that
 `loader._inject_db_registries` injects into `config.raw`, so teatree boots fully
 from the DB. `config_setting export` / `import` are a byte-stable round-trip
 interchange; the shipped default VALUES, the pydantic schema that hosts them + the
@@ -47,7 +48,8 @@ slack_token_ref = "teatree/slack/another-project"
 slack_user_id = "U01ABCD1234"
 
 # External Playwright E2E repos — used by `t3 <overlay> e2e external --repo <name>`
-# Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
+# Teatree clones/updates the repo to ~/.local/share/teatree/e2e-specs/<name>/<ref-slug>/
+# — one checkout per ref, so concurrent runs on different refs never share a tree —
 # and runs Playwright from <clone>/<e2e_dir>. `branch` is the default ref;
 # `--branch <name>` (alias `--ref`) overrides it to run the suite from an open
 # MR's source branch instead.
@@ -170,13 +172,13 @@ tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
 (`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
 resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
 per-overlay MERGE; the cold Stop-hook `speak` reader uses `cold_reader.read_setting`
-— to the DB. The last NON-`UserSettings` config — the `[overlays]` overlay-definition
-registry and the `[e2e_repos]` registry — is DB-home too: each is stored as one JSON-dict
-`ConfigSetting` row (`config/registries.py`, `REGISTRY_SETTINGS`) and
-`loader._inject_db_registries` overrides `config.raw["overlays"]` / `config.raw["e2e_repos"]`
-from the store via the Django-free `cold_reader`, so every existing reader
-(`discover_overlays`, `load_e2e_repos`) is untouched and teatree boots fully DB-configured
-with no config file present. Because the DB row REPLACES
+— to the DB. The last NON-`UserSettings` config — the definition registries
+(`REGISTRY_SETTINGS`: `[overlays]`, `[e2e_repos]`, `[peer_instances]`) — is DB-home too:
+each is stored as one JSON-dict `ConfigSetting` row (`config/registries.py`) and
+`loader._inject_db_registries` overrides `config.raw[<key>]` for every `REGISTRY_KEYS`
+member from the store via the Django-free `cold_reader`, so every existing reader
+(`discover_overlays`, `load_e2e_repos`, `load_peer_instances`) is untouched and teatree
+boots fully DB-configured with no config file present. Because the DB row REPLACES
 the whole file table, a lingering `[overlays.<name>]` / `[e2e_repos.<name>]` value that
 DIVERGES from the DB row would be silently masked on read — editing an overlay `path` in the
 file had NO effect and returned the stale DB value with zero signal
@@ -301,12 +303,13 @@ upserted so a re-run is idempotent), skipping bootstrap-file-only and unknown ke
 It walks BOTH tiers — every operational `[teatree]` key into the GLOBAL scope and
 every operational `[overlays.<name>]` key into THAT overlay's scope (the DB twin of
 the per-overlay TOML override), so an install with both a global and a per-overlay
-value for a DB-home key migrates both in one pass. `import` also seeds the two
+value for a DB-home key migrates both in one pass. `import` also seeds the
 NON-`UserSettings` registries: the `[overlays]` overlay-definition keys (the overlay's
 own `path` / `class` / messaging keys — everything that is NOT a setting) into one global
-`overlays` row, and `[e2e_repos]` into one global `e2e_repos` row. `set` / `get` admit
-those two keys too (their parser registry is `REGISTRY_SETTINGS`, kept separate from
-`OVERLAY_OVERRIDABLE_SETTINGS` so the resolver's per-field coercion never sees them). Run
+`overlays` row, and every other `REGISTRY_KEYS` member's `[<key>.<name>]` tables into that
+key's own global row. `set` / `get` admit those keys too (their parser registry is
+`REGISTRY_SETTINGS`, kept separate from `OVERLAY_OVERRIDABLE_SETTINGS` so the resolver's
+per-field coercion never sees them). Run
 it once after upgrading to the partition so an existing install's DB-home keys keep
 applying (they are otherwise ignored on read).
 
@@ -372,7 +375,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `architectural_review_retry_backoff_hours` | Per-overlay post-failure backoff (age of the last terminal attempt of any status) before re-firing after a FAILED review — bounds the retry so a persistent failure backs off instead of storming hourly (default 12) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
-| `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the shared host-stripped leading-segment-prefix grammar `private_repos` uses, so a namespace entry covers every repo under it. Unioned with the overlay's own `review_exempt_repo_slugs()` by `teatree.core.review.repo_exemption`; both sources empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
+| `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the shared host-stripped leading-segment-prefix grammar `private_repos` uses, so a namespace entry covers every repo under it. This is the PIN layer over the overlay's derived `review_exempt_repo_slugs()`, resolved by `teatree.core.review.repo_exemption`, and it wins in BOTH directions — an entry ADDS an exemption, a `!`-prefixed one SUBTRACTS one the overlay declared, so a changed policy is a config edit rather than a merge. Both sources feed one list where the deepest matching pattern decides and a tie does not exempt; both are empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
 | `review_exempt_repos_count_toward_group_readiness` | Whether a review-exempt merge request still gates its work group's readiness. Default `true` is the conservative reading — an exempt member keeps holding the group, biasing toward NOT broadcasting a partial batch. |
 | `require_work_group_batch` | Turns the work-group batch gate from advisory into a hard refusal: no member is broadcast while a sibling is not yet review-ready. Default `false` ships INERT (the advisory behaviour). |
 | `work_group_generic_scopes` | Conventional-commit scopes too generic to group merge requests on (`chore`, `ci`, `deps`, …) — two changes sharing one say nothing about being a single unit of work, so keying a group on it would batch unrelated merge requests and hold each behind the others. |
@@ -426,7 +429,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 | `private_repos` | Offline slug-NAMESPACE allowlist of known-private repos: each entry is a path-segment prefix of a host-stripped `owner/repo` slug (`acme-engineering` covers `acme-engineering/*`, host-qualified or bare), NOT a raw substring (#1953 — a substring match falsely downgraded a public SSH-alias remote). Drives the #126/#1657 carve-out and (unioned with `internal_publish_namespaces`, #1672) the destination skip, so a user with only this set needs no second list. `teatree.hooks._repo_visibility`. |
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
-| `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). `teatree.core.intake.repo_scope`. |
+| `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
 | `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
@@ -631,6 +634,7 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 | `gitlab_url` | `str` | `"https://gitlab.com/api/v4"` | GitLab API base URL (only set for self-hosted) |
 | `get_username()` | `str` | `""` | The user's handle on the active code host (used to filter "my PRs") |
 | `pr_auto_labels` | `list[str]` | `[]` | Labels to apply when creating PRs |
+| `pr_auto_reviewers` | `list[str]` | `[]` | Usernames set as reviewers in the create call itself. The standing policy, and the only sanctioned reviewer assignment — `handle_block_self_reviewer_assign` refuses every other surface. SCOPED by `OverlayConfig.acts_as_distinct_identity_on`: it applies only on a repo the overlay writes under a credential that is not the overlay-wide one, so it can never name the owner as reviewer of a PR he authored himself. A PR opened before the policy existed is caught up by `t3 <overlay> review apply-reviewer-policy`, which reads this list and nothing else, and refuses any PR the repo's own bot identity did not author |
 
 **Messaging:**
 
@@ -1010,6 +1014,59 @@ answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row
 `hx-target="closest tr"`), so an edit never re-renders the document and the scroll position
 never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
 keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
+
+**Comparing instances** (`/dash/settings/compare/`). The read-only twin of the editor: this
+box beside every other one, showing what actually differs and what an import would do with
+each row. A column reaches the page by one of TWO routes, and they produce the same
+`dash.settings_peers.PeerSnapshot`, so the comparison has one set of rules rather than two.
+
+* **Fetched from a live peer.** Every entry in the `peer_instances` registry is fetched over
+    httpx from its own loopback-bound `/dash/settings/snapshot.json`, reached through an
+    `ssh -L` tunnel the operator already holds open. No instance publishes a port and no
+    `ALLOWED_HOSTS` entry is added for this — the route sits behind the same
+    `require_loopback_or_staff` gate every other dash view carries. The snapshot PATH is
+    derived from the URLconf (`settings_peers.snapshot_url`), so the two ends cannot drift. A
+    peer that does not answer is listed with its REASON rather than dropped: a comparison
+    missing one box reads as agreement between the boxes that did answer.
+* **Loaded from a saved snapshot file** (`dash.settings_files`). The page's one POST carries
+    snapshot documents — picked files (`snapshot_files`, several at a time) or JSON pasted into
+    `snapshot_json` for the operator who holds the document in a terminal on the far side of a
+    tunnel. Each becomes one more column under the identical rules. This is the only route to
+    the three columns a live fetch can never produce: a box whose tunnel is not up, a box that
+    is gone, and THIS box as it stood at an earlier date.
+
+**A loaded column is a RECORD and says so.** Its heading carries the snapshot's own
+`captured_at` (`PeerSnapshot.origin is SnapshotOrigin.FILE`, rendered as "record of …" in the
+difference table and as its own Captured column in the instance band), so a stale capture can
+never be read as a live reading. **Loading writes nothing** — the POST parses bytes into
+in-memory snapshots for the one response that carried them; no `ConfigSetting` row, no file
+and no setting on this box is touched, and the columns do not survive the response. A document
+that is not a `teatree-settings-snapshot`, carries a `format_version` this teatree does not
+read, is not UTF-8 JSON, is not a JSON object, or exceeds `MAX_SNAPSHOT_BYTES` is REFUSED BY
+NAME with what was wrong (`LoadRefusal`). One bad document never costs the good ones: the POST
+answers 400 only when NOTHING loaded, so a mis-picked file cannot hide the comparison the rest
+produced.
+
+**Saving this box's snapshot.** `GET /dash/settings/snapshot.json?download=1` is the SAME
+payload the peer fetch reads, with a Content-Disposition filename built from the instance's own
+label and its capture date (`settings_files.snapshot_filename`). The flag changes the header and
+nothing else — one `core.settings_snapshot.build_snapshot` builder, one read-only GET route.
+`build_snapshot(label, note)` takes no `include_private` parameter and emits
+`"includes_private": false`, so the route is structurally incapable of serving a raw secret
+however it is called; a withheld value travels as its reason plus a digest, which still compares
+for difference. The download is linked from both the settings page and the comparison page.
+
+**An older record stays comparable — that is the point of the file route.** The no-opinion rule
+(`dash.settings_compare`) holds for a loaded column exactly as for a live one: no row for a key
+in a scope, no rows in that scope at all, and a key the box's code never declared all
+canonicalise to `ABSENT` and compare EQUAL, so whatever today's code declares and an older
+capture never did is silence rather than drift — a missing key costs no row per scope, a missing
+scope costs no row per key. And a record never decides whether the LIVE boxes may be diffed:
+`dash.settings_compat` reads agreement across the live columns alone and reports a record's
+differing fingerprint as `CompatRow.dated` at INFO severity — shown, marked, never blocking. A
+schema difference between "then" and "now" is the record's AGE, not two boxes running different
+code. `tests/teatree_dash/test_settings_files.py` pins both as properties: a hand-degraded copy
+of this box's own snapshot fabricates no value difference, and its older schema reports as INFO.
 
 **Django admin (`ConfigSettingAdmin`).** The fourth config write surface, held to the same
 two boundaries as the other three. A secret's value is MASKED wherever the admin would

@@ -15,9 +15,10 @@ See: souliane/teatree#2599
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+from teatree.utils import work_tree
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOC = _REPO_ROOT / "docs" / "generated" / "cli-reference.md"
@@ -31,14 +32,17 @@ def _committed_doc(repo_root: Path, rel: str) -> str | None:
     working-tree regeneration that did not stage leaves the drifted committed bytes
     here for the gate to catch. ``None`` (no git repo, untracked doc) lets the
     caller fall back to the working tree, e.g. a throwaway test tree.
+
+    The index names *rel* from the work-tree TOP, which is not ``repo_root`` when
+    this project is vendored inside a fork — so a bare ``:<rel>`` resolved to
+    nothing, the read fell through to the working tree, and the gate compared the
+    regenerated doc against itself. :mod:`teatree.utils.work_tree` supplies the
+    name git actually recorded.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "show", f":{rel}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout if result.returncode == 0 else None
+    try:
+        return work_tree.resolve(repo_root).blob("", rel)
+    except work_tree.WorkTreeError:
+        return None
 
 
 def main() -> int:

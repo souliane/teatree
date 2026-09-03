@@ -654,7 +654,8 @@ jobs:
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
-    timeout-minutes: 15
+    # Stopgap headroom for the 2.3x shard imbalance; #4603 rebalances the split.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -734,6 +735,19 @@ jobs:
       # plugin records each test's seconds against the ceiling that applied to it, and
       # `scripts/ci/report_timeout_headroom.py` prints the suite-wide worst to the run
       # summary below. `tests/test_ci_timeout_ceilings.py` pins the raise to this job.
+      #
+      # `--durations-path dev/.test_durations` is RELATIVE deliberately, unlike the
+      # absolute `--shard-stats-out` below: the image is `dev/Dockerfile.test --target
+      # base` (WORKDIR `/app`) and `-v "$PWD":/app` makes that cwd the runner workspace,
+      # so the recording lands on the runner and outlives `--rm`. `dev/ci-shard.sh`
+      # mirrors the same relative arg on the host, where `/app` does not exist — do not
+      # make it absolute to match. Swapping the image (`deploy/Dockerfile`'s own WORKDIR
+      # sits outside the mount), retargeting the build stage, moving the mount or a `-w`
+      # each redirects the recording into the container's own layer for `--rm` to
+      # destroy, while the upload step still finds the COMMITTED file on the runner and
+      # republishes month-old timings as freshly measured — green at every step. #4483
+      # reported that coupling backwards as the live cause; it was not (the real one was
+      # the dotfile drop, #4584). `tests/test_ci_shard_durations_path_contract.py` pins it.
       - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
         run: >
           docker run --rm
@@ -763,12 +777,24 @@ jobs:
       # `refresh-durations` job can merge the twelve groups into one balanced file.
       # Same gate as the recording above — an upload that opens without it would
       # publish the committed file back as if it were freshly measured.
+      #
+      # `always()` because a leg that FAILED still measured everything it ran, and a step
+      # whose `if` names no status function inherits `success()` — so the legs worth
+      # hearing from most were the exact ones that uploaded nothing (#4603). A leg that
+      # died before pytest rewrote the file uploads the committed one verbatim; the merge
+      # job recognises that shape and drops it rather than merging month-old timings back.
       - name: Upload this shard's recorded durations (refresh source)
-        if: (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
+        if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
+          # A DOTFILE, and upload-artifact v4.4+ drops hidden files unless told otherwise:
+          # without this the step matched nothing, published no artifact and still reported
+          # success, for a month, while `refresh-durations` died on the absent files (#4584).
+          include-hidden-files: true
+          # `dev/.test_durations` is committed, so zero matches can only mean the upload broke.
+          if-no-files-found: error
 
   # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
   # from rotting (#3160).
@@ -800,9 +826,18 @@ jobs:
   # at all three sites on this path (the two `test-shard` steps above and here) —
   # `tests/test_ci_durations_refresh_gate.py` pins that, because a shard that records
   # nothing and a merge job that runs anyway is a refresh that reads as a clean no-op.
+  #
+  # It does NOT require the shard lane to have PASSED (#4603). Recording is a measurement,
+  # not a verdict: a leg that timed out still timed everything it ran. Requiring `success`
+  # made the durations self-blocking — stale durations bin-pack the unrecorded tests at the
+  # average, whichever leg draws the slow ones exceeds the ceiling, and that one leg then
+  # vetoed the job whose whole purpose is to un-stale the durations. Measured: no refresh
+  # PR since 2026-07-25, and every scheduled run since 2026-08-18 red or cancelled. The
+  # merge step layers fresh timings over the committed file, so a leg that delivered
+  # nothing costs its slice's freshness and never removes a test from the split.
   refresh-durations:
     needs: test-shard
-    if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && needs.test-shard.result == 'success'
+    if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -912,8 +947,11 @@ jobs:
             gh pr create \
               --title "chore(ci): refresh test shard durations" \
               --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green." \
-              --base main \
-              --label "ci"
+              --base main
+            # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
+            # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
+            # no PR (#4483). The PR is the deliverable; the label is decoration, never a gate.
+            gh pr edit "$BRANCH" --add-label infra || true
           fi
 
   # MAINTENANCE HONESTY (#4262): "the scheduled run passed" and "the maintenance job ran"
@@ -937,10 +975,6 @@ jobs:
           set -euo pipefail
           echo "test-shard: ${SHARDS}"
           echo "refresh-durations: ${REFRESH}"
-          if [ "${SHARDS}" != "success" ]; then
-            echo "::notice::refresh-durations did not run because test-shard was '${SHARDS}' — the shard result is the cause and already reds this run."
-            exit 0
-          fi
           case "${REFRESH}" in
             success)
               echo "refresh-durations ran and passed."
@@ -949,7 +983,7 @@ jobs:
               echo "::notice::refresh-durations ran and FAILED — this run is already red, which is an honest report."
               ;;
             *)
-              echo "::error::refresh-durations was '${REFRESH}' on this scheduled run while every shard passed. A job that did not run does not red a run, so the lane would otherwise report green while dev/.test_durations goes unrefreshed (#4262)." >&2
+              echo "::error::refresh-durations was '${REFRESH}' on this scheduled run (test-shard: '${SHARDS}'). Since #4603 it no longer waits for a green lane — recording is a measurement, not a verdict — so a red lane no longer excuses it, and anything but a run means the gate drifted back to requiring success. A job that did not run does not red a run, so the lane would otherwise report green while dev/.test_durations goes unrefreshed (#4262)." >&2
               exit 1
               ;;
           esac

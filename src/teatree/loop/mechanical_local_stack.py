@@ -49,23 +49,25 @@ def reap_idle_stack(payload: ActionPayload) -> None:
 
     Re-verifies the worktree is STILL in the reapable set against the live DB
     (the scanner flagged it a tick ago; an intervening ``start``/session could
-    have revived it). Only if it is still reapable does it fire
-    ``stop_services`` under a row lock guarded by ``can_proceed`` — so a
-    concurrent transition between the re-verify and the stop never raises.
+    have revived it). The re-verify happens INSIDE the row lock, because idleness is
+    exactly what an intervening session revives: read before the lock, it is the same
+    stale read the check exists to replace, and ``can_proceed`` would not catch it — a
+    revived worktree is still in a stoppable state, so its live stack gets torn down
+    under the agent using it.
     """
     worktree_id = payload.get("worktree_id")
     if worktree_id is None:
         return
     overlay = str(payload.get("overlay", ""))
     idle_minutes = int(get_effective_settings().idle_stack_idle_minutes)
-    still_reapable = {wt.pk for wt in reapable_worktrees(overlay=overlay, idle_minutes=idle_minutes)}
-    if worktree_id not in still_reapable:
-        logger.info("reap_idle_stack: worktree %s no longer reapable — keeping (fail-safe)", worktree_id)
-        return
     with transaction.atomic():
         try:
             worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
         except Worktree.DoesNotExist:
+            return
+        still_reapable = {wt.pk for wt in reapable_worktrees(overlay=overlay, idle_minutes=idle_minutes)}
+        if worktree_id not in still_reapable:
+            logger.info("reap_idle_stack: worktree %s no longer reapable — keeping (fail-safe)", worktree_id)
             return
         if not can_proceed(worktree.stop_services):
             logger.info("reap_idle_stack: stop_services not allowed for %s (state=%s)", worktree_id, worktree.state)

@@ -35,3 +35,8 @@ class TicketFacet(models.Model):
         _TERMINAL_STATES: ClassVar[frozenset[str]]
         _WORK_STATE_ORDER: ClassVar[tuple[str, ...]]
         _PHASE_PRODUCES_STATE: ClassVar[dict[str, str]]
+
+        # The two ladder transitions a facet drives; the concrete ``Ticket`` declares
+        # them with ``@transition``, which a static checker cannot see through.
+        def scope(self) -> None: ...
+        def start(self) -> None: ...

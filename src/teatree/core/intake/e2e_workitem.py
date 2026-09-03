@@ -189,7 +189,7 @@ class RunProvenance:
     ``spec_path`` is the exact spec that ran; ``manifest_entry`` the
     overlay-resolved manifest entry id (e.g. a CI lane); ``artifacts_dir`` the
     out-of-repo artifacts root the runner exported for the run (so
-    ``post-test-plan --from-seams`` locates the captures after cleanup). All
+    ``write-test-plan --from-seams`` locates the captures after cleanup). All
     overlay-agnostic strings core never parses; empty values are dropped rather
     than stored, so an overlay with no per-spec manifest records exactly the
     pre-#272 shape (the default ``RunProvenance()`` is the no-op).
@@ -231,7 +231,7 @@ def record_run(
     records provenance but never moves the baseline.
 
     ``provenance.artifacts_dir`` (#3331) is the out-of-repo artifacts root the
-    runner exported; recorded so ``post-test-plan --from-seams`` (#3329) defaults
+    runner exported; recorded so ``write-test-plan --from-seams`` (#3329) defaults
     the artifacts dir to the run's. Empty is dropped rather than stored.
 
     ``env`` is the environment the run executed against — ``"local"``
@@ -262,6 +262,12 @@ def record_run(
     if result == "green":
         by_repo = {r.repo: r for r in recipe.repos}
         for repo, sha in per_repo_shas.items():
+            # A blank sha is an UNRESOLVED head, not a green baseline: the caller
+            # swallows a `git rev-parse` failure into "". Promoting it wiped the
+            # repo's prior baseline, so `resolve_environment` then rebuilt an
+            # incomplete `last_green` after workspace cleanup.
+            if not sha:
+                continue
             existing = by_repo.get(repo)
             branch = existing.branch if existing else ""
             by_repo[repo] = RepoEntry(repo=repo, branch=branch, last_green_sha=sha)

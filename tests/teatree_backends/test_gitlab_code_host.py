@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
@@ -454,10 +455,10 @@ def test_list_pr_discussions_returns_empty_when_project_unresolved() -> None:
 
 def test_current_user_proxies_to_api_username() -> None:
     client = MagicMock(spec=GitLabAPI)
-    client.current_username.return_value = "adrien.cossa"
+    client.current_username.return_value = "souliane"
     host = GitLabCodeHost(client=client)
 
-    assert host.current_user() == "adrien.cossa"
+    assert host.current_user() == "souliane"
     client.current_username.assert_called_once_with()
 
 
@@ -945,10 +946,10 @@ def test_get_pr_open_state_any_exception_fails_open_to_unknown() -> None:
 def test_get_pr_author_returns_username() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    client.get_json.return_value = {"author": {"username": "adrien.cossa"}}
+    client.get_json.return_value = {"author": {"username": "souliane"}}
     host = GitLabCodeHost(client=client)
 
-    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == "adrien.cossa"
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == "souliane"
     client.get_json.assert_called_once_with("projects/42/merge_requests/12")
 
 
@@ -1638,3 +1639,76 @@ def test_fetch_pr_draft_state_non_dict_payload_is_unknown() -> None:
     client.get_json.return_value = []
 
     assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.UNKNOWN
+
+
+class TestCreatePrSetsReviewersAtomically:
+    """``reviewer_ids`` rides the create POST, so the MR is never open unreviewed.
+
+    GitLab's ``POST /merge_requests`` takes ``reviewer_ids`` natively. Assigning
+    in a second call would leave a window where the MR exists with no reviewer —
+    and would need a reviewer-assignment surface the gate refuses.
+    """
+
+    @staticmethod
+    def _host_with(*, resolved: dict[str, int]) -> tuple[GitLabCodeHost, MagicMock]:
+        client = MagicMock(spec=GitLabAPI)
+        client.resolve_project_from_remote.return_value = _project()
+        client.post_json.return_value = {"iid": 9}
+        client.resolve_user_id_by_username.side_effect = lambda name: resolved.get(name, 0)
+        return GitLabCodeHost(client=client), client
+
+    @staticmethod
+    def _spec(reviewers: list[str]) -> PullRequestSpec:
+        return PullRequestSpec(
+            repo="/tmp/repo",
+            branch="feature",
+            title="feat: thing",
+            description="body",
+            reviewers=reviewers,
+        )
+
+    def test_usernames_are_resolved_into_reviewer_ids(self) -> None:
+        host, client = self._host_with(resolved={"alice": 11, "bob": 22})
+
+        host.create_pr(self._spec(["alice", "bob"]))
+
+        assert client.post_json.call_args[0][1]["reviewer_ids"] == [11, 22]
+
+    def test_an_unresolvable_username_degrades_to_no_reviewer(self) -> None:
+        host, client = self._host_with(resolved={})
+
+        result = host.create_pr(self._spec(["ghost"]))
+
+        assert result == {"iid": 9}
+        assert "reviewer_ids" not in client.post_json.call_args[0][1]
+
+    def test_a_resolvable_reviewer_survives_an_unresolvable_sibling(self) -> None:
+        host, client = self._host_with(resolved={"alice": 11})
+
+        host.create_pr(self._spec(["ghost", "alice"]))
+
+        assert client.post_json.call_args[0][1]["reviewer_ids"] == [11]
+
+    def test_an_unresolvable_username_is_reported_at_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The degradation is LOUD: one typo would otherwise open every MR unreviewed.
+
+        ``resolve_user_id_by_username`` returns 0 "so callers can detect and report
+        the failure" — a silent drop is indistinguishable from the policy working.
+        """
+        host, _ = self._host_with(resolved={"alice": 11})
+
+        with caplog.at_level(logging.WARNING, logger="teatree.backends.gitlab.client"):
+            host.create_pr(self._spec(["ghost", "alice"]))
+
+        assert [record.levelname for record in caplog.records] == ["WARNING"]
+        message = caplog.records[0].getMessage()
+        assert "'ghost'" in message
+        assert "pr_auto_reviewers" in message
+
+    def test_a_fully_resolved_policy_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        host, _ = self._host_with(resolved={"alice": 11, "bob": 22})
+
+        with caplog.at_level(logging.WARNING, logger="teatree.backends.gitlab.client"):
+            host.create_pr(self._spec(["alice", "bob"]))
+
+        assert caplog.records == []

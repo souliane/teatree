@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.lane_b.filesystem import PathTraversalError, build_filesystem_toolset, resolve_within
+from teatree.agents.lane_b.filesystem import (
+    _MAX_READ_BYTES,
+    PathTraversalError,
+    build_filesystem_toolset,
+    resolve_within,
+)
 
 
 class TestResolveWithin:
@@ -69,3 +74,42 @@ class TestFilesystemTools:
         ts = build_filesystem_toolset(tmp_path)
         with pytest.raises(PathTraversalError):
             _tool(ts, "Write")("../escape.txt", "x")
+
+
+class TestSearchStaysInsideTheJail:
+    """``Grep`` reaches files by glob, so the jail has to hold on that path too."""
+
+    def test_traversing_glob_is_refused(self, tmp_path: Path) -> None:
+        root, outside = tmp_path / "wt", tmp_path / "outside"
+        root.mkdir()
+        outside.mkdir()
+        (outside / "secret.txt").write_text("needle")
+        ts = build_filesystem_toolset(root)
+        with pytest.raises(PathTraversalError):
+            _tool(ts, "Grep")("needle", "../outside/*")
+
+    def test_symlink_to_a_file_outside_the_root_is_not_searched(self, tmp_path: Path) -> None:
+        root, outside = tmp_path / "wt", tmp_path / "outside"
+        root.mkdir()
+        outside.mkdir()
+        (outside / "secret.txt").write_text("needle")
+        (root / "link.txt").symlink_to(outside / "secret.txt")
+        assert _tool(build_filesystem_toolset(root), "Grep")("needle") == []
+
+    def test_no_unbounded_whole_file_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A cap applied AFTER a whole-file read bounds the slice, not the memory:
+        # a multi-gigabyte worktree file is fully resident before it is truncated.
+        def refuse(*_args: object, **_kwargs: object) -> bytes:
+            msg = "unbounded whole-file read"
+            raise AssertionError(msg)
+
+        (tmp_path / "big.txt").write_text("needle")
+        ts = build_filesystem_toolset(tmp_path)
+        monkeypatch.setattr(Path, "read_bytes", refuse)
+        monkeypatch.setattr(Path, "read_text", refuse)
+        assert _tool(ts, "Read")("big.txt") == "needle"
+        assert _tool(ts, "Grep")("needle") == ["big.txt"]
+
+    def test_read_stops_at_the_byte_cap(self, tmp_path: Path) -> None:
+        (tmp_path / "big.txt").write_text("x" * (_MAX_READ_BYTES + 500))
+        assert len(_tool(build_filesystem_toolset(tmp_path), "Read")("big.txt")) == _MAX_READ_BYTES

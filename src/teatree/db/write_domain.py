@@ -42,6 +42,19 @@ _HOST_SHARED_FSTYPES = frozenset({"virtiofs", "fuse.grpcfuse", "osxfs", "9p", "f
 
 _FDINFO_FLAGS = re.compile(r"^flags:\s*(\d+)$", re.MULTILINE)
 
+#: Seam over `shutil.which`, so a test can force the lsof branch on a host without lsof.
+_which = shutil.which
+
+
+class DescriptorTableUnavailableError(RuntimeError):
+    """The descriptor table could not be read AT ALL — never an answer of "no writers".
+
+    An unread table and an empty one reach a caller as the same empty list, and the
+    caller then certifies that nothing holds the database. Raising keeps the two
+    apart so a reporting check can stop certifying rather than certify an answer it
+    never obtained.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class FdHolder:
@@ -174,20 +187,25 @@ def _lsof_holders(targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]
 
     ``lsof`` exits 1 when nothing holds the files, which is an ANSWER (no holders),
     not a failure — hence the widened *expected_codes*. The ``n`` (name) field
-    arrives AFTER the ``a`` (access) field of the same record, so a record is emitted
-    only once its name has been read; that is what lets one invocation cover many files.
+    arrives AFTER the ``a`` (access) field of the same record, so a record is only
+    complete when its name arrives; that is what lets one invocation cover many files.
+
+    An absent binary and a failed invocation are the opposite of that: neither is an
+    answer, so both raise rather than yield nothing.
     """
-    lsof = shutil.which("lsof")
+    lsof = _which("lsof")
     if lsof is None:
-        return
+        msg = "no /proc on this host and no lsof on PATH — no descriptor view is available"
+        raise DescriptorTableUnavailableError(msg)
     try:
         result = run_allowed_to_fail(
             [lsof, "-F", "pcan", "--", *sorted(targets)],
             expected_codes=None,
             timeout=_LSOF_TIMEOUT_SECONDS,
         )
-    except (OSError, CommandFailedError):
-        return
+    except (OSError, CommandFailedError) as error:
+        msg = f"lsof could not be run: {error.__class__.__name__}: {error}"
+        raise DescriptorTableUnavailableError(msg) from error
     pid, command, writable = 0, "?", False
     for line in result.stdout.splitlines():
         tag, value = line[:1], line[1:]

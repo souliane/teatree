@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core import overlay_ownership as _ownership
 from teatree.core.overlay_conformance import conforming_or_none, conforming_or_raise
 from teatree.core.overlay_name_resolution import cwd_overlay_name, overlay_name_of, resolve_overlay_name
 from teatree.core.overlay_url import get_overlay_for_url
@@ -28,6 +29,9 @@ if TYPE_CHECKING:
 _FieldT = TypeVar("_FieldT", list[str], dict[str, list[str]])
 
 logger = logging.getLogger(__name__)
+
+_full_slug_owns = _ownership.full_slug_owns
+_bare_name_owns = _ownership.bare_name_owns
 
 __all__ = [
     "OverlayConfigResolver",
@@ -123,10 +127,13 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
 
     Resolves the ``origin`` remote slug (``owner/name``) of the repo at
     ``repo`` and matches it against each registered overlay's
-    ``get_workspace_repos()`` — the same repo-ownership relation
-    :func:`infer_overlay_for_url` uses for a URL. This lets a caller in an
-    ambiguous multi-overlay environment pick the overlay that actually owns
-    the current repository instead of crashing on ambiguity.
+    ``get_workspace_repos()`` through the same two-tier, boundary-safe
+    ownership relation :func:`infer_overlay_for_url` uses for a URL
+    (:func:`_full_slug_owns` authoritative, :func:`_bare_name_owns` only when
+    no overlay claims a full slug). A raw substring test let ``acme/widget``
+    own ``acme/widget-extra``. This lets a caller in an ambiguous
+    multi-overlay environment pick the overlay that actually owns the current
+    repository instead of crashing on ambiguity.
 
     Returns ``None`` when the slug is empty (no ``origin``) or matches zero
     or more than one overlay, so the caller can fall back deterministically
@@ -139,7 +146,8 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
     if not slug:
         return None
 
-    matches: list[OverlayBase] = []
+    full_matches: list[OverlayBase] = []
+    bare_matches: list[OverlayBase] = []
     for name, overlay in get_all_overlays().items():
         getter = getattr(overlay, "get_workspace_repos", None)
         if not callable(getter):
@@ -149,11 +157,13 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
         except Exception:
             logger.warning("Overlay %r get_workspace_repos() failed during repo resolution", name, exc_info=True)
             continue
-        for repo_slug in repo_slugs or []:
-            if isinstance(repo_slug, str) and repo_slug and repo_slug in slug:
-                matches.append(overlay)
-                break
+        tokens = [token for token in repo_slugs or [] if isinstance(token, str) and token]
+        if any(_full_slug_owns(token, slug) for token in tokens):
+            full_matches.append(overlay)
+        elif any(_bare_name_owns(token, slug) for token in tokens):
+            bare_matches.append(overlay)
 
+    matches = full_matches or bare_matches
     return matches[0] if len(matches) == 1 else None
 
 
@@ -340,43 +350,6 @@ def _url_to_slug(url: str) -> str:
     return candidate if candidate.count("/") >= 1 else ""
 
 
-def _full_slug_owns(repo_slug: str, url_slug: str) -> bool:
-    """True when the proper ``owner/name`` ``repo_slug`` owns ``url_slug``.
-
-    Segment/boundary-aware, not a raw substring: ``repo_slug`` must carry at
-    least one ``/`` (a real ``owner/name`` slug) and its ``/``-delimited
-    segments must align as a suffix of ``url_slug``. A bare relative token
-    (``t3-company``, as ``_discover_workspace_repos()`` emits) is rejected
-    here — it can never own a URL by its directory name, closing the #1120
-    misclassification where ``"t3-company" in <full URL>`` was True.
-
-    Examples (``repo_slug`` owns ``url_slug``?):
-
-    - ``company-fork-org/t3-company`` owns ``company-fork-org/t3-company`` (exact).
-    - ``subgroup/repo`` owns ``group/subgroup/repo`` (segment suffix).
-    - ``t3-company`` does NOT own ``company-fork-org/t3-company`` (bare token).
-    - ``acme/widget`` does NOT own ``acme/widget-extra`` (segment differs).
-    """
-    if "/" not in repo_slug:
-        return False
-    if repo_slug == url_slug:
-        return True
-    return url_slug.split("/")[-repo_slug.count("/") - 1 :] == repo_slug.split("/")
-
-
-def _bare_name_owns(repo_token: str, url_slug: str) -> bool:
-    """True when a bare repo-name ``repo_token`` matches ``url_slug``'s name segment.
-
-    The weak tiebreaker tier: a relative directory token (no ``/``) is
-    matched only against the trailing repo-name segment of ``url_slug``, on a
-    full-segment boundary. This preserves overlays that legitimately own a
-    repo but only expose its bare relative path (the bundled ``t3-teatree``
-    overlay, whose ``get_workspace_repos()`` returns ``["teatree"]``), without
-    the raw-substring collisions of the pre-#1120 matcher.
-    """
-    return "/" not in repo_token and url_slug.rsplit("/", 1)[-1] == repo_token
-
-
 def infer_overlay_for_url(url: str) -> str:
     """Return the overlay whose workspace repos own ``url``, or ``""``.
 
@@ -403,6 +376,13 @@ def infer_overlay_for_url(url: str) -> str:
     2. Bare repo-name fallback (:func:`_bare_name_owns`) fires only when
         NO overlay claims the URL by a full slug — preserving overlays that
         expose only a bare relative path for a repo they own.
+
+    Both tiers match an ENUMERATION of repos. The overlay's declared forge
+    NAMESPACE is deliberately NOT a third tier here: ``owned_repos`` "gates ONLY
+    the unknown-repo approval decision, never merge-without-review"
+    (:class:`~teatree.core.overlay.OverlayConfig`), and this resolver feeds
+    merge authorization. The review surface applies it as its own explicit
+    fallback (:func:`teatree.cli.review.forge_target.owning_overlay_name`).
 
     Within each tier, more than one matching overlay returns ``""`` rather
     than an arbitrary first dict hit, so callers fall back to the explicit

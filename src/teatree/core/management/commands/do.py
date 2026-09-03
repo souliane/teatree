@@ -23,16 +23,14 @@ blocked golden path as success to a machine front-end.
 from typing import IO, Annotated, NotRequired, TypedDict, cast
 
 import typer
-from django.core.management import call_command
-from django_typer.management import TyperCommand
 
 from teatree.core.lifecycle_pipeline import DoReport, DriveSeams, LifecycleStep, StepReport, TicketSnapshot, drive
-from teatree.core.machine_output import emit
+from teatree.core.machine_output import MachineOutputCommand, call_command_streamed, emit
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.errors import InvalidTransitionError
 
 # stopped_reason values that mean "the operator must act" -> exit 1.
-_FAILED_REASONS = frozenset({"blocked", "ignored"})
+_FAILED_REASONS = frozenset({"blocked", "ignored", "off_path"})
 
 
 class _ChokepointError(TypedDict, total=False):
@@ -112,6 +110,9 @@ def _invoke_chokepoint(step: LifecycleStep, *, ref: str, ticket_id: int | None, 
 
     Both of the child command's streams are redirected to *err* so ``do``'s
     stdout stays a pure JSON channel (its own stdout is never handed to a child).
+    The redirection goes through ``call_command_streamed`` rather than
+    ``call_command(..., stdout=)``: the latter hands Django's own wrapper the
+    child's typed return to print, which crashes on anything but a ``str``.
     A gate refusal surfaces either as a raised ``SystemExit``/``InvalidTransitionError``
     (``workspace``/FSM refusals) or a returned error mapping (``pr create``); both
     are normalised to a blocker string. The caller (``drive``) confirms RAN vs
@@ -120,7 +121,7 @@ def _invoke_chokepoint(step: LifecycleStep, *, ref: str, ticket_id: int | None, 
     """
     argv = _chokepoint_argv(step, ref=ref, ticket_id=ticket_id)
     try:
-        result = call_command(*argv, stdout=err, stderr=err)
+        result = call_command_streamed(argv[0], *argv[1:], stream=err)
     except SystemExit as exc:
         return str(exc.code) if isinstance(exc.code, str) and exc.code else f"the {step.name} chokepoint refused"
     except InvalidTransitionError as exc:
@@ -159,7 +160,11 @@ def _payload(report: DoReport) -> DoPayload:
 
 def _render_human(report: DoReport, stream: IO[str]) -> None:
     header = "PLAN" if report.plan_only else "DO"
-    stream.write(f"{header} {report.ticket_ref} ({report.initial_state or 'absent'} -> {report.final_state}):\n")
+    # The admitted pk is the one thing a caller cannot re-derive from the ref it passed.
+    admitted = f" ticket {report.ticket_id}" if report.ticket_id else ""
+    stream.write(
+        f"{header} {report.ticket_ref} ({report.initial_state or 'absent'} -> {report.final_state}){admitted}:\n"
+    )
     for item in report.steps:
         line = f"  {item.step.name:<10} {item.status.value}"
         if item.step.needs and item.status.value == "pending":
@@ -171,7 +176,7 @@ def _render_human(report: DoReport, stream: IO[str]) -> None:
     stream.write(f"stopped at: {stop} ({report.stopped_reason})\n")
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     def handle(
         self,
         ticket_ref: Annotated[str, typer.Argument(help="Ticket pk, issue number, issue URL, or repo#N.")],

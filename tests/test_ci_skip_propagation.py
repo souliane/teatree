@@ -56,9 +56,11 @@ class TestNoJobInheritsAnUpstreamSkip:
 class TestRefreshDurationsStaysReachable:
     """The specific job whose silent skip left the shard split blind."""
 
-    def test_it_runs_on_a_scheduled_run_whose_shards_all_passed(self) -> None:
+    def test_it_runs_on_a_scheduled_run_whatever_the_shards_did(self) -> None:
         job = _jobs(_WORKFLOWS / "ci.yml")["refresh-durations"]
         condition = _condition(job)
         assert "always()" in condition
         assert "github.event_name == 'schedule'" in condition
-        assert "needs.test-shard.result == 'success'" in condition
+        # #4603: gating on a green lane was a second way to never run — the durations that
+        # unbalance the split are what red the leg that then vetoed the refresh.
+        assert "needs.test-shard.result" not in condition

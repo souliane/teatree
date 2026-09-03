@@ -1,22 +1,22 @@
 """Poll-driven GitLab MR approval scanner — #936 phase 1.
 
-The webhook path (``IncomingEventsScanner`` + ``SCHEDULE_MERGE``) already
-drives the sanctioned auto-merge keystone when GitLab fires an
-``approved`` webhook to ``/hooks/gitlab/``. That path is blocked for
-Slack Connect workspaces where the bot cannot join the overlay's
-review channel, and other deployments that have not enabled the GitLab
-webhook at all. This scanner is the
-poll-driven complement: every tick it walks the active user's open MRs,
-asks GitLab for the approval state, and — when the merge guard says yes
-— emits the same ``incoming_event.merge_*`` signal the dispatcher
-already routes to the §17.4 keystone merge transition.
+The webhook path (``IncomingEventsScanner`` + ``SCHEDULE_MERGE``) surfaces an
+approved MR when GitLab fires an ``approved`` webhook to ``/hooks/gitlab/``.
+That path is blocked for Slack Connect workspaces where the bot cannot join
+the overlay's review channel, and other deployments that have not enabled the
+GitLab webhook at all. This scanner is the poll-driven complement: every tick
+it walks the active user's open MRs, asks GitLab for the approval state, and
+— when the merge guard says yes — emits the same ``incoming_event.merge_*``
+signal the webhook path does.
 
 Design notes
 ------------
 
-* No new merge code. The scanner emits ``ScanSignal``s only; the
-    existing dispatcher + ``OverlayBase.can_auto_merge`` guard +
-    ``t3 <overlay> ticket merge`` keystone handle the actual write.
+* No merge code, and no merge dispatch. ``incoming_event.merge_*`` is
+    routed by ``STATUSLINE_ZONE_BY_KIND`` alone — there is no ``AGENT_BY_KIND``
+    or ``MECHANICAL_BY_KIND`` row for it — so an approved MR surfaces in the
+    statusline's ``action_needed`` zone and the §17.4 keystone
+    (``t3 <overlay> ticket clear`` → ``ticket merge``) stays a human-run action.
 * Idempotency. The head SHA at the moment of emission is recorded in
     ``Ticket.extra['last_approval_sha']``; a second tick whose payload
     carries the same head SHA is a no-op. A new push (different head SHA)

@@ -499,14 +499,15 @@ class TestRetireAnsweredInThread:
         assert PendingChatInjection.retire_answered_in_thread("9999.9999") == 0
         assert PendingChatInjection.objects.get().loop_replied_at is None
 
-    def test_does_not_overwrite_an_existing_loop_reply(self) -> None:
+    def test_answers_a_row_the_cycle_already_loop_replied_without_stealing_its_kind(self) -> None:
         row = PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
         assert row is not None
         row.mark_loop_replied(PendingChatInjection.AnswerKind.ACK)
 
-        assert PendingChatInjection.retire_answered_in_thread("1700.0001") == 0
+        assert PendingChatInjection.retire_answered_in_thread("1700.0001") == 1
         row.refresh_from_db()
         assert row.answer_kind == PendingChatInjection.AnswerKind.ACK
+        assert row.answered_at is not None
 
     def test_second_call_is_idempotent(self) -> None:
         PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")

@@ -14,7 +14,8 @@ Asserts:
     ``[label](url)`` link, and the summary;
 *   ``notify_on_post_on_behalf = false`` → no DM (the post already
     happened; this only controls the after-receipt visibility);
-*   a second call with the same ``(target, action)`` is idempotent;
+*   a second call for the same publication is idempotent, while a second
+    publication to the same ``(target, action)`` gets its own receipt;
 *   a permalink-lookup failure falls back to the canonical URL (no raise);
 *   a Slack non-delivery records one ``BotPing`` FAILED and never raises.
 """
@@ -31,6 +32,8 @@ from django.test import TestCase
 
 from teatree.core.models import BotPing, ConfigSetting
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+
+_GITLAB_X_KEY = "on_behalf_post:org/repo!7:post_comment:https://gitlab.example/x"
 
 
 def _seed_cold_slack_user(tmp_path: Path, user_id: str) -> None:
@@ -101,7 +104,7 @@ class TestAfterReceiptDm(TestCase):
             summary="LGTM on org/repo!7",
         )
 
-        key = "on_behalf_post:org/repo!7:post_comment"
+        key = "on_behalf_post:org/repo!7:post_comment:https://gitlab.example/org/repo/-/merge_requests/7#note_42"
         ping = BotPing.objects.get(idempotency_key=key)
         assert ping.kind == BotPing.Kind.INFO
         assert ping.status == BotPing.Status.SENT
@@ -130,7 +133,7 @@ class TestAfterReceiptDm(TestCase):
             summary="left a review note",
         )
 
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:org/repo!7:post_comment")
+        ping = BotPing.objects.get(idempotency_key="on_behalf_post:org/repo!7:post_comment:C07ABCDEF")
         assert ping.status == BotPing.Status.SENT
         assert "the review channel" in ping.text
         assert "left a review note" in ping.text
@@ -167,8 +170,25 @@ class TestAfterReceiptDm(TestCase):
                 summary="LGTM",
             )
 
-        assert BotPing.objects.filter(idempotency_key="on_behalf_post:org/repo!7:post_comment").count() == 1
+        assert BotPing.objects.filter(idempotency_key=_GITLAB_X_KEY).count() == 1
         assert backend.post_message.call_count == 1
+
+    def test_second_publication_to_the_same_target_gets_its_own_receipt(self) -> None:
+        _cfg(self.tmp_path, enabled=True)
+        backend = _stub_backend()
+        self._set_messaging(backend)
+
+        for note in ("note_1", "note_2"):
+            notify_user_on_behalf_post(
+                target="org/repo!7",
+                action="post_comment",
+                destination="review channel C-eng",
+                artifact_url=f"https://gitlab.example/org/repo/-/merge_requests/7#{note}",
+                summary=f"comment {note}",
+            )
+
+        assert BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:org/repo!7:post_comment").count() == 2
+        assert backend.post_message.call_count == 2
 
     def test_permalink_lookup_failure_falls_back_to_canonical_url(self) -> None:
         _cfg(self.tmp_path, enabled=True)
@@ -185,7 +205,9 @@ class TestAfterReceiptDm(TestCase):
             summary="LGTM",
         )
 
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:org/repo!7:post_comment")
+        ping = BotPing.objects.get(
+            idempotency_key="on_behalf_post:org/repo!7:post_comment:https://gitlab.example/org/repo/-/merge_requests/7"
+        )
         # Permalink lookup failed → BotPing.permalink is empty but the DM
         # still SENT carrying the canonical artifact URL in its body.
         assert ping.status == BotPing.Status.SENT
@@ -206,5 +228,5 @@ class TestAfterReceiptDm(TestCase):
             summary="LGTM",
         )
 
-        ping = BotPing.objects.get(idempotency_key="on_behalf_post:org/repo!7:post_comment")
+        ping = BotPing.objects.get(idempotency_key=_GITLAB_X_KEY)
         assert ping.status == BotPing.Status.FAILED

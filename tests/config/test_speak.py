@@ -134,6 +134,27 @@ class TestSpeakDbResolution(TestCase):
         with pytest.raises(ValueError, match="Invalid speak local"):
             get_effective_settings()
 
+    def test_quoted_false_slack_raises_instead_of_enabling_speech(self) -> None:
+        ConfigSetting.objects.set_value("speak", value={"slack": "false"})
+        with pytest.raises(ValueError, match="Invalid bool value"):
+            get_effective_settings()
+
+
+class TestSlackIsAStrictBool:
+    """``slack`` is coerced like every other bool setting — no ``bool(...)`` truthiness (#258)."""
+
+    def test_quoted_false_is_refused_at_write_time(self) -> None:
+        with pytest.raises(ValueError, match="Invalid bool value"):
+            parse_speak_setting({"local": "off", "slack": "false"})
+
+    def test_a_number_is_refused_at_write_time(self) -> None:
+        with pytest.raises(ValueError, match="Invalid bool value"):
+            parse_speak_setting({"local": "off", "slack": 1})
+
+    def test_real_booleans_round_trip(self) -> None:
+        assert parse_speak_setting({"local": "off", "slack": True})["slack"] is True
+        assert parse_speak_setting({"local": "off", "slack": False})["slack"] is False
+
 
 class TestResolveSpeakDirect:
     def test_off_when_empty(self) -> None:

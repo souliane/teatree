@@ -100,7 +100,9 @@ def drive_off_live_tick_loops() -> dict[str, int]:
     :func:`teatree.loops.timer_chains.loop_timer`. Then self-dedup (another pending fire
     already carries the chain), then successor-FIRST (F6) so a body fault cannot orphan
     it. A single command's failure is recorded and stepped over rather than aborting the
-    remaining loops.
+    remaining loops — recorded means COUNTED, so a command that ran and exited nonzero
+    lands in ``failed`` rather than passing as a healthy drive. These counts are the only
+    record an off-live-tick pass leaves, so an uncounted failure is an invisible one.
     """
     if not loop_runner_enabled():
         return {"halted": 1}
@@ -108,7 +110,7 @@ def drive_off_live_tick_loops() -> dict[str, int]:
         return {"deduped": 1}
     drive_off_live_tick_loops.using(run_after=timezone.now() + dt.timedelta(seconds=DRIVE_INTERVAL_SECONDS)).enqueue()
 
-    counts = {"driven": 0, "timed_out": 0}
+    counts = {"driven": 0, "timed_out": 0, "failed": 0}
     for name, argv_tail, deadline in off_live_tick_commands():
         try:
             outcome = run_deadlined_argv(
@@ -118,9 +120,13 @@ def drive_off_live_tick_loops() -> dict[str, int]:
             )
         except Exception:
             logger.exception("off-live-tick driver: %r failed to run; the chain and the other loops survive", name)
+            counts["failed"] += 1
             continue
         counts["driven"] += 1
         counts["timed_out"] += int(outcome["timed_out"])
+        if outcome["returncode"]:
+            logger.warning("off-live-tick driver: %r exited %s — the loop did not tick", name, outcome["returncode"])
+            counts["failed"] += 1
     return counts
 
 

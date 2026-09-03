@@ -51,6 +51,7 @@ _LEAK_DENY_MESSAGES: dict[str, str] = {
     "banned_terms_scanner.format_scanner_unavailable_message": (
         banned_terms_scanner.format_scanner_unavailable_message()
     ),
+    "banned_terms_scanner.format_scanner_timeout_message": (banned_terms_scanner.format_scanner_timeout_message()),
     "banned_terms_scanner.marker_deny_message": (
         banned_terms_scanner.marker_deny_message(banned_terms_scanner.UNRESOLVABLE_BODY_MARKER) or ""
     ),

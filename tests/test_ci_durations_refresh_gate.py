@@ -89,15 +89,27 @@ class TestEveryGateOnTheRefreshPathAgrees:
     def test_the_shard_uploads_what_it_recorded_behind_the_same_gate(self) -> None:
         job = _workflow()["jobs"]["test-shard"]
         step = _step_containing(job, "durations-shard-", "with")
-        assert str(step.get("if", "")).strip() == DURATIONS_GATE, (
+        assert str(step.get("if", "")).strip() == f"always() && {DURATIONS_GATE}", (
             "the durations upload runs on a different condition from the recording that feeds it — "
-            "the pair must open and close together."
+            "the pair must open and close together. `always()` is what makes the upload survive a "
+            "FAILED shard: a step whose `if` names no status function inherits `success()`, so the "
+            "legs worth hearing from most uploaded nothing (#4603)."
         )
 
     def test_the_refresh_job_runs_on_the_same_gate(self) -> None:
         condition = str(_workflow()["jobs"]["refresh-durations"].get("if", "")).strip()
-        assert condition == f"always() && {DURATIONS_GATE} && needs.test-shard.result == 'success'", (
+        assert condition == f"always() && {DURATIONS_GATE}", (
             "`refresh-durations` no longer carries the shared gate verbatim. `always()` stays first "
-            "(it is what stops GitHub propagating `preflight`'s skip through `test-shard`), and the "
-            "shard-success condition stays last."
+            "(it is what stops GitHub propagating `preflight`'s skip through `test-shard`)."
+        )
+
+    def test_the_refresh_job_does_not_wait_for_a_green_lane(self) -> None:
+        # #4603: `needs.test-shard.result == 'success'` made the durations self-blocking. Stale
+        # durations bin-pack the unrecorded tests at the average, whichever leg draws the slow
+        # ones exceeds the ceiling, and that leg then vetoed the job that un-stales them.
+        condition = str(_workflow()["jobs"]["refresh-durations"].get("if", "")).strip()
+        assert "needs.test-shard.result" not in condition, (
+            "`refresh-durations` requires the shard lane to have passed again. Recording is a "
+            "measurement, not a verdict — a leg that timed out still timed everything it ran, and "
+            "a red lane is exactly when the durations most need refreshing."
         )

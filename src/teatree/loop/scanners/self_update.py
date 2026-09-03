@@ -39,7 +39,7 @@ tick without re-shelling git.
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from django.db import transaction
@@ -63,6 +63,10 @@ logger = logging.getLogger(__name__)
 # resolve, so the first configured repo is an OVERLAY, and a retry keyed on that
 # label would page about an overlay clone while migrating the control DB.
 CORE_REPO_LABEL = "teatree"
+
+# The clone advanced but nothing was queued to re-anchor the running
+# interpreter — carried on the outcome so the signal and marker both show it.
+REINSTALL_QUEUE_FAILED_REASON = "reinstall_queue_failed"
 
 _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.RED: "ci_red",
@@ -177,7 +181,7 @@ class SelfUpdateScanner:
             )
         outcome = _attempt_pull(repo=path, ci_gate=self._ci_gate)
         if outcome.outcome == "updated" and self.auto_update_reinstall:
-            _queue_reinstall(label=label, target_sha=outcome.new_sha)
+            outcome = _queue_reinstall(label=label, outcome=outcome)
         return _record_marker(label=label, path=path, outcome=outcome)
 
     def _ci_gate(self, repo: Path) -> CiVerdict | None:
@@ -449,15 +453,28 @@ def _origin_ahead(repo: Path, *, pre_sha: str) -> bool:
     return upstream.stdout.strip() != pre_sha
 
 
-def _queue_reinstall(*, label: str, target_sha: str) -> None:
-    """Upsert a deferred-reinstall row; never crash the tick on a DB error."""
+def _queue_reinstall(*, label: str, outcome: _PullOutcome) -> _PullOutcome:
+    """Upsert a deferred-reinstall row; never crash the tick on a DB error.
+
+    A failed upsert leaves the clone advanced with the running interpreter
+    still anchored at the old code and nothing queued to re-anchor it, and the
+    marker this outcome writes closes the cadence window — so the failure is
+    carried on the outcome's reason, where the emitted signal and the persisted
+    marker both surface it, rather than being swallowed into a clean "updated".
+    """
     from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         with transaction.atomic():
-            PendingReinstall.objects.upsert_pending(repo_label=label, target_sha=target_sha)
+            PendingReinstall.objects.upsert_pending(repo_label=label, target_sha=outcome.new_sha)
     except Exception:
         logger.exception("self_update failed to queue PendingReinstall for %s", label)
+        return replace(outcome, reason=_joined_reason(outcome.reason, REINSTALL_QUEUE_FAILED_REASON))
+    return outcome
+
+
+def _joined_reason(existing: str, added: str) -> str:
+    return f"{existing};{added}" if existing else added
 
 
 def _git(repo: Path, *args: str) -> CompletedProcess[str]:

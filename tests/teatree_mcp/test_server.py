@@ -17,7 +17,7 @@ from django.test import TestCase
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.models import Task
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from teatree.mcp.search import factory_score
 from teatree.mcp.server import _required_services
@@ -184,6 +184,7 @@ class TestCallToolThroughServer(TestCase):
 class _ServiceOverlay:
     def __init__(self, *services: Service) -> None:
         self.config = OverlayConfig(required_third_party_services=frozenset(services))
+        self.connectors = OverlayConnectors()
 
 
 _SENTRY_TOOLS = {"sentry_top_issues", "sentry_issue_get", "sentry_issue_events", "sentry_projects"}

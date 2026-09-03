@@ -15,6 +15,11 @@ deny path. The BANNED-TERM path is proved in-process through the re-exported
 visibility probe is pinned, exactly as ``test_public_leak_gate_stays_fail_closed``
 does), because the banned-term deny scopes to an affirmatively-public surface a
 subprocess cannot resolve without an authenticated ``gh`` on PATH.
+
+Both paths pin ``T3_UV`` at a stub so the scanner resolves an interpreter without
+reaching for the box's own uv. Starved, the gate fails CLOSED — right for a leak gate,
+but it makes the benign case deny for a reason that is not the split, and the run then
+turns on where the box keeps uv rather than on the routing this file exists to prove.
 """
 
 import json
@@ -28,6 +33,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _repo_visibility
+from tests._uv_stub import working_uv
 
 _HOOK_ROUTER = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "hook_router.py"
 
@@ -69,6 +75,7 @@ class TestSecretBlockedEndToEndSubprocess:
         _seed_config_db(tmp_path / "config.sqlite3")
         return {
             "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "T3_UV": str(working_uv(tmp_path / "bin" / "uv")),
             "T3_CONFIG_DB": str(tmp_path / "config.sqlite3"),
             "T3_DATA_DIR": str(tmp_path / "data"),
             "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(tmp_path / "state"),
@@ -106,6 +113,10 @@ class TestBannedTermBlockedInProcess:
         _seed_config_db(tmp_path / "config.sqlite3")
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+        # The handler shells the scanner out under the ambient env, where resolving the
+        # box's own uv makes the scan pay a cold environment provision — measured past
+        # the scanner's 10s budget, so the gate denied benign text on a timeout.
+        monkeypatch.setenv("T3_UV", str(working_uv(tmp_path / "bin" / "uv")))
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
 
     def test_banned_term_is_still_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -113,7 +124,10 @@ class TestBannedTermBlockedInProcess:
         assert blocked is True, "banned term on a public surface must still deny after the router split"
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
-        assert "banned-terms" in decision["permissionDecisionReason"]
+        # The TERM, not just the gate's name: every fail-closed reason this gate emits
+        # carries "banned-terms", so a scanner that never ran would satisfy the weaker
+        # assertion and the control would certify a gate that matched nothing.
+        assert _BANNED_TERM in decision["permissionDecisionReason"]
 
     def test_benign_body_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(_bash(_public_post_with("just a normal update")))

@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+from django.db.models.signals import post_delete
 from django.test import TestCase
 from django.utils import timezone
 
@@ -202,6 +203,44 @@ class FailClosedTest(_DeadRowCase):
             release_dead_rows(self.workspace, dry_run=False)
 
         assert fetch.call_count == 1, f"expected one memoised refresh, got {fetch.call_count}"
+
+
+class RevalidatesEachRowBeforeDeletingItTest(_DeadRowCase):
+    """The plan is minutes old by the time the deletes run — every gate can change under it.
+
+    A ticket claimed mid-sweep is the ordinary shape: the plan cleared the row, an
+    agent then took the ticket, and the row is the registry's only handle on its
+    branch. The concurrent claim is landed from a ``post_delete`` receiver on the
+    row deleted just before it, which puts it exactly in the window without
+    patching anything the pass itself decides with.
+    """
+
+    def _claim_the_second_ticket_while_the_first_is_deleted(self, first: Worktree, second: Worktree) -> None:
+        def _claim(sender: object, instance: Worktree, **_kwargs: object) -> None:
+            if instance.pk == first.pk:
+                Session.objects.create(overlay="", ticket=second.ticket)
+
+        post_delete.connect(_claim, sender=Worktree)
+        self.addCleanup(post_delete.disconnect, _claim, sender=Worktree)
+
+    def test_a_row_protected_after_the_plan_is_not_deleted(self) -> None:
+        first, _ = self._dead_row_with_gone_ref("gone-first")
+        second, _ = self._dead_row_with_gone_ref("gone-second")
+        self._claim_the_second_ticket_while_the_first_is_deleted(first, second)
+
+        outcome = release_dead_rows(self.workspace, dry_run=False)
+
+        assert not Worktree.objects.filter(pk=first.pk).exists()
+        assert Worktree.objects.filter(pk=second.pk).exists(), "a ticket claimed mid-sweep must keep its row"
+        assert outcome.released_pks == frozenset({first.pk})
+
+    def test_two_undisturbed_rows_are_both_released(self) -> None:
+        first, _ = self._dead_row_with_gone_ref("gone-first")
+        second, _ = self._dead_row_with_gone_ref("gone-second")
+
+        outcome = release_dead_rows(self.workspace, dry_run=False)
+
+        assert outcome.released_pks == frozenset({first.pk, second.pk})
 
 
 class DispositionReportingTest(_DeadRowCase):

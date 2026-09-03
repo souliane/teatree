@@ -20,7 +20,7 @@ from typing import TypedDict
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.intake.landscape import LandscapeSurvey, survey_landscape, survey_merged_pr_issue_numbers
+from teatree.core.intake.landscape import LandscapeSurvey, survey_landscape, survey_merged_pr_issue_keys
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import RawAPIDict
 from teatree.utils import git
@@ -60,7 +60,7 @@ class OpenPrReport(TypedDict):
 
     url: str
     title: str
-    referenced_issues: list[int]
+    referenced_issues: list[str]
 
 
 class RecommendationReport(TypedDict):
@@ -221,13 +221,13 @@ def run_landscape(workspace: Path) -> LandscapeReport:
         author = ""
         issue_warnings.append(f"could not resolve current user: {exc}")
 
-    merged_issue_numbers, merged_warnings = survey_merged_pr_issue_numbers(host, author=author)
+    merged_issue_keys, merged_warnings = survey_merged_pr_issue_keys(host, author=author)
     survey = survey_landscape(
         host=host,
         author=author,
         worktree_paths=worktree_paths,
         open_issues=open_issues,
-        merged_pr_issue_numbers=merged_issue_numbers,
+        merged_pr_issue_keys=merged_issue_keys,
     )
     # Every warning from a CONFIGURED host is a forge read failure (the survey
     # primitives append only on a caught read error). Refuse to return a

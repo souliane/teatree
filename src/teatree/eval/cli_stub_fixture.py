@@ -49,7 +49,7 @@ case "$args" in
     *" notify post "*) echo "posted to channel" ;;
     *" directive capture "*) echo "captured directive #1 (state=captured)." ;;
     *" lifecycle record-e2e-run "*) echo "recorded e2e run (attestation stored)" ;;
-    *" e2e post-test-plan "*) echo "test plan posted to the ticket" ;;
+    *" e2e write-test-plan "*) echo "test plan written to the e2e repo" ;;
     *" skill-preamble "*)
         printf -- '--- SKILL: t3:rules ---\\nCross-cutting agent rules body.\\n'
         printf -- '--- SKILL: t3:e2e ---\\nEnd-to-end testing skill body.\\n' ;;

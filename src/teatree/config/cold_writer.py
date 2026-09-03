@@ -20,6 +20,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -109,9 +110,7 @@ def write_setting(
     except sqlite3.Error:
         return WriteResult.NO_DB_TIER
     try:
-        result = _upsert_classified(conn, scope, key, value)
-        if result is WriteResult.WROTE and key != GENERATION_KEY:
-            _bump_generation(conn)
+        result = _write_classified(conn, scope, key, value)
     finally:
         conn.close()
     if result is WriteResult.WROTE:
@@ -120,10 +119,11 @@ def write_setting(
 
 
 def _bump_generation(conn: sqlite3.Connection) -> None:
-    """Ratchet the projection generation on the SAME connection that just wrote.
+    """Ratchet the projection generation inside the caller's open transaction.
 
-    Same connection, so the counter can never disagree with the write it labels, and
-    no second handle is opened on a database whose whole point is one writer.
+    Same connection AND same transaction as the value write, so a generation the
+    projection is published under can never label a value that did not commit — nor
+    a committed value be published under a generation that did not move.
     """
     row = conn.execute(
         "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
@@ -133,7 +133,7 @@ def _bump_generation(conn: sqlite3.Connection) -> None:
         current = json.loads(row[0]) if row is not None else None
     except (TypeError, ValueError):
         current = None
-    _upsert_classified(conn, _GLOBAL_SCOPE, GENERATION_KEY, next_generation(current))
+    _upsert(conn, _GLOBAL_SCOPE, GENERATION_KEY, next_generation(current))
 
 
 def _publish_projection(db: Path, env: Mapping[str, str]) -> None:
@@ -151,10 +151,14 @@ def _publish_projection(db: Path, env: Mapping[str, str]) -> None:
         sys.stderr.write(f"WARNING: the host projection was not republished after a config write: {error}\n")
 
 
-def _upsert_classified(conn: sqlite3.Connection, scope: str, key: str, value: object) -> WriteResult:
-    """Probe the table, then UPSERT — classifying an absent DB tier apart from a locked write."""
-    payload = json.dumps(value)
-    now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
+def _write_classified(conn: sqlite3.Connection, scope: str, key: str, value: object) -> WriteResult:
+    """Probe the table, then commit the value AND its generation bump as ONE transaction.
+
+    Classifies an absent DB tier apart from a locked write. The two rows commit together
+    or not at all: a value that committed while its generation bump was lost would be
+    published under a generation the readers have already seen, so the projection carrying
+    it reads FRESH while serving the pre-write value.
+    """
     try:
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         table_present = _table_present(conn)
@@ -165,11 +169,20 @@ def _upsert_classified(conn: sqlite3.Connection, scope: str, key: str, value: ob
     if not table_present:
         return WriteResult.NO_DB_TIER  # a present-but-unmigrated DB -> caller writes TOML
     try:
-        conn.execute(_UPSERT, (scope, key, payload, now, now))
+        _upsert(conn, scope, key, value)
+        if key != GENERATION_KEY:
+            _bump_generation(conn)
         conn.commit()
     except sqlite3.Error:
-        # The table is present but the write failed -- a locked DB (SQLITE_BUSY after the
-        # busy-timeout). The DB row stays authoritative, so the caller must NOT write a dead,
-        # shadowed TOML row; it surfaces the failure via read-back-verify instead.
+        # The table is present but a write failed -- a locked DB (SQLITE_BUSY after the
+        # busy-timeout), or a refused generation bump. The DB row stays authoritative, so the
+        # caller must NOT write a dead, shadowed TOML row; it surfaces the failure instead.
+        with suppress(sqlite3.Error):
+            conn.rollback()
         return WriteResult.WRITE_FAILED
     return WriteResult.WROTE
+
+
+def _upsert(conn: sqlite3.Connection, scope: str, key: str, value: object) -> None:
+    now = datetime.now(tz=UTC).strftime(_DJANGO_SQLITE_DATETIME)
+    conn.execute(_UPSERT, (scope, key, json.dumps(value), now, now))

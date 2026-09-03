@@ -108,12 +108,13 @@ class PhaseCadence:
     ) -> "_Task | None":
         """Create a Task + Session row anchored at the per-overlay placeholder ticket.
 
-        Wrapped in ``transaction.atomic()`` so a concurrent scanner on a second
-        loop process can't double-queue: the caller's in-flight check and this
-        insert run under one DB transaction. A DB error is logged but never
-        raised — losing one tick's queue is acceptable; crashing the tick is not.
-        Returns the created ``Task`` (or ``None`` when a model is unavailable or
-        the write fails).
+        The in-flight check is re-run INSIDE the ``transaction.atomic()`` block
+        that writes, so a concurrent scanner on a second loop process can't
+        double-queue: the caller's own pre-check is a cheap early-out, never the
+        guard. A DB error is logged but never raised — losing one tick's queue is
+        acceptable; crashing the tick is not. Returns the created ``Task``, or
+        ``None`` when a model is unavailable, a task is already in flight, or
+        the write fails.
         """
         ticket_model = _ticket_model()
         task_model = _task_model()
@@ -122,6 +123,8 @@ class PhaseCadence:
             return None
         try:
             with transaction.atomic():
+                if self.in_flight_exists():
+                    return None
                 ticket, _created = ticket_model.objects.get_or_create(
                     issue_url=placeholder_issue_url,
                     defaults={"overlay": self.overlay_name, "role": "author"},

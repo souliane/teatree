@@ -12,10 +12,12 @@ import json
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.attempt_recorder import validate_result_keys
 from teatree.core.management.commands.tasks_session_view import render_tasks_table
 from teatree.core.modelkit.task_failure_taxonomy import (
     FailureKind,
@@ -28,8 +30,11 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     stall_kinds,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.overlay_loader import get_overlay
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.dash.selectors import build_kanban_columns
+from teatree.llm.anthropic_limits import LimitCause, classify_limit
+from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
 
 if TYPE_CHECKING:
     from teatree.core.management.commands.tasks_session_view import TaskRow
@@ -105,6 +110,56 @@ class TestClassifier(TestCase):
         assert kind == FailureKind.UNCLASSIFIED
         assert not is_environmental(kind)
 
+    def test_an_unconfigured_credential_is_named_and_is_not_environmental(self) -> None:
+        """The reason is taken from the real emitter, so a reword cannot silently un-name it.
+
+        Its EXHAUSTED sibling is environmental because a usage window resets on its own;
+        an unconfigured credential never does, so naming it environmental would present the
+        one failure that cannot self-heal as a dismissable dip and re-dispatch into it.
+        """
+        with pytest.raises(CredentialError) as exc:
+            AnthropicApiKeyCredential(sources=()).resolve()
+
+        kind = classify_failure(str(exc.value))
+
+        assert kind == FailureKind.CREDENTIAL_MISSING
+        assert not is_environmental(kind)
+        assert is_environmental(FailureKind.CREDENTIAL_EXHAUSTED)
+
+    def test_every_limit_cause_marker_resolves_to_its_remediation(self) -> None:
+        """A drained CREDIT is billing, a plan window is waiting — never one name for both."""
+        expected = {
+            LimitCause.API_CREDIT: FailureKind.CREDENTIAL_EXHAUSTED,
+            LimitCause.SUBSCRIPTION_SESSION: FailureKind.USAGE_LIMIT_PARKED,
+            LimitCause.SUBSCRIPTION_WEEKLY: FailureKind.USAGE_LIMIT_PARKED,
+            LimitCause.RATE_LIMIT: FailureKind.USAGE_LIMIT_PARKED,
+        }
+        for phrase, cause in (
+            ("credit balance too low", LimitCause.API_CREDIT),
+            ("session limit", LimitCause.SUBSCRIPTION_SESSION),
+            ("weekly limit", LimitCause.SUBSCRIPTION_WEEKLY),
+            ("rate limit", LimitCause.RATE_LIMIT),
+        ):
+            match = classify_limit(phrase)
+            assert match is not None, phrase
+            assert match.cause is cause, phrase
+            assert classify_failure(match.as_reason()) == expected[cause], phrase
+
+    def test_an_off_schema_result_envelope_is_named_not_unclassified(self) -> None:
+        kind = classify_failure(validate_result_keys({"cmd": "ls", "summary": "x"}))
+        assert kind == FailureKind.RESULT_SCHEMA_INVALID
+        assert not is_environmental(kind)
+
+    def test_an_unknown_overlay_outranks_the_traceback_that_carries_it(self) -> None:
+        """The lookup fails AS a traceback, and ``harness_crash`` would call a config defect environmental."""
+        with pytest.raises(ImproperlyConfigured) as exc:
+            get_overlay("no-such-overlay")
+
+        kind = classify_failure(f"Traceback (most recent call last):\n{exc.value}")
+
+        assert kind == FailureKind.OVERLAY_UNKNOWN
+        assert not is_environmental(kind)
+
     def test_no_reason_at_all_is_named_unrecorded(self) -> None:
         """The bug-detector kind: a failure that recorded nothing is itself nameable."""
         assert classify_failure("") == FailureKind.UNRECORDED
@@ -120,7 +175,10 @@ class TestClassifier(TestCase):
             "stuck_loop: runtime ceiling exceeded",
             "limit_parked: admission: all_accounts_exhausted",
             "all configured Anthropic oauth accounts are exhausted",
+            "no ANTHROPIC_API_KEY credential available and no OAuth `pass` path is configured.",
             "agent_harness_provider='x' is not valid for agent_harness='claude'",
+            "unknown overlay 'no-such': ticket 191 cannot be dispatched",
+            "Agent result contains unexpected keys: cmd",
             "Traceback (most recent call last):",
             "outage_death: connection refused",
             "result_error: no terminal ResultMessage",
@@ -129,6 +187,7 @@ class TestClassifier(TestCase):
             "no_result_envelope: agent produced no JSON result envelope",
             "missing required evidence for phase 'reviewing'",
             "review verdict recording refused: merge_safe needs a reviewed sha",
+            "plan_missing: refusing to dispatch t3:coder for ticket 7 (coding)",
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",
             "agent_abandoned: agent failed the task without giving a reason",

@@ -12,10 +12,13 @@ headers (a 429 still carries them), and the accounts rank on binding-then-weight
 window headroom, deterministic first on a tie. Runs in seconds; imports only the
 foundation-pure probe, so it needs no ``django.setup()``.
 
-THIS STEP OWNS THE CREDENTIAL DECISION. It always exports ``T3_AGENT_HARNESS_PROVIDER``
-and (on the OAuth path) ``CLAUDE_CODE_OAUTH_TOKEN`` into ``$GITHUB_ENV`` — the eval step
-reads both from there rather than pinning them in its own ``env:`` block, so this step's
-dynamic choice is authoritative.
+THIS STEP OWNS THE CREDENTIAL DECISION. Whenever it makes one it exports
+``T3_AGENT_HARNESS_PROVIDER`` and (on the OAuth path) ``CLAUDE_CODE_OAUTH_TOKEN`` into
+``$GITHUB_ENV`` — the eval step reads both from there rather than pinning them in its own
+``env:`` block, so this step's dynamic choice is authoritative. With nothing configured at
+all there is no decision to record: ``subscription_oauth`` is already the absent-setting
+default (:class:`~teatree.config.agent_enums.AgentHarnessProvider`), so the clean no-op
+below leaves the eval exactly where an unexported provider would.
 
 *   ``EVAL_CREDENTIAL`` is not ``subscription_oauth`` (e.g. an ``api_key`` run) → export
     the provider and stop; there is no OAuth account to select.

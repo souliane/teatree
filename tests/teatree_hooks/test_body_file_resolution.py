@@ -14,7 +14,7 @@ from teatree.hooks._body_file_resolution import (
     heredoc_files_map,
     unredirected_heredoc_bodies,
 )
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, extract_bash_payload
 from teatree.hooks._shell_lexer import tokenize
 
 
@@ -54,3 +54,34 @@ class TestStaleFileVsHeredocSuperset:
         payloads: list[str] = []
         _append_file_payload(str(missing), payloads, ctx, fail_closed=True, leader="gh")
         assert payloads == [FAIL_CLOSED_SENTINEL]
+
+
+class TestNonGitBodyFileBaseIsAnchoredOnTheHarnessCwd:
+    """A relative leading ``cd`` resolves against the HARNESS cwd, not the hook's.
+
+    ``cd <relative> && gh pr create --body-file <relpath>`` names its working dir
+    relative to the dir the AGENT ran in. The cold PreToolUse hook's own cwd has
+    usually reset elsewhere, so an unanchored ``Path("worktree")`` pointed at a
+    different tree entirely — the body read as missing (fail-closed on a clean
+    post) or, worse, read from a same-named file in the wrong repo.
+    """
+
+    def test_relative_cd_resolves_under_the_given_cwd(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "body.md").write_text("mentions acmecorp\n", encoding="utf-8")
+
+        command = "cd wt && gh pr create --body-file body.md"
+        payload = extract_bash_payload(command, fail_closed_body_file=True, cwd=tmp_path)
+
+        assert "acmecorp" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_absolute_cd_is_unaffected_by_the_cwd(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / "body.md").write_text("mentions acmecorp\n", encoding="utf-8")
+
+        command = f"cd {worktree} && gh pr create --body-file body.md"
+
+        assert "acmecorp" in extract_bash_payload(command, fail_closed_body_file=True, cwd=tmp_path / "elsewhere")

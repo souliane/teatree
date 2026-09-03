@@ -37,7 +37,7 @@ class Command(TyperCommand):
             OUTER_LOOP_LEASE_NAME,
             OUTER_LOOP_LEASE_SECONDS,
         )
-        from teatree.loops.outer_loop.tick import run_tick  # noqa: PLC0415 — cross-layer import cycle
+        from teatree.loops.outer_loop.tick import REFUSED_ACTION, run_tick  # noqa: PLC0415 — cross-layer import cycle
 
         now = timezone.now()
         row = Loop.objects.filter(name=MINI_LOOP.name).first()
@@ -59,7 +59,9 @@ class Command(TyperCommand):
         Loop.objects.mark_run(MINI_LOOP.name, now)
         detail = f" ({result.reason})" if result.reason else ""
         experiment = f" experiment={result.experiment_id}" if result.experiment_id else ""
-        self.stdout.write(f"OK    outer_loop tick — {result.action}{detail}{experiment}.")
+        # A guard-chain refusal mutates nothing; labelling it OK read as an advanced tick.
+        label = "REFUSE" if result.action == REFUSED_ACTION else "OK    "
+        self.stdout.write(f"{label} outer_loop tick — {result.action}{detail}{experiment}.")
 
     @command(name="status")
     def status(self) -> None:

@@ -10,22 +10,54 @@ The command makes the admin immediately usable from a cold checkout: it applies
 migrations, collects static into ``STATIC_ROOT`` (so WhiteNoise serves the admin
 and dashboard assets under gunicorn with DEBUG off), ensures a superuser exists
 (creating one non-interactively from ``T3_ADMIN_USER`` / ``T3_ADMIN_PASSWORD``
-when absent), opens the browser at ``/admin/``, then serves
-``teatree.wsgi:application`` under gunicorn (a production WSGI server, not
-Django's dev ``runserver``) in the foreground until interrupted. It is
-DEBUG-agnostic — nothing here reads or sets ``DEBUG``.
+when absent), opens the browser, then serves ``teatree.wsgi:application`` under
+gunicorn (a production WSGI server, not Django's dev ``runserver``) in the
+foreground until interrupted. It is DEBUG-agnostic — nothing here reads or sets
+``DEBUG``.
+
+``admin`` and ``dashboard`` are the same command against two entry paths —
+``/admin/`` and the dashboard board. On a host running the Docker stack, the URL
+opened is the :mod:`teatree.utils.loopback_forward` one: the admin gunicorn binds
+the CONTAINER's loopback, which a host browser cannot otherwise reach.
+
+RUN FROM THE CONTAINERIZED CLI (``deploy/t3``) THIS SERVES NOTHING. The stack's
+``teatree-admin`` is already serving, so a second gunicorn would bind a loopback
+no browser can reach — or collide outright with the first. The command instead
+publishes the forward, records the resulting HOST url for the wrapper to open,
+and exits; ``deploy/t3`` is the only layer that runs on the host, so it owns both
+the reachability probe and the browser.
 """
 
+import os
 import threading
 import webbrowser
 from dataclasses import dataclass
 
 import typer
 
+from teatree.paths import data_dir_root
 from teatree.utils.django_bootstrap import ensure_django
+from teatree.utils.loopback_forward import FORWARD_PORT, ensure_admin_forward
+from teatree.utils.ports import running_in_container
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8000
+#: The two landing routes, shared with ``t3 peer open`` so a peer's pages and this box's
+#: own are reached by one spelling.
+ADMIN_PATH = "/admin/"
+DASHBOARD_PATH = "/dash/board/"
+#: Where the containerized CLI leaves the resolved HOST url. Under ``data_dir_root()``,
+#: which is bind-mounted, so ``deploy/t3`` reads the same file on the host — the port the
+#: wrapper opens is therefore the one the CLI resolved, never a second hardcoded copy.
+BROWSE_URL_FILE = "admin-browse-url"
+#: The role whose whole job IS to serve; every other container venue is an operator CLI.
+_ADMIN_ROLE = "admin"
+# Which port the flag names depends on which venue answers it — gunicorn's bind when
+# this process serves, the published HOST port when the stack's admin already does.
+_PORT_HELP = (
+    f"Port for the admin: gunicorn's bind when serving (default {_DEFAULT_PORT}), "
+    f"else the published host port for the forward (default {FORWARD_PORT})."
+)
 _DEFAULT_ADMIN_USER = "admin"
 _GENERATED_PASSWORD_BYTES = 12
 _BROWSER_OPEN_DELAY_SECONDS = 1.5
@@ -49,31 +81,91 @@ class SuperuserResult:
 def admin(
     *,
     host: str = typer.Option(_DEFAULT_HOST, "--host", help="Host interface for the admin gunicorn server."),
-    port: int = typer.Option(_DEFAULT_PORT, "--port", help="Port for the admin gunicorn server."),
+    port: int | None = typer.Option(None, "--port", help=_PORT_HELP),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the browser at /admin/."),
 ) -> None:
     """Run the Django admin for the teatree project under a local gunicorn server."""
+    _serve(host=host, port=port, no_browser=no_browser, path=ADMIN_PATH)
+
+
+def dashboard(
+    *,
+    host: str = typer.Option(_DEFAULT_HOST, "--host", help="Host interface for the admin gunicorn server."),
+    port: int | None = typer.Option(None, "--port", help=_PORT_HELP),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the browser at the dashboard."),
+) -> None:
+    """Open the teatree dashboard board, served by the same local gunicorn as the admin."""
+    _serve(host=host, port=port, no_browser=no_browser, path=DASHBOARD_PATH)
+
+
+def serving_here() -> bool:
+    """Whether THIS process is the one that must run gunicorn.
+
+    False only for the containerized operator CLI, where the stack's ``teatree-admin``
+    already serves: binding a second gunicorn there reaches no browser at best and
+    collides with the first at worst.
+    """
+    return not running_in_container() or os.environ.get("TEATREE_ROLE") == _ADMIN_ROLE
+
+
+def _serve(*, host: str, port: int | None, no_browser: bool, path: str) -> None:
     ensure_django()
+
+    if not serving_here():
+        _publish_running_admin(port=port, path=path)
+        return
 
     _ensure_migrated()
     _collectstatic()
     superuser = _ensure_superuser()
-    admin_url = f"http://{host}:{port}/admin/"
+    bound_port = port if port is not None else _DEFAULT_PORT
+    forward = ensure_admin_forward()
+    browse_url = f"{forward.url}{path}" if forward.url else f"http://{host}:{bound_port}{path}"
 
-    typer.echo(f"teatree admin → {admin_url}")
+    typer.echo(f"teatree admin → {browse_url}")
+    if forward.error:
+        typer.echo(f"no loopback forward: {forward.error}")
     if superuser.created_password is not None:
         typer.echo(f"created superuser '{superuser.username}' with password '{superuser.created_password}'")
         typer.echo("set T3_ADMIN_USER / T3_ADMIN_PASSWORD to control these credentials")
     else:
         typer.echo(f"using existing superuser '{superuser.username}'")
 
-    browser_timer = None if no_browser else _open_browser_when_ready(admin_url)
+    browser_timer = None if no_browser else _open_browser_when_ready(browse_url)
 
     try:
-        _run_server(host, port)
+        _run_server(host, bound_port)
     finally:
+        forward.close()
         if browser_timer is not None:
             browser_timer.join()
+
+
+def _publish_running_admin(*, port: int | None, path: str) -> None:
+    """Make the already-serving stack admin reachable from the host, and say where.
+
+    ``--port`` here selects the HOST port the forward is published on, so the flag and
+    the published mapping are one value. Unset it defaults to the documented forward
+    port rather than gunicorn's, which is the container's and not ours to choose.
+    """
+    forward = ensure_admin_forward(port=port if port is not None else FORWARD_PORT)
+    if not forward.url:
+        _record_browse_url("")
+        typer.echo(f"cannot reach the admin from the host: {forward.error}", err=True)
+        raise typer.Exit(code=1)
+    browse_url = f"{forward.url}{path}"
+    _record_browse_url(browse_url)
+    typer.echo(f"teatree admin → {browse_url}")
+
+
+def _record_browse_url(url: str) -> None:
+    """Leave the resolved url where ``deploy/t3`` reads it on the host; never fatal."""
+    target = data_dir_root() / BROWSE_URL_FILE
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{url}\n", encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"could not record the browse url at {target}: {exc}", err=True)
 
 
 def _ensure_migrated() -> None:

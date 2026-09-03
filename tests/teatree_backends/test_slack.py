@@ -367,14 +367,35 @@ def test_read_recent_review_matches_finds_and_paginates(monkeypatch: pytest.Monk
     assert read.matches[0].author == "U9"
 
 
-def test_read_recent_review_matches_stops_when_no_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """has_more but no cursor terminates the loop with a clean ok read."""
+def test_read_recent_review_matches_not_ok_when_history_pending_without_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """has_more with no cursor leaves history unread — the dedup must fail safe."""
     _patch(monkeypatch, FakeSlackHttp(pages=[{"ok": True, "messages": [], "has_more": True, "response_metadata": {}}]))
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
     )
-    assert read.ok is True
+    assert read.ok is False
+
+
+def test_read_recent_review_matches_not_ok_when_the_page_cap_truncates_the_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cap-truncated walk never saw the whole window, so it is not a clean empty read."""
+    page = {"ok": True, "messages": [], "has_more": True, "response_metadata": {"next_cursor": "c2"}}
+    fake = FakeSlackHttp(pages=[page, page])
+    _patch(monkeypatch, fake)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(
+            token="xoxb",
+            channel_id="C1",
+            channel_name="r",
+            pr_urls=["https://x/pull/1"],
+            max_pages=1,
+        )
+    )
+    assert read.ok is False
+    assert fake._page_idx == 1
 
 
 def test_iter_review_matches_uses_bot_id_author(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -93,8 +93,17 @@ class VisualQAReport:
     base_url: str = ""
 
     @property
+    def unchecked(self) -> list[str]:
+        """Targets the total-deadline cut off before the browser reached them.
+
+        A page nobody loaded is not a page with no findings, so the gate must not read
+        a truncated run as a clean one.
+        """
+        return [] if self.skipped_reason else self.targets[len(self.pages) :]
+
+    @property
     def has_errors(self) -> bool:
-        return any(page.errors for page in self.pages)
+        return bool(self.unchecked) or any(page.errors for page in self.pages)
 
     @property
     def total_errors(self) -> int:
@@ -312,10 +321,12 @@ def format_report(report: VisualQAReport) -> str:
         lines.extend((f"_base url: {base}_", ""))
     lines.extend(
         (
-            f"Checked {len(report.pages)} page(s) — {report.total_errors} finding(s).",
+            f"Checked {len(report.pages)} of {len(report.targets)} page(s) — {report.total_errors} finding(s).",
             "",
         ),
     )
+    if report.unchecked:
+        lines.extend((f"**Not checked** — the {TOTAL_TIMEOUT_S}s budget ran out: {', '.join(report.unchecked)}", ""))
     for page in report.pages:
         path = page.url.removeprefix(base) or "/" if base else page.url
         marker = ":x:" if page.errors else ":white_check_mark:"

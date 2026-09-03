@@ -26,6 +26,7 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 
 from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.work_tree import clean_env
 
 # git's canonical empty tree. The base for a commit with no parent, where
 # ``HEAD`` does not resolve and every staged line is by definition authored here.
@@ -88,8 +89,16 @@ def staged_diff(base: DiffBase, *args: str) -> str | None:
 
     *args* are appended verbatim, so a caller keeps its own ``--diff-filter`` /
     ``-U0`` / pathspec choices; only the base is decided here.
+
+    :func:`~teatree.utils.work_tree.clean_env` drops ``GIT_DIR``/``GIT_WORK_TREE``
+    so a PATHSPEC in *args* is resolved against the real work tree. Git exports
+    ``GIT_DIR`` to a hook fired from a linked worktree, and with it set (and no
+    work tree named) it treats the CURRENT DIRECTORY as the top — so a caller
+    running from a vendored project handed ``-- pyproject.toml`` matched the
+    FORK's file, found nothing, and the gate passed on a diff it never read.
+    ``GIT_INDEX_FILE`` survives the strip: it names the index being committed.
     """
-    result = run_allowed_to_fail(["git", "diff", "--cached", base.ref, *args], expected_codes=None)
+    result = run_allowed_to_fail(["git", "diff", "--cached", base.ref, *args], expected_codes=None, env=clean_env())
     return result.stdout if result.returncode == 0 else None
 
 

@@ -17,6 +17,7 @@ from teatree.utils.coverage_floor import (
     ModuleCoverage,
     load_overall_floor,
     load_per_module_floors,
+    load_report_precision,
     measure_coverage,
 )
 
@@ -202,3 +203,29 @@ class TestModuleCoverageJson:
         assert data["overall_percent"] == pytest.approx(95.0)
         assert data["overall_floor"] == 93
         assert data["passes"] is True
+
+
+class TestReportPrecision:
+    """The floor verdict has to round the way coverage.py's own ``fail_under`` does."""
+
+    def test_precision_is_read_from_pyproject(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            "[tool.coverage.report]\nfail_under = 93\nprecision = 1\n",
+            encoding="utf-8",
+        )
+        assert load_report_precision(pyproject) == 1
+
+    def test_precision_defaults_to_zero_when_absent(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[tool.coverage.report]\nfail_under = 93\n", encoding="utf-8")
+        assert load_report_precision(pyproject) == 0
+
+    def test_a_total_coverage_py_rejects_does_not_pass(self) -> None:
+        # coverage.py compares round(92.6, 1) < 93 and FAILS the run; rounding to whole
+        # percent here would report a PASS on a total the enforcing lane rejects.
+        report = CoverageReport(overall_percent=92.6, overall_floor=93, precision=1)
+        assert report.passes() is False
+
+    def test_the_same_total_passes_at_whole_percent_precision(self) -> None:
+        assert CoverageReport(overall_percent=92.6, overall_floor=93, precision=0).passes() is True

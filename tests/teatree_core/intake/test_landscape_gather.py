@@ -126,36 +126,36 @@ class TestRunLandscape(TestCase):
 
     def test_composes_survey_with_prs_worktrees_and_recommendations(self) -> None:
         host = _FakeHost(
-            my_prs=[{"url": "https://forge/pr/3", "title": "WIP (#50)"}],
+            my_prs=[{"url": "https://github.com/acme/app/pull/3", "title": "WIP (#50)"}],
             issues=[
-                {"url": "https://forge/issues/50", "title": "in flight"},
-                {"url": "https://forge/issues/99", "title": "genuine"},
+                {"url": "https://github.com/acme/app/issues/50", "title": "in flight"},
+                {"url": "https://github.com/acme/app/issues/99", "title": "genuine"},
             ],
         )
         with patch(_FACTORY, return_value=host), patch(_OVERLAY, return_value=_FakeOverlay()):
             report = run_landscape(self.workspace)
 
         assert any(wt["in_flight"] for wt in report["worktrees"])
-        assert report["open_prs"][0]["url"] == "https://forge/pr/3"
+        assert report["open_prs"][0]["url"] == "https://github.com/acme/app/pull/3"
         actions = {r["issue_url"]: r["action"] for r in report["recommendations"]}
-        assert actions["https://forge/issues/50"] == "merge"
-        assert actions["https://forge/issues/99"] == "keep"
+        assert actions["https://github.com/acme/app/issues/50"] == "merge"
+        assert actions["https://github.com/acme/app/issues/99"] == "keep"
 
     def test_merged_pr_marks_referenced_issue_done_close(self) -> None:
         # The §1b resolved-but-open path: a MERGED PR names an open issue, so the
         # survey recommends CLOSE/done. Reachable ONLY because run_landscape wires
-        # survey_merged_pr_issue_numbers into the survey — revert that wiring and
+        # survey_merged_pr_issue_keys into the survey — revert that wiring and
         # this drops back to KEEP (the M1 anti-vacuity proof).
         host = _FakeHost(
             my_prs=[],
-            merged_prs=[{"url": "https://forge/pr/7", "title": "ship it (#42)"}],
-            issues=[{"url": "https://forge/issues/42", "title": "already shipped"}],
+            merged_prs=[{"url": "https://github.com/acme/app/pull/7", "title": "ship it (#42)"}],
+            issues=[{"url": "https://github.com/acme/app/issues/42", "title": "already shipped"}],
         )
         with patch(_FACTORY, return_value=host), patch(_OVERLAY, return_value=_FakeOverlay()):
             report = run_landscape(self.workspace)
 
         verdict = {r["issue_url"]: (r["disposition"], r["action"]) for r in report["recommendations"]}
-        assert verdict["https://forge/issues/42"] == ("done", "close")
+        assert verdict["https://github.com/acme/app/issues/42"] == ("done", "close")
 
     def test_missing_code_host_degrades_to_local_only_with_warning(self) -> None:
         with patch(_FACTORY, return_value=None):

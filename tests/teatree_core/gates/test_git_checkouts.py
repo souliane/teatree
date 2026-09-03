@@ -7,7 +7,8 @@ clone is not the one teatree is installed from.
 
 from pathlib import Path
 
-from teatree.core.gates.git_checkouts import _isolated_worktrees, discover_checkouts, owning_clone
+import teatree
+from teatree.core.gates.git_checkouts import _installed_clone, _isolated_worktrees, discover_checkouts, owning_clone
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -27,6 +28,54 @@ class TestOwningClone:
 
     def test_non_repo_resolves_to_none(self, tmp_path: Path) -> None:
         assert owning_clone(tmp_path) is None
+
+
+class TestInstalledClone:
+    """The clone is found by walking to the git root, not at a fixed depth.
+
+    A repo that VENDORS this package holds it deeper than ``src/teatree``, so a
+    fixed-depth probe reported NO installed clone there — leaving the checkout
+    every commit is made from outside hook installation and repair entirely.
+    """
+
+    def _fake_package(self, root: Path, *, relative: str) -> Path:
+        package = root / relative / "src" / "teatree"
+        package.mkdir(parents=True)
+        init = package / "__init__.py"
+        init.touch()
+        return init
+
+    def test_finds_the_root_of_a_repo_that_vendors_the_package(self, tmp_path: Path, monkeypatch) -> None:
+        host = make_git_repo(tmp_path / "host-repo")
+        init = self._fake_package(host, relative="vendor/teatree")
+        monkeypatch.setattr(teatree, "__file__", str(init))
+
+        assert _installed_clone() == host
+
+    def test_finds_the_root_of_a_plain_checkout(self, tmp_path: Path, monkeypatch) -> None:
+        clone = make_git_repo(tmp_path / "clone")
+        init = self._fake_package(clone, relative=".")
+        monkeypatch.setattr(teatree, "__file__", str(init))
+
+        assert _installed_clone() == clone
+
+    def test_a_packaged_install_claims_no_clone(self, tmp_path: Path, monkeypatch) -> None:
+        # A non-editable install lives under site-packages inside a venv that is
+        # itself inside some project's clone — that project is NOT teatree's.
+        project = make_git_repo(tmp_path / "unrelated-project")
+        package = project / ".venv" / "lib" / "python3.13" / "site-packages" / "teatree"
+        package.mkdir(parents=True)
+        init = package / "__init__.py"
+        init.touch()
+        monkeypatch.setattr(teatree, "__file__", str(init))
+
+        assert _installed_clone() is None
+
+    def test_no_git_root_anywhere_claims_no_clone(self, tmp_path: Path, monkeypatch) -> None:
+        init = self._fake_package(tmp_path, relative="loose")
+        monkeypatch.setattr(teatree, "__file__", str(init))
+
+        assert _installed_clone() is None
 
 
 class TestIsolatedWorktrees:

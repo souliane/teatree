@@ -1,5 +1,7 @@
 """Tests for teatree.utils.bad_artifacts — bad artifact cache."""
 
+import contextlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,30 @@ class TestListAndClear:
 
     def test_clear_when_no_file(self) -> None:
         mod.clear_all()  # no error
+
+
+class TestConcurrentMarks:
+    def test_parallel_marks_all_survive(self) -> None:
+        # Two importers marking different dumps at once: an unlocked read-modify-write
+        # lets the later writer publish a list read before the earlier one landed.
+        paths = [f"/tmp/dump-{n}.pgsql" for n in range(24)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(mod.mark_bad, paths))
+        assert sorted(mod.list_bad()) == sorted(paths)
+
+    def test_an_interrupted_publish_leaves_the_previous_ledger_readable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A truncating in-place write that dies mid-way loses every earlier mark.
+        mod.mark_bad("/tmp/first.pgsql")
+
+        def truncate_then_die(target: Path, *_args: object, **_kwargs: object) -> int:
+            target.write_bytes(b"")
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "write_text", truncate_then_die)
+        with contextlib.suppress(OSError):
+            mod.mark_bad("/tmp/second.pgsql")
+        assert "/tmp/first.pgsql" in mod.list_bad()
 
 
 class TestCorruptCache:

@@ -141,6 +141,36 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_verbatim_identical_landing_unverified_is_escalated_not_reopened(self) -> None:
+        # This caller passes no ``last_two_deterministic_kinds``, so the fingerprint check
+        # is its ONLY stall check. Withholding every operator-ENVIRONMENTAL kind from it
+        # would make the stall structurally unreachable here — and a coder that yields
+        # without a commit twice in a row is a defect recurring, not an outage repeated.
+        task = _failed_task()
+        for _ in range(2):
+            _add_failed_attempt(task, error="landing_unverified: coder yielded with no commit")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_verbatim_identical_outage_is_reopened_not_escalated(self) -> None:
+        # The narrowing's other side: an outage says nothing about the work however often
+        # its text repeats, so it stays retryable to the iteration cap.
+        task = _failed_task()
+        for _ in range(2):
+            _add_failed_attempt(task, error="outage_death: unable to connect to api")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
     def test_budget_exhausted_is_escalated_not_reopened(self) -> None:
         cap = max_phase_iterations()
         task = _failed_task()

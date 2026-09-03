@@ -29,6 +29,7 @@ inline tag in its detail so the reader can tell provenance. The global
 once per overlay — so a pending question never appears more than once.
 """
 
+import operator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TypedDict
@@ -36,6 +37,7 @@ from typing import TypedDict
 from teatree.core._checking_gather import (
     _MergedScope,
     deferred_questions,
+    merged_entries_from_qs,
     merged_group_from_qs,
     motion_for_overlay,
     ticket_url,
@@ -266,8 +268,8 @@ def gather_all_overlays_report(
     Overlay-scoped items (merged, in-flight, failed attempts) have their
     detail text suffixed with ``[overlay]`` so the reader sees provenance.
     """
-    merged_items, in_flight_items, failed_items, earliest_since = _accumulate_overlays(
-        overlay_windows=overlay_windows, overlay_configs=overlay_configs, cap=cap
+    merged_entries, in_flight_items, failed_items, earliest_since = _accumulate_overlays(
+        overlay_windows=overlay_windows, overlay_configs=overlay_configs
     )
     in_flight_items.sort(
         key=lambda item: int(item.label.lstrip("#")) if item.label.lstrip("#").isdigit() else 0,
@@ -280,7 +282,11 @@ def gather_all_overlays_report(
     return AllOverlaysReport(
         all_overlays=list(overlay_windows),
         earliest_since=effective_since,
-        merged=CheckGroup(title="Merged", items=merged_items[:cap], total=len(merged_items)),
+        merged=CheckGroup(
+            title="Merged",
+            items=[item for _, item in merged_entries[:cap]],
+            total=len(merged_entries),
+        ),
         in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
         needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
     )
@@ -290,9 +296,8 @@ def _accumulate_overlays(
     *,
     overlay_windows: dict[str, tuple[datetime, datetime]],
     overlay_configs: dict[str, tuple[str, list[str]]],
-    cap: int,
-) -> tuple[list[CheckItem], list[CheckItem], list[CheckItem], datetime | None]:
-    merged_items: list[CheckItem] = []
+) -> tuple[list[tuple[datetime, CheckItem]], list[CheckItem], list[CheckItem], datetime | None]:
+    merged_entries: list[tuple[datetime, CheckItem]] = []
     in_flight_items: list[CheckItem] = []
     failed_items: list[CheckItem] = []
     seen_in_flight: set[int] = set()
@@ -305,8 +310,9 @@ def _accumulate_overlays(
         code_host, overlay_repos = overlay_configs.get(overlay_name, ("", []))
         scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos)
         overlay_tag = f"[{overlay_name}]"
-        items, _ = merged_group_from_qs(since=window[0], now=window[1], scope=scope, cap=cap, overlay_tag=overlay_tag)
-        merged_items.extend(items)
+        merged_entries.extend(
+            merged_entries_from_qs(since=window[0], now=window[1], scope=scope, overlay_tag=overlay_tag)
+        )
         new_in_flight, new_failed = motion_for_overlay(
             window=window,
             overlay_name=overlay_name,
@@ -317,7 +323,8 @@ def _accumulate_overlays(
         in_flight_items.extend(new_in_flight)
         failed_items.extend(new_failed)
 
-    return merged_items, in_flight_items, failed_items, earliest_since
+    merged_entries.sort(key=operator.itemgetter(0), reverse=True)
+    return merged_entries, in_flight_items, failed_items, earliest_since
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -395,7 +402,7 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
 
     failed = (
         TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
-        .filter(exit_code__gt=0)
+        .filter(outcome__in=TaskAttempt.FAILED_OUTCOMES)
         .select_related("task__ticket")
         .order_by("-ended_at")
     )

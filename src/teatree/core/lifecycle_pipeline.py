@@ -49,6 +49,14 @@ _STATE_ORDER: dict[str, int] = {
 _ABSENT_ORDER = -1  # the ticket does not exist yet (intake has not run)
 _STARTED_ORDER = _STATE_ORDER[Ticket.State.STARTED]
 
+#: The two steps that share the STARTED target, so neither is scored off state alone.
+#: An intake ticket carries no repos, so ``execute_provision`` returns "no repos on
+#: ticket" and leaves it STARTED with nothing provisioned — a state ``order`` cannot
+#: tell from a finished intake. Scoring intake DONE there skipped ``workspace ticket
+#: <ref>``, the only automated step that populates repos and the branch, and with it
+#: the operator's whole repair path (souliane/teatree#4578).
+_SHARED_STARTED_TARGET_STEPS = frozenset({"intake", "provision"})
+
 
 class StepKind(enum.Enum):
     AUTO = "auto"  # a deterministic chokepoint ``do`` invokes itself
@@ -107,6 +115,18 @@ class TicketSnapshot:
             return _ABSENT_ORDER
         return _STATE_ORDER.get(self.state, _ABSENT_ORDER)
 
+    @property
+    def off_path(self) -> bool:
+        """An EXISTING ticket whose state is not on the golden path.
+
+        IGNORED plus every non-golden-path terminal a non-coder role reaches
+        (``REVIEW_POSTED``). They must be reported as off-path, never scored
+        through :attr:`order`: an unranked state falls through to
+        ``_ABSENT_ORDER``, so a finished reviewer ticket read as "intake has not
+        run yet" and the plan named intake as its current step.
+        """
+        return self.exists and self.state is not None and self.state not in _STATE_ORDER
+
 
 @dataclasses.dataclass(frozen=True)
 class StepReport:
@@ -123,16 +143,14 @@ class DoReport:
     ticket_id: int | None
     steps: list[StepReport]
     stopped_at: str | None  # the step where the walk stopped, None when it completed
-    stopped_reason: str  # completed | pending | blocked | ignored | runnable (dry-run)
+    stopped_reason: str  # completed | pending | blocked | ignored | off_path | runnable (dry-run)
     plan_only: bool
 
 
 def _step_done(step: LifecycleStep, snapshot: TicketSnapshot) -> bool:
     """Whether *step*'s target has already been reached (so ``do`` skips it)."""
     order = snapshot.order
-    if step.name == "provision":
-        # intake and provision share the STARTED target; provision is done only
-        # once worktrees are actually provisioned (or the ticket is past STARTED).
+    if step.name in _SHARED_STARTED_TARGET_STEPS:
         return order > _STARTED_ORDER or (order == _STARTED_ORDER and snapshot.provisioned)
     return order >= step.target_order
 
@@ -167,7 +185,14 @@ def _plan_stop(reports: list[StepReport]) -> tuple[str | None, str]:
     return None, "completed"
 
 
-def _ignored_report(ref: str, snapshot: TicketSnapshot, ticket_id: int | None, *, plan_only: bool) -> DoReport:
+def _off_path_report(
+    ref: str,
+    snapshot: TicketSnapshot,
+    ticket_id: int | None,
+    *,
+    reason: str,
+    plan_only: bool,
+) -> DoReport:
     return DoReport(
         ticket_ref=ref,
         initial_state=snapshot.state,
@@ -175,7 +200,7 @@ def _ignored_report(ref: str, snapshot: TicketSnapshot, ticket_id: int | None, *
         ticket_id=ticket_id,
         steps=[StepReport(step, StepStatus.WAITING) for step in PIPELINE],
         stopped_at=None,
-        stopped_reason="ignored",
+        stopped_reason=reason,
         plan_only=plan_only,
     )
 
@@ -239,7 +264,9 @@ def drive(ref: str, seams: DriveSeams, *, plan_only: bool) -> DoReport:
     initial = seams.snapshot_provider()
     ticket_id = seams.ticket_id_provider()
     if initial.ignored:
-        return _ignored_report(ref, initial, ticket_id, plan_only=plan_only)
+        return _off_path_report(ref, initial, ticket_id, reason="ignored", plan_only=plan_only)
+    if initial.off_path:
+        return _off_path_report(ref, initial, ticket_id, reason="off_path", plan_only=plan_only)
     if plan_only:
         reports = list(starmap(StepReport, resolve_plan(initial)))
         stopped_at, reason = _plan_stop(reports)

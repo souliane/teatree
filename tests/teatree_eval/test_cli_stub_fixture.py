@@ -55,7 +55,7 @@ class TestStubExecutables:
             (["t3", "teatree", "notify", "send", "hi https://x/1", "--idempotency-key", "k"], "DM queued"),
             (["t3", "default", "notify", "dm", "hi"], "DM queued"),
             (["t3", "teatree", "lifecycle", "record-e2e-run", "42", "--posted-url", "https://x/1"], "recorded e2e run"),
-            (["t3", "teatree", "e2e", "post-test-plan", "--manifest", "m.json"], "test plan posted"),
+            (["t3", "teatree", "e2e", "write-test-plan", "--manifest", "m.json"], "test plan written"),
             (["t3", "teatree", "review", "record", "--verdict", "merge_safe"], "recorded verdict"),
             (["t3", "teatree", "review-request", "check", "512"], "review-requestable"),
             (["t3", "slack", "react", "C1", "1.5", "eyes"], "reaction added"),

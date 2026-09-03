@@ -1,6 +1,6 @@
 """Resolve the ``review post-comment`` body from its three input sources (#32).
 
-``t3 <overlay> review post-comment REPO MR NOTE`` historically took the comment
+``t3 review post-comment REPO MR NOTE`` historically took the comment
 body as the positional ``NOTE`` only. A large MR-thread evidence body is awkward
 and error-prone to pass as a single shell-quoted argument, so #32 adds the two
 flag forms the sibling forge comment commands already use:

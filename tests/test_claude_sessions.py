@@ -83,6 +83,27 @@ class TestSessionEndStatus:
 # ── _build_session_index ─────────────────────────────────────────────
 
 
+class TestSessionEndStatusReadsOnlyTheTail:
+    """A transcript grows to hundreds of MB; the last record must not cost a full load."""
+
+    def test_no_whole_file_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        conv = tmp_path / "tail.jsonl"
+        conv.write_text(_jsonl({"type": "user"}, {"type": "last-prompt", "sessionId": "tail"}))
+
+        def refuse(*_args: object, **_kwargs: object) -> bytes:
+            msg = "unbounded whole-file read"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(Path, "read_bytes", refuse)
+        monkeypatch.setattr(Path, "read_text", refuse)
+        assert _session_end_status(conv) == "finished"
+
+    def test_a_final_record_larger_than_the_tail_window_still_parses(self, tmp_path: Path) -> None:
+        conv = tmp_path / "wide.jsonl"
+        conv.write_text(_jsonl({"type": "user"}, {"type": "last-prompt", "lastPrompt": "x" * 200_000}))
+        assert _session_end_status(conv) == "finished"
+
+
 class TestBuildSessionIndex:
     def test_reads_history_entries(self, tmp_path: Path) -> None:
         history = tmp_path / "history.jsonl"

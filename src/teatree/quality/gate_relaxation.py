@@ -141,7 +141,7 @@ def parse_diff(diff: str) -> list[_FileDiff]:
         if _DIFF_OLD_FILE_RE.match(raw) or raw.startswith(("diff ", "index ")):
             continue
         if raw.startswith("@@"):
-            in_omit = False  # a hunk gap — the enclosing array is unknown again
+            in_omit = _advance_omit_list(_hunk_heading(raw), in_omit=False)
             continue
         if current is None:
             continue
@@ -165,6 +165,16 @@ def parse_diff(diff: str) -> list[_FileDiff]:
 # its ENCLOSING array rather than in isolation.
 _ASSIGN_RE: Final[re.Pattern[str]] = re.compile(r"""^(?P<key>[A-Za-z0-9_.\-"']+?)\s*=\s*(?P<val>.*)$""")
 _SECTION_RE: Final[re.Pattern[str]] = re.compile(r"^\[.*\]$")
+
+
+def _hunk_heading(raw: str) -> str:
+    """The enclosing declaration git appends after a hunk's ``@@ … @@``.
+
+    A hunk gap loses the array the cursor was inside, and an entry appended to a long
+    ``omit`` list sits far below its opener — but git's own hunk heading names that
+    opener, so the enclosing array is recoverable instead of assumed absent.
+    """
+    return raw.partition("@@")[2].partition("@@")[2].strip()
 
 
 def _advance_omit_list(line: str, *, in_omit: bool) -> bool:

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import MergeAudit, MergeClear, PullRequest
@@ -109,6 +110,19 @@ def _advance_ticket(clear: MergeClear, ticket: "Ticket") -> tuple[str, str]:
     return ticket.state, "linked and advanced"
 
 
+def _repair(clear: MergeClear, ticket: "Ticket") -> tuple[str, str]:
+    """Link, settle the PR row and advance the ticket as ONE unit; return ``_advance_ticket``'s pair.
+
+    Atomic because the walk selects on ``ticket__isnull=True``: a repair that
+    committed only the link would never be re-selected, so the remaining steps
+    would be stranded permanently rather than retried on the next run.
+    """
+    with transaction.atomic():
+        clear.adopt_owning_ticket()
+        PullRequest.objects.record_forge_merge(slug=clear.slug, pr_id=clear.pr_id)
+        return _advance_ticket(clear, ticket)
+
+
 def backfill_clear_tickets(*, dry_run: bool = False) -> ClearBackfillReport:
     rows: list[ClearBackfillRow] = []
     for clear in MergeClear.objects.filter(ticket__isnull=True).order_by("pk"):
@@ -124,9 +138,7 @@ def backfill_clear_tickets(*, dry_run: bool = False) -> ClearBackfillReport:
         if dry_run:
             rows.append(_row(clear, BackfillOutcome.LINKED, "resolved via the PR", ticket_id=int(ticket.pk)))
             continue
-        clear.adopt_owning_ticket()
-        PullRequest.objects.record_forge_merge(slug=clear.slug, pr_id=clear.pr_id)
-        landed, detail = _advance_ticket(clear, ticket)
+        landed, detail = _repair(clear, ticket)
         rows.append(
             _row(clear, BackfillOutcome.LINKED, detail, ticket_id=int(ticket.pk), advanced_to=landed),
         )

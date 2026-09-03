@@ -294,7 +294,12 @@ class TestRedCardZoneRevived(TestCase):
 
 
 class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
-    """#10: the auto-start orchestrator stamps the auto_implement marker before coding."""
+    """#10: the auto-start orchestrator stamps the auto_implement marker before scheduling.
+
+    Kept after #4578 moved the scheduled phase to ``planning``: ``code_direct`` is
+    conditioned on the marker and is still the only edge that can advance a coding
+    completion landing before the ladder reached PLANNED.
+    """
 
     def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
         return ScanSignal(
@@ -310,7 +315,7 @@ class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
 
         assert len(created) == 1
         task = created[0]
-        assert task.phase == "coding"
+        assert task.phase == "planning"
         assert task.ticket.role == Ticket.Role.AUTHOR
         task.ticket.refresh_from_db()
         assert is_auto_implement(task.ticket) is True, "the orchestrator must mark the direct-coding path"

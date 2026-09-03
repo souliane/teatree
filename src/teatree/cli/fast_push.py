@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.core.push.fast_push import FastPusher, FastPushOutcome
+from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP, FastPusher, FastPushOutcome
 
 
 def fast_push(
@@ -44,3 +44,5 @@ def _echo_outcome(outcome: FastPushOutcome) -> None:
         typer.echo(f"  PR {outcome.pr_action}: {outcome.pr_url}")
     elif outcome.pr_action == "skipped":
         typer.echo("  PR skipped: no gh/glab forge detected for the origin remote")
+    elif outcome.pr_action == EMPTY_DELTA_PR_SKIP:
+        typer.echo(f"  PR skipped: {outcome.pr_skip_reason}")

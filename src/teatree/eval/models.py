@@ -91,6 +91,13 @@ class Matcher:
     loads" — where a plain order-agnostic negative wrongly reds the correct
     load-skill-THEN-read trajectory. Empty guard fields (the default) leave the
     negative order-agnostic, so every existing matcher is byte-identical.
+
+    It may also carry an optional EXEMPTION (the ``unless_*`` fields, parsed from
+    the YAML ``unless`` sibling key): a predicate on ANOTHER argument of the SAME
+    call, whose satisfaction excuses it. This expresses "X is forbidden unless the
+    same call also does Y" — e.g. a sleep-loop waiter is forbidden in the
+    foreground but fine with ``run_in_background: true`` — where a plain negative
+    contradicts the scenario's own positive matcher.
     """
 
     kind: Literal["positive", "negative"]
@@ -102,10 +109,17 @@ class Matcher:
     guard_arg_path: str = ""
     guard_operator: str = ""
     guard_value: str = ""
+    unless_arg_path: str = ""
+    unless_operator: str = ""
+    unless_value: str = ""
 
     @property
     def has_order_guard(self) -> bool:
         return bool(self.guard_tool)
+
+    @property
+    def has_exemption(self) -> bool:
+        return bool(self.unless_arg_path)
 
 
 @dataclasses.dataclass(frozen=True)

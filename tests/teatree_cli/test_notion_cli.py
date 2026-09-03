@@ -183,6 +183,59 @@ class TestAppend:
         assert result.exit_code == 9
         assert "treat the write as failed" in result.output
 
+    def test_a_raw_blocks_append_that_does_not_land_is_not_reported_as_verified(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        """``--blocks-file`` carries no Markdown, so there is no text probe to look for.
+
+        The re-fetch check was skipped entirely and the command still printed
+        "verified by re-fetch" — a write that never landed reported as verified.
+        """
+        notion.suppress_appends = True
+        blocks_file = tmp_path / "blocks.json"
+        blocks_file.write_text(
+            json.dumps([{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}]),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(notion_app, ["append", notion.page_id, "--blocks-file", str(blocks_file)])
+
+        assert result.exit_code == 9, result.output
+        assert "treat the write as failed" in result.output
+
+    def test_a_markdown_append_too_short_to_probe_is_still_verified(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.suppress_appends = True
+        body_file = tmp_path / "body.md"
+        body_file.write_text("ok\n", encoding="utf-8")
+
+        result = runner.invoke(notion_app, ["append", notion.page_id, "--body-file", str(body_file)])
+
+        assert result.exit_code == 9, result.output
+
+    def test_a_raw_blocks_append_that_lands_reports_success(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        blocks_file = tmp_path / "blocks.json"
+        blocks_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": "landed"}}]},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(notion_app, ["append", notion.page_id, "--blocks-file", str(blocks_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "verified by re-fetch" in result.output
+
 
 class TestCommentPost:
     def test_posting_lands_the_comment_and_reports_its_discussion(
@@ -548,3 +601,16 @@ class TestDoctor:
 
         assert result.exit_code == 0, result.output
         assert "page:  OK" in result.output
+
+    def test_a_capability_denial_keeps_its_own_code_on_the_page_line(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        # The page/live stages are shared with `t3 notion setup` through `page_verdict`;
+        # the exit codes and the line prefixes are the CLI contract that sharing must not shift.
+        notion.fail_with = (403, "restricted_resource")
+
+        result = runner.invoke(notion_app, ["doctor", notion.page_id])
+
+        assert result.exit_code == 5, result.output
+        assert "token: OK" in result.output
+        assert "page:  FAIL" in result.output

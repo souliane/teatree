@@ -19,11 +19,15 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from teatree.backends.http_retry import SimpleRetryTransport, SleepFn
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+
+_BACKOFF_BASE_SECONDS = 0.5
+_SLEEP: SleepFn = time.sleep
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,15 +76,12 @@ class HTTPProbeSpec:
     ``response_header_equals`` enables CORS round-trip assertions
     (``Access-Control-Allow-Origin`` reflected with the configured origin).
 
-    ``retries`` controls how many times to retry on transport failures —
-    a refused connection and a read timeout alike, since a service is just
-    as likely to be slow after it binds the socket as before (not on wrong
-    status codes, which fail immediately). The default of 5 with a 2-second
-    initial delay handles the common case where Django inside Docker needs
-    a few seconds to boot after ``docker compose up``.
-
-    ``max_retry_delay`` caps the exponential backoff, so a generous
-    ``retries`` cannot schedule days of sleeping.
+    ``retries`` is the number of *additional* attempts after the first. They
+    cover a connect failure, a connect **or read** timeout, and a transient
+    ``5xx``/``429`` — every shape a service still booting behind ``docker
+    compose up`` produces. Backoff is bounded exponential, capped at
+    ``MAX_BACKOFF_SECONDS``. A non-transient wrong status (a ``403`` where
+    ``200`` is expected) is never retried and fails on the first attempt.
     """
 
     url: str
@@ -90,8 +91,6 @@ class HTTPProbeSpec:
     request_headers: "Mapping[str, str] | None" = None
     timeout_seconds: float = 5.0
     retries: int = 5
-    retry_delay: float = 2.0
-    max_retry_delay: float = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,52 +177,31 @@ def run_and_report_probes(
     return ProbeRunSummary(total=len(results), failures=failures)
 
 
-# A request the client itself rejects is decided before the peer is reached, so a retry
-# replays the same verdict — every other transport failure is the peer being slow or unwell.
-_CLIENT_DETERMINED_ERRORS = (httpx.UnsupportedProtocol, httpx.LocalProtocolError)
-
-
-class _ProbeRequestError(Exception):
-    """Carries the attempts actually made, so the failure text never interpolates config."""
-
-    def __init__(self, cause: httpx.HTTPError, attempts: int) -> None:
-        super().__init__(str(cause))
-        self.cause = cause
-        self.attempts = attempts
-
-
-def _is_retryable(exc: httpx.HTTPError) -> bool:
-    return isinstance(exc, httpx.TransportError) and not isinstance(exc, _CLIENT_DETERMINED_ERRORS)
-
-
-def _http_get_with_retry(url: str, headers: dict[str, str], spec: HTTPProbeSpec) -> httpx.Response:
-    last_exc: httpx.HTTPError = httpx.TransportError("no attempts made")
-    attempts = 0
-    for attempt in range(max(1, spec.retries + 1)):
-        attempts += 1
-        try:
-            return httpx.get(url, headers=headers, timeout=spec.timeout_seconds)
-        except httpx.HTTPError as exc:
-            last_exc = exc
-            if attempt >= spec.retries or not _is_retryable(exc):
-                break
-            time.sleep(min(spec.retry_delay * (2**attempt), spec.max_retry_delay))
-    raise _ProbeRequestError(last_exc, attempts)
-
-
 def _check_http(name: str, spec: HTTPProbeSpec) -> ProbeResult:
     evidence = f"GET {spec.url}"
     headers = dict(spec.request_headers or {})
     expected_headers = dict(spec.response_header_equals or {})
+    transport = SimpleRetryTransport(
+        env_prefix="T3_READINESS_HTTP",
+        max_retries=spec.retries,
+        backoff_base=_BACKOFF_BASE_SECONDS,
+        sleep=_SLEEP,
+    )
+    attempts = 0
+
+    def _attempt() -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.get(spec.url, headers=headers, timeout=spec.timeout_seconds)
+
     try:
-        response = _http_get_with_retry(spec.url, headers, spec)
-    except _ProbeRequestError as failure:
-        plural = "" if failure.attempts == 1 else "s"
-        made = f" (after {failure.attempts} attempt{plural})"
+        response = transport.run(_attempt, idempotent=True)
+    except httpx.HTTPError as exc:
+        plural = "" if attempts == 1 else "s"
         return ProbeResult(
             name=name,
             passed=False,
-            reason=f"{type(failure.cause).__name__}: {failure.cause}{made}",
+            reason=f"{type(exc).__name__}: {exc} (after {attempts} attempt{plural})",
             evidence=evidence,
         )
     status = response.status_code

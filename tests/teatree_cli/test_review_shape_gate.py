@@ -30,6 +30,7 @@ import pytest
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -137,7 +138,7 @@ class TestColleagueMRShapeGate:
             "Added a regression test."
         )
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 1, f"expected refuse, got code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
@@ -167,7 +168,7 @@ class TestColleagueMRShapeGate:
             "See line 142 in joint-rep-search.component.ts for the regression."
         )
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 0, f"3-sentence finding must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls), "API POST must hit on accepted note"
@@ -189,7 +190,7 @@ class TestColleagueMRShapeGate:
             "Wrapping the inner read-modify-write in atomic() with SELECT FOR UPDATE fixes it."
         )
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 0, f"5-sentence single-paragraph finding must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls)
@@ -210,7 +211,7 @@ class TestColleagueMRShapeGate:
         sentence = "this sentence has eight words for the count. "
         body = sentence * 27
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 1, f"27-sentence dump must be refused: code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
@@ -234,7 +235,7 @@ class TestColleagueMRShapeGate:
             lambda api, encoded, mr, file, line: ({"new_path": file, "new_line": line}, ""),
         )
 
-        msg, code = service.post_comment("org/repo", 7, "Nit: rename foo to bar.", file="x.py", line=10)
+        msg, code = service.post_comment(OWNED_REPO, 7, "Nit: rename foo to bar.", file="x.py", line=10)
 
         assert code == 0, f"expected success, got code={code} msg={msg!r}"
         assert "OK" in msg
@@ -252,7 +253,7 @@ class TestColleagueMRShapeGate:
         service, stub = _service_with_stub(mr_author=_AUTHOR_ALICE)
         body = "S1. S2. S3. S4. S5. S6."
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 0, f"own-MR long prose must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls)
@@ -278,7 +279,7 @@ class TestColleagueMRShapeGate:
             lambda api, encoded, mr: (True, ""),
         )
 
-        msg, code = service.approve("org/repo", 7)
+        msg, code = service.approve(OWNED_REPO, 7)
 
         assert code == 0, f"approve on colleague MR must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_status" for c in stub.calls)
@@ -302,7 +303,7 @@ class TestColleagueMRShapeGate:
 
         body = "This branch is unreachable. The caller already guards with isinstance. Consider deleting the if."
 
-        msg, code = service.post_comment("org/repo", 7, body, file="x.py", line=10)
+        msg, code = service.post_comment(OWNED_REPO, 7, body, file="x.py", line=10)
 
         assert code == 0, f"multi-sentence inline finding must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls)
@@ -338,7 +339,7 @@ class TestAllowLongReviewOverride:
             "## Fix\n\nGuard the empty case.\n\n## Verification\n\nAdded a regression test."
         )
 
-        msg, code = service.post_comment("org/repo", 7, body)
+        msg, code = service.post_comment(OWNED_REPO, 7, body)
 
         assert code == 1, f"control: over-cap must refuse without flag: code={code} msg={msg!r}"
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
@@ -352,7 +353,7 @@ class TestAllowLongReviewOverride:
             "## Fix\n\nGuard the empty case.\n\n## Verification\n\nAdded a regression test."
         )
 
-        msg, code = service.post_comment("org/repo", 7, body, allow_long_review=True)
+        msg, code = service.post_comment(OWNED_REPO, 7, body, allow_long_review=True)
 
         assert code == 0, f"override must let the long review proceed: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls), "API POST must fire when the override is set"
@@ -389,7 +390,7 @@ class TestAllowLongReviewOverride:
 
         for flag in (False, True):
             stub.calls.clear()
-            msg, code = service.post_comment("org/repo", 7, body, allow_long_review=flag)
+            msg, code = service.post_comment(OWNED_REPO, 7, body, allow_long_review=flag)
             assert code == 0, f"own-MR must pass regardless of flag={flag}: code={code} msg={msg!r}"
 
 

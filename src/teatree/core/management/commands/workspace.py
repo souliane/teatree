@@ -10,7 +10,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.cleanup.unshipped_restore import restore_bundle
-from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.machine_output import emit
@@ -104,7 +104,9 @@ class Command(TyperCommand):
             str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
         ] = "",
     ) -> int:
-        """Create or update a ticket and trigger worktree provisioning."""
+        """Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)."""
+        # The pk is for a ``call_command`` caller; the summary below is the human view.
+        self.print_result = False
         _wh.warn_orphans(self.stderr.write)
         # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
         # used to die on the ambiguous ``get_overlay()`` call here.
@@ -118,21 +120,21 @@ class Command(TyperCommand):
             issue_url = canonicalize_issue_ref(overlay, issue_url)
         except InvalidIssueRefError as exc:
             self.stderr.write(f"  Refused: {exc}")
-            return 0
+            raise SystemExit(1) from exc
         adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
         adopt_refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
         if adopt_refusal is not None:
             self.stderr.write(adopt_refusal)
-            return 0
+            raise SystemExit(1)
         raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind)
         try:
             intake = build_intake(overlay, raw)
             ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
         except InvalidTicketKindError as exc:
             self.stderr.write(f"  Refused: {exc}")
-            return 0
-        except ForeignIssueWorktreeRefusedError:
-            return 0
+            raise SystemExit(1) from exc
+        except ForeignIssueWorktreeRefusedError as exc:
+            raise SystemExit(1) from exc
 
         # #3952: re-resolving a ticket whose checkout a live agent already holds
         # would hand a second actor into that working tree. ``--take-over`` is the
@@ -144,15 +146,18 @@ class Command(TyperCommand):
             except WorktreeOccupiedError as exc:
                 self.stderr.write(f"  Refused: {exc}")
                 self.stderr.write("  Pass --take-over to proceed anyway.")
-                return 0
+                raise SystemExit(1) from exc
 
-        return finalize_ticket_provision(
+        ticket_pk = finalize_ticket_provision(
             self.stdout.write,
             self.stderr.write,
             ticket,
             adopt_ctx,
             _worktree_root(),
         )
+        if not ticket_pk:
+            raise SystemExit(1)
+        return ticket_pk
 
     @command()
     def provision(
@@ -166,6 +171,8 @@ class Command(TyperCommand):
         ),
     ) -> int:
         """Provision every worktree in the current ticket workspace, in parallel."""
+        # The count is for a ``call_command`` caller; the per-worktree lines above are the human view.
+        self.print_result = False
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
             ticket = resolve_workspace_ticket(path)
@@ -237,9 +244,11 @@ class Command(TyperCommand):
                 continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
             commands = list(overlay.runtime.run_commands(wt))
-            with transaction.atomic():
-                wt.start_services(services=commands)
-                wt.save()
+            # Only the FIRST sibling can lose this recount — once it holds the
+            # slot the ticket is excluded from its own count — so bailing here
+            # leaves no half-started workspace behind.
+            if not start_services_or_enqueue(wt, services=commands, write_out=self.stdout.write):
+                return f"queued {len(worktrees)} worktree(s) — no free local-stack slot"
             started.append(wt)
             result = WorktreeStartRunner(wt, overlay=overlay).run()
             self.stdout.write(f"    {result.detail}")

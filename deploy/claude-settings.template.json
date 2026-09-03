@@ -62,7 +62,16 @@
       "Bash(rm -rf /tmp/pytest-:*)",
       "Bash(rm -rf /var/tmp/pytest-:*)",
       "Bash(rm -rf /tmp/uv:*)",
-      "Bash(rm -rf /var/tmp/uv:*)"
+      "Bash(rm -rf /var/tmp/uv:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git restore:*)",
+      "Bash(terraform validate:*)",
+      "Bash(terraform fmt:*)"
     ]
   },
   "autoMode": {

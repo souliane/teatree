@@ -15,7 +15,6 @@ refs will fence on. It is not a network identity — a persisted UUID4 is
 deliberately enough, and it must never require network access to resolve.
 """
 
-import contextlib
 import os
 import tempfile
 import uuid
@@ -69,10 +68,15 @@ def read_or_create_instance_id(data_dir: Path) -> str:
     try:
         os.write(fd, candidate.encode("utf-8"))
         os.close(fd)
-        # os.link is atomic and fails if the target exists: the first writer
-        # wins and every racing writer falls through to read the winner's value.
-        with contextlib.suppress(FileExistsError):
+        try:
+            # os.link is atomic and fails if the target exists: the first writer
+            # wins and every racing writer falls through to read the winner's value.
             os.link(tmp_path, path)
+        except FileExistsError:
+            # An unreadable occupant is corruption, not a racing winner: replacing it
+            # is what stops the id regenerating on every call.
+            if not _read_valid(path):
+                tmp_path.replace(path)
     finally:
         tmp_path.unlink(missing_ok=True)
     return _read_valid(path) or candidate

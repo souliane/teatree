@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.paths import teatree_source_root
 from teatree.quality import regression_scan
 from teatree.quality.regression_catalog import (
     BLOCKING_NOW,
@@ -32,7 +33,6 @@ from teatree.quality.regression_catalog import (
     load_astgrep_rule_ids,
     load_manifest,
     manifest_path,
-    repo_root,
 )
 from teatree.quality.regression_scan import AstGrepUnavailableError, astgrep_invocable, scan_findings
 
@@ -57,7 +57,7 @@ def manifest() -> tuple[RegressionRule, ...]:
 
 @pytest.fixture(scope="module")
 def blocking_dir() -> Path:
-    return repo_root() / ".ast-grep" / "blocking"
+    return teatree_source_root() / ".ast-grep" / "blocking"
 
 
 class TestManifestSchema:
@@ -98,8 +98,8 @@ class TestManifestSchema:
 class TestManifestMatchesTree:
     def test_every_astgrep_rule_file_is_in_the_manifest(self, manifest: tuple[RegressionRule, ...]) -> None:
         on_disk = {
-            p.relative_to(repo_root()).as_posix()
-            for p in (repo_root() / ".ast-grep").rglob("*.yml")
+            p.relative_to(teatree_source_root()).as_posix()
+            for p in (teatree_source_root() / ".ast-grep").rglob("*.yml")
             if p.name != "sgconfig.yml"
         }
         declared = {rule.file for rule in manifest}
@@ -486,3 +486,18 @@ class TestLoaderValidation:
         bad.write_text("rule:\n  pattern: x\n", encoding="utf-8")
         with pytest.raises(RegressionCatalogError, match="needs a string 'id'"):
             load_astgrep_rule_ids(bad)
+
+
+class TestRepoRootHasOneHome:
+    """The rule root resolves through the shared core helper, not a per-module literal.
+
+    Two copies of the same ``parents[N]`` arithmetic drift apart the moment the
+    package layout moves, and the pair reads as two independent answers to one
+    question.
+    """
+
+    def test_a_rule_path_follows_the_shared_helper(self, tmp_path: Path) -> None:
+        rule = RegressionRule(id="r", issue=BLOCKING_NOW, status="blocking", file=".ast-grep/blocking/r.yml")
+
+        with patch("teatree.quality.regression_catalog.teatree_source_root", return_value=tmp_path):
+            assert rule.rule_path == tmp_path / ".ast-grep/blocking/r.yml"

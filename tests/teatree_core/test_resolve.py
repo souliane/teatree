@@ -1111,6 +1111,45 @@ class TestRefreshReusedRowRefusesPathSteal(TestCase):
         assert row.extra["keep"] == "me"
 
 
+class TestAutoRegisterFromAWorktreeSubdirectory(TestCase):
+    """A `t3` invocation from inside a worktree registers it, not only from its root.
+
+    Only the worktree ROOT carries ``.git`` as a file, so probing the invocation
+    directory alone left every call made from ``<worktree>/src/`` unregistered.
+    Real ``git init`` + ``git worktree add`` under ``tmp_path`` — the marker file
+    a stub writes cannot reproduce the subdirectory case.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _linked_worktree(self, branch: str) -> Path:
+        clone = make_git_repo(self._tmp_path / "clone")
+        worktree = self._tmp_path / "wt-repo"
+        run_git(clone, "worktree", "add", "-q", "-b", branch, str(worktree))
+        return worktree
+
+    def test_registers_the_worktree_when_invoked_from_a_subdirectory(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
+        worktree = self._linked_worktree("1180-fix-the-thing")
+        nested = worktree / "src" / "deep"
+        nested.mkdir(parents=True)
+
+        result = _auto_register_from_git(str(nested))
+
+        assert result is not None
+        assert result.ticket_id == ticket.pk
+        assert result.repo_path == "wt-repo"
+        assert result.extra["worktree_path"] == str(worktree)
+
+    def test_a_plain_directory_outside_any_checkout_still_registers_nothing(self) -> None:
+        outside = self._tmp_path / "not-a-repo"
+        outside.mkdir()
+
+        assert _auto_register_from_git(str(outside)) is None
+
+
 class TestResolveModuleDocstringMatchesCacheLocation:
     """Guard the env-cache resolution docs against a stale mental model.
 

@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.backend_protocols import ReviewState
+from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import BroadcastObservation, ImplementedIssueMarker, ScannedBroadcast, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
@@ -267,15 +268,23 @@ class TestPersistOrchestrator(TestCase):
             payload={"issue_url": issue_url, "auto_start": auto_start, "overlay": overlay},
         )
 
-    def test_creates_author_ticket_and_coding_task(self) -> None:
+    def test_creates_author_ticket_and_planning_task(self) -> None:
+        """#4578: intake schedules PLANNING. Scheduling coding here fails the plan gate forever."""
         created = persist_agent_actions([self._action()])
 
         assert len(created) == 1
         task = created[0]
-        assert task.phase == "coding"
+        assert task.phase == "planning"
         ticket = task.ticket
         assert ticket.role == Ticket.Role.AUTHOR
         assert ticket.issue_url == "https://example.com/owner/repo/issues/99"
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_the_scheduled_task_is_not_refused_by_the_plan_gate(self) -> None:
+        """The acceptance criterion, stated as the gate itself rather than as the phase name."""
+        task = persist_agent_actions([self._action()])[0]
+
+        assert unplanned_dispatch_refusal(task.ticket, phase=task.phase) is None
 
     def test_links_claimed_marker_to_ticket_and_moves_it_to_ticket_created(self) -> None:
         """The dispatch handler is the intended writer of ``TICKET_CREATED`` (previously unwritten)."""

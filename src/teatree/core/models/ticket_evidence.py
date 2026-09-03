@@ -1,16 +1,18 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import ac_label, spec_coverage_criteria, validated_ticket_extra
+from teatree.core.models.types import FIX_RECORD_FIELDS, ac_label, spec_coverage_criteria, validated_ticket_extra
 
 if TYPE_CHECKING:
     from teatree.core.models.types import (
         AcceptanceCriterion,
         AntiVacuityAttestation,
+        FixRecord,
+        FixRecordOverride,
         JSONObject,
         ReviewContext,
         ReviewSkillRun,
@@ -152,6 +154,27 @@ class TicketEvidenceModel(TicketFacet):
         """
         run: ReviewSkillRun = {"skill": skill, "at": timezone.now().isoformat()}
         self.merge_extra(set_keys={"review_skill_run": run})
+
+    def record_fix_record(self, record: "FixRecord") -> None:
+        """Stamp the fix-ticket Definition-of-Done record the DoD gate reads (#1661/#4520).
+
+        Only the declared :data:`FIX_RECORD_FIELDS` are stored, stripped — a stray key
+        the agent tacked on never rides into ``extra``. Written through the canonical
+        locked ``merge_extra`` primitive so a concurrent ``extra`` writer's key survives.
+        Callers validate first (``fix_record_missing_fields``); this method persists.
+        """
+        stored = cast("FixRecord", {field: str(record.get(field, "")).strip() for field in FIX_RECORD_FIELDS})
+        self.merge_extra(set_keys={"fix_record": stored})
+
+    def record_fix_record_override(self, reason: str) -> None:
+        """Stamp the audited EXCEPTION for a fix the kind heuristic mis-classifies (#1661/#4520).
+
+        Deliberately weaker than the forced-repro gate's human-authorized ``ReproWaiver``:
+        this one is self-authored, which is why it is the exception and the agent's
+        ``fix_record`` envelope member is the route.
+        """
+        override: FixRecordOverride = {"reason": reason}
+        self.merge_extra(set_keys={"fix_record_override": override})
 
     def record_review_context(self, work_item: str, documents: list[str], analysis: str) -> None:
         """Stamp durable evidence the referenced context was retrieved + analyzed.
