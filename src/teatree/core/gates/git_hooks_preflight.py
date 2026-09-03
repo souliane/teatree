@@ -26,6 +26,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.prek_hook import is_foreign_config_hook
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 # Absent either of these, a commit or a push runs with no local gate layer at all.
@@ -45,7 +46,8 @@ INSTALL_COMMAND = "t3 setup"
 class GitHooksProbe:
     """Outcome of a git-hook installation probe on one checkout.
 
-    ``missing`` is the required hook names absent from the resolved hooks dir
+    ``missing`` is the required hook names that will not run this repo's gates —
+    absent from the resolved hooks dir, or present but bound to another config
     (empty == fully installed). ``custom_hooks_path`` is a deliberate operator
     ``core.hooksPath`` override — set, it means the probe declined to judge that
     dir at all, so ``missing`` stays empty and nothing may be installed over it.
@@ -83,8 +85,14 @@ def _resolve(repo: Path, value: str) -> Path:
 
 
 def _is_installed_hook(path: Path) -> bool:
-    """A hook git will actually run: a real file with the execute bit set."""
-    return path.is_file() and path.stat().st_mode & 0o111 != 0
+    """A hook git will run, gating THIS repo — presence and the execute bit prove neither.
+
+    A shim `prek install` wrote from a subdirectory carries `--cd=<subdir>` and gates the
+    repo on that subdirectory's config, so the repo's own hooks never fire. It is a real
+    executable file, which is why a presence-only test reports it installed and the
+    repair keyed off that verdict never runs.
+    """
+    return path.is_file() and path.stat().st_mode & 0o111 != 0 and not is_foreign_config_hook(path)
 
 
 def probe_git_hooks(repo: Path) -> GitHooksProbe:
@@ -137,7 +145,12 @@ def format_remediation(probe: GitHooksProbe) -> list[str]:
     """Remediation lines naming each missing hook, the gates it carries, and the fix. Pure/print-free."""
     if not probe.missing:
         return []
-    lines = [f"{probe.checkout} has no git hooks installed — missing {', '.join(probe.missing)} in {probe.hooks_dir}:"]
+    lines = [
+        (
+            f"{probe.checkout} is not running its git hooks — {', '.join(probe.missing)} "
+            f"absent or bound to another config in {probe.hooks_dir}:"
+        )
+    ]
     lines.extend(f"  {name} — carries {GATES_BY_HOOK[name]}" for name in probe.missing)
     lines.append(
         f"Every worktree sharing this git dir pushes ungated until they are installed. "

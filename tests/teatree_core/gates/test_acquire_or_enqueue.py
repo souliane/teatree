@@ -13,7 +13,11 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.gates import local_stack_gate as gate_mod
-from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, acquire_or_enqueue
+from teatree.core.gates.local_stack_gate import (
+    LocalStackLimitExceededError,
+    acquire_or_enqueue,
+    start_services_or_enqueue,
+)
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
 
@@ -258,6 +262,62 @@ class TestReapScopedByTicketOverlay(TestCase):
 
         # Scoped to the ticket's real overlay, NOT the blank Worktree.overlay ("").
         assert captured["overlay"] == "t3-heavy"
+
+
+class TestSlotIsReservedByTheAdvanceItself(TestCase):
+    """The cap is recounted in the transaction that advances the FSM (#F5).
+
+    ``acquire_or_enqueue`` reads the count and returns, so a concurrent start
+    that commits in that window sees a free slot too and both advance — the
+    breach the cap exists to prevent. The recount below models exactly that
+    window: the blocker appears AFTER admission and BEFORE the advance.
+    """
+
+    def test_a_blocker_that_lands_after_admission_stops_the_advance(self) -> None:
+        candidate = _worktree(ticket_number="800", state=Worktree.State.PROVISIONED)
+        messages: list[str] = []
+        with patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1):
+            assert acquire_or_enqueue(candidate, write_out=messages.append) is True
+            # The concurrent start commits here, between the admission and the advance.
+            _worktree(ticket_number="801", state=Worktree.State.SERVICES_UP)
+            advanced = start_services_or_enqueue(candidate, services=["up"], write_out=messages.append)
+
+        assert advanced is False
+        candidate.refresh_from_db()
+        assert candidate.state == Worktree.State.PROVISIONED
+        assert LocalStackQueueItem.objects.get(worktree=candidate).status == LocalStackQueueItem.Status.QUEUED
+        assert any("queued" in m.lower() for m in messages)
+
+    def test_a_free_slot_advances_and_records_the_services(self) -> None:
+        candidate = _worktree(ticket_number="810", state=Worktree.State.PROVISIONED)
+        with patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1):
+            advanced = start_services_or_enqueue(candidate, services=["up"], write_out=lambda _m: None)
+
+        assert advanced is True
+        candidate.refresh_from_db()
+        assert candidate.state == Worktree.State.SERVICES_UP
+        assert LocalStackQueueItem.objects.count() == 0
+
+    def test_an_unbounded_overlay_never_recounts(self) -> None:
+        candidate = _worktree(ticket_number="820", state=Worktree.State.PROVISIONED)
+        _worktree(ticket_number="821", state=Worktree.State.SERVICES_UP)
+        with patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=0):
+            assert start_services_or_enqueue(candidate, services=["up"], write_out=lambda _m: None) is True
+        candidate.refresh_from_db()
+        assert candidate.state == Worktree.State.SERVICES_UP
+
+    def test_a_sibling_of_the_same_ticket_is_not_its_own_blocker(self) -> None:
+        candidate = _worktree(ticket_number="830", state=Worktree.State.PROVISIONED)
+        sibling = Worktree.objects.create(
+            overlay="t3-heavy",
+            ticket=candidate.ticket,
+            repo_path="frontend",
+            branch="830-feat",
+            state=Worktree.State.SERVICES_UP,
+        )
+        with patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1):
+            assert start_services_or_enqueue(candidate, services=["up"], write_out=lambda _m: None) is True
+        del sibling
 
 
 class TestCheckLimitUntouched(TestCase):

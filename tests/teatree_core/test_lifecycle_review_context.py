@@ -15,7 +15,7 @@ machine's config, so the suite is deterministic regardless of it.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import cast
+from io import StringIO
 from unittest.mock import patch
 
 import pytest
@@ -167,16 +167,15 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
 
-    def test_direct_cli_transition_review_returns_actionable_refusal(self) -> None:
+    def test_direct_cli_transition_review_exits_nonzero_with_an_actionable_refusal(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
-        with _gate(required=True):
-            result = cast(
-                "dict[str, object]",
-                call_command("ticket", "transition", str(ticket.pk), "review"),
-            )
+        err = StringIO()
+        with _gate(required=True), pytest.raises(SystemExit) as exc:
+            call_command("ticket", "transition", str(ticket.pk), "review", stderr=err)
+        assert exc.value.code == 1
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
-        assert "record-review-context" in str(result["error"])
+        assert "record-review-context" in err.getvalue()
 
 
 class TestRecordReviewContext(TestCase):

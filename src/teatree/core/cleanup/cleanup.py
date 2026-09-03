@@ -31,6 +31,7 @@ from teatree.core.worktree._overlay_teardown import reap_external_resources, run
 from teatree.core.worktree.branch_classification import (
     _branch_pr_is_merged,
     _branch_tree_matches_squash,
+    branch_redundancy,
     content_equivalence_blockers,
     effective_default_target,
 )
@@ -252,10 +253,25 @@ def _ref_captured_by_merge(repo: str, ref: str, branch: str | None, *, remote_re
 
     With NO merged-evidence the branch is kept regardless of tree equality: a
     local-only branch whose tree matches the default branch must never be deleted.
+
+    **Tree equality is no longer the ONLY accepted proof.** The ``--not
+    --remotes`` probe that routes callers here fires by construction on every
+    squash-merged branch (the forge deleted the source ref, so the SHAs are on
+    no remote), and demanding the tip's tree still equal a base that has since
+    moved on misreported every one of them as unlanded — the probe carried no
+    information, yet its firing was read as one. When the tree check cannot
+    confirm, the verdict falls through to the full landed ladder
+    (:func:`branch_redundancy` — patch-id, synthetic-squash, ancestor, blob
+    content, and the forge's merge record at the exact tip), every rung of
+    which fails CLOSED.
     """
-    if not (remote_ref_was_present or (branch is not None and _branch_pr_is_merged(repo, branch))):
+    if (
+        remote_ref_was_present or (branch is not None and _branch_pr_is_merged(repo, branch))
+    ) and _ref_tree_matches_default(repo, ref):
+        return True
+    if branch is None:
         return False
-    return _ref_tree_matches_default(repo, ref)
+    return branch_redundancy(repo, branch, effective_default_target(repo)).redundant
 
 
 def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:

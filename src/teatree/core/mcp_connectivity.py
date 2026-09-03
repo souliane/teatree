@@ -258,7 +258,7 @@ def probe_mcp_servers() -> list[McpServerStatus]:
         raise FileNotFoundError(message)
     completed = run_allowed_to_fail(
         [binary, "mcp", "list"],
-        expected_codes=None,
+        expected_codes=(0,),
         timeout=_MCP_LIST_TIMEOUT_SECONDS,
     )
     return parse_mcp_list_output(completed.stdout)

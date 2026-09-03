@@ -17,7 +17,7 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.core.diagrams import render_fsm_mermaid
-from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.intake.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks
@@ -319,9 +319,11 @@ class Command(OccupancyCommands, TyperCommand):
             return worktree.state
 
         commands = list(resolved_overlay.runtime.run_commands(worktree))
-        with transaction.atomic():
-            worktree.start_services(services=commands)
-            worktree.save()
+        # The cap is re-counted inside the advance's own transaction: the
+        # unlocked pre-check above cannot stop a concurrent start slipping
+        # between its read and this write.
+        if not start_services_or_enqueue(worktree, services=commands, write_out=self.stdout.write):
+            return worktree.state
 
         result = WorktreeStartRunner(worktree, overlay=resolved_overlay).run()
         worktree.refresh_from_db()
@@ -522,19 +524,7 @@ class Command(OccupancyCommands, TyperCommand):
         except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes diagnose
             checks["database"] = {"status": "error", "detail": str(exc)}
 
-        hook_config = Path("." if Path(".pre-commit-config.yaml").is_file() else os.environ.get("PWD", "."))
-        hook_file = hook_config / ".pre-commit-config.yaml"
-        if hook_file.is_file():
-            try:
-                from importlib import import_module  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-                yaml = import_module("yaml")
-                yaml.safe_load(hook_file.read_text(encoding="utf-8"))
-                checks["hooks"] = {"status": "ok"}
-            except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes diagnose
-                checks["hooks"] = {"status": "error", "detail": str(exc)}
-        else:
-            checks["hooks"] = {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
+        checks["hooks"] = _hook_config_check()
 
         import_errors: list[str] = []
         for module in ("teatree.core.overlay", "teatree.core.models", "teatree.utils.git", "teatree.utils.ports"):
@@ -544,9 +534,16 @@ class Command(OccupancyCommands, TyperCommand):
                 import_errors.append(f"{module}: {exc}")
         checks["imports"] = {"status": "ok" if not import_errors else "error", "errors": import_errors}
 
+        failed: list[str] = []
         for name in ("overlay", "cli", "database", "hooks", "imports"):
             entry = checks.get(name) or {}
-            self.stdout.write(f"  [{entry.get('status', 'unknown').upper()}] {name}")
+            status = str(entry.get("status", "unknown"))
+            self.stdout.write(f"  [{status.upper()}] {name}")
+            if status == "error":
+                failed.append(name)
+        if failed:
+            self.stderr.write(f"  smoke-test failed: {', '.join(failed)}")
+            raise SystemExit(1)
         return checks
 
     @command()
@@ -564,6 +561,22 @@ class Command(OccupancyCommands, TyperCommand):
             self.stderr.write(f"Unknown model: {model}. Choose from: worktree, ticket, task")
             raise SystemExit(1)
         return render_fsm_mermaid(model_map[model])
+
+
+def _hook_config_check() -> SmokeCheck:
+    """Whether this checkout's prek config parses — ``skipped`` when it has none."""
+    hook_config = Path("." if Path(".pre-commit-config.yaml").is_file() else os.environ.get("PWD", "."))
+    hook_file = hook_config / ".pre-commit-config.yaml"
+    if not hook_file.is_file():
+        return {"status": "skipped", "detail": "no .pre-commit-config.yaml"}
+    try:
+        from importlib import import_module  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+        yaml = import_module("yaml")
+        yaml.safe_load(hook_file.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — the diagnostic records any failure as an error status, never crashes smoke-test
+        return {"status": "error", "detail": str(exc)}
+    return {"status": "ok"}
 
 
 def _task_diagram() -> str:

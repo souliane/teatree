@@ -102,6 +102,34 @@ class TestMeasureSkillDrift:
         drift = measure_skill_drift(_clone_config(clone), search_dirs=[installed])
         assert drift.absent == ("elite-review",)
 
+    def test_a_stale_reference_file_makes_its_skill_stale(self, source: Path, clone: Path, installed: Path) -> None:
+        # A skill installs as its whole directory, so a merged fix landing only in
+        # references/ is drift a SKILL.md-only comparison cannot see.
+        (source / "qa" / "references").mkdir()
+        (source / "qa" / "references" / "checklist.md").write_text("the reviewed checklist\n", encoding="utf-8")
+        run_git(source, "add", "-A")
+        run_git(source, "commit", "-q", "-m", "publish a reference file")
+        run_git(clone, "fetch", "-q", "origin")
+        _write_skill(installed, "backend-dev", "backend-dev")
+        _write_skill(installed, "qa", "qa")
+        (installed / "qa" / "references").mkdir()
+        (installed / "qa" / "references" / "checklist.md").write_text("the old checklist\n", encoding="utf-8")
+        drift = measure_skill_drift(_clone_config(clone), search_dirs=[installed])
+        assert drift.stale == ("qa",)
+
+    def test_a_reference_file_the_install_never_received_makes_its_skill_stale(
+        self, source: Path, clone: Path, installed: Path
+    ) -> None:
+        (source / "qa" / "references").mkdir()
+        (source / "qa" / "references" / "checklist.md").write_text("the reviewed checklist\n", encoding="utf-8")
+        run_git(source, "add", "-A")
+        run_git(source, "commit", "-q", "-m", "publish a reference file")
+        run_git(clone, "fetch", "-q", "origin")
+        _write_skill(installed, "backend-dev", "backend-dev")
+        _write_skill(installed, "qa", "qa")
+        drift = measure_skill_drift(_clone_config(clone), search_dirs=[installed])
+        assert drift.stale == ("qa",)
+
     def test_answer_comes_from_the_reviewed_ref_not_the_checked_out_branch(self, clone: Path, installed: Path) -> None:
         # Exactly why the install is a copy: the clone may sit on somebody's WIP
         # branch, and that must not change what "current" means.

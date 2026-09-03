@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -37,10 +38,29 @@ def test_startoverlay_creates_lightweight_package(tmp_path: Path) -> None:
     assert 'name = "t3-acme"' in pyproject_text
 
 
+def test_generated_pyproject_names_only_modules_the_scaffolder_wrote(tmp_path: Path) -> None:
+    # Every declared module, entry point and coverage source has to exist on disk: the
+    # scaffolder writes one overlay package and no host, so naming a second one means the
+    # generated project cannot build, test or load.
+    assert runner.invoke(app, ["startoverlay", "t3-acme", str(tmp_path)]).exit_code == 0
+    project_root = tmp_path / "t3-acme"
+    config = tomllib.loads((project_root / "pyproject.toml").read_text())
+
+    entry_point = config["project"]["entry-points"]["teatree.overlays"]["t3-acme"]
+    module, _, attribute = entry_point.partition(":")
+    assert (project_root / "src" / Path(*module.split("."))).with_suffix(".py").is_file()
+    assert f"class {attribute}(OverlayBase):" in (project_root / "src" / "t3_overlay" / "overlay.py").read_text()
+
+    for module_name in config["tool"]["uv"]["build-backend"]["module-name"]:
+        assert (project_root / "src" / module_name).is_dir()
+    for source in config["tool"]["coverage"]["run"]["source"]:
+        assert (project_root / source).is_dir()
+
+
 def test_startoverlay_with_explicit_options(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
-        ["startoverlay", "t3-acme", str(tmp_path), "--overlay-app", "acme_overlay", "--project-package", "acme"],
+        ["startoverlay", "t3-acme", str(tmp_path), "--overlay-app", "acme_overlay"],
     )
     assert result.exit_code == 0, result.output
 

@@ -75,6 +75,7 @@ NOT_A_CROSS_TIER_MIRROR: dict[str, str] = {
     "SKILL.md": "skill frontmatter authored in-repo; schema-validated by the validate-skill-md prek hook",
     "pyproject.toml": "build metadata — authored, never written from the ORM",
     "settings.json": "the Claude Code harness's own config file, not a teatree-written mirror",
+    "hooks.json": "the shipped plugin's hook manifest — authored in-repo, never written from the ORM",
     "db.sqlite3": (
         "the canonical store ITSELF, not a mirror of it. Its cross-tier reads are the "
         "COLD_HOOK_SETTINGS registry, already pinned key-by-key by "

@@ -11,6 +11,7 @@ at the same moment found three resolved-but-open issues (#4135).
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -92,9 +93,11 @@ class LabelSuggester:
             suggestions.append(LabelSuggestion(number=issue["number"], title=issue["title"], labels=labels))
         return suggestions
 
-    def apply(self, suggestions: list[LabelSuggestion]) -> None:
+    def apply(self, suggestions: list[LabelSuggestion]) -> list[int]:
+        """Label each suggested issue; return the numbers ``gh issue edit`` refused."""
+        failed: list[int] = []
         for suggestion in suggestions:
-            run_allowed_to_fail(
+            result = run_allowed_to_fail(
                 [
                     "gh",
                     "issue",
@@ -106,6 +109,10 @@ class LabelSuggester:
                 ],
                 expected_codes=None,
             )
+            if result.returncode != 0:
+                sys.stderr.write(f"gh issue edit #{suggestion.number} failed: {result.stderr.strip()}\n")
+                failed.append(suggestion.number)
+        return failed
 
 
 # Conventional-commit prefix: `type(scope)!:` with optional scope and breaking `!`.
@@ -173,6 +180,9 @@ class DuplicateFinder:
 # ``ResolvedIssue.confidence``).
 _ISSUE_REF_IN_TITLE = re.compile(r"(?<![\w/])#(\d+)\b")
 
+#: The verdict a canonical ``(#N)`` earns — the only one auto-closure acts on.
+HIGH_CONFIDENCE = "high"
+
 
 @dataclass(frozen=True)
 class ResolvedIssue:
@@ -184,7 +194,7 @@ class ResolvedIssue:
     @property
     def confidence(self) -> str:
         canonical = f"(#{self.issue_number})"
-        return "high" if canonical in self.pr_title else "medium"
+        return HIGH_CONFIDENCE if canonical in self.pr_title else "medium"
 
 
 @dataclass(frozen=True)
@@ -242,9 +252,18 @@ class TriageScanner:
         resolved.sort(key=lambda r: r.issue_number)
         return resolved
 
-    def close_resolved(self, resolved: list[ResolvedIssue]) -> None:
+    def close_resolved(self, resolved: list[ResolvedIssue]) -> list[int]:
+        """Close each HIGH-confidence resolved issue; return the numbers ``gh issue close`` refused.
+
+        A medium-confidence match is a loose ``#N`` anywhere in a merged PR title — "see
+        #42 for context" reads identically to a fix — so it is reported for a human and
+        never closed by this destructive path.
+        """
+        failed: list[int] = []
         for r in resolved:
-            run_allowed_to_fail(
+            if r.confidence != HIGH_CONFIDENCE:
+                continue
+            result = run_allowed_to_fail(
                 [
                     "gh",
                     "issue",
@@ -257,6 +276,10 @@ class TriageScanner:
                 ],
                 expected_codes=None,
             )
+            if result.returncode != 0:
+                sys.stderr.write(f"gh issue close #{r.issue_number} failed: {result.stderr.strip()}\n")
+                failed.append(r.issue_number)
+        return failed
 
     def find_stale(self, *, days: int = 30) -> list[StaleIssue]:
         issues = _open_issues(self.repo)

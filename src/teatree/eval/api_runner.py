@@ -312,11 +312,18 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     )
 
 
-def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ()) -> str:
+def load_agent_definition(
+    agent_path: str,
+    agent_sections: tuple[str, ...] = (),
+    spec_dir: Path | None = None,
+) -> str:
     """Read the agent definition (whole file, or only the named ``## `` sections)."""
     resolved = Path(agent_path).expanduser()
     if not resolved.is_absolute():
-        for candidate in (Path.cwd() / resolved, teatree_root() / resolved):
+        # The spec's own directory wins: a relative agent path is written relative to the spec.
+        spec_roots = (spec_dir,) if spec_dir is not None else ()
+        for root in (*spec_roots, Path.cwd(), teatree_root()):
+            candidate = root / resolved
             if candidate.is_file():
                 resolved = candidate
                 break
@@ -431,7 +438,9 @@ class ApiInProcessRunner:
                 raise ClaudeCliMissingError(msg)
             return EvalRun.skipped(spec.name, "claude binary not on PATH")
 
-        clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
+        clean_room_prompt = (
+            load_agent_definition(spec.agent_path, spec.agent_sections, spec.source_path.parent) + LIVE_ENV_FRAMING
+        )
         system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
         max_turns = self._resolve_max_turns(spec)
 

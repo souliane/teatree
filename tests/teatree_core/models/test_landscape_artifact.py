@@ -17,14 +17,16 @@ def _ticket() -> Ticket:
 
 _SURVEY = {
     "worktrees": [{"path": "/w/1", "branch": "b", "has_uncommitted": True, "has_unpushed": False, "in_flight": True}],
-    "open_prs": [{"url": "https://forge/pr/1", "title": "WIP (#50)", "referenced_issues": [50]}],
+    "open_prs": [
+        {"url": "https://github.com/acme/app/pull/1", "title": "WIP (#50)", "referenced_issues": ["acme/app#50"]}
+    ],
     "recommendations": [
         {
-            "issue_url": "https://forge/issues/50",
+            "issue_url": "https://github.com/acme/app/issues/50",
             "title": "x",
             "disposition": "partial",
             "action": "merge",
-            "evidence": "https://forge/pr/1",
+            "evidence": "https://github.com/acme/app/pull/1",
         }
     ],
     "warnings": [],

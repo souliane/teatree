@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models
 from django.db.models.functions import Coalesce
@@ -220,6 +220,12 @@ class TaskAttempt(models.Model):
         SUCCESS = "success", "Success"
         REFUSAL = "refusal", "Refusal"
         CRASH = "crash", "Crash"
+
+    #: The terminal outcomes that are a FAILURE — the one predicate every failure
+    #: count filters on, so the standup and the two ``checking`` surfaces can never
+    #: drift back to ``exit_code > 0`` (which misses a refusal's ``0`` and a
+    #: SIGKILL's ``-9``, and counts an in-flight attempt as neither).
+    FAILED_OUTCOMES: ClassVar[tuple[str, ...]] = (Outcome.REFUSAL, Outcome.CRASH)
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
     started_at = models.DateTimeField(auto_now_add=True)

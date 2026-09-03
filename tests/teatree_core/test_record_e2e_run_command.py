@@ -50,12 +50,14 @@ class TestRecordE2ERunCommand(TestCase):
         assert E2eMandatoryRun.has_green_evidence(self.ticket, _SHA) is False
 
     def test_refuses_missing_spec(self) -> None:
-        result = self._run("--spec", "", "--result", "green", "--head-sha", _SHA, "--posted-url", _URL)
-        assert result["recorded"] is False
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("--spec", "", "--result", "green", "--head-sha", _SHA, "--posted-url", _URL)
+        assert exc_info.value.code == 1
 
     def test_refuses_bad_sha(self) -> None:
-        result = self._run("--spec", "x", "--result", "green", "--head-sha", "abc", "--posted-url", _URL)
-        assert result["recorded"] is False
+        with pytest.raises(SystemExit) as exc_info:
+            self._run("--spec", "x", "--result", "green", "--head-sha", "abc", "--posted-url", _URL)
+        assert exc_info.value.code == 1
 
 
 class TestRecordE2ERunStampsWorktree(TestCase):

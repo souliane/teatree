@@ -198,9 +198,11 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                     "holder_pid": holder,
                     "holder": record.context.as_json() if record is not None else None,
                     "flock_held": flock_held,
-                    "loop_runner_enabled": enabled,
                     "source": source,
                     "timers": timers,
+                    # ``loop_runner_enabled`` comes from ``health``: the fail-safe reader
+                    # the chain itself gates on, so the JSON cannot report a switch state
+                    # the timers do not obey.
                     **health.as_json(),
                 }
             )
@@ -440,7 +442,10 @@ def stop_command(
         WorkerStopper,
     )
 
-    report = WorkerStopper(StopRequest(drain=drain, drain_timeout=timeout, exit_timeout=exit_timeout)).stop()
+    report = WorkerStopper(
+        StopRequest(drain=drain, drain_timeout=timeout, exit_timeout=exit_timeout),
+        on_drain_progress=_DrainHeartbeat(),
+    ).stop()
     _emit_stop(report, json_output=json_output)
     if not report.worker_gone:
         raise SystemExit(_STOP_FAILED_EXIT)
@@ -479,7 +484,10 @@ def restart_command(
         wait_for_new_holder,
     )
 
-    stopped = WorkerStopper(StopRequest(drain=drain, drain_timeout=timeout, exit_timeout=exit_timeout)).stop()
+    stopped = WorkerStopper(
+        StopRequest(drain=drain, drain_timeout=timeout, exit_timeout=exit_timeout),
+        on_drain_progress=_DrainHeartbeat(),
+    ).stop()
     if not stopped.worker_gone:
         _emit_stop(stopped, json_output=json_output)
         raise SystemExit(_STOP_FAILED_EXIT)

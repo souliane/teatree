@@ -12,7 +12,8 @@ from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.types import SqlRow
+from teatree.core.provision.step_runner import run_callable_step
+from teatree.types import ProvisionStep, SqlRow
 from teatree.utils.approval import ApprovalRefusedError
 from teatree.utils.env import patched_environ
 
@@ -112,6 +113,21 @@ def _run_read_only(sql: str) -> list[SqlRow]:
 
 
 class Command(TyperCommand):
+    def _run_step_or_die(self, step: ProvisionStep) -> None:
+        """Run one provisioning step, stopping the command when it fails.
+
+        Routed through :func:`run_callable_step` — the same classifier
+        provisioning uses — so a step returning a non-zero
+        ``CompletedProcess`` (the shape every shell-out step returns) is a
+        failure here exactly as it is there, instead of a discarded value the
+        caller reads as success.
+        """
+        result = run_callable_step(step.name, step.callable)
+        if result.success:
+            return
+        self.stderr.write(f"  Step {step.name!r} failed: {result.error}")
+        raise SystemExit(1)
+
     @command()
     def migrate(self) -> None:
         """Apply pending migrations to the runtime self-DB, non-destructively.
@@ -235,13 +251,13 @@ class Command(TyperCommand):
             # Run post-DB steps (migrations, collectstatic, etc.)
             for step in overlay.provisioning.post_db_steps(worktree):
                 self.stdout.write(f"  Running post-DB step: {step.name}")
-                step.callable()
+                self._run_step_or_die(step)
 
             # Reset passwords
             reset_step = overlay.provisioning.reset_passwords_command(worktree)
             if reset_step:  # pragma: no branch
                 self.stdout.write("  Resetting passwords...")
-                reset_step.callable()
+                self._run_step_or_die(reset_step)
 
         # FSM transition
         worktree.db_refresh()
@@ -293,8 +309,10 @@ class Command(TyperCommand):
             self.stderr.write("No DB import strategy configured in the overlay.")
             raise SystemExit(1)
 
-        # Use db_import with a hint to skip DSLR/local and go straight to CI
-        success = overlay.provisioning.db_import(worktree, force=True)
+        # ``slow_import`` is the ONLY hint the import seam has for "skip the DSLR
+        # fast path and re-read the dump": ``force`` alone drops the DB and then
+        # restores the same stale local snapshot, so this restored anything but CI.
+        success = overlay.provisioning.db_import(worktree, force=True, slow_import=True)
         if not success:
             self.stderr.write(f"CI restore failed for {worktree.db_name}.")
             raise SystemExit(1)
@@ -334,10 +352,7 @@ class Command(TyperCommand):
                 "so there is no app-DB migrate to run."
             )
             raise SystemExit(1)
-        result = step.callable()
-        if result is not None and getattr(result, "returncode", 0) != 0:
-            self.stderr.write(f"Migrate failed for {worktree.db_name}. Check output above for details.")
-            raise SystemExit(1)
+        self._run_step_or_die(step)
         return f"Migrations applied to {worktree.db_name}"
 
     @command(name="reset-passwords")
@@ -352,7 +367,7 @@ class Command(TyperCommand):
         if not step:
             self.stderr.write("No reset-passwords command configured in the overlay.")
             raise SystemExit(1)
-        step.callable()
+        self._run_step_or_die(step)
         return f"Passwords reset for worktree {worktree.repo_path}"
 
     @command()

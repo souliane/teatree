@@ -94,8 +94,19 @@ def _migrate_legacy_json_cache_once() -> None:
     path.unlink(missing_ok=True)
 
 
-def _persist_entry(ticket_model: "TicketModel", url: str, entry: CacheEntry) -> None:
-    """Upsert a reviewer-role ticket's cached SHA/state in its ``extra`` dict."""
+def _persist_entry(
+    ticket_model: "TicketModel",
+    url: str,
+    entry: CacheEntry,
+    *,
+    drop_review_state: bool = False,
+) -> None:
+    """Upsert a reviewer-role ticket's cached SHA/state in its ``extra`` dict.
+
+    ``drop_review_state`` is opt-in per call site because the legacy-JSON import
+    and :func:`mark_reviewed` share this helper and must never pop a state they
+    are not replacing.
+    """
     ticket, _ = ticket_model.objects.get_or_create(
         role="reviewer",
         issue_url=url,
@@ -110,8 +121,9 @@ def _persist_entry(ticket_model: "TicketModel", url: str, entry: CacheEntry) -> 
         set_keys["reviewed_sha"] = entry.sha
     if entry.state:
         set_keys["last_review_state"] = entry.state
-    if set_keys:
-        ticket.merge_extra(set_keys=set_keys)
+    pop_keys = ["last_review_state"] if drop_review_state else None
+    if set_keys or pop_keys:
+        ticket.merge_extra(set_keys=set_keys, pop_keys=pop_keys)
 
 
 def _read_cache() -> dict[str, CacheEntry]:
@@ -441,7 +453,12 @@ class ReviewerPrsScanner:
         previous = cache.get(url, CacheEntry())
         if previous.sha and previous.sha != head:
             if ticket_model is not None:
-                _persist_entry(ticket_model, url, CacheEntry(sha=head, state=previous.state))
+                # The prior verdict belonged to the OLD head. Advancing the SHA while
+                # keeping a terminal state makes ``_already_reviewed_at_head`` swallow
+                # the review this very signal is asking for (#959), and silences the
+                # backup ``ReviewedPrHeadScanner`` too — the discharged SHA would then
+                # equal the live head.
+                _persist_entry(ticket_model, url, CacheEntry(sha=head), drop_review_state=True)
             return [
                 ScanSignal(
                     kind="reviewer_pr.new_sha",

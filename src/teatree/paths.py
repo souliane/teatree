@@ -13,17 +13,16 @@ inside the managed isolation root. An explicit attempt to point worktree code
 at the true canonical DB is a hard error.
 """
 
-import fcntl
 import hashlib
 import os
 import re
-import sqlite3
 import tempfile
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
+
+from teatree.sqlite_snapshot import _exclusive_lock, _sqlite_snapshot
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 
@@ -185,6 +184,13 @@ def teatree_source_root() -> Path:
     callers that need the surrounding git working tree resolve it from here.
     """
     return Path(__file__).resolve().parents[2]
+
+
+#: Where teatree's own root sits inside a fork that VENDORS core, as a path
+#: prefix — ``""`` in a plain clone, this in a fork. A forge reports changed
+#: files relative to the WORKING-TREE root, so any consumer classifying forge
+#: paths against ``src/teatree/…`` literals must strip this first.
+VENDORED_CORE_PREFIX = "vendor/teatree/"
 
 
 def _worktree_isolation_root(home: Path) -> Path:
@@ -401,60 +407,6 @@ class ControlDb:
         )
 
 
-@contextmanager
-def _exclusive_lock(lock_path: Path) -> Iterator[None]:
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-def _sqlite_snapshot(src: Path, dst: Path) -> None:
-    """Consistent point-in-time copy INCLUDING commits still living in the ``-wal``.
-
-    ``?mode=ro`` is tried first because it is the case that matters. A live
-    WAL-mode DB keeps every commit in its ``-wal`` until a checkpoint folds it
-    back into the main file, and only a connection that READS the WAL sees
-    them. ``?immutable=1`` does not: it promises SQLite the file cannot change,
-    so SQLite skips locking *and* ignores the ``-wal`` entirely. Snapshotting a
-    live DB that way silently drops every transaction since the last checkpoint
-    and can tear pages under a concurrent writer — which is how an
-    unrestorable "backup" gets produced. ``mode=ro`` also takes real read
-    locks, so the snapshot is a consistent point in time rather than a smear.
-
-    ``immutable=1`` stays as the FALLBACK, for the case it was actually added
-    for: a cold artifact whose ``-shm`` is absent and cannot be created (a
-    read-only file or directory), where ``mode=ro`` fails with
-    ``OperationalError: unable to open database file``. A cold artifact has no
-    uncheckpointed WAL to lose, so the fallback is lossless exactly where it
-    applies. The probe query is what forces the real open — ``connect`` alone
-    is lazy, so a missing ``-shm`` would otherwise surface later, mid-backup.
-
-    The source is never opened read-write, so this stays legal on a host whose
-    control DB the containerized stack owns (:mod:`teatree.db.boundary`).
-    """
-    # ``as_uri`` percent-encodes a path holding a URI-special character (space,
-    # ``%``, ``?``, ``#``) instead of malforming the URI into a different open.
-    base_uri = src.absolute().as_uri()
-    source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
-    try:
-        source.execute("SELECT 1").fetchone()
-    except sqlite3.OperationalError:
-        source.close()
-        source = sqlite3.connect(f"{base_uri}?immutable=1", uri=True)
-    try:
-        dest = sqlite3.connect(dst)
-        try:
-            source.backup(dest)
-        finally:
-            dest.close()
-    finally:
-        source.close()
-
-
 def _seed_isolated_db(data_dir: Path, *, canonical_db: Path, isolation_root: Path) -> None:
     """Seed an auto-isolated worktree dir from a consistent canonical snapshot.
 
@@ -533,6 +485,12 @@ def data_dir_root() -> Path:
 #: real install, and walking it over a bind mount costs 20-115s for files no live
 #: process holds. Both measured offenders sat at the root; the bound keeps a level
 #: of margin at 0.14s.
+# The data dir is shared: teatree's own e2e machinery parks spec-repo checkouts under it,
+# 166k files on the deployed box. Every control DB teatree creates there sits at the
+# root (``resolve_data_dir``) or one namespaced level down (``get_data_dir``,
+# ``find_overlay_db``), so both sweeps stop at that level rather than descending —
+# a ``**`` walk of those checkouts cost 4.4s on the host and 274s in the container.
+_CONTROL_DB_ROOT_GLOBS = ("{name}", "*/{name}")
 _CONTROL_DB_ARTIFACT_GLOBS = ("{name}*", "*/{name}*")
 
 
@@ -585,19 +543,23 @@ class PathHelpers:
     def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
         """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
 
-        Walks recursively under ``data_dir`` so any legacy namespaced layout
-        (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
-        Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
-        root, never under ``data_dir``, so they are structurally excluded here.
-        Used by both the settings warning and the ``t3 doctor`` check.
+        Scoped to where a sibling control DB can actually be: the data dir itself and
+        the legacy namespaced layout one level down (``data_dir/<name>/db.sqlite3``).
+        The canonical path is skipped. Auto-isolated worktree DBs live under the
+        sibling ``teatree-worktrees`` root, never under ``data_dir``, so they are
+        structurally excluded here. Used by both the settings warning and the
+        ``t3 doctor`` check.
         """
         if not data_dir.is_dir():
             return
         canonical = canonical.resolve()
-        for candidate in data_dir.glob("**/db.sqlite3"):
-            if candidate.resolve() == canonical:
-                continue
-            yield candidate
+        seen: set[Path] = set()
+        for pattern in _CONTROL_DB_ROOT_GLOBS:
+            for candidate in sorted(data_dir.glob(pattern.format(name=DB_FILENAME))):
+                if candidate in seen or candidate.resolve() == canonical:
+                    continue
+                seen.add(candidate)
+                yield candidate
 
     @staticmethod
     def find_control_db_artifacts(data_dir: Path, *, canonical: Path) -> Iterator[Path]:

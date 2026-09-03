@@ -184,12 +184,12 @@ class TestShipExecutorIntegration:
 
     def test_banned_namespace_strips_trailer_from_pr_description(self) -> None:
         ticket = Ticket.objects.create(
-            overlay="test",
+            overlay="",
             state=Ticket.State.REVIEWED,
             issue_url="https://example.com/issues/1",
         )
         Worktree.objects.create(
-            overlay="test",
+            overlay="",
             ticket=ticket,
             repo_path="eng-group/product",
             branch="feat-x",
@@ -236,12 +236,12 @@ class TestShipExecutorIntegration:
 
     def test_non_banned_namespace_keeps_trailer(self) -> None:
         ticket = Ticket.objects.create(
-            overlay="test",
+            overlay="",
             state=Ticket.State.REVIEWED,
             issue_url="https://example.com/issues/2",
         )
         Worktree.objects.create(
-            overlay="test",
+            overlay="",
             ticket=ticket,
             repo_path="souliane/teatree",
             branch="feat-y",

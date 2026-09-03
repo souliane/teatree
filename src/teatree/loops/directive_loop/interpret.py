@@ -110,6 +110,12 @@ def reinterpret_after_clarification(directive: Directive) -> "DirectiveDispatch 
     Called once every clarify question for the current generation is answered — the
     ``CLARIFYING`` → re-``INTERPRETED`` round-trip. Bumps ``generation`` first so the
     dispatch dedups on the NEW generation (one fresh interpreter, never a duplicate).
+
+    A live interpreter is checked BEFORE the bump: answering the clarify question also
+    resumes the parked interpreter, and bumping past questions that are keyed on the old
+    generation would strand the directive in ``CLARIFYING`` with nothing left to answer.
     """
+    if DirectiveDispatch.live_interpreter_exists(directive):
+        return None
     directive.bump_generation()
     return dispatch_interpretation(directive)

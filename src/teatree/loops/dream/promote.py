@@ -387,9 +387,12 @@ def promote_candidate(
 
     scen_dir.mkdir(parents=True, exist_ok=True)
     fix_dir.mkdir(parents=True, exist_ok=True)
-    _append_scenario_yaml(scenario_path, candidate, drift_rule)
+    # Appending the scenario is what ACTIVATES it, so both replay fixtures it names must
+    # already exist — a failure between the two orderings leaves a live scenario the
+    # suite cannot replay rather than fixtures nothing yet reads.
     fail_fixture.write_text(_fail_transcript(name, drift_rule) + "\n", encoding="utf-8")
     pass_fixture.write_text(_pass_transcript(name, drift_rule) + "\n", encoding="utf-8")
+    _append_scenario_yaml(scenario_path, candidate, drift_rule)
     return PromotionOutcome(
         scenario_name=name,
         promoted=True,

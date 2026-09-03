@@ -15,7 +15,7 @@ is exactly what blocks the release-notes pipeline.
 from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.ship import (
     PrTitleInputs,
@@ -64,7 +64,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
     """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
-    overlay = get_overlay()
+    overlay = get_overlay_for_ticket(ticket)
     resolved = resolve_pr_title(
         ticket,
         ticket.extra or {},
@@ -93,13 +93,14 @@ def ship_dry_run(ticket: Ticket, worktree: Worktree, *, title: str = "") -> Ship
         branch=worktree.branch,
         title=resolved_title,
         description=description,
-        labels=overlay_pr_labels(),
+        labels=overlay_pr_labels(get_overlay_for_ticket(ticket)),
     )
 
 
 def validate_pr_metadata(ticket: Ticket, worktree: Worktree, *, title: str = "") -> PrValidationError | None:
-    _, resolved_title, description = ship_preview(ticket, worktree, title=title)
-    validation = get_overlay().metadata.validate_pr(resolved_title, description)
+    repo_path, resolved_title, description = ship_preview(ticket, worktree, title=title)
+    overlay = get_overlay_for_ticket(ticket)
+    validation = overlay.metadata.validate_pr(resolved_title, description, repo=git.remote_slug(repo=repo_path))
     if validation["errors"]:
         return PrValidationError(error="PR validation failed", details=validation["errors"])
     return None

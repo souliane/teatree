@@ -17,9 +17,12 @@ tick atomically claims the next pending DB unit (``t3 loop claim-next``) and spa
 ONE fresh, bounded sub-agent for just that unit, which returns; spawning the
 sub-agent requires the Agent tool, which exists only inside a live Claude session,
 so the worker's deadlined tick subprocess dispatches work when a session is present.
-Statelessness across ticks is the compaction-proofing — a worker dying mid-task
-leaves its Task reclaimable and the next tick re-dispatches it. Ownership is
-per-loop (the ``loop:<name>`` lease).
+The returning sub-agent's outcome is then recorded (``tasks record-attempt
+--claim-token``), which is the only thing that ends the unit. Statelessness across
+ticks is the compaction-proofing — a worker dying mid-task leaves its Task
+reclaimable and the next tick re-dispatches it; so does a worker that returns
+without recording, which is why an unrecorded unit circulates rather than
+completing. Ownership is per-loop (the ``loop:<name>`` lease).
 """
 
 import os
@@ -59,7 +62,10 @@ loop_app = typer.Typer(
         "profile). `loop_runner_enabled` is the kill-switch — set it false to stop the "
         "loops entirely (there is no fallback plane; PR-28 retired the native `/loop` "
         "cron mirror). Each per-loop tick atomically claims the next pending unit "
-        "(`t3 loop claim-next`) and spawns one fresh bounded sub-agent for it; a "
+        "(`t3 loop claim-next`), spawns one fresh bounded sub-agent for it, and records "
+        "the outcome when that sub-agent returns (`tasks record-attempt --claim-token`) "
+        "— the claim is the spawn boundary, not the finish, and an unrecorded unit is "
+        "reclaimed and re-offered rather than ever completing; a "
         "dying worker leaves its Task reclaimable and the next tick re-dispatches it. "
         "Check the worker with `t3 worker status`; ensure one is running with "
         "`t3 worker ensure`."
@@ -283,8 +289,13 @@ def _session_pin_flags() -> list[str]:
 
 @loop_app.command("stop")
 def stop_command() -> None:
-    """Print the slot id to stop in the Claude Code session."""
-    typer.echo("To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.")
+    """Print how to stop the durable, worker-driven loops."""
+    typer.echo(
+        "To stop the loops, turn the kill-switch off:\n"
+        "    t3 <overlay> config_setting set loop_runner_enabled false\n"
+        "Then stop the worker that drains their timer chains: t3 <overlay> worker (Ctrl+C), "
+        "or check it with `t3 worker status`. Re-enable with `loop_runner_enabled true`."
+    )
 
 
 # ── self-improve subcommands (BLUEPRINT § 5.7) ───────────────────────

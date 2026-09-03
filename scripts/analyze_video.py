@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -155,8 +156,15 @@ def _gh_token() -> str | None:
     return token or None
 
 
-def _fetch_plan(url: str, dest: Path, *, gh_token: str | None = None) -> tuple[list[str], bool]:
-    """Return ``(argv, capture_stdout)`` to fetch *url* into *dest*, using forge auth where needed.
+@dataclass(frozen=True)
+class FetchPlan:
+    argv: list[str]
+    capture_stdout: bool = False
+    stdin: str | None = None
+
+
+def _fetch_plan(url: str, dest: Path, *, gh_token: str | None = None) -> FetchPlan:
+    """Return how to fetch *url* into *dest*, using forge auth where needed.
 
     A GitLab project-upload URL routes through ``glab api`` (its body is the raw
     file on stdout); a GitHub attachment through an authenticated ``curl`` (the
@@ -171,24 +179,30 @@ def _fetch_plan(url: str, dest: Path, *, gh_token: str | None = None) -> tuple[l
         if host != "gitlab.com":
             argv += ["--hostname", host]
         argv.append(f"projects/{quote(project, safe='')}/uploads/{secret}/{filename}")
-        return argv, True
+        return FetchPlan(argv, capture_stdout=True)
 
     if urlparse(url).hostname == "github.com" and gh_token:
-        return ["curl", "-sL", "-H", f"Authorization: Bearer {gh_token}", "-o", str(dest), url], False
+        # `--config -` keeps the bearer token out of the argument vector, which
+        # every other process on the machine can read out of `ps`.
+        return FetchPlan(
+            ["curl", "-sL", "--config", "-", "-o", str(dest), url],
+            stdin=f'header = "Authorization: Bearer {gh_token}"\n',
+        )
 
-    return ["curl", "-sL", "-o", str(dest), url], False
+    return FetchPlan(["curl", "-sL", "-o", str(dest), url])
 
 
 def _download_url(url: str, dest: Path) -> Path:
     """Download a URL to a local file, authenticating for GitLab/GitHub forge uploads."""
     suffix = Path(url.split("?", maxsplit=1)[0]).suffix or ".mp4"
     local = dest / f"input{suffix}"
-    argv, capture_stdout = _fetch_plan(url, local, gh_token=_gh_token())
-    result = subprocess.run(argv, capture_output=True)
+    plan = _fetch_plan(url, local, gh_token=_gh_token())
+    stdin = plan.stdin.encode() if plan.stdin is not None else None
+    result = subprocess.run(plan.argv, input=stdin, capture_output=True)
     if result.returncode != 0:
         print(f"Error downloading {url}: {result.stderr.decode(errors='replace')}", file=sys.stderr)
         raise typer.Exit(1)
-    if capture_stdout:
+    if plan.capture_stdout:
         local.write_bytes(result.stdout)
     if not local.exists() or local.stat().st_size == 0:
         print(f"Error: downloaded file is empty: {local}", file=sys.stderr)
@@ -222,8 +236,9 @@ def _run_verify(source: str, *, max_dead_lead: float) -> None:
     print(f"Video: {video_path.name}")
     print(f"Duration: {report.duration:.1f}s")
     print(f"Leading dead pre-roll: {report.dead_lead_seconds:.1f}s (budget {budget:.1f}s)")
+    print(f"Total blank/static: {report.dead_total_seconds:.1f}s (budget {report.max_dead_fraction:.0%} of duration)")
     if report.ok:
-        print("PASS: no excessive blank/static pre-roll.")
+        print("PASS: not excessively blank/static.")
         return
     print(f"FAIL: {report.detail}", file=sys.stderr)
     raise typer.Exit(1)

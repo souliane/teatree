@@ -62,19 +62,28 @@ class ReapResult:
         )
 
 
-def _docker_lines(cmd: list[str], *, timeout: int) -> list[str]:
+def _docker_output(cmd: list[str], *, timeout: int) -> list[str] | None:
+    """Stripped stdout lines, or ``None`` when docker refused, timed out, or was absent.
+
+    A refusal and an empty success are different answers: collapsing them lets a failed
+    removal be counted as a completed one.
+    """
     try:
         result = run_allowed_to_fail(cmd, expected_codes=None, timeout=timeout)
     except (FileNotFoundError, PermissionError) as exc:
         logger.debug("docker unavailable, skipping %s: %s", cmd[:3], exc)
-        return []
+        return None
     except TimeoutExpired:
         logger.warning("docker command timed out: %s", cmd[:3])
-        return []
+        return None
     if result.returncode != 0:
         logger.warning("docker %s failed: %s", cmd[:3], result.stderr.strip()[:300])
-        return []
+        return None
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _docker_lines(cmd: list[str], *, timeout: int) -> list[str]:
+    return _docker_output(cmd, timeout=timeout) or []
 
 
 def _project_filter(project: str) -> list[str]:
@@ -99,7 +108,11 @@ def _remove(kind: str, ids: list[str]) -> int:
     if not ids:
         return 0
     flag = "rm" if kind == "container" else "rmi"
-    removed = _docker_lines(["docker", flag, "-f", *ids], timeout=_REMOVE_TIMEOUT)
+    removed = _docker_output(["docker", flag, "-f", *ids], timeout=_REMOVE_TIMEOUT)
+    if removed is None:
+        return 0
+    # `docker rmi` prints Untagged:/Deleted: lines rather than one id per removal, so a
+    # succeeding call with an unmatched line count still removed everything asked for.
     return len(removed) or len(ids)
 
 

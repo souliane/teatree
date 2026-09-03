@@ -214,6 +214,8 @@ Pair with `ScheduleWakeup` to poll at sensible intervals (5-10 min for multi-min
 
 **Always use the `t3 review` CLI.** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw `glab api` or `curl` for draft notes.
 
+For an MR-level (`--general`) draft, prefer the `mcp__teatree__review_post_draft_note` MCP tool — the same gated seam, colleague-invisible by design; fall back to `t3 review post-draft-note … --general` when the MCP server isn't connected. **Inline** drafts stay on the CLI: the MCP tool takes `(repo, mr, note)` and has no file/line anchor.
+
 ```bash
 # Inline comment on a specific file and line
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>

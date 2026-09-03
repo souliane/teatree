@@ -17,11 +17,24 @@ from pydantic_ai.toolsets.function import FunctionToolset
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_BASH
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import TimeoutExpired, redact_secrets, run_allowed_to_fail
 
 
 class ShellDeniedError(ToolInputError, RuntimeError):
     """A command matched the coarse Shell denylist — refused before execution."""
+
+
+class ShellTimeoutError(ToolInputError, RuntimeError):
+    """A command exceeded its per-call wall-clock ceiling — a ``ToolInputError``.
+
+    The model chose (or was handed) a command that ran too long — same family as a
+    denied path or a bad substring: it can retry narrower or backgrounded, so this
+    is retryable, not a teatree defect. Before this existed, ``subprocess.TimeoutExpired``
+    escaped uncaught (not a member of
+    :data:`~teatree.agents.lane_b.tool_errors.CORRECTABLE_TOOL_ERRORS`) and crashed the
+    whole dispatch — the repeated ``harness_crash`` on unbounded filesystem-wide
+    ``find /`` searches was this, three times over.
+    """
 
 
 def _denylisted(command: str, denylist: tuple[str, ...]) -> str | None:
@@ -51,8 +64,11 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     The command runs with ``cwd`` pinned to the worktree root (or the process cwd
     when the task has none), under *config*'s pinned child env, with the
     per-command timeout enforced by the shared ``teatree.utils.run`` wrapper. A
-    denylist hit raises :class:`ShellDeniedError`; a timeout raises the tool error
-    the model sees. The command is passed through a resolved POSIX ``-c`` shell
+    denylist hit raises :class:`ShellDeniedError`; a timeout raises
+    :class:`ShellTimeoutError` — both ``ToolInputError`` — so the gate wrapper
+    (:class:`~teatree.agents.lane_b.gating.HardDenyToolset`) turns either into a
+    retryable ``ModelRetry`` instead of crashing the run. The command is passed
+    through a resolved POSIX ``-c`` shell
     (:func:`_resolve_shell`, absolute path preferring ``bash``) so the list-based
     runner still evaluates a full shell string (pipes, redirects) — the runner is
     the sanctioned chokepoint, not raw ``subprocess``.
@@ -69,13 +85,19 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             raise ShellDeniedError(msg)
         # ``expected_codes=None`` accepts any exit code — the tool REPORTS the
         # exit status to the model rather than raising on a non-zero one.
-        result = run_allowed_to_fail(
-            [shell_bin, "-c", command],
-            expected_codes=None,
-            env=config.shell_env or None,
-            cwd=cwd,
-            timeout=config.shell_timeout_seconds,
-        )
+        try:
+            result = run_allowed_to_fail(
+                [shell_bin, "-c", command],
+                expected_codes=None,
+                env=config.shell_env or None,
+                cwd=cwd,
+                timeout=config.shell_timeout_seconds,
+            )
+        except TimeoutExpired as exc:
+            # Redacted like ``CommandFailedError`` — this text can end up in a
+            # TaskAttempt.error record, not just the model's own turn.
+            msg = f"command timed out after {exc.timeout}s: {redact_secrets(command)}"
+            raise ShellTimeoutError(msg) from exc
         return f"exit={result.returncode}\n{result.stdout}{result.stderr}"
 
     # Exposed to the model as ``Bash`` (the skill/SDK vocabulary) so a skill saying

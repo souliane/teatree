@@ -7,8 +7,12 @@ and passes when everything is inside scope. This is the anti-vacuity trust-build
 that must fail LOUD before the operator flips the flag on.
 """
 
+import subprocess
 from pathlib import Path
 
+import pytest
+
+from scripts.ci import push_gate_selection_audit as audit
 from scripts.ci.push_gate_selection_audit import audit_scope
 from teatree.quality.push_gate import WHOLE_TREE_DOCTEST, PushGatePlan
 
@@ -47,3 +51,59 @@ class TestAuditScope:
 
     def test_clean_whole_tree_passes(self) -> None:
         assert audit_scope(_SCOPED, [], []) == []
+
+
+def _sweep_result(returncode: int, stdout: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=["pytest"], returncode=returncode, stdout=stdout, stderr="")
+
+
+class TestWholeTreeDoctestSweepFailsLoud:
+    """An empty failure set only means "clean tree" when the sweep actually ran.
+
+    A collection error, an internal error, or a run that collected nothing all
+    produce no parseable ``FAILED`` line — indistinguishable from a green sweep,
+    so the audit would certify the scoping it never measured.
+    """
+
+    @pytest.mark.parametrize("returncode", [2, 3, 4, 5])
+    def test_infrastructure_exit_code_raises(
+        self,
+        returncode: int,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(audit, "run_allowed_to_fail", lambda *a, **k: _sweep_result(returncode, ""))
+
+        with pytest.raises(SystemExit) as exc_info:
+            audit._whole_tree_doctest_failures(tmp_path)
+
+        assert str(returncode) in str(exc_info.value)
+
+    def test_reported_failures_that_parse_to_nothing_raise(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(
+            audit,
+            "run_allowed_to_fail",
+            lambda *a, **k: _sweep_result(1, "1 failed in 0.10s\n"),
+        )
+
+        with pytest.raises(SystemExit):
+            audit._whole_tree_doctest_failures(tmp_path)
+
+    def test_green_sweep_returns_no_failures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(audit, "run_allowed_to_fail", lambda *a, **k: _sweep_result(0, "42 passed in 1.0s\n"))
+
+        assert audit._whole_tree_doctest_failures(tmp_path) == []
+
+    def test_parsed_failures_are_returned_sorted_and_deduped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        stdout = "FAILED src/teatree/z.py::z\nFAILED src/teatree/a.py::a\nFAILED src/teatree/z.py::z2\n"
+        monkeypatch.setattr(audit, "run_allowed_to_fail", lambda *a, **k: _sweep_result(1, stdout))
+
+        assert audit._whole_tree_doctest_failures(tmp_path) == ["src/teatree/a.py", "src/teatree/z.py"]

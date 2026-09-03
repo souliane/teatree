@@ -33,9 +33,10 @@ def resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
     Lives in the command layer (not the domain gate) so the integration-layer
     git-diff helper is reached from a layer allowed to depend on it. Shares the
     canonical :func:`resolve_ship_worktree` (#776) so the CLEAR side classifies
-    the same tree the ship side does — the branch the CLEAR acts on, recorded on
-    ``extra['ship_invoking_branch']`` — not the ticket's earliest (often
-    already-merged) worktree row a reused multi-workstream ticket carries.
+    the same tree the ship side does — the checkout the CLEAR acts on, recorded on
+    ``extra['ship_invoking_path']`` (its branch the fallback) — not the ticket's
+    earliest (often already-merged) worktree row a reused multi-workstream ticket
+    carries.
     Returns the ``origin/main...HEAD`` changed-file list, or an empty list when
     no worktree / no resolvable diff (the gate treats an empty diff as
     fail-closed impacting for a customer-facing overlay).
@@ -44,11 +45,17 @@ def resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
         return []
 
     from teatree import visual_qa  # noqa: PLC0415 — deferred: keeps command import light
-    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.core.runners.ship import (  # noqa: PLC0415 — deferred: keeps command import light
+        ShipWorktreeAmbiguousError,
+        resolve_ship_worktree,
+    )
     from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: keeps command import light
 
     extra = cast("TicketExtra", ticket.extra or {})
-    worktree = resolve_ship_worktree(ticket, extra)
+    try:
+        worktree = resolve_ship_worktree(ticket, extra)
+    except ShipWorktreeAmbiguousError:
+        return []
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
     try:
         return visual_qa.changed_files(repo=repo_path)

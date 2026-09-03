@@ -396,3 +396,22 @@ class TestTriageIssuesCLI:
             result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree", "--close-resolved"])
         assert result.exit_code == 0
         assert "Closed 1" in result.output
+
+    def test_a_loose_mention_is_left_open_rather_than_auto_closed(self) -> None:
+        # "see #42 for context" reads identically to a fix, so closing on it shuts a live issue.
+        issues = [_issue_with_age(42, "an unrelated open issue")]
+        prs = [_pr_fixture(100, "fix: flaky test, see #42 for context")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            # A fourth result is offered so the pre-fix close attempt runs to completion
+            # and the verdict is the assertion below, not a StopIteration.
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+            ]
+            result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree", "--close-resolved"])
+        assert result.exit_code == 0
+        assert "Closed 0" in result.output
+        assert "Left open for review" in result.output
+        assert not any(call.args[0][:3] == ["gh", "issue", "close"] for call in mock_run.call_args_list)

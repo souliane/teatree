@@ -3,9 +3,10 @@
 Naked ``httpx`` calls broke a whole loop tick on a single transient ``502`` /
 ``429`` / connect timeout — the failure both :class:`SlackHttpClient` and
 :class:`GitLabHTTPClient` were built to survive. :class:`BoundedRetryTransport`
-is the one machine those two (and the lighter Sentry / Notion / Figma clients)
-share: a bounded exponential backoff that honours ``Retry-After`` and is gated
-by BOTH the failure class and the call's idempotency.
+is the one machine those two — plus the lighter Sentry / Notion / Figma clients
+and the worktree readiness probe's boot-time GET — share: a bounded exponential
+backoff that honours ``Retry-After`` and is gated by BOTH the failure class and
+the call's idempotency.
 
 Idempotency is the load-bearing safety constraint. A non-idempotent write
 (``chat.postMessage``, a GitLab note ``POST``) that read-times-out may have

@@ -16,9 +16,12 @@ Integration-style with real Django ORM rows. Times are backdated with
 (mirrors :mod:`tests.teatree_loop.test_stale_tickets`).
 """
 
+import os
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -28,11 +31,34 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.loop.scanners.architectural_review import ARCHITECTURAL_REVIEW_PHASE, ArchitecturalReviewScanner
+from teatree.provisioning.declared import project_root_for_running_code, skills_declared_in_apm_manifest
 from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
 OVERLAY = "acme"
 
 
+@pytest.fixture
+def mandated_skills_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin the search dirs to the skills ``apm.yml`` MANDATES, not the operator's home.
+
+    Unpinned, ``default_search_dirs`` reaches ``~/.claude/skills``, so the verdict is
+    whatever the box happens to have installed — green on a provisioned machine, red on
+    a runner that never ran ``apm install``. The mandate is the honest set and the one
+    ``t3 setup`` provisions, so a name in neither the manifest nor the repo tree is the
+    #3353 drift and nothing else is.
+    """
+    staged = tmp_path / "mandated"
+    staged.mkdir()
+    root = project_root_for_running_code()
+    assert root is not None, "the running code's own checkout must be locatable"
+    for dependency in skills_declared_in_apm_manifest(root / "apm.yml"):
+        (staged / dependency.name).mkdir(parents=True, exist_ok=True)
+        (staged / dependency.name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+    monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", f"{root / 'skills'}{os.pathsep}{staged}")
+    return staged
+
+
+@pytest.mark.usefixtures("mandated_skills_dir")
 class TestDefaultSkillResolvesToARealSkill:
     """Regression for #3353: the default review skill must actually exist.
 
@@ -53,6 +79,10 @@ class TestDefaultSkillResolvesToARealSkill:
     def test_settings_default_skill_is_canonical(self) -> None:
         default_skill = UserSettings().architectural_review_skill
         assert default_skill in canonical_skill_names(default_search_dirs())
+
+    def test_a_name_nothing_mandates_is_flagged(self) -> None:
+        # Anti-vacuity: the staged set is the mandate, not a copy of the answer.
+        assert "ac-reviewing-skills" not in canonical_skill_names(default_search_dirs())
 
 
 def _scanner(

@@ -1,10 +1,23 @@
 """Tests for the module-health pre-commit hook."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import scripts.hooks.check_module_health as mod
+
+
+@pytest.fixture(autouse=True)
+def _work_tree(tmp_path: Path) -> None:
+    """Make the fixture directory a real work tree.
+
+    The hook resolves the tree its staged names are relative to, and a
+    pre-commit hook only ever runs inside one. A non-repo fixture was the only
+    venue where it did not, and the silent degrade that tolerated it is the
+    fail-open this module now refuses.
+    """
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)  # noqa: S607 — `git` from PATH deliberately: the fixture must drive the same git the hook under test resolves
 
 
 class TestModuleHealthGate:

@@ -11,6 +11,7 @@ merge (in :mod:`.render`) overlays onto the persisted state.
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.core.management.commands._test_plan.state import (
@@ -35,20 +36,23 @@ class WorkflowArtifacts:
 
 @dataclass(frozen=True, slots=True)
 class SideManifest:
-    """One side (dev/local): commits, gap, per-workflow artifacts.
+    """One side (dev/local): commits, when it ran, gap, per-workflow artifacts.
 
     ``present`` is False when the run did not carry this side (merge freezes it).
+    ``ran_at`` is the run's ISO-8601 UTC instant, empty when the run did not
+    record one.
     """
 
     present: bool
     commits: dict[str, str] = field(default_factory=dict)
+    ran_at: str = ""
     missing_on_dev: tuple[str, ...] = ()
     workflows: dict[str, WorkflowArtifacts] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class TestPlanManifest:
-    """Parsed + validated ``--manifest``: ticket, MRs, per-side input, template, optional steps."""
+    """Parsed + validated ``--manifest``: ticket, title, MRs, per-side input, template, optional steps."""
 
     __test__ = False  # not a pytest test class (name starts with 'Test')
 
@@ -56,6 +60,7 @@ class TestPlanManifest:
     mrs: tuple[str, ...]
     dev: SideManifest
     local: SideManifest
+    title: str = ""
     steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
     template: str = DEFAULT_TEMPLATE
     blocked_workflows: dict[str, str] = field(default_factory=dict)
@@ -95,6 +100,7 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
     return TestPlanManifest(
         ticket=str(data.get("ticket", "")).strip(),
         mrs=mrs,
+        title=str(data.get("title", "")).strip(),
         dev=sides["dev"],
         local=sides["local"],
         steps=steps,
@@ -155,10 +161,32 @@ def _parse_side(
         return SideManifest(present=False)
     meta = _as_dict(side_meta)
     commits = {str(k): str(v) for k, v in _as_dict(meta.get("commits")).items()}
+    ran_at = _parse_ran_at(meta.get("ran_at"), env=env)
     missing: tuple[str, ...] = ()
     if env == "dev":
         missing = tuple(str(m).strip() for m in _as_list(meta.get("missing_on_dev")) if str(m).strip())
-    return SideManifest(present=True, commits=commits, missing_on_dev=missing, workflows=workflows)
+    return SideManifest(present=True, commits=commits, ran_at=ran_at, missing_on_dev=missing, workflows=workflows)
+
+
+def _parse_ran_at(raw: object, *, env: str) -> str:
+    """The side's run instant as an ISO-8601 UTC string; raise on an unparsable value.
+
+    Stored as the instant, not a display string, so the persisted state stays
+    sortable and can be aged against a later build; the human form is a render
+    concern. An unparsable timestamp is refused rather than dropped: a capture
+    whose time silently vanished reads as evidence that was never dated.
+    """
+    text = str(raw).strip() if raw else ""
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        msg = f"--manifest '{env}.ran_at' is not an ISO-8601 timestamp: {text!r}."
+        raise TestPlanValidationError(msg) from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_side_workflow(entry: object, *, env: str, index: int, base_dir: Path | None) -> WorkflowArtifacts | None:

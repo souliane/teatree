@@ -18,7 +18,8 @@ from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
-from teatree.cli.setup.docker_alias import DockerAliasInstaller
+from teatree.cli.setup.docker_alias import retire_alias
+from teatree.cli.setup.docker_launcher import DockerLauncherInstaller
 from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
 from teatree.cli.setup.mandated_skills import MandatedSkillProvisioner
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
@@ -32,6 +33,7 @@ from teatree.cli.slack.dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack.provision import slack_provision
 from teatree.cli.slack.setup import slack_bot_setup
 from teatree.cli.slack.user_token_setup import slack_user_token_setup
+from teatree.core.skill_sources import install_declared_sources
 from teatree.paths import get_data_dir
 from teatree.provisioning.skill_pin import default_record_path
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
@@ -179,11 +181,15 @@ def run(
 
     _report_statusline_install(settings_json, repo)
 
-    # #3232: wire the containerized `t3` workflow — install a shell alias pointing
-    # `t3` at the container-wrapping `deploy/t3` entry so `t3 <args>` transparently
-    # execs into the Docker worker. No-ops inside a container (there the container
-    # IS the CLI); best-effort on the host (an unwritable rc WARNs, never aborts).
-    DockerAliasInstaller(repo).install(echo=typer.echo)
+    # #3232: wire the containerized `t3` workflow. The launcher is the ONLY
+    # mechanism — an executable `t3` on PATH that execs `deploy/t3`, so scripts,
+    # git hooks, cron and sub-agents resolve the same containerized CLI an
+    # interactive shell does. A container writes it through the host bin mount; a
+    # host writes it directly. The alias a previous version installed is retired,
+    # never refreshed. Both are best-effort — a refusal or an unwritable path
+    # WARNs, never aborts.
+    DockerLauncherInstaller(repo).install(echo=typer.echo)
+    retire_alias(echo=typer.echo)
 
     from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -210,6 +216,13 @@ def run(
     # already-loadable skill is skipped, so the entrypoint's every-start `t3 setup`
     # converges without re-fetching.
     MandatedSkillProvisioner(repo, claude_skills, get_data_dir("skill-sources")).provision(typer.echo)
+
+    # The overlays' OWN dispatch map names skills published by a repo the manifest
+    # above never mentions, so provisioning and dispatch gated on different lists and
+    # an unresolvable dispatch failed silently. Same skip-if-loadable idempotence, so
+    # the entrypoint's every-start `t3 setup` converges.
+    for outcome in install_declared_sources(link_dir=claude_skills, cache_root=get_data_dir("skill-sources")):
+        typer.echo(outcome.render())
 
     # The provisioner above installs what the manifest pins; this asks whether the
     # PIN itself is still where the source is. Setup is the one place that can ask:

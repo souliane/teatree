@@ -33,6 +33,8 @@ import datetime as dt
 from collections.abc import Mapping
 from typing import Final
 
+from django.db import transaction
+
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models import Loop, Mode
 from teatree.core.models.loop_preset import low_power_preset_name
@@ -126,8 +128,13 @@ def set_preset_entry(preset_name: str, loop_name: str, value: str) -> Mode:
 
     ``inherit`` removes the key entirely — the preset then holds no opinion and the
     loop's base ``enabled`` column decides.
+
+    ``entries`` is ONE JSON map holding every loop's opinion, so a bare
+    read-modify-write lets the CLI and the dashboard editor silently drop each other's
+    edit to a different loop. The re-read happens inside the transaction, which SQLite's
+    ``IMMEDIATE`` mode makes a real compare-and-swap: the first writer holds the reserved
+    lock for the whole block, so the second reads the map the first already wrote.
     """
-    preset = require_preset(preset_name)
     state = value.strip().lower()
     if state not in ENTRY_STATES:
         msg = f"invalid entry value {value!r}; use on|off|inherit"
@@ -135,8 +142,10 @@ def set_preset_entry(preset_name: str, loop_name: str, value: str) -> Mode:
     if not Loop.objects.filter(name=loop_name).exists():
         msg = f"no loop named {loop_name!r}"
         raise PresetEditError(msg)
-    preset.entries = apply_entry_edits(preset.entries, [f"{loop_name}={state}"], preset_name=preset.name)
-    preset.save(update_fields=["entries", "updated_at"])
+    with transaction.atomic():
+        preset = require_preset(preset_name)
+        preset.entries = apply_entry_edits(preset.entries, [f"{loop_name}={state}"], preset_name=preset.name)
+        preset.save(update_fields=["entries", "updated_at"])
     return preset
 
 

@@ -334,12 +334,16 @@ class PydanticAiHarness:
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
+        # ``config.shell_tool_retries`` is None outside the shell-exploration phase
+        # family — passing ``retries=None`` there is byte-identical to omitting it,
+        # so only those phases' Agent gets a widened tool-retry budget.
         agent: Agent[None, str] = Agent(
             model,
             system_prompt=harness_options.system_prompt,
             model_settings=model_settings,
             toolsets=toolsets,
             tool_timeout=config.shell_timeout_seconds if self._phase else None,
+            retries={"tools": config.shell_tool_retries} if config.shell_tool_retries is not None else None,
         )
         # ``async with agent:`` enters the model so the provider's HTTP client
         # (the OpenAI-compatible connection pool) closes cleanly on

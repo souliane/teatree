@@ -7,11 +7,17 @@ assertion fails if the status mapping — or the SSRF host filter — regresses.
 """
 
 import socket
+import threading
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Self
 
+import pytest
+
 from teatree.verification.url_check import HostResolver, UrlCheckStatus, check_url
+from teatree.verification.url_check import _default_opener as default_opener
 
 
 class _FakeResponse:
@@ -28,7 +34,7 @@ class _FakeResponse:
 def _opener(method_status: dict[str, object]) -> object:
     """Build an opener that maps request method -> a status int or an exception."""
 
-    def opener(request: urllib.request.Request, timeout: float) -> _FakeResponse:
+    def opener(request: urllib.request.Request, timeout: float, address: str) -> _FakeResponse:
         outcome = method_status[request.get_method()]
         if isinstance(outcome, Exception):
             raise outcome
@@ -101,7 +107,7 @@ class TestCheckUrl:
 class TestSsrfGuard:
     """The host SSRF filter refuses non-public addresses before any probe."""
 
-    def _explode_opener(self, request: urllib.request.Request, timeout: float) -> _FakeResponse:
+    def _explode_opener(self, request: urllib.request.Request, timeout: float, address: str) -> _FakeResponse:
         msg = "the opener must never be reached for a refused host"
         raise AssertionError(msg)
 
@@ -152,3 +158,47 @@ class TestSsrfGuard:
             "https://example.com/a", opener=_opener({"HEAD": 200}), resolver=_resolver_to("93.184.216.34")
         )
         assert result.status is UrlCheckStatus.OK
+
+
+class _PingHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self) -> None:
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — BaseHTTPRequestHandler names it `format`
+        return
+
+
+@pytest.fixture
+def ping_server() -> Iterator[int]:
+    server = HTTPServer(("127.0.0.1", 0), _PingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestAddressPinning:
+    """The vetted address — not a second DNS answer — is what the transport connects to."""
+
+    def test_transport_receives_the_vetted_address(self) -> None:
+        seen: list[str] = []
+
+        def recording(request: urllib.request.Request, timeout: float, address: str) -> _FakeResponse:
+            seen.append(address)
+            return _FakeResponse(200)
+
+        result = check_url("https://example.com/a", opener=recording, resolver=_resolver_to("93.184.216.34"))
+        assert result.status is UrlCheckStatus.OK
+        assert seen == ["93.184.216.34"], "the guard's vetted address must reach the transport"
+
+    def test_default_opener_connects_to_the_pinned_address_not_dns(self, ping_server: int) -> None:
+        # The hostname resolves nowhere, so an answered request proves the connection
+        # went to the pinned address instead of a transport-side lookup.
+        request = urllib.request.Request(f"http://rebinding-host.invalid:{ping_server}/ping", method="HEAD")
+        with default_opener(request, 5.0, "127.0.0.1") as response:
+            assert response.status == 200

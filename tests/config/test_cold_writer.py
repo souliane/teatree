@@ -19,6 +19,7 @@ import pytest
 
 from teatree.config import cold_reader, cold_writer
 from teatree.config.cold_writer import WriteResult
+from teatree.config.host_projection import GENERATION_KEY
 
 # The exact ``teatree_config_setting`` shape Django's migration emits (see
 # ``sqlmigrate core 0001_initial``): NOT-NULL timestamp columns + the JSON_VALID
@@ -56,7 +57,7 @@ class TestWriteRoundTrip:
         _make_real_schema_db(db)
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
-        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.WROTE  # noqa: FBT003
+        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.WROTE  # noqa: FBT003 — positional bool is the argument the API under test takes
         assert cold_reader.read_setting("memory_recall_enabled", scope="") is False
 
     def test_write_is_an_upsert_not_a_duplicate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,8 +65,8 @@ class TestWriteRoundTrip:
         _make_real_schema_db(db)
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
-        assert cold_writer.write_setting("plan_edit_gate_enabled", True) is WriteResult.WROTE  # noqa: FBT003
-        assert cold_writer.write_setting("plan_edit_gate_enabled", False) is WriteResult.WROTE  # noqa: FBT003
+        assert cold_writer.write_setting("plan_edit_gate_enabled", True) is WriteResult.WROTE  # noqa: FBT003 — positional bool is the argument the API under test takes
+        assert cold_writer.write_setting("plan_edit_gate_enabled", False) is WriteResult.WROTE  # noqa: FBT003 — positional bool is the argument the API under test takes
         conn = sqlite3.connect(db)
         try:
             count = conn.execute(
@@ -80,7 +81,7 @@ class TestWriteRoundTrip:
         db = tmp_path / "explicit.sqlite3"
         _make_real_schema_db(db)
         assert (
-            cold_writer.write_setting("completion_claim_gate_enabled", False, db_path=db)  # noqa: FBT003
+            cold_writer.write_setting("completion_claim_gate_enabled", False, db_path=db)  # noqa: FBT003 — positional bool is the argument the API under test takes
             is WriteResult.WROTE
         )
         assert cold_reader.read_setting("completion_claim_gate_enabled", scope="", db_path=db) is False
@@ -97,20 +98,20 @@ class TestNoDbTierFallsBackToToml:
         absent = tmp_path / "nope.sqlite3"
         monkeypatch.setenv("T3_CONFIG_DB", str(absent))
         # The pre-``t3 setup`` cold state: no canonical DB yet -> caller writes TOML instead.
-        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003
+        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003 — positional bool is the argument the API under test takes
         assert not absent.exists()  # the writer must not CREATE the canonical DB
 
     def test_missing_table_is_no_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "unmigrated.sqlite3"
         sqlite3.connect(db).close()  # a DB file with NO teatree_config_setting table
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003
+        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003 — positional bool is the argument the API under test takes
 
     def test_malformed_db_is_no_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         garbage = tmp_path / "corrupt.sqlite3"
         garbage.write_bytes(b"this is not a sqlite database at all")
         monkeypatch.setenv("T3_CONFIG_DB", str(garbage))
-        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003
+        assert cold_writer.write_setting("memory_recall_enabled", False) is WriteResult.NO_DB_TIER  # noqa: FBT003 — positional bool is the argument the API under test takes
 
 
 class TestLockedWithRowIsWriteFailed:
@@ -126,15 +127,54 @@ class TestLockedWithRowIsWriteFailed:
         db = tmp_path / "db.sqlite3"
         _make_real_schema_db(db)
         # Seed a real row so the lock guards an EXISTING value the reader would still return.
-        assert cold_writer.write_setting("memory_recall_enabled", True, db_path=db) is WriteResult.WROTE  # noqa: FBT003
+        assert cold_writer.write_setting("memory_recall_enabled", True, db_path=db) is WriteResult.WROTE  # noqa: FBT003 — positional bool is the argument the API under test takes
         monkeypatch.setattr(cold_writer, "_BUSY_TIMEOUT_MS", 100)  # fail fast, don't wait 2s
         blocker = sqlite3.connect(db)
         try:
             blocker.execute("PRAGMA journal_mode=WAL")
             blocker.execute("BEGIN IMMEDIATE")  # hold the write lock
-            result = cold_writer.write_setting("memory_recall_enabled", False, db_path=db)  # noqa: FBT003
+            result = cold_writer.write_setting("memory_recall_enabled", False, db_path=db)  # noqa: FBT003 — positional bool is the argument the API under test takes
         finally:
             blocker.close()
         assert result is WriteResult.WRITE_FAILED
         # The blocked write did NOT touch the row: the seeded value survives.
         assert cold_reader.read_setting("memory_recall_enabled", scope="", db_path=db) is True
+
+
+class TestValueAndGenerationCommitTogether:
+    """The setting row and its generation bump are ONE transaction, or neither lands.
+
+    The generation labels the projection published from this write. A value that commits
+    while its bump is lost is published under a generation every host reader has already
+    seen — so the projection carrying the OLD value classifies FRESH, and the write is
+    invisible until some later write happens to move the counter.
+    """
+
+    @staticmethod
+    def _refuse_generation_writes(db: Path) -> None:
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TRIGGER refuse_generation BEFORE INSERT ON teatree_config_setting "
+                f"WHEN NEW.key = '{GENERATION_KEY}' "
+                "BEGIN SELECT RAISE(ABORT, 'generation write refused'); END"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_a_refused_generation_bump_rolls_the_value_back(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_real_schema_db(db)
+        self._refuse_generation_writes(db)
+
+        result = cold_writer.write_setting("memory_recall_enabled", False, db_path=db)  # noqa: FBT003 — positional bool is the argument the API under test takes
+        assert result is WriteResult.WRITE_FAILED
+        assert cold_reader.read_setting("memory_recall_enabled", scope="", db_path=db) is None
+
+    def test_a_committed_write_carries_its_generation(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_real_schema_db(db)
+
+        assert cold_writer.write_setting("memory_recall_enabled", False, db_path=db) is WriteResult.WROTE  # noqa: FBT003 — positional bool is the argument the API under test takes
+        assert cold_reader.read_setting(GENERATION_KEY, scope="", db_path=db) == 1
