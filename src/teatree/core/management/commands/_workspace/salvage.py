@@ -9,14 +9,20 @@ import json
 from pathlib import Path
 
 from teatree.core.cleanup.cleanup_salvage import SalvageRequest, default_salvage_hooks, salvage_item
+from teatree.core.worktree.orphan_emit import collect_orphan_emit_records
 from teatree.core.worktree.worktree_done import collect_emit_records
 from teatree.utils import git
 
 
 def emit_records_json(workspace: Path) -> str:
-    """Render the JSON array of NOT-auto-deleted records the judgment skill consumes."""
-    records = [record.to_dict() for record in collect_emit_records(workspace)]
-    return json.dumps(records, indent=2)
+    """Render the JSON array of NOT-auto-deleted records the judgment skill consumes.
+
+    Two source sets, one handoff: the ``Worktree`` ledger, plus the work-bearing checkouts
+    no row tracks (#4579) — without which a dispatched agent's uncommitted work reached no
+    surface at all.
+    """
+    collected = [*collect_emit_records(workspace), *collect_orphan_emit_records(workspace)]
+    return json.dumps([record.to_dict() for record in collected], indent=2)
 
 
 def run_salvage(source_ref: str, *, salvage_branch: str, target: str, allow_banned: bool) -> str:
