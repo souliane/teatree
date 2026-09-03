@@ -1633,6 +1633,21 @@ class TestConflictFlag:
         assert signals[0].payload["merged"] is False
         assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
 
+    def test_conflicted_pr_that_is_behind_and_red_is_never_merge_updated(self) -> None:
+        # #4526: behind-ness is now truthful, so a conflict reaches the stale-base
+        # rung's inputs. A conflict needs resolution, not a merge-update.
+        _issue_clear()
+        red_required = _check("test (3.13)", conclusion="FAILURE")
+        conflicted = replace(_open_pr(checks=(red_required,), behind_main=True), is_conflicted=True)
+        api = FakePrApiClient(prs_by_slug={SLUG: [conflicted]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
+        assert notifier.flag_calls == [(SLUG, 6230, "conflict", f"https://github.com/{SLUG}/pull/6230")]
+
     def test_conflicted_solo_overlay_pr_is_flagged_not_merged(self) -> None:
         # The conflict flag precedes the solo bypass — a conflicted PR never
         # reaches the gh fallback even on a full-autonomy overlay.
@@ -1787,12 +1802,33 @@ class TestGhConflictDecode:
         assert behind.is_conflicted is False
         assert unknown.is_conflicted is False
 
-    def test_decode_marks_behind_merge_state_as_behind_main(self) -> None:
+    def test_decode_stamps_the_merge_state_fallback_for_behind_main(self) -> None:
+        # The pre-compare signal `list_open_prs` overrides with the Ref.compare
+        # answer, and keeps only when that read fails (#4526).
         behind = _decode_pr(slug=SLUG, raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})
         clean = _decode_pr(slug=SLUG, raw={"number": 2, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
 
         assert behind.behind_main is True
         assert clean.behind_main is False
+
+    def test_decode_carries_the_refs_the_compare_needs(self) -> None:
+        same_repo = _decode_pr(
+            slug=SLUG,
+            raw={"number": 1, "baseRefName": "main", "headRefName": "fix", "isCrossRepository": False},
+        )
+        fork = _decode_pr(
+            slug=SLUG,
+            raw={
+                "number": 2,
+                "baseRefName": "main",
+                "headRefName": "fix",
+                "isCrossRepository": True,
+                "headRepositoryOwner": {"login": "outsider"},
+            },
+        )
+
+        assert (same_repo.base_ref, same_repo.compare_head_ref) == ("main", "fix")
+        assert fork.compare_head_ref == "outsider:fix"
 
 
 class TestSlackMergeNotifier:
