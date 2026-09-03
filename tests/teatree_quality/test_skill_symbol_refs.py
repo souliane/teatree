@@ -11,7 +11,8 @@ and unlike a stale import or a stale patch target, nothing mechanical catches it
 BEFORE any skill — ``BLUEPRINT.md``, ``AGENTS.md``, ``CLAUDE.md`` and the
 ``docs/blueprint/`` appendices — which the skills-only scan could not see at all.
 Their currently-unresolved references are pinned in
-:data:`_KNOWN_UNRESOLVED_CHARTER_REFS`, a shrink-only ratchet asserted in BOTH
+the ``charter`` ratchet of :func:`teatree.quality.ref_baseline.load_baseline`,
+a shrink-only ratchet asserted in BOTH
 directions: the listed ones are visible instead of invisible, a NEW stale citation
 reds, and a listed one that got FIXED reds until its entry is deleted.
 
@@ -19,7 +20,7 @@ reds, and a listed one that got FIXED reds until its entry is deleted.
 comments under ``src/teatree`` and ``hooks`` — the surface a `:func:` citation of
 a function that MOVED modules shipped through, because the markdown walk cannot
 read a ``.py`` file at all. Its ratchet is
-:data:`_KNOWN_UNRESOLVED_PYTHON_PROSE_REFS`, two-sided for the same reason.
+that loader's ``python_prose`` ratchet, two-sided for the same reason.
 
 :class:`TestGoldenCorpus` proves the scanner is neither vacuous nor
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
@@ -44,6 +45,7 @@ from pathlib import Path
 import pytest
 
 import teatree
+from teatree.quality import ref_baseline
 from teatree.quality.python_prose_refs import prose_lines, scan_python_source, scan_python_tree
 from teatree.quality.skill_symbol_refs import (
     RepoIndex,
@@ -112,34 +114,14 @@ class TestLiveTree:
         )
 
 
-#: The charter documents an agent reads before any skill. A stale symbol here is
-#: read as a work item exactly as one in a skill is — more so, since these load first.
-_CHARTER_DOCS: list[Path] = [
-    _REPO_ROOT / "BLUEPRINT.md",
-    _REPO_ROOT / "AGENTS.md",
-    _REPO_ROOT / "CLAUDE.md",
-    *sorted((_REPO_ROOT / "docs" / "blueprint").glob("*.md")),
-]
+#: The charter documents an agent reads before any skill, and the pinned pairs that do
+#: not resolve today — both owned by :mod:`teatree.quality.ref_baseline` so the prune
+#: tool and this ratchet can never disagree about what is pinned.
+_CHARTER_DOCS: list[Path] = ref_baseline.charter_docs(_REPO_ROOT)
 
-#: ``(document, reference)`` pairs that do not resolve today. Some are genuinely
-#: stale citations, some are tokens the scanner cannot yet tell apart from an
-#: importable name (an entry-point group, a config-section header) — the remedy for
-#: the latter is a ``skill-symbol-ref:`` pragma on the citing line. Either way the
-#: set may only ever SHRINK: fixing an entry means deleting its line here, and a NEW
-#: unresolved reference fails the ratchet.
-_KNOWN_UNRESOLVED_CHARTER_REFS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("AGENTS.md", "teatree.overlays"),
-        ("BLUEPRINT.md", "teatree.harnesses"),
-        ("BLUEPRINT.md", "teatree.overlays"),
-        ("BLUEPRINT.md", "teatree.teams"),
-        ("BLUEPRINT.md", "teatree.utils.django_db.refresh_reference_snapshot"),
-        ("CLAUDE.md", "teatree.overlays"),
-        ("docs/blueprint/configuration.md", "teatree.Gates.Quality"),
-        ("docs/blueprint/configuration.md", "teatree.log"),
-        ("docs/blueprint/loop-topology.md", "teatree.loops.master.build_loop_table_jobs"),
-    },
-)
+
+def _known_charter_refs() -> frozenset[tuple[str, str]]:
+    return ref_baseline.load_baseline()["charter"]
 
 
 def _unresolved_charter_refs() -> set[tuple[str, str]]:
@@ -154,7 +136,7 @@ def _unresolved_charter_refs() -> set[tuple[str, str]]:
 
 class TestCharterDocs:
     def test_no_new_charter_document_reference_is_unresolved(self) -> None:
-        new = _unresolved_charter_refs() - _KNOWN_UNRESOLVED_CHARTER_REFS
+        new = _unresolved_charter_refs() - _known_charter_refs()
         assert new == set(), (
             "charter document(s) naming a symbol the tree does not have — an agent reads "
             f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
@@ -167,10 +149,10 @@ class TestCharterDocs:
         citation of the same symbol in the same doc. It also proves each recorded pair
         still resolves to a real scan result rather than exempting nothing.
         """
-        stale = _KNOWN_UNRESOLVED_CHARTER_REFS - _unresolved_charter_refs()
+        stale = _known_charter_refs() - _unresolved_charter_refs()
         assert stale == set(), (
             "Pinned charter reference(s) the scanner no longer reports as unresolved — "
-            f"delete them from _KNOWN_UNRESOLVED_CHARTER_REFS so the ratchet stays tight: {sorted(stale)}"
+            f"run `t3 tool ratchet-prune --write` to delete exactly these: {sorted(stale)}"
         )
 
     def test_the_charter_documents_are_actually_walked(self) -> None:
@@ -188,89 +170,9 @@ The disposal half is :func:`teatree.loop.transient_requeue._retire_superseded`.
 """
 '''
 
-#: ``(module, reference)`` pairs that do not resolve today, seeded so the walk can
-#: land without a tree-wide cleanup first. Some are genuinely stale citations, some
-#: are illustrative stand-ins, some are tokens the scanner cannot tell apart from an
-#: importable name (an entry-point group, a Django settings attribute) — the remedy
-#: for the last is a ``skill-symbol-ref:`` pragma on the citing line. Either way the
-#: set may only ever SHRINK, asserted in both directions below.
-_KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("hooks/scripts/session_start_skills.py", "scripts/lib/skill_loader.suggest_skills"),
-        ("hooks/scripts/worker_supervisor.py", "teatree.config.settings._parse_env_bool"),
-        ("src/teatree/_overlay_api.py", "teatree.overlays"),
-        ("src/teatree/agents/attempt_recorder.py", "prompt._REVIEW_VERDICT_RETURN_LINES"),
-        ("src/teatree/agents/envelope_refusal.py", "agents/prompt.py"),
-        ("src/teatree/agents/harness_registry.py", "teatree.harnesses"),
-        ("src/teatree/agents/harness_registry.py", "teatree.overlays"),
-        ("src/teatree/agents/pydantic_ai_session.py", "models._get_final_result_event"),
-        ("src/teatree/agents/regulated_path.py", "teatree.config.UserSettings.regulated_path_model_allowlist"),
-        ("src/teatree/agents/runner_usage.py", "agents/runner.py"),
-        ("src/teatree/backends/forge_merge_rpc.py", "github._run_gh"),
-        ("src/teatree/backends/gitlab/sync_terminal.py", "hooks/check_module_health.py"),
-        ("src/teatree/cli/doctor/app.py", "teatree.cli.doctor._x"),
-        ("src/teatree/cli/doctor/checks_environment.py", "teatree.overlays"),
-        ("src/teatree/cli/enforcement_tools.py", "teatree.targetBranch"),
-        ("src/teatree/cli/overlay_dev.py", "teatree.overlays"),
-        ("src/teatree/cli/review/evidence_gate.py", "src/teatree/cli/foo.py"),
-        ("src/teatree/cli/review/on_behalf.py", "hooks/scripts/check_module_health.py"),
-        ("src/teatree/cli/update.py", "teatree.overlays"),
-        ("src/teatree/config/agent_enums.py", "teatree.harnesses"),
-        ("src/teatree/config/discovery.py", "teatree.overlays"),
-        ("src/teatree/config/fleet_policy.py", "deploy/teatree.env"),
-        ("src/teatree/config/fleet_policy.py", "teatree.env"),
-        ("src/teatree/config/loader.py", "settings.T3_WORKSPACE_DIR"),
-        ("src/teatree/config/loader.py", "teatree.log"),
-        ("src/teatree/config/overlay_code_defaults.py", "teatree.overlays"),
-        ("src/teatree/config/reviewer_identities.py", "teatree.core.models.merge_clear.REVIEWER_ROLE_COMPONENTS"),
-        ("src/teatree/core/cleanup/cleanup_emit.py", "src/gate.py"),
-        ("src/teatree/core/code_tokens.py", "teatree.core.tasks.claim"),
-        ("src/teatree/core/gates/review_request_guard.py", "slack._iter_review_matches"),
-        ("src/teatree/core/harness_todos.py", "hooks/scripts/hook_router._newest_task_agent_id"),
-        ("src/teatree/core/management/commands/run.py", "src/foo.py"),
-        ("src/teatree/core/management/commands/ticket_short_describe.py", "teatree.core.ticket_short_description"),
-        (
-            "src/teatree/core/merge/clear_reconcile.py",
-            "teatree.core.models.pull_request.PullRequest.record_forge_merge",
-        ),
-        ("src/teatree/core/merge/merge_response.py", "execution._is_transient_merge_response"),
-        ("src/teatree/core/modelkit/diff_scope.py", "src/other_paths.py"),
-        ("src/teatree/core/modelkit/diff_scope.py", "src/paths.py"),
-        ("src/teatree/core/models/merge_clear.py", "src/teatree/core/merger/"),
-        ("src/teatree/core/models/mechanism_sketch.py", "src/teatree/../overlays/x.py"),
-        ("src/teatree/core/models/review_verdict.py", "teatree.core.review.diff_scope_gate"),
-        ("src/teatree/core/review/diff_scope_probe.py", "teatree.core.review.diff_scope_gate"),
-        ("src/teatree/core/views/github_webhook.py", "settings.TEATREE_GITHUB_WEBHOOK_SECRET"),
-        ("src/teatree/core/views/gitlab_webhook.py", "settings.TEATREE_GITLAB_WEBHOOK_TOKEN"),
-        ("src/teatree/eval/corpus_models.py", "teatree.eval.scenarios"),
-        ("src/teatree/eval/git_fixture.py", "src/teatree/util/money.py"),
-        ("src/teatree/eval/git_fixture.py", "teatree.util.money"),
-        ("src/teatree/eval/models.py", "teatree.eval.api_runner.resolve_max_turns_override"),
-        ("src/teatree/eval/pydantic_ai_runner.py", "teatree.agents.harness._X_LANE_HEADER"),
-        ("src/teatree/hooks/publish_destination.py", "public_visibility._destination_visibility"),
-        ("src/teatree/hooks/quote_scanner.py", "hook_router._agent_prompt_skip_token"),
-        ("src/teatree/loop/rendering.py", "teatree.loop.rendering.X"),
-        ("src/teatree/loop/scanners/issue_disposition.py", "src/teatree/foo.py"),
-        ("src/teatree/loop/scanners/self_update_ci.py", "teatree.loop.scanners.pr_sweep.GhPrApiClient"),
-        ("src/teatree/loop/substrate_pinger.py", "teatree.loop.scanners.pr_sweep.SubstratePinger"),
-        ("src/teatree/loop/transient_requeue.py", "teatree.loop.config_self_repair.SELF_REPAIR_STAMP"),
-        ("src/teatree/loops/dream/recall.py", "hook_router._AMBIENT_CONTEXT_RE"),
-        ("src/teatree/overlay_sdk/factory.py", "teatree.agents._"),
-        ("src/teatree/quality/affected_tests.py", "src/teatree/foo/bar.py"),
-        ("src/teatree/quality/affected_tests.py", "teatree.foo.bar"),
-        ("src/teatree/quality/full_suite_invocation.py", "tests/foo.py"),
-        ("src/teatree/quality/mutation_run.py", "src/teatree/x.py"),
-        ("src/teatree/quality/mutation_run.py", "teatree.x"),
-        ("src/teatree/quality/skill_symbol_refs.py", "phase_tools.PHASE_TOOLS"),
-        ("src/teatree/quality/snapshot_baseline.py", "e2e/foo.spec.ts-snapshots/"),
-        ("src/teatree/self_update.py", "teatree.overlays"),
-        ("src/teatree/settings.py", "teatree.overlays"),
-        ("src/teatree/utils/coverage_exclusions.py", "src/myvenv_helper.py"),
-        ("src/teatree/utils/django_db/testdb_clone.py", "importer._copy_ref_to_ticket"),
-        ("src/teatree/utils/editable_pth.py", "teatree.overlays"),
-        ("src/teatree/utils/git_branch.py", "teatree.targetBranch"),
-    },
-)
+
+def _known_python_prose_refs() -> frozenset[tuple[str, str]]:
+    return ref_baseline.load_baseline()["python_prose"]
 
 
 @lru_cache(maxsize=1)
@@ -290,17 +192,17 @@ def _unresolved_python_prose_refs() -> set[tuple[str, str]]:
 
 class TestPythonProse:
     def test_no_new_python_prose_reference_is_unresolved(self) -> None:
-        new = _unresolved_python_prose_refs() - _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS
+        new = _unresolved_python_prose_refs() - _known_python_prose_refs()
         assert new == set(), (
             "Python docstring/#: reference(s) naming a symbol the tree does not have — a reader "
             f"following one finds nothing and cannot tell renamed from moved from deleted: {sorted(new)}"
         )
 
     def test_no_known_python_prose_reference_is_stale(self) -> None:
-        stale = _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS - _unresolved_python_prose_refs()
+        stale = _known_python_prose_refs() - _unresolved_python_prose_refs()
         assert stale == set(), (
             "Pinned Python-prose reference(s) the scanner no longer reports as unresolved — "
-            f"delete them so the ratchet stays tight: {sorted(stale)}"
+            f"run `t3 tool ratchet-prune --write` to delete exactly these: {sorted(stale)}"
         )
 
     def test_the_python_tree_is_actually_walked(self) -> None:
