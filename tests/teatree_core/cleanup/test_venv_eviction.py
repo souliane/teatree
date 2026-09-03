@@ -17,9 +17,11 @@ from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.cleanup import process_table
 from teatree.core.cleanup.checkout_registry import CheckoutRegistry
+from teatree.core.cleanup.reclaim_pressure import effective_idle_days
 from teatree.core.cleanup.venv_eviction import evict_venvs, plan_venv_eviction
 from tests._git_repo import make_git_repo
 from tests._process_table_venue import blinded_process_table
@@ -27,15 +29,31 @@ from tests._process_table_venue import blinded_process_table
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
 _LONG_AGO = 1_600_000_000  # comfortably beyond any idle threshold under test
 
+# The shipped thresholds, so the escalation tests exercise the real decay.
+_WARN_GB = 25.0
+_CRIT_GB = 10.0
+_IDLE_DAYS = 2.0
 
-def _venv_in(checkout: Path, *, name: str = ".venv", dormant: bool = True) -> Path:
+
+def _criterion(free_gb: float) -> float | None:
+    return effective_idle_days(free_gb=free_gb, warn_gb=_WARN_GB, crit_gb=_CRIT_GB, idle_days=_IDLE_DAYS)
+
+
+def _venv_in(checkout: Path, *, name: str = ".venv", dormant: bool = True, size: int = 4096) -> Path:
     venv = checkout / name
     (venv / "lib").mkdir(parents=True)
-    (venv / "lib" / "big.so").write_bytes(b"x" * 4096)
+    (venv / "lib" / "big.so").write_bytes(b"x" * size)
     if dormant:
         os.utime(venv, (_LONG_AGO, _LONG_AGO))
         os.utime(checkout, (_LONG_AGO, _LONG_AGO))
     return venv
+
+
+def _touched_an_hour_ago(checkout: Path, venv: Path) -> None:
+    """What a directory some other process rebuilds every few hours looks like."""
+    stamp = timezone.now().timestamp() - 3600
+    os.utime(venv, (stamp, stamp))
+    os.utime(checkout, (stamp, stamp))
 
 
 class _EvictionFixture(TestCase):
@@ -93,6 +111,59 @@ class TestEviction(_EvictionFixture):
         assert plan.considered == 2
         assert not venv.exists()
         assert not hook_venv.exists()
+
+
+class TestPressureEscalation(_EvictionFixture):
+    """Age stops gating as the disk fills; liveness never does (#4644)."""
+
+    def test_a_fresh_venv_is_evicted_below_the_critical_floor(self) -> None:
+        checkout = make_git_repo(self.workspace / "fresh")
+        venv = _venv_in(checkout, dormant=False)
+        self._some_process_exists()
+
+        plan = plan_venv_eviction(self.workspace, idle_days=_criterion(0.2))
+        outcome = evict_venvs(plan)
+
+        assert not venv.exists(), "below the floor a rebuildable cache is not worth an age test"
+        assert outcome.freed_bytes > 0
+        assert (checkout / ".git").exists(), "the checkout holds the work; only the cache goes"
+
+    def test_liveness_keeps_a_held_venv_at_critical_while_its_free_sibling_goes(self) -> None:
+        held = make_git_repo(self.workspace / "held")
+        free = make_git_repo(self.workspace / "free")
+        _venv_in(held, dormant=False)
+        _venv_in(free, dormant=False)
+        self._process_working_in(held / "src")
+
+        plan = plan_venv_eviction(self.workspace, idle_days=_criterion(0.2))
+        evict_venvs(plan)
+
+        assert (held / ".venv").exists(), "liveness is the sole guard once age stops gating"
+        assert not (free / ".venv").exists(), "and that guard is only meaningful if the pass reaches it"
+        assert any("a live process is working inside the checkout" in line for line in plan.kept)
+
+    def test_liveness_refuses_at_every_pressure_level(self) -> None:
+        held = make_git_repo(self.workspace / "held")
+        venv = _venv_in(held, dormant=False)
+        self._process_working_in(held / "src")
+
+        for free_gb in (0.2, 17.5, 200.0):
+            with self.subTest(free_gb=free_gb):
+                evict_venvs(plan_venv_eviction(self.workspace, idle_days=_criterion(free_gb)))
+                assert venv.exists()
+
+    def test_an_hourly_rewritten_checkout_does_not_become_permanently_ineligible(self) -> None:
+        """Churn faster than ``venv_idle_days`` used to confer immunity on every pass, forever."""
+        churned = make_git_repo(self.workspace / "churned")
+        venv = _venv_in(churned, dormant=False)
+        _touched_an_hour_ago(churned, venv)
+        self._some_process_exists()
+
+        plan = plan_venv_eviction(self.workspace, idle_days=_criterion(0.2))
+        evict_venvs(plan)
+
+        assert not venv.exists()
+        assert not any("too recently" in line for line in plan.kept)
 
 
 class TestGuards(_EvictionFixture):
@@ -191,3 +262,15 @@ class TestGuards(_EvictionFixture):
 
         assert len(plan.candidates) == 1
         assert sum("per-pass cap" in kept for kept in plan.kept) == 2
+
+    def test_the_cap_takes_the_largest_venvs_and_reports_the_deferred_bytes(self) -> None:
+        """A capped pass returns the most bytes — the cap used to truncate in walk order."""
+        sizes = {"small": 1024, "largest": 8192, "middling": 4096}
+        venvs = {name: _venv_in(make_git_repo(self.workspace / name), size=size) for name, size in sizes.items()}
+        self._some_process_exists()
+
+        with patch("teatree.core.cleanup.venv_eviction._MAX_EVICTIONS_PER_PASS", 2):
+            plan = plan_venv_eviction(self.workspace, idle_days=1)
+
+        assert [candidate.venv for candidate in plan.candidates] == [venvs["largest"], venvs["middling"]]
+        assert any("deferred to the next pass: 1 venv(s), 1024 bytes" in kept for kept in plan.kept)

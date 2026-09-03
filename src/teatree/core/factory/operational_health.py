@@ -37,8 +37,10 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.models.known_issue import KnownIssue
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.utils.throttled_log import warn_throttled
 
@@ -402,6 +404,42 @@ def _admission_pressure_signals() -> SignalCollection:
     )
 
 
+def _reclaim_stall_signals() -> SignalCollection:
+    """One CRITICAL while the disk reclaim keeps returning nothing below the critical floor (#4644).
+
+    A pass that reclaimed nothing and a pass that never ran read identically from
+    outside, which is how a box reached 100% full with a green chip and 23 ticks
+    behind it. The clearing condition is the live free-space reading rather than
+    the streak, so a disk that recovers by a route which also stops the pass from
+    running — leaving the streak frozen — still resolves the row.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred to keep the module cold-import cheap
+
+    try:
+        marker = ResourcePressureMarker.load()
+        free_gb = marker.last_disk_free_gb
+        streak = marker.zero_yield_passes
+        crit_gb = get_effective_settings(None).disk_crit_free_gb
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-reclaim-stall", "reclaim-stall health read failed — skipped", exc_info=True)
+        return SignalCollection(unread=("_reclaim_stall_signals",))
+    if free_gb is None or not reclaim_is_stalled(streak=streak, free_gb=free_gb, crit_gb=crit_gb):
+        return SignalCollection()
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="reclaim-stalled:disk",
+                severity=KnownIssue.Severity.CRITICAL,
+                kind="reclaim_stalled",
+                summary=(
+                    f"disk reclaim stalled — {streak} consecutive passes freed nothing "
+                    f"at {free_gb:.1f} GB free (crit < {crit_gb:.0f} GB)"
+                ),
+            ),
+        )
+    )
+
+
 # The deterministic signal collectors, run in order. Each is fail-open on its
 # own so one broken read never suppresses the others; adding a new signal family
 # (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
@@ -412,6 +450,7 @@ _COLLECTORS = (
     _harness_provider_consistency_signals,
     _fleet_loop_policy_signals,
     _admission_pressure_signals,
+    _reclaim_stall_signals,
 )
 
 

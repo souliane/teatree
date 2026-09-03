@@ -355,6 +355,13 @@ class ClassificationTests(_ScannerHarness):
         disk_sig = next(s for s in signals if s.payload.get("resource") == "disk")
         assert disk_sig.payload["level"] == "critical"
 
+    def test_the_cleanup_payload_carries_the_ladder_it_was_dispatched_from(self) -> None:
+        """The freeing pass scales its reclaim criterion by these, so a reading alone is not enough."""
+        signals = self._scan_with(disk_gb=7.0, ram_gb=10.0)
+        disk_sig = next(s for s in signals if s.payload.get("resource") == "disk")
+        assert disk_sig.payload["disk_warn_free_gb"] == pytest.approx(25.0)
+        assert disk_sig.payload["disk_crit_free_gb"] == pytest.approx(10.0)
+
     def test_disk_warn_band_is_advisory_only(self) -> None:
         signals = self._scan_with(disk_gb=18.0, ram_gb=10.0)
         assert len(signals) == 1

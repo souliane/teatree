@@ -48,6 +48,10 @@ class ResourcePressureMarker(models.Model):
     # freshness TTL, so a stopped loop stops being trusted instead of clamping forever.
     adaptive_intake_concurrency = models.IntegerField(null=True, blank=True)
     adaptive_intake_recorded_at = models.DateTimeField(null=True, blank=True)
+    # #4644 Consecutive freeing passes that ran below the critical floor and returned
+    # nothing. A pass that reclaims nothing and a pass that never ran read identically
+    # from outside; this is what tells them apart and feeds the health alarm.
+    zero_yield_passes = models.IntegerField(default=0)
 
     class Meta:
         db_table = "teatree_resource_pressure_marker"
@@ -68,6 +72,18 @@ class ResourcePressureMarker(models.Model):
         self.last_disk_free_gb = disk_free_gb
         self.last_ram_avail_gb = ram_avail_gb
         self.save(update_fields=["last_run_at", "last_disk_free_gb", "last_ram_avail_gb"])
+
+    def record_reclaim_pass(self, *, freed_gb: float, under_critical: bool) -> int:
+        """Stamp one freeing pass and return the resulting zero-yield streak.
+
+        Only a pass that ran under pressure AND returned nothing extends the
+        streak: reclaiming nothing on a box with room to spare is the correct
+        outcome, not a stall.
+        """
+        stalled = under_critical and freed_gb <= 0
+        self.zero_yield_passes = self.zero_yield_passes + 1 if stalled else 0
+        self.save(update_fields=["zero_yield_passes"])
+        return self.zero_yield_passes
 
     def record_adaptive_concurrency(self, value: int) -> None:
         """Stamp the derived intake concurrency; the timestamp IS its freshness heartbeat."""
