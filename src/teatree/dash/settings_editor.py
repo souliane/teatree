@@ -27,13 +27,14 @@ so the two pages apply ONE policy. A secret row's value AND its shipped default 
 with ``***`` HERE, before the row enters the view context. Transferring the whole store is a
 page of its own (:mod:`teatree.dash.interchange`) — its scope is wider than this grid's.
 
-Help text and the constrained-value options are both DERIVED, never re-typed:
-:func:`~teatree.config.setting_help.setting_help` is the same sentence ``defaults.toml``
-carries as that key's comment, and :func:`~teatree.config.schema.setting_choices` is the
-schema's own admissible set — so a select can never offer a value the validator refuses.
+**The per-setting half is composed, not restated.** Each row holds a
+:class:`~teatree.core.setting_control.SettingControl` — the ONE derivation of a key's help
+text, shipped default, masking verdict and admissible options, shared with the settings
+snapshot. Help text is the same sentence ``defaults.toml`` carries as that key's comment and
+the options are the schema's own admissible set, so a select can never offer a value the
+validator refuses, and no second surface can drift into a different answer.
 """
 
-import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -43,36 +44,18 @@ from django.urls import reverse
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.provenance import ResolvedSetting, ValueSource, resolve_settings
-from teatree.config.schema import TeatreeSettingsSchema, setting_choices
+from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_slug, group_tree
-from teatree.config.setting_help import setting_help
-from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, is_secret, render_value
+from teatree.core.config_display import MASKED
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
 from teatree.core.overlay_loader import get_all_overlays
+from teatree.core.setting_control import SettingChoice, SettingControl, wire
 
 logger = logging.getLogger(__name__)
 
 #: The column header the global scope renders under — every other column is an overlay name.
 GLOBAL_LABEL = "global"
-
-
-def _wire(value: object) -> str:
-    """*value* as the JSON literal an edit POSTs — the one encoding both ends agree on."""
-    return json.dumps(value, default=str)
-
-
-@dataclass(frozen=True, slots=True)
-class SettingChoice:
-    """One option of a constrained control — the JSON an edit posts, and its screen label.
-
-    The label runs through the SAME ``render_value`` every other value on the page does, so
-    a boolean reads ``on`` / ``off`` in the select exactly as it does in the default column.
-    """
-
-    value: str
-    label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +88,7 @@ class ScopeCell:
         row that was already resolving its default. :attr:`selected` keeps the literal, so a
         ``<select>`` still matches its ``null`` option against the real value.
         """
-        return "" if self.selected == _wire(None) else self.selected
+        return "" if self.selected == wire(None) else self.selected
 
     @property
     def post_url(self) -> str:
@@ -116,16 +99,45 @@ class ScopeCell:
 
 @dataclass(frozen=True, slots=True)
 class EditableSetting:
-    """One ROW of the grid — the setting, its shipped default, and every scope's value."""
+    """One ROW of the grid — the setting's control, and every scope's value for it.
 
-    name: str
-    help_text: str
-    shipped_default: str  # ``***`` for a secret, NO_SHIPPED_DEFAULT when the file carries none
-    has_shipped_default: bool
-    is_secret: bool
-    is_safety_posture: bool
-    choices: tuple[SettingChoice, ...]  # non-empty -> the cells render as selects
+    The per-setting half is COMPOSED, not restated: the control is the same
+    :class:`~teatree.core.setting_control.SettingControl` the snapshot surface derives from,
+    delegated field by field so the row template and its readers keep one vocabulary.
+    """
+
+    control: SettingControl
     cells: tuple[ScopeCell, ...]
+
+    @property
+    def name(self) -> str:
+        return self.control.name
+
+    @property
+    def help_text(self) -> str:
+        return self.control.help_text
+
+    @property
+    def shipped_default(self) -> str:
+        """``***`` for a secret, ``NO_SHIPPED_DEFAULT`` when the file carries no entry."""
+        return self.control.shipped_default
+
+    @property
+    def has_shipped_default(self) -> bool:
+        return self.control.has_shipped_default
+
+    @property
+    def is_secret(self) -> bool:
+        return self.control.is_secret
+
+    @property
+    def is_safety_posture(self) -> bool:
+        return self.control.is_safety_posture
+
+    @property
+    def choices(self) -> tuple[SettingChoice, ...]:
+        """Non-empty -> the cells render as selects."""
+        return self.control.choices
 
     @property
     def drifts(self) -> bool:
@@ -181,69 +193,29 @@ class _Grid:
     shipped: Mapping[str, ConfigValue]
 
     def row(self, key: str) -> EditableSetting:
-        default = _display_default(key, self.shipped)
+        control = SettingControl(key, self.shipped)
         return EditableSetting(
-            name=key,
-            help_text=setting_help(key),
-            shipped_default=default,
-            has_shipped_default=key in self.shipped,
-            is_secret=is_secret(key),
-            is_safety_posture=key in SAFETY_POSTURE_KEYS,
-            choices=_choices(key),
-            cells=tuple(self._cell(scope, key, default) for scope in self.scopes),
+            control=control,
+            cells=tuple(self._cell(control, scope) for scope in self.scopes),
         )
 
-    def _cell(self, scope: str, key: str, default: str) -> ScopeCell:
-        resolved = self.resolved[scope][key]
-        value = _display_value(key, resolved)
+    def _cell(self, control: SettingControl, scope: str) -> ScopeCell:
+        resolved = self.resolved[scope][control.key]
+        value = control.display_value(resolved.value)
         # Compared as the operator SEES them: identical text in the cell means identical
         # value. A key the shipped file does not carry has no shipped text to equal, so it
         # falls back to whether an operator's own tier supplied it at all — a Secret/Personal
         # key with no entry in defaults.toml still has a real default (its code default), and
         # an env/DB tier outranking that IS the drift the grid exists to surface.
-        matches = not resolved.is_overridden or (key in self.shipped and value == default)
+        matches = not resolved.is_overridden or (control.has_shipped_default and value == control.shipped_default)
         return ScopeCell(
-            key=key,
+            key=control.key,
             scope=scope,
             value=value,
-            # The wire value is masked by the SAME test as the display value: it is a second
-            # rendering of the same stored value, and a control that held the real one would
-            # put a secret in the page the moment a template read it.
-            selected=MASKED if is_secret(key) else _wire(resolved.value),
+            selected=control.wire_value(resolved.value),
             source=resolved.source.value,
             matches_default=matches,
         )
-
-
-def _choices(key: str) -> tuple[SettingChoice, ...]:
-    """*key*'s schema-admissible values as select options — derived, never hand-listed."""
-    return tuple(SettingChoice(_wire(value), render_value(value)) for value in setting_choices(key))
-
-
-def _display_value(key: str, resolved: ResolvedSetting) -> str:
-    """The cell's shown value — ``***`` for a secret, else the resolved value as text.
-
-    A secret returns ``MASKED`` WITHOUT reading the resolved value, so a stored secret can
-    never be serialised into the page.
-    """
-    return MASKED if is_secret(key) else render_value(resolved.value)
-
-
-def _display_default(key: str, shipped: Mapping[str, ConfigValue]) -> str:
-    """The shipped default as display text — ``***`` for a secret, a sentence when there is none.
-
-    Read from the shipped TABLE, in the same stored form the cells render, so "same as
-    default" compares like with like rather than a stored scalar against a coerced value.
-
-    A key the shipped file carries no entry for reads as :data:`NO_SHIPPED_DEFAULT` rather
-    than an empty string the template then spelled as the bare word ``none`` (#4078). ``none``
-    reads as a VALUE, and it was the same word whether the file had no entry or the entry was
-    empty — two different facts, one rendering. The wording lives here rather than in the
-    template so every surface sharing this module says it identically.
-    """
-    if is_secret(key):
-        return MASKED
-    return render_value(shipped[key]) if key in shipped else NO_SHIPPED_DEFAULT
 
 
 def _build_grid(keys: Sequence[str]) -> _Grid:

@@ -103,6 +103,40 @@ class TestSegmentIsApiRead:
         assert not segment_is_api_read(["gh", "pr", "create", "--body", "x"])
 
 
+class TestAttachedBodyFlagDefaultsToPost:
+    """pflag accepts ``--field=body=x`` / ``-fbody=x``, so the attached spelling writes too."""
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--field=body=x",
+            "--raw-field=body=x",
+            "--input=/tmp/body.json",
+            '--data={"body":"x"}',
+            "-fbody=x",
+            "-Fbody=x",
+            '-d{"body":"x"}',
+        ],
+    )
+    def test_attached_body_flag_writes(self, flag: str) -> None:
+        words = ["gh", "api", "repos/o/r/issues", flag]
+        assert _api_effective_method(words) == "POST"
+        assert segment_is_api_write(words)
+
+    def test_attached_body_flag_reaches_the_publish_surface(self) -> None:
+        assert command_has_token_aware_publish_surface("gh api repos/o/r/issues --field=body=customer-secret")
+
+    @pytest.mark.parametrize(
+        "words",
+        [
+            ["gh", "api", "user"],
+            ["gh", "api", "repos/o/r/issues", "--field=body=x", "--method=GET"],
+        ],
+    )
+    def test_explicit_read_method_still_reads(self, words: list[str]) -> None:
+        assert segment_is_api_read(words)
+
+
 class TestTokenAwarePublishSurface:
     def test_read_only_api_is_not_a_publish_surface(self) -> None:
         assert not command_has_token_aware_publish_surface("gh api user")

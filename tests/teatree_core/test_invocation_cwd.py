@@ -50,3 +50,21 @@ class TestInvocationCwd:
         monkeypatch.setenv(INVOCATION_CWD_ENV, str(a_file))
 
         assert invocation_cwd() == Path.cwd()
+
+    def test_discarding_an_unusable_declaration_names_the_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Degrading in silence lands back on the process cwd — the original bug.
+
+        The ship refusals tell operators to export this variable, so a value that
+        is discarded without a word makes that instruction unfollowable.
+        """
+        unusable = tmp_path / "host-side-path"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(unusable))
+
+        with caplog.at_level("WARNING", logger="teatree.core.invocation_cwd"):
+            assert invocation_cwd() == Path.cwd()
+
+        assert str(unusable) in caplog.text
+        assert INVOCATION_CWD_ENV in caplog.text

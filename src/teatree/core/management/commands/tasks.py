@@ -17,7 +17,7 @@ from teatree.core.management.commands.tasks_session_view import (
 )
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
-from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
@@ -256,6 +256,10 @@ class Command(TyperCommand):
             typer.Argument(help="The agent result envelope as JSON. Use '-' to read from stdin."),
         ],
         *,
+        claim_token: Annotated[
+            str,
+            typer.Option(help="The claim_token the claim that spawned this sub-agent emitted."),
+        ] = "",
         agent_session_id: Annotated[
             str,
             typer.Option(help="Claude session id of the sub-agent, for resume context on follow-ups."),
@@ -272,6 +276,16 @@ class Command(TyperCommand):
         ``loop_dispatch spawn-claim``: claim → spawn → record-attempt. The task
         must be ``claimed`` (the claim is the spawn boundary); recording onto a
         finished task is rejected.
+
+        ``--claim-token`` is REQUIRED and is the whole reason a late record cannot
+        finish somebody else's unit. This command reads the row fresh, so the
+        recorder's own claim-generation guard would compare that row against itself
+        and always hold; the token is the generation the CALLER observed when it was
+        given the work (``claim-next`` / ``spawn-claim`` emit it). A lease that
+        lapsed mid-run, was reclaimed and re-offered mints a new generation, so the
+        stale token no longer matches and the record is refused instead of
+        completing the unit the next tick is executing — and advancing the ticket
+        FSM over it.
         """
         from teatree.agents.attempt_recorder import (  # noqa: PLC0415 — deferred: keeps command import light
             AttemptUsage,
@@ -299,7 +313,21 @@ class Command(TyperCommand):
         if task.status != Task.Status.CLAIMED:
             self.stderr.write(
                 f"Task {task_id} is '{task.status}', not 'claimed'. Claim it first "
-                "(`t3 loop claim-next` / `loop_dispatch spawn-claim`) before recording its attempt.",
+                "(`t3 loop claim-next` / `loop_dispatch spawn-claim`) before `tasks record-attempt`.",
+            )
+            raise SystemExit(1)
+        if not claim_token.strip():
+            self.stderr.write(
+                f"Task {task_id} needs --claim-token: pass back the `claim_token` the claim "
+                "that spawned this sub-agent emitted, so a record whose unit was reclaimed "
+                "mid-run is refused rather than completing the generation another tick owns.",
+            )
+            raise SystemExit(1)
+        live_generation = claim_generation(task)
+        if claim_token.strip() != live_generation:
+            self.stderr.write(
+                f"Task {task_id} was re-claimed since --claim-token was issued "
+                f"(now {live_generation!r}); another tick owns this unit and its attempt is not recorded.",
             )
             raise SystemExit(1)
 

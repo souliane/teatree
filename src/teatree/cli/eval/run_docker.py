@@ -17,6 +17,10 @@ from teatree.cli.eval.metered_routing import should_route_to_docker
 from teatree.eval.backends import TRANSCRIPT_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
 
+#: ``--judge-budget``'s default, shared with the ``t3 eval run`` option so the
+#: forwarded flag pair and the host default cannot drift.
+DEFAULT_JUDGE_BUDGET = 20
+
 
 @dataclasses.dataclass(frozen=True)
 class RunDockerArgs:
@@ -44,6 +48,9 @@ class RunDockerArgs:
     preset: str | None = None
     escalate_on_fail: bool = False
     escalate_trials: int = 3
+    judge: bool = False
+    judge_budget: int = DEFAULT_JUDGE_BUDGET
+    transcript_dir: Path | None = None
 
     def _container_transcript_path(self) -> str:
         """The in-container path the transcript artifact is written to.
@@ -81,14 +88,29 @@ class RunDockerArgs:
             return ""
         return f"{ARTIFACTS_MOUNT}/{self.summary_json.name}"
 
+    def _requested_report_parents(self) -> list[Path]:
+        return [p.parent for p in (self.transcript_html, self.summary_md, self.summary_json) if p is not None]
+
     def _artifacts_dir(self) -> Path | None:
-        if self.transcript_html is not None:
-            return self.transcript_html.parent
-        if self.summary_md is not None:
-            return self.summary_md.parent
-        if self.summary_json is not None:
-            return self.summary_json.parent
-        return None
+        """The single writable bind-mount every report is redirected into.
+
+        One mount can only serve one host directory, so reports requested under
+        DIFFERENT parents are rejected upfront rather than silently all landing
+        under the first one.
+        """
+        parents = self._requested_report_parents()
+        if not parents:
+            return None
+        distinct = {p.resolve() for p in parents}
+        if len(distinct) > 1:
+            listed = ", ".join(sorted(str(p) for p in distinct))
+            typer.echo(
+                "--docker writes every report through ONE writable bind-mount, so "
+                f"--transcript-html/--summary-md/--summary-json must share a parent directory (got: {listed}).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        return parents[0]
 
     def _leading_optionals(self) -> list[list[str]]:
         """Non-default flag groups that precede the always-present budget/effort flags."""
@@ -119,6 +141,9 @@ class RunDockerArgs:
             ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
             ["--summary-json", self._container_summary_json_path()] if self.summary_json is not None else [],
             ["--escalate-on-fail", "--escalate-trials", str(self.escalate_trials)] if self.escalate_on_fail else [],
+            # Dropping these ran the container with matcher-only grading while the
+            # host reported the requested LLM-judge run (#judge-passthrough).
+            ["--judge", "--judge-budget", str(self.judge_budget)] if self.judge else [],
         ]
 
     def passthrough(self) -> list[str]:
@@ -151,6 +176,14 @@ def run_in_docker_or_exit(
             "--docker runs in an ephemeral container, so it cannot update or read the durable "
             "run-history the gates consume; drop --baseline/--gate-regressions/"
             "--gate-cost-regression/--gate-cost-bounds or run on the host.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if args.transcript_dir is not None:
+        typer.echo(
+            "--docker mounts only the repo (read-only), so a host --transcript-dir is unreachable "
+            "in-container and the run would grade the container's own cwd instead; pass --local to "
+            "grade the host transcripts, or drop --transcript-dir.",
             err=True,
         )
         raise typer.Exit(code=2)

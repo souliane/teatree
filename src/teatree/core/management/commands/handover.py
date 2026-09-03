@@ -32,6 +32,7 @@ from teatree.core.handover import (
     SelfAddressedHandoverError,
     claim_handovers,
     create_handover,
+    dangling_backlog_claims,
     resolve_handover,
     write_mirror,
 )
@@ -122,8 +123,11 @@ class Command(TyperCommand):
         """
         from_session = current_session_id()
         if not from_session:
-            msg = "no Claude session id — run inside a Claude Code session to hand off its state"
-            self._refuse(msg, json_output=json_output, code=2)
+            self._refuse(
+                "no Claude session id — run inside a Claude Code session to hand off its state",
+                json_output=json_output,
+                code=2,
+            )
 
         authored = self._read_authored(from_file=from_file, body=body, json_output=json_output)
 
@@ -156,6 +160,7 @@ class Command(TyperCommand):
         # over, and the receiving session claims a row that does not hold it
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
+        dangling = dangling_backlog_claims(str(handover.payload))
         ok = source.is_vetted and not failures
         status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
         human_lines = [
@@ -173,6 +178,7 @@ class Command(TyperCommand):
                 "ok": ok,
                 "handover_id": handover.pk,
                 "payload_source": source.value,
+                "dangling_backlog_claims": dangling,
                 # Derived from the same re-read the completeness checks ran against, so the
                 # pair that once read `empty` beside `row_written: true` cannot recur by
                 # asserting itself: a row that vanished between the write and the read
@@ -205,6 +211,13 @@ class Command(TyperCommand):
             for failure in failures:
                 self.stderr.write(f"ERROR hand-off {handover.pk} is INCOMPLETE: {failure}")
             raise SystemExit(1)
+        if dangling:
+            self.stderr.write(
+                f"WARN  hand-off {handover.pk} counts a backlog it never locates: {', '.join(dangling)}. "
+                f"A receiver cannot expand a number — and a per-session task list dies with the session that "
+                f"held it. Name the durable home (a file path or a URL) in the same paragraph as the count, or "
+                f"drop the count."
+            )
         if not source.is_vetted:
             self.stderr.write(
                 f"WARN  hand-off {handover.pk} to {recipient} is UNVETTED: no authored body and no PreCompact "

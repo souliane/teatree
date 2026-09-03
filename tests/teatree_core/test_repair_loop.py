@@ -16,6 +16,7 @@ from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import (
+    MAX_REOFFERS,
     IterationStalled,
     MaxIterationsExceeded,
     is_kind_stalled,
@@ -320,6 +321,69 @@ class TestReclaimEnforcesRepairLoop(TestCase):
         Task.objects.reclaim_orphaned_claims()
         task.refresh_from_db()
         assert task.status != Task.Status.PENDING
+
+
+class TestReofferBudget(TestCase):
+    """The bound that survives an attempt ledger nothing ever writes to.
+
+    The iteration cap and the stall detector both read ``TaskAttempt`` rows, so a
+    dispatch that returns without recording its outcome leaves both frozen: the same
+    unit is reclaimed and re-offered forever behind a completed counter that never
+    moves, with nothing counting or signalling it. The re-offer budget is counted on
+    the row instead, so it terminates with zero attempts recorded.
+    """
+
+    def _orphaned_phase_task(self, ticket: Ticket, *, reclaim_count: int = 0) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        past = timezone.now() - timezone.timedelta(seconds=600)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+            claimed_by="worker",
+            claimed_at=past,
+            lease_expires_at=past,
+            reclaim_count=reclaim_count,
+        )
+
+    def test_each_reclaim_counts_the_re_offer(self) -> None:
+        task = self._orphaned_phase_task(Ticket.objects.create())
+
+        assert Task.objects.reclaim_orphaned_claims() == 1
+
+        task.refresh_from_db()
+        assert task.reclaim_count == 1
+
+    def test_a_never_recorded_unit_stops_being_re_offered_and_signals(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/9")
+        task = self._orphaned_phase_task(ticket, reclaim_count=MAX_REOFFERS)
+
+        assert Task.objects.reclaim_orphaned_claims() == 0
+
+        task.refresh_from_db()
+        assert task.status != Task.Status.PENDING
+        assert not task.attempts.exists()
+        question = DeferredQuestion.pending().get()
+        assert "Re-offer budget" in question.question
+
+    def test_the_last_re_offer_within_budget_still_happens(self) -> None:
+        task = self._orphaned_phase_task(Ticket.objects.create(), reclaim_count=MAX_REOFFERS - 1)
+
+        assert Task.objects.reclaim_orphaned_claims() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.pending().count() == 0
+
+    def test_the_signal_is_recorded_once_per_ticket_phase(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
+        self._orphaned_phase_task(ticket, reclaim_count=MAX_REOFFERS)
+
+        Task.objects.reclaim_orphaned_claims()
+        Task.objects.reclaim_orphaned_claims()
+
+        assert DeferredQuestion.pending().count() == 1
 
 
 class TestKindStall:

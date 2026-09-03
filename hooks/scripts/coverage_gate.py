@@ -50,7 +50,6 @@ module's own test file.
 import importlib
 import json
 import re
-import shutil
 import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors hook_router).
 import sys
 import time
@@ -62,6 +61,7 @@ from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_ex
 from hooks.scripts.hook_budget import bounded_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, shlex_flag_value, strip_quoted_and_heredoc
+from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # The moment a PR moves toward review/merge: ``gh pr ready`` (un-drafting) or a
 # non-draft ``gh pr create`` / ``glab mr create`` / an api POST to a PR/MR
@@ -352,14 +352,13 @@ def diff_coverage_argv(repo_dir: Path | None) -> list[str] | None:
     ``None`` when ``t3`` is not on PATH (the gate then fails open), announced —
     a cold hook inherits a restricted PATH, so this is the shape in which gate 12
     stops firing for every create on the box at once (#4004). ``--repo`` is
-    appended only when *repo_dir* resolved, so a cwd-relative run (the historical
-    behaviour) is preserved when no target could be pinned.
+    appended only when *repo_dir* resolved; an unresolved one never reaches the
+    measurement, because :func:`measured_repo_is_publish_target` already skips it.
     """
-    t3_bin = shutil.which("t3")
-    if t3_bin is None:
+    argv = t3_argv("tool", "diff-coverage", "--json")
+    if argv is None:
         note_gate_skipped("`t3` is not on PATH, so the diff cannot be measured")
         return None
-    argv = [t3_bin, "tool", "diff-coverage", "--json"]
     if repo_dir is not None:
         argv += ["--repo", str(repo_dir)]
     return argv
@@ -440,14 +439,7 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
         note_gate_skipped("the hook's shared ceiling was already spent before the measurement could start")
         return None
     try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-            cwd=str(repo_dir) if repo_dir is not None else None,
-        )
+        result = run_t3(argv, timeout=timeout, cwd=repo_dir)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         note_gate_skipped(f"the diff-coverage measurement did not complete ({type(exc).__name__})")
         return None

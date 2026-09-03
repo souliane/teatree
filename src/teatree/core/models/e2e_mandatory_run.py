@@ -1,17 +1,18 @@
-"""SHA-bound, POSTED green-E2E evidence artifact for the mandatory-E2E gate (#1967).
+"""SHA-bound, PUBLISHED green-E2E evidence artifact for the mandatory-E2E gate (#1967).
 
 The mandatory-E2E gate is satisfied by green E2E evidence that is both bound to
-the exact reviewed tree AND **posted** — a recorded-but-unposted run does NOT
-satisfy the gate (user directive: "recorded e2e evidence is NOT enough — it must
-be posted too"). ``E2eMandatoryRun`` is that durable record: one row per
-``(ticket, head_sha, spec)``, carrying the run ``result`` and the ``posted_url``
-of the SHA-bound ``e2e post-test-plan`` ticket comment.
+the exact reviewed tree AND **published where reviewers read it** — a run
+recorded only in the teatree DB does NOT satisfy the gate (user directive:
+"recorded e2e evidence is NOT enough"). ``E2eMandatoryRun`` is that durable
+record: one row per ``(ticket, head_sha, spec)``, carrying the run ``result``
+and the ``posted_url`` reference to the ticket's ``test-plans/<repo>-<ticket>.md`` in
+the e2e repo.
 
 The gate reads it via :meth:`has_green_evidence`, true only when a green run with
 a non-empty ``posted_url`` exists for the ticket at the given SHA — a green run
-at an earlier commit does NOT carry to a later tree, and a green run with no
-posted comment does NOT satisfy the gate (the same SHA-binding ``MergeClear``
-uses for its CLEAR, plus the posted-proof requirement).
+at an earlier commit does NOT carry to a later tree, and a green run whose
+evidence was never published does NOT satisfy the gate (the same SHA-binding
+``MergeClear`` uses for its CLEAR, plus the published-proof requirement).
 
 Re-recording the same ``(ticket, head_sha, spec)`` updates the existing row
 rather than appending a duplicate, so a red→green (or unposted→posted) rerun of
@@ -47,9 +48,9 @@ class E2eMandatoryRun(models.Model):
     head_sha = models.CharField(max_length=64)
     spec = models.CharField(max_length=512)
     result = models.CharField(max_length=16, choices=Result.choices)
-    # The URL of the posted ``e2e post-test-plan`` ticket comment for this run.
-    # Empty means recorded-but-unposted: the run does NOT satisfy the gate
-    # (#1967 — posted proof is required, a local record is not enough).
+    # Where this run's evidence lives — the ticket's ``test-plans/<repo>-<ticket>.md``.
+    # Empty means recorded-but-unpublished: the run does NOT satisfy the gate
+    # (#1967 — published proof is required, a DB record is not enough).
     posted_url = models.CharField(max_length=512, blank=True, default="")
     recorded_at = models.DateTimeField(default=timezone.now)
 
@@ -91,11 +92,11 @@ class E2eMandatoryRun(models.Model):
 
     @classmethod
     def has_green_evidence(cls, ticket: Ticket, head_sha: str) -> bool:
-        """True iff a green AND POSTED E2E run is recorded for *ticket* at exactly *head_sha*.
+        """True iff a green AND PUBLISHED E2E run is recorded for *ticket* at exactly *head_sha*.
 
         A green run with no ``posted_url`` does NOT satisfy the gate — the
-        evidence must be posted (the SHA-bound ``e2e post-test-plan`` comment),
-        not merely recorded locally (#1967).
+        evidence must be published where reviewers read it (the ticket's
+        ``test-plans/<repo>-<ticket>.md``), not merely recorded locally (#1967).
         """
         return (
             cls.objects.filter(ticket=ticket, head_sha=_canonical_sha(head_sha), result=GREEN_RESULT)
@@ -105,16 +106,16 @@ class E2eMandatoryRun(models.Model):
 
     @classmethod
     def has_visual_verification(cls, ticket: Ticket) -> bool:
-        """True iff *ticket* has any green AND POSTED E2E run — the visual attestation.
+        """True iff *ticket* has any green AND PUBLISHED E2E run — the visual attestation.
 
         The snapshot-baseline gate runs at commit time, when the tree the new
         baseline lands on has no SHA yet, so it cannot bind to a specific
         ``head_sha`` the way :meth:`has_green_evidence` does. It instead reads
-        this per-ticket signal: a green run whose evidence was POSTED proves the
-        rendered result was verified and shown, which is exactly the
+        this per-ticket signal: a green run whose evidence was PUBLISHED proves
+        the rendered result was verified and shown, which is exactly the
         visual-verification attestation a baseline change needs. A green run
-        with no ``posted_url`` (recorded-but-unposted) does not count — the
-        verification must have been posted, matching the mandatory-E2E gate's
-        posted-proof rule.
+        with no ``posted_url`` (recorded-but-unpublished) does not count — the
+        verification must have been published, matching the mandatory-E2E gate's
+        published-proof rule.
         """
         return cls.objects.filter(ticket=ticket, result=GREEN_RESULT).exclude(posted_url="").exists()

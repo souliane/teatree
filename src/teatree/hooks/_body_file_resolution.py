@@ -320,7 +320,7 @@ def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
     return _commit_repo_dir.git_root_for_dir(Path(commit_dir))
 
 
-def command_body_file_base(command: str) -> Path | None:
+def command_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
     """Return the working dir a non-git command's ``--body-file`` resolves against.
 
     A ``cd <dir> && gh pr create --body-file <relpath>`` body file is resolved
@@ -330,11 +330,18 @@ def command_body_file_base(command: str) -> Path | None:
     (:func:`_commit_repo_dir.leading_cd_dir`) is the dir the forge command would
     actually run in, so resolving the body file against it lets the gate scan the
     real body. ``None`` when the command has no leading ``cd``.
+
+    A RELATIVE ``cd`` target is anchored on the AMBIENT harness ``cwd``
+    (:func:`_commit_repo_dir.anchored_dir`), exactly as the ``git commit`` sibling
+    :func:`commit_body_file_base` anchors its ``-C``/``cd``: an unanchored
+    ``Path("../worktree")`` resolves against the COLD hook process's own cwd, so
+    the body file was read from the wrong tree — unreadable (fail-closed on a
+    clean post) or, worse, a same-named file in a different repo.
     """
-    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.hooks._commit_repo_dir import anchored_dir, leading_cd_dir  # noqa: PLC0415 — deferred: kept lazy
 
     cd_dir = leading_cd_dir(command)
-    return Path(cd_dir) if cd_dir is not None else None
+    return anchored_dir(cd_dir, cwd) if cd_dir is not None else None
 
 
 @dataclass(frozen=True)

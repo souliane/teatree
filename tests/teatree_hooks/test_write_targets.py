@@ -203,3 +203,33 @@ class TestResolvedPaths:
 
     def test_relative_target_without_a_base_resolves_to_nothing(self) -> None:
         assert bash_write_targets("echo hi > src/x.py").resolved_paths(None) == ()
+
+
+class TestInterpreterHeredocWithAPunctuatedDelimiter:
+    r"""A heredoc delimiter is a shell WORD, not an identifier.
+
+    The delimiter grammar was ``\\w+``, so ``<<'PY-1'`` paired with no body at
+    all — and the segment then reported NO targets AND NO unresolved target,
+    which both write gates read as "this command writes nothing". A write gate
+    that cannot see a write is the failure; not being able to PIN the path is a
+    different, honest answer the module already has a word for.
+    """
+
+    def test_a_punctuated_delimiter_still_yields_its_literal_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "out.txt"
+        command = f"python3 - <<'PY-1'\nopen({str(target)!r}, 'w').write('x')\nPY-1\n"
+        result = bash_write_targets(command)
+        assert str(target) in result.targets
+
+    def test_an_unreadable_interpreter_heredoc_body_is_reported_unresolved(self) -> None:
+        # The delimiter opens a body this module cannot pair (a mismatched
+        # terminator). The command demonstrably feeds an interpreter a script,
+        # so "writes nothing" is the one answer it must not give.
+        command = "python3 - <<'PY_BODY'\nopen('/tmp/x', 'w').write('x')\nPY_OTHER\n"
+        result = bash_write_targets(command)
+        assert result.targets == ()
+        assert result.unresolved is True
+        assert result.writes_something is True
+
+    def test_a_plain_command_with_no_heredoc_is_untouched(self) -> None:
+        assert bash_write_targets("git status").writes_something is False

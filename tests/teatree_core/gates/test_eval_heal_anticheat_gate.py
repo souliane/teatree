@@ -100,6 +100,31 @@ class TestClassifyFixDiff:
         assert classify_fix_diff(["docs/evals/scenarios-guide.md"]) == ()
 
 
+class TestVendoredCopyIsCoveredToo:
+    """A repo that VENDORS this package reports the very same files with a prefix.
+
+    Anchoring the match at the repo root left the healer free to rewrite the test
+    in exactly the layout the gate has to defend hardest — a fork where the
+    scenarios and the graders are one subdirectory down.
+    """
+
+    def test_prefixed_scenario_tree_is_forbidden(self) -> None:
+        path = "vendor/pkg/evals/scenarios/rules.yaml"
+        assert classify_fix_diff([path]) == (path,)
+
+    def test_prefixed_red_matcher_is_forbidden(self) -> None:
+        path = "vendor/pkg/src/teatree/eval/matchers.py"
+        assert classify_fix_diff([path]) == (path,)
+
+    def test_prefixed_product_code_is_still_allowed(self) -> None:
+        # ANTI-VACUOUS: the prefix alone forbids nothing — only the suffix does.
+        assert classify_fix_diff(["vendor/pkg/src/teatree/loop/tick.py"]) == ()
+
+    def test_a_lookalike_suffix_is_not_forbidden(self) -> None:
+        assert classify_fix_diff(["docs/my_evals/scenarios-guide.md"]) == ()
+        assert classify_fix_diff(["tools/eval/matchers.py"]) == ()
+
+
 class TestAssertFixTouchesOnlyCode:
     def test_clean_diff_does_not_raise(self) -> None:
         assert_fix_touches_only_code(["src/teatree/loop/tick.py"])  # does not raise

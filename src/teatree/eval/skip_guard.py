@@ -9,24 +9,37 @@ Two distinct failure shapes, two guards:
     path forces this guard on; the LOCAL transcript backend legitimately
     all-skips before any transcript exists, so for it the guard is opt-in.
 
-*   *Unmetered api*: the api backend executed scenarios but recorded $0 of model
-    cost. That is the exact ``$0.00 (no metered calls)`` state the ``--bare``
+*   *Unmetered api*: the ``api`` backend executed scenarios but recorded $0 of
+    model cost. That is the exact ``$0.00 (no metered calls)`` state the ``--bare``
     OAuth-auth bug produced — the model "ran" but authenticated as nothing,
     made zero tool calls, and recorded nothing. A fresh run that records nothing
-    never actually executed and must FAIL LOUD, never pass. This guard is
-    unconditional for the api backend (it is the fresh-run path's reason to exist).
+    never actually executed and must FAIL LOUD, never pass.
+
+*   *Empty fresh run*: the vacuous-green signal for the fresh-run backends that
+    record no cost at all. ``anthropic_api`` and ``pydantic_ai`` both drive the model
+    through ``PydanticAiRunner``, which meters no ``cost_usd``, so the $0 guard is
+    structurally blind to them — an EMPTY trajectory (no tool calls, no text) is
+    their equivalent "never actually executed" evidence.
 
 *   *Hooks not registered*: a ``production_hooks`` scenario ran with the shipped
     plugin unregistered, so it graded the raw model rather than the model+hook
-    system it exists to measure. Unlike the two above it is detected per scenario,
+    system it exists to measure. Unlike the others above it is detected per scenario,
     inside the runner, and carried out on the run's ``terminal_reason``
     (:mod:`teatree.eval.harness_failure`); the guard is what turns that reason into
     a lane exit. It is deliberately a GUARD rather than a verdict: a verdict can be
     exempted by the advisory surface, and 6 of the 7 hooked scenarios are advisory
     (souliane/teatree#3922).
+
+Which guard owns which backend is the load-bearing detail, and it is NOT the
+fresh-run split: ``api`` is guarded by cost because it is the only backend that
+records any, while the other two fresh lanes are guarded by trajectory because they
+record none. Widening the $0 guard to every fresh backend would red every healthy
+``anthropic_api`` run — the CI eval lane's own backend.
 """
 
 from collections.abc import Sequence
+
+from teatree.eval.backends import API_BACKEND, UNMETERED_FRESH_BACKENDS
 
 
 class AllSkippedError(RuntimeError):
@@ -69,14 +82,22 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
 
 
 def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
-    """Fail when the api backend executed scenarios but metered $0 of API cost.
+    """Fail when the ``api`` backend executed scenarios but metered $0 of API cost.
 
-    Only the ``api`` backend is checked — the transcript backend runs no model
-    by design. ``executed == 0`` is the all-skipped guard's job, not this one;
-    this fires only when scenarios ran (``executed > 0``) yet recorded nothing,
-    which means the model never actually authenticated/executed.
+    ``api`` ONLY, and deliberately so — this keys on ``cost_usd``, which no other
+    backend records. ``transcript`` runs no model by design, and the other two
+    fresh-run lanes (:data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS`) drive
+    the model through ``PydanticAiRunner`` and meter nothing, so $0 is their NORMAL
+    state on a run that genuinely executed; widening this to
+    :data:`~teatree.eval.backends.FRESH_CLAUDE_BACKENDS` would red every healthy
+    ``anthropic_api`` run. Their vacuous-green signal is an empty trajectory, which
+    :func:`assert_fresh_run_produced_output` owns.
+
+    ``executed == 0`` is the all-skipped guard's job, not this one; this fires only
+    when scenarios ran (``executed > 0``) yet recorded nothing, which means the model
+    never actually authenticated/executed.
     """
-    if backend != "api" or executed == 0 or total_cost_usd > 0.0:
+    if backend != API_BACKEND or executed == 0 or total_cost_usd > 0.0:
         return
     msg = (
         f"api eval run executed {executed} scenario(s) but metered $0.00 (no metered "
@@ -92,25 +113,32 @@ def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
     raise UnmeteredApiRunError(msg)
 
 
-def assert_pydantic_ai_run_produced_output(*, backend: str, executed: int, produced: int) -> None:
-    """Fail when the ``pydantic_ai`` backend executed scenarios but every run was empty.
+def assert_fresh_run_produced_output(*, backend: str, executed: int, produced: int) -> None:
+    """Fail when an UNMETERED fresh backend executed scenarios but every run was empty.
 
-    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) is Claude-specific:
-    it keys on ``cost_usd``, which the the OpenAI-compatible backend ``pydantic_ai`` lane does not
-    meter, so it can never guard a ``pydantic_ai`` fresh run. The backend-appropriate
-    vacuous-green signal there is an EMPTY trajectory — a run that captured no tool
-    calls AND no text never actually drove the model (the model-evolution lane could
-    otherwise report a decorative green). ``produced`` is the count of executed
-    (non-skipped) runs with a non-empty trajectory; the guard fires only for the
-    ``pydantic_ai`` backend when scenarios ran yet not one produced output.
+    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) keys on ``cost_usd``,
+    which only the CLI-backed ``api`` lane records. Every backend in
+    :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` — ``anthropic_api`` and
+    ``pydantic_ai`` — drives the model through ``PydanticAiRunner``, which meters
+    nothing, so the cost guard is structurally blind to them. The backend-appropriate
+    vacuous-green signal is an EMPTY trajectory: a run that captured no tool calls AND
+    no text never actually drove the model.
+
+    ``anthropic_api`` is the backend CI runs, so leaving it out of this guard left the
+    CI eval lane with NO vacuous-green guard at all — the cost guard cannot see it and
+    this one skipped it.
+
+    ``produced`` is the count of executed (non-skipped) runs with a non-empty
+    trajectory; the guard fires only when scenarios ran yet not one produced output.
     """
-    if backend != "pydantic_ai" or executed == 0 or produced > 0:
+    if backend not in UNMETERED_FRESH_BACKENDS or executed == 0 or produced > 0:
         return
     msg = (
-        f"pydantic_ai eval run executed {executed} scenario(s) but every run captured an EMPTY "
+        f"{backend} eval run executed {executed} scenario(s) but every run captured an EMPTY "
         "trajectory (no tool calls, no text). A fresh run that produces nothing never actually "
-        "drove the model — the backend credential/model likely never authenticated. This fails "
-        "loud rather than reporting a vacuous green; check the the OpenAI-compatible backend credential and model."
+        "drove the model — the backend credential/model likely never authenticated. This backend "
+        "meters no cost, so the $0 guard cannot see it and this is the only vacuous-green check "
+        "standing between the lane and a decorative green. Check the backend credential and model."
     )
     raise EmptyFreshRunError(msg)
 

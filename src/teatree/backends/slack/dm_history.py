@@ -28,6 +28,11 @@ type Getter = Callable[[str, dict[str, str | int]], RawAPIDict]
 # never silently truncated, so a dedup caller can trust a full read below the cap.
 _MAX_THREAD_PAGES = 40
 
+# A `since`-bounded DM poll is walked whole so a burst larger than one page is
+# not dropped; 20 pages * 20 messages bounds it at ~400 messages.
+_MAX_DM_PAGES = 20
+_DM_PAGE_SIZE = 20
+
 
 def _messages(data: RawAPIDict) -> list[RawAPIDict]:
     if not data.get("ok"):
@@ -36,30 +41,49 @@ def _messages(data: RawAPIDict) -> list[RawAPIDict]:
     return [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
 
 
-def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
-    """Cursor-follow ``conversations.replies`` across every page of the thread.
+def _walk_pages(
+    get: Getter,
+    method: str,
+    params: dict[str, str | int],
+    *,
+    cap: int,
+    subject: str,
+) -> list[RawAPIDict]:
+    """Cursor-follow *method* across every page, bounded by *cap*.
 
-    Mirrors the ``conversations.history`` cursor walk in ``client.py`` so a
-    thread with more than one page of replies is read whole — the pre-post dedup
-    and post-delivery verification that read it depend on seeing every reply.
+    The one Slack read walk in this module: a caller whose dedup or delivery
+    verification depends on seeing every message needs the whole read, and a
+    cap hit is logged rather than passing for a complete one. A refused page
+    abandons the walk empty: what is collected is the NEWEST history, so
+    keeping it would advance the caller's cursor past the page it never read.
     """
     collected: list[RawAPIDict] = []
     cursor: str | None = None
-    for _ in range(_MAX_THREAD_PAGES):
-        params: dict[str, str | int] = {"channel": channel, "ts": thread_ts, "limit": 200}
+    for _ in range(cap):
+        page = dict(params)
         if cursor:
-            params["cursor"] = cursor
-        data = get("conversations.replies", params)
+            page["cursor"] = cursor
+        data = get(method, page)
+        if not data.get("ok"):
+            logger.warning("Slack %s refused a page on %s; the read is abandoned", method, subject)
+            return []
         collected.extend(_messages(data))
         cursor = next_cursor(data)
         if cursor is None:
             return collected
-    logger.warning(
-        "Slack conversations.replies hit the %d-page cap on thread %s; the reply read is truncated",
-        _MAX_THREAD_PAGES,
-        thread_ts,
-    )
+    logger.warning("Slack %s hit the %d-page cap on %s; the read is truncated", method, cap, subject)
     return collected
+
+
+def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
+    params: dict[str, str | int] = {"channel": channel, "ts": thread_ts, "limit": 200}
+    return _walk_pages(
+        get,
+        "conversations.replies",
+        params,
+        cap=_MAX_THREAD_PAGES,
+        subject=f"thread {thread_ts}",
+    )
 
 
 def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
@@ -105,12 +129,27 @@ def read_user_dms(
     since: str,
     identity: OwnSlackIdentity | None,
 ) -> list[RawAPIDict]:
-    """Return new DMs FROM the user, with thread replies, bot's own posts dropped."""
-    params: dict[str, str | int] = {"channel": channel, "limit": 20}
+    """Return new DMs FROM the user, with thread replies, bot's own posts dropped.
+
+    A ``since``-bounded poll is walked across every page of the window, so a
+    burst larger than one page is not silently dropped. An unbounded poll reads
+    the newest page only — Slack pages newest-first, so walking one would replay
+    the entire DM history into the inbound pipeline.
+    """
+    params: dict[str, str | int] = {"channel": channel, "limit": _DM_PAGE_SIZE}
     if since:
         params["oldest"] = since
+        history = _walk_pages(
+            get,
+            "conversations.history",
+            params,
+            cap=_MAX_DM_PAGES,
+            subject=f"DM channel {channel}",
+        )
+    else:
+        history = _messages(get("conversations.history", params))
     result: list[RawAPIDict] = []
-    for msg in _messages(get("conversations.history", params)):
+    for msg in history:
         msg.setdefault("channel", channel)
         if identity is None or not is_self_authored(msg, identity):
             result.append(msg)

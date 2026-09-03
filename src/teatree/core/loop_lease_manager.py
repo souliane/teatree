@@ -48,6 +48,7 @@ from teatree.core.loop_lease_liveness import (
     lease_is_live,
     live_foreign_owner_session,
     namespace_is_attributable,
+    owner_pid_is_dead,
     pid_alive_probe,
     reader_pid_namespace,
     reclaim_reason,
@@ -280,14 +281,21 @@ class LoopLeaseQuerySet(models.QuerySet):
             return False, live_owner
 
         prior_session = claim.session_id
+        reclaimable = (
+            Q(session_id="")
+            | Q(session_id=session_id)
+            | Q(lease_expires_at__isnull=True)
+            | Q(lease_expires_at__lte=now)
+        )
+        if prior_session:
+            # The exact snapshot ``live_foreign_owner_session`` just judged NOT live —
+            # the only arm that reaches a not-live owner still inside its TTL (a dead
+            # pid, or a per-loop owner past :data:`UNVERIFIABLE_OWNER_GRACE`). It is
+            # its own CAS: every concurrent write moves one of the three columns.
+            reclaimable |= Q(session_id=prior_session, owner_pid=claim.owner_pid, acquired_at=claim.acquired_at)
         won = (
             self.filter(name=name)
-            .filter(
-                Q(session_id="")
-                | Q(session_id=session_id)
-                | Q(lease_expires_at__isnull=True)
-                | Q(lease_expires_at__lte=now)
-            )
+            .filter(reclaimable)
             .update(
                 session_id=session_id,
                 owner_pid=owner_pid,
@@ -421,15 +429,13 @@ class LoopLeaseQuerySet(models.QuerySet):
         is_live = lease_is_live(claim, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name))
 
         if not is_live:
-            # The owner is gone — either an expired TTL with an indeterminate
-            # pid, or a determinately-dead ``owner_pid`` even within an
-            # unexpired TTL. Re-assert the not-live condition in the CAS: a
-            # still-lapsed TTL, OR (for the dead-pid-within-TTL case) the
-            # exact dead pid we read — so a concurrent refresh/claim (which
-            # extends the TTL and/or moves ``owner_pid``) is never clobbered.
-            cas = Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)
-            if stored_pid is not None:
-                cas |= Q(owner_pid=stored_pid)
+            # Re-assert the ACTUAL not-live reason in the CAS, never their union:
+            # ORing the dead-pid arm onto the lapsed-TTL one evicted a lease a
+            # concurrent tick had just refreshed under the same (live) pid.
+            if owner_pid_is_dead(stored_pid):
+                cas = Q(owner_pid=stored_pid)
+            else:
+                cas = Q(session_id=claim.session_id, owner_pid=stored_pid, acquired_at=claim.acquired_at)
             return candidates.filter(cas).update(
                 session_id="", owner_pid=None, owner_pid_namespace="", acquired_at=None, lease_expires_at=None
             )

@@ -15,10 +15,11 @@ import typer
 from django.core.exceptions import ObjectDoesNotExist
 from django_typer.management import TyperCommand, command
 
-from teatree.config import cadence_seconds
+from teatree.config import UserSettings, cadence_seconds, get_effective_settings
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
+from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
@@ -107,7 +108,30 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # Session that took the claim (empty until the worker session is known),
         # orthogonal to the role-label ``claimed_by``.
         "claimed_by_session": task.claimed_by_session,
+        # The generation this claim minted. The slot hands it straight back to
+        # ``tasks record-attempt --claim-token``, which is what stops a run whose
+        # lease lapsed and was re-offered mid-flight from recording its outcome
+        # onto the generation the next tick is executing. Empty on an unclaimed
+        # row (``pending-spawn``): there is no claim to record against yet.
+        "claim_token": claim_generation(task),
     }
+
+
+def _interactive_claim_lease_seconds() -> int:
+    """How long an in-session claim holds WITHOUT a heartbeat.
+
+    The ``/loop`` slot's ``Agent``-tool sub-agent runs inside the owner's own
+    single-threaded session, so nothing can renew the lease while it works —
+    ``renew_lease``'s only production caller is the detached headless heartbeat.
+    The initial lease is therefore the WHOLE budget, and ``Task.claim``'s 300s
+    default reclaims and re-offers every dispatch slower than five minutes, which
+    is most of them. The instant a unit is genuinely presumed runaway is already
+    named once, by the watchdog runtime ceiling, so the lease is that same instant
+    rather than a second number to keep in sync; a disabled (``0``) ceiling means
+    the watchdog will not judge a run, never that a lease may not expire, so the
+    shipped ceiling stands in.
+    """
+    return get_effective_settings().watchdog_max_runtime_seconds or UserSettings().watchdog_max_runtime_seconds
 
 
 def _resolve_fanout_directive(task: Task) -> str:
@@ -323,6 +347,7 @@ class Command(TyperCommand):
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
                 claimed_by_session=session,
+                lease_seconds=_interactive_claim_lease_seconds(),
                 extra_filter=Task.dispatchable_q(),
                 ordering=admission_claim_order(),
             )
@@ -334,7 +359,7 @@ class Command(TyperCommand):
             entry = payload[0]
             human = (
                 f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
-                f"phase={entry['phase']} url={entry['issue_url']}"
+                f"phase={entry['phase']} url={entry['issue_url']} claim_token={entry['claim_token']}"
             )
         emit(
             payload,
@@ -357,9 +382,12 @@ class Command(TyperCommand):
         """Mark the Task as claimed so the next tick doesn't surface it.
 
         Called by the ``/loop`` slot immediately after it calls ``Agent``
-        for the entry. The Task transitions to ``completed`` when the
-        spawned sub-agent reports back (via the existing TaskAttempt
-        flow) — claiming is the boundary, not the finish.
+        for the entry. Claiming is the spawn boundary, NOT the finish: nothing
+        terminalizes the Task on its own. When the sub-agent returns, the slot
+        MUST record its outcome with ``t3 <overlay> tasks record-attempt
+        <task_id> <result_json> --claim-token <token>``, passing back the token
+        printed here — an unrecorded unit stays CLAIMED until its lease lapses,
+        is reclaimed to PENDING and re-offered forever.
         """
         try:
             task = Task.objects.get(pk=task_id)
@@ -371,4 +399,4 @@ class Command(TyperCommand):
         except Exception as exc:  # noqa: BLE001 — a claim failure surfaces as a clean SystemExit, never a traceback
             self.stderr.write(f"Cannot claim task {task_id}: {exc}")
             raise SystemExit(1) from None
-        self.stdout.write(f"Claimed task {task_id} for {claimed_by}.")
+        self.stdout.write(f"Claimed task {task_id} for {claimed_by}. claim_token={claim_generation(task)}")

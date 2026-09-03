@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
@@ -307,7 +308,8 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
     critic_error = record_returned_critic_verdict(task, result)
     if critic_error:
         return critic_error
-    return record_returned_directive_interpretation(task, result)
+    fix_error = record_returned_fix_record(task, result)
+    return fix_error or record_returned_directive_interpretation(task, result)
 
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
@@ -635,5 +637,5 @@ def _record_failure(
         result=result or {},
         **usage_fields(usage),
     )
-    task.fail(reason=error)
+    task.fail_claimed(reason=error)
     return attempt

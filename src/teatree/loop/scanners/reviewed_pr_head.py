@@ -63,6 +63,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from django.utils import timezone
+
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.loop.scanners.base import ScanSignal
@@ -97,6 +99,16 @@ def _discharged_sha(ticket: "Ticket") -> str:
     return sha if isinstance(sha, str) else ""
 
 
+def _last_head_check(ticket: "Ticket") -> str:
+    """When this ticket's head was last read, ``""`` (sorts first) if never."""
+    stamped = (ticket.extra or {}).get("head_checked_at")
+    return stamped if isinstance(stamped, str) else ""
+
+
+def _stamp_head_check(ticket: "Ticket") -> None:
+    ticket.merge_extra(set_keys={"head_checked_at": timezone.now().isoformat()})
+
+
 @dataclass(slots=True)
 class ReviewedPrHeadScanner:
     """Emit ``reviewer_pr.new_sha`` for reviewer tickets whose reviewed head moved.
@@ -124,12 +136,20 @@ class ReviewedPrHeadScanner:
             except Exception:
                 logger.exception("ReviewedPrHeadScanner failed on %s", ticket.issue_url)
                 continue
+            finally:
+                # Stamped even on a raise, so a ticket whose forge read keeps
+                # failing rotates to the back instead of re-claiming the window.
+                _stamp_head_check(ticket)
             if signal is not None:
                 signals.append(signal)
         return signals
 
     def _watched_tickets(self) -> list["Ticket"]:
-        """Reviewer tickets with a discharged review and no reviewing task in flight."""
+        """Reviewer tickets with a discharged review and no reviewing task in flight.
+
+        Ordered least-recently-checked first so the ``max_checks`` cap rotates
+        across a backlog larger than itself rather than pinning one window.
+        """
         from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
@@ -143,6 +163,7 @@ class ReviewedPrHeadScanner:
             for ticket in candidates.order_by("pk").distinct()
             if _discharged_sha(ticket) and self._url_allowed(ticket.issue_url)
         ]
+        watched.sort(key=lambda ticket: (_last_head_check(ticket), ticket.pk))
         return watched[: self.max_checks]
 
     def _signal_for_ticket(self, ticket: "Ticket") -> ScanSignal | None:

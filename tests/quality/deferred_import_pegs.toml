@@ -53,7 +53,7 @@
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
-"src/teatree/core/gates/local_stack_gate.py" = 3
+"src/teatree/core/gates/local_stack_gate.py" = 4
 # 2: the owner-ratification citation check needs `PlanArtifact` (an ORM read) and
 # `reviewer_identity.is_non_reviewer_role` (imports the model module), both of which
 # must resolve after the app registry is ready, so `_citations_the_owner_did_not_make`
@@ -169,7 +169,7 @@
 # ticket_status.py in the introspection/status facet split; the peg moved with it.
 "src/teatree/core/models/ticket_introspection.py" = 1
 "src/teatree/core/models/ticket_phase_sessions.py" = 1
-"src/teatree/core/models/ticket_scheduling.py" = 7
+"src/teatree/core/models/ticket_scheduling.py" = 8
 # `teatree.settings._discover_overlay_apps()` `ep.load()`s every `teatree.overlays`
 # entry point at SETTINGS-IMPORT time, before Django can be configured — so any
 # overlay module whose import chain reaches `teatree.core.models` is silently dropped

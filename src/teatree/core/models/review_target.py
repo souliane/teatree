@@ -9,10 +9,11 @@ without one silently DISCARDED a well-formed ``review_verdict`` envelope and com
 that otherwise presented as CLEAN. A split answer is what let the writer's key and the
 reader's key disagree; one resolver is what stops them disagreeing again.
 
-:func:`verdict_at` is the read-back the writer verifies its own persistence with, and it is
-deliberately the STRICTEST consumer predicate — exact ``slug`` rather than the manager's
-``__iexact`` — so a row written under a key the landed-work guard cannot see is caught at
-write time rather than presenting as a review that never happened.
+:func:`verdict_at` is the read-back the writer verifies its own persistence with, and it
+queries exactly what the consumers do — :meth:`ReviewVerdict.objects.for_pr`'s
+``slug__iexact``, the predicate the merge gate's ``authorizing_verdict_at`` and the
+landed-work guard both read. A stricter read-back would refuse a row those consumers can
+see, which is a false "never persisted" on a forge slug spelled another way.
 """
 
 from dataclasses import dataclass
@@ -85,15 +86,13 @@ def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
     """The verdict durably recorded for *target*, or ``None`` — the shared read-back.
 
     An empty ``head_sha`` can match nothing: a verdict binds to the exact tree it judged, so
-    "some verdict at an unknown head" is not an answer any consumer accepts.
+    "some verdict at an unknown head" is not an answer any consumer accepts. The slug is
+    matched case-insensitively through :meth:`~ReviewVerdict.objects.for_pr`, because a
+    forge slug spelled ``Owner/Repo`` names the PR the guards resolve as ``owner/repo``.
     """
     if not target.head_sha:
         return None
-    return ReviewVerdict.objects.filter(
-        slug=target.slug,
-        pr_id=target.pr_id,
-        reviewed_sha=target.head_sha.lower(),
-    ).first()
+    return ReviewVerdict.objects.for_pr(target.slug, target.pr_id).filter(reviewed_sha=target.head_sha.lower()).first()
 
 
 __all__ = ["ReviewTarget", "review_target_for_task", "verdict_at"]

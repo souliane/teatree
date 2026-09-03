@@ -34,7 +34,12 @@ from django.db import DatabaseError, connections
 
 from teatree.config.cold_db import projection_dir_for
 from teatree.config.host_projection import ProjectionPublisher, ProjectionReader
-from teatree.db.write_domain import ControlDbWriteDomain, FdHolder, read_write_holders_across
+from teatree.db.write_domain import (
+    ControlDbWriteDomain,
+    DescriptorTableUnavailableError,
+    FdHolder,
+    read_write_holders_across,
+)
 from teatree.paths import DATA_DIR, TRUE_CANONICAL_DB, find_control_db_artifacts
 
 # quick_check returns exactly this single row when the database is sound.
@@ -165,7 +170,16 @@ def _check_no_host_process_holds_the_db_writable() -> bool:
     every corruption, because a claim says a container once wrote a marker and says
     nothing about the descriptors already open when it did.
     """
-    offenders = _control_db_writers()
+    try:
+        offenders = _control_db_writers()
+    except DescriptorTableUnavailableError as unreadable:
+        typer.secho(
+            f"WARN  Control DB writers UNVERIFIED: {unreadable}. Whether a process holds the control DB "
+            "read-write is unknown here, not answered — run this where the descriptor table is readable "
+            "(deploy/t3 <args>) before treating the writer probe as passed.",
+            fg=typer.colors.YELLOW,
+        )
+        return True
     if not offenders:
         typer.secho(
             "OK    Control DB writers: no process holds the control DB or a host copy of it read-write",

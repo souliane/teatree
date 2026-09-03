@@ -310,6 +310,16 @@ class TestCheckingNotify:
             _call("checking", "show", "--this-overlay", "--notify")
         backend.post_message.assert_not_called()
 
+    def test_an_undelivered_recap_leaves_the_window_unadvanced(self, checkpoint_file: Path) -> None:
+        """The checkpoint consumes the window — advancing it over a lost DM loses those rows."""
+        _merged_ticket()
+        before = load_checkpoint(checkpoint_file)
+        # Patched at the delivery seam, not at a transport: the recap is a PULLED row now,
+        # so a post_message stub proves nothing about whether the recap landed.
+        with patch("teatree.core.management.commands.checking.notify_user", return_value=False):
+            _call("checking", "show", "--this-overlay", "--notify")
+        assert load_checkpoint(checkpoint_file) == before
+
     def test_unchanged_recap_deduped_to_one_pulled_row(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         backend = _notify_backend()

@@ -11,10 +11,9 @@ maintenance chains (``reconcile_timers`` / ``prune_task_results``): the re-arm d
 purely time-based (``resets_at`` has passed), so a released task that re-hits the limit
 simply re-parks — no fragile "is the model reachable yet" inference probe is needed.
 
-Gated by the DARK ``limit_autorecovery_enabled`` flag: while it is OFF the chain is a cheap
-keepalive that clears nothing, releases nothing, and posts nothing (behaviorally inert), so
-the whole feature ships dark. Seeded by ``ensure_maintenance_chains`` at worker startup and
-self-perpetuating after that.
+Gated by ``limit_autorecovery_enabled``, which ships ON: turned OFF the chain degrades to a
+cheap keepalive that clears nothing, releases nothing, and posts nothing. Seeded by
+``ensure_maintenance_chains`` at worker startup and self-perpetuating after that.
 
 Harness-limited (NOT teatree-fixable, stated plainly): this re-arms the WORKER / DB loop
 plane. Resuming the interactive orchestrator SESSION's conversation, or auto-resuming the
@@ -156,7 +155,7 @@ def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime
 
 
 def _autorecovery_enabled() -> bool:
-    """Whether ``limit_autorecovery_enabled`` resolves ON — fail-safe OFF (dark by default)."""
+    """Whether ``limit_autorecovery_enabled`` resolves ON — fail-safe OFF on a failed read."""
     try:
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
@@ -184,6 +183,16 @@ def _next_fire(now: dt.datetime) -> dt.datetime:
     return now + dt.timedelta(seconds=cadence)
 
 
+def _refine_successor(run_after: dt.datetime) -> None:
+    """Push the queued successor out to *run_after* — the post-body cadence refinement."""
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+
+    DBTaskResult.objects.filter(task_path=usage_window_recovery.module_path, status=TaskResultStatus.READY).update(
+        run_after=run_after
+    )
+
+
 @task(queue_name=LOOPS_QUEUE)
 def usage_window_recovery() -> dict[str, int]:
     """One recovery fire: clear due windows, then re-schedule this chain.
@@ -193,6 +202,10 @@ def usage_window_recovery() -> dict[str, int]:
     ``limit_autorecovery_enabled`` is OFF the body is a cheap keepalive — it clears nothing
     and posts nothing (behaviorally inert) but keeps re-scheduling so a flag flip is picked
     up without a worker restart.
+
+    Successor-FIRST, exactly as :func:`~teatree.loops.timer_chains.loop_timer` chains: the
+    recovery body writes to several tables and a raise there would otherwise end the chain
+    for good, leaving every parked task parked with nothing left to re-arm it.
     """
     if _pending_recovery():
         return {"deduped": 1}
@@ -200,8 +213,9 @@ def usage_window_recovery() -> dict[str, int]:
     if not _autorecovery_enabled():
         usage_window_recovery.using(run_after=now + dt.timedelta(seconds=IDLE_KEEPALIVE_SECONDS)).enqueue()
         return {"disabled": 1}
+    usage_window_recovery.using(run_after=_next_fire(now)).enqueue()
     outcome = recover_windows(now)
-    usage_window_recovery.using(run_after=_next_fire(timezone.now())).enqueue()
+    _refine_successor(_next_fire(timezone.now()))
     return {"cleared": len(outcome.cleared), "released": outcome.released}
 
 

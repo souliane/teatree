@@ -11,9 +11,10 @@ See: souliane/teatree#67, souliane/teatree#2599
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+import generated_doc_staging
 
 _DEFAULT_OUTPUT = Path("docs/generated/cli-reference.md")
 
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     output.write_text(markdown, encoding="utf-8")
 
     if markdown != old and output == _DEFAULT_OUTPUT and not os.environ.get("CLI_REFERENCE_NO_STAGE"):
-        subprocess.run(["git", "add", str(output)], check=False)
+        generated_doc_staging.stage(output)
         print(f"Updated {output}")
 
     return 0

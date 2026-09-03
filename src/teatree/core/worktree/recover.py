@@ -9,9 +9,10 @@ report by composing the primitives that already exist — the boot sweeps,
 branch -> Worktree -> ticket -> task map. Stranded work is surfaced for SALVAGE
 (push the branch to a PR), never auto-captured: there is no recovery snapshot.
 
-Default is a DRY-RUN: gathering is pure reads, and the report mutates nothing.
-``--requeue`` (reopen FAILED tasks) is the only mutating action, applied
-explicitly by the command.
+``--requeue`` (reopen FAILED tasks) is the only action the operator asks for.
+Gathering is otherwise pure reads EXCEPT the boot sweeps, which run by default
+and do write, so the report's own header reports what they recovered rather than
+claiming nothing changed.
 """
 
 from dataclasses import dataclass, field
@@ -138,8 +139,21 @@ class RecoverReport:
             open_pr_url=orphan.open_pr_url,
         )
 
+    def _header(self, *, dry_run: bool) -> str:
+        """The mode line, whose no-change claim is read off the sweeps rather than assumed.
+
+        The boot sweeps run on the default path and DO write, so a flat "nothing
+        changed" was false exactly when the operator most needed to know otherwise.
+        """
+        if not dry_run:
+            return "t3 recover — applied"
+        recovered = self.boot_sweeps.changed_rows
+        if recovered:
+            return f"t3 recover — DRY RUN except the boot sweeps, which recovered {recovered} row(s)"
+        return "t3 recover — DRY RUN (nothing changed)"
+
     def to_terse(self, *, dry_run: bool) -> str:
-        header = "t3 recover — DRY RUN (nothing changed)" if dry_run else "t3 recover — applied"
+        header = self._header(dry_run=dry_run)
         sweeps = self.boot_sweeps
         sweep_line = (
             f"boot sweeps: replayed={sweeps.replayed_transitions} "

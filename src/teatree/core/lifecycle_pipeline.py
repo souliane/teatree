@@ -115,6 +115,18 @@ class TicketSnapshot:
             return _ABSENT_ORDER
         return _STATE_ORDER.get(self.state, _ABSENT_ORDER)
 
+    @property
+    def off_path(self) -> bool:
+        """An EXISTING ticket whose state is not on the golden path.
+
+        IGNORED plus every non-golden-path terminal a non-coder role reaches
+        (``REVIEW_POSTED``). They must be reported as off-path, never scored
+        through :attr:`order`: an unranked state falls through to
+        ``_ABSENT_ORDER``, so a finished reviewer ticket read as "intake has not
+        run yet" and the plan named intake as its current step.
+        """
+        return self.exists and self.state is not None and self.state not in _STATE_ORDER
+
 
 @dataclasses.dataclass(frozen=True)
 class StepReport:
@@ -131,7 +143,7 @@ class DoReport:
     ticket_id: int | None
     steps: list[StepReport]
     stopped_at: str | None  # the step where the walk stopped, None when it completed
-    stopped_reason: str  # completed | pending | blocked | ignored | runnable (dry-run)
+    stopped_reason: str  # completed | pending | blocked | ignored | off_path | runnable (dry-run)
     plan_only: bool
 
 
@@ -173,7 +185,14 @@ def _plan_stop(reports: list[StepReport]) -> tuple[str | None, str]:
     return None, "completed"
 
 
-def _ignored_report(ref: str, snapshot: TicketSnapshot, ticket_id: int | None, *, plan_only: bool) -> DoReport:
+def _off_path_report(
+    ref: str,
+    snapshot: TicketSnapshot,
+    ticket_id: int | None,
+    *,
+    reason: str,
+    plan_only: bool,
+) -> DoReport:
     return DoReport(
         ticket_ref=ref,
         initial_state=snapshot.state,
@@ -181,7 +200,7 @@ def _ignored_report(ref: str, snapshot: TicketSnapshot, ticket_id: int | None, *
         ticket_id=ticket_id,
         steps=[StepReport(step, StepStatus.WAITING) for step in PIPELINE],
         stopped_at=None,
-        stopped_reason="ignored",
+        stopped_reason=reason,
         plan_only=plan_only,
     )
 
@@ -245,7 +264,9 @@ def drive(ref: str, seams: DriveSeams, *, plan_only: bool) -> DoReport:
     initial = seams.snapshot_provider()
     ticket_id = seams.ticket_id_provider()
     if initial.ignored:
-        return _ignored_report(ref, initial, ticket_id, plan_only=plan_only)
+        return _off_path_report(ref, initial, ticket_id, reason="ignored", plan_only=plan_only)
+    if initial.off_path:
+        return _off_path_report(ref, initial, ticket_id, reason="off_path", plan_only=plan_only)
     if plan_only:
         reports = list(starmap(StepReport, resolve_plan(initial)))
         stopped_at, reason = _plan_stop(reports)

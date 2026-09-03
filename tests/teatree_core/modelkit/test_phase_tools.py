@@ -70,8 +70,8 @@ class TestDispatchablePhaseTotality:
     def test_every_verdict_review_phase_gets_the_shell_never_write(self, phase: str) -> None:
         # Each verdict-review phase's deliverable is a RECORDED verdict. The
         # `codex_*` variants have NO server-side envelope seam and the MCP post
-        # path is GitLab-only, so on a GitHub PR the shell (`t3 teatree review
-        # record` / `t3 teatree review post-comment`, bound to a `git rev-parse
+        # path is GitLab-only, so on a GitHub PR the shell (`t3 <overlay> review
+        # record` / `t3 review post-comment`, bound to a `git rev-parse
         # HEAD` sha off a `git worktree add --detach` cold checkout) is their only
         # way to deliver — a shell-less codex member stalls and leaks an "I have no
         # Bash/git/gh" question to the owner. It still never mutates source.

@@ -15,10 +15,9 @@ def camelize(name: str) -> str:
 class OverlayScaffolder:
     """Generate a TeaTree overlay package."""
 
-    def __init__(self, project_root: Path, overlay_app: str, package_name: str) -> None:
+    def __init__(self, project_root: Path, overlay_app: str) -> None:
         self.project_root = project_root
         self.overlay_app = overlay_app
-        self.package_name = package_name
         self.overlay_class_name = camelize(overlay_app)
         self.src_dir = project_root / "src"
 
@@ -108,7 +107,7 @@ class OverlayScaffolder:
         )
         content = template.replace("{{project_name}}", project_name)
         content = content.replace("{{overlay_app}}", self.overlay_app)
-        content = content.replace("{{package_name}}", self.package_name)
+        content = content.replace("{{overlay_class}}", self.overlay_class_name)
         content = content.replace("{{description}}", f"TeaTree overlay for {self.overlay_class_name}")
         self.project_root.joinpath("pyproject.toml").write_text(content, encoding="utf-8")
 

@@ -14,7 +14,7 @@ GitLab-side ``teatree.cli.review.post_impl`` uses.
 import json
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NoReturn, TypedDict
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
@@ -23,7 +23,12 @@ from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
 from teatree.core.models.review_verdict import Finding, FindingDict
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
-from teatree.core.review.verdict_findings import FindingsRenderError, findings_payload, render_findings_text
+from teatree.core.review.verdict_findings import (
+    FindingsRenderError,
+    findings_payload,
+    readable_findings,
+    render_findings_text,
+)
 from teatree.core.review.verdict_findings_publish import FindingsPublishError, PublishOutcome, publish_verdict_findings
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
@@ -41,7 +46,6 @@ class RecordResult(TypedDict, total=False):
     findings_count: int
     findings_published: bool
     findings_publish_note: str
-    error: str
 
 
 class StatusResult(TypedDict, total=False):
@@ -55,6 +59,7 @@ class StatusResult(TypedDict, total=False):
     reviewer_identity: str
     findings_count: int
     findings: list[FindingDict]
+    findings_error: str
     error: str
 
 
@@ -142,19 +147,19 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
     try:
         require_current_schema()
     except SelfDbMigrationError as exc:
-        return {"recorded": False, "error": str(exc)}, f"  record refused: {exc}"
+        _refuse(command, f"record refused: {exc}")
 
     resolved_ticket = None
     if request.ticket_id:
         try:
             resolved_ticket = Ticket.objects.get(pk=request.ticket_id)
         except Ticket.DoesNotExist:
-            return {"recorded": False, "error": f"Ticket {request.ticket_id} not found"}, ""
+            _refuse(command, f"record refused: Ticket {request.ticket_id} not found")
 
     try:
         findings = parse_findings(request.findings_json)
     except (TypeError, ValueError) as exc:
-        return {"recorded": False, "error": str(exc)}, f"  record refused: {exc}"
+        _refuse(command, f"record refused: {exc}")
 
     try:
         recorded = ReviewVerdict.record(
@@ -173,7 +178,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
             live_checks=live_checks_at,
         )
     except ReviewVerdictError as exc:
-        return {"recorded": False, "error": str(exc)}, f"  record refused: {exc}"
+        _refuse(command, f"record refused: {exc}")
 
     published, publish_line = _publish_on_record(recorded)
     lines = [
@@ -198,17 +203,22 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
     return payload, "\n".join(line for line in lines if line)
 
 
+def _refuse(command: "TyperCommand", reason: str) -> NoReturn:
+    """Stop on *reason* with a nonzero exit — an ``{"error": …}`` return prints and exits 0 (#932)."""
+    command.stderr.write(f"  {reason}")
+    raise SystemExit(1)
+
+
 def _assert_recordable(command: "TyperCommand", request: RecordRequest) -> None:
     """Refuse a slug that is not ``owner/repo``, or a verdict not bound to a full SHA."""
     if not _looks_like_owner_repo(request.slug):
-        command.stderr.write(
-            f"  record refused: slug must be owner/repo (got {request.slug!r}) — this looks like a branch "
-            f"name; the review-verdict / merge lookup keys by repo slug"
+        _refuse(
+            command,
+            f"record refused: slug must be owner/repo (got {request.slug!r}) — this looks like a branch "
+            f"name; the review-verdict / merge lookup keys by repo slug",
         )
-        raise SystemExit(1)
     if not request.reviewed_sha.strip():
-        command.stderr.write("  record refused: --reviewed-sha is required (full hex commit id of the reviewed tree)")
-        raise SystemExit(1)
+        _refuse(command, "record refused: --reviewed-sha is required (full hex commit id of the reviewed tree)")
 
 
 def _publish_on_record(recorded: ReviewVerdict) -> tuple[bool, str]:
@@ -323,8 +333,8 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
         reason = "verdict is HOLD" if not recorded.is_merge_safe() else f"live checks {live_checks!r}"
         human = f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
         state = "not_safe"
-    payload = findings_payload(recorded)
-    return {
+    readable = readable_findings(recorded)
+    result: StatusResult = {
         "state": state,
         "slug": ref.slug,
         "pr_id": ref.pr_id,
@@ -333,9 +343,17 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
         "current_head_sha": current_head,
         "live_checks": live_checks,
         "reviewer_identity": recorded.reviewer_identity,
-        "findings_count": len(payload),
-        "findings": payload,
-    }, "\n".join([human, render_findings_text(recorded)]) if payload else human
+        "findings_count": readable.recorded_count if readable.error else len(readable.payload),
+        "findings": readable.payload,
+    }
+    if readable.error:
+        result["findings_error"] = readable.error
+        unreadable = (
+            f"  findings unreadable ({readable.recorded_count} recorded): {readable.error} — the verdict "
+            f"above stands; read them with `t3 <overlay> review findings <pr-url>`"
+        )
+        return result, f"{human}\n{unreadable}"
+    return result, "\n".join([human, render_findings_text(recorded)]) if readable.payload else human
 
 
 def findings_result(command: "TyperCommand", mr_url: str, reviewed_sha: str) -> tuple[FindingsResult, str]:

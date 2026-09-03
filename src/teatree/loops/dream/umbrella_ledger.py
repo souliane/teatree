@@ -28,6 +28,7 @@ testable without an LLM and without a live forge. A rendered title that would le
 a banned term / bare reference is WITHHELD — never written to the umbrella.
 """
 
+import enum
 import logging
 import re
 from dataclasses import dataclass
@@ -190,6 +191,46 @@ def upsert_gap_checkbox(
     return _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n")
 
 
+class _GapCheckState(enum.Enum):
+    """Whether a gap's umbrella box is checked after an attempt to check it.
+
+    A bare "did I flip it" boolean cannot separate "already checked" from "I could not
+    check it", and the reconciler needs exactly that distinction: the first means the
+    gap is done, the second means a forge read/write did not land.
+    """
+
+    NEWLY_CHECKED = "newly_checked"
+    ALREADY_CHECKED = "already_checked"
+    UNCONFIRMED = "unconfirmed"
+
+    @property
+    def is_checked(self) -> bool:
+        return self is not _GapCheckState.UNCONFIRMED
+
+
+_CHECKED_BOX = re.compile(r"^- \[x\]", re.IGNORECASE)
+_UNCHECKED_BOX = re.compile(r"^- \[ \]")
+
+
+def _ensure_gap_checked(host: CodeHostBackend, *, umbrella_url: str, gap_key: str) -> _GapCheckState:
+    """Check *gap_key*'s umbrella box if needed, reporting whether it IS checked now."""
+    body = _read_body(host, umbrella_url)
+    if body is None:
+        return _GapCheckState.UNCONFIRMED
+    lines = body.splitlines()
+    index = _line_index(lines, gap_key)
+    if index == -1:
+        return _GapCheckState.UNCONFIRMED
+    if _CHECKED_BOX.match(lines[index]):
+        return _GapCheckState.ALREADY_CHECKED
+    flipped = _UNCHECKED_BOX.sub("- [x]", lines[index], count=1)
+    if flipped == lines[index]:
+        return _GapCheckState.UNCONFIRMED
+    lines[index] = flipped
+    written = _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n")
+    return _GapCheckState.NEWLY_CHECKED if written else _GapCheckState.UNCONFIRMED
+
+
 def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str) -> bool:
     """Flip *gap_key*'s umbrella checkbox from unchecked to checked, idempotently.
 
@@ -197,18 +238,7 @@ def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str
     ``- [x]``, and writes the whole body back. An already-checked or absent gap is a
     no-op (no rewrite). Returns True iff the box was newly checked.
     """
-    body = _read_body(host, umbrella_url)
-    if body is None:
-        return False
-    lines = body.splitlines()
-    index = _line_index(lines, gap_key)
-    if index == -1:
-        return False
-    flipped = re.sub(r"^- \[ \]", "- [x]", lines[index], count=1)
-    if flipped == lines[index]:
-        return False
-    lines[index] = flipped
-    return _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n")
+    return _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key) is _GapCheckState.NEWLY_CHECKED
 
 
 def _gap_issue_url(umbrella_url: str, gap_key: str) -> str:
@@ -358,6 +388,12 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
     NOT a fragile forge re-read of a ``/pull/<n>`` URL the issue endpoint does not
     serve. A BINDING memory is never retired; a gap whose fix has not merged is left
     alone. Returns the gap-fix tickets reconciled this pass.
+
+    A gap whose umbrella box could NOT be confirmed checked — an unreadable body, a
+    missing line, a refused write — is left unstamped and retried next pass. The stamp
+    is permanent (it removes the ticket from every future scan), so stamping on an
+    unconfirmed forge write would leave the umbrella showing an open box for a merged
+    fix, with nothing left to ever re-check it.
     """
     from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415 — tick-time import
 
@@ -369,7 +405,9 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
         gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
         cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
         merged_url = _merged_pr_url(ticket)
-        check_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap_key)
+        if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
+            logger.warning("dream reconcile: could not check umbrella box for gap %r — retrying next pass", gap_key)
+            continue
         if _stamp_memory_merged(cluster_key, merged_url=merged_url):
             merged_memory_urls.add(merged_url)
         _stamp_ticket_reconciled(ticket)

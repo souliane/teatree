@@ -86,7 +86,7 @@ If the (possibly-bundled) branch has **more than one** commit, offer to squash f
 
 ### 2. Pre-Flight Checks (all must pass)
 
-1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in your environment (or `t3 <overlay> config_setting set contribute true`)."
+1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in your environment (or set `contribute` with the `mcp__teatree__config_setting_set` MCP tool — it writes the DB-home value directly; fall back to `t3 <overlay> config_setting set contribute true` when the MCP server isn't connected)."
 2. **`T3_PUSH` is `true`** — if not, stop: "Pushing is disabled (`T3_PUSH=false`). Push manually with `git push` if you're sure."
 3. **Has a push remote:** `git -C "$T3_REPO" remote -v` → shows a push URL for `origin`.
 4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); fix first if it fails.

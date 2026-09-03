@@ -3,7 +3,10 @@
 # Not a push gate: push -> CI runs the suite (#112/#21/#38). The opt-in Docker
 # superset is dev/test-matrix.sh.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# PHYSICAL, because `dev/` is reachable through a symlink: a caller that invokes this
+# through one gets `..` applied to the LINK's parent, which is a different tree, and
+# every path below then resolves nowhere.
+cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 PY_VERSION="${TEATREE_TEST_PYTHON:-3.13}"
 

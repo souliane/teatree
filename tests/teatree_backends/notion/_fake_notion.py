@@ -36,6 +36,7 @@ class FakeNotion:
         self.fail_with: tuple[int, str] | None = None
         self.identity_fail_with: tuple[int, str] | None = None
         self.requests: list[tuple[str, str]] = []
+        self.bearer_tokens: list[str] = []
         self._counter = 0
         self.suppress_appends = False
         self.suppress_deletes = False
@@ -43,6 +44,8 @@ class FakeNotion:
         self.suppress_property_writes = False
         self.page_archived = False
         self.page_parent: dict[str, Any] = {"type": "workspace", "workspace": True}
+        # What `POST /v1/search` answers: the objects granted to this integration.
+        self.shared_objects: list[dict[str, Any]] = [{"object": "page", "id": self.page_id}]
         self.rows: list[dict[str, Any]] | None = None
         self.query_fail_with: tuple[int, str] | None = None
         self.query_filters: list[dict[str, Any]] = []
@@ -109,6 +112,7 @@ class FakeNotion:
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path.removeprefix("/v1")
         self.requests.append((request.method, path))
+        self.bearer_tokens.append(request.headers.get("authorization", "").removeprefix("Bearer "))
         if path == "/users/me":
             return self._identity_response()
         if self.fail_with is not None:
@@ -126,6 +130,8 @@ class FakeNotion:
         )
 
     def _route(self, request: httpx.Request, path: str) -> httpx.Response:
+        if path == "/search":
+            return httpx.Response(200, json={"results": self.shared_objects, "has_more": False})
         if path.startswith("/pages/"):
             return self._page_response(request, path.removeprefix("/pages/"))
         if path == "/comments":

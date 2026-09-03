@@ -78,11 +78,29 @@ _FORCE_GENERAL_HELP = (
 
 _ALLOW_BLOAT_HELP = (
     "Escape the comment-bloat gate (souliane/teatree#2663) for ONE post — the documented "
-    "over-deny escape (#126). A note longer than a small sentence cap, or one that "
-    "references project chatter (a ticket/PR id like #1234/!42, an @handle, or a Slack "
-    "timestamp) is refused by default — a review comment is about the diff, not the "
-    "tracker. Use ONLY for a genuinely justified long nit or a load-bearing reference."
+    "over-deny escape (#126). A note referencing project chatter (an @handle, a Slack "
+    "timestamp, or a ticket/PR id like #1234/!42 paired with a coordinate-with-people "
+    "directive) is refused by default — a review comment is about the diff, not the "
+    "tracker. Length is a SEPARATE gate whose escape is --allow-long-review. Use ONLY "
+    "for a genuinely load-bearing reference."
 )
+
+
+def _require_whole_inline_anchor(*, file: str, line: int) -> None:
+    """Refuse a half-specified ``--file``/``--line`` pair on ``post-comment`` (#72 class).
+
+    Omitting both is the documented general-note path; supplying exactly one would
+    reach ``post_comment_impl``'s ``if not (file and line)`` branch and post a
+    general note, silently dropping the anchor the caller asked for.
+    """
+    if bool(file) == bool(line):
+        return
+    typer.echo(
+        "Refusing: --file AND --line must be given together for an inline comment. "
+        "Omit both to post a general (MR-wide) note — a half-specified pair would "
+        "silently degrade the intended inline comment into a general one."
+    )
+    raise typer.Exit(code=2)
 
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
@@ -200,8 +218,8 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
         None,
         help="Comment text (markdown). Omit and use -m/--body or --body-file instead.",
     ),
-    file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
-    line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
+    file: str = typer.Option("", help="File path for inline comment — pair with --line; omit BOTH for a general note"),
+    line: int = typer.Option(0, help="Line number in the new file (an added line) — pair with --file"),
     *,
     body: str = typer.Option("", "-m", "--body", help=_BODY_OPTION_HELP),
     body_file: str = typer.Option("", "--body-file", help=_BODY_FILE_OPTION_HELP),
@@ -252,6 +270,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     except PostBodyError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=2) from exc
+    _require_whole_inline_anchor(file=file, line=line)
     service = _require_token(repo)
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_comment(

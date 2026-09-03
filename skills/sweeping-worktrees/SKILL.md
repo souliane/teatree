@@ -67,7 +67,7 @@ This prints a JSON **array** of the items the CLI did NOT auto-delete — one
 | `branch` | the branch ref — the `<source_ref>` you pass to `salvage`/`teardown` |
 | `kind` | `"worktree"` \| `"branch"` \| `"stash"` |
 | `content_verified` | **`false` ⇒ no content probe ran; every other field below is unproven ⇒ KEEP** |
-| `verdict_source` | which layer decided: `cherry-zero-unique` / `synthetic-squash` / `branch-merged` / `not-redundant`, or why none could: `inconclusive` / `clone-unresolvable` |
+| `verdict_source` | which layer decided: `cherry-zero-unique` / `synthetic-squash` / `branch-merged` / `content-landed` / `forge-merged-tip` / `not-redundant`, or why none could: `inconclusive` / `clone-unresolvable` |
 | `unique_commit_shas` | commits whose **content** is NOT provably on target. **`[]` ⇒ nothing unique ⇒ redundant — but ONLY when `content_verified` is `true`.** |
 | `uncommitted_paths` | work-bearing files on **no ref** — staged, modified or untracked. **Non-empty ⇒ the record is forced `content_verified: false` with `verdict_source: uncommitted-work` ⇒ KEEP and salvage.** |
 | `merged_with_post_merge_work` | forge-merged BUT the current tip has unique content (commits added AFTER the merge) |
@@ -208,7 +208,7 @@ t3 <overlay> workspace salvage <branch>            # branch = the record's `bran
 #   [--salvage-branch <name>]   default: salvage/<branch>
 #   [--target origin/main]      base the salvage PR opens against
 #   [--allow-banned]            ONLY after you cleaned + committed the terms yourself
-t3 <overlay> worktree teardown --path <path>       # THEN remove the worktree dir + branch
+t3 <overlay> worktree teardown --path <path>       # THEN remove the worktree dir + branch (MCP: mcp__teatree__worktree_teardown)
 ```
 
 `salvage` captures the unique content onto a fresh `salvage/<branch>`, pushes it, opens a

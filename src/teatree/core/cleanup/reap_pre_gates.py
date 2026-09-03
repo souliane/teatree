@@ -67,7 +67,10 @@ def reap_pre_gate(worktree: Worktree, *, workspace: Path, fsm_terminal: bool = F
     if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
         return ReapPreGateVerdict(ReapPreGate.CLEAN_IGNORE, _CLEAN_IGNORE_REASON)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    settings = get_effective_settings()
+    # The ROW's overlay, not the ambient one: an all-overlay sweep runs under
+    # whichever overlay is active, and reading that overlay's colleague pattern
+    # would reap a sibling overlay's colleague-owned worktree.
+    settings = get_effective_settings(worktree.overlay or None)
     ownership = is_excluded_by_ownership(
         str(repo_main),
         worktree.branch,

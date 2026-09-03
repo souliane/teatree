@@ -73,3 +73,37 @@ class TestPerSegmentLexing:
 
     def test_secret_read_inside_a_quoted_echo_arg_is_prose(self) -> None:
         assert is_secret_print('echo "reminder: cat ~/.netrc is forbidden"') is False
+
+
+class TestUnknownDownstreamStageIsExposed:
+    """Only a PROVEN consumer keeps a secret off stdout; an unrecognised stage is a leak."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~/.netrc | sed -n '1p'",
+            "cat ~/.netrc | awk '{print}'",
+            "cat ~/.netrc | cut -d: -f1",
+            "cat ~/.netrc | tr -d ' '",
+            "cat ~/.netrc | base64 -d",
+            "pass show ci/token | xargs -I{} echo {}",
+        ],
+    )
+    def test_transforming_stage_still_prints_the_secret(self, command: str) -> None:
+        assert is_secret_print(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~/.netrc | wc -l",
+            "cat ~/.ssh/id_rsa | pbcopy",
+            "cat ~/.netrc | gpg -e -r me",
+            "cat ~/.netrc | openssl enc -aes-256-cbc -out /tmp/x",
+            "cat ~/.netrc | md5sum",
+            "cat ~/.netrc | shasum -a 256",
+            "cat ~/.netrc | wc -l | cat",
+            "cat ~/.netrc | sed -n '1p' > /tmp/out",
+        ],
+    )
+    def test_proven_consumer_or_redirected_tail_passes(self, command: str) -> None:
+        assert is_secret_print(command) is False

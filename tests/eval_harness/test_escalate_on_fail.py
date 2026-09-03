@@ -8,7 +8,9 @@ at higher trials and classifies each:
 *   it passes on ANY escalation trial → ``flaky`` (NOT a hard red — the agent IS
     capable of the right behavior; trial 1 was an unlucky sample);
 *   every escalation trial fails → ``confirmed`` (a real, non-flaky failure — the
-    lane goes RED).
+    lane goes RED);
+*   every escalation trial SKIPS → ``unresolved`` (the re-run never happened, so
+    nothing cleared trial 1 — the lane goes RED too).
 
 A scenario that passed or skipped trial 1 is never re-run.
 """
@@ -19,13 +21,14 @@ import pytest
 
 from teatree.cli.eval.escalate import EscalationOutcome, EscalationReport, escalate_failures, render_escalation_markdown
 from teatree.cli.eval.single_trial import _render_escalation_text
-from teatree.eval.models import EvalRun, EvalSpec, Matcher
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalRun, EvalSpec, Matcher
 from teatree.eval.report import ScenarioResult
 
 
-def _spec(name: str) -> EvalSpec:
+def _spec(name: str, *, surface: str = HEADLESS_SURFACE) -> EvalSpec:
     return EvalSpec(
         name=name,
+        surface=surface,
         scenario="text",
         agent_path="skills/code/SKILL.md",
         prompt="do",
@@ -54,10 +57,11 @@ class _ScriptedRunner:
     A ``bool`` entry is a clean pass/fail. A ``str`` entry is a cap reason
     (``max_turns``) for a trial whose matchers were satisfied by a partial
     trajectory the harness then truncated — the #2192 shape, which
-    :attr:`ScenarioResult.passed` scores as a non-pass.
+    :attr:`ScenarioResult.passed` scores as a non-pass. A ``None`` entry is a
+    SKIPPED trial — a re-run that never happened.
     """
 
-    def __init__(self, scripts: dict[str, list[bool | str]]) -> None:
+    def __init__(self, scripts: dict[str, list[bool | str | None]]) -> None:
         self._iters = {name: iter(verdicts) for name, verdicts in scripts.items()}
         self.calls: dict[str, int] = {}
 
@@ -66,7 +70,7 @@ class _ScriptedRunner:
         verdict = next(self._iters[spec.name])
         if isinstance(verdict, str):
             return _result(spec, passed=True, cap_reason=verdict)
-        return _result(spec, passed=verdict)
+        return _result(spec, passed=bool(verdict), skipped=verdict is None)
 
 
 class TestEscalateFailures:
@@ -161,21 +165,47 @@ class TestEscalateFailures:
         assert outcome.is_hard_red
         assert report.hard_red
 
-    def test_an_all_skipped_escalation_clears_rather_than_reddening_the_lane(self) -> None:
-        # A provisioning gate that fell away after trial 1 (expired key, vanished
-        # binary) yields zero graded trials — an absent verdict, not a confirmed one.
-        spec = _spec("gate_fell_away")
+    def test_an_all_skipped_escalation_does_not_clear_the_trial_one_failure(self) -> None:
+        # The observed CI shape: trial 1 failed, every escalation trial SKIPPED, and the
+        # lane went green on "FLAKY ... (0/3 escalation trials)". Not being able to re-run a
+        # scenario is not evidence the agent is capable, so it must not clear the failure.
+        spec = _spec("never_reran")
         initial = [_result(spec, passed=False)]
-
-        class _SkippingRunner:
-            def __call__(self, spec: EvalSpec) -> ScenarioResult:
-                return _result(spec, passed=False, skipped=True)
-
-        report = escalate_failures(initial, _SkippingRunner(), escalate_trials=3)
+        runner = _ScriptedRunner({"never_reran": [None, None, None]})
+        report = escalate_failures(initial, runner, escalate_trials=3)
+        assert report.hard_red
         outcome = report.outcomes[0]
+        assert outcome.classification == "unresolved"
         assert outcome.passes == 0
-        assert outcome.classification == "flaky"
+
+    def test_a_partially_skipped_escalation_that_really_failed_is_confirmed(self) -> None:
+        # One trial actually ran and failed — the failure WAS re-proven, so this is a
+        # confirmed red, not an unresolved one.
+        spec = _spec("partly_skipped")
+        initial = [_result(spec, passed=False)]
+        runner = _ScriptedRunner({"partly_skipped": [None, False, None]})
+        report = escalate_failures(initial, runner, escalate_trials=3)
+        assert report.hard_red
+        assert report.outcomes[0].classification == "confirmed"
+
+    def test_a_partially_skipped_escalation_that_passed_once_is_flaky(self) -> None:
+        spec = _spec("partly_skipped_pass")
+        initial = [_result(spec, passed=False)]
+        runner = _ScriptedRunner({"partly_skipped_pass": [None, True, None]})
+        report = escalate_failures(initial, runner, escalate_trials=3)
         assert not report.hard_red
+        assert report.outcomes[0].classification == "flaky"
+
+    def test_an_all_skipped_advisory_escalation_is_reported_but_never_gates(self) -> None:
+        # #3855 preserved: an interactive-surface scenario is classified exactly the same
+        # way, it just does not red the lane.
+        spec = _spec("advisory_never_reran", surface=INTERACTIVE_SURFACE)
+        initial = [_result(spec, passed=False)]
+        runner = _ScriptedRunner({"advisory_never_reran": [None, None]})
+        report = escalate_failures(initial, runner, escalate_trials=2)
+        assert not report.hard_red
+        assert report.outcomes[0].classification == "unresolved"
+        assert report.outcomes[0].advisory
 
     def test_escalate_trials_must_be_at_least_two(self) -> None:
         spec = _spec("x")
@@ -198,6 +228,14 @@ class TestEscalationOutcome:
     def test_confirmed_outcome_is_a_hard_red(self) -> None:
         outcome = EscalationOutcome(spec_name="s", trials=3, passes=0, classification="confirmed")
         assert outcome.is_hard_red
+
+    def test_unresolved_outcome_is_a_hard_red(self) -> None:
+        outcome = EscalationOutcome(spec_name="s", trials=3, passes=0, classification="unresolved")
+        assert outcome.is_hard_red
+
+    def test_advisory_unresolved_outcome_is_not_a_hard_red(self) -> None:
+        outcome = EscalationOutcome(spec_name="s", trials=3, passes=0, classification="unresolved", advisory=True)
+        assert not outcome.is_hard_red
 
 
 class TestRenderEscalationMarkdown:
@@ -228,3 +266,16 @@ class TestRenderEscalationMarkdown:
         assert "CAP-TRUNCATED" in _render_escalation_text(report)
         assert not report.outcomes[0].is_hard_red
         assert not report.hard_red
+
+    def test_unresolved_is_counted_apart_from_flaky(self) -> None:
+        # An unresolved row absorbed into the flaky count would read as a cleared
+        # failure on the very dashboard the lane's verdict is read from.
+        report = EscalationReport(
+            outcomes=[
+                EscalationOutcome(spec_name="flaky_one", trials=3, passes=1, classification="flaky"),
+                EscalationOutcome(spec_name="never_reran", trials=3, passes=0, classification="unresolved"),
+            ]
+        )
+        md = render_escalation_markdown(report)
+        assert "0 confirmed, 1 flaky, 1 unresolved" in md
+        assert "| never_reran | 0/3 | unresolved |" in md

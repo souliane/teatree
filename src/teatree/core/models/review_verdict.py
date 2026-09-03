@@ -201,6 +201,21 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         """
         return self.filter(slug__iexact=slug.strip(), pr_id=pr_id)
 
+    def slug_spelling_for(self, slug: str, pr_id: int, *, reviewed_sha: str, reviewer_identity_normalized: str) -> str:
+        """The slug an existing row for this idempotency key already stores, else *slug*.
+
+        The case-insensitive half of the ``(slug, pr_id, reviewed_sha, reviewer)``
+        uniqueness: the DB constraint is byte-exact, so re-recording under a
+        differently-cased slug would stack a second row for one forge repo.
+        """
+        stored = (
+            self.for_pr(slug, pr_id)
+            .filter(reviewed_sha=reviewed_sha, reviewer_identity_normalized=reviewer_identity_normalized)
+            .values_list("slug", flat=True)
+            .first()
+        )
+        return stored or slug.strip()
+
     def latest_for_pr(self, slug: str, pr_id: int) -> "ReviewVerdict | None":
         """The most recently recorded verdict for a PR, regardless of SHA.
 
@@ -437,6 +452,8 @@ class ReviewVerdict(models.Model):
         if scope_refusal:
             raise ReviewVerdictError(scope_refusal)
 
+        normalized_sha = reviewed_sha.strip().lower()
+        normalized_reviewer = normalize_reviewer_identity(reviewer)
         with transaction.atomic():
             # Idempotent on the normalized-identity key (F8): a re-review of the
             # SAME head by the SAME identity UPDATES its one row (newest verdict
@@ -444,11 +461,16 @@ class ReviewVerdict(models.Model):
             # pile the free-text identity produced. A different identity, or a
             # moved head, is a distinct key and records a fresh row, so the
             # cross-reviewer / cross-head newest-wins aggregation is preserved.
+            # The upsert reuses an existing row's slug spelling so a differently-
+            # cased slug for the same forge repo updates that row rather than
+            # stacking a second, invisible-to-the-other-spelling one.
             recorded, _ = cls.objects.update_or_create(
-                slug=slug.strip(),
+                slug=cls.objects.slug_spelling_for(
+                    slug, pr_id, reviewed_sha=normalized_sha, reviewer_identity_normalized=normalized_reviewer
+                ),
                 pr_id=pr_id,
-                reviewed_sha=reviewed_sha.strip().lower(),
-                reviewer_identity_normalized=normalize_reviewer_identity(reviewer),
+                reviewed_sha=normalized_sha,
+                reviewer_identity_normalized=normalized_reviewer,
                 defaults={
                     "ticket": ticket,
                     "verdict": normalized_verdict,

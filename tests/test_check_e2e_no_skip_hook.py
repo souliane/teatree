@@ -12,6 +12,7 @@ fails the gate; the agent must remove or replace it before the push lands.
 
 import pytest
 
+from scripts.hooks import check_e2e_no_skip
 from scripts.hooks.check_e2e_no_skip import Finding, is_spec_path, scan_spec_lines, scan_specs
 
 
@@ -110,13 +111,22 @@ class TestScanSpecs:
         helper = tmp_path / "e2e" / "helpers.ts"
         helper.write_text("test.skip('not a spec', () => {});\n", encoding="utf-8")
 
-        findings = scan_specs(["e2e/a.spec.ts", "e2e/helpers.ts"], root=tmp_path)
+        findings = scan_specs(
+            ["e2e/a.spec.ts", "e2e/helpers.ts"],
+            read=lambda rel: (tmp_path / rel).read_text(encoding="utf-8"),
+        )
         assert len(findings) == 1
         assert findings[0].path == "e2e/a.spec.ts"
 
-    def test_missing_file_is_skipped(self, tmp_path) -> None:
-        # A staged-then-deleted path must not crash the gate.
-        assert scan_specs(["e2e/gone.spec.ts"], root=tmp_path) == []
+    def test_unreadable_spec_fails_loud_instead_of_scanning_nothing(self) -> None:
+        # The re-rooting class: a staged name the source
+        # cannot resolve used to be skipped, so the gate reported clean having
+        # read no spec at all. It must surface instead.
+        def _missing(rel: str) -> str:
+            raise check_e2e_no_skip.work_tree.WorkTreeError(rel)
+
+        with pytest.raises(check_e2e_no_skip.work_tree.WorkTreeError):
+            scan_specs(["e2e/gone.spec.ts"], read=_missing)
 
 
 class TestFindingMessage:
@@ -186,5 +196,5 @@ class TestMain:
             return subprocess.CompletedProcess(args=["git"], returncode=128, stdout="", stderr="fatal")
 
         monkeypatch.setattr(subprocess, "run", _fail_run)
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(check_e2e_no_skip.work_tree.WorkTreeError):
             mod.main()

@@ -12,11 +12,17 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
+from teatree.loop.scanners.pr_behind_base import (
+    build_compare_query,
+    chunk_heads,
+    head_compare_ref,
+    parse_compare_response,
+)
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
@@ -46,6 +52,9 @@ class GhPrJson(TypedDict, total=False):
     statusCheckRollup: list[object]
     mergeable: str
     mergeStateStatus: str
+    baseRefName: str
+    headRefName: str
+    headRepositoryOwner: "GhAuthorJson"
     author: "GhAuthorJson"
     isCrossRepository: bool
 
@@ -66,11 +75,10 @@ def _as_str(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _author_login(raw: GhPrJson) -> str:
-    """Read the PR author's login from the ``gh pr list --json author`` block."""
-    author = raw.get("author")
-    if isinstance(author, dict):
-        return _as_str(author.get("login"))
+def _login(block: object) -> str:
+    """Read a ``{"login": …}`` block — the shape of both ``author`` and ``headRepositoryOwner``."""
+    if isinstance(block, dict):
+        return _as_str(block.get("login"))
     return ""
 
 
@@ -97,19 +105,27 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         url=url,
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
-        behind_main=_gh_is_behind_main(raw),
-        author=_author_login(raw),
+        behind_main=_gh_reports_behind(raw),
+        base_ref=_as_str(raw.get("baseRefName")),
+        compare_head_ref=head_compare_ref(
+            head_ref=_as_str(raw.get("headRefName")),
+            owner=_login(raw.get("headRepositoryOwner")),
+            cross_repo=bool(cross_repo),
+        ),
+        author=_login(raw.get("author")),
         same_repo=same_repo,
     )
 
 
-def _gh_is_behind_main(raw: GhPrJson) -> bool:
-    """True iff GitHub reports the branch as behind its base (#2045).
+def _gh_reports_behind(raw: GhPrJson) -> bool:
+    """The cheap behind-ness signal, used ONLY when the compare read fails (#4526).
 
-    ``mergeStateStatus == "BEHIND"`` is a clean branch whose base advanced —
-    distinct from ``DIRTY`` (a hard conflict). A repo-state check red on a
-    behind branch is the rerun-can't-fix case the sweep surfaces as
-    ``needs_branch_update``.
+    A strict subset of the truth: ``mergeStateStatus`` names one
+    highest-precedence blocker, so ``BEHIND`` means behind, but behind+red says
+    ``BLOCKED`` and behind+conflicted says ``DIRTY``. Never a false positive,
+    frequently a false negative — which is why it is the fallback and
+    :func:`~teatree.loop.scanners.pr_behind_base.parse_compare_response` is the
+    answer.
     """
     return _as_str(raw.get("mergeStateStatus")).upper() == "BEHIND"
 
@@ -163,7 +179,10 @@ class GhPrApiClient:
             "--limit",
             "100",
             "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author,isCrossRepository",
+            (
+                "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,"
+                "baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
+            ),
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:
@@ -188,7 +207,50 @@ class GhPrApiClient:
             return []
         if not isinstance(data, list):
             return []
-        return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
+        decoded = [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
+        return self._resolve_behind_base(slug=slug, prs=decoded)
+
+    def _resolve_behind_base(self, *, slug: str, prs: list[PrSummary]) -> list[PrSummary]:
+        """Replace each PR's fallback behind-ness with the compare answer (#4526).
+
+        One GraphQL call per distinct base ref; a PR the read did not answer keeps
+        the ``mergeStateStatus`` fallback ``_decode_pr`` already stamped.
+        """
+        heads_by_base: dict[str, dict[int, str]] = {}
+        for pr in prs:
+            if pr.base_ref and pr.compare_head_ref:
+                heads_by_base.setdefault(pr.base_ref, {})[pr.number] = pr.compare_head_ref
+        answers: dict[int, bool | None] = {}
+        for base_ref, heads in heads_by_base.items():
+            answers.update(self._compare_behind(slug=slug, base_ref=base_ref, heads=heads))
+        resolved: list[PrSummary] = []
+        for pr in prs:
+            behind = answers.get(pr.number)
+            resolved.append(pr if behind is None else replace(pr, behind_main=behind))
+        return resolved
+
+    def _compare_behind(self, *, slug: str, base_ref: str, heads: dict[int, str]) -> dict[int, bool | None]:
+        owner, _, name = slug.partition("/")
+        answers: dict[int, bool | None] = {}
+        for chunk in chunk_heads(heads):
+            query = build_compare_query(owner=owner, name=name, base_ref=base_ref, heads=chunk)
+            rc, out, err = self._run_gh(["api", "graphql", "-f", f"query={query}"])
+            # gh exits non-zero on a PARTIAL failure while still printing the
+            # aliases that did resolve, so the payload is read whatever rc says.
+            parsed = parse_compare_response(out)
+            answers.update(parsed)
+            unanswered = sorted(number for number in chunk if parsed.get(number) is None)
+            if unanswered:
+                logger.warning(
+                    "pr_sweep could not read behind-ness for %s PR(s) %s against %s (gh rc=%d: %s); "
+                    "falling back to the mergeStateStatus signal, which under-reports behind-ness",
+                    slug,
+                    unanswered,
+                    base_ref,
+                    rc,
+                    err.strip()[:200],
+                )
+        return answers
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         """Whether *check_name* has a completed, non-green conclusion on ``main`` (#4090 sibling).
