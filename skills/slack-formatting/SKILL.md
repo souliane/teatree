@@ -52,6 +52,36 @@ Slack's mrkdwn is not Markdown. When assembling message text:
 - **No pipe tables** — see above; use the table block or the fence.
 - Fenced code (triple backtick) and inline code are preserved verbatim by the linkify/normalize passes, so the monospace fence survives untouched.
 
+## Line length — wrapped at 90, at the transport
+
+Every outbound message is wrapped to a **maximum line length of 90 characters**, so it stays readable on a phone and in a narrow DM column.
+
+You do not call anything to get this. The wrap is applied at each Slack transport that carries a message body, so a **new sender inherits it by construction** rather than having to remember a helper:
+
+- `SlackBotBackend._post` — the single funnel every in-app `chat.postMessage` passes through, so `notify_user`, `post_routed`, `post_reply` and a raw `post_message` all get the same treatment,
+- `teatree.hooks.slack_mirror` — the hook process's question mirror, which posts through an injected `Poster` and never reaches the funnel above,
+- `audio_upload.upload_audio_dm` — the audio DM's `initial_comment`; with `speak.slack` on, the whole DM goes out this way and never touches `chat.postMessage`,
+- `client.post_webhook_message` — the incoming-webhook post, raw `httpx` outside the backend transport.
+
+Exceeding 90 is fine where breaking would hurt. These are never broken and never count as a violation:
+
+- fenced code blocks and inline code spans (the monospace fence keeps its alignment),
+- `<url|label>` mrkdwn links and bare URLs,
+- table rows — the `slack_table_fence` output is space-aligned, so any break destroys the columns,
+- any single whitespace-free token longer than 90 (a long path, identifier, or ref).
+
+Structure survives: a `-`/`*` bullet's continuation lines indent under the marker, a `>` quote's keep the quote prefix. Block Kit `blocks` are **never** rewritten — Block Kit lays itself out, and the `text` field remains the notification preview and degradation fallback.
+
+The transform is idempotent (it only breaks at existing whitespace and never rejoins), so pre-wrapping at a composition seam is harmless. A body with no over-width line comes back byte for byte.
+
+The one sanctioned escape is a call-site `wrap_exempt_reason` — a reason string, visible in a diff, not a bare boolean:
+
+```python
+backend.post_message(channel=channel, text=body, wrap_exempt_reason="pre-formatted ASCII diagram")
+```
+
+`tests/quality/test_slack_wrap_chokepoint.py` refuses a blank or computed reason, and turns red if any new module reaches a text-bearing Slack method, or opens a raw `httpx` call inside the Slack backend, outside the wrap path. The primitives are `wrap_slack_message` / `slack_line_violations` / `WRAP_WIDTH` in `teatree.slack_mrkdwn`.
+
 ## CLI tables
 
 For terminal / CI output (not Slack), render record lists through `teatree.core.table_output.print_table(headers, rows, *, title="", stream=None)` — one `rich.table.Table` seam every record-list command shares, safe on a dumb terminal (rich degrades colour on a non-TTY; a generous fixed width keeps piped columns untruncated).

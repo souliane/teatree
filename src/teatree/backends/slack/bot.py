@@ -43,6 +43,7 @@ resolves correctly.
 
 from typing import cast
 
+from teatree.backends.slack import egress
 from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
 from teatree.backends.slack.http import SlackHttpClient
@@ -64,6 +65,7 @@ from teatree.backends.slack.web_ops import join_conversation as join_slack_conve
 from teatree.backends.slack.web_ops import open_im_channel, read_permalink, run_auth_test
 from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import ChannelReadRefusedError, RawAPIDict
 
 __all__ = [
@@ -202,7 +204,15 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         """
         return self._inbound
 
-    def _post(self, method: str, payload: SlackPayload, *, token: str = "", idempotent: bool = True) -> RawAPIDict:
+    def _post(
+        self,
+        method: str,
+        payload: SlackPayload,
+        *,
+        token: str = "",
+        idempotent: bool = True,
+        wrap_exempt_reason: str = "",
+    ) -> RawAPIDict:
         """POST *method* through the bounded-retry transport.
 
         ``idempotent`` gates the response-phase retry. A non-idempotent
@@ -211,10 +221,17 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         Slack may mean it already posted. Replayable calls (``reactions.add``'s
         ``already_reacted`` no-op, ``auth.test``, ``conversations.*`` lookups)
         keep the ``True`` default.
+
+        Also the #3809 wrap seam: every in-app ``chat.postMessage`` funnels
+        through here, so a new sender inherits the 90-char rule rather than
+        remembering it. *wrap_exempt_reason* is the one sanctioned escape;
+        ``blocks`` are never rewritten (Block Kit lays itself out).
         """
         auth = token or self._bot_token
         if not auth:
             return {}
+        if method == "chat.postMessage" and not wrap_exempt_reason:
+            payload = {**payload, "text": wrap_slack_message(str(payload.get("text", "")))}
         return self._http.post(method, token=auth, json=payload, idempotent=idempotent)
 
     def _get(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
@@ -462,27 +479,26 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         text: str,
         thread_ts: str = "",
         blocks: list[RawAPIDict] | None = None,
+        wrap_exempt_reason: str = "",
     ) -> RawAPIDict:
+        # Refused before ``_channel_token``, which can fire a live Connect probe.
         if is_single_emoji_body(text):
             raise SingleEmojiBodyRefusedError(text)
-        token = self._channel_token(channel, op=SlackOp.WRITE)
-        self._voice_gate.check(text=text, channel=channel, token=token)
-        payload: SlackPayload = {"channel": channel, "text": text}
-        if thread_ts:
-            payload["thread_ts"] = thread_ts
-        if blocks:
-            payload["blocks"] = blocks  # ``text`` stays the notification + degradation fallback
-        return self._post("chat.postMessage", payload, token=token, idempotent=False)
+        return egress.publish(
+            self._post,
+            token=self._channel_token(channel, op=SlackOp.WRITE),
+            voice_gate=self._voice_gate,
+            message=egress.ChatMessage(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks),
+            wrap_exempt_reason=wrap_exempt_reason,
+        )
 
-    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+    def post_reply(self, *, channel: str, ts: str, text: str, wrap_exempt_reason: str = "") -> RawAPIDict:
         # A reply is a post threaded under ``ts`` — one payload/guard path, not two.
-        return self.post_message(channel=channel, text=text, thread_ts=ts)
+        return self.post_message(channel=channel, text=text, thread_ts=ts, wrap_exempt_reason=wrap_exempt_reason)
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
-        return self._post(
-            "reactions.add",
-            {"channel": channel, "timestamp": ts, "name": emoji},
-            token=self._channel_token(channel, op=SlackOp.WRITE),
+        return egress.add_reaction(
+            self._post, token=self._channel_token(channel, op=SlackOp.WRITE), channel=channel, ts=ts, emoji=emoji
         )
 
     def _is_self_dm(self, channel: str) -> bool:
@@ -513,36 +529,19 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         """
         return self._route_token(channel)
 
-    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
-        """Post to *channel*, token chosen by destination (#1750).
-
-        The deterministic edge for ``t3 <overlay> notify post``: routes
-        through :meth:`_route_token` (self-DM → bot, colleague/channel →
-        ``xoxp``). Returns the raw Slack body so the CLI can inspect
-        ``ok`` / ``error``; ``{}`` when no token at all is configured.
-        """
-        token = self._route_token(channel)
-        if not token:
-            return {}
-        payload: SlackPayload = {"channel": channel, "text": text}
-        if thread_ts:
-            payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload, token=token, idempotent=False)
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "", wrap_exempt_reason: str = "") -> RawAPIDict:
+        """Post to *channel*, token chosen by destination (#1750)."""
+        return egress.publish_routed(
+            self._post,
+            token=self._route_token(channel),
+            message=egress.ChatMessage(channel=channel, text=text, thread_ts=thread_ts),
+            wrap_exempt_reason=wrap_exempt_reason,
+        )
 
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
-        """Add a reaction to *channel*'s message, token chosen by destination (#1750).
-
-        Reacting follows the *same* :meth:`_route_token` rule as
-        :meth:`post_routed` — self-DM → bot, colleague/channel → ``xoxp``.
-        Returns the raw Slack body; ``{}`` when no token is configured.
-        """
-        token = self._route_token(channel)
-        if not token:
-            return {}
-        return self._post(
-            "reactions.add",
-            {"channel": channel, "timestamp": ts, "name": emoji},
-            token=token,
+        """Add a reaction to *channel*'s message, token chosen by destination (#1750)."""
+        return egress.add_reaction_routed(
+            self._post, token=self._route_token(channel), channel=channel, ts=ts, emoji=emoji
         )
 
     def open_dm(self, user_id: str) -> str:
