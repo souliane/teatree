@@ -8,6 +8,7 @@ import httpx
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.pagination import next_cursor
 from teatree.identity import agent_signature_suffix
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
 
@@ -38,8 +39,11 @@ def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") ->
     see `teatree.identity` and
     `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
     Behalf".
+
+    The #3809 wrap runs here: this is a raw ``httpx`` post, so it never reaches
+    ``SlackBotBackend._post`` where the in-app wrap seam lives.
     """
-    body = text + agent_signature_suffix(signature)
+    body = wrap_slack_message(text + agent_signature_suffix(signature))
     response = httpx.post(webhook_url, json={"text": body}, timeout=10.0)
     response.raise_for_status()
     return _webhook_result(response)
