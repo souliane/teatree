@@ -11,5 +11,8 @@ scanned: a detector that stops reading a directory because one file in it is
 noisy is a worse detector.
 """
 
-#: Repo-relative posix path of the cassette, as the scans spell their paths.
-DURATIONS_CASSETTE = "dev/.test_durations"
+from teatree.quality.durations_file import DURATIONS_PATH
+
+#: The canonical path, spelled the way the scans spell theirs. Derived rather than
+#: repeated so a move of the cassette cannot silently un-exempt it.
+DURATIONS_CASSETTE = DURATIONS_PATH.as_posix()

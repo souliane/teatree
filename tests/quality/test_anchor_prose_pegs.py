@@ -144,15 +144,16 @@ class TestTheDocSurfaceExemptsTheGeneratedCassette:
     """Control: exactly one generated file is exempt, not the directory holding it."""
 
     def test_the_cassette_is_no_doc_surface_while_its_neighbour_is(self, tmp_path: Path) -> None:
-        make_git_repo(tmp_path)
+        # Its own dir, not tmp_path: an autouse fixture writes a config tree there, and
+        # `git add -A` would track that too.
+        repo = make_git_repo(tmp_path / "repo")
         for name in (DURATIONS_CASSETTE, "dev/handwritten.md"):
-            path = tmp_path / name
+            path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{_ANCHOR} is the event.\n")
-        run_git(tmp_path, "add", "-A")
-        surfaces = {p.relative_to(tmp_path).as_posix() for p in doc_surface_files(_ANCHOR, repo_root=tmp_path)}
-        assert DURATIONS_CASSETTE not in surfaces
-        assert "dev/handwritten.md" in surfaces
+        run_git(repo, "add", "-A")
+        surfaces = {p.relative_to(repo).as_posix() for p in doc_surface_files(_ANCHOR, repo_root=repo)}
+        assert surfaces == {"dev/handwritten.md"}
 
 
 class TestTheRepoLedgerIsCurrent:

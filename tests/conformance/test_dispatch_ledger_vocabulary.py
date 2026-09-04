@@ -100,15 +100,16 @@ class TestTheTrackedWalkExemptsTheGeneratedCassette:
     """Control: exactly one generated file is exempt, not the directory holding it."""
 
     def test_the_cassette_is_skipped_while_its_neighbour_is_still_walked(self, tmp_path: Path) -> None:
-        make_git_repo(tmp_path)
+        # Its own dir, not tmp_path: an autouse fixture writes a config tree there, and
+        # `git add -A` would track that too.
+        repo = make_git_repo(tmp_path / "repo")
         for name in (DURATIONS_CASSETTE, "dev/handwritten.py"):
-            path = tmp_path / name
+            path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{_RETIRED_MODULE} = 1\n")
-        run_git(tmp_path, "add", "-A")
-        walked = {p.relative_to(tmp_path).as_posix() for p in _tracked_files(tmp_path)}
-        assert DURATIONS_CASSETTE not in walked
-        assert "dev/handwritten.py" in walked
+        run_git(repo, "add", "-A")
+        walked = {p.relative_to(repo).as_posix() for p in _tracked_files(repo)}
+        assert walked == {"dev/handwritten.py"}
 
 
 class TestModuleIsNamedForTheLedger:

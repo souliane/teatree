@@ -578,19 +578,21 @@ class TestTheTrackedWalkExemptsTheGeneratedCassette:
     """Control: exactly one generated file is exempt, not the directory holding it."""
 
     @staticmethod
-    def _repo_tracking(tmp_path: Path, *relative: str) -> None:
-        make_git_repo(tmp_path)
+    def _repo_tracking(tmp_path: Path, *relative: str) -> Path:
+        # Its own dir, not tmp_path: an autouse fixture writes a config tree there, and
+        # `git add -A` would track that too.
+        repo = make_git_repo(tmp_path / "repo")
         for name in relative:
-            path = tmp_path / name
+            path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{_ANCHOR} handle_thing\n")
-        run_git(tmp_path, "add", "-A")
+        run_git(repo, "add", "-A")
+        return repo
 
     def test_the_cassette_is_skipped_while_its_neighbour_is_still_walked(self, tmp_path: Path) -> None:
-        self._repo_tracking(tmp_path, DURATIONS_CASSETTE, "dev/handwritten.py")
-        walked = {p.relative_to(tmp_path).as_posix() for p in _tracked_files(tmp_path)}
-        assert DURATIONS_CASSETTE not in walked
-        assert "dev/handwritten.py" in walked
+        repo = self._repo_tracking(tmp_path, DURATIONS_CASSETTE, "dev/handwritten.py")
+        walked = {p.relative_to(repo).as_posix() for p in _tracked_files(repo)}
+        assert walked == {"dev/handwritten.py"}
 
 
 class TestTheRetiredSymbolsAreGone:
