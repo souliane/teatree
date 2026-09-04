@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pytest
 
+from tests._generated_artifacts import DURATIONS_CASSETTE
+from tests._git_repo import make_git_repo, run_git
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "hooks" / "scripts"
 _BLUEPRINT = _REPO_ROOT / "BLUEPRINT.md"
@@ -49,18 +52,20 @@ def _windows(text: str, anchor: str, radius: int) -> list[str]:
     return found
 
 
-def _tracked_files() -> list[Path]:
+def _tracked_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
     """Tracked files, minus this one — the guard must name what it forbids."""
     out = subprocess.run(
         ["git", "ls-files"],  # noqa: S607 — repo-relative git, no user input
-        cwd=_REPO_ROOT,
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=True,
     )
-    here = Path(__file__).resolve()
-    tracked = (_REPO_ROOT / line for line in out.stdout.splitlines() if line)
-    return [path for path in tracked if path.resolve() != here]
+    # The durations cassette goes too: it records node ids, so it spells the retired
+    # module without referencing it.
+    exempt = {Path(__file__).resolve(), (repo_root / DURATIONS_CASSETTE).resolve()}
+    tracked = (repo_root / line for line in out.stdout.splitlines() if line)
+    return [path for path in tracked if path.resolve() not in exempt]
 
 
 def _hook_files_naming_the_state_file() -> list[Path]:
@@ -89,6 +94,22 @@ class TestWindowsHelper:
 
     def test_an_absent_anchor_yields_nothing(self) -> None:
         assert _windows("nothing here", "<session>.agents", radius=10) == []
+
+
+class TestTheTrackedWalkExemptsTheGeneratedCassette:
+    """Control: exactly one generated file is exempt, not the directory holding it."""
+
+    def test_the_cassette_is_skipped_while_its_neighbour_is_still_walked(self, tmp_path: Path) -> None:
+        # Its own dir, not tmp_path: an autouse fixture writes a config tree there, and
+        # `git add -A` would track that too.
+        repo = make_git_repo(tmp_path / "repo")
+        for name in (DURATIONS_CASSETTE, "dev/handwritten.py"):
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{_RETIRED_MODULE} = 1\n")
+        run_git(repo, "add", "-A")
+        walked = {p.relative_to(repo).as_posix() for p in _tracked_files(repo)}
+        assert walked == {"dev/handwritten.py"}
 
 
 class TestModuleIsNamedForTheLedger:
