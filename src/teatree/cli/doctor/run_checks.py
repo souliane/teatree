@@ -23,6 +23,7 @@ from teatree.cli.doctor.checks_admission_pressure import (
 from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
+from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
 from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
@@ -460,8 +461,12 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # push away from main (#4225). One more durable-row FAIL sits alongside the first three:
     # a review phase task that reached ``completed`` carrying no attempt at all ran nothing,
     # so the PR it "reviewed" keeps whatever stale verdict was binding it (#4308) — found
-    # until now only by hand-querying the control DB. The tuple calls all ten before ``all``
-    # short-circuits, so no finding masks another.
+    # until now only by hand-querying the control DB. An eleventh is none of the above: not a
+    # stale row, not a stale artifact, but untracked content sitting IN the checkout itself —
+    # a repo-root-scanning gate (`ty-check`) still reads it and can fail on stale code inside,
+    # found when a periodic review's own leftover snapshot broke `t3 tool verify-gates` weeks
+    # after it was written with nothing surfacing it in between. The tuple calls all eleven
+    # before ``all`` short-circuits, so no finding masks another.
     ok = (
         all(
             (
@@ -475,6 +480,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_test_durations_freshness(),
                 check_test_timeout_headroom(),
                 check_branch_upstreams(),
+                check_checkout_untracked_debris(),
             )
         )
         and ok
