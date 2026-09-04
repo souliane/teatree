@@ -29,10 +29,12 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import t3_invocation
 from hooks.scripts.hook_router import (
     _OWNER_LOOP,
     _write_loop_registry,
@@ -515,6 +517,12 @@ class TestConsolidatedPendingWorkIsClaimAware:
     never advancing. The probe must invoke ``--claimable-only`` so it
     answers "is there a unit a claim could actually take?".
     """
+
+    @pytest.fixture(autouse=True)
+    def _stub_the_prover(self):
+        # The probe also goes through subprocess.run, so its argv lands in `captured` first.
+        with patch.object(t3_invocation, "container_path", return_value=None):
+            yield
 
     def _run_with_fake_t3(
         self, monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode: int = 0
