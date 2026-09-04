@@ -3306,6 +3306,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      by side for MR evidence.                                │
 │ push-gate            Plan (or ``--run``) the incremental push gate: scoped   │
 │                      doctest + ast-grep, FULL-fallback.                      │
+│ reap-orphan-groups   Report — and with ``--apply`` reclaim — process groups  │
+│                      whose leader is gone.                                   │
 │ ratchet-prune        Report the reference ratchets' drift; with --write,     │
 │                      delete the stale pins.                                  │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
@@ -3851,6 +3853,20 @@ Usage: t3 tool push-gate [OPTIONS]
 │ --emit-cmd              Print the scoped doctest command + ast-grep scope.   │
 │ --run                   Execute the two scoped sweeps and exit non-zero on   │
 │                         failure.                                             │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool reap-orphan-groups`
+
+```
+Usage: t3 tool reap-orphan-groups [OPTIONS]
+
+ Report — and with ``--apply`` reclaim — process groups whose leader is gone.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --pgid         INTEGER  Only this group (repeatable).                        │
+│ --apply                 Actually SIGTERM; default is a dry run.              │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

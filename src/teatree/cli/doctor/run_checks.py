@@ -18,6 +18,7 @@ from teatree.cli.doctor.checks_admission_pressure import (
     _check_box_occupancy,
     _check_drain_lane_starved,
     _check_intake_budget_deadlock,
+    _check_orphaned_process_groups,
     _check_starved_intake_candidates,
 )
 from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
@@ -188,6 +189,10 @@ def _run_loop_intent_gates() -> bool:
     their return values are deliberately discarded so neither can become a gate by accident.
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
     never claimed) joins them: a slow queue is not a fault, an invisible one is. So does
+    ``_check_orphaned_process_groups`` (#4580) explains a surplus ``_check_box_occupancy``
+    can only report: a process group whose leader is gone keeps its members runnable, and
+    runnable is what the load average the governor throttles on counts.
+
     ``_check_box_occupancy`` (#4407), which prints the factory's own agent count beside the
     whole box's load — every other surface here counts only what the factory started, so a
     box saturated by anything else reads healthy on all of them at once — and
@@ -220,6 +225,7 @@ def _run_loop_intent_gates() -> bool:
     _check_aged_sweep_skips()
     _check_marker_jam()
     _check_box_occupancy()
+    _check_orphaned_process_groups()
     _check_starved_intake_candidates()
     _check_drain_lane_starved()
     intake_ok = _check_intake_budget_deadlock()

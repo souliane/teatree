@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-fuzz_harness_owns_its_process_group-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "drafting the harness."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "/tmp/fuzz_gate.py", "content": "import os, signal, subprocess\nfrom teatree.utils.run import spawn_session_leader\n\nfor case in generate():\n    proc = spawn_session_leader([\"sh\", \"-c\", case])\n    try:\n        proc.wait(timeout=5)\n    except subprocess.TimeoutExpired:\n        pass\n    finally:\n        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

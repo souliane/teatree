@@ -725,6 +725,19 @@ Use `command rm`, `command cp`, `command mv` in Bash tool calls to avoid zsh int
 
 **A pipeline reports the LAST command's status, so `cmd | tail` reports `tail`'s.** Piping a command through `tail`/`grep`/`head` to trim its output discards its exit code: a command that failed loudly reads as success, and its own error text is often the part trimmed away. Capture the real status (`${PIPESTATUS[0]}`, or run the command unpiped and trim afterwards) whenever the status is what you are about to reason about. Same failure shape as the rows above, and it survives being read twice in one session because the transcript shows a clean-looking result either way.
 
+**A probe that SPAWNS shells owns their process group, and every generated case gets a timeout (Non-Negotiable).** A throwaway fuzz/probe harness inherits the caller's process group, so when it dies its children keep running with no parent, no owner and no reaper. One such group ran 9 days 10 hours on this box and removed ~58% of the factory's admitted capacity — near-idle on CPU, but a tight loop is _runnable_, and runnable is what the load average the admission governor throttles on counts. A generated payload that corrupts the loop's own exit keyword into an infinite loop is a NORMAL fuzzer outcome, not an exceptional one, so both halves are mandatory:
+
+```bash
+# do X — the harness leads its own group and kills the GROUP in a finally, on every exit path:
+#   proc = spawn_session_leader([...])          # teatree.utils.run — start_new_session=True
+#   try: ...                                    # or run_deadlined_argv (deadline + killpg)
+#   finally: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+# never Y — a bare spawn with no group and no per-case deadline:
+#   subprocess.Popen(["sh", "-c", generated])   # FORBIDDEN: orphans outlive the harness
+```
+
+`t3 doctor check` reports a leaderless group that is still burning, and `t3 tool reap-orphan-groups --pgid <n> --apply` reclaims one — but the harness is what stops it existing. (Issue [#4580](https://github.com/souliane/teatree/issues/4580).)
+
 **A timeout is not a failure.** When a foreground call hits its time limit, the process it started is usually still running. Launching a second attempt then puts two writers on one resource — the second fails on a lock the first legitimately holds, and that lock reads as stale debris. Before retrying anything that timed out, check whether the first attempt is still alive; before clearing a lock, confirm no live process owns it.
 
 Every row fails the same way: **the wrong answer looks exactly like the right answer** — nothing errors, nothing is empty, the output is well-formed and false. (The `noclobber` case is the proof a scattered symptom-fix does not work: that exact rule is already written under § "Temp File Safety", and the failure still recurred, because no probe author looks there.)
