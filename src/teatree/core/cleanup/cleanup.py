@@ -35,6 +35,7 @@ from teatree.core.worktree.branch_classification import (
     content_equivalence_blockers,
     effective_default_target,
 )
+from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree.worktree_paths import worktree_dir_for
@@ -148,6 +149,13 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     squash tree no longer matches). The error message lists up to
     ``_SUBJECT_PREVIEW_LIMIT`` blockers so the caller can decide whether to push or
     abandon.
+
+    **Squash-blindness (#4423).** A squash folds N commits into one whose patch-id matches
+    none of them, so ``git cherry`` reports every one as a blocker, and the squash-tree fallback
+    above needs the branch's tree to still equal the target's — which any later commit there
+    defeats, leaving only the forge. :func:`branch_is_landed` answers from git first, ANDing the
+    layered content verdict with present-tense proof that merging the branch would leave the
+    target's tree untouched, so it is ordered between them.
     """
     branch = target.branch_to_delete
     if branch is None:
@@ -172,6 +180,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     if not blockers:
         return
     if _branch_tree_matches_squash(repo_main, branch):
+        return
+    if branch_is_landed(repo_main, branch, default_target):
         return
     if _branch_pr_is_merged(repo_main, branch):
         return
@@ -310,6 +320,15 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     tree, so without one of the positive merged signals the branch is kept. The
     check fails safe to skip — only positive merged-evidence overrides; any
     uncertainty keeps the refusal.
+
+    **Squash-blindness (#4423).** Both signals above need the branch's tree to still equal
+    the default branch's, so ANY later commit there defeats them and the worktree becomes
+    permanently unreclaimable. :func:`branch_is_landed` is the drift-tolerant fallback — would
+    merging this branch change the target at all — ANDed with the layered content verdict,
+    which is what keeps #2205's reverted local-only branch refused: its tree matches by
+    coincidence, and no content layer calls it redundant. It runs LAST because
+    ``remote_ref_was_present`` lets the signals above accept the ordinary squash with no forge
+    probe at all, and the verdict's first layer is one.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
@@ -330,6 +349,8 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
         target.branch_to_delete,
         remote_ref_was_present=remote_ref_was_present,
     ):
+        return
+    if target.branch_to_delete is not None and branch_is_landed(repo_main, target.branch_to_delete):
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
     shas = ", ".join(preview)

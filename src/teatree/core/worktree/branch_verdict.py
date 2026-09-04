@@ -84,8 +84,11 @@ def branch_verdict_report(repo: str, branch: str, target: str = "") -> BranchVer
     )
 
 
-def branch_is_landed(repo: str, branch: str) -> bool:
+def branch_is_landed(repo: str, branch: str, target: str = "") -> bool:
     """Whether *branch*'s CURRENT tip is provably captured on the repo's default branch.
+
+    An explicit *target* lets a caller that already resolved the default branch share that one
+    ref with this probe, so the two can never measure against different bases.
 
     The boolean view for a caller that only needs the decision — a duplicate-PR refusal,
     a redundancy check. Fail-CLOSED like every layer beneath it: an inconclusive probe
@@ -97,7 +100,7 @@ def branch_is_landed(repo: str, branch: str) -> bool:
     unlanded branch opening its first PR pays neither of ``branch_redundancy``'s two
     30s forge probes.
     """
-    resolved = effective_default_target(repo)
+    resolved = target or effective_default_target(repo)
     return _content_still_present(repo, branch, resolved) and branch_redundancy(repo, branch, resolved).redundant
 
 

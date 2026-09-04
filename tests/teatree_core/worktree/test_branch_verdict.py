@@ -186,3 +186,20 @@ class TestTheTargetIsResolvedNotHardcoded(BranchVerdictCase):
         repo = self._repo_with_branch("one.py")
 
         assert branch_verdict_report(str(repo), "feature", target="main").target == "main"
+
+    def test_branch_is_landed_measures_against_an_explicit_target(self) -> None:
+        """#4423 — the cleanup guard shares its already-resolved default with the probe.
+
+        Falsifiable both ways in one fixture: ``feature`` landed on ``origin/release`` and on
+        nothing else, so a ``branch_is_landed`` that dropped the argument and re-resolved the
+        repo default would answer False for the very ref the caller named.
+        """
+        repo = self._repo_with_branch("one.py")
+        run_git(repo, "checkout", "-q", "-b", "release", "main")
+        run_git(repo, "merge", "-q", "--squash", "feature")
+        run_git(repo, "commit", "-q", "-m", "feat: one (#1)")
+        run_git(repo, "push", "-q", "origin", "release")
+        run_git(repo, "fetch", "-q", "origin")
+
+        assert branch_is_landed(str(repo), "feature", "origin/release") is True
+        assert branch_is_landed(str(repo), "feature") is False
