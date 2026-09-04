@@ -13,6 +13,7 @@ from pathlib import Path
 
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.upload_response import shared_message_ts
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 
 
@@ -37,6 +38,9 @@ def upload_audio_dm(*, http: SlackHttpClient, token: str, request: AudioDmReques
     step returns ``ok:false`` / ``missing_scope`` (surfaced verbatim so the caller
     degrades to a text-only post). Returns the raw ``completeUploadExternal`` body
     (``{}`` when the file is unreadable).
+
+    ``initial_comment`` is a message body, so it carries the #3809 wrap: this
+    call is the audio DM's whole egress and never touches ``chat.postMessage``.
     """
     path = Path(request.filepath)
     try:
@@ -56,7 +60,11 @@ def upload_audio_dm(*, http: SlackHttpClient, token: str, request: AudioDmReques
     file_entry: RawAPIDict = {"id": file_id}
     if request.title:
         file_entry["title"] = request.title
-    payload: RawAPIDict = {"files": [file_entry], "channel_id": request.channel, "initial_comment": request.text}
+    payload: RawAPIDict = {
+        "files": [file_entry],
+        "channel_id": request.channel,
+        "initial_comment": wrap_slack_message(request.text),
+    }
     if request.thread_ts:
         payload["thread_ts"] = request.thread_ts
     body = http.post("files.completeUploadExternal", token=token, json=payload, idempotent=False)
