@@ -44,7 +44,7 @@ def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None)
         )
         if in_flight is not None:
             return in_flight
-        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        session = Session.objects.create(ticket=ticket, agent_id="external-reviewer")
         return Task.objects.create(
             ticket=ticket,
             session=session,
