@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hooks.scripts import t3_invocation
 
 
@@ -78,6 +80,12 @@ class TestRunPinsTheCwd:
 
 
 class TestDetachedSpawnPinsTheCwd:
+    @pytest.fixture(autouse=True)
+    def _stub_the_prover(self):
+        # Patching Popen alone leaves the prover live, and subprocess.run BUILDS a Popen.
+        with patch.object(t3_invocation, "container_path", return_value=None):
+            yield
+
     def test_it_pins_the_checkout_root(self) -> None:
         with patch("subprocess.Popen") as popen:
             t3_invocation.spawn_t3_detached(["t3", "speak", "hello"])
@@ -108,7 +116,11 @@ class TestTheInvocationCwdCrossesTheBoundary:
         assert env["TEATREE_INVOCATION_CWD"] == "/mnt/checkout"
 
     def test_an_unprovable_cwd_stays_refused(self) -> None:
-        """The anti-vacuity control: no proof, no escape, the leak guard holds."""
+        """No proof, no escape — the seam declares nothing the prover would not vouch for.
+
+        This controls the SEAM's wiring, not the prover: it patches ``container_path``.
+        The prover's own anti-vacuity controls live in ``tests/test_container_visibility.py``.
+        """
         with patch.object(t3_invocation, "container_path", return_value=None):
             assert t3_invocation.t3_invocation_env("/nowhere/invisible") is None
 

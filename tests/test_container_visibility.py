@@ -13,6 +13,7 @@ stop.
 """
 
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,10 +26,15 @@ def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[
     return subprocess.CompletedProcess(args=["docker"], returncode=returncode, stdout=stdout, stderr="")
 
 
+@contextmanager
 def _docker_answers(*stdouts: str):
     """Patch the docker probe to answer each call in turn, cache cleared around it."""
     container_visibility.identity_mount_roots.cache_clear()
-    return patch.object(container_visibility, "_docker", side_effect=list(stdouts))
+    try:
+        with patch.object(container_visibility, "_docker", side_effect=list(stdouts)) as docker:
+            yield docker
+    finally:
+        container_visibility.identity_mount_roots.cache_clear()
 
 
 class TestIdentityMountRoots:

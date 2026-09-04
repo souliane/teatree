@@ -47,10 +47,10 @@ _ONEOFF_LABEL = "com.docker.compose.oneoff"
 _SERVICE_FORMAT = '{{.ID}} {{.Label "' + _ONEOFF_LABEL + '"}}'
 _MOUNT_FORMAT = "{{range .Mounts}}{{.Source}}\t{{.Destination}}\n{{end}}"
 
-#: Ample for a local daemon round-trip, and short because this cost lands BEFORE the
-#: gate's own validator allowance starts — a probe that waited would spend the hook's
-#: budget on a question whose unanswered form is already handled.
-_PROBE_TIMEOUT = 5.0
+#: Ample for a local daemon round-trip (measured ~46ms), and short because this cost
+#: lands BEFORE the gate's own validator allowance starts — a probe that waited would
+#: spend the hook's budget on a question whose unanswered form is already handled.
+_PROBE_TIMEOUT = 1.0
 
 
 def _docker(*args: str) -> str | None:
