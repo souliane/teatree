@@ -23,16 +23,13 @@ The scanner mirrors :class:`~teatree.loop.scanners.eval_local.EvalLocalScanner`:
     other mechanical scanner uses.
 """
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.utils.django_db.backup import default_backup_dir, hours_since_last_backup
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -49,9 +46,10 @@ class DbBackupScanner:
         now = timezone.now()
         try:
             elapsed_hours = hours_since_last_backup(target_dir, now=now)
-        except Exception:
-            logger.exception("db_backup: reading the backup dir %s failed — skipping this tick", target_dir)
-            return []
+        except Exception as exc:
+            # A swallowed [] reads identically to "no backup due" — the retention
+            # directive could lapse for good with nothing ever telling the owner.
+            raise ScannerError(scanner=self.name, error_class=ScannerErrorClass.UNKNOWN, detail=str(exc)) from exc
 
         trigger = self._evaluate_trigger(elapsed_hours)
         if trigger is None:
