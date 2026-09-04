@@ -507,12 +507,6 @@ class TestStopHookFailsSafeWithoutTeatree:
 
 
 class TestConsolidatedPendingWorkIsClaimAware:
-    @pytest.fixture(autouse=True)
-    def _stub_the_prover(self):
-        # The probe also goes through subprocess.run, so its argv lands in `captured` first.
-        with patch.object(t3_invocation, "container_path", return_value=None):
-            yield
-
     """TODO #100: the self-pump's work probe must be claim/budget-aware.
 
     The self-pump re-offered the SAME unit every interval because its
@@ -523,6 +517,12 @@ class TestConsolidatedPendingWorkIsClaimAware:
     never advancing. The probe must invoke ``--claimable-only`` so it
     answers "is there a unit a claim could actually take?".
     """
+
+    @pytest.fixture(autouse=True)
+    def _stub_the_prover(self):
+        # The probe also goes through subprocess.run, so its argv lands in `captured` first.
+        with patch.object(t3_invocation, "container_path", return_value=None):
+            yield
 
     def _run_with_fake_t3(
         self, monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode: int = 0
