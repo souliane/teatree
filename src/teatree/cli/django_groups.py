@@ -380,7 +380,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
             ("show", "Show a ticket's state plus the per-phase attempt counts."),
-            ("dead-rows", "List the non-terminal tickets intake can never find (#4527)."),
             ("expedite", "Flag a ticket as an expedite/release-blocker."),
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("record-spec-coverage", "Record the spec-coverage manifest the delivery gate reads (#2232)."),

@@ -24,10 +24,10 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import DmContext, PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
-from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work
+from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work, find_coverage
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
@@ -389,3 +389,42 @@ class TestTheDispatchedRowIsNeverAnUnfindableShell:
         second = dispatch_work(reading=reading, fingerprint="fp", origin=origin)
 
         assert first.ticket_id == second.ticket_id, "a retried dispatch forked a second row for one message"
+
+
+class TestADivergedLaneOverlayIsRepairedSoCoverageStillFindsIt:
+    """``find_coverage`` scans ``ticket__overlay=<queue overlay>``, so a diverged row is invisible.
+
+    The row diverges when it was minted before the queue's overlay was known and
+    ``Ticket.save`` inferred one from the umbrella anchor. Nothing re-dispatches a
+    lane it cannot see, so the next report of the same problem mints a rival.
+    """
+
+    def _dispatch(self, overlay: str) -> Task:
+        return dispatch_work(
+            reading=_work("fix interest-rate rounding on the offer PDF"),
+            fingerprint="fp-rounding",
+            origin=WorkOrigin(
+                overlay=overlay, channel=_CHANNEL, slack_ts="1.0", coalesced_ts=("1.0",), text="rounding"
+            ),
+        )
+
+    def test_a_re_dispatch_repoints_the_existing_row_at_the_queue_overlay(self) -> None:
+        self._dispatch("t3-other")
+
+        task = self._dispatch("t3-teatree")
+
+        assert Ticket.objects.get(pk=task.ticket_id).overlay == "t3-teatree"
+
+    def test_the_repaired_lane_is_visible_to_find_coverage(self) -> None:
+        self._dispatch("t3-other")
+        self._dispatch("t3-teatree")
+
+        coverage = find_coverage(
+            fingerprint="fp-rounding",
+            slack_ts="1.0",
+            coalesced_ts=("1.0",),
+            overlay="t3-teatree",
+            text="rounding",
+        )
+
+        assert coverage is not None, "the lane is invisible to the queue that owns it, so a rival will be minted"

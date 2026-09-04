@@ -177,7 +177,7 @@ def dispatch_work(
         origin.text,
     )
     subject = (reading.work_summary or text).strip()
-    ticket, created = Ticket.objects.get_or_create(
+    ticket, _created = Ticket.objects.get_or_create(
         issue_url=slack_conversation_anchor(channel=channel, slack_ts=slack_ts),
         defaults={
             "overlay": overlay,
@@ -197,10 +197,12 @@ def dispatch_work(
             },
         },
     )
-    if created and ticket.overlay != overlay:
+    if ticket.overlay != overlay:
         # The lane's overlay is the QUEUE's, never one `save()` inferred from the umbrella
         # anchor: `find_coverage` scans `ticket__overlay=<unit overlay>`, so a diverged
         # value hides this lane and the next report of the same problem mints a rival.
+        # An EXISTING row is where that divergence survives, so this must not gate on
+        # `created` — a fresh row was just handed the queue's overlay and cannot diverge.
         Ticket.objects.filter(pk=ticket.pk).update(overlay=overlay)
         ticket.overlay = overlay
     session = Session.objects.create(ticket=ticket, overlay=overlay, agent_id=DISPATCH_PHASE)

@@ -11336,7 +11336,7 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              transition (BLUEPRINT §17.4).                   │
 │ list                         List tickets, optionally filtered by state      │
 │                              and/or overlay.                                 │
-│ dead-rows                    List the non-terminal tickets intake can never  │
+│ dead-rows                    List every non-terminal ticket intake can never │
 │                              find (#4527).                                   │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │

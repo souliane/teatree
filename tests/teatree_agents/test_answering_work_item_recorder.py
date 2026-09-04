@@ -9,6 +9,7 @@ can open is the trap this whole change removes.
 from dataclasses import dataclass, field
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
@@ -156,3 +157,18 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
         body = self.backend.replies[0][2]
         assert "could not file" in body.lower(), f"the forge refused and the owner was told nothing: {body!r}"
         assert "403" in body, f"the stated reason does not carry what the forge said: {body!r}"
+
+    def test_a_raising_code_host_resolver_is_stated_in_the_thread_and_never_destroys_the_answer(self) -> None:
+        """Resolving the host is a filing step too — an escape there takes the whole reply with it."""
+        with mock.patch(
+            "teatree.core.backend_factory.code_host_from_overlay",
+            side_effect=ImproperlyConfigured("no code host provider is registered for t3-teatree"),
+        ):
+            self._record({"answer": {"text": "On it."}, "work_item": {"title": "t", "body": "b"}})
+
+        assert self.backend.replies, "the resolver raised and the owner's commitment was dropped in silence"
+        body = self.backend.replies[0][2]
+        assert "could not file" in body.lower(), f"the resolver raised and the owner was told nothing: {body!r}"
+        assert "no code host provider is registered" in body, (
+            f"the stated reason does not carry why the host could not be resolved: {body!r}"
+        )

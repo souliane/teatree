@@ -140,7 +140,7 @@ class TicketShowCommands(TyperCommand):
     def dead_rows(
         self,
         *,
-        as_json: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
     ) -> list[DeadRowResult]:
         """List every non-terminal ticket intake can never find, oldest lane first (#4527).
 
@@ -161,7 +161,7 @@ class TicketShowCommands(TyperCommand):
         self.print_result = False
         emit(
             rows,
-            json_output=as_json,
+            json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human=_render_dead_rows(rows),

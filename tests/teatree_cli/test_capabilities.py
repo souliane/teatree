@@ -85,6 +85,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree review apply-reviewer-policy": review.Command.apply_reviewer_policy,
         "teatree ticket backfill-clears": ticket.Command.backfill_clears,
         "teatree ticket list-clears": ticket.Command.list_clears,
+        "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree review record": review.Command.record,
         "teatree review record-evidence": review.Command.record_evidence,

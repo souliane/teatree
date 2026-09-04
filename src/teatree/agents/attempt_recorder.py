@@ -34,6 +34,7 @@ from teatree.agents.result_schema import (
     ReviewVerdictEnvelope,
     check_evidence,
 )
+from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
@@ -293,8 +294,6 @@ def _check_before_recording(
 
 def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:
     """The answering phase's task-conditional evidence check — empty on every other phase."""
-    from teatree.core.answering.work_intent import missing_work_item_error  # noqa: PLC0415 — deferred: ORM import
-
     if normalize_phase(phase or task.phase) != "answering":
         return ""
     return missing_work_item_error(task, result)

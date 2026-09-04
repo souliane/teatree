@@ -99,3 +99,15 @@ class TestAWorkImplyingRunMustSayWhatTheRequestBecomes(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+    def test_an_empty_work_item_is_refused_like_a_missing_one(self) -> None:
+        """``{}`` names none of the three outcomes, so it is the drop wearing the channel's shape."""
+        task = _answering_task(implies_work=True)
+
+        attempt = record_result_envelope(
+            task, {"summary": "replied", "answer": dict(_ANSWER), "work_item": {}}, phase="answering"
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED, "an empty envelope passed as if the request had been placed"
+        assert "work_item" in attempt.error, attempt.error

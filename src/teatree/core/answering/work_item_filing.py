@@ -79,6 +79,13 @@ class NoCodeHostError(WorkItemFilingError):
         super().__init__(f"no code host is configured for overlay {overlay or '(default)'}")
 
 
+class CodeHostUnresolvableError(WorkItemFilingError):
+    """Building the overlay's code host raised, so the request cannot be filed anywhere."""
+
+    def __init__(self, overlay: str, cause: Exception) -> None:
+        super().__init__(f"the code host for overlay {overlay or '(default)'} could not be resolved: {cause}")
+
+
 class NoFilingRepoError(WorkItemFilingError):
     """The overlay declares no repo, so there is nowhere the request could be filed."""
 
@@ -260,6 +267,7 @@ def _issue_url(raw: RawAPIDict) -> str:
 
 __all__ = [
     "FINGERPRINT_MARKER",
+    "CodeHostUnresolvableError",
     "EmptyWorkItemError",
     "FiledWorkItem",
     "ForgeRefusedError",

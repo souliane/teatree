@@ -11,7 +11,7 @@ refused a summary-only run, so each channel field is present and non-empty here.
 
 import logging
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
@@ -30,6 +30,9 @@ from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Pend
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.news_digest import DigestItem, render_digest
 from teatree.core.notify import NotifyKind, notify_user
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
 
 #: Shell-denied reactive phases whose headless agent hands its work back through
 #: a typed envelope channel (#9): the agent cannot run the ``t3`` CLI, so the
@@ -205,12 +208,10 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     here is why" beats posting a reply that silently promises nothing.
     """
     from teatree.core.answering.work_item_filing import (  # noqa: PLC0415 — deferred: ORM + backend imports
-        NoCodeHostError,
         WorkItemFilingError,
         file_work_item,
         filing_repo,
     )
-    from teatree.core.backend_factory import code_host_from_overlay  # noqa: PLC0415 — deferred: call-time import
 
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
         return None
@@ -218,10 +219,8 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     if not isinstance(envelope, dict) or not envelope:
         return None
     overlay = task.ticket.overlay
-    host = code_host_from_overlay(overlay or None)
     try:
-        if host is None:
-            raise NoCodeHostError(overlay)
+        host = _resolved_code_host(overlay)
         filed = file_work_item(task.ticket, dict(envelope), host=host, repo=filing_repo(overlay))
     except WorkItemFilingError as exc:
         logger.warning("Work-item filing failed for task %s: %s", task.pk, exc)
@@ -231,6 +230,28 @@ def _maybe_file_work_item(task: Task, result: AgentResultBlob, *, phase: str) ->
     if filed.withheld:
         return WorkItemOutcome(url="", failure=filed.withheld_reason)
     return WorkItemOutcome(url=filed.url)
+
+
+def _resolved_code_host(overlay: str) -> "CodeHostBackend":
+    """*overlay*'s code host as a filing step: it raises where the caller states the failure.
+
+    Resolution runs an overlay-supplied provider, so it fails as many ways as filing
+    does — and an escape here reaches the recorder before the reply is delivered, so
+    the owner gets neither an issue nor an answer.
+    """
+    from teatree.core.answering.work_item_filing import (  # noqa: PLC0415 — deferred: ORM + backend imports
+        CodeHostUnresolvableError,
+        NoCodeHostError,
+    )
+    from teatree.core.backend_factory import code_host_from_overlay  # noqa: PLC0415 — deferred: call-time import
+
+    try:
+        host = code_host_from_overlay(overlay or None)
+    except Exception as exc:  # every provider fails differently, and any escape takes the reply with it
+        raise CodeHostUnresolvableError(overlay, exc) from exc
+    if host is None:
+        raise NoCodeHostError(overlay)
+    return host
 
 
 @dataclass(frozen=True, slots=True)
