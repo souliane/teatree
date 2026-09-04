@@ -44,7 +44,7 @@
               user: the target branch, the commit type, and whether to squash.
     16:02:19  orchestrator: reminder carried from the rules skill — never ask a question
               inline in prose; every user-facing decision goes through AskUserQuestion so
-              it renders as a structured UI and mirrors to the user's Slack DM.
+              it renders as a structured UI the user can answer.
     16:02:31  orchestrator: and the one-decision-per-call rule — each decision is its OWN
               AskUserQuestion call, never a multi-item batch. A prompt like
               "approve A1, B3, C4?" is unevaluable; one bad item contaminates a yes-to-all.
@@ -56,9 +56,9 @@
               (clean working tree)
     16:03:07  $ git log --oneline origin/main..HEAD
               a1b2c3d implement the widget timeout guard
-    16:03:44  orchestrator: the Slack mirror posts each AskUserQuestion to the user DM;
-              a batched call lands as one wall of opaque options on the phone, a
-              one-at-a-time walk-through lands as a clean sequence the user can answer.
+    16:03:44  orchestrator: each AskUserQuestion renders as its own structured prompt;
+              a batched call lands as one wall of opaque options, a one-at-a-time
+              walk-through lands as a clean sequence the user can answer.
     16:04:10  orchestrator: don't abandon a one-by-one walk-through midway either —
               once started, finish the sequence; never switch to autonomous work and
               leave the remaining decisions dangling.

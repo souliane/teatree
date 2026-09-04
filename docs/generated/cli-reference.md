@@ -23,8 +23,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │
-│ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
-│                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
@@ -250,25 +248,6 @@ Usage: t3 speak [OPTIONS] TEXT
 │ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
 │                        creds).                                               │
 │ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 speak-dm`
-
-```
-Usage: t3 speak-dm [OPTIONS]
-
- Attach spoken audio to a user DM per  (no-op unless slack/local on).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel          TEXT  Slack DM channel id the audio attaches to.       │
-│                             [required]                                       │
-│ *  --text             TEXT  Text to speak. Use '-' to read it from stdin.    │
-│                             [required]                                       │
-│    --thread-ts        TEXT  Thread the audio DM under this ts.               │
-│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
-│                             Slack creds).                                    │
-│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

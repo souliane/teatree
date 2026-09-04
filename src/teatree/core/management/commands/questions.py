@@ -10,6 +10,9 @@ populated when availability=away (BLUEPRINT §17.1 invariant 9):
     the user no longer wants to answer; writes an audit row.
 * ``t3 teatree questions reachability`` — which automated resolvers can decide
     each pending row, and how many can be decided by none (#4178).
+* ``t3 teatree questions mirror --ref <ref>`` — deliver ONE un-mirrored row
+    now; the capture-time kick the loop-driven ``AskUserQuestion`` deny arm
+    spawns detached so a headless blocker does not wait for the next tick.
 * ``t3 teatree questions resurface`` — re-post the pending backlog to the
     user's Slack DM (the away→present drain): returning from away never
     silently swallows questions. Reuses :func:`teatree.core.notify.notify_user`
@@ -32,7 +35,7 @@ from django_typer.management import command, initialize
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.task_handoff import schedule_resume
-from teatree.core.notify_question_drains import drain_deferred_questions
+from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.table_output import print_table
 
 
@@ -342,6 +345,37 @@ class Command(MachineOutputCommand):
         if not dismissed:
             raise SystemExit(1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
+
+    @command()
+    def mirror(
+        self,
+        ref: Annotated[
+            str,
+            typer.Option("--ref", help="The row's stable_notify_ref (its tool_use_id, or '<instance>:<pk>')."),
+        ] = "",
+        user_id: Annotated[
+            str,
+            typer.Option("--user-id", help="Slack user id to DM (defaults to the configured user)."),
+        ] = "",
+        overlay: Annotated[
+            str,
+            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
+        ] = "",
+    ) -> str:
+        """Deliver ONE un-mirrored question now, bypassing the per-tick batch cap.
+
+        Same :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions`
+        egress the tick scanner runs, so there is exactly one Slack chokepoint for
+        every deferred question. An unmatched *ref* is not an error: the tick drain
+        may have taken the row first, and the durable row remains the fallback.
+        """
+        if not ref.strip():
+            self.stderr.write("--ref is required; a blank ref would drain the whole backlog.")
+            raise SystemExit(2)
+        mirrored, total = drain_unmirrored_deferred_questions(user_id=user_id, overlay=overlay, only_ref=ref.strip())
+        if total == 0:
+            return f"nothing to mirror for ref {ref.strip()!r} — already delivered, or resolved."
+        return f"mirrored {mirrored}/{total} question(s)."
 
     @command()
     def resurface(

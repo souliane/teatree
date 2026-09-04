@@ -26,8 +26,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │
-│ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
-│                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │

@@ -390,8 +390,17 @@ def drain_deferred_questions(
     return delivered, len(owner_rows)
 
 
+def _rows_to_mirror(only_ref: str) -> list[DeferredQuestion]:
+    pending = DeferredQuestion.unmirrored_pending()
+    if not only_ref:
+        return list(pending)[:_MAX_MIRRORS_PER_TICK]
+    # Selection is oldest-first and the cap bounds a BURST, so a freshly-recorded
+    # row queues behind the whole backlog. One targeted row is not a burst.
+    return [row for row in pending if row.stable_notify_ref == only_ref][:1]
+
+
 def drain_unmirrored_deferred_questions(
-    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None
+    *, user_id: str = "", overlay: str = "", backend: "MessagingBackend | None" = None, only_ref: str = ""
 ) -> tuple[int, int]:
     """Post the un-mirrored :class:`DeferredQuestion` backlog and stamp its mirror.
 
@@ -417,8 +426,13 @@ def drain_unmirrored_deferred_questions(
     genuine question too. The remainder is not dropped: `unmirrored_pending()`
     is re-read every tick, so the backlog drains steadily instead of at once,
     and a question that has waited hours can wait one more cadence.
+
+    *only_ref* narrows the batch to the single row with that
+    :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`
+    and bypasses the cap — the capture-time kick the loop-driven ``AskUserQuestion``
+    deny arm fires so a headless blocker is not queued behind the backlog.
     """
-    rows = list(DeferredQuestion.unmirrored_pending())[:_MAX_MIRRORS_PER_TICK]
+    rows = _rows_to_mirror(only_ref)
     if not rows:
         return 0, 0
 

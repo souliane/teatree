@@ -164,7 +164,6 @@ from hooks.scripts.question_gates import (
     STRUCTURED_QUESTION_BLOCK,
     denied_question_dedupe_key,
     denied_question_row_marker,
-    handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
@@ -195,8 +194,6 @@ from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
 from hooks.scripts.skill_path_probe import is_file_safe
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
-from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
-from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
 from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
 from hooks.scripts.state_files import append_line, read_lines
 from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
@@ -3024,11 +3021,6 @@ def handle_read_dedup(data: dict) -> None:
     )
 
 
-# ``handle_resolve_answered_question`` (+ its ``_answer_text_from_tool_response``
-# helper) lives in the ``question_gates`` sibling — the AskUserQuestion
-# decision-policy home — and is imported into the PostToolUse chain above.
-
-
 # ``handle_track_agents`` (+ its ``_agent_id_from_response`` /
 # ``_newest_task_agent_id`` helpers) lives in the ``dispatch_ledger`` sibling — the
 # #778 sub-agent-dispatch capture — and is imported into the PostToolUse chain.
@@ -4586,72 +4578,27 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 #
-# The Slack TRANSPORT (open DM, post message, channel cache, question text)
-# lives in the ``teatree.hooks.slack_mirror`` leaf, which posts through the
-# hardened ``SlackHttpClient`` (#1110) instead of the raw ``urllib`` this
-# router carried. The leaf is a pure ``teatree.hooks`` (platform-layer) leaf:
-# it must not import ``teatree.backends.slack`` / ``teatree.core`` (a backwards
-# layer edge tach forbids), so the router — which lives outside ``src`` and may
-# touch the domain — builds the Slack ``post`` and the audio enricher here and
-# INJECTS them into the leaf. The router keeps the ROUTING decision
-# (which present-/away-mode arm fires, the DeferredQuestion capture); these thin
-# wrappers preserve the ``patch.object(router, "_perform_slack_post" /
-# "_slack_config_from_toml" / "_read_dm_channel_cache")`` seam the handler tests
-# intercept.
-#
-# No active-DM-thread resolver is injected: the mirror posts AT ROOT so
-# its ``ts`` is a thread root, which is the only ts a later Slack reply carries
-# in ``thread_ts`` — the identity ``teatree.loop.question_binding`` binds on.
-
-
-def _slack_config_from_toml() -> tuple[str, str] | None:
-    from teatree.hooks.slack_mirror import slack_config_from_registry  # noqa: PLC0415 — deferred: cold-hook import
-
-    return slack_config_from_registry()
-
-
-def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:
-    from teatree.hooks.slack_mirror import perform_slack_post  # noqa: PLC0415 — deferred: cold-hook import
-
-    return perform_slack_post(
-        slack_cfg,
-        questions,
-        poster=_slack_http_poster(),
-        enrich_audio=build_dm_audio_enricher(slack_enabled=_speak_settings()[1]),
-    )
-
-
-def _read_dm_channel_cache(user_id: str) -> str:
-    from teatree.hooks.slack_mirror import read_dm_channel_cache  # noqa: PLC0415 — deferred: cold-hook import
-
-    return read_dm_channel_cache(user_id)
-
-
-def _post_question_to_slack(data: dict) -> None:
-    questions = data.get("tool_input", {}).get("questions", [])
-    if not questions:
-        return
-    slack_cfg = _slack_config_from_toml()
-    if slack_cfg is None:
-        return
-    _perform_slack_post(slack_cfg, questions)
+# There is ONE Slack egress for a deferred question and it is not here:
+# ``notify_question_drains.drain_unmirrored_deferred_questions`` -> ``notify_user``.
+# This handler records the durable row and kicks that drain; the tick scanner
+# re-runs it for anything the kick did not land (#4673).
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
-    """Mirror an ``AskUserQuestion`` to Slack; deny a loop-driven one (#1174).
+    """Defer a loop-driven ``AskUserQuestion`` to Slack; let an attended one render (#1174, #4673).
 
-    Runs LAST in the PreToolUse chain. Three arms — live user turn / attended
-    non-owner turn: capture, mirror, return ``False`` so the question renders
-    in-client (#2058 slides the live window forward on the live arm, the #189
-    escape); loop-driven / autonomous turn: capture a generation-stamped
-    mirror-linked ``DeferredQuestion``, deduped against a harness retry of the
-    SAME denied call, then deny so the agent narrates the deferral and proceeds
-    — the answer arrives later via ``additionalContext``.
+    Runs LAST in the PreToolUse chain. Two arms — live user turn / attended
+    non-owner turn: nothing leaves the box, the question renders in-client
+    (#2058 slides the live window forward on the live arm, the #189 escape) and
+    any older pending row for this (session, run) is superseded so the owner is
+    not nagged for a decision they just made; loop-driven / autonomous turn:
+    capture a generation-stamped ``DeferredQuestion``, deduped against a harness
+    retry of the SAME denied call, kick its delivery, then deny so the agent
+    narrates the deferral and proceeds — the answer arrives later via
+    ``additionalContext``.
 
-    All three arms record the question (#3642) so a Slack reply always has a live
-    generation to bind and an in-client answer resolves it via
-    :func:`handle_resolve_answered_question` — neither surface can apply an answer
-    the other already took.
+    A Claude Code question is never asked twice: an attended session's question
+    exists only in the terminal the owner is already looking at.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
@@ -4662,40 +4609,57 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
             # is still driving, so the NEXT question in the same walk-through stays live
             # across an intervening notification turn (which never stamps a heartbeat).
             _refresh_live_turn(data)
-        if _capture_and_defer_question(data) is None:
-            _post_question_to_slack(data)
+        _supersede_pending_questions(data)
         return False
-    if not str(_first_question(data).get("question", "")).strip():
-        _post_question_to_slack(data)
-        return False
-    queue_id = _capture_and_defer_question(data, dedupe=True)
+    queue_id, ref = _capture_and_defer_question(data, dedupe=True)
     if queue_id is None:
-        # Teatree unavailable — fail open so the in-client modal renders.
+        # Teatree unavailable, or nothing to record — fail open so the in-client modal renders.
         return False
+    _kick_question_drain(ref)
     reason = (
-        f"Your question was captured durably as DeferredQuestion #{queue_id} and mirrored to the "
-        "user's Slack DM. A loop-driven AskUserQuestion cannot block here — the suspended session "
+        f"Your question was captured durably as DeferredQuestion #{queue_id} and is being delivered to "
+        "the user's Slack DM. A loop-driven AskUserQuestion cannot block here — the suspended session "
         "has no path to receive a Slack reply. Proceed with any work that does not depend on the "
         "answer; the user's reply will surface in a future turn's additionalContext."
     )
     return emit_pretooluse_deny(reason)
 
 
-def _mirror_question_to_slack(question: dict) -> tuple[str, str]:
-    """Post the single recorded question to the user's Slack DM; return ``(ts, channel)``.
+def _supersede_pending_questions(data: dict) -> None:
+    """Stale-mark this (session, run)'s pending rows — an in-client ask replaces them.
 
-    Fail-open: any Slack/IO error yields ``("", "")`` so the deny is never blocked.
+    A loop-driven row the agent later re-asks on an attended turn would otherwise keep
+    nagging from ``reask_escalated_questions`` after the owner has already answered.
     """
-    if not question:
-        return "", ""
-    slack_cfg = _slack_config_from_toml()
-    if slack_cfg is None:
-        return "", ""
+    if not bootstrap_teatree_django():
+        return
     try:
-        ts = _perform_slack_post(slack_cfg, [question])
-    except Exception:  # noqa: BLE001 — a Slack failure never blocks the capture/deny.
-        return "", ""
-    return ts, _read_dm_channel_cache(slack_cfg[1])
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        for prior in DeferredQuestion.pending().filter(
+            session_id=str(data.get("session_id", "")), run_id=_run_id(data)
+        ):
+            prior.mark_stale("superseded by an in-client question")
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+        return
+
+
+def _kick_question_drain(ref: str) -> None:
+    """Deliver the just-recorded row NOW, detached — never on the hook's own budget.
+
+    Selection in the tick drain is oldest-first and capped, so without this a headless
+    blocker waits ``ceil(backlog/cap)`` ticks. Detached rather than synchronous because
+    ``notify_user``'s client retries and this runs inside the PreToolUse timeout. Any
+    failure is silent: the durable row plus the tick scanner remain the fallback.
+    """
+    overlay = os.environ.get("T3_OVERLAY_NAME", "")
+    if not ref or not overlay:
+        return
+    argv = t3_argv(overlay, "questions", "mirror", "--ref", ref)
+    if argv is None:
+        return
+    with contextlib.suppress(Exception):
+        spawn_t3_detached(argv)
 
 
 def _run_id(data: dict) -> str:
@@ -4723,30 +4687,30 @@ def _first_question(data: dict) -> dict:
     return first if isinstance(first, dict) else {}
 
 
-def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:
-    """Record one mirror-linked ``DeferredQuestion`` and post it to Slack.
+def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[int | None, str]:
+    """Record the loop-driven deny arm's durable ``DeferredQuestion`` (#1174, #4673).
 
-    The single chokepoint every ``AskUserQuestion`` arm calls (#1174). It supersedes
-    any pending older-generation row for the same (session, run), posts the question
-    to the user's Slack DM capturing the posted ``ts``, and records the row with its
-    mirror fields so the reply matcher can bind a later Slack reply to exactly this
-    generation. Returns the new row id, or ``None`` when teatree is unavailable (fails
-    open — the in-client modal renders).
+    It supersedes any pending older-generation row for the same (session, run) and
+    records the row UN-MIRRORED, so the one Slack egress
+    (``drain_unmirrored_deferred_questions`` -> ``notify_user``) delivers it and stamps
+    the mirror coordinates the reply matcher binds on. Returns ``(row id,
+    stable_notify_ref)``, or ``(None, "")`` when teatree is unavailable or there is
+    nothing to record — fails open, so the in-client modal renders.
 
-    *dedupe* (the loop-driven deny arm) makes the row itself the idempotency record: a
-    harness retry returns the live row rather than superseding it into a mirrorless twin
-    ``live_for_reply`` cannot bind, which silently drops the operator's Slack answer.
+    *dedupe* makes the row itself the idempotency record: a harness retry returns the
+    live row rather than superseding it into a twin ``live_for_reply`` cannot bind,
+    which silently drops the operator's Slack answer.
     """
     if not bootstrap_teatree_django():
-        return None
+        return None, ""
     try:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+        return None, ""
     first = _first_question(data)
     question_text = str(first.get("question", "")).strip()
     if not question_text:
-        return None
+        return None, ""
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
     session_id = str(data.get("session_id", ""))
     run_id = _run_id(data)
@@ -4758,25 +4722,22 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | No
             for prior in DeferredQuestion.pending().filter(session_id=session_id, run_id=run_id):
                 prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+        return None, ""
     if row is None:
-        slack_ts, slack_channel = _mirror_question_to_slack(first)
         try:
             row = DeferredQuestion.record(
                 question_text,
                 options_json=json.dumps(options) if options else "",
                 session_id=session_id,
                 tool_use_id=str(data.get("tool_use_id", "")),
-                slack_ts=slack_ts,
-                slack_channel=slack_channel,
                 options_hash=_options_hash(options),
                 generation=generation,
                 run_id=run_id,
                 dedupe_marker=marker,
             )
         except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-            return None
-    return int(row.pk)
+            return None, ""
+    return int(row.pk), row.stable_notify_ref
 
 
 def _is_live_user_turn(data: dict) -> bool:
@@ -5342,7 +5303,6 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_agents,
-        handle_resolve_answered_question,
     ],
     # Nothing registered here can block — see ``_NEVER_BLOCKING_EVENTS``. The
     # skill-loading arm has MOVED to the PreToolUse ``Agent`` matcher, where the

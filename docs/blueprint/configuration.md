@@ -485,14 +485,14 @@ MS Teams backend (`teatree.backends.msteams.presence`) reads MS Graph
 step. Core never imports the backend — `teatree.backends` registers the factory
 at app-ready, the same inversion `backend_registry` uses.
 
-**Question-mirror audio parity (#2171).** When `slack` is on, the AskUserQuestion
-Slack mirror (§17.1 invariant 9) also carries a spoken rendition to the user's
-phone, matching `notify_user` DMs. The router injects an audio enricher into the
-`teatree.hooks.slack_mirror` leaf (keeping the leaf import-clean); after the text
-question DM lands, the enricher spawns `t3 speak-dm` DETACHED (like the Stop-hook
-`t3 speak` read) so synthesis never blocks the mirror's hook budget. Both
-question surfaces — the present-mode mirror and the away-mode `DeferredQuestion`
-capture — carry audio.
+**Question audio parity (#2171, #4673).** When `slack` is on, a loop-driven
+AskUserQuestion (§17.1 invariant 9) carries a spoken rendition to the user's phone
+like any other `notify_user` DM — it IS one: the question is delivered by
+`drain_unmirrored_deferred_questions` → `notify_user`, whose speak sidecar attaches
+audio under the delivered text with an empty `initial_comment`. There is no separate
+mirror enricher and no `t3 speak-dm` worker; #4673 deleted both with the duplicate
+Slack ask they served. An attended question renders in the terminal only, so it has
+no DM to carry audio.
 
 **Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
 playback fans out from two independent sources — each DM's local-read leg and

@@ -807,6 +807,10 @@
           "name": "dismiss"
         },
         {
+          "help": "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap",
+          "name": "mirror"
+        },
+        {
           "help": "Re-post the pending backlog to the user's Slack DM (away\u2192present drain)",
           "name": "resurface"
         },
@@ -1053,11 +1057,6 @@
     {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
-      "subcommands": []
-    },
-    {
-      "help": "Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).",
-      "name": "speak_dm",
       "subcommands": []
     },
     {

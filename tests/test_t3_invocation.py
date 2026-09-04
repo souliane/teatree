@@ -93,7 +93,7 @@ class TestDetachedSpawnPinsTheCwd:
 
     def test_it_detaches_so_a_slow_call_never_holds_the_hook_open(self) -> None:
         with patch("subprocess.Popen") as popen:
-            t3_invocation.spawn_t3_detached(["t3", "speak-dm", "--text", "hi"])
+            t3_invocation.spawn_t3_detached(["t3", "teatree", "questions", "mirror", "--ref", "r"])
         kwargs = popen.call_args.kwargs
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] == kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL

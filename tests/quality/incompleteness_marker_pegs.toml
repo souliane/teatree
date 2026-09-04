@@ -42,7 +42,6 @@
 "docs/blueprint/rubric-done-gate.md" = 1
 "hooks/scripts/hook_router.py" = 1
 "hooks/scripts/secret_file_print_guard.py" = 1
-"hooks/scripts/slack_mirror_wiring.py" = 1
 "scripts/hooks/check_antipatterns.py" = 1
 "scripts/lib/requires_parser.py" = 1
 "src/teatree/agents/harness.py" = 1

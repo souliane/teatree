@@ -1,10 +1,10 @@
-"""Slack mirror for AskUserQuestion fires on PreToolUse, synchronously.
+"""AskUserQuestion routing on PreToolUse — deny the loop-driven arm, pass the attended one.
 
-The mirror posts a DM to the user so they see the question on Slack
-**before** they answer in the terminal. The previous detached/forked
-implementation made the message land *after* the user had answered;
-this is now a synchronous call with a per-user channel cache so the
-post fits inside the hook timeout.
+A question asked in Claude Code is answered in Claude Code and nowhere else (#4673):
+the attended arms send nothing and record nothing, because an un-mirrored row is what
+the tick drain would pick up, re-posting the question to Slack one cadence later. Only
+a LOOP-DRIVEN call — which has no terminal to render into — is captured and delivered,
+through the single ``drain_unmirrored_deferred_questions`` -> ``notify_user`` egress.
 """
 
 import contextlib
@@ -14,11 +14,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 
 import hooks.scripts.hook_router as router
-import hooks.scripts.slack_mirror_wiring as wiring
 from teatree.core.models.deferred_question import DeferredQuestion
 
 
@@ -49,12 +47,11 @@ class TestRouterRegistration(TestCase):
         assert router.handle_mirror_question_to_slack not in router._HANDLERS["PostToolUse"]
 
 
-class TestMirrorHandler(TestCase):
-    """The mirror-without-deny dispatch path (the live-user-turn arm).
+class TestAttendedTurnSendsNothingAndRecordsNothing(TestCase):
+    """The attended arms are inert: in-client render, no Slack, no durable row (#4673).
 
-    These exercise the Slack mirror dispatch mechanics; they run under a
-    live-user-turn so the handler mirrors and returns ``False`` (the
-    loop-driven deny arm has its own class below).
+    Recording an un-mirrored row here would be the duplication with a delay — the tick
+    drain selects exactly ``slack_ts == ""`` and would post it to the owner's DM.
     """
 
     def setUp(self) -> None:
@@ -65,6 +62,8 @@ class TestMirrorHandler(TestCase):
     def _question_payload(self) -> dict:
         return {
             "tool_name": "AskUserQuestion",
+            "session_id": "sess-interactive",
+            "tool_use_id": "tu-1",
             "tool_input": {
                 "questions": [
                     {
@@ -79,141 +78,41 @@ class TestMirrorHandler(TestCase):
         }
 
     def test_returns_false_so_chain_continues(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post") as mock_post,
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-        ):
-            mock_post.return_value = None
+        with patch.object(router, "_kick_question_drain") as kick:
             result = router.handle_mirror_question_to_slack(self._question_payload())
         assert result is False
+        kick.assert_not_called()
 
     def test_ignores_other_tools(self) -> None:
-        with patch.object(router, "_perform_slack_post") as mock_post:
+        with patch.object(router, "_kick_question_drain") as kick:
             router.handle_mirror_question_to_slack({"tool_name": "Bash", "tool_input": {"command": "ls"}})
-        mock_post.assert_not_called()
+        kick.assert_not_called()
+        assert DeferredQuestion.objects.count() == 0
 
-    def test_dispatches_synchronously_when_questions_present(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-        ):
+    def test_records_no_row_so_the_tick_drain_cannot_repost_it(self) -> None:
+        with patch.object(router, "_kick_question_drain"):
             router.handle_mirror_question_to_slack(self._question_payload())
-        mock_post.assert_called_once()
-        slack_cfg, questions = mock_post.call_args.args
-        assert slack_cfg == ("tok/ref", "U1")
-        assert questions[0]["question"] == "Ship it?"
+        assert DeferredQuestion.objects.count() == 0
+        assert not DeferredQuestion.unmirrored_pending().exists()
 
-    def test_no_dispatch_when_no_questions(self) -> None:
-        with patch.object(router, "_perform_slack_post") as mock_post:
-            router.handle_mirror_question_to_slack({"tool_name": "AskUserQuestion", "tool_input": {"questions": []}})
-        mock_post.assert_not_called()
-
-    def test_no_dispatch_when_slack_not_configured(self) -> None:
-        with (
-            patch.object(router, "_slack_config_from_toml", return_value=None),
-            patch.object(router, "_perform_slack_post") as mock_post,
-        ):
+    def test_nothing_is_bindable_from_slack(self) -> None:
+        with patch.object(router, "_kick_question_drain"):
             router.handle_mirror_question_to_slack(self._question_payload())
-        mock_post.assert_not_called()
-
-
-class TestAttendedTurnMirrorsButDoesNotDeny(TestCase):
-    """An attended AskUserQuestion mirrors to Slack and is NOT denied (#182).
-
-    On an attended turn the question still renders in the client; the mirror
-    only ADDS a Slack DM so the user sees it on their phone too. The handler
-    must never deny — denying would suppress the in-client prompt. The #4202
-    mode collapse replaced "present mode" with the live-turn/loop-ownership
-    predicates directly, so "attended" is pinned here the same way
-    ``TestMirrorHandler`` pins it above: a live user turn.
-    """
-
-    def setUp(self) -> None:
-        live_turn = patch.object(router, "_is_live_user_turn", lambda _data: True)
-        live_turn.start()
-        self.addCleanup(live_turn.stop)
-
-    def _payload(self) -> dict:
-        return {
-            "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}]}]},
-        }
-
-    def test_attended_turn_posts_and_returns_false(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-        ):
-            mirror_verdict = router.handle_mirror_question_to_slack(self._payload())
-        assert mirror_verdict is False
-        mock_post.assert_called_once()
-
-
-class TestInteractiveQuestionReachesTheOwnerQueue(TestCase):
-    """#3642 — an interactive question is answerable from Slack, like the agent lane.
-
-    The live-user-turn arm must still render in-client (never deny), but the question
-    also enters the shared owner-thread queue with its Slack coordinates bound, so a
-    reply from Slack resolves it and the owner cannot lose it in an unwatched terminal.
-    """
-
-    def setUp(self) -> None:
-        live_turn = patch.object(router, "_is_live_user_turn", lambda _data: True)
-        live_turn.start()
-        self.addCleanup(live_turn.stop)
-
-    def _payload(self) -> dict:
-        return {
-            "tool_name": "AskUserQuestion",
-            "session_id": "sess-interactive",
-            "tool_use_id": "tu-1",
-            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}]}]},
-        }
-
-    def test_the_question_is_recorded_and_mirror_linked_without_denying(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post", return_value="1779990001.000001"),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-            patch.object(router, "_read_dm_channel_cache", return_value="D0OWNER"),
-        ):
-            verdict = router.handle_mirror_question_to_slack(self._payload())
-
-        assert verdict is False
-        row = DeferredQuestion.objects.get()
-        assert row.question == "Ship it?"
-        assert row.slack_ts == "1779990001.000001"
-        assert row.slack_channel == "D0OWNER"
-
-    def test_a_slack_reply_can_resolve_the_interactive_question(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post", return_value="1779990001.000001"),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-            patch.object(router, "_read_dm_channel_cache", return_value="D0OWNER"),
-        ):
-            router.handle_mirror_question_to_slack(self._payload())
-
-        live = DeferredQuestion.live_for_reply(channel="D0OWNER", after_ts="1779990002.000001")
-        assert live is not None
-        assert live.question == "Ship it?"
-
-    def test_an_in_client_answer_resolves_the_row_so_slack_cannot_double_apply(self) -> None:
-        with (
-            patch.object(router, "_perform_slack_post", return_value="1779990001.000001"),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-            patch.object(router, "_read_dm_channel_cache", return_value="D0OWNER"),
-        ):
-            router.handle_mirror_question_to_slack(self._payload())
-
-        router.handle_resolve_answered_question(
-            {"tool_name": "AskUserQuestion", "session_id": "sess-interactive", "tool_use_id": "tu-1"}
-        )
-
-        row = DeferredQuestion.objects.get()
-        assert row.status == DeferredQuestion.STATUS_ANSWERED
         assert DeferredQuestion.live_for_reply(channel="D0OWNER", after_ts="1779990002.000001") is None
 
-    def test_the_resolver_is_registered_on_posttooluse(self) -> None:
-        assert router.handle_resolve_answered_question in router._HANDLERS["PostToolUse"]
+    def test_an_empty_question_list_is_a_no_op(self) -> None:
+        with patch.object(router, "_kick_question_drain") as kick:
+            verdict = router.handle_mirror_question_to_slack(
+                {"tool_name": "AskUserQuestion", "tool_input": {"questions": []}}
+            )
+        assert verdict is False
+        kick.assert_not_called()
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_the_in_client_answer_resolver_is_gone_from_posttooluse(self) -> None:
+        # It existed only to stop a Slack reply and an in-client answer both applying;
+        # with no attended row there is nothing for it to resolve.
+        assert not hasattr(router, "handle_resolve_answered_question")
 
 
 class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
@@ -245,59 +144,52 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
-            patch.object(router, "_perform_slack_post", return_value="1700.0001"),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-            patch.object(router, "_read_dm_channel_cache", return_value="D-cached"),
+            patch.object(router, "_kick_question_drain") as kick,
         ):
-            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-loop"))
+            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", tool_use_id="tu-9"))
         assert verdict is True
         out = json.loads(self.drain_stdout().strip())
         assert out["permissionDecision"] == "deny"
         row = DeferredQuestion.objects.latest("created_at")
         assert f"#{row.pk}" in out["permissionDecisionReason"]
         assert "additionalContext" in out["permissionDecisionReason"]
-        assert row.slack_ts == "1700.0001"
-        assert row.slack_channel == "D-cached"
+        assert row.slack_ts == "", "the hook must not post; the drain stamps the coordinates"
         assert row.generation == 1
+        assert row in DeferredQuestion.unmirrored_pending()
+        kick.assert_called_once_with(row.stable_notify_ref)
 
-    def test_live_user_turn_mirrors_without_deny(self) -> None:
+    def test_live_user_turn_renders_without_deny_or_delivery(self) -> None:
         self._pin_state_dir()
         with (
             patch.object(router, "_is_live_user_turn", return_value=True),
             patch.object(router, "_session_drives_loop", return_value=True),
-            patch.object(router, "_perform_slack_post", return_value="1700.0002") as mock_post,
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_kick_question_drain") as kick,
         ):
             verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-live"))
         assert verdict is False
         assert self.drain_stdout().strip() == ""
-        mock_post.assert_called_once()
-        # #3642: the interactive arm records the question too, so Slack can answer it.
-        assert DeferredQuestion.objects.count() == 1
+        kick.assert_not_called()
+        assert DeferredQuestion.objects.count() == 0
 
-    def test_attended_non_owner_turn_mirrors_without_deny(self) -> None:
+    def test_attended_non_owner_turn_renders_without_deny_or_delivery(self) -> None:
         self._pin_state_dir()
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=False),
-            patch.object(router, "_perform_slack_post", return_value="1700.0003") as mock_post,
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_kick_question_drain") as kick,
         ):
             verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-attended"))
         assert verdict is False
         assert self.drain_stdout().strip() == ""
-        mock_post.assert_called_once()
-        # #3642: the interactive arm records the question too, so Slack can answer it.
-        assert DeferredQuestion.objects.count() == 1
+        kick.assert_not_called()
+        assert DeferredQuestion.objects.count() == 0
 
     def test_supersession_marks_prior_generation_stale(self) -> None:
         self._pin_state_dir()
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
-            patch.object(router, "_perform_slack_post", side_effect=["1700.0001", "1700.0005"]),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
-            patch.object(router, "_read_dm_channel_cache", return_value="D-cached"),
+            patch.object(router, "_kick_question_drain"),
         ):
             router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
             self.drain_stdout()
@@ -316,28 +208,13 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
-            patch.object(router, "_capture_and_defer_question", return_value=None),
-            patch.object(router, "_perform_slack_post", return_value="1700.0001"),
-            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_capture_and_defer_question", return_value=(None, "")),
+            patch.object(router, "_kick_question_drain") as kick,
         ):
             verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-loop"))
         assert verdict is False
         assert self.drain_stdout().strip() == ""
-
-
-class TestRouterDomainWiring(TestCase):
-    """The router owns the platform→domain edges the leaf must not carry.
-
-    The ``teatree.hooks.slack_mirror`` leaf is a pure platform leaf, so the
-    Slack ``post`` (``teatree.backends.slack``) and the audio enricher
-    (``teatree.core.speak``) are built HERE and injected. These pin that wiring.
-    """
-
-    def test_http_poster_is_slack_client_post_with_no_retry(self) -> None:
-        poster = router._slack_http_poster()
-        client = poster.__self__
-        assert client._max_retries == 0
-        assert client._timeout == pytest.approx(wiring._SLACK_POST_TIMEOUT_SECONDS)
+        kick.assert_not_called()
 
 
 class TestHooksJsonWiring(TestCase):
@@ -349,12 +226,12 @@ class TestHooksJsonWiring(TestCase):
         assert "AskUserQuestion" in pre_matchers
         assert "AskUserQuestion" not in post_matchers
 
-    def test_askuserquestion_hook_timeout_allows_sync_post(self) -> None:
+    def test_askuserquestion_hook_timeout_allows_the_durable_capture(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
         hooks_config = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         ask_entry = next(
             entry for entry in hooks_config["hooks"]["PreToolUse"] if entry.get("matcher") == "AskUserQuestion"
         )
-        # Synchronous post needs to fit pass-show + (cache hit) chat.postMessage
-        # under the timeout. 3s was too tight; 5s+ keeps a safety margin.
+        # The hook bootstraps Django and writes the row; delivery is detached, so the
+        # budget covers the ORM write rather than a Slack round trip.
         assert ask_entry["hooks"][0]["timeout"] >= 5
