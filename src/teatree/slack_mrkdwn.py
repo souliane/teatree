@@ -24,7 +24,7 @@ TokenResolver = Callable[[int], str | None]
 
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-_MRKDWN_LINK_RE = re.compile(r"<https?://[^\s|>]+\|[^>]+>")
+_MRKDWN_LINK_RE = re.compile(r"<https?://[^\s|>]+\|([^>]+)>")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _BARE_MR_RE = re.compile(r"(?<![A-Za-z0-9_/])!(\d+)(?![A-Za-z0-9_])")
 _BARE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_/])#(\d+)(?![A-Za-z0-9_])")
@@ -46,7 +46,8 @@ WRAP_WIDTH = 90
 # conversion runs before any range check could reject the index.
 _PLACEHOLDER_RE = re.compile(r"\x00(\d{1,9})\x00")
 _LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+)")
-_NEVER_WRAPPED_PREFIXES = ("#",)
+# Whitespace is what separates a heading from the `#4665` issue ref teatree writes constantly.
+_HEADING_RE = re.compile(r"#{1,6}\s")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
 # Lowercased abbreviation guard. Honorifics (Dr./Mr./Mrs./Ms./Prof./St.)
 # are deliberately NOT in this set: it is matched case-insensitively, so
@@ -381,6 +382,30 @@ def _stash_unwrappable(text: str, protected: list[str]) -> str:
     return text
 
 
+def _substitute_placeholders(text: str, resolve: Callable[[str], str], protected: list[str]) -> str:
+    """Apply *resolve* to every placeholder, repeatedly, until the text settles.
+
+    ``_stash_unwrappable`` stashes inner-first, so a stashed span can embed a
+    placeholder of its own: an inline code span inside a link label, or a bare
+    URL that swallowed a marker (NUL is not one of the characters that ends
+    one). A single pass reinstates the outer span with the inner marker still
+    in it, deleting the inner span and putting raw NULs on the wire. A span at
+    index ``i`` can only carry markers stashed before it, so the nesting is
+    strictly decreasing and one pass per stashed span reaches the fixpoint.
+    """
+
+    def _substitute(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return resolve(protected[index]) if index < len(protected) else match.group(0)
+
+    for _ in range(len(protected) + 1):
+        substituted = _PLACEHOLDER_RE.sub(_substitute, text)
+        if substituted == text:
+            break
+        text = substituted
+    return text
+
+
 def _restore_placeholders(text: str, protected: list[str]) -> str:
     """Put every stashed span back, leaving an index we never issued as body text.
 
@@ -394,17 +419,23 @@ def _restore_placeholders(text: str, protected: list[str]) -> str:
     see the accepted-behaviour tests. Closing that needs an unforgeable
     sentinel, which no in-band marker can be.
     """
+    return _substitute_placeholders(text, lambda span: span, protected)
 
-    def _restore(match: re.Match[str]) -> str:
-        index = int(match.group(1))
-        return protected[index] if index < len(protected) else match.group(0)
 
-    return _PLACEHOLDER_RE.sub(_restore, text)
+def _rendered_span(span: str) -> str:
+    """What Slack actually shows for a stashed span — a link renders as its label alone."""
+    link = _MRKDWN_LINK_RE.fullmatch(span)
+    return link.group(1) if link else span
 
 
 def _display_len(text: str, protected: list[str]) -> int:
-    """Length of *text* as Slack renders it — placeholders count as their content."""
-    return len(_restore_placeholders(text, protected))
+    """Length of *text* as Slack renders it, where a link costs its label, not its URL.
+
+    Teatree's own reference convention puts a titled link on almost every line,
+    so measuring the raw ``<url|label>`` splits lines the reader sees far under
+    the limit — worse than not wrapping them at all.
+    """
+    return len(_substitute_placeholders(text, _rendered_span, protected))
 
 
 def _wrap_line(line: str, protected: list[str], width: int) -> str:
@@ -413,7 +444,7 @@ def _wrap_line(line: str, protected: list[str], width: int) -> str:
         return line
     stripped = line.lstrip()
     # A table row's columns are space-aligned, so any break destroys the alignment.
-    if not stripped or stripped.startswith(_NEVER_WRAPPED_PREFIXES) or "|" in line:
+    if not stripped or _HEADING_RE.match(stripped) or "|" in line:
         return line
     indent = line[: len(line) - len(stripped)]
     marker, body = _split_list_or_quote_marker(stripped)
