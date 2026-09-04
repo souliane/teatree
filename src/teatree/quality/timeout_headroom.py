@@ -47,6 +47,8 @@ class CeilingPressure:
 @dataclasses.dataclass(frozen=True)
 class HeadroomReport:
     pressured: tuple[CeilingPressure, ...]
+    # Past the band yet absent from `pressured` — the marker path working, which absence alone cannot show.
+    shielded: tuple[CeilingPressure, ...]
     judged: int
     unresolved_ceilings: int
 
@@ -74,6 +76,7 @@ def measure_timeout_headroom(repo: Path) -> HeadroomReport | None:
     candidates = {node_id: seconds for node_id, seconds in recorded.items() if seconds >= TIGHT_FRACTION * lane_ceiling}
 
     pressured: list[CeilingPressure] = []
+    shielded: list[CeilingPressure] = []
     unresolved: set[str] = set()
     facts: dict[str, _FileFacts | None] = {}
     for node_id, seconds in candidates.items():
@@ -90,9 +93,17 @@ def measure_timeout_headroom(repo: Path) -> HeadroomReport | None:
         ceiling = stated.seconds or lane_ceiling
         if seconds >= TIGHT_FRACTION * ceiling:
             pressured.append(CeilingPressure(node_id=node_id, seconds=seconds, ceiling=ceiling))
+        elif ceiling > lane_ceiling:
+            shielded.append(CeilingPressure(node_id=node_id, seconds=seconds, ceiling=ceiling))
 
     pressured.sort(key=lambda pressure: (-pressure.consumed, pressure.node_id))
-    return HeadroomReport(pressured=tuple(pressured), judged=len(recorded), unresolved_ceilings=len(unresolved))
+    shielded.sort(key=lambda pressure: (-pressure.consumed, pressure.node_id))
+    return HeadroomReport(
+        pressured=tuple(pressured),
+        shielded=tuple(shielded),
+        judged=len(recorded),
+        unresolved_ceilings=len(unresolved),
+    )
 
 
 def _lane_ceiling(pyproject: Path) -> float | None:

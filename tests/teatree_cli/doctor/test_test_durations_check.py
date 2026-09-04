@@ -101,8 +101,10 @@ def _headroom(report: HeadroomReport | None):
     )
 
 
-def _report(*pressured: CeilingPressure, unresolved: int = 0) -> HeadroomReport:
-    return HeadroomReport(pressured=pressured, judged=100, unresolved_ceilings=unresolved)
+def _report(
+    *pressured: CeilingPressure, unresolved: int = 0, shielded: tuple[CeilingPressure, ...] = ()
+) -> HeadroomReport:
+    return HeadroomReport(pressured=pressured, shielded=shielded, judged=100, unresolved_ceilings=unresolved)
 
 
 class TestTimeoutHeadroomDoctorCheck:
@@ -119,6 +121,22 @@ class TestTimeoutHeadroomDoctorCheck:
         assert "WARN" in out
         assert "FAIL" not in out
         assert "tests/test_a.py::test_slow" in out
+
+    def test_a_shielded_test_is_counted_beside_the_squeeze_it_is_not(self, capsys, tmp_path: Path) -> None:
+        squeezed = CeilingPressure(node_id="tests/test_a.py::test_slow", seconds=56.85, ceiling=60.0)
+        covered = CeilingPressure(node_id="tests/test_b.py::test_slow", seconds=100.0, ceiling=240.0)
+        with _repo_found(tmp_path), _headroom(_report(squeezed, shielded=(covered,))):
+            assert check_test_timeout_headroom() is True
+        out = capsys.readouterr().out
+        assert "1 more run past" in out
+        assert "state their own higher ceiling" in out
+
+    def test_a_healthy_run_stays_silent_even_with_shielded_tests(self, capsys, tmp_path: Path) -> None:
+        """The count is context for a report already being printed, never a reason to start one."""
+        covered = CeilingPressure(node_id="tests/test_b.py::test_slow", seconds=100.0, ceiling=240.0)
+        with _repo_found(tmp_path), _headroom(_report(shielded=(covered,))):
+            assert check_test_timeout_headroom() is True
+        assert capsys.readouterr().out == ""
 
     def test_a_recorded_over_run_fails_and_names_the_test(self, capsys, tmp_path: Path) -> None:
         over = CeilingPressure(node_id="tests/test_b.py::test_slow", seconds=180.2, ceiling=180.0)

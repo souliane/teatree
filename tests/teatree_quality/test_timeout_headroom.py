@@ -1,27 +1,17 @@
 """How much room recorded tests have left against their own ceilings (#4048)."""
 
 import json
-import tomllib
 from pathlib import Path
 
 import pytest
 
-from teatree.quality.durations_file import DURATIONS_PATH, DurationsUnreadableError, read_durations
+from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.timeout_headroom import TIGHT_FRACTION, measure_timeout_headroom
 
 _PYPROJECT = """
 [tool.pytest.ini_options]
 timeout = 60
 """
-
-# The tests #4369 measured at 90-95% of the lane ceiling, each now stating its own.
-_CEILING_STATED_IN_SOURCE = (
-    "tests/test_cli_tools.py::TestValidateMrCommand::test_runs_to_completion_in_a_fresh_shell_without_django_preset",
-    (
-        "tests/teatree_cli/review/test_review_inline_post.py"
-        "::TestInlinePostVerifiesNewPath::test_position_null_refuses_success"
-    ),
-)
 
 
 def _repo(tmp_path: Path, *, sources: dict[str, str], durations: dict[str, float], pyproject: str = _PYPROJECT) -> Path:
@@ -45,6 +35,15 @@ import pytest
 
 
 @pytest.mark.timeout(240)
+def test_slow() -> None:
+    pass
+"""
+
+_MARKED_AT_LANE = """
+import pytest
+
+
+@pytest.mark.timeout(60)
 def test_slow() -> None:
     pass
 """
@@ -451,6 +450,87 @@ class TestTheFirstStoredMarkWins:
         ]
 
 
+class TestShieldedByItsOwnCeiling:
+    """`shielded` is what the report knows that `pressured` cannot say: the marker path is working."""
+
+    def test_a_marked_test_past_the_lane_band_is_shielded_not_pressured(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, sources={"tests/test_a.py": _MARKED}, durations={"tests/test_a.py::test_slow": 100.0})
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.shielded] == [
+            ("tests/test_a.py::test_slow", 240.0)
+        ]
+        assert report.pressured == ()
+
+    def test_an_unmarked_test_past_the_band_is_pressured_and_shields_nothing(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, sources={"tests/test_a.py": _PLAIN}, durations={"tests/test_a.py::test_slow": 56.85})
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [pressure.node_id for pressure in report.pressured] == ["tests/test_a.py::test_slow"]
+        assert report.shielded == ()
+
+    def test_a_marker_restating_the_lane_value_shields_nothing(self, tmp_path: Path) -> None:
+        """A ceiling that raises nothing is not protection — it is the lane value written twice."""
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MARKED_AT_LANE},
+            durations={"tests/test_a.py::test_slow": 56.85},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [pressure.node_id for pressure in report.pressured] == ["tests/test_a.py::test_slow"]
+        assert report.shielded == ()
+
+    def test_a_raised_ceiling_the_test_is_still_eating_is_not_shielding_it(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, sources={"tests/test_a.py": _MARKED}, durations={"tests/test_a.py::test_slow": 240.2})
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [pressure.node_id for pressure in report.over_ceiling] == ["tests/test_a.py::test_slow"]
+        assert report.shielded == ()
+
+    def test_a_stale_key_shields_nothing_so_it_cannot_fake_a_live_marker(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MARKED},
+            durations={"tests/test_a.py::test_under_its_old_name": 100.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert report.shielded == ()
+        assert report.pressured == ()
+
+    def test_a_marked_test_below_the_band_is_never_a_candidate(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path, sources={"tests/test_a.py": _MARKED}, durations={"tests/test_a.py::test_slow": 1.0})
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert report.shielded == ()
+        assert report.pressured == ()
+
+    def test_a_ceiling_named_rather_than_written_shields_nothing(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _NAMED_CEILING},
+            durations={"tests/test_a.py::test_slow": 100.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert report.shielded == ()
+        assert report.unresolved_ceilings == 1
+
+    def test_the_worst_squeeze_is_named_first(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MARKED, "tests/test_b.py": _MARKED},
+            durations={"tests/test_a.py::test_slow": 100.0, "tests/test_b.py::test_slow": 170.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [pressure.node_id for pressure in report.shielded] == [
+            "tests/test_b.py::test_slow",
+            "tests/test_a.py::test_slow",
+        ]
+
+
 class TestAgainstThisRepo:
     """The guard must be non-vacuous on the real tree it ships in."""
 
@@ -459,32 +539,19 @@ class TestAgainstThisRepo:
         assert report is not None
         assert report.judged > 0
 
-    @pytest.mark.parametrize("node_id", _CEILING_STATED_IN_SOURCE)
-    def test_a_test_recorded_past_the_tight_band_states_its_own_ceiling(self, node_id: str) -> None:
-        """#4369: each of these is recorded past the lane's tight band and stays off the report only via its marker.
+    def test_a_recorded_test_is_kept_off_the_report_by_its_own_stated_ceiling(self) -> None:
+        """Derived from the cassette, never pinned in source (#4664 item 4, #4670).
 
-        Deliberately per-node rather than a blanket ``pressured == ()``: the recorded
-        seconds move only when a durations refresh lands, so a suite-wide assertion
-        would red every PR the first time an unrelated test drifted — the failure
-        :mod:`teatree.quality.timeout_headroom` exists to remove, which is why the
-        doctor check itself warns rather than fails. A refresh that retires one of
-        these keys leaves nothing here to guard, and the assertion says so.
+        ``refresh-durations`` stages only ``dev/.test_durations``, so a node list
+        hardcoded here desynchronises on every refresh — twice now, the second time
+        reddening six CI jobs on a PR that changed no source at all. The cassette owns
+        which tests are slow; all this asserts is that the marker path is live on
+        whatever the cassette currently says, which is the one claim a refresh cannot
+        invalidate while any marked slow test survives.
         """
-        repo = Path(__file__).resolve().parents[2]
-        seconds = read_durations(repo / DURATIONS_PATH).get(node_id)
-        if seconds is None:
-            pytest.skip(f"{node_id} is no longer recorded, so no ceiling of its own is under test")
-
-        lane = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"][
-            "timeout"
-        ]
-        assert seconds >= TIGHT_FRACTION * lane, (
-            f"{node_id} no longer runs past {TIGHT_FRACTION:.0%} of the {lane:g}s lane ceiling, so this "
-            "assertion proves nothing about its marker — drop it rather than leave it passing vacuously."
-        )
-        report = measure_timeout_headroom(repo)
+        report = measure_timeout_headroom(Path(__file__).resolve().parents[2])
         assert report is not None
-        assert node_id not in {pressure.node_id for pressure in report.pressured}, (
-            f"{node_id} is judged against the {lane:g}s lane ceiling again — its own `@pytest.mark.timeout` "
-            "is what keeps a contended shard from reddening a PR that never touched it (#4369)."
+        assert report.shielded, (
+            "no recorded test runs past the tight band while its own `@pytest.mark.timeout` "
+            "keeps it off the report, so nothing here exercises the marker path (#4369)."
         )

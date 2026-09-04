@@ -182,6 +182,11 @@ def check_test_timeout_headroom() -> bool:
             "Make each faster, or state its own `@pytest.mark.timeout` with the measurement."
         )
     _echo_pressure(report.pressured)
+    if report.shielded:
+        typer.echo(
+            f"      ({len(report.shielded)} more run past {timeout_headroom.TIGHT_FRACTION:.0%} of the lane "
+            "value but state their own higher ceiling.)"
+        )
     if report.unresolved_ceilings:
         typer.echo(
             f"      ({report.unresolved_ceilings} file(s) name their ceiling rather than writing it, "
