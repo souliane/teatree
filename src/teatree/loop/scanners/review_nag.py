@@ -455,7 +455,10 @@ def _approval_state(host: CodeHostBackend, slug: str, pr_id: int) -> ApprovalRea
     except Exception as exc:  # noqa: BLE001 — an approval probe must never crash a tick.
         logger.warning("review_nag: approval probe failed for %s#%s: %s", slug, pr_id, exc)
         return ApprovalReadState.UNKNOWN
-    return ApprovalReadState.APPROVED if state.get("approved_by") else ApprovalReadState.NOT_APPROVED
+    # ``approvals_left`` — not ``approved_by`` — is the field both backends populate
+    # correctly: GitHub hard-codes ``approved_by=[]`` unconditionally (#8), so reading its
+    # truthiness misreads every GitHub-backed approval as NOT_APPROVED and nags forever.
+    return ApprovalReadState.APPROVED if state["approvals_left"] <= 0 else ApprovalReadState.NOT_APPROVED
 
 
 def _engineers_mention(messaging: MessagingBackend) -> str:

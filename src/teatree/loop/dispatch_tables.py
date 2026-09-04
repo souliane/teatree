@@ -348,6 +348,9 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # Mechanical-only (the scanner flags open sessions; the executor advances the
     # durable FSM), never an agent — the observe loop writes no fix.
     "ci_eval_heal.advance": ("mechanical", "advance_ci_eval_heal"),
+    # #4451: the scanner flags stale ratchet pins on the core clone; the executor
+    # only reports them. Never an agent — nothing here writes a fix.
+    "ratchet.stale_pins": ("mechanical", "report_ratchet_staleness"),
 }
 
 
