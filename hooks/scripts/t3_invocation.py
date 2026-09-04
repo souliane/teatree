@@ -31,14 +31,28 @@ names the layout that did not hold, and the call proceeds with the inherited
 directory rather than being blocked. A gate that cannot locate its own tree must
 not become a gate that refuses everything.
 
+Pinning that directory is only half the guarantee: the entry point translates a
+host cwd against a fixed table of worktree roots, and this package's own checkout
+is absent from that table even when the container mounts it 1:1 — so the pin lands
+on a directory the entry point then refuses, and the gate fails closed anyway.
+:func:`t3_invocation_env` closes that half by handing over
+``TEATREE_INVOCATION_CWD``, the escape the refusal itself documents, for a
+directory :mod:`hooks.scripts.container_visibility` can PROVE the container reaches.
+A directory it cannot vouch for is declared to nothing and stays refused, which is
+the leak guard doing its job rather than a gap in it.
+
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
-``teatree`` is importable, so the module top imports only stdlib.
+``teatree`` is importable, so the module top imports only stdlib plus the
+stdlib-only ``container_visibility`` sibling.
 """
 
+import os
 import shutil
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `t3` CLI
 import sys
 from pathlib import Path
+
+from hooks.scripts.container_visibility import container_path
 
 # Alias the bare and ``hooks.scripts.`` identities so a module importing one and a
 # test patching the other operate on ONE module object.
@@ -85,6 +99,26 @@ def t3_invocation_cwd() -> str | None:
     return None
 
 
+def t3_invocation_env(cwd: str | None) -> dict[str, str] | None:
+    """The environment a ``t3`` shell-out from *cwd* needs, or ``None`` to inherit.
+
+    The containerized entry point refuses a working directory absent from its
+    translation table, so a hook whose checkout is not a worktree root is refused
+    for a reason unrelated to what it asked. ``TEATREE_INVOCATION_CWD`` is the
+    escape that entry point documents, and it is set only for a directory a bind
+    mount proves the container reaches — never asserted, because asserting it is
+    how a ``t3`` call silently operates on a tree nobody meant.
+
+    ``None`` leaves the environment inherited, which keeps the refusal.
+    """
+    if cwd is None:
+        return None
+    reachable = container_path(Path(cwd))
+    if reachable is None:
+        return None
+    return {**os.environ, "TEATREE_INVOCATION_CWD": reachable}
+
+
 def t3_available() -> bool:
     """Whether the ``t3`` CLI is on this hook's (restricted) PATH."""
     return shutil.which(T3_BINARY) is not None
@@ -116,6 +150,7 @@ def run_t3(
     *cwd* overrides the pinned default for a caller whose subject IS a directory.
     Omitting it is what makes the session directory unreachable.
     """
+    resolved = str(cwd) if cwd is not None else t3_invocation_cwd()
     return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
         argv,
         input=stdin_text,
@@ -123,7 +158,8 @@ def run_t3(
         text=True,
         check=False,
         timeout=timeout,
-        cwd=str(cwd) if cwd is not None else t3_invocation_cwd(),
+        cwd=resolved,
+        env=t3_invocation_env(resolved),
     )
 
 
@@ -134,11 +170,13 @@ def spawn_t3_detached(argv: list[str]) -> None:
     cwd is pinned for the same reason as :func:`run_t3`: an inherited session
     directory turns the spawn into a refusal nobody ever sees.
     """
+    cwd = t3_invocation_cwd()
     subprocess.Popen(  # noqa: S603 — detached, fire-and-forget; trusted internal CLI
         argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
-        cwd=t3_invocation_cwd(),
+        cwd=cwd,
+        env=t3_invocation_env(cwd),
     )
