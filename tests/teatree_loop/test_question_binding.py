@@ -425,3 +425,28 @@ class TestAResurfacedQuestionIsAnswerable:
 
         row.refresh_from_db()
         assert row.answer_text == "use postgres-1"
+
+
+class TestReplyThreadedUnderANonQuestion:
+    """A reply that named a thread has already stated its referent (#4527).
+
+    ``sole_for_reply`` is the fallback for a TOP-LEVEL reply — with a single live
+    mirror such a reply cannot be for anything else. A reply carrying a
+    ``thread_ts`` that matches no mirror is a different message: it answers the
+    watchdog/info DM it is threaded under. Binding it to the sole live question
+    consumed the owner's INSTRUCTION as that question's answer and ✅-acked it, so
+    the instruction reached no consumer at all — the silent drop that lost nine
+    owner messages in one audited fortnight.
+    """
+
+    def test_instruction_threaded_under_an_info_dm_binds_nothing(self) -> None:
+        only = _question("Which DB host?", slack_ts="100.0", generation=1)
+        reply = _reply("fix all of them", slack_ts="400.0", thread_ts="250.0")
+
+        backend = _scan()
+
+        only.refresh_from_db()
+        reply.refresh_from_db()
+        assert only.is_pending, "an instruction threaded under a non-question was applied as its answer"
+        assert reply.loop_replied_at is None, "the instruction was claimed, so the cycle never dispatched it"
+        assert backend.react_calls == [], "the owner was ✅-acked for an answer nobody recorded"

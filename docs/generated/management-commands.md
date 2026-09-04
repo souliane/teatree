@@ -601,6 +601,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
+| `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
 | `plan-reconcile-inflight` | Retroactively advance STARTED tickets to PLANNED after the gate was added |

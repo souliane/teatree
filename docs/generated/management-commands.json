@@ -1215,6 +1215,10 @@
           "name": "fix-record-override"
         },
         {
+          "help": "List every non-terminal ticket intake can never find, oldest lane first (#4527)",
+          "name": "dead-rows"
+        },
+        {
           "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
           "name": "plan-bypass"
         },

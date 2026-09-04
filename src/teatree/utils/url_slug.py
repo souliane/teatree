@@ -28,6 +28,17 @@ def is_synthetic_loop_umbrella_url(issue_url: str) -> bool:
     return issue_url.partition("#")[0] == SYNTHETIC_LOOP_UMBRELLA_URL
 
 
+def slack_conversation_anchor(*, channel: str, slack_ts: str) -> str:
+    """The synthetic ``issue_url`` a Slack-originated conversation lane is keyed on (#4527).
+
+    The fully-qualified anchor is the lane's identity — never the bare ``slack_ts``,
+    which collides across channels. The trailing ``/dm`` is load-bearing:
+    ``derive_issue_number`` reads trailing digits, so a fragment ending in the ts
+    would stamp the Slack timestamp as a forge issue number.
+    """
+    return f"{SYNTHETIC_LOOP_UMBRELLA_URL}#slack={channel}/{slack_ts}/dm"
+
+
 _GITHUB_RE = re.compile(r"^/(?P<slug>[^/]+/[^/]+)/(?:issues|pull|pulls)/\d+/?$")
 _GITLAB_RE = re.compile(r"^/(?P<slug>.+?)/-/(?:issues|work_items|merge_requests)/\d+/?$")
 

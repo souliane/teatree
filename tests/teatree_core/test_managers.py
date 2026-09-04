@@ -24,6 +24,42 @@ class TestTicketQuerySet(TestCase):
 
         assert list(Ticket.objects.in_flight()) == [active]
 
+    def test_unfindable_returns_only_rows_intake_can_never_reach(self) -> None:
+        unreachable = Ticket.objects.create(state=Ticket.State.STARTED, short_description="a lost request")
+        Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            issue_url="https://github.com/souliane/teatree/issues/4527",
+            short_description="a real backlog item",
+        )
+
+        assert Ticket.objects.unfindable() == [unreachable]
+
+    def test_unfindable_sorts_the_row_with_no_task_at_all_first(self) -> None:
+        """No task is the most provably dead shape, so it must not sort last by accident."""
+        never_dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="never ran")
+        dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="ran once")
+        session = Session.objects.create(ticket=dispatched, agent_id="answering")
+        Task.objects.create(ticket=dispatched, session=session, phase="answering", subject="s")
+
+        assert Ticket.objects.unfindable() == [never_dispatched, dispatched]
+
+    def test_a_conversation_row_that_placed_its_work_is_not_a_dead_row(self) -> None:
+        """The lane succeeded: it filed the findable issue and recorded where it went.
+
+        The bookkeeping row stays non-admissible by design, so without this the mechanism
+        reports its own successes and the WARN grows with every inbound DM until the
+        genuinely dead rows are buried in it.
+        """
+        handled = Ticket.objects.create(
+            state=Ticket.State.STARTED,
+            short_description="answered and filed",
+            extra={"slack_answer": {"work_issue_url": "https://github.com/souliane/teatree/issues/7100"}},
+        )
+        dropped = Ticket.objects.create(state=Ticket.State.STARTED, short_description="answered, filed nothing")
+
+        assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
+        assert handled not in Ticket.objects.unfindable()
+
 
 class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_delivered_and_ignored_tickets(self) -> None:

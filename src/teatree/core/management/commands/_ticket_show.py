@@ -1,16 +1,18 @@
-"""``ticket show`` + ``ticket expedite`` — read/set a ticket's state (#2009, PR-07).
+"""``ticket show`` / ``expedite`` / ``dead-rows`` — read or set a ticket's state (#2009).
 
 Split out of ``ticket.py`` as a :class:`TicketShowCommands` mixin (the same MRO
 split as ``RubricCommands``) so the already-cap-bound command god-module does not
 grow. Holds ``show`` (per-phase ``attempt N/max`` budget over the ticket's
-``TaskAttempt`` rows) and ``expedite`` (the release-blocker flag).
+``TaskAttempt`` rows), ``expedite`` (the release-blocker flag), and ``dead-rows``
+(the rows no forge query can reach, #4527).
 """
 
-from typing import Annotated, TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import TaskAttempt, Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -31,6 +33,13 @@ class TicketShowResult(TypedDict):
     issue_url: str
     expedited: bool
     phases: list[PhaseBudgetRow]
+
+
+class DeadRowResult(TypedDict):
+    ticket_id: int
+    state: str
+    overlay: str
+    held_text: str
 
 
 class ExpediteResult(TypedDict, total=False):
@@ -86,6 +95,12 @@ def render_ticket_show(result: TicketShowResult) -> str:
     return "\n".join(lines)
 
 
+def _render_dead_rows(rows: list[DeadRowResult]) -> str:
+    if not rows:
+        return "  no unfindable ticket rows\n"
+    return "".join(f"  ticket {row['ticket_id']} ({row['state']}): {row['held_text']}\n" for row in rows)
+
+
 class TicketShowCommands(TyperCommand):
     """The ``ticket show`` command, mounted via MRO inheritance (#2009).
 
@@ -120,6 +135,38 @@ class TicketShowCommands(TyperCommand):
         }
         self.stdout.write(render_ticket_show(result))
         return result
+
+    @command(name="dead-rows")
+    def dead_rows(
+        self,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
+    ) -> list[DeadRowResult]:
+        """List every non-terminal ticket intake can never find, oldest lane first (#4527).
+
+        The enumeration behind the doctor's dead-ticket WARN, which names only the
+        first few. Read-only: each row records a request someone was told is tracked,
+        so whether to re-file it or let it go is the operator's call, never this
+        command's.
+        """
+        rows: list[DeadRowResult] = [
+            {
+                "ticket_id": int(ticket.pk),
+                "state": ticket.state,
+                "overlay": ticket.overlay,
+                "held_text": ticket.recorded_request(),
+            }
+            for ticket in Ticket.objects.unfindable()
+        ]
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_dead_rows(rows),
+        )
+        return rows
 
     @command()
     def expedite(
