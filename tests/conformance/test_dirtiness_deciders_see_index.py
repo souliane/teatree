@@ -22,11 +22,11 @@ from django.test import TestCase
 
 from teatree.cli.update import _tracked_dirty_paths as update_tracked_dirty_paths
 from teatree.core.cleanup.cleanup import _EffectiveTarget
+from teatree.core.cleanup.orphan_checkouts import orphan_is_dirty
 from teatree.core.cleanup.unshipped_work import probe_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.handover_orchestration import _has_pending_work
 from teatree.core.management.commands._workspace.cleanup import _worktree_clean
-from teatree.core.management.commands._workspace.orphan_worktrees import _is_dirty
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import worktree_tracked_dirty_path
 from teatree.loop.scanners.pull_main_clone import _tracked_dirty_paths as pull_tracked_dirty_paths
@@ -68,7 +68,7 @@ class TestEveryDirtinessDeciderSeesTheIndex(TestCase):
                 real_uncommitted_reasons(str(self.checkout), target)
             ),
             "cleanup.unshipped_work.probe_unshipped_work": lambda: probe_unshipped_work(self.checkout).exists,
-            "_workspace.orphan_worktrees._is_dirty": lambda: _is_dirty(str(self.checkout)),
+            "cleanup.orphan_checkouts.orphan_is_dirty": lambda: orphan_is_dirty(str(self.checkout)),
             "_workspace.cleanup._worktree_clean": lambda: not _worktree_clean(str(self.checkout)),
             "models.ticket_worktree_checks.worktree_tracked_dirty_path": lambda: bool(
                 worktree_tracked_dirty_path(self._worktree_row())

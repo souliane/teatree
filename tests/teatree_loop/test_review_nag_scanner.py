@@ -120,6 +120,7 @@ class FakeHost:
     open_state: Any = PrOpenState.OPEN
     draft_state: DraftState = DraftState.NOT_DRAFT
     approved_by: list[str] = field(default_factory=list)
+    approvals_left: int | None = None
     raise_on_lookup: Exception | None = None
     raise_on_approvals: Exception | None = None
     user: str = ""
@@ -139,8 +140,9 @@ class FakeHost:
         _ = (repo, pr_iid)
         if self.raise_on_approvals is not None:
             raise self.raise_on_approvals
+        left = (0 if self.approved_by else 1) if self.approvals_left is None else self.approvals_left
         return {
-            "approvals_left": 0 if self.approved_by else 1,
+            "approvals_left": left,
             "approved_by": self.approved_by,
             "unresolved_resolvable": 0,
         }
@@ -301,6 +303,20 @@ class TestMrStateGate(_EnableReviewNagMixin, TestCase):
         post = _seed(days_old=3.0)
         slack = FakeSlack()
         signals = ReviewNagScanner(messaging=slack, host=FakeHost(approved_by=["reviewer"])).scan()
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.done_at is None  # left open so a later merge-react still fires
+        assert [s.kind for s in signals] == ["review_nag.mr_approved"]
+
+    def test_github_shaped_approval_with_an_empty_approved_by_list_is_skipped_not_closed(self) -> None:
+        """GitHub's ``get_mr_approvals`` hard-codes ``approved_by=[]`` always (#8).
+
+        Only ``approvals_left`` carries the real verdict there. Reading ``approved_by``
+        truthiness misreads every GitHub-backed approval as NOT_APPROVED and nags forever.
+        """
+        post = _seed(days_old=3.0)
+        slack = FakeSlack()
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(approved_by=[], approvals_left=0)).scan()
         assert slack.posts == []
         post.refresh_from_db()
         assert post.done_at is None  # left open so a later merge-react still fires

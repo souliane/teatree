@@ -48,6 +48,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from tests._generated_artifacts import DURATIONS_CASSETTE
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER_TOML = Path(__file__).resolve().parent / "anchor_prose_pegs.toml"
 
@@ -130,15 +132,18 @@ def tracked_files(*, repo_root: Path = _REPO_ROOT) -> list[Path]:
 
 
 def doc_surface_files(anchor: str, *, repo_root: Path = _REPO_ROOT) -> list[Path]:
-    """Tracked files mentioning *anchor*, minus ``tests/**``.
+    """Tracked files mentioning *anchor*, minus ``tests/**`` and the durations cassette.
 
     The ledger's own two files live under ``tests/``, so this exclusion is also
-    what stops the ledger digesting its own digests — there is no fixed point.
+    what stops the ledger digesting its own digests — there is no fixed point. The
+    cassette is the same problem one step out: it spells the anchor only by recording
+    the node ids of those test files, so it describes no surface a human could reword.
     """
     return sorted(
         path
         for path in tracked_files(repo_root=repo_root)
-        if not path.relative_to(repo_root).as_posix().startswith("tests/")
+        if (rel := path.relative_to(repo_root).as_posix()) != DURATIONS_CASSETTE
+        and not rel.startswith("tests/")
         and anchor in path.read_text(encoding="utf-8", errors="ignore")
     )
 

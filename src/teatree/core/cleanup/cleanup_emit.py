@@ -12,10 +12,10 @@ these). ``schema_version`` is bumped on any breaking field change.
 
 ```jsonc
 {
-    "schema_version": 3,
+    "schema_version": 4,
     "path": "/abs/path/to/worktree-or-clone",       // on-disk location, "" for a bare branch/stash
     "branch": "feat-x",                             // the branch (or "stash@{N}" for a stash)
-    "kind": "worktree",                             // "worktree" | "branch" | "stash"
+    "kind": "worktree",                             // "worktree" | "orphan-worktree" | "branch" | "stash"
     "unique_commit_shas": ["<sha>", ...],           // commits whose CONTENT is not provably on target
     "uncommitted_paths": ["src/gate.py", ...],      // work-bearing files on NO ref: staged/modified/untracked
     "merged_with_post_merge_work": true,            // forge-merged BUT current tip has unique content
@@ -32,6 +32,13 @@ these). ``schema_version`` is bumped on any breaking field change.
 The skill reads ``unique_commit_shas`` + ``merged_with_post_merge_work`` to decide
 salvage-to-fresh-PR, ``banned_terms_status`` to know whether to clean before
 salvage, and ``liveness`` to defer a live item.
+
+``kind: "orphan-worktree"`` (schema 4) marks a checkout with no ``Worktree`` row — a
+dispatched agent's bare ``git worktree add``. Its DISPOSAL differs from a ledger row's
+(``git worktree remove`` / ``clean-all``, never a row teardown), and neither ``path`` nor
+``branch`` reveals that, so a consumer switching on ``"worktree"`` would silently mis-route
+it. Only work-bearing ones are emitted (:mod:`teatree.core.worktree.orphan_emit`); a clean
+one stays absent so the signal keeps its meaning.
 
 ``uncommitted_paths`` (schema 3) is the second half of "what would be lost". The
 record described COMMITS only, so a checkout whose entire delta is staged-but-
@@ -56,7 +63,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-EMIT_SCHEMA_VERSION = 3
+EMIT_SCHEMA_VERSION = 4
 
 #: The ``verdict_source`` a record naming uncommitted work always carries: no commit
 #: probe can speak for a delta that was never committed.

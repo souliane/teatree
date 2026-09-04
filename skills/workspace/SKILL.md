@@ -258,7 +258,9 @@ Docker cache is not where the disk goes. The pool of checkouts is: each carries 
 `.venv` and a `.venv-hook` at roughly 1.1 GB together, and they accumulate across every
 ticket ever worked — measured at ~82 GB across two locations on a box that was 92% full,
 about half of it in ad-hoc session checkouts (`wt-*`, `fix<NNNN>`, `cold<NNNN>`) that
-appear in **no** ledger, so `workspace emit` never surfaces them.
+appear in **no** ledger. `workspace emit` surfaces the ones holding work (#4579) — it
+unions the ledger with every unregistered checkout carrying uncommitted changes or commits
+on no remote — but a CLEAN one is deliberately absent, so emit is not a disk-usage census.
 
 The policy is enforced by the `resource_pressure` loop, not by a human running a command:
 

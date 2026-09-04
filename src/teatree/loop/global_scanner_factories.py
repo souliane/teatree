@@ -25,6 +25,7 @@ from teatree.loop.scanners import (
     LocalStackQueueDrainerScanner,
     MyPrsScanner,
     NotionViewScanner,
+    RatchetStalenessScanner,
     ResourcePressureScanner,
     ReviewerPrsScanner,
     Scanner,
@@ -303,6 +304,22 @@ def _ci_eval_heal_scanner() -> CiEvalHealScanner | None:
     it carries no overlay anchor and needs no config.
     """
     return CiEvalHealScanner()
+
+
+def _ratchet_staleness_scanner() -> RatchetStalenessScanner | None:
+    """Build the reference-ratchet staleness scanner (#4451) — the core clone gates it.
+
+    Returns ``None`` when no editable teatree clone resolves (a non-editable install
+    has no core tree to read), so the loop is silent rather than guessing at a path.
+    Like ``ci_eval_heal`` it carries no config kill-switch of its own: the default-OFF
+    ``ratchet_repair`` ``Loop`` row is the on/off decision, and while that row is
+    disabled the fan-out never calls ``build_jobs``. Read-only and overlay-agnostic —
+    the ratchet is teatree's own tree, not an overlay's.
+    """
+    repo = _resolve_t3_repo()
+    if repo is None:
+        return None
+    return RatchetStalenessScanner(repo=repo)
 
 
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:

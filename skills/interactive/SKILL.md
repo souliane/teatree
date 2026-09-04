@@ -92,7 +92,7 @@ Work is *work-bearing* from the moment it exists in the working tree. There are 
 
 Every state either advances or leaves a durable record that something else drains. Nothing may exit 0 having observed work and stored nothing.
 
-A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger, so `workspace emit` never surfaces it and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger. `workspace emit` now names it (#4579: it unions the ledger with the unregistered checkouts holding work), so it is visible — but visibility is not delivery, and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
 
 ### The mechanisms
 

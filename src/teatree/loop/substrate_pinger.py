@@ -16,7 +16,7 @@ from teatree.messaging import notify_with_fallback
 
 
 class NotifyWithFallbackSubstratePinger:
-    """Production :class:`~teatree.loop.scanners.pr_sweep.SubstratePinger` (ping-and-hold).
+    """Production :class:`~teatree.loop.scanners.pr_sweep_substrate.SubstratePinger` (ping-and-hold).
 
     The substrate-hold signal is INTERNAL (log-only) — recorded through the
     BotPing ledger under the per-diff idempotency key but never DM'd, so a hold
