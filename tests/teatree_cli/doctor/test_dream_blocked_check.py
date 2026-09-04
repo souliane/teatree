@@ -57,9 +57,13 @@ class DreamBlockedDoctorCheckTestCase(TestCase):
         assert "FAIL" in out
         assert "t3 dream run" in out
 
-    def test_a_recently_attempted_pass_reads_as_withheld(self) -> None:
+    def test_a_recently_attempted_pass_that_reached_a_verdict_reads_as_withheld(self) -> None:
+        # #4671 sharpened the premise: a recent attempt alone no longer proves withholding,
+        # because the attempt anchor is stamped BEFORE the pass and a SIGKILLed pass moves
+        # it too. Withholding is claimed only once a terminal refusal was RECORDED; the
+        # hard-FAIL verdict itself is unchanged either way.
         DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
-        DreamRunMarker.objects.mark_attempted(timezone.now())
+        DreamRunMarker.objects.mark_attempted(timezone.now(), outcome="gates_failed", failure_detail="interference")
         assert _WITHHELD_CLAIM in _blocked_output()
 
     def test_an_unattempted_pass_says_frozen_and_does_not_claim_withholding(self) -> None:
@@ -122,3 +126,38 @@ def _calls_feeding_the_exit_code() -> set[str]:
         for call in ast.walk(node.value)
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
     }
+
+
+class DreamBlockCauseAttributionTestCase(TestCase):
+    """#4671 D4 — a pass killed before any verdict must not be reported as withheld."""
+
+    def _blocked(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+
+    def test_a_recent_attempt_with_no_terminal_outcome_reads_as_killed(self) -> None:
+        # The attempt anchor is stamped BEFORE the pass (#4355), so a SIGKILLed pass still
+        # moves it. Without a terminal outcome that read as a gate refusal and sent the
+        # operator hunting a gate that never ran — the observed 10-day misdiagnosis.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(timezone.now())
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM not in out
+        assert "killed before reaching a verdict" in out
+
+    def test_a_recorded_gate_refusal_still_reads_as_withheld_and_quotes_the_gate(self) -> None:
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now(), outcome="gates_failed", failure_detail="interference FAIL (1 lost) [lost: foo.md]"
+        )
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM in out
+        assert "interference FAIL" in out
+        assert "foo.md" in out
+
+    def test_no_attempt_at_all_still_reads_as_frozen(self) -> None:
+        # Behaviour preservation: the #4355 FROZEN branch is unchanged by the new field.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+        out = _blocked_output()
+        assert "FROZEN" in out
+        assert "killed before reaching a verdict" not in out

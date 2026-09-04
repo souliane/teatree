@@ -169,7 +169,11 @@ class MemoryPhaseRunnerTestCase(TestCase):
             os.environ["T3_DREAM_DECAY"] = "0"
             os.environ.pop("T3_DREAM_REINDEX", None)
             _summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=0, dry_run=False)
-        assert "gates FAILED (consolidation)" in gate_summary
+        assert "gates FAILED" in gate_summary
+        assert "consolidation FAIL" in gate_summary
+        # #4671 D3: the clause must name the LOST pointer, not just the gate — a bare gate
+        # name is what made ten days of refusals unactionable.
+        assert "feedback_lost.md" in gate_summary
         assert passed is False
 
     def test_decay_toggle_off_archives_nothing(self) -> None:

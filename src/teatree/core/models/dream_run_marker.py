@@ -24,6 +24,14 @@ STALE_THRESHOLD_HOURS = 48
 #: blocking every pass, which nobody notices while the only signal is a WARN (#3993).
 CRITICAL_STALE_MULTIPLE = 3
 
+#: The pass reached its gates and stamped success.
+OUTCOME_STAMPED = "stamped"
+#: The pass reached a verdict and the acceptance gates REFUSED it.
+OUTCOME_GATES_FAILED = "gates_failed"
+#: The pass ran to a terminal verdict that was neither of the above (0 members, a raised
+#: pass, a broken distiller batch).
+OUTCOME_FAILED = "failed"
+
 
 class DreamRunMarkerManager(models.Manager["DreamRunMarker"]):
     """Read/write surface for the dream-run cadence + staleness alarm."""
@@ -32,18 +40,30 @@ class DreamRunMarkerManager(models.Manager["DreamRunMarker"]):
         """Stamp both attempted and succeeded at *ts* — a clean consolidation run."""
         self.update_or_create(
             name=DreamRunMarker.NAME,
-            defaults={"last_attempted_at": ts, "last_succeeded_at": ts},
+            defaults={
+                "last_attempted_at": ts,
+                "last_succeeded_at": ts,
+                "last_outcome": OUTCOME_STAMPED,
+                "last_failure_detail": "",
+            },
         )
 
-    def mark_attempted(self, ts: dt.datetime) -> None:
+    def mark_attempted(self, ts: dt.datetime, *, outcome: str = "", failure_detail: str = "") -> None:
         """Stamp the attempt at *ts* without touching ``last_succeeded_at``.
 
         A failed run bumps only the attempt timestamp, so :meth:`is_stale`
         (which keys on success) still fires when attempts keep failing.
+
+        *outcome* is the pass's TERMINAL verdict, and its ABSENCE is the load-bearing
+        signal (#4671): the attempt anchor is stamped BEFORE the pass so a SIGKILLed pass
+        still moves it (#4355), which left a killed pass indistinguishable from a gate
+        refusal — the doctor asserted "every pass is being withheld" when no verdict had
+        been reached at all. A pre-pass stamp therefore CLEARS the previous outcome, so a
+        pass that dies mid-flight leaves it blank and the killed case is nameable.
         """
         self.update_or_create(
             name=DreamRunMarker.NAME,
-            defaults={"last_attempted_at": ts},
+            defaults={"last_attempted_at": ts, "last_outcome": outcome, "last_failure_detail": failure_detail},
         )
 
     def is_stale(self, now: dt.datetime, threshold_hours: int = STALE_THRESHOLD_HOURS) -> bool:
@@ -90,6 +110,13 @@ class DreamRunMarker(models.Model):
     #: the tail is never consolidated at all; see
     #: :func:`teatree.loops.dream.distill.distill_in_batches`.
     distill_cursor = models.PositiveIntegerField(default=0)
+    #: The last pass's TERMINAL verdict, blank when it never reached one. Blank-after-an-
+    #: attempt is what distinguishes a pass SIGKILLed mid-flight from one whose gates
+    #: refused it — see :meth:`DreamRunMarkerManager.mark_attempted`.
+    last_outcome = models.CharField(max_length=32, blank=True, default="")
+    #: The failing gates' rendered detail when *last_outcome* is a refusal, so the doctor
+    #: quotes WHICH gate refused instead of sending the reader to re-run the pass.
+    last_failure_detail = models.TextField(blank=True, default="")
 
     objects: ClassVar[DreamRunMarkerManager] = DreamRunMarkerManager()
 

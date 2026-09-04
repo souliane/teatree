@@ -74,6 +74,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol
@@ -339,9 +340,79 @@ def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str])
     citation = normalize_ws(cluster.verified_citation)
     if not citation:
         return GroundingVerdict(resolved, "its verified_citation is empty")
-    if not any(citation in snippet_texts[source] for source in sources):
-        return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
-    return GroundingVerdict(resolved, None)
+    if any(citation in snippet_texts[source] for source in sources):
+        return GroundingVerdict(resolved, None)
+    snapped = _snap_citation(citation, [snippet_texts[source] for source in sources])
+    if snapped is not None:
+        return GroundingVerdict(replace(resolved, verified_citation=snapped), None)
+    return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
+
+
+#: How close a citation must be to a real snippet window before it is snapped to it. High
+#: on purpose: the snap exists to rescue a dropped article or a re-punctuated clause, never
+#: to admit a quote the model composed.
+_SNAP_MIN_RATIO = 0.90
+#: Below this many characters a citation cannot identify one window rather than another, so
+#: a short generic fragment is rejected instead of snapped to an arbitrary match.
+_SNAP_MIN_CITATION_CHARS = 40
+#: Where alignment anchors are taken from within the citation. A near-miss diverges from
+#: the snippet somewhere, so anchoring at several offsets keeps one damaged region from
+#: hiding an otherwise exact quote.
+_SNAP_ANCHOR_OFFSETS = (0.0, 0.25, 0.5, 0.75)
+#: An anchor shorter than this matches too many places to locate a window.
+_SNAP_ANCHOR_CHARS = 24
+
+
+def _snap_citation(citation: str, snippets: Sequence[str]) -> str | None:
+    """The snippet's OWN text for the window *citation* nearly quotes, else ``None``.
+
+    The distiller reproduces a quote from memory and drops an article or re-punctuates a
+    clause, so a genuinely grounded rule is lost to a paraphrase — nine in one observed
+    pass (#4671). Rather than loosen the grounding test, the citation is re-EXTRACTED: an
+    anchor locates the window and the SNIPPET's bytes are returned, so what the ledger
+    records is verbatim by construction and the model's wording is never persisted.
+
+    Alignment is anchored rather than searched: scoring every window of a long snippet is
+    quadratic, and the tail this runs in has no time to spare.
+    """
+    if len(citation) < _SNAP_MIN_CITATION_CHARS:
+        return None
+    best: str | None = None
+    best_ratio = _SNAP_MIN_RATIO
+    for snippet in snippets:
+        for start in _anchored_windows(citation, snippet):
+            window = _window_at(snippet, start, len(citation))
+            ratio = SequenceMatcher(None, window, citation).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = window, ratio
+    return best
+
+
+def _window_at(snippet: str, start: int, length: int) -> str:
+    """The *length*-ish slice of *snippet* at *start*, widened out to whole words.
+
+    A near-miss is shorter or longer than the text it quotes, so the anchor-derived offset
+    lands a few characters inside a word. Recording a citation that begins mid-token is
+    still verbatim but reads as damaged, so both ends move out to the nearest boundary.
+    """
+    left = snippet.rfind(" ", 0, start + 1) + 1 if start > 0 else 0
+    right = snippet.find(" ", left + length)
+    return snippet[left:] if right == -1 else snippet[left:right]
+
+
+def _anchored_windows(citation: str, snippet: str) -> set[int]:
+    """Candidate start offsets in *snippet* where *citation* may align."""
+    starts: set[int] = set()
+    for fraction in _SNAP_ANCHOR_OFFSETS:
+        offset = int(len(citation) * fraction)
+        anchor = citation[offset : offset + _SNAP_ANCHOR_CHARS]
+        if len(anchor) < _SNAP_ANCHOR_CHARS:
+            continue
+        found = snippet.find(anchor)
+        while found != -1:
+            starts.add(max(0, found - offset))
+            found = snippet.find(anchor, found + 1)
+    return starts
 
 
 def _resolve_cited_path(source: str, snippet_texts: Mapping[str, str]) -> str:
@@ -433,11 +504,16 @@ def run_consolidation(
         extract, distiller=distill.distiller or sdk_distill, dry_run=dry_run, budget=distill.budget
     )
     if outcome.deferred_members:
+        sweep = outcome.sweep_passes
         logger.warning(
             "dream pass DEFERRED %d of %d snippet(s) — the per-pass batch cap bound; "
-            "they are carried to the next pass by the distill cursor, not dropped.",
+            "they are carried to the next pass by the distill cursor, not dropped. "
+            "The cursor advanced %d of %d rotating batch(es), so a full corpus sweep takes %s.",
             outcome.deferred_members,
             len(extract.snippets),
+            outcome.rotation_advance,
+            outcome.rotation_len,
+            f"~{sweep} pass(es)" if sweep else "UNBOUNDED passes — the cursor did not advance",
         )
     clusters = outcome.clusters
     # ONE transaction for the rows and for the cursor that CLAIMS those rows exist. The

@@ -163,11 +163,18 @@ def _check_dream_consolidation_blocked() -> bool:
 
 
 def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> str:
-    """Which of the two causes the marker's own attempt timestamp establishes (#4355).
+    """Which of the THREE causes the marker establishes (#4355, #4671).
 
-    Naming the wrong one is expensive in both directions: "every pass is withheld" sends
+    Naming the wrong one is expensive in every direction: "every pass is withheld" sends
     the reader hunting a gate that is refusing when no pass ran, and the reverse sends
     them after a driver that is already firing every ten minutes.
+
+    The third cause is the one #4355's own fix created. It stamps the attempt anchor
+    BEFORE the pass so a SIGKILLed pass still moves it — which made a pass killed
+    mid-flight indistinguishable from one whose gates refused it, and this check
+    confidently reported the refusal that never happened for ten days. A terminal outcome
+    is recorded at every verdict and CLEARED at the start of each pass, so a recent
+    attempt carrying no outcome is a pass that died before reaching one.
     """
     from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
         STALE_THRESHOLD_HOURS,
@@ -175,7 +182,11 @@ def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> s
 
     attempted = marker.last_attempted_at if marker else None
     if attempted is not None and (now - attempted) < dt.timedelta(hours=STALE_THRESHOLD_HOURS):
-        return "every pass is being withheld,"
+        if not (marker.last_outcome if marker else ""):
+            return "the last pass was killed before reaching a verdict,"
+        detail = (marker.last_failure_detail if marker else "").strip()
+        quoted = f" ({detail})" if detail else ""
+        return f"every pass is being withheld{quoted},"
     since = f"since {attempted.isoformat()}" if attempted else "ever"
     return f"and no pass has been attempted {since} — the loop is FROZEN, not withheld —"
 

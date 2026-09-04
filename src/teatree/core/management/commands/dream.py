@@ -37,7 +37,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_registry import get_backend_provider
-from teatree.core.management.commands._dream_report import _ResultFragments
+from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.loops.dream.pass_config import PassBudget, PromotionBudget
 
@@ -276,10 +276,19 @@ class Command(TyperCommand):
         budget: PassBudget | None = None,
     ) -> PassOutcome:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+            OUTCOME_FAILED,
+            OUTCOME_GATES_FAILED,
+        )
         from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import
 
         request = EvalProposalRequest() if mode.propose_evals else None
+        # Clear the previous pass's terminal outcome BEFORE this one runs: a pass
+        # SIGKILLed mid-flight then leaves it blank, which is what lets the doctor tell
+        # "killed before reaching a verdict" from "the gates refused it" (#4671).
+        if not dry_run:
+            DreamRunMarker.objects.mark_attempted(now)
         try:
             result = engine.run_consolidation(
                 overlay="",
@@ -290,7 +299,9 @@ class Command(TyperCommand):
             )
         except Exception as exc:  # noqa: BLE001 — a dream pass failure is marked attempted + reported, never crashes the command
             if not dry_run:
-                DreamRunMarker.objects.mark_attempted(now)
+                DreamRunMarker.objects.mark_attempted(
+                    now, outcome=OUTCOME_FAILED, failure_detail=f"{type(exc).__name__}: {exc}"
+                )
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
             return PassOutcome.FAILED
 
@@ -326,7 +337,9 @@ class Command(TyperCommand):
             # archive stale memories and the index is never re-derived on a quiet
             # night (#2547).
             memory_phases = self._run_memory_phases(dry_run=dry_run)
-            DreamRunMarker.objects.mark_attempted(now)
+            DreamRunMarker.objects.mark_attempted(
+                now, outcome=OUTCOME_FAILED, failure_detail="0 transcript members replayed"
+            )
             self.stdout.write(
                 f"WARN  dream pass found 0 transcript members — marker NOT stamped succeeded{memory_phases}.",
             )
@@ -337,29 +350,38 @@ class Command(TyperCommand):
         # WALL-CLOCK budget above: two different bounds on the same pass.
         promotion = PromotionBudget.from_config()
         phases = self._gap_phases()
-        promoted = self._promote_candidates(
-            propose_evals=mode.propose_evals,
-            dry_run=dry_run,
-            force_all_phases=mode.force_all_phases,
-            validate_live=mode.validate_live,
-        )
+        # Every tail phase is timed, because WHICH one consumes the tail was not
+        # answerable from the logs when the deadline SIGKILLed the pass short of its
+        # gates (#4671). The clause rides every pass line, green or not.
+        timings = TailTimings()
+        with timings.phase("eval-promote"):
+            promoted = self._promote_candidates(
+                propose_evals=mode.propose_evals,
+                dry_run=dry_run,
+                force_all_phases=mode.force_all_phases,
+                validate_live=mode.validate_live,
+            )
         # Phase 3c (#2663) runs BEFORE the gates so gate (g) reads the just-persisted
         # compliance records (a recurrence remediated with a memory FAILS the pass).
         # Measurement is the root KPI — it runs on EVERY pass (default ON) and reuses the
         # extract the engine already built; escalation is the default-OFF other half.
-        compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, budget=promotion)
+        with timings.phase("compliance"):
+            compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, budget=promotion)
         # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
         # automatable user asks to a fix-and-merge under the same standing umbrella.
-        automation_asks = phases.run_automation_asks(
-            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
-        )
-        memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
-            clusters_recorded=result.clusters_recorded, dry_run=dry_run
-        )
-        memory_promote = phases.run_memory_promotion(
-            dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
-        )
-        deferred = promotion.summary
+        with timings.phase("automation-asks"):
+            automation_asks = phases.run_automation_asks(
+                extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
+            )
+        with timings.phase("memory-phases+gates"):
+            memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
+                clusters_recorded=result.clusters_recorded, dry_run=dry_run
+            )
+        with timings.phase("memory-promote"):
+            memory_promote = phases.run_memory_promotion(
+                dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
+            )
+        deferred = promotion.summary + timings.summary
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
@@ -369,7 +391,11 @@ class Command(TyperCommand):
         # while the marker is still withheld.
         if not gates_passed or result.distillation_broken:
             reason = "acceptance gate(s) FAILED" if not gates_passed else "the distiller FAILED on some batch(es)"
-            DreamRunMarker.objects.mark_attempted(now)
+            DreamRunMarker.objects.mark_attempted(
+                now,
+                outcome=OUTCOME_GATES_FAILED if not gates_passed else OUTCOME_FAILED,
+                failure_detail=gates_summary.strip("; ") if not gates_passed else reason,
+            )
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
                 f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"

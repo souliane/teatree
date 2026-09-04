@@ -227,6 +227,32 @@ class DreamQaReport:
     def render(self) -> str:
         return "; ".join(f"{g.name} {'PASS' if g.passed else 'FAIL'} ({g.detail})" for g in self.gate_results)
 
+    def render_failures(self) -> str:
+        """The FAILING gates only, each with its detail and the memories it regressed.
+
+        The pass summary used to carry gate NAMES alone, so ten days of `gates FAILED
+        (interference)` said nothing about WHICH memory stopped being answerable and the
+        refusal could not be acted on (#4671). The regression list is bounded rather than
+        truncated silently: past :data:`_MAX_NAMED_REGRESSIONS` the remainder is counted,
+        so a long list stays legible without reading as a complete one.
+        """
+        return "; ".join(
+            f"{g.name} FAIL ({g.detail}){_render_regressions(g.regressions)}" for g in self.gate_results if not g.passed
+        )
+
+
+#: How many regressed memory names a failure clause spells out before counting the rest.
+_MAX_NAMED_REGRESSIONS = 5
+
+
+def _render_regressions(regressions: tuple[str, ...]) -> str:
+    """The `` [lost: a.md, b.md, +N more]`` suffix naming what a gate regressed."""
+    if not regressions:
+        return ""
+    named = ", ".join(regressions[:_MAX_NAMED_REGRESSIONS])
+    overflow = len(regressions) - _MAX_NAMED_REGRESSIONS
+    return f" [lost: {named}{f', +{overflow} more' if overflow > 0 else ''}]"
+
 
 def _normalize(text: str) -> str:
     return " ".join(text.split()).lower()
