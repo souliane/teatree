@@ -23,6 +23,7 @@ from teatree.config.agent_spawn import resolve_agent_config
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -44,7 +45,7 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
     "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
     '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
-    '                     "reviewer_identity": "<your reviewer id, NOT a maker/loop role>",',
+    f'                     "reviewer_identity": "{REVIEWER_IDENTITY_INSTRUCTION}",',
     '                     "gh_verify_result": "green"|"pending"|"failed",',
     '                     "blast_class": "substrate"|"logic"|"docs",',
     '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',

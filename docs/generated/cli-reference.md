@@ -12345,7 +12345,9 @@ Usage: t3 teatree review record-evidence [OPTIONS] TICKET_ID
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --kind            TEXT  cold_review / integration_review.                    │
 │                         [default: cold_review]                               │
-│ --reviewer        TEXT  Reviewer identity (not a maker/loop role).           │
+│ --reviewer        TEXT  Reviewer identity: must carry a reviewer role word   │
+│                         (reviewer/cold/cr/critic/adjudicator/checker/codex), │
+│                         never maker/coding/loop.                             │
 │ --verdict         TEXT  Review verdict, e.g. merge_safe / hold / pass.       │
 │ --head-sha        TEXT  Full 40-char hex commit id of the reviewed tree.     │
 │ --repos           TEXT  Comma-separated repos covered (≥2 required for       │

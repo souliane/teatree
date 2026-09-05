@@ -177,7 +177,7 @@ HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a s
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict merge_safe \
-  --reviewer-identity "<your-reviewer-id>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)" \
   --gh-verify-result green
 ```
 
@@ -198,7 +198,7 @@ JSON
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict hold \
-  --reviewer-identity "<your-reviewer-id>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)" \
   --findings-json /tmp/findings.json
 ```
 
