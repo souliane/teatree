@@ -117,7 +117,8 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
         f"affected tests in that checkout before voting merge_safe. Then RETURN your verdict in the "
         f'result envelope: `"review_verdict": '
         f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
-        f'"<your-reviewer-id>", "gh_verify_result": "green", "findings": [{{"severity": "low", '
+        f'"<reviewer id: one of reviewer/cold/cr/critic/adjudicator/checker/codex>", '
+        f'"gh_verify_result": "green", "findings": [{{"severity": "low", '
         f'"summary": "<what you observed>", "file": "<path>", "line": 0}}]}}`. {ENVELOPE_FINDINGS_RULE} '
         f"Do NOT run `t3 <overlay> review record` — maker≠checker requires a different "
         f"actor to write the row: the orchestrator records the ReviewVerdict at head {head_sha[:8]} from "

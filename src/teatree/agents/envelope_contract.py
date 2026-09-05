@@ -38,7 +38,7 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         "review_verdict": {
             "verdict": "merge_safe",
             "reviewed_sha": "<the full 40-char head sha you were dispatched for>",
-            "reviewer_identity": "<your reviewer id>",
+            "reviewer_identity": "<reviewer id: one of reviewer/cold/cr/critic/adjudicator/checker/codex>",
             "gh_verify_result": "green",
             "blast_class": "logic",
             # Non-empty on a PASS: the example a reviewer copies outranks the prose
