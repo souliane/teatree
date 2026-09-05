@@ -12,7 +12,9 @@ to real newline-prefixed ``- `` list items.
 
 import re
 
-from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
+import pytest
+
+from teatree.slack_mrkdwn import normalize_slack_message, slack_line_violations, slack_linkify, wrap_slack_message
 
 
 def _pipes_outside_mrkdwn(line: str) -> int:
@@ -465,3 +467,211 @@ class TestNormalizeSlackMessageProseSplitting:
         once = normalize_slack_message(text)
         twice = normalize_slack_message(once)
         assert once == twice
+
+
+_STASH_MARKER = "\x0099\x00"
+
+_OVER_WIDTH = "word " * 30
+
+_HUGE_DIGIT_MARKER = "\x00" + "1" * 4301 + "\x00"
+
+
+class TestALiteralStashMarkerIsBodyText:
+    """A body may carry this module's own placeholder sequence as ordinary text.
+
+    Every transform stashes never-broken spans behind ``NUL<n>NUL`` and restores
+    them by indexing the stash list. An index the body supplied itself is out of
+    range, and indexing it raised ``IndexError`` at a transport contracted to
+    degrade rather than raise.
+    """
+
+    def test_linkify_leaves_it_alone(self) -> None:
+        assert slack_linkify(f"see {_STASH_MARKER} here") == f"see {_STASH_MARKER} here"
+
+    def test_normalize_leaves_it_alone(self) -> None:
+        assert _STASH_MARKER in normalize_slack_message(f"see {_STASH_MARKER} here")
+
+    def test_wrap_leaves_it_alone(self) -> None:
+        assert wrap_slack_message(f"see {_STASH_MARKER} here") == f"see {_STASH_MARKER} here"
+
+    def test_wrap_leaves_it_alone_on_an_over_width_line(self) -> None:
+        assert _STASH_MARKER in wrap_slack_message(f"{_OVER_WIDTH}{_STASH_MARKER}")
+
+    def test_the_violations_oracle_reports_instead_of_raising(self) -> None:
+        assert slack_line_violations(f"{_OVER_WIDTH}{_STASH_MARKER}") != []
+
+    def test_a_digit_run_past_the_int_conversion_cap_does_not_raise(self) -> None:
+        """CPython refuses a str->int conversion past 4300 digits.
+
+        The index guard cannot save an unbounded digit group: the conversion
+        runs first, so the range check is never reached.
+        """
+        assert wrap_slack_message(_HUGE_DIGIT_MARKER) == _HUGE_DIGIT_MARKER
+
+    def test_the_oracle_survives_a_digit_run_past_the_cap(self) -> None:
+        assert slack_line_violations(_HUGE_DIGIT_MARKER) == []
+
+
+class TestAnInRangeBodyMarkerResolvesToOurStash:
+    """Accepted, documented behaviour — NOT a guarantee, and deliberately pinned.
+
+    The range guard covers an index we never issued. An index the body supplied
+    that happens to be IN range still resolves to our stashed span, so a body
+    carrying ``NUL0NUL`` alongside any stashable span gets that span's content
+    pasted over its own text.
+
+    Closing this needs a sentinel the body cannot forge, and no in-band marker
+    can be one: sanitizing NUL out of the input would break the byte-for-byte
+    round-trip these transforms now guarantee, and stashing the body's own
+    markers first still loses when a later pattern absorbs one (a bare URL
+    matches across a placeholder). The sound fix is to carry protected spans
+    out of band instead of substituting them into the text — a restructure of
+    its own, not warranted by a defect nothing can currently trigger.
+
+    Reaching it needs a literal NUL in an outbound body, and the transform
+    manufactures that marker itself — so what keeps it out of reach is not an
+    absence of NULs in the pipeline but the fixpoint restore, which guarantees
+    no placeholder survives a transform to be fed back through another one.
+    These tests exist so the day someone changes it, the change is visible
+    rather than silent.
+    """
+
+    _MARKER = "\x000\x00"
+
+    def test_wrap_pastes_the_url_over_the_bodys_own_marker(self) -> None:
+        body = f"{self._MARKER} {_OVER_WIDTH} https://example.com/zzz"
+        assert wrap_slack_message(body).startswith("https://example.com/zzz")
+
+    def test_linkify_pastes_the_code_span_over_it(self) -> None:
+        assert slack_linkify(f"{self._MARKER} see `code` here") == "`code` see `code` here"
+
+    def test_normalize_pastes_the_code_span_over_it(self) -> None:
+        assert normalize_slack_message(f"{self._MARKER} see `code` here") == "`code` see `code` here"
+
+    def test_an_out_of_range_marker_is_still_left_alone(self) -> None:
+        """The guarded half — the contrast that shows what the guard does cover."""
+        assert slack_linkify(f"{_STASH_MARKER} see `code` here") == f"{_STASH_MARKER} see `code` here"
+
+
+class TestWrapPreservesABodyItNeedNotBreak:
+    """A body with no over-width line comes back byte for byte.
+
+    ``splitlines()`` + newline-join silently rewrote every message: a trailing
+    newline vanished, CRLF and a lone CR collapsed to LF, and the vertical tab,
+    form feed, U+2028 and U+0085 all became hard line breaks.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "done",
+            "Deploy done.\n\nNext: watch CI.\n",
+            "first line\r\nsecond line",
+            "carriage\rreturn",
+            "vertical\x0btab",
+            "form\x0cfeed",
+            "line\u2028separator",
+            "next\u0085line",
+        ],
+    )
+    def test_returned_byte_for_byte(self, text: str) -> None:
+        assert wrap_slack_message(text) == text
+
+    def test_a_trailing_newline_survives_a_real_wrap(self) -> None:
+        assert wrap_slack_message(f"{_OVER_WIDTH}\n").endswith("\n")
+
+
+class TestEveryNestedStashComesBack:
+    """``_stash_unwrappable`` stashes inner-first, so one restore pass is not enough.
+
+    An inline code span inside a link label is stashed BEFORE the link that
+    contains it, and a bare URL swallows a placeholder sitting inside it. A
+    single non-recursive substitution puts the outer span back with the inner
+    marker still embedded: the inner span is deleted and raw NULs reach the
+    wire. The trigger is the whole-message restore, so one over-width line
+    anywhere corrupts lines that never needed wrapping.
+    """
+
+    @pytest.mark.parametrize(
+        ("body", "inner"),
+        [
+            (f"See <https://ex.com/a|the `wrap` change>.\n{_OVER_WIDTH}", "`wrap`"),
+            (f"{_OVER_WIDTH} https://ex.com/a`b` tail", "`b`"),
+            (f"{_OVER_WIDTH} https://ex.com/x<https://ex.com/y|Lbl> tail", "<https://ex.com/y|Lbl>"),
+        ],
+    )
+    def test_no_placeholder_reaches_the_wire(self, body: str, inner: str) -> None:
+        out = wrap_slack_message(body)
+        assert "\x00" not in out
+        assert inner in out
+
+    def test_a_line_that_needed_no_wrapping_is_untouched(self) -> None:
+        untouched = "See <https://ex.com/a|the `wrap` change>."
+        assert wrap_slack_message(f"{untouched}\n{_OVER_WIDTH}").startswith(f"{untouched}\n")
+
+    def test_the_oracle_reports_no_placeholder_either(self) -> None:
+        for line in slack_line_violations(f"{_OVER_WIDTH} https://ex.com/a`b` tail"):
+            assert "\x00" not in line
+
+
+class TestWidthIsMeasuredAsSlackRendersIt:
+    """Slack renders ``<url|label>`` as the label alone, so the URL costs nothing.
+
+    Teatree's own clickable-reference rule mandates a ref carry its title
+    inline, which makes a link-dense line the common shape. Measuring the raw
+    span splits lines the reader sees well under the limit — strictly worse
+    than not wrapping at all.
+    """
+
+    _DIGEST = (
+        "- <https://github.com/souliane/teatree/issues/4665|#4665 (wrap slack messages at 90)> landed on main today."
+    )
+
+    def test_a_line_rendering_under_the_limit_is_returned_unchanged(self) -> None:
+        assert wrap_slack_message(self._DIGEST) == self._DIGEST
+
+    def test_the_oracle_reports_no_violation_for_it(self) -> None:
+        assert slack_line_violations(self._DIGEST) == []
+
+    def test_a_line_whose_labels_exceed_the_limit_still_wraps(self) -> None:
+        line = " ".join(f"<https://ex.com/{n}|label number {n} carrying its own real title>" for n in range(4))
+        assert "\n" in wrap_slack_message(line)
+        assert slack_line_violations(line) != []
+
+
+class TestAnIssueRefIsNotAMarkdownHeading:
+    """``#`` opens a heading only when whitespace follows it.
+
+    A bare ``#4665`` opening a line is an issue ref, and teatree writes them
+    constantly. Treating it as a heading exempts a genuinely over-width prose
+    line from the wrap and reports no violation for it.
+    """
+
+    _REF_LINE = (
+        "#4665 was merged today and the wrap is now total for any body handed to it, "
+        "which is exactly the shape this carve-out was letting through unwrapped."
+    )
+
+    def test_a_long_line_opening_with_an_issue_ref_wraps(self) -> None:
+        assert "\n" in wrap_slack_message(self._REF_LINE)
+
+    def test_the_oracle_reports_the_issue_ref_line(self) -> None:
+        assert slack_line_violations(self._REF_LINE) == [self._REF_LINE]
+
+    def test_a_real_heading_is_still_never_wrapped(self) -> None:
+        heading = "## " + "heading word " * 12
+        assert wrap_slack_message(heading) == heading
+
+
+class TestExoticSeparatorsSurviveARealWrap:
+    r"""``splitlines()`` breaks on each of these; ``split("\n")`` does not.
+
+    The byte-for-byte params above cannot tell the two apart — the
+    ``wrapped == lines`` early return hands back the original before any join
+    runs. Putting the separator on a line needing no wrapping, in a body that
+    has one that does, forces the join and pins the separator through it.
+    """
+
+    @pytest.mark.parametrize("separator", ["\r", "\x0b", "\x0c", "\u2028", "\u0085"])
+    def test_a_separator_survives_when_another_line_is_wrapped(self, separator: str) -> None:
+        assert wrap_slack_message(f"short{separator}line\n{_OVER_WIDTH}").startswith(f"short{separator}line\n")

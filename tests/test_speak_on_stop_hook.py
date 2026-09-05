@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import t3_invocation
 
 
 def _write_transcript(tmp_path: Path, assistant_text: str) -> str:
@@ -92,6 +93,12 @@ class TestSpeakSettings:
 
 
 class TestHandleSpeakAllOnStop:
+    @pytest.fixture(autouse=True)
+    def _stub_the_prover(self):
+        # The detached spawn probes docker, and subprocess.run BUILDS a Popen these tests mock.
+        with patch.object(t3_invocation, "container_path", return_value=None):
+            yield
+
     def test_fires_when_local_all(self, seed_speak: Callable[[object | None], None], tmp_path: Path) -> None:
         seed_speak({"local": "all"})
         transcript = _write_transcript(tmp_path, "all green, shipping now")

@@ -339,6 +339,24 @@ class PromotionGatedOnLiveModelPassTestCase(TestCase):
         )
         assert [o.promoted for o in second] == [True]
 
+    def test_a_withheld_row_is_not_re_graded_without_a_validator(self) -> None:
+        # The nightly tick carries no validator, so a WITHHELD row can only re-derive
+        # its own WITHHELD — at ~304ms of grader work each. 6614 such rows cost ~2130s
+        # and overran the loop deadline, killing the pass before its gates ever ran.
+        queue = self.tmp / "proposals.jsonl"
+        queue.write_text(json.dumps(_GROUNDED_CANDIDATE) + "\n", encoding="utf-8")
+        promote.promote_proposals_file(queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=None)
+        assert json.loads(queue.read_text(encoding="utf-8").splitlines()[0])["status"] == promote._WITHHELD_STATUS
+
+        unreached = promote.PromotionOutcome(scenario_name="x", promoted=False, reason="should not be reached")
+        with patch.object(promote, "promote_candidate", return_value=unreached) as graded:
+            again = promote.promote_proposals_file(
+                queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=None
+            )
+        graded.assert_not_called()
+        assert [o.promoted for o in again] == [False]
+        assert "no live validator" in again[0].reason
+
 
 class PromotedScenarioIsPublishSafeTestCase(TestCase):
     """The promoted YAML + fixtures are publish-safe BY CONSTRUCTION (no leak reaches the gate).
