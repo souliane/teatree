@@ -42,10 +42,22 @@ NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "lo
 # is not, because the same model is also the maker.
 REVIEWER_ROLE_COMPONENTS = frozenset({"reviewer", "cold", "cr", "critic", "adjudicator", "checker", "codex"})
 
+
 _IDENTITY_DELIMITERS = re.compile(r"[^a-z0-9]+")
 
 # A maker ROLE word names who the identity is, so it refuses unconditionally.
 _MAKER_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
+
+#: What a dispatched reviewer is TOLD to return. Derived from the two sets above so the
+#: instruction cannot drift from the gate, and it states BOTH constraints: a positive one
+#: (44 of 51 recorded refusals named no admitting token) and the negative (7 more carried
+#: one but were refused for a maker word). The example is concrete because a model copies
+#: an example over prose, and a bare token would collide on the per-head unique index.
+REVIEWER_IDENTITY_INSTRUCTION = (
+    "cold-reviewer-<pr-or-task-id>"
+    " (must contain one of " + "/".join(sorted(REVIEWER_ROLE_COMPONENTS)) + ";"
+    " never " + "/".join(sorted(_MAKER_ROLE_WORDS)) + ")"
+)
 
 # A review PHASE word names what the identity is doing, and the periodic holistic pass
 # does it while implementing its own findings and opening its own PR (#4230) — a MAKER

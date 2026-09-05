@@ -175,7 +175,7 @@ Merge through the §17.4 keystone. Do — never reach for a raw forge merge (raw
    ```bash
    t3 <overlay> ticket clear <pr> <slug> \
      --reviewed-sha <sha> \
-     --reviewer-identity <independent-reviewer> \
+     --reviewer-identity "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)" \
      --blast-class <substrate|logic|docs>
    # → prints CLEAR_ID=<clear_id>  (pass it to the loop's merge step below)
    ```
