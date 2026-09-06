@@ -14,6 +14,7 @@ import teatree.utils.singleton as singleton_mod
 from teatree.core.loop_lease_liveness import (
     UNVERIFIABLE_OWNER_GRACE,
     LeaseClaim,
+    _pid_is_foreign,
     anchorable_owner_pid,
     claim_pid_is_foreign,
     lease_is_live,
@@ -21,7 +22,6 @@ from teatree.core.loop_lease_liveness import (
     namespace_is_attributable,
     namespace_is_proven,
     pid_alive_probe,
-    pid_is_foreign,
     reader_pid_namespace,
     reclaim_reason,
 )
@@ -166,16 +166,16 @@ class TestLiveForeignOwnerSession:
 
 class TestPidIsForeign:
     def test_a_null_current_pid_is_treated_as_foreign(self) -> None:
-        assert pid_is_foreign(100, None) is True
+        assert _pid_is_foreign(100, None) is True
 
     def test_a_different_pid_is_foreign(self) -> None:
-        assert pid_is_foreign(100, 200) is True
+        assert _pid_is_foreign(100, 200) is True
 
     def test_the_same_process_is_not_foreign(self) -> None:
-        assert pid_is_foreign(100, 100) is False
+        assert _pid_is_foreign(100, 100) is False
 
     def test_a_null_stored_pid_biases_to_foreign(self) -> None:
-        assert pid_is_foreign(None, 200) is True
+        assert _pid_is_foreign(None, 200) is True
 
 
 class TestReaderPidNamespace:
