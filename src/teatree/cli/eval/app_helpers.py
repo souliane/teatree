@@ -39,7 +39,7 @@ EVAL_CREDENTIALS: tuple[str, ...] = ("subscription_oauth", "api_key")
 PROVIDER_ENV_VAR = "T3_AGENT_HARNESS_PROVIDER"
 
 
-def benchmark_models() -> str:
+def _benchmark_models() -> str:
     """The comma-joined ``--models`` list for ``--benchmark``: each tier's model.
 
     Resolves :data:`BENCHMARK_TIERS` through :func:`resolve_tier` so the benchmark
@@ -93,7 +93,7 @@ def resolve_benchmark_selection(
         typer.echo(f"{' and '.join(active)} are mutually exclusive; pass at most one.", err=True)
         raise typer.Exit(code=2)
     if benchmark:
-        return BenchmarkSelection(models=benchmark_models(), model_override=None, benchmark_html=html_out)
+        return BenchmarkSelection(models=_benchmark_models(), model_override=None, benchmark_html=html_out)
     if preset is not None:
         try:
             resolved_preset = resolve_preset(preset)
