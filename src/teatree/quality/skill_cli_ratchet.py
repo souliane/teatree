@@ -241,7 +241,7 @@ def is_already_migrated(context: str, signature: str) -> bool:
     return tool is not None and f"mcp__teatree__{tool}" in context
 
 
-def code_fragments(line: str, *, in_fence: bool) -> list[str]:
+def _code_fragments(line: str, *, in_fence: bool) -> list[str]:
     if in_fence:
         return [line]
     return _INLINE_CODE_RE.findall(line)
@@ -275,7 +275,7 @@ def raw_calls_in(source: str, path: str) -> list[RawCall]:
             continue
         if in_fence and line.lstrip().startswith("#"):
             continue
-        fragments = code_fragments(line, in_fence=in_fence)
+        fragments = _code_fragments(line, in_fence=in_fence)
         signatures = [
             sig
             for fragment in fragments
@@ -293,7 +293,7 @@ def raw_calls_in(source: str, path: str) -> list[RawCall]:
     return calls
 
 
-def collect_skill_files(root: Path) -> list[Path]:
+def _collect_skill_files(root: Path) -> list[Path]:
     skills = root / _SKILLS_DIR
     if not skills.is_dir():
         return []
@@ -302,7 +302,7 @@ def collect_skill_files(root: Path) -> list[Path]:
 
 def find_raw_calls(root: Path) -> list[RawCall]:
     calls: list[RawCall] = []
-    for path in collect_skill_files(root):
+    for path in _collect_skill_files(root):
         rel = path.relative_to(root).as_posix()
         calls.extend(raw_calls_in(_read(path), rel))
     return calls
