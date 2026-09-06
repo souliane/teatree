@@ -25,9 +25,14 @@ from teatree.core.models.reviewer_identity import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: Markdown a dispatched agent reads directly. `agents/reviewer.md` IS the reviewer
-#: sub-agent's system prompt, so a negative-only slot there defeats the whole fix.
-_MARKDOWN_SURFACES = ("agents/reviewer.md", "skills/e2e-review/SKILL.md")
+#: SELF-NAMING surfaces: the agent declares its OWN identity here, so a concrete copyable
+#: example is right. `agents/reviewer.md` IS the reviewer sub-agent's system prompt.
+_SELF_NAMING_MARKDOWN = ("agents/reviewer.md",)
+
+#: CITING surfaces: the agent names ANOTHER actor's identity in a CLI recipe. A template
+#: here is actively wrong — it overrides the real reviewer's name, which is what the
+#: keystone_merge_reviewer_is_independent eval caught. They carry the constraint, not an example.
+_CITING_MARKDOWN = ("skills/ship/SKILL.md", "skills/sweeping-prs/SKILL.md", "skills/e2e-review/SKILL.md")
 
 
 def _rendered_surfaces() -> dict[str, str]:
@@ -37,7 +42,7 @@ def _rendered_surfaces() -> dict[str, str]:
         "review_contract": build_review_contract(
             slug="o/r", pr_id=1, head_sha="a" * 40, pr_url="https://github.com/o/r/pull/1"
         ),
-        **{path: (_REPO_ROOT / path).read_text(encoding="utf-8") for path in _MARKDOWN_SURFACES},
+        **{path: (_REPO_ROOT / path).read_text(encoding="utf-8") for path in _SELF_NAMING_MARKDOWN},
     }
 
 
@@ -68,3 +73,23 @@ class TestEverySurfaceCarriesTheWholeInstruction:
         # without the fix. It is a gate anti-REGRESSION control: if it ever goes green
         # for the wrong reason, the fix was applied to the gate instead of the prompt.
         assert not is_independent_reviewer_identity("external-review-agent:task-3200")
+
+
+class TestCitingSurfacesConstrainWithoutOverridingTheRealName:
+    """A CLI recipe cites ANOTHER actor, so it must not hand over a ready-made identity.
+
+    Supplying `cold-reviewer-<id>` there made the agent emit a generic name instead of the
+    reviewer actually named in its task — caught by `keystone_merge_reviewer_is_independent`,
+    whose prompt names `codex` and expects that to be cited.
+    """
+
+    def test_they_carry_both_constraints(self) -> None:
+        for path in _CITING_MARKDOWN:
+            text = (_REPO_ROOT / path).read_text(encoding="utf-8")
+            assert all(t in text for t in REVIEWER_ROLE_COMPONENTS), path
+            assert "never coding/loop/maker" in text, path
+
+    def test_they_do_not_hand_over_a_ready_made_identity(self) -> None:
+        for path in _CITING_MARKDOWN:
+            text = (_REPO_ROOT / path).read_text(encoding="utf-8")
+            assert "cold-reviewer-<pr-or-task-id>" not in text, f"{path} templates an identity it should cite"
