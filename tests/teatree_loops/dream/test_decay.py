@@ -760,6 +760,85 @@ class BudgetDecayTierTestCase(SimpleTestCase):
             assert (self.dir / "archive" / name).is_file()
             assert any(line.startswith(f"- {name} — ") for line in cold), name
 
+    def _seed_clique_and_uncited_rules(self, *, clique: int, rules: int, rule_type: str = "feedback") -> list[str]:
+        """Seed a citing clique of project notes plus *rules* fresh rules nobody cites.
+
+        Every file is EQUALLY fresh, so recency cannot be the discriminator; the clique
+        members each collect +40 x 12 of inbound-link signal while the rules collect none.
+        That is the measured live shape — vocabulary overlap makes the cross-link phase
+        wire near-identical notes into a mutually-citing block, and the type floor alone
+        left an owner-stated rule less than two cross-links clear of one.
+        """
+        clique_names = [f"project-note-{i:04d}-{_BUDGET_SLUG}" for i in range(clique)]
+        for i, name in enumerate(clique_names):
+            related = " ".join(f"[[{clique_names[(i + k) % clique]}]]" for k in range(1, 13))
+            self._write(name, f"an ordinary working note\n\nRelated: {related}", age_days=5, mtype="project")
+        rule_names = [f"owner-rule-{i:03d}-{_BUDGET_SLUG}" for i in range(rules)]
+        for name in rule_names:
+            self._write(name, f"the durable rule {name} that nothing cites", age_days=5, mtype=rule_type)
+        self._seed_index()
+        return rule_names
+
+    def test_owner_feedback_is_archived_after_a_well_connected_project_note(self) -> None:
+        # The owner's own doctrine ranked BELOW vocabulary overlap: the type floor put
+        # `feedback` 90 points over `project` — less than two of the +40 cross-links the
+        # link phase hands out freely — so an uncited rule the owner stated lost its hot
+        # slot to any note wired into a clique. `do-not-hand-run-t3-loops` was evicted
+        # that way twice, and each eviction was followed by the rule being broken again,
+        # because a session only ever reads the LIVE index.
+        #
+        # RED before the fix: the archive set is exactly the owner rules.
+        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        archived = self._archived_sources(self._decay(budget_tier=True))
+
+        assert archived, "the tier must fire"
+        assert all(name.startswith("project-note-") for name in archived), sorted(archived)[:5]
+        for name in rule_names:
+            assert f"{name}.md" not in archived
+            assert (self.dir / f"{name}.md").exists()
+
+    def test_without_the_feedback_weight_the_clique_evicts_the_rules(self) -> None:
+        # AV: the positive control. Revert the weight alone and the live inversion
+        # re-reproduces — so the assertion above is satisfiable only BY that weight,
+        # not by freshness, by the settled-record ordering, or by the drain target.
+        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        with patch.object(decay_signal, "_SIGNAL_FEEDBACK", 0):
+            archived = self._archived_sources(self._decay(budget_tier=True))
+
+        assert {f"{name}.md" for name in rule_names} <= archived
+
+    def _seed_with_archive_twin(self, name: str, banner: str) -> None:
+        archive = self.dir / "archive"
+        archive.mkdir(exist_ok=True)
+        (archive / f"{name}.md").write_text(f"<!-- {banner} -->\n\nthe evicted body\n", encoding="utf-8")
+
+    def test_a_name_already_evicted_once_survives_the_second_pass(self) -> None:
+        # A memory decay archived and the corpus then RE-LEARNED is a recurrence the
+        # corpus recorded about itself: the lesson cost something to learn twice, so
+        # evicting it a third time is the expensive mistake. The signal reads `archive/`
+        # rather than the prose, so it needs no cooperation from whoever wrote the file.
+        #
+        # RED before the fix: `relearned.md` is in the cut like any other uncited note.
+        self._seed_clique_and_uncited_rules(clique=200, rules=0)
+        self._write("relearned-the-hard-way", "learned again after decay dropped it", age_days=5, mtype="project")
+        self._seed_with_archive_twin(
+            "relearned-the-hard-way.1", "archived by dream decay 2026-08-21: over-budget, lowest-signal"
+        )
+        self._seed_index()
+
+        archived = self._archived_sources(self._decay(budget_tier=True))
+        assert "relearned-the-hard-way.md" not in archived
+        assert (self.dir / "relearned-the-hard-way.md").exists()
+
+    def test_the_same_note_without_an_archive_twin_is_cut(self) -> None:
+        # AV: the negative control — identical file, identical corpus, no twin. It is cut,
+        # so the survival above comes from the twin and from nothing else.
+        self._seed_clique_and_uncited_rules(clique=200, rules=0)
+        self._write("relearned-the-hard-way", "learned again after decay dropped it", age_days=5, mtype="project")
+        self._seed_index()
+
+        assert "relearned-the-hard-way.md" in self._archived_sources(self._decay(budget_tier=True))
+
 
 class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
     """The projection must model the header the re-index ACTUALLY writes (#4193).
@@ -1234,3 +1313,28 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         # The high-signal entries survive; the user/BINDING signatures stay answerable.
         assert (self.dir / "feedback_binding_rule.md").exists()
         assert (self.dir / "user_durable_pref.md").exists()
+
+
+class ReArchivedNamesReadOnlyEvictionBannersTestCase(SimpleTestCase):
+    """Only an over-budget EVICTION confers the re-archival signal (`decay_signal`)."""
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _archive(self, filename: str, banner: str) -> None:
+        archive = self.dir / "archive"
+        archive.mkdir(exist_ok=True)
+        (archive / filename).write_text(f"<!-- {banner} -->\n\nbody\n", encoding="utf-8")
+
+    def test_an_eviction_banner_counts_and_the_collision_suffix_is_normalised(self) -> None:
+        self._archive("rule.1.md", "archived by dream decay 2026-08-21: over-budget, lowest-signal")
+        assert decay_signal.re_archived_names(self.dir) == frozenset({"rule.md"})
+
+    def test_a_merge_banner_does_not_count(self) -> None:
+        # Consolidation is not eviction: a memory folded into another was not lost, so
+        # re-learning it says nothing about decay having made a mistake.
+        self._archive("folded.md", "archived by dream decay 2026-08-21: merged into other.md")
+        assert decay_signal.re_archived_names(self.dir) == frozenset()
+
+    def test_no_archive_directory_is_empty_not_an_error(self) -> None:
+        assert decay_signal.re_archived_names(self.dir) == frozenset()
