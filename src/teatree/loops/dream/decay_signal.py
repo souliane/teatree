@@ -36,6 +36,15 @@ _KNOWN_TYPES = frozenset({"user", "feedback", "retro", "reference", "project"})
 #: citations and recency add the rest; a per-type floor breaks ties.
 _SIGNAL_USER = 1000
 _SIGNAL_BINDING = 500
+#: Owner doctrine ranks WITH binding text, not 70 points above a project note. The type
+#: floor alone put `feedback` less than two cross-links clear of `project`, so a rule the
+#: owner stated in their own words lost to any note sharing vocabulary with two siblings —
+#: and the same rule was evicted three times, each eviction followed by its violation.
+_SIGNAL_FEEDBACK = _SIGNAL_BINDING
+#: A live memory whose name is ALREADY in `archive/` under an over-budget banner was
+#: re-learned after decay evicted it. That is a recurrence the corpus recorded about
+#: itself, so it outranks connectivity — no prose heuristic, no author cooperation.
+_SIGNAL_RE_ARCHIVED = _SIGNAL_USER
 _SIGNAL_PER_INBOUND_LINK = 40
 _SIGNAL_RECENT = 200
 _TYPE_WEIGHTS = {"feedback": 90, "retro": 70, "reference": 30, "project": 20, "user": 10, "other": 10}
@@ -146,12 +155,44 @@ def _recency_score(memory: MemoryFile, now: datetime, retention: timedelta) -> i
     return max(0, _SIGNAL_RECENT - (age - retention).days)
 
 
-def signal_score(memory: MemoryFile, *, inbound_links: int, now: datetime, retention: timedelta) -> int:
+def re_archived_names(memory_dir: Path) -> frozenset[str]:
+    """Live-memory names that `archive/` already holds under an OVER-BUDGET banner.
+
+    A name in both places was re-learned after decay evicted it — the corpus recording a
+    recurrence about itself. Only an over-budget banner counts: a `merged into` banner is
+    consolidation, not eviction, and must not confer the signal. The archive collision
+    suffix (`x.1.md`) is normalised away, since that IS the eviction's own footprint.
+    """
+    archive = memory_dir / "archive"
+    if not archive.is_dir():
+        return frozenset()
+    names: set[str] = set()
+    for path in archive.glob("*.md"):
+        head = path.read_text(encoding="utf-8", errors="replace")[:400]
+        if "archived by dream decay" not in head or "over-budget" not in head:
+            continue
+        stem = path.name.removesuffix(".md")
+        base = stem.rsplit(".", 1)[0] if stem.rsplit(".", 1)[-1].isdigit() else stem
+        names.add(f"{base}.md")
+    return frozenset(names)
+
+
+def signal_score(
+    memory: MemoryFile,
+    *,
+    inbound_links: int,
+    now: datetime,
+    retention: timedelta,
+    re_archived: bool = False,
+) -> int:
     """The keep-HOT signal of a memory — higher means more worth keeping in ``MEMORY.md``.
 
     Composed ADDITIVELY (never short-circuits) from the signals that mark a lesson
     load-bearing: a user-authored memory (+1000), BINDING / Non-Negotiable doctrine
-    (+500), each inbound ``[[name]]`` wikilink (+40, *inbound_links* precomputed by the
+    (+500), owner-stated ``feedback`` doctrine (+500 — it ranks WITH binding text, not one
+    type-floor step above a working note), a name ``archive/`` already holds under an
+    over-budget banner (+1000 — decay evicted it and the corpus re-learned it, which is a
+    recurrence recorded about itself), each inbound ``[[name]]`` wikilink (+40, *inbound_links* precomputed by the
     caller via :func:`_inbound_link_counts` so scoring the whole set stays O(N)), recency
     by the logical ``lesson_touched`` clock (+200 within *retention*, decaying linearly
     with age beyond it), and a per-type floor (feedback 90 / retro 70 / reference 30 /
@@ -162,6 +203,10 @@ def signal_score(memory: MemoryFile, *, inbound_links: int, now: datetime, reten
     score = _SIGNAL_USER if _is_user_memory(memory) else 0
     if is_binding_text(memory.text):
         score += _SIGNAL_BINDING
+    if _resolved_type(memory) == "feedback":
+        score += _SIGNAL_FEEDBACK
+    if re_archived:
+        score += _SIGNAL_RE_ARCHIVED
     score += _SIGNAL_PER_INBOUND_LINK * inbound_links
     score += _recency_score(memory, now, retention)
     score += _TYPE_WEIGHTS.get(_resolved_type(memory), _TYPE_WEIGHTS["other"])
@@ -233,6 +278,7 @@ def budget_tier_candidates(files: Sequence[MemoryFile], projection: BudgetProjec
         return
     from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
+    previously_evicted = re_archived_names(projection.memory_dir)
     ordered = sorted(
         files,
         key=lambda m: (
@@ -242,6 +288,7 @@ def budget_tier_candidates(files: Sequence[MemoryFile], projection: BudgetProjec
                 inbound_links=len(projection.citers.get(m.path.name, ())),
                 now=projection.now,
                 retention=projection.retention,
+                re_archived=m.path.name in previously_evicted,
             ),
         ),
     )
