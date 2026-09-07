@@ -1456,10 +1456,16 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh issue create \
-            --title "push-gate selection-audit: measured false negative (#122)" \
-            --body "The incremental push gate would have SKIPPED a whole-tree ast-grep finding or doctest failure on PR #${PR_NUMBER} (${PR_URL}). See the failed selection-audit job logs for the offending path(s). Do NOT enable \`incremental_push_gate\` until resolved." \
-            --label needs-triage || true
+          existing="$(gh issue list --search 'in:title "push-gate selection-audit: measured false negative"' \
+            --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            echo "Tracking issue #$existing is already open — skipping duplicate filing."
+          else
+            gh issue create \
+              --title "push-gate selection-audit: measured false negative (#122)" \
+              --body "The incremental push gate would have SKIPPED a whole-tree ast-grep finding or doctest failure on PR #${PR_NUMBER} (${PR_URL}). See the failed selection-audit job logs for the offending path(s). Do NOT enable \`incremental_push_gate\` until resolved." \
+              --label needs-triage || true
+          fi
 
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 
