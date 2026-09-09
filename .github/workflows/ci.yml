@@ -65,7 +65,10 @@
 #   5. Test suite            — build-image (builds/pushes BOTH the `-test` and
 #                              `-lint` tags; unconditional, feeds group 2's
 #                              `lint` job as well as this group), test-shard
-#                              (12-way coverage matrix),
+#                              (12-way coverage matrix), jscpd-scan (the
+#                              whole-tree duplication scan, relocated off the
+#                              shard lane by #4672 and gating through the
+#                              combiner's `needs`),
 #                              test (combiner = required `test (3.13)`),
 #                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
@@ -988,6 +991,54 @@ jobs:
               ;;
           esac
 
+  # The whole-tree jscpd scan, relocated OFF the twelve-way shard lane (#4672).
+  # Measured 314s standalone on an idle 8-core box (1829 sources, 2.1M tokens)
+  # against the 300s ceiling it ran under, so every shard that drew it was one
+  # contention spike from a timeout that reds the required rollup — #2995 had
+  # already raised that ceiling 60s->300s for the same symptom. Here it runs ONCE,
+  # unsharded and serial, on the jscpd baked into the image, and still gates
+  # `test (3.13)` through the combiner's `needs` below. Relocation is by env-gated
+  # skipif, never `-m`: `shard_stats_plugin` records `selected` AFTER
+  # collection_modifyitems, so a marker filter would make sum(selected) < total and
+  # fail `check_shard_completeness.py`. `-s` keeps the elapsed/scale line the ledger
+  # prints on the PASS path in this log, which is what makes a future slowdown
+  # legible without downloading an artifact.
+  jscpd-scan:
+    needs: [preflight, build-image]
+    if: >
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Obtain the prebuilt test image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          fi
+      - name: Whole-tree jscpd scan coverage (unsharded, pinned engine)
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e PYTHONPATH=/app
+          -e TEATREE_JSCPD_SCAN=1
+          ${{ needs.build-image.outputs.image }}
+          uv run -p 3.13 pytest --no-header -q -s -n0
+          -o cache_dir=/tmp/.pytest_cache
+          tests/quality/test_jscpd_duplication.py
+
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).
   # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
@@ -1003,7 +1054,7 @@ jobs:
   # LOAD-BEARING: the job key `test` + matrix python-version "3.13" produce
   # `test (3.13)` — do NOT rename without updating branch protection.
   test:
-    needs: [preflight, test-shard]
+    needs: [preflight, test-shard, jscpd-scan]
     if: >
       always() &&
       (github.event_name != 'pull_request' ||
@@ -1023,6 +1074,16 @@ jobs:
           result='${{ needs.test-shard.result }}'
           if [ "$result" != "success" ]; then
             echo "::error::test-shard result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
+            exit 1
+          fi
+      # The relocated whole-tree jscpd scan (#4672) reaches merge protection only
+      # through this context, so its result is checked exactly like a shard's: a
+      # `needs:` alone still passes under `always()` when the needed job failed.
+      - name: Require the relocated jscpd scan to have passed
+        run: |
+          result='${{ needs.jscpd-scan.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::jscpd-scan result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
