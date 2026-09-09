@@ -275,10 +275,10 @@ class Command(TyperCommand):
         mode: PipelineMode = _DEFAULT_MODE,
         budget: PassBudget | None = None,
     ) -> PassOutcome:
-        from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
-        from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+        from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
             OUTCOME_FAILED,
             OUTCOME_GATES_FAILED,
+            DreamRunMarker,
         )
         from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import

@@ -59,6 +59,27 @@ class DefaultEvalProposerTestCase(TestCase):
         )
         assert default_eval_proposer([invented], _extract_of(member)) == []
 
+    def test_snapped_citation_is_grounded_snippet_text_not_the_model_paraphrase(self) -> None:
+        """The ledger's snapped citation must seed the proposal, not the ungrounded input (#4671)."""
+        snapped_source = "the reviewer approved the change without running the CI gate at all"
+        paraphrase = "the reviewer approved the change without running CI gate at all"
+        member = self.tmp / "feedback_gate.md"
+        member.write_text(f"BINDING: verify before merging — {snapped_source} — that is the failure mode")
+        transcript_member = TranscriptMember(path=member, kind="memory")
+        cluster = DistilledCluster(
+            cluster_key="run-gate",
+            rule="Run the gate before pushing.",
+            source_files=[str(transcript_member.path)],
+            is_binding=False,
+            verified_citation=paraphrase,
+            durable_destination="feedback/run_gate.md",
+        )
+        extract = _extract_of(transcript_member)
+        proposals = default_eval_proposer([cluster], extract)
+        assert len(proposals) == 1
+        assert proposals[0].seed_citation != paraphrase
+        assert any(proposals[0].seed_citation in snippet.text for snippet in extract.snippets)
+
     def test_empty_source_cluster_yields_no_candidate(self) -> None:
         member = _member(self.tmp)
         no_source = DistilledCluster(

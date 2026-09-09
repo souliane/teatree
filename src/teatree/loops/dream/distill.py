@@ -322,6 +322,10 @@ def distill_in_batches(
     # it: a clock-truncated UNCAPPED pass that did not advance would re-distil the same
     # head next pass and never reach the corpus's tail.
     resumable = capped or stopped > 0
+    next_cursor = selection.cursor_after(len(reached)) if resumable and not dry_run and consolidated else None
+    # rotation_advance must agree with next_cursor: a withheld cursor (a failed/broken
+    # batch, or a dry run) means the rotation did NOT move, whatever `reached` says (#4671).
+    rotation_advance = max(0, len(reached) - selection.head_len) if next_cursor is not None else 0
     return BatchDistillOutcome(
         clusters=list(tally.merged.values()),
         empty_batches=tally.empty,
@@ -330,10 +334,10 @@ def distill_in_batches(
         diagnostics=tuple(tally.diagnostics),
         snippets_distilled=tally.distilled_snippets,
         deferred_members=sum(len(batch.snippets) for i, batch in enumerate(batches) if i not in distilled),
-        next_cursor=selection.cursor_after(len(reached)) if resumable and not dry_run and consolidated else None,
+        next_cursor=next_cursor,
         budget_stopped_batches=stopped,
         rotation_len=selection.rotation_len,
-        rotation_advance=max(0, len(reached) - selection.head_len),
+        rotation_advance=rotation_advance,
     )
 
 
