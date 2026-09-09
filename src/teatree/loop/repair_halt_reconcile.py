@@ -17,7 +17,7 @@ This module answers only "which tickets raised it, and what state are they in?".
 A ticket-keyed marker (``repair-stall``/``repair-cap``) carries its subject ticket
 pk directly; a fingerprint-keyed ``repair-halt`` marker collapses several tickets
 onto one row, so its subjects are re-derived from the parked
-(:data:`~teatree.loop.transient_requeue.HALT_STAMP`) tasks that share the marker.
+(:data:`~teatree.core.modelkit.task_parking.HALT_STAMP`) tasks that share the marker.
 An undeterminable subject answers ``None``, which the sweep treats as KEEP —
 dropping a question whose subject is still live is the failure mode this must
 never commit.

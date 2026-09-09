@@ -31,7 +31,6 @@ that does not exist.
 
 import datetime as dt
 import logging
-import re
 from typing import IO, Annotated, cast
 
 import typer
@@ -39,12 +38,11 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
+from teatree.core.modelkit.durations import parse_duration
 from teatree.core.models import Loop, LoopState
 
 logger = logging.getLogger(__name__)
 
-_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
-_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 _OVERRIDE_STATES = {"on", "off", "clear"}
 
 
@@ -53,11 +51,7 @@ def _parse_for(raw: str) -> dt.datetime | None:
     raw = raw.strip()
     if not raw:
         return None
-    match = _DURATION_RE.match(raw)
-    if match is None:
-        msg = f"invalid --for duration {raw!r}; use forms like 2h, 30m, 1d"
-        raise ValueError(msg)
-    return timezone.now() + dt.timedelta(seconds=int(match.group(1)) * _DURATION_UNIT_SECONDS[match.group(2)])
+    return timezone.now() + parse_duration(raw, flag="--for")
 
 
 def _reconcile_timers() -> None:

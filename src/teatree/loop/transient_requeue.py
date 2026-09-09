@@ -120,6 +120,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     recovery_strategy,
     stall_fingerprints,
 )
+from teatree.core.modelkit.task_parking import HALT_STAMP
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
@@ -136,10 +137,6 @@ from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, dispos
 
 logger = logging.getLogger(__name__)
 
-#: Stamped onto ``execution_reason`` when a task is escalated (dead-lettered), so it
-#: is excluded from every future scan — bounds per-tick work and makes the escalation
-#: durably once-per-task regardless of whether the question is later answered.
-HALT_STAMP = "[repair-halt-parked]"
 #: Phases whose RECORDER-side envelope refusal earns the one-shot corrective retry.
 #: The RUNNER-side ``no_result_envelope`` is NOT gated on it (:func:`_corrective_note`).
 _CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
@@ -340,7 +337,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
     """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
 
     Excluding the parked rows — :data:`HALT_STAMP` (escalated) and
-    :data:`~teatree.loop.transient_requeue_disposal.LIVE_SUCCESSOR_STAMP` (a live successor holds the phase) — keeps the
+    :data:`~teatree.core.modelkit.task_parking.LIVE_SUCCESSOR_STAMP` (a live successor holds the phase) — keeps the
     per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
     would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
     per-task N+1 that :func:`_latest_error` would otherwise issue for every FAILED row.

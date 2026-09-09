@@ -8,7 +8,6 @@ project's "anything touching the ORM is a management command" rule).
 """
 
 import datetime as dt
-import re
 from typing import IO, Annotated, Any, NoReturn, cast
 
 import typer
@@ -17,23 +16,13 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+from teatree.core.modelkit.durations import parse_duration
 from teatree.core.models import Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.preset_admin import delete_preset
 from teatree.loops.preset_editing import PresetEditError, apply_entry_edits
 from teatree.loops.preset_status import active_summary
-
-_DURATION_RE = re.compile(r"^(\d+)([smhd])$")
-_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
-
-def _parse_duration(raw: str) -> dt.timedelta:
-    match = _DURATION_RE.match(raw.strip())
-    if match is None:
-        msg = f"invalid --for duration {raw!r}; use forms like 2h, 30m, 1d"
-        raise ValueError(msg)
-    return dt.timedelta(seconds=int(match.group(1)) * _DURATION_UNIT_SECONDS[match.group(2)])
 
 
 def _parse_expiry(raw: str) -> dt.datetime | None:
@@ -43,7 +32,7 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
     absolute instant — so the two-flag alias never depends on which name the user typed.
     """
     try:
-        return timezone.now() + _parse_duration(raw)
+        return timezone.now() + parse_duration(raw, flag="--for")
     except ValueError:
         return _parse_iso(raw)
 

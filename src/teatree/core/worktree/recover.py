@@ -9,23 +9,52 @@ report by composing the primitives that already exist — the boot sweeps,
 branch -> Worktree -> ticket -> task map. Stranded work is surfaced for SALVAGE
 (push the branch to a PR), never auto-captured: there is no recovery snapshot.
 
-``--requeue`` (reopen FAILED tasks) is the only action the operator asks for.
+``--requeue`` (reopen FAILED tasks) is the only action the operator asks for, and it is
+BOUNDED (#4710): a recovery run recovers the incident's casualties, not every failure in
+the deployment's history — the dispatcher claims oldest-first, so an unbounded requeue
+buries the incident's own fix behind years of dead work.
 Gathering is otherwise pure reads EXCEPT the boot sweeps, which run by default
 and do write, so the report's own header reports what they recovered rather than
 claiming nothing changed.
 """
 
+import datetime as dt
 from dataclasses import dataclass, field
 from typing import TypedDict
 
+from django.utils import timezone
+
 from teatree.config import clone_root
 from teatree.core.gates.orphan_guard import BranchStatus, find_orphans_in_workspace
-from teatree.core.models import Task, Worktree
+from teatree.core.modelkit.durations import format_age, format_window
+from teatree.core.modelkit.task_parking import PARK_STAMPS
+from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.reconcile import reconcile_all
 from teatree.core.worktree.recovery_sweeps import BootSweepCounts, run_boot_sweeps
 
 _OUTAGE_ERROR_PREFIX = "outage_death:"
+
+#: Recovering an outage means recovering THAT outage's casualties, so the requeue is
+#: bounded by default; ``since=None`` is the explicit opt-in to the whole history.
+DEFAULT_REQUEUE_WINDOW = dt.timedelta(hours=24)
+
+#: Above this many candidates the reopen is refused rather than performed silently —
+#: 186 reopened tasks may not be a side effect of one flag. Raising it means naming the
+#: number, so a flood is never a blanket confirmation.
+DEFAULT_MAX_REOPEN = 25
+
+
+class RequeueThresholdError(RuntimeError):
+    """Raised when a requeue would reopen more tasks than the caller confirmed."""
+
+    def __init__(self, count: int, max_reopen: int) -> None:
+        self.count = count
+        self.max_reopen = max_reopen
+        super().__init__(
+            f"refusing to reopen {count} task(s) — over the --max {max_reopen} ceiling; "
+            f"re-run with --max {count} to confirm that number, or narrow --since",
+        )
 
 
 class BootSweepsDict(TypedDict):
@@ -43,12 +72,19 @@ class OrphanDict(TypedDict):
     open_pr_url: str
 
 
+class RequeueExclusionsDict(TypedDict):
+    older_than_window: int
+    duplicate_phase: int
+    live_successor: int
+
+
 class RequeueDict(TypedDict):
     task_pk: int
     ticket_url: str
     phase: str
     error: str
     is_outage: bool
+    failed_at: str
 
 
 class RecoverReportDict(TypedDict):
@@ -57,6 +93,8 @@ class RecoverReportDict(TypedDict):
     committed_unpushed: list[OrphanDict]
     open_pr_pending: list[OrphanDict]
     requeue_candidates: list[RequeueDict]
+    requeue_window_seconds: int | None
+    requeue_excluded: RequeueExclusionsDict
     drift_ticket_pks: list[int]
 
 
@@ -80,6 +118,31 @@ class RequeueCandidate:
     phase: str
     error: str
     is_outage: bool
+    failed_at: dt.datetime | None = None
+
+
+@dataclass
+class RequeueExclusions:
+    """Why the FAILED rows that are NOT candidates were left alone."""
+
+    older_than_window: int = 0
+    duplicate_phase: int = 0
+    live_successor: int = 0
+
+    def to_dict(self) -> RequeueExclusionsDict:
+        return RequeueExclusionsDict(
+            older_than_window=self.older_than_window,
+            duplicate_phase=self.duplicate_phase,
+            live_successor=self.live_successor,
+        )
+
+    def to_terse(self) -> str:
+        parts = [
+            f"{self.older_than_window} older than the window",
+            f"{self.duplicate_phase} superseded on the same phase",
+            f"{self.live_successor} already held by a live task",
+        ]
+        return ", ".join(parts)
 
 
 @dataclass
@@ -91,6 +154,8 @@ class RecoverReport:
     committed_unpushed: list[OrphanItem] = field(default_factory=list)
     open_pr_pending: list[OrphanItem] = field(default_factory=list)
     requeue_candidates: list[RequeueCandidate] = field(default_factory=list)
+    requeue_window: dt.timedelta | None = DEFAULT_REQUEUE_WINDOW
+    requeue_excluded: RequeueExclusions = field(default_factory=RequeueExclusions)
     drift_ticket_pks: list[int] = field(default_factory=list)
 
     @property
@@ -123,9 +188,12 @@ class RecoverReport:
                     phase=c.phase,
                     error=c.error,
                     is_outage=c.is_outage,
+                    failed_at=c.failed_at.isoformat() if c.failed_at else "",
                 )
                 for c in self.requeue_candidates
             ],
+            requeue_window_seconds=(None if self.requeue_window is None else int(self.requeue_window.total_seconds())),
+            requeue_excluded=self.requeue_excluded.to_dict(),
             drift_ticket_pks=self.drift_ticket_pks,
         )
 
@@ -165,10 +233,15 @@ class RecoverReport:
         lines += self._render_orphans("Committed-unpushed (pushed, no PR)", self.committed_unpushed)
         lines += self._render_orphans("Open-PR pending", self.open_pr_pending)
         if self.requeue_candidates:
-            lines.append(f"Re-queue candidates ({len(self.requeue_candidates)}):")
+            now = timezone.now()
+            lines.append(
+                f"Re-queue candidates ({len(self.requeue_candidates)}, {self._window_phrase()}; "
+                f"excluded: {self.requeue_excluded.to_terse()}):",
+            )
             lines += [
                 f"  task TODO-{c.task_pk} {c.phase or '(no phase)'} "
-                f"{'[outage]' if c.is_outage else '[failed]'} {c.ticket_url or '(no url)'} — {c.error}"
+                f"{'[outage]' if c.is_outage else '[failed]'} {c.ticket_url or '(no url)'} "
+                f"({format_age(c.failed_at, now=now)}) — {c.error}"
                 for c in self.requeue_candidates
             ]
         if self.drift_ticket_pks:
@@ -176,6 +249,26 @@ class RecoverReport:
         if not self.has_findings:
             lines.append("(no stranded work found)")
         return "\n".join(lines)
+
+    def _window_phrase(self) -> str:
+        if self.requeue_window is None:
+            return "any age"
+        return f"within {format_window(self.requeue_window)}"
+
+    def requeue_preview(self) -> str:
+        """What ``--requeue`` is about to do, stated BEFORE it does it."""
+        candidates = self.requeue_candidates
+        if not candidates:
+            return f"Will reopen 0 task(s) — nothing failed {self._window_phrase()}."
+        now = timezone.now()
+        tickets = {c.ticket_url for c in candidates}
+        dated = sorted(c.failed_at for c in candidates if c.failed_at is not None)
+        ages = [format_age(dated[0], now=now), format_age(dated[-1], now=now)] if dated else []
+        span = " … ".join(dict.fromkeys(ages)) if ages else "undated"
+        return (
+            f"Will reopen {len(candidates)} task(s) across {len(tickets)} ticket(s), "
+            f"failed {span} ({self._window_phrase()})."
+        )
 
     @staticmethod
     def _render_orphans(title: str, orphans: list[OrphanItem]) -> list[str]:
@@ -220,16 +313,70 @@ def _classify_orphans(report: RecoverReport) -> None:
             report.open_pr_pending.append(item)
 
 
-def _collect_requeue_candidates(report: RecoverReport) -> None:
-    for task in Task.objects.filter(status=Task.Status.FAILED).select_related("ticket").order_by("pk"):
+def _reopenable_failed_tasks() -> list[Task]:
+    """The FAILED rows a requeue may touch at all, newest first, attempts prefetched.
+
+    Excludes the DELIBERATELY parked ones — a halted task already paged a human and a
+    superseded one has a live successor holding its phase, so reopening either undoes a
+    decision rather than recovering a casualty.
+    """
+    queryset = Task.objects.filter(status=Task.Status.FAILED)
+    for stamp in PARK_STAMPS:
+        queryset = queryset.exclude(execution_reason__contains=stamp)
+    return list(queryset.select_related("ticket").prefetch_related("attempts").order_by("-pk"))
+
+
+def _last_attempt(task: Task) -> TaskAttempt | None:
+    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]
+    return attempts[-1] if attempts else None
+
+
+def _failure_instant(task: Task) -> dt.datetime | None:
+    """When this task last failed — an attempt killed mid-flight records no ``ended_at``."""
+    attempt = _last_attempt(task)
+    if attempt is not None:
+        return attempt.ended_at or attempt.started_at
+    return task.created_at
+
+
+def _live_phase_keys() -> set[tuple[int, str]]:
+    """The ``(ticket, phase)`` pairs a PENDING/CLAIMED task already holds."""
+    return set(
+        Task.objects.filter(status__in=Task.Status.active()).values_list("ticket_id", "phase"),
+    )
+
+
+def _collect_requeue_candidates(report: RecoverReport, *, since: dt.timedelta | None) -> None:
+    """Bound the candidates to *since* and to ONE task per ``(ticket, phase)`` (#4710).
+
+    Newest-first, so the survivor of a de-duplicated phase is the attempt carrying the
+    most current context; the report itself is re-sorted into task order for reading.
+    """
+    cutoff = None if since is None else timezone.now() - since
+    live_keys = _live_phase_keys()
+    claimed_keys: set[tuple[int, str]] = set()
+    for task in _reopenable_failed_tasks():
         if task.ticket.is_terminal:
             continue
         # An unknown-overlay task can never be dispatched — reopening it would
         # re-crash on every drain (souliane/teatree#1959 poison pill).
         if not task.ticket.has_dispatchable_overlay():
             continue
-        last = task.attempts.order_by("-pk").first()
-        error = last.error if last else ""
+        failed_at = _failure_instant(task)
+        # An undated failure cannot be PROVED inside the window, so it stays out of it.
+        if cutoff is not None and (failed_at is None or failed_at < cutoff):
+            report.requeue_excluded.older_than_window += 1
+            continue
+        key = (task.ticket.pk, task.phase)
+        if key in live_keys:
+            report.requeue_excluded.live_successor += 1
+            continue
+        if key in claimed_keys:
+            report.requeue_excluded.duplicate_phase += 1
+            continue
+        claimed_keys.add(key)
+        attempt = _last_attempt(task)
+        error = attempt.error if attempt else ""
         report.requeue_candidates.append(
             RequeueCandidate(
                 task_pk=task.pk,
@@ -237,33 +384,46 @@ def _collect_requeue_candidates(report: RecoverReport) -> None:
                 phase=task.phase,
                 error=error,
                 is_outage=error.startswith(_OUTAGE_ERROR_PREFIX),
+                failed_at=failed_at,
             ),
         )
+    report.requeue_candidates.sort(key=lambda c: c.task_pk)
 
 
-def gather_recover_report(*, run_sweeps: bool = True) -> RecoverReport:
+def gather_recover_report(
+    *,
+    run_sweeps: bool = True,
+    since: dt.timedelta | None = DEFAULT_REQUEUE_WINDOW,
+) -> RecoverReport:
     """Compose the full recovery report from the existing recovery primitives.
 
     Pure reads except the boot sweeps, which are themselves idempotent recovery
     (replay dropped transitions, reclaim orphaned claims, reap stale claims) and
     are the documented boot/tick behaviour — they run by default so a stalled
     ledger is rescued before the report is built. ``run_sweeps=False`` skips them
-    for a strictly read-only inspection.
+    for a strictly read-only inspection. ``since=None`` drops the requeue window.
     """
-    report = RecoverReport(boot_sweeps=run_boot_sweeps() if run_sweeps else BootSweepCounts())
+    report = RecoverReport(
+        boot_sweeps=run_boot_sweeps() if run_sweeps else BootSweepCounts(),
+        requeue_window=since,
+    )
     _classify_orphans(report)
-    _collect_requeue_candidates(report)
+    _collect_requeue_candidates(report, since=since)
     report.drift_ticket_pks = sorted(reconcile_all().keys())
     return report
 
 
-def requeue_failed_tasks(report: RecoverReport) -> list[int]:
+def requeue_failed_tasks(report: RecoverReport, *, max_reopen: int = DEFAULT_MAX_REOPEN) -> list[int]:
     """Reopen the genuinely-incomplete FAILED tasks in *report*. Returns reopened pks.
 
     Only reopens tasks whose ticket is still non-terminal (the candidates the
     report already filtered to) and whose status is still FAILED at write time —
     a task completed by a concurrent actor between gather and requeue is skipped.
+    Past *max_reopen* candidates nothing is reopened: confirming a flood means naming
+    its size, so it is always a number someone chose rather than a blanket yes.
     """
+    if len(report.requeue_candidates) > max_reopen:
+        raise RequeueThresholdError(len(report.requeue_candidates), max_reopen)
     reopened: list[int] = []
     for candidate in report.requeue_candidates:
         task = Task.objects.filter(pk=candidate.task_pk, status=Task.Status.FAILED).first()

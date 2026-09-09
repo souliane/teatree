@@ -14,6 +14,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_parking import LIVE_SUCCESSOR_STAMP
 from teatree.core.models import Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
@@ -22,11 +23,6 @@ from teatree.core.models.phase_landing import phase_landing_evidence
 #: out of the scan — the away-mode queue is never asked about a phase the ticket
 #: already advanced past (the 3366/3336/3352 redispatch-loop root cause).
 SUPERSEDED_STAMP = "[superseded-retired]"
-#: Stamped onto ``execution_reason`` when a FAILED task is parked because a newer,
-#: still-active sibling Task holds its ``(ticket, phase)`` (#3534). The row stays
-#: FAILED — the phase has not completed — and drops out of the scan, so the stale
-#: predecessor neither escalates nor advances the ticket's FSM.
-LIVE_SUCCESSOR_STAMP = "[superseded-parked]"
 
 #: Stamped onto ``execution_reason`` when a review/codex-review task is retired
 #: because its linked PR is provably MERGED/CLOSED. A review verdict can never land

@@ -6365,12 +6365,17 @@ Usage: t3 recover [OPTIONS] [COMMAND] [ARGS]...
  Find (and optionally recover) work stranded by a network-outage death (#1764).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --requeue              Reopen genuinely-incomplete FAILED (incl.             │
-│                        outage-death) tasks.                                  │
-│ --json                 Emit the structured report as JSON.                   │
-│ --overlay        TEXT  Which overlay's manage.py runs the report (default:   │
-│                        active overlay).                                      │
-│ --help                 Show this message and exit.                           │
+│ --requeue                 Reopen genuinely-incomplete FAILED (incl.          │
+│                           outage-death) tasks.                               │
+│ --since          TEXT     Only reopen tasks that failed within this window   │
+│                           (default: 1d).                                     │
+│ --max            INTEGER  Refuse to reopen more than this many tasks         │
+│                           (default: 25).                                     │
+│                           [default: -1]                                      │
+│ --json                    Emit the structured report as JSON.                │
+│ --overlay        TEXT     Which overlay's manage.py runs the report          │
+│                           (default: active overlay).                         │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
