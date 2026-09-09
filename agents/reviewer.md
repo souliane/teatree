@@ -37,7 +37,7 @@ never happened, and it is refused.
 "review_verdict": {
   "verdict": "merge_safe",
   "reviewed_sha": "<full 40-char SHA of the head you were dispatched for>",
-  "reviewer_identity": "<your reviewer id — never a maker/coder/loop role>",
+  "reviewer_identity": "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)",
   "gh_verify_result": "green",
   "blast_class": "logic",
   "findings": [{"severity": "major", "summary": "...", "file": "src/x.py", "line": 42}]
