@@ -23,6 +23,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
+
+from teatree.backends.slack.self_identity import OwnSlackIdentity, identity_from_auth_test, is_self_originated
+
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +173,36 @@ def commit_reactions_drain(path: Path | None = None, *, retain: list[dict] | Non
     commit_drain(path or default_reactions_queue_path(), retain=retain)
 
 
+class _AuthTestClient(Protocol):
+    """The one ``WebClient`` method the wake self-filter needs."""
+
+    def auth_test(self) -> object: ...
+
+
+def _probe_own_identity(web_client: _AuthTestClient, overlay_name: str) -> OwnSlackIdentity | None:
+    """The bot's own ids, probed ONCE per connection — ``None`` when unavailable.
+
+    Per connection rather than per event: probing per message is what made
+    ``auth.test`` hot enough to be rate-limited (#4707). An unresolved identity
+    costs precision, not the guard — :func:`is_self_originated` still reads
+    ``bot_id`` and ``api_app_id`` straight off the event.
+    """
+    try:
+        response = web_client.auth_test()
+    except Exception:  # noqa: BLE001 — a probe failure degrades the filter, never the listener
+        logger.warning("[%s] auth.test raised; wake self-filter runs on event fields alone", overlay_name)
+        return None
+    body = getattr(response, "data", response)
+    identity = identity_from_auth_test(cast("RawAPIDict", body) if isinstance(body, dict) else None)
+    if identity is None:
+        logger.warning(
+            "[%s] auth.test gave no usable identity; wake self-filter runs on event fields alone", overlay_name
+        )
+    else:
+        logger.info("[%s] own identity user=%s bot=%s", overlay_name, identity.user_id, identity.bot_id)
+    return identity
+
+
 def _run_single_overlay(
     *,
     overlay: tuple[str, str, str],
@@ -190,6 +226,7 @@ def _run_single_overlay(
 
     web_client = WebClient(token=bot_token)
     client = SocketModeClient(app_token=app_token, web_client=web_client)
+    identity = _probe_own_identity(web_client, overlay_name)
 
     def _handle(_sm_client: BaseSocketModeClient, req: SocketModeRequest) -> None:
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -205,14 +242,18 @@ def _run_single_overlay(
         target = queues.for_event_type(event_type)
         _enqueue(target, overlay_name, event)
         logger.info("[%s] Queued %s event (ts=%s)", overlay_name, event_type, event.get("ts", "?"))
-        if on_event is not None:
-            # Best-effort event-driven wake so the answer cycle runs now instead of
-            # at the next cadence tick. The JSONL write above is the durable buffer,
-            # so a failed signal only costs latency — never an event.
-            try:
-                on_event()
-            except Exception:
-                logger.warning("[%s] slack-answer wake signal failed", overlay_name, exc_info=True)
+        if on_event is None:
+            return
+        if is_self_originated(event, identity):
+            logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay_name, event.get("ts", "?"))
+            return
+        # Best-effort event-driven wake so the answer cycle runs now instead of
+        # at the next cadence tick. The JSONL write above is the durable buffer,
+        # so a failed signal only costs latency — never an event.
+        try:
+            on_event()
+        except Exception:
+            logger.warning("[%s] slack-answer wake signal failed", overlay_name, exc_info=True)
 
     client.socket_mode_request_listeners.append(_handle)
     client.connect()
