@@ -27,6 +27,7 @@ from teatree.cli.doctor.checks_bootstrap import (
 )
 from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable, _check_config_override_tier_healthy
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
+from teatree.cli.doctor.checks_dead_ticket_rows import check_dead_ticket_rows
 from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -218,6 +219,7 @@ __all__ = (
     "_write_dev_sources_marker",
     "agent_skill_dirs",
     "check",
+    "check_dead_ticket_rows",
     "check_slack_engagement",
     "check_slack_roundtrip",
     "check_statusline",
