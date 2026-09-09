@@ -112,6 +112,7 @@ from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelo
 from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
+from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import (
     RecoveryStrategy,
@@ -366,6 +367,12 @@ def _budget_halt_reason(task: Task) -> str | None:
     A CAUSELESS attempt is dropped from the stall comparison (#4075): this sweep's own
     corrective retry is what produces the second no-envelope attempt, so counting it made
     the halt an artifact of the repair rather than an observation about the work.
+
+    The CAP is skipped for a synthetic cadence-anchor ticket (``architectural_review``,
+    ``eval_local``, …) — same exemption and rationale as
+    :func:`~teatree.core.models.task_repair.check_requeue_allowed`: ``PhaseCadence``
+    re-fires such a ticket's phase forever by design, so a lifetime attempt count is not
+    a doom signal there. Stall detection stays live either way.
     """
     attempts = phase_attempts(task)
     last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
@@ -376,7 +383,11 @@ def _budget_halt_reason(task: Task) -> str | None:
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,
         )
-    except (MaxIterationsExceeded, IterationStalled) as exc:
+    except IterationStalled as exc:
+        return str(exc)
+    except MaxIterationsExceeded as exc:
+        if is_synthetic_ticket_url(task.ticket.issue_url):
+            return None
         return str(exc)
     return None
 

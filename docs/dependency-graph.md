@@ -53,6 +53,7 @@ graph TD
     teatree.core --> teatree.backends.types
     teatree.core --> teatree.backends.http_retry
     teatree.core --> teatree.core.modelkit
+    teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
     teatree.core --> teatree.core.schema_readiness
@@ -96,6 +97,7 @@ graph TD
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
     teatree.core.models --> teatree.core.claim_liveness
+    teatree.core.models --> teatree.core.forge_url
     teatree.core.models --> teatree.core.modelkit
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
@@ -427,6 +429,7 @@ graph TD
     teatree.claude_sessions
     teatree.overlay_init
     teatree.core.modelkit
+    teatree.core.forge_url
     teatree.core.models.errors
     teatree.core.session_identity
     teatree.core.repair_loop
