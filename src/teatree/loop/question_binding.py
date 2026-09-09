@@ -132,13 +132,23 @@ def _pending_by_id(question_id: int) -> DeferredQuestion | None:
 
 
 def _inferred_question(reply: PendingChatInjection) -> DeferredQuestion | None:
-    """Rungs (b) and (c): the thread root's question, else the only live one."""
+    """Rungs (b) and (c): the thread root's question, else the only live one.
+
+    Rung (c) is reachable only from a TOP-LEVEL reply, which is what
+    ``sole_for_reply`` is: with one live mirror such a reply cannot be for anything
+    else. A reply carrying a ``thread_ts`` has already named its referent, so a
+    ``thread_ts`` matching no mirror means it answers the info/watchdog DM it hangs
+    under — not the sole open question. Falling through consumed the owner's
+    INSTRUCTION as that question's answer and ✅-acked it, leaving the instruction
+    with no consumer at all; unbound, it reaches the reactive cycle, which dispatches
+    or files it (#4527).
+    """
     threaded = DeferredQuestion.for_thread(
         channel=reply.channel,
         thread_ts=reply.thread_ts,
         after_ts=reply.slack_ts,
     )
-    if threaded is not None:
+    if threaded is not None or reply.thread_ts:
         return threaded
     return DeferredQuestion.sole_for_reply(channel=reply.channel, after_ts=reply.slack_ts)
 
