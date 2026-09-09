@@ -1000,11 +1000,20 @@ class _RetentionSettings:
     task_attempt_retention_days: int = 30
     incoming_event_retention_days: int = 30
     # #4178 age backstop over the pending DeferredQuestion backlog. A row past this
-    # many days with no resolution is ESCALATED — stamped and audited, never dismissed
-    # (directive #45), and at most once per window. 3 days because that is where the
-    # measured backlog turned from a queue into a graveyard (46 of 70 rows). ``0``
-    # disables the backstop. Per-overlay overridable.
+    # many days with no resolution is ESCALATED — stamped and audited, at most once per
+    # window, and left pending. One RUNG of the ladder that deferred_question_max_
+    # escalations below ends. 3 days because that is where the measured backlog turned
+    # from a queue into a graveyard (46 of 70 rows). ``0`` disables the backstop.
+    # Per-overlay overridable.
     deferred_question_age_ceiling_days: int = 3
+    # #4706 bound on the ladder above. The ceiling only ever RE-asked: it suppressed
+    # re-escalation while the last stamp was inside the window, so a row nobody answered
+    # escalated again every window, forever (measured: 116 pending, oldest 41d, 105 past
+    # the ceiling). After this many escalations the row is drained STALE with an audited
+    # reason — a question unanswered through 3 asks over 9 days was decided by default,
+    # and recording that is quieter and more honest than asking a fourth time. ``0``
+    # restores the unbounded ladder. Per-overlay overridable.
+    deferred_question_max_escalations: int = 3
     # The PARK lane's own window — separate from the terminal-owned rule above, and
     # deliberately shorter. A limit-park is a scheduling event on a task the park
     # itself RETURNS to the queue PENDING, so a park row's owning task is by

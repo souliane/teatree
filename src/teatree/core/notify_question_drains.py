@@ -20,7 +20,7 @@ of ``teatree.core.notify`` (at its module-health LOC cap). Both post pending
 * :func:`reask_escalated_questions` — the RECURRING nag's ANSWERABLE half. A
     digest is a place the owner cannot answer from (a reply under it carries the
     digest's thread ts, which joins no question), so the per-question bump is
-    posted INTO each question's own mirror thread under the SAME interval bucket.
+    posted INTO each question's own mirror thread, once per escalation generation.
     It records no row and re-records nothing: ``DeferredQuestion.record`` returns
     the existing pending row for a marker, so a re-ask built on it posts nothing
     at all.
@@ -252,18 +252,24 @@ def reask_escalated_questions(
     dismissing-and-recreating would break that mute and cut the single-use audit
     chain. So the bump rides the row and the mirror thread it already has, and the
     only new state is one ``BotPing`` under
-    ``reask:<stable_notify_ref>:<bucket>``. The bucket is the same
-    :data:`RESURFACE_INTERVAL_HOURS` window the digest uses, so every tick inside
-    one bucket collapses onto the delivered ping and only a new bucket bumps again.
+    ``reask:<stable_notify_ref>:e<escalation_count>``. The ESCALATION is the cadence:
+    every tick collapses onto the delivered ping until the age backstop stamps the next
+    escalation, so an unanswered row is bumped once per rung and the nag stops when the
+    ladder does — rather than once per 24h bucket, for as long as the row stayed pending.
 
     The count is of NEW bumps: a key the ledger has already delivered returns a sent
-    outcome too, so counting that would report a fresh nag on every tick of the bucket.
+    outcome too, so counting that would report a fresh nag on every tick.
 
     Escalated rows come first and, within each half, the oldest — the rows the age
     backstop has already stamped as sat-past-the-ceiling. Only MIRRORED rows are
     candidates: an un-mirrored row has no thread to bump into, and it belongs to
     :func:`drain_unmirrored_deferred_questions`, which posts its FIRST copy at root
     and stamps the mirror this function then rides.
+
+    A row already bumped at its current generation is dropped BEFORE the batch is cut,
+    which is what makes the five slots rotate: keyed on the clock, they went to the same
+    five most-urgent rows every bucket, so those five were re-notified daily forever
+    while row six was never bumped at all (#4706).
     """
     rows = [
         row for row in DeferredQuestion.pending() if row.audience != DeferredQuestion.Audience.INTERNAL and row.slack_ts
@@ -272,8 +278,9 @@ def reask_escalated_questions(
         return 0, 0
 
     stamped_at = now or timezone.now()
-    bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
-    urgent = sorted(rows, key=lambda row: (row.escalated_at is None, row.created_at))[:_REASK_BATCH]
+    delivered = _bumped_generations(rows)
+    unbumped = [row for row in rows if _reask_key(row) not in delivered]
+    urgent = sorted(unbumped, key=lambda row: (row.escalated_at is None, row.created_at))[:_REASK_BATCH]
 
     previous_overlay = _scoped_overlay_env(overlay)
     bumped = 0
@@ -282,7 +289,7 @@ def reask_escalated_questions(
             outcome = notify_user_outcome(
                 _reask_text(row, now=stamped_at),
                 kind=NotifyKind.QUESTION,
-                idempotency_key=f"{_REASK_KEY_PREFIX}{row.stable_notify_ref}:{bucket}",
+                idempotency_key=_reask_key(row),
                 audience=NotifyAudience.OWNER_QUESTION,
                 options=_answerable_options(row, backend=backend, user_id=user_id),
             )
@@ -294,6 +301,26 @@ def reask_escalated_questions(
     finally:
         _restore_overlay_env(overlay, previous_overlay)
     return bumped, len(rows)
+
+
+def _reask_key(row: DeferredQuestion) -> str:
+    """The bump's idempotency key — the row AND the escalation generation it is bumping."""
+    return f"{_REASK_KEY_PREFIX}{row.stable_notify_ref}:e{row.escalation_count}"
+
+
+def _bumped_generations(rows: Sequence[DeferredQuestion]) -> set[str]:
+    """Which of *rows*' current generations the ledger has already DELIVERED, in one query.
+
+    Only a ``SENT`` ping counts: a bump that never reached the owner has to stay a
+    candidate, so an undelivered one retries on the next tick rather than being counted
+    as a nag the owner has had.
+    """
+    return set(
+        BotPing.objects.filter(
+            idempotency_key__in=[_reask_key(row) for row in rows],
+            status=BotPing.Status.SENT,
+        ).values_list("idempotency_key", flat=True)
+    )
 
 
 def _scoped_overlay_env(overlay: str) -> str | None:
