@@ -23,6 +23,11 @@ may LEAD the bundle but never trail it: a generation behind the introduction of
 ``claude-opus-5`` breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``, which
 sets that model as the ``frontier`` tier.
 
+Both tiers are additionally held at or above :data:`_MODEL_MINIMUM_CLI_VERSION`. Every
+other assertion here compares the pins only to EACH OTHER, so they all hold at a version
+the API rejects — which is how the implementation lane 400ed for a day with this file
+green (souliane/teatree#4704).
+
 So these tests assert agreement PER TIER and never one global version across all
 sites — that global equality is precisely the mistake the split exists to avoid.
 The two tiers may happen to name the same version when the SDK's bundle catches up
@@ -52,17 +57,26 @@ _RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.139"
+_PINNED_SDK_VERSION = "0.2.152"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.233 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.233"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.259 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.259"
 
 #: The deployed runtime's pin: the version the factory host runs today.
-_RUNTIME_CLI_VERSION = "2.1.233"
+_RUNTIME_CLI_VERSION = "2.1.265"
 
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
+
+#: The oldest CLI the API accepts for the models teatree dispatches. Under it every
+#: dispatch dies with ``400 ... Claude Code 2.1.233 does not support this model; version
+#: 2.1.251 or newer is required`` BEFORE the task is claimed, so nothing local sees it.
+#: The floor is server-side: no manifest, lockfile or bot can read it, and the tier
+#: assertions below only ever compared the pins to EACH OTHER — which is how both tiers
+#: sat under it with this suite green (souliane/teatree#4704). Raise it only from an
+#: observed API refusal, never speculatively.
+_MODEL_MINIMUM_CLI_VERSION = "2.1.251"
 
 _EVAL_TEST_SITES = frozenset(
     {
@@ -386,4 +400,41 @@ class TestTheRuntimeTierIsPinnedIndependently:
         versions = {match.group("version") for match in _PYRIGHT_PATTERN.finditer(text)}
         assert versions == {_PYRIGHT_VERSION}, (
             f"deploy/Dockerfile must install pyright@{_PYRIGHT_VERSION}; got {versions or 'no install'}."
+        )
+
+
+class TestEveryPinClearsTheApiFloor:
+    """Agreeing with each other is not enough — both tiers must clear the API's own floor.
+
+    Every other assertion here is INTERNAL: sites match their tier's constant, the runtime
+    does not trail the bundle. All of them hold at a version the API rejects, which is
+    exactly what happened — the whole implementation lane 400ed for a day with this file
+    green. This is the one assertion that reads the outside world's requirement.
+    """
+
+    def test_no_install_site_ships_a_cli_the_model_rejects(self) -> None:
+        below = {
+            name: version
+            for name, version in sorted(_install_sites().items())
+            if version is not None and _as_tuple(version) < _as_tuple(_MODEL_MINIMUM_CLI_VERSION)
+        }
+        assert not below, (
+            f"every `npm install -g @anthropic-ai/claude-code` must pin >= {_MODEL_MINIMUM_CLI_VERSION}, "
+            "the oldest CLI the API accepts for the dispatched models — under it every dispatch dies "
+            f"with an API 400 before the task is ever claimed. Below the floor: {below}"
+        )
+
+    def test_the_runtime_tier_clears_the_floor(self) -> None:
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_MODEL_MINIMUM_CLI_VERSION), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} is under the API floor {_MODEL_MINIMUM_CLI_VERSION}: "
+            "the deployed image execs the global binary, so every dispatched task would 400."
+        )
+
+    def test_the_eval_test_tier_clears_the_floor(self) -> None:
+        # The fix when this reds is the SDK pin, never this file: the eval lane execs the
+        # bundle, so only a release bundling a newer CLI can lift the tier off the floor.
+        assert _as_tuple(_SDK_BUNDLED_CLI_VERSION) >= _as_tuple(_MODEL_MINIMUM_CLI_VERSION), (
+            f"claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude-code@{_SDK_BUNDLED_CLI_VERSION}, "
+            f"under the API floor {_MODEL_MINIMUM_CLI_VERSION}. The eval lane execs that bundle, so it "
+            "would 400 on every scenario — bump the SDK pin to a release bundling a CLI at or above it."
         )
