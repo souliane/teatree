@@ -986,7 +986,12 @@ next approved run, so the shared renderer is what makes the grouping durable rat
 one-off reformat. `tests/config/test_defaults_file_grouping.py` pins the shipped block's
 key ORDER to that walk and names the banner a stray key belongs under, and
 `tests/config/test_defaults_snapshot.py`'s byte-for-byte fixed-point test keeps the
-committed file a fixed point of the renderer.
+committed file a fixed point of the renderer. A key hand-added to the shipped file lands in
+its ALPHABETICAL slot inside whichever group's table happens to span that spelling, which is
+a valid-looking TOML document both tests then reject ([#4580](https://github.com/souliane/teatree/issues/4580)
+shipped `orphan_group_min_age_hours` under `Gates > Pre-publish` that way) — the misplacement
+report names the table and the row to move it under, so the correction is that move and
+nothing else.
 
 `/dash/config/` is retired into this page and redirects to it. Its readouts that are NOT
 `ConfigSetting` rows — the resolved model / reasoning-effort pins, the `pass` entry each
