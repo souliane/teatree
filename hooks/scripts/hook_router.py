@@ -4655,7 +4655,11 @@ def _kick_question_drain(ref: str) -> None:
     overlay = os.environ.get("T3_OVERLAY_NAME", "")
     if not ref or not overlay:
         return
-    argv = t3_argv(overlay, "questions", "mirror", "--ref", ref)
+    # ``T3_OVERLAY_NAME`` carries the entry name (e.g. ``t3-teatree``); the CLI group
+    # registers under the canonical short name with that prefix stripped (``t3 teatree
+    # …``). The full entry name is still what ``--overlay`` wants, for per-overlay bot
+    # routing.
+    argv = t3_argv(overlay.removeprefix("t3-"), "questions", "mirror", "--ref", ref, "--overlay", overlay)
     if argv is None:
         return
     with contextlib.suppress(Exception):

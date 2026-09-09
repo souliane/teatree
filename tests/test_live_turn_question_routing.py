@@ -364,3 +364,32 @@ class TestSection807InteropGate:
         """Control: without this, the test above could pass on a §807 gate broken in general."""
         transcript = self._transcript(tmp_path, with_tool_use=False)
         assert handle_enforce_structured_question({"transcript_path": str(transcript)}) is True
+
+
+class TestKickQuestionDrainArgvUsesTheCanonicalGroup:
+    """The kick's argv must be a REAL ``t3`` command, not just correctly triggered.
+
+    ``T3_OVERLAY_NAME`` carries the entry name (e.g. ``t3-teatree``), but the CLI
+    group registers under the canonical short name with the ``t3-`` prefix
+    stripped (``t3 teatree ...``) — ``OverlayEntry.canonical_overlay_name``. Passing
+    the raw entry name as the GROUP makes the whole spawn exit 2 at the root
+    ("No such command 't3-teatree'") before subcommand resolution is even reached,
+    silently dropping every loop-driven question back to the capped tick drain.
+    """
+
+    def test_argv_group_is_canonicalised_and_carries_overlay_option(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
+        with patch.object(router, "spawn_t3_detached") as spawn:
+            router._kick_question_drain("toolu_abc123")
+
+        spawn.assert_called_once()
+        argv = spawn.call_args.args[0]
+        assert argv[1] == "teatree", "the group must be the canonical short name, not the raw entry name"
+        assert "t3-teatree" not in argv[:2], "the entry name must never be passed as the CLI group"
+        assert argv[-2:] == ["--overlay", "t3-teatree"], "the full entry name still routes --overlay bot config"
+
+    def test_no_overlay_env_skips_the_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        with patch.object(router, "spawn_t3_detached") as spawn:
+            router._kick_question_drain("toolu_abc123")
+        spawn.assert_not_called()
