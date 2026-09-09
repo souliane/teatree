@@ -107,13 +107,14 @@ def resolve_own_identity(backend: MessagingBackend) -> OwnSlackIdentity | None:
     transport raised. Callers (the scanner) treat this as a hard
     fail-closed signal and refuse to enqueue any row that turn.
 
-    The "once" was aspirational until #4707: every call re-probed, so the
-    per-cycle callers together issued ~7 ``auth.test`` a minute and a
-    rate-limit there silently disabled the self-filter exactly when traffic
-    was highest. A resolved identity is now memoised on the backend
-    instance. Only successes are memoised, so a transient failure that later
-    recovers is re-probed, and a backend that refuses the attribute
-    (``__slots__``, frozen) merely keeps re-probing as before.
+    "Once" is per *backend*: a resolved identity is memoised on the instance,
+    and the backend factory keeps one backend per overlay for the process
+    life. #4707 is why that matters — every call used to re-probe, so the
+    per-cycle callers together put ~7 ``auth.test`` a minute on the wire, and
+    a rate-limit there silently disabled the self-filter exactly when traffic
+    was highest. Only successes are memoised, so a transient failure that
+    later recovers is re-probed, and a backend that refuses the attribute
+    (``__slots__``, frozen) simply re-probes every call.
     """
     memo = getattr(backend, _IDENTITY_MEMO_ATTR, None)
     if isinstance(memo, OwnSlackIdentity):
