@@ -19,9 +19,10 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, PullRequest, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.loop.question_drain import DrainReport, Verdict, drain_pending_questions, question_reachability
+from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 
 
@@ -46,6 +47,14 @@ def _session_keyed_question(*, ticket_state: str) -> DeferredQuestion:
 
 def _age(question: DeferredQuestion, *, days: int) -> None:
     DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(days=days))
+
+
+def _part_way_up_the_ladder(question: DeferredQuestion, *, count: int, days_ago: int) -> None:
+    """Stamp *count* escalations on *question*, the last of them *days_ago* old."""
+    DeferredQuestion.objects.filter(pk=question.pk).update(
+        escalation_count=count, escalated_at=timezone.now() - timedelta(days=days_ago)
+    )
+    question.refresh_from_db()
 
 
 class TestSubjectDerivedDrain(TestCase):
@@ -421,3 +430,190 @@ class TestSettledPullRequestsDrain(TestCase):
         assert drain_pending_questions().drained == 0
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_PENDING
+
+
+class TestTheAgeLadderTerminates(TestCase):
+    """The ceiling ends the row rather than re-asking about it forever (#4706).
+
+    ``_age_ceiling`` suppressed re-escalation only while the last stamp was newer than
+    the same cutoff, so once THAT stamp aged past the ceiling the row escalated again —
+    every ceiling period, with no terminal state. Measured at 116 pending rows, 105 of
+    them past the ceiling, the oldest 41 days old and still being asked.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
+        ConfigSetting.objects.set_value("deferred_question_max_escalations", 3)
+
+    def test_a_row_at_the_escalation_bound_is_drained_stale(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=3, days_ago=4)
+
+        report = drain_pending_questions()
+
+        assert (report.escalated, report.expired) == (0, 1)
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        audit = DeferredQuestionAudit.objects.get(question=question, action="dismissed")
+        assert audit.resolver_id == "age_ceiling"
+        assert "3 escalations" in audit.dismissed_reason
+
+    def test_the_ladder_escalates_to_the_bound_then_drains_once(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+
+        for _ in range(4):
+            drain_pending_questions()
+            DeferredQuestion.objects.filter(pk=question.pk).update(escalated_at=timezone.now() - timedelta(days=4))
+
+        assert DeferredQuestionAudit.objects.filter(question=question, action="escalated").count() == 3
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+    def test_a_drained_row_is_never_escalated_again(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=3, days_ago=4)
+
+        assert drain_pending_questions().expired == 1
+        assert drain_pending_questions() == DrainReport(drained=0, escalated=0, expired=0)
+
+    def test_a_row_at_the_bound_inside_the_window_is_left_alone(self) -> None:
+        # The last escalation is what the owner is still answering; expiry waits it out.
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=3, days_ago=0)
+
+        assert drain_pending_questions() == DrainReport(drained=0, escalated=0, expired=0)
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_never_escalated_row_escalates_before_it_can_ever_drain(self) -> None:
+        # Age ALONE never dismisses: however old the row, the owner is asked first.
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=90)
+
+        report = drain_pending_questions()
+
+        assert (report.escalated, report.expired) == (1, 0)
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_zero_bound_keeps_the_ladder_unbounded(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_max_escalations", 0)
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=9, days_ago=4)
+
+        report = drain_pending_questions()
+
+        assert (report.escalated, report.expired) == (1, 0)
+        question.refresh_from_db()
+        assert question.escalation_count == 10
+        assert question.is_pending
+
+    def test_a_zero_ceiling_disables_the_expiry_too(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=90)
+        _part_way_up_the_ladder(question, count=9, days_ago=40)
+
+        assert drain_pending_questions() == DrainReport(drained=0, escalated=0, expired=0)
+        question.refresh_from_db()
+        assert question.is_pending
+
+
+def _halt_question(ticket_pk: int) -> DeferredQuestion:
+    """The shape ``stuck_ticket_redispatch._escalate_once`` records.
+
+    The subject lives in the question TEXT — no marker, no session, no parked task —
+    so before #4706 no subject source could name it and only the backstop saw the row.
+    """
+    return DeferredQuestion.record(
+        f"{STUCK_HALT_MARKER.format(pk=ticket_pk)} Stuck ticket {ticket_pk} has no work in flight "
+        "but re-dispatch is halted. How should it proceed — investigate, rework, or ignore?"
+    )
+
+
+def _attempt(ticket: Ticket, *, phase: str, exit_code: int) -> TaskAttempt:
+    task = _completed(ticket, phase=phase)
+    return TaskAttempt.objects.create(task=task, exit_code=exit_code, error="" if exit_code == 0 else "boom")
+
+
+class TestHaltTriggerCleared(TestCase):
+    """A halt question is reconciled against its OWN trigger, not just its subject state.
+
+    Nine rows shared one dispatch-failure fingerprint; the fix landed, the tickets could
+    dispatch again, and every one of those questions stayed pending — moot, and escalating
+    on the age timer regardless.
+    """
+
+    def setUp(self) -> None:
+        # Isolate the subject stage: with no backstop, a drain here is the resolver's.
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
+
+    def test_a_halt_question_drains_once_its_ticket_runs_a_phase_to_success(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk)
+        _attempt(ticket, phase="coding", exit_code=0)
+
+        assert drain_pending_questions().drained == 1
+
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        assert "success" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
+
+    def test_a_halt_question_whose_ticket_only_failed_since_is_kept(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk)
+        _attempt(ticket, phase="coding", exit_code=1)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_success_predating_the_question_is_not_the_trigger_clearing(self) -> None:
+        # The halt was raised AFTER that success, so it says nothing about the failure.
+        ticket = _ticket(Ticket.State.STARTED)
+        _attempt(ticket, phase="coding", exit_code=0)
+        question = _halt_question(ticket.pk)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_halt_question_on_a_terminal_ticket_drains(self) -> None:
+        ticket = _ticket(Ticket.State.MERGED)
+        question = _halt_question(ticket.pk)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert "terminal" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
+
+    def test_a_halt_question_on_a_live_ticket_that_never_recovered_is_kept(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_halt_question_naming_an_unknown_ticket_is_kept(self) -> None:
+        # Undeterminable ⇒ KEEP. Never drop a question on a guess (#3692).
+        question = _halt_question(999999)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_the_halt_resolver_reports_its_verdict_in_the_reachability_map(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk)
+        _attempt(ticket, phase="coding", exit_code=0)
+
+        reach = next(r for r in question_reachability() if r.question_id == question.pk)
+
+        assert reach.has_subject
+        assert reach.decisions["halt_trigger_cleared"] == Verdict.DRAIN

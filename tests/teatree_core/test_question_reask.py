@@ -68,17 +68,15 @@ class TestTheBumpRidesTheExistingRow(TestCase):
         backend.post_message.assert_called_once()
         assert backend.post_message.call_args.kwargs["thread_ts"] == "100.0"
 
-    def test_the_idempotency_key_carries_the_interval_bucket(self) -> None:
+    def test_the_idempotency_key_carries_the_escalation_generation(self) -> None:
         row = _mirrored("Which DB host?", slack_ts="100.0")
-        now = timezone.now()
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            reask_escalated_questions(user_id="U_ME", backend=backend, now=now)
+            reask_escalated_questions(user_id="U_ME", backend=backend)
 
-        bucket = int(now.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
         assert BotPing.objects.filter(
-            idempotency_key=f"reask:{row.stable_notify_ref}:{bucket}",
+            idempotency_key=f"reask:{row.stable_notify_ref}:e0",
             status=BotPing.Status.SENT,
         ).exists()
 
@@ -107,8 +105,14 @@ class TestTheBumpRidesTheExistingRow(TestCase):
             assert reask_escalated_questions(user_id="U_ME", backend=backend) == (0, 0)
 
 
-class TestTheBucketIsTheCadence(TestCase):
-    def test_a_second_tick_in_the_same_bucket_posts_nothing(self) -> None:
+class TestTheEscalationGenerationIsTheCadence(TestCase):
+    """One bump per escalation, so the nag ends where the age ladder does (#4706).
+
+    Keyed on the 24h bucket, a row nobody answered was bumped again every bucket for as
+    long as it stayed pending — 105 rows past the ceiling, re-notified daily, forever.
+    """
+
+    def test_a_second_tick_at_the_same_generation_posts_nothing(self) -> None:
         _mirrored("Which DB host?", slack_ts="100.0")
         now = timezone.now()
         backend = _backend()
@@ -118,9 +122,9 @@ class TestTheBucketIsTheCadence(TestCase):
             second, _ = reask_escalated_questions(user_id="U_ME", backend=backend, now=now + dt.timedelta(minutes=5))
 
         assert (first, second) == (1, 0)
-        assert backend.post_message.call_count == 1, "every tick inside one bucket re-bumped the owner"
+        assert backend.post_message.call_count == 1, "every tick re-bumped the owner"
 
-    def test_the_next_bucket_bumps_again(self) -> None:
+    def test_an_unanswered_row_is_not_re_bumped_a_bucket_later(self) -> None:
         _mirrored("Which DB host?", slack_ts="100.0")
         now = timezone.now()
         backend = _backend()
@@ -133,7 +137,36 @@ class TestTheBucketIsTheCadence(TestCase):
                 now=now + dt.timedelta(hours=RESURFACE_INTERVAL_HOURS + 1),
             )
 
-        assert later == 1, "an unanswered question stopped being re-asked after one bucket"
+        assert later == 0, "the clock alone re-bumped a row nothing had happened to"
+        assert backend.post_message.call_count == 1
+
+    def test_the_next_escalation_bumps_again(self) -> None:
+        # Directive #36 is preserved, re-keyed: an unanswered question IS re-raised —
+        # once per escalation, so the nag terminates when the ladder does.
+        row = _mirrored("Which DB host?", slack_ts="100.0")
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            reask_escalated_questions(user_id="U_ME", backend=backend)
+            row.mark_escalated("pending past the ceiling")
+            later, _ = reask_escalated_questions(user_id="U_ME", backend=backend)
+
+        assert later == 1, "an escalation the owner was never told about"
+        assert backend.post_message.call_count == 2
+
+    def test_the_batch_rotates_through_the_backlog(self) -> None:
+        # The five slots went to the five most urgent rows every bucket, so row six
+        # was never bumped at all while rows one to five were bumped daily.
+        for i in range(_REASK_BATCH * 2):
+            _mirrored(f"Question {i}?", slack_ts=f"{100 + i}.0", age_days=40 - i)
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            reask_escalated_questions(user_id="U_ME", backend=backend)
+            reask_escalated_questions(user_id="U_ME", backend=backend)
+
+        threads = {call.kwargs["thread_ts"] for call in backend.post_message.call_args_list}
+        assert len(threads) == _REASK_BATCH * 2, "the second pass re-bumped the same five"
 
 
 class TestTheBatchIsBoundedAndUrgentFirst(TestCase):

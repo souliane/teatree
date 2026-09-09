@@ -172,8 +172,10 @@ class DeferredQuestion(models.Model):
     )
     applied_at = models.DateTimeField(null=True, blank=True)
     # #4178 age-backstop stamps. An escalation records that a row has sat past the
-    # ceiling WITHOUT resolving it — the row stays pending, so directive #45's "an
-    # unresolved request is never silently dropped" holds.
+    # ceiling WITHOUT resolving it — the row stays pending. #4706 bounds that ladder:
+    # past deferred_question_max_escalations the sweep drains the row stale with an
+    # audited reason, so directive #45's "never silently dropped" holds as "never
+    # dropped unaudited, and never before the owner was asked N times".
     escalated_at = models.DateTimeField(null=True, blank=True)
     escalation_count = models.PositiveIntegerField(default=0)
 
@@ -385,12 +387,14 @@ class DeferredQuestion(models.Model):
         candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
         return candidates[0] if len(candidates) == 1 else None
 
-    def mark_stale(self, reason: str) -> None:
+    def mark_stale(self, reason: str, *, resolver_id: str = "") -> None:
         """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.
 
         Used at capture-time supersession (a newer-generation question
         arrived) and as the terminal state for a reply that found no live
-        row. A no-op on an already-resolved row.
+        row. A no-op on an already-resolved row. *resolver_id* names the
+        automated resolver that decided it, so a sweep-driven dismissal is
+        distinguishable from a human one in the audit trail.
         """
         with transaction.atomic():
             row = (
@@ -409,6 +413,7 @@ class DeferredQuestion(models.Model):
                 question=row,
                 action="dismissed",
                 dismissed_reason=reason,
+                resolver_id=resolver_id,
             )
             self.dismissed_at = row.dismissed_at
             self.dismissed_reason = row.dismissed_reason
