@@ -53,6 +53,7 @@ from teatree.core.worktree.branch_classification import (
     is_squash_merged,
     reset_forge_probe_cache,
 )
+from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
@@ -235,7 +236,8 @@ def _unpushed_commit_reasons(
     tip's whole tree equals the squash/merge commit's tree. A merged PR whose source
     branch has since grown unique content is NOT sufficient (it would destroy the
     post-merge delta), so it is no longer consulted here — the worktree is kept and
-    reported for salvage.
+    reported for salvage. The layered ladder is the third proof, and only ANDed with
+    present-tense presence — see the comment at its rung.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
@@ -254,7 +256,12 @@ def _unpushed_commit_reasons(
     # a squash whose patch was resolved at merge and whose file the base then
     # edited again defeats every patch-id/tree instrument, while the forge's
     # merge record at the exact tip still proves it landed. Fails CLOSED.
-    if branch is not None and branch_redundancy(content_repo, branch, default_target).redundant:
+    #
+    # Its git-local rungs are ANDed with present-tense presence (#4719): this
+    # analysis IS the data-loss gate — its caller force-wipes past every guard in
+    # ``cleanup_worktree`` — and those rungs read a patch's PRIOR appearance, which
+    # a later commit over the same region does not erase.
+    if branch is not None and branch_landed_for_teardown(content_repo, branch, default_target):
         return []
     preview = ", ".join(unpushed[:_PREVIEW_LIMIT]) + (", …" if len(unpushed) > _PREVIEW_LIMIT else "")
     return [f"{len(unpushed)} commit(s) not provably on {default_target} (content not upstream): {preview}"]

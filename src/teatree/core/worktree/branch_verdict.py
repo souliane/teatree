@@ -22,7 +22,11 @@ impossible to reach.
 
 from dataclasses import dataclass, field
 
-from teatree.core.worktree.branch_classification import branch_redundancy, effective_default_target
+from teatree.core.worktree.branch_classification import (
+    branch_redundancy,
+    effective_default_target,
+    forge_merged_tip_captured,
+)
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -99,6 +103,31 @@ def branch_is_landed(repo: str, branch: str) -> bool:
     """
     resolved = effective_default_target(repo)
     return _content_still_present(repo, branch, resolved) and branch_redundancy(repo, branch, resolved).redundant
+
+
+def branch_landed_for_teardown(repo: str, branch: str, target: str = "") -> bool:
+    """Whether *branch* may be DESTROYED — the deletion predicate, stricter than :func:`branch_is_landed` (#4719).
+
+    Every git-local rung of :func:`branch_redundancy` reads a patch's PRIOR appearance on the
+    target, which a later commit over the same region does not erase. On that shape the
+    ``synthetic-squash`` rung answered "landed" for a branch whose commits are on NO remote and
+    whose content will not merge clean, and the teardown guards reaped the only checkout of it.
+    Those rungs are therefore ANDed with present-tense presence.
+
+    The forge's merge record at the EXACT current tip is not one of those inferences — it is the
+    forge reporting that precisely these bytes merged, and it is the ONLY instrument that survives
+    a squash whose content the base later evolved past (#4423). It stands alone, as it did before,
+    and is asked directly rather than read off the deciding rung: which rung fired first says
+    nothing about whether that record exists. It runs second because it is the probe that can
+    reach the network, so a reclaimable branch pays for it only when presence cannot answer.
+
+    An explicit *target* lets a caller that already resolved the default branch share that one ref,
+    so the verdict and the presence probe can never measure against different bases.
+    """
+    resolved = target or effective_default_target(repo)
+    if not branch_redundancy(repo, branch, resolved).redundant:
+        return False
+    return _content_still_present(repo, branch, resolved) or forge_merged_tip_captured(repo, branch)
 
 
 def render_verdict(verdict: BranchVerdict) -> str:
