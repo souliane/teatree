@@ -638,8 +638,10 @@ class TestValidateMrCommand:
             "feat: a [f] (p#1)", "body here", require_sections=True, repo=""
         )
 
-    # The cold interpreter below imports the whole CLI + Django: 2.9s alone, 56.9s recorded
-    # under the 12-shard matrix. 180 is that lane's own `-o timeout=`, so CI is unchanged (#4369).
+    # The cold interpreter below imports the whole CLI + Django. Two refreshes under the SAME
+    # 12-shard matrix recorded 56.9s and 2.7s, so the cost is contention, not this test: a low
+    # recorded number is not grounds to drop the marker (#4670). 180 is that lane's own
+    # `-o timeout=`, so CI is unchanged (#4369).
     @pytest.mark.timeout(180)
     def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
         # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
