@@ -272,6 +272,28 @@ class TestCheckRequeueAllowed(TestCase):
         with pytest.raises(IterationStalled):
             task.check_requeue_allowed()
 
+    def test_synthetic_cadence_ticket_is_exempt_from_the_iteration_cap(self) -> None:
+        # A PhaseCadence-anchored ticket (architectural_review, eval_local, …) recurs
+        # forever by design — the scanner re-fires it every cadence_hours /
+        # after_merge_count for the overlay's whole lifetime, so a LIFETIME attempt
+        # count is not a doom signal the way it is for a one-shot deliverable ticket.
+        ticket = Ticket.objects.create(issue_url="architectural-review://t3-teatree")
+        task = self._phase_task(ticket, phase="architectural_review")
+        _failed_attempt(task, error="A")
+        _failed_attempt(task, error="B")
+        _failed_attempt(task, error="C")
+        task.check_requeue_allowed()  # must not raise, even at/over the cap
+
+    def test_synthetic_cadence_ticket_still_stalls_on_identical_failures(self) -> None:
+        # The cap exemption must not swallow stall detection: two consecutive
+        # identical failures are still a real, actionable signal on a cadence phase.
+        ticket = Ticket.objects.create(issue_url="architectural-review://t3-teatree")
+        task = self._phase_task(ticket, phase="architectural_review")
+        _failed_attempt(task, error="the identical failure")
+        _failed_attempt(task, error="the identical failure")
+        with pytest.raises(IterationStalled):
+            task.check_requeue_allowed()
+
 
 @override_settings(MAX_PHASE_ITERATIONS=3)
 class TestReclaimEnforcesRepairLoop(TestCase):
@@ -321,6 +343,17 @@ class TestReclaimEnforcesRepairLoop(TestCase):
         Task.objects.reclaim_orphaned_claims()
         task.refresh_from_db()
         assert task.status != Task.Status.PENDING
+
+    def test_synthetic_cadence_ticket_over_cap_is_still_requeued(self) -> None:
+        ticket = Ticket.objects.create(issue_url="architectural-review://t3-teatree")
+        task = self._orphaned_phase_task(ticket, phase="architectural_review")
+        _failed_attempt(task, error="A")
+        _failed_attempt(task, error="B")
+        _failed_attempt(task, error="C")
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+        task.refresh_from_db()
+        assert reclaimed == 1
+        assert task.status == Task.Status.PENDING
 
 
 class TestReofferBudget(TestCase):

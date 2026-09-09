@@ -38,6 +38,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
+from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -204,8 +205,12 @@ def slack_post_message(
     one that MAY have landed, where the response was lost after Slack accepted
     it. A caller may re-post only in the first case. A transport failure
     therefore carries an EMPTY error: nothing came back, so nothing is known.
+
+    The #3809 wrap is applied here rather than inherited: this transport posts
+    through an injected ``Poster``, so it never reaches ``SlackBotBackend._post``
+    where the in-app wrap seam lives.
     """
-    body: dict[str, str] = {"channel": channel, "text": text}
+    body: dict[str, str] = {"channel": channel, "text": wrap_slack_message(text)}
     if thread_ts:
         body["thread_ts"] = thread_ts
     try:

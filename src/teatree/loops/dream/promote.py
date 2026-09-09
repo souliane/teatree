@@ -433,6 +433,14 @@ _WITHHELD_STATUS = "withheld"
 _REJECTED_STATUS = "rejected"
 
 
+def _can_advance_a_withheld_row(live_gate: "LiveGate | None") -> bool:
+    """True when a WITHHELD row could reach a different verdict on this pass.
+
+    Only a live validator can, so without one the row re-derives its own WITHHELD.
+    """
+    return live_gate is not None and live_gate.validator is not None
+
+
 def promote_proposals_file(
     proposals_path: Path,
     *,
@@ -450,9 +458,12 @@ def promote_proposals_file(
     rather than landed. Unless *dry_run*, the queue is REWRITTEN so each row records
     its ``status`` (``promoted`` / ``withheld`` / ``rejected``) and a
     ``promotion_reason``. Idempotent: a row already ``status: promoted`` is SKIPPED
-    (not re-promoted, not re-appended, its scenario not duplicated); a ``withheld``
-    (live check not run) or ``rejected`` row may be retried — a later
-    ``--validate-live`` pass can land a withheld candidate. A malformed line is
+    (not re-promoted, not re-appended, its scenario not duplicated); a ``rejected``
+    row may be retried, and so may a ``withheld`` one — but ONLY when this pass
+    carries a live validator, since that is the sole thing that could reach a
+    different verdict. Without one a withheld row is skipped rather than re-deriving
+    its own WITHHELD: the nightly tick walked 6614 such rows at ~304ms each, ~2130s,
+    which overran the loop's own deadline and killed the pass before its gates ran. A malformed line is
     skipped (logged in its outcome reason), never fatal, and preserved verbatim in
     the rewrite. Under *dry_run* the file is left byte-identical.
     """
@@ -481,6 +492,17 @@ def promote_proposals_file(
                 PromotionOutcome(scenario_name=name, promoted=True, reason="already promoted (skipped on re-run)")
             )
             rewritten.append(line)  # already terminal — left as-is
+            continue
+        if candidate.get("status") == _WITHHELD_STATUS and not _can_advance_a_withheld_row(live_gate):
+            name = str(candidate.get("scenario_name") or "")
+            outcomes.append(
+                PromotionOutcome(
+                    scenario_name=name,
+                    promoted=False,
+                    reason="withheld and no live validator to advance it (skipped on re-run)",
+                )
+            )
+            rewritten.append(line)  # re-attempting would re-derive the same WITHHELD
             continue
         outcome = promote_candidate(
             candidate,
