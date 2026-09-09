@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from teatree.core.models import PullRequest, Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.repair_halt_reconcile import repair_marker_subject_tickets
+from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_PK_RE
 
 _REPAIR_PREFIX = "repair-"
 
@@ -79,6 +80,8 @@ class SubjectIndex:
     marker_tickets: dict[str, list[int]]
     #: question pk -> its parked task's ticket pk, for the rows that carry one.
     parked_task_tickets: dict[int, int]
+    #: question pk -> the ticket pk its stuck-redispatch-halt TEXT names.
+    halt_text_tickets: dict[int, int]
     session_tickets: dict[int, int]
     ticket_states: dict[int, str]
     #: subject ticket pk -> the state of every pull request recorded against it.
@@ -91,11 +94,18 @@ class SubjectIndex:
         )
         parked = _parked_ticket_ids({q.pk for q in questions})
         sessions = _session_ticket_ids(_session_pks(questions))
+        halted = _halt_text_ticket_ids(questions)
 
-        subjects = {pk for pks in markers.values() for pk in pks} | set(parked.values()) | set(sessions.values())
+        subjects = (
+            {pk for pks in markers.values() for pk in pks}
+            | set(parked.values())
+            | set(sessions.values())
+            | set(halted.values())
+        )
         return cls(
             marker_tickets=markers,
             parked_task_tickets=parked,
+            halt_text_tickets=halted,
             session_tickets=sessions,
             ticket_states=_ticket_states(subjects),
             ticket_pr_states=_ticket_pr_states(subjects),
@@ -151,13 +161,36 @@ def _parked_task_answer(index: SubjectIndex, question: DeferredQuestion) -> Subj
     return _resolved([ticket]) if ticket is not None else NOT_APPLICABLE
 
 
+def _stuck_halt_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
+    """The ticket a ``[stuck-redispatch-halt ticket=N]`` question names in its own text.
+
+    ``stuck_ticket_redispatch._escalate_once`` records the question with no dedupe
+    marker, no session and no parked task, so the text is the ONLY handle on its
+    subject — which is why nine of these sat pending after their shared dispatch
+    failure was fixed, reachable by the age backstop alone.
+
+    A marker naming a ticket that no longer exists is UNDETERMINABLE, not absent: the
+    row is owned by this source and kept, rather than falling through to a source that
+    would answer about something else.
+    """
+    if STUCK_HALT_PK_RE.search(question.question) is None:
+        return NOT_APPLICABLE
+    ticket = index.halt_text_tickets.get(question.pk)
+    return _resolved([ticket]) if ticket is not None else UNDETERMINABLE
+
+
 def _session_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
     ticket = index.session_tickets.get(_session_pk(question) or 0)
     return _resolved([ticket]) if ticket is not None else NOT_APPLICABLE
 
 
 #: Consulted in order; the first APPLICABLE source owns the row (see the module docstring).
-_SUBJECT_SOURCES: tuple[SubjectSource, ...] = (_repair_marker_answer, _parked_task_answer, _session_answer)
+_SUBJECT_SOURCES: tuple[SubjectSource, ...] = (
+    _repair_marker_answer,
+    _stuck_halt_answer,
+    _parked_task_answer,
+    _session_answer,
+)
 
 
 def _session_pk(question: DeferredQuestion) -> int | None:
@@ -177,6 +210,15 @@ def _parked_ticket_ids(question_pks: set[int]) -> dict[int, int]:
             "pk", "parked_task__ticket_id"
         )
     )
+
+
+def _halt_text_ticket_ids(questions: Sequence[DeferredQuestion]) -> dict[int, int]:
+    """Question pk -> the LIVE ticket its halt marker names, in one query."""
+    named = {q.pk: int(match.group(1)) for q in questions if (match := STUCK_HALT_PK_RE.search(q.question)) is not None}
+    if not named:
+        return {}
+    live = set(Ticket.objects.filter(pk__in=set(named.values())).values_list("pk", flat=True))
+    return {pk: ticket for pk, ticket in named.items() if ticket in live}
 
 
 def _session_ticket_ids(session_pks: set[int]) -> dict[int, int]:

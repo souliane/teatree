@@ -61,10 +61,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STUCK_IDLE_HOURS = 6
 
-_ESCALATION_MARKER = "[stuck-redispatch-halt ticket={pk}]"
+#: The subject ticket a halt question names. Public because the question carries no
+#: dedupe marker, session or parked task, so the TEXT is the only handle the question
+#: drain has on its subject (:mod:`teatree.loop.question_subjects`).
+STUCK_HALT_MARKER = "[stuck-redispatch-halt ticket={pk}]"
 #: Extracts the ticket pk from an escalation marker so an already-escalated ticket is
 #: skipped without re-running its per-ticket budget query every tick (bounds the sweep).
-_ESCALATION_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
+STUCK_HALT_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
 
 #: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
@@ -139,7 +142,7 @@ def _already_escalated_ticket_pks() -> set[int]:
     texts = DeferredQuestion.objects.filter(question__contains="[stuck-redispatch-halt ticket=").values_list(
         "question", flat=True
     )
-    return {int(m.group(1)) for text in texts if (m := _ESCALATION_PK_RE.search(text))}
+    return {int(m.group(1)) for text in texts if (m := STUCK_HALT_PK_RE.search(text))}
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
@@ -350,7 +353,7 @@ def _escalate_once(ticket: Ticket, *, reason: str) -> None:
     never resurrects a fresh one. Reuses the §17.1 invariant 9 surface (statusline /
     ``t3 teatree questions list`` / Slack DM).
     """
-    marker = _ESCALATION_MARKER.format(pk=ticket.pk)
+    marker = STUCK_HALT_MARKER.format(pk=ticket.pk)
     already = DeferredQuestion.objects.filter(question__contains=marker).exists()
     if already:
         return
