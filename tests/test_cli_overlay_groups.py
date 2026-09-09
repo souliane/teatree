@@ -6,6 +6,8 @@ that table is unreachable via the overlay CLI even though the core
 ``ticket`` management command defines it — exactly the regression this guards.
 """
 
+from collections import Counter
+
 import typer
 
 from teatree.cli.loop.preset import register as register_preset
@@ -135,3 +137,15 @@ def test_learnings_group_dispatches_to_core() -> None:
 def test_learnings_subcommands_map_to_real_command_methods() -> None:
     for name in _learnings_subcommands():
         assert hasattr(LearningsCommand, name.replace("-", "_")), name
+
+
+def test_no_group_registers_the_same_command_twice() -> None:
+    # Click keeps the LAST registration of a repeated name and silently discards the
+    # rest, so a duplicate ships one arbitrary help text and no error. Every existing
+    # DJANGO_GROUPS guard reads `subcommands` through a set comprehension, which
+    # absorbs the repeat — this is the one that can see it.
+    repeated = {
+        group: sorted(name for name, count in Counter(name for name, _desc in spec.subcommands).items() if count > 1)
+        for group, spec in DJANGO_GROUPS.items()
+    }
+    assert {group: names for group, names in repeated.items() if names} == {}

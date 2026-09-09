@@ -11336,6 +11336,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              transition (BLUEPRINT §17.4).                   │
 │ list                         List tickets, optionally filtered by state      │
 │                              and/or overlay.                                 │
+│ dead-rows                    List every non-terminal ticket intake can never │
+│                              find (#4527).                                   │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
 │ fold                         Merge a member ticket's body into its host's,   │
@@ -11847,6 +11849,25 @@ Usage: t3 teatree ticket list [OPTIONS]
 │ --state          TEXT                                                        │
 │ --overlay        TEXT                                                        │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket dead-rows`
+
+```
+Usage: t3 teatree ticket dead-rows [OPTIONS]
+
+ List every non-terminal ticket intake can never find, oldest lane first
+ (#4527).
+
+ The enumeration behind the doctor's dead-ticket WARN, which names only the
+ first few. Read-only: each row records a request someone was told is tracked,
+ so whether to re-file it or let it go is the operator's call, never this
+ command's.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the rows as JSON.                                       │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -21,9 +21,10 @@ from typing import TypedDict, cast
 from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
+from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.fix_record_recorder import record_returned_fix_record
-from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
+from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.result_schema import (
@@ -33,6 +34,7 @@ from teatree.agents.result_schema import (
     ReviewVerdictEnvelope,
     check_evidence,
 )
+from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
@@ -44,14 +46,11 @@ from teatree.core.models import (
     ReviewVerdictError,
     Task,
     TaskAttempt,
-    Worktree,
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError
 
 
 @dataclasses.dataclass(frozen=True)
@@ -283,14 +282,21 @@ def _check_before_recording(
     if action_error:
         return _PreRecordCheck(action_error, result)
 
-    evidence_error = check_evidence(result, phase or task.phase)
+    evidence_error = check_evidence(result, phase or task.phase) or _answering_work_item_error(task, result, phase)
     if evidence_error:
-        salvaged = _salvage_coding_result(task, result, phase=phase)
+        salvaged = salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
             return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
         result = salvaged
 
     return _PreRecordCheck(landing_verification_error(task, phase=phase), result)
+
+
+def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:
+    """The answering phase's task-conditional evidence check — empty on every other phase."""
+    if normalize_phase(phase or task.phase) != "answering":
+        return ""
+    return missing_work_item_error(task, result)
 
 
 def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -558,68 +564,6 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
         base_sha=base_sha if isinstance(base_sha, str) else "",
         adequacy=adequacy if isinstance(adequacy, dict) else None,
     )
-
-
-#: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.
-_SALVAGEABLE_PHASES = frozenset({"coding", "debugging"})
-
-
-def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -> AgentResultBlob | None:
-    """Return *result* with ``files_modified`` synthesized from the landed commit, or ``None``.
-
-    The #3263 recovery: a coder committed real work but omitted the trailing
-    ``files_modified`` envelope, so the evidence gate refuses and the branch is
-    stranded. When the ticket worktree has a NEW commit ahead of its base AND is
-    clean (``landing_verification_error`` passes — so this never salvages dirty or
-    commit-less work), the committed diff's file paths ARE the evidence: synthesize
-    ``files_modified`` from them so the task COMPLETES on the real landed work.
-    ``None`` for a non-coding phase, or when there is nothing clean to salvage —
-    the caller then records the honest evidence refusal.
-    """
-    if normalize_phase(phase or task.phase) not in _SALVAGEABLE_PHASES:
-        return None
-    if landing_verification_error(task, phase=phase):
-        return None
-    files = _committed_file_changes(task)
-    if not files:
-        return None
-    salvaged = dict(result)
-    salvaged["files_modified"] = files
-    return salvaged
-
-
-def _committed_file_changes(task: Task) -> list[dict[str, str]]:
-    """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``.
-
-    A worktree whose probe cannot answer is one nothing can be salvaged FROM, so
-    it is skipped like a commit-less one — never allowed to abort the scan before
-    it reaches the sibling that did land the work.
-    """
-    for worktree in Worktree.objects.for_ticket(task.ticket):
-        if commits_ahead_or_unknown(worktree) is not True:
-            continue
-        paths = _committed_paths(worktree)
-        if paths:
-            return [{"path": path, "action": "modified"} for path in paths]
-    return []
-
-
-def _committed_paths(worktree: Worktree) -> list[str]:
-    # Reached only after ``commits_ahead_or_unknown`` proved a valid path + branch.
-    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
-    base = _base_ref(repo_path)
-    try:
-        out = git.run(repo=repo_path, args=["diff", "--name-only", f"{base}..{worktree.branch}"])
-    except (CommandFailedError, OSError):
-        return []
-    return [line.strip() for line in out.splitlines() if line.strip()]
-
-
-def _base_ref(repo_path: str) -> str:
-    try:
-        return f"origin/{git.default_branch(repo_path)}"
-    except (CommandFailedError, RuntimeError):
-        return "main"
 
 
 def _record_failure(

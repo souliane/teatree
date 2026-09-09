@@ -6,7 +6,12 @@ recognises that anchor (any fragment, or none) so the artifact-terminal task swe
 skip these FSM-owned tasks regardless of their phase.
 """
 
-from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL, is_synthetic_loop_umbrella_url
+from teatree.core.models.ticket_number import derive_issue_number
+from teatree.utils.url_slug import (
+    SYNTHETIC_LOOP_UMBRELLA_URL,
+    is_synthetic_loop_umbrella_url,
+    slack_conversation_anchor,
+)
 
 
 class TestIsSyntheticLoopUmbrellaUrl:
@@ -31,3 +36,27 @@ class TestIsSyntheticLoopUmbrellaUrl:
 
     def test_empty_url_does_not_match(self) -> None:
         assert not is_synthetic_loop_umbrella_url("")
+
+
+class TestSlackConversationAnchor:
+    """Each load-bearing component of the anchor, pinned (#4527)."""
+
+    def test_the_channel_disambiguates_the_same_ts_across_channels(self) -> None:
+        # Slack ts is unique per channel, not globally: dropping the channel collapses
+        # two unrelated conversations onto one row under `unique_nonempty_issue_url`.
+        assert slack_conversation_anchor(channel="D-owner", slack_ts="1.0") != slack_conversation_anchor(
+            channel="C-team", slack_ts="1.0"
+        )
+
+    def test_the_ts_disambiguates_two_messages_in_one_channel(self) -> None:
+        assert slack_conversation_anchor(channel="D-owner", slack_ts="1.0") != slack_conversation_anchor(
+            channel="D-owner", slack_ts="2.0"
+        )
+
+    def test_the_anchor_is_recognised_as_the_synthetic_umbrella(self) -> None:
+        assert is_synthetic_loop_umbrella_url(slack_conversation_anchor(channel="D-owner", slack_ts="1.0"))
+
+    def test_the_trailing_suffix_stops_the_ts_reading_as_an_issue_number(self) -> None:
+        anchor = slack_conversation_anchor(channel="D-owner", slack_ts="1730000000.123456")
+
+        assert derive_issue_number(anchor) != "123456"
