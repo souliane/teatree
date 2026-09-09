@@ -23,6 +23,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+from teatree.backends.slack.self_identity import OwnSlackIdentity, is_self_authored, resolve_own_identity
+from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +174,42 @@ def commit_reactions_drain(path: Path | None = None, *, retain: list[dict] | Non
     commit_drain(path or default_reactions_queue_path(), retain=retain)
 
 
+def _resolve_own_identity_once(web_client: object, overlay_name: str) -> OwnSlackIdentity | None:
+    """The bot's own ids, probed ONCE per connection — ``None`` if unresolvable.
+
+    Probed here rather than per event because the per-message probe it replaces
+    was issuing ~7 ``auth.test`` calls a minute, and being fail-closed that made a
+    rate-limit silently disable the self-check exactly when traffic was highest.
+    """
+    identity = resolve_own_identity(cast("MessagingBackend", web_client))
+    if identity is None:
+        logger.warning("[%s] auth.test failed — self-authored events cannot be told apart", overlay_name)
+        return None
+    logger.info("[%s] own identity user=%s bot=%s", overlay_name, identity.user_id, identity.bot_id)
+    return identity
+
+
+def _wake_is_warranted(event: RawAPIDict, identity: OwnSlackIdentity | None, overlay_name: str) -> bool:
+    """Whether *event* should trigger an immediate answer-cycle wake.
+
+    The bot's own ``chat.postMessage`` output returns as a plain ``message``
+    event — Slack stamps ``subtype=bot_message`` only on some post shapes — so
+    waking on it lets the answer cycle feed on its own replies (#4707). The
+    downstream ``filter_self_messages`` already refuses to ANSWER such a row, but
+    it runs after the wake, so each self-post still bought a full cycle and two
+    Slack reads; the trigger is where the loop gain has to be removed.
+
+    Unresolved identity means NO wake: the cadence chain drains the queue anyway,
+    so the cost is latency, whereas a wrong wake is the failure being fixed.
+    """
+    if identity is None or not identity.is_resolvable:
+        return False
+    if is_self_authored(event, identity):
+        logger.debug("[%s] skipping wake for a self-authored event (ts=%s)", overlay_name, event.get("ts", "?"))
+        return False
+    return True
+
+
 def _run_single_overlay(
     *,
     overlay: tuple[str, str, str],
@@ -190,6 +233,7 @@ def _run_single_overlay(
 
     web_client = WebClient(token=bot_token)
     client = SocketModeClient(app_token=app_token, web_client=web_client)
+    identity = _resolve_own_identity_once(web_client, overlay_name)
 
     def _handle(_sm_client: BaseSocketModeClient, req: SocketModeRequest) -> None:
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -205,7 +249,7 @@ def _run_single_overlay(
         target = queues.for_event_type(event_type)
         _enqueue(target, overlay_name, event)
         logger.info("[%s] Queued %s event (ts=%s)", overlay_name, event_type, event.get("ts", "?"))
-        if on_event is not None:
+        if on_event is not None and _wake_is_warranted(event, identity, overlay_name):
             # Best-effort event-driven wake so the answer cycle runs now instead of
             # at the next cadence tick. The JSONL write above is the durable buffer,
             # so a failed signal only costs latency — never an event.
