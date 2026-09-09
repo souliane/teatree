@@ -20,9 +20,11 @@ from teatree.agents.dispatch_preflight import (
 )
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.config.agent_spawn import resolve_agent_config
+from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -44,7 +46,7 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
     "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
     '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
-    '                     "reviewer_identity": "<your reviewer id, NOT a maker/loop role>",',
+    f'                     "reviewer_identity": "{REVIEWER_IDENTITY_INSTRUCTION}",',
     '                     "gh_verify_result": "green"|"pending"|"failed",',
     '                     "blast_class": "substrate"|"logic"|"docs",',
     '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
@@ -85,6 +87,23 @@ _ANSWER_RETURN_LINES: tuple[str, ...] = (
     "The `text` MUST be non-empty — a summary-only result with no `answer` drops the reply and",
     "the phase is refused. If you cannot answer (missing context, a decision only the user can",
     "make), draft a clarifying-question reply as the `answer` text rather than returning nothing.",
+)
+
+# Injected into an answering brief whose dispatching message implied work (#4527):
+# the reply alone leaves the request nowhere intake can find it, so the phase also
+# has to say what the request BECOMES. The agent cannot file it — the recorder does,
+# from this channel.
+_WORK_ITEM_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "THIS REQUEST IMPLIES WORK, so ALSO add a `work_item` object to your final JSON result.",
+    "Search the open backlog FIRST and prefer extending an existing issue over filing a near-duplicate:",
+    '  "work_item": {"existing_issue_url": "<the backlog issue this belongs to>"}',
+    "or, when nothing fits:",
+    '  "work_item": {"title": "<imperative one-line title>", "body": "<what to do and why>"}',
+    "or, when the reply genuinely settles it and nothing needs building:",
+    '  "work_item": {"no_work_reason": "<why no work is needed>"}',
+    "The body must PARAPHRASE — never paste the owner's message verbatim; this files onto a",
+    "PUBLIC repo. A result with no `work_item` is refused and the task is re-dispatched.",
 )
 
 # Injected into a planning brief (#3584): the phase evidence gate
@@ -303,6 +322,8 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
         if question:
             lines.append(f"The user's message: {question}")
     lines.extend(_ANSWER_RETURN_LINES)
+    if owes_work_item(task.ticket):
+        lines.extend(_WORK_ITEM_RETURN_LINES)
     return tuple(lines)
 
 

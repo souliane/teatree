@@ -11336,6 +11336,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              transition (BLUEPRINT §17.4).                   │
 │ list                         List tickets, optionally filtered by state      │
 │                              and/or overlay.                                 │
+│ dead-rows                    List every non-terminal ticket intake can never │
+│                              find (#4527).                                   │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
 │ fold                         Merge a member ticket's body into its host's,   │
@@ -11850,6 +11852,25 @@ Usage: t3 teatree ticket list [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket dead-rows`
+
+```
+Usage: t3 teatree ticket dead-rows [OPTIONS]
+
+ List every non-terminal ticket intake can never find, oldest lane first
+ (#4527).
+
+ The enumeration behind the doctor's dead-ticket WARN, which names only the
+ first few. Read-only: each row records a request someone was told is tracked,
+ so whether to re-file it or let it go is the operator's call, never this
+ command's.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the rows as JSON.                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket bulk-close`
 
 ```
@@ -12345,7 +12366,9 @@ Usage: t3 teatree review record-evidence [OPTIONS] TICKET_ID
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --kind            TEXT  cold_review / integration_review.                    │
 │                         [default: cold_review]                               │
-│ --reviewer        TEXT  Reviewer identity (not a maker/loop role).           │
+│ --reviewer        TEXT  Reviewer identity: must carry a reviewer role word   │
+│                         (reviewer/cold/cr/critic/adjudicator/checker/codex), │
+│                         never maker/coding/loop.                             │
 │ --verdict         TEXT  Review verdict, e.g. merge_safe / hold / pass.       │
 │ --head-sha        TEXT  Full 40-char hex commit id of the reviewed tree.     │
 │ --repos           TEXT  Comma-separated repos covered (≥2 required for       │

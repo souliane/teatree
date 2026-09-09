@@ -608,10 +608,10 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 `uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
 `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
-`--overrides` is required, not optional: `claude-agent-sdk` declares an `mcp` bound
-broader than the surface it imports, and `uv tool install` does not read the
-`[tool.uv] override-dependencies` that corrects it — so without the flag the install
-fails with an unsatisfiable-requirements error. See
+`--overrides` carries no entry today, but every install site keeps passing it: `uv tool
+install` does not read `[tool.uv] override-dependencies`, so an override added later would
+be invisible to the global install and it would fail with an unsatisfiable-requirements
+error. Keeping the flag wired makes the next entry a one-line change. See
 [`uv-overrides.txt`](uv-overrides.txt).
 
 Installing the plugin does **not** force teatree on. By default a fresh Claude

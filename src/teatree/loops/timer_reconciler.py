@@ -22,10 +22,10 @@ owner session's ``/loop`` slot before), guarded by the SAME ``loop-slack-answer`
 :class:`LoopLease` the ``loop_slack_answer`` mgmt command takes so the worker and an
 interactive owner session can never double-post. The same lease-guarded cycle is
 also driven event-first: the Socket Mode receiver enqueues a one-shot
-:func:`wake_slack_answer` the moment it appends an inbound event, so a reply
-lands in ~one worker poll instead of waiting out the cadence, while
-:func:`run_slack_answer` stays as the fallback that drains anything a missed
-wake left behind. A :func:`render_statusline` chain
+:func:`wake_slack_answer` the moment it appends an inbound event it did not
+itself author (#4707), so a reply lands in ~one worker poll instead of waiting
+out the cadence, while :func:`run_slack_answer` stays as the fallback that
+drains anything a missed or debounced wake left behind. A :func:`render_statusline` chain
 (:mod:`teatree.loops.statusline_refresh`) keeps ``statusline.txt`` fresh on a short
 cadence even when no domain loop is admitted-and-ticking, so the pre-rendered loop line
 never freezes headless. The :mod:`teatree.loops.off_live_tick_driver` chain fires each ``off_live_tick``
@@ -57,6 +57,10 @@ PRUNE_INTERVAL_SECONDS = 86400
 #: The stale-job expiry cadence — hourly, so a long-lived worker keeps the
 #: ``default``-queue backlog swept without depending on the front-end drain loop.
 EXPIRE_INTERVAL_SECONDS = 3600
+#: Floor on the spacing between two event-driven answer wakes. An inbound burst
+#: collapses to one cycle plus one trailing catch-up instead of one cycle per
+#: event, whatever the burst's source (#4707).
+WAKE_MIN_INTERVAL_SECONDS = 10
 #: Grace past a tick's deadline before its still-RUNNING timer is deemed stranded.
 STUCK_GRACE_SECONDS = 60
 #: The headless-queue drain + stuck-run reaper cadence — the safety net that
@@ -142,6 +146,23 @@ def _pending_for_path(path: str) -> bool:
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
+
+
+def _finished_within(path: str, seconds: int) -> dt.datetime | None:
+    """When *path* last finished, if that was under *seconds* ago — else ``None``.
+
+    The window is in the filter rather than applied to a newest-first scan so
+    the query stays bounded to the few rows the interval can hold.
+    """
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    cutoff = timezone.now() - dt.timedelta(seconds=seconds)
+    return (
+        DBTaskResult.objects.filter(task_path=path, finished_at__gt=cutoff)
+        .order_by("-finished_at")
+        .values_list("finished_at", flat=True)
+        .first()
+    )
 
 
 @task(queue_name=LOOPS_QUEUE)
@@ -430,11 +451,23 @@ def wake_slack_answer() -> dict[str, int]:
     instead of waiting out the :func:`run_slack_answer` cadence. Runs the same
     lease-guarded cycle as the cadence chain (so it can never double-post), then
     STOPS — it does not re-arm. The cadence chain remains the fallback that
-    drains anything a missed wake left behind. Self-dedups against a pending
-    wake so an event burst collapses to a single immediate cycle.
+    drains anything a missed wake left behind.
+
+    Two dedupes, because a pending wake is only half the burst. Against a
+    PENDING wake: the queued one carries the work, so this one stands down.
+    Against a RECENTLY FINISHED one: a cycle takes ~2s, so events arriving
+    slower than that found nothing pending and bought a cycle each — 290 an
+    hour at the peak of #4707. Inside the interval the wake re-arms itself once
+    at the far edge and returns, which is a trailing-edge debounce: the burst
+    costs O(1) cycles and its last event is still answered, one interval late
+    at worst rather than one cadence.
     """
     if _pending_for_path(wake_slack_answer.module_path):
         return {"deduped": 1}
+    last_finished = _finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
+    if last_finished is not None:
+        wake_slack_answer.using(run_after=last_finished + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
+        return {"coalesced": 1}
     return _run_slack_answer_cycle_under_lease()
 
 

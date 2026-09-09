@@ -19,9 +19,15 @@ where it is unreachable.
 import json
 from collections.abc import Mapping
 
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResult, required_evidence_for_phase
+from teatree.agents.result_schema import (
+    RESULT_JSON_SCHEMA,
+    AgentResult,
+    conditional_evidence_for_phase,
+    required_evidence_for_phase,
+)
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 CONTRACT_HEADING = "# Result Envelope — REQUIRED OUTPUT CONTRACT"
 
@@ -38,7 +44,7 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         "review_verdict": {
             "verdict": "merge_safe",
             "reviewed_sha": "<the full 40-char head sha you were dispatched for>",
-            "reviewer_identity": "<your reviewer id>",
+            "reviewer_identity": REVIEWER_IDENTITY_INSTRUCTION,
             "gh_verify_result": "green",
             "blast_class": "logic",
             # Non-empty on a PASS: the example a reviewer copies outranks the prose
@@ -106,10 +112,15 @@ def _evidence_lines(phase: str) -> tuple[str, ...]:
     if not required:
         return (f"- Phase `{normalize_phase(phase) or phase}` requires no extra evidence key beyond `summary`.",)
     fields = " or ".join(f"`{field}`" for field in required)
-    return (
+    lines = [
         f"- Phase `{normalize_phase(phase)}` ALSO requires a non-empty {fields}.",
         "  A result without it is refused as missing evidence and the whole run is wasted.",
-    )
+    ]
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        lines.append(f"  When this task's own request implies work, {also} is required TOO.")
+    return tuple(lines)
 
 
 def _verdict_consistency_lines(phase: str) -> tuple[str, ...]:

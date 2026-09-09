@@ -168,7 +168,7 @@ def check_on_behalf_issue(repo: str, issue_iid: int, action: str) -> str:
     return on_behalf_block_message(issue_gate_target(repo, issue_iid), action, context=_context(repo, own_mr=False))
 
 
-def publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: Callable[[], T]) -> T:
+def _publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: Callable[[], T]) -> T:
     """Issue/work-item twin of :func:`publish_on_behalf` — atomic consume + audit scoped to the issue.
 
     A BLOCK with no recorded approval raises :class:`OnBehalfPostBlockedError`
@@ -253,11 +253,11 @@ def publish_or_blocked_issue(
 ) -> tuple[str, int]:
     """Issue/work-item twin of :func:`publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
 
-    Routes *body* through :func:`publish_on_behalf_issue` so the recorded
+    Routes *body* through :func:`_publish_on_behalf_issue` so the recorded
     approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
     never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
     """
-    return _surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, _raising_on_failure(body)))
+    return _surface(lambda: _publish_on_behalf_issue(repo, issue_iid, action, _raising_on_failure(body)))
 
 
 def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
