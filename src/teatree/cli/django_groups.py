@@ -370,6 +370,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("reconcile-clears", "Consume every standing merge authorisation whose PR already merged or closed."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
+            ("dead-rows", "List every non-terminal ticket intake can never find (#4527)."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
             ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
             ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),

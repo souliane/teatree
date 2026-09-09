@@ -30,6 +30,7 @@ from teatree.cli.doctor.checks_cold_hooks import (
 )
 from teatree.cli.doctor.checks_config_drift import _check_config_rows_shadowing_shipped_defaults
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
+from teatree.cli.doctor.checks_dead_ticket_rows import check_dead_ticket_rows
 from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -470,6 +471,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_reviewing_ledger(),
                 _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
+                check_dead_ticket_rows(),
                 check_stranded_prek_patches(),
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),
