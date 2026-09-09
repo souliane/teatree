@@ -390,6 +390,64 @@ class TestMaintenanceChains(django.test.TestCase):
         result = timer_reconciler.wake_slack_answer.func()
         assert result == {"deduped": 1}
 
+    def test_wake_slack_answer_coalesces_behind_a_just_finished_wake(self) -> None:
+        # #4707: a cycle takes ~2s, so events arriving slower than that found
+        # nothing pending and bought a cycle each — 290 an hour at the peak.
+        finished = timezone.now() - dt.timedelta(seconds=2)
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.wake_slack_answer.module_path,
+            status=TaskResultStatus.SUCCESSFUL,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=finished,
+        )
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result == {"coalesced": 1}
+        # Trailing edge: the burst's last event is still answered, one interval
+        # late at worst, rather than waiting out the whole 5m cadence.
+        ready = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        )
+        assert ready.count() == 1
+        expected = finished + dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS)
+        assert ready.get().run_after == expected
+
+    def test_wake_slack_answer_runs_once_the_interval_has_passed(self) -> None:
+        # The control: the debounce must expire, or the wake path is dead.
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.wake_slack_answer.module_path,
+            status=TaskResultStatus.SUCCESSFUL,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=timezone.now() - dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS + 1),
+        )
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result["processed"] == 0
+        assert "coalesced" not in result
+
+    def test_wake_slack_answer_ignores_another_chains_recent_finish(self) -> None:
+        # The window is keyed on the wake's own path; the cadence chain finishing
+        # must not debounce an event-driven wake.
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.run_slack_answer.module_path,
+            status=TaskResultStatus.SUCCESSFUL,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=timezone.now(),
+        )
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result["processed"] == 0
+        assert "coalesced" not in result
+
     def test_wake_slack_answer_skips_when_lease_held(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from teatree.backends.slack.self_identity import (
     OwnSlackIdentity,
+    identity_from_auth_test,
     is_on_behalf_posted,
     is_self_authored,
     is_thread_root,
@@ -104,3 +105,83 @@ class TestIsOnBehalfPosted:
 
     def test_false_when_api_app_id_non_string(self) -> None:
         assert is_on_behalf_posted({"user": "U1", "api_app_id": 12345}) is False
+
+
+@dataclass
+class _CountingBackend:
+    """Backend recording how many times ``auth.test`` was actually hit."""
+
+    auth_response: RawAPIDict = field(default_factory=dict)
+    calls: int = 0
+
+    def auth_test(self) -> RawAPIDict:
+        self.calls += 1
+        return self.auth_response
+
+
+@dataclass(frozen=True, slots=True)
+class _UnwritableBackend:
+    """A backend that refuses new attributes, so the memo cannot be stored."""
+
+    auth_response: RawAPIDict
+
+    def auth_test(self) -> RawAPIDict:
+        return self.auth_response
+
+
+class TestIdentityIsProbedOncePerBackend:
+    """#4707: the docstring promised "once"; every call re-probed.
+
+    Four call sites re-resolving per cycle put ~7 ``auth.test`` a minute on the
+    wire, and the probe is fail-closed — so a rate-limit there silently disabled
+    the self-filter at exactly the moment traffic was highest.
+    """
+
+    def test_repeated_resolves_hit_auth_test_once(self) -> None:
+        backend = _CountingBackend(auth_response={"ok": True, "user_id": "U1", "bot_id": "B1"})
+
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+        assert backend.calls == 1
+
+    def test_a_failed_probe_is_not_memoised_so_a_recovery_is_seen(self) -> None:
+        # Caching the failure would make one bad response outlive the outage.
+        backend = _CountingBackend(auth_response={"ok": False})
+
+        assert resolve_own_identity(backend) is None
+        backend.auth_response = {"ok": True, "user_id": "U1", "bot_id": ""}
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="")
+        assert backend.calls == 2
+
+    def test_a_backend_that_refuses_the_memo_still_resolves(self) -> None:
+        backend = _UnwritableBackend(auth_response={"ok": True, "user_id": "U1", "bot_id": "B1"})
+
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+        assert resolve_own_identity(backend) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+
+    def test_two_backends_do_not_share_one_identity(self) -> None:
+        # The memo is per instance, so a second overlay's bot resolves its own ids.
+        first = _CountingBackend(auth_response={"ok": True, "user_id": "U1", "bot_id": "B1"})
+        second = _CountingBackend(auth_response={"ok": True, "user_id": "U2", "bot_id": "B2"})
+
+        assert resolve_own_identity(first) == OwnSlackIdentity(user_id="U1", bot_id="B1")
+        assert resolve_own_identity(second) == OwnSlackIdentity(user_id="U2", bot_id="B2")
+
+
+class TestIdentityFromAuthTest:
+    """The parse, split out so a caller holding a raw Slack response reuses it."""
+
+    def test_reads_both_ids(self) -> None:
+        parsed = identity_from_auth_test({"ok": True, "user_id": "U1", "bot_id": "B1"})
+
+        assert parsed == OwnSlackIdentity(user_id="U1", bot_id="B1")
+
+    def test_none_body_is_unresolved(self) -> None:
+        assert identity_from_auth_test(None) is None
+
+    def test_not_ok_body_is_unresolved(self) -> None:
+        assert identity_from_auth_test({"ok": False, "error": "ratelimited"}) is None
+
+    def test_both_ids_missing_is_unresolved(self) -> None:
+        assert identity_from_auth_test({"ok": True}) is None
