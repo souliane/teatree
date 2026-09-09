@@ -8,6 +8,7 @@ its module-health LOC cap) — the thin ``Task`` methods delegate here. The
 functions take a ``Task`` so they stay free of model-class state.
 """
 
+from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -74,7 +75,16 @@ def check_requeue_allowed(task: Task) -> None:
     A CAUSELESS attempt is dropped from the stall comparison (#4075) but still counted
     toward the cap — see :func:`~teatree.core.modelkit.task_failure_taxonomy.is_causeless`.
 
-    A no-op when under the cap and not stalled.
+    The CAP is skipped for a synthetic cadence-anchor ticket (``architectural_review``,
+    ``eval_local``, …) — :func:`~teatree.core.forge_url.is_synthetic_ticket_url`, same
+    predicate as the doctor-probe fix (#3492). ``PhaseCadence`` re-fires such a ticket's
+    phase forever by design (every ``cadence_hours``/``after_merge_count``, for the
+    overlay's whole lifetime), so a LIFETIME attempt count is not a doom signal the way
+    it is for a one-shot deliverable ticket — the cap was tripping on ordinary healthy
+    recurrence. Stall detection stays live: two consecutive identical failures is still
+    a real signal regardless of ticket kind.
+
+    A no-op when under the cap (or cap-exempt) and not stalled.
     """
     phase = normalize_phase(task.phase)
     try:
@@ -99,6 +109,8 @@ def check_requeue_allowed(task: Task) -> None:
         _escalate_stall(task, phase=phase, iterations=len(attempts))
         raise
     except MaxIterationsExceeded:
+        if is_synthetic_ticket_url(task.ticket.issue_url):
+            return
         _escalate_cap(task, phase=phase, iterations=len(attempts))
         raise
 
