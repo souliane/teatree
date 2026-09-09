@@ -29,11 +29,11 @@ dependencies = [
   # derivation impossible. Re-derive ``_SDK_BUNDLED_CLI_VERSION`` from the new
   # wheel's ``claude_agent_sdk/_bundled/claude --version`` on every bump.
   #
-  # The SDK declares ``mcp<2.0.0``, which is broader than what it imports; the
-  # ``[tool.uv] override-dependencies`` entry below narrows it back to what it
-  # actually uses so this pin and the ``mcp>=2,<3`` bound resolve together.
-  # ``tests/test_claude_agent_sdk_pin.py`` keeps that override honest.
-  "claude-agent-sdk==0.2.139",
+  # The SDK's declared ``mcp>=1.23.0,<3.0.0`` already admits the project's own
+  # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
+  # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
+  # bound, or reaches for an mcp symbol the locked 2.x does not provide.
+  "claude-agent-sdk==0.2.152",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -733,30 +733,23 @@ package = true
 # `mcp` floors it itself.
 constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 
-# Replace `claude-agent-sdk`'s declared `mcp<2.0.0` with the project's own
-# `mcp>=2,<3`, so the SDK pin and that bound resolve together.
+# Empty, not deleted: `uv-overrides.txt` and the `--overrides`/`UV_OVERRIDE`
+# every unattended `uv tool install` passes stay wired, so the next entry is a
+# one-line change rather than a re-wiring of every install surface.
 #
-# The cap is broader than the SDK's usage. Its `mcp` imports are exactly six
-# statements across three modules (`claude_agent_sdk/__init__.py`,
-# `_internal/query.py`, `types.py`), and they reach only the LOW-LEVEL server
-# surface — `mcp.server.Server` plus types from `mcp.types` (`ToolAnnotations`,
-# `Tool`, `CallToolRequest`, `CallToolRequestParams`, `CallToolResult`,
-# `ListToolsRequest`, `TextContent`, `ImageContent`, `AudioContent`,
-# `EmbeddedResource`, `ResourceLink`). mcp 2.x still provides every one of them.
-# `teatree.mcp.server` uses a different surface — `mcp.server.mcpserver.MCPServer`,
-# which mcp 2.0 introduced — so the two never touch the same symbols.
+# `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
+# replaced with the project's own `mcp>=2,<3` for the two to resolve together.
+# 0.2.152 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# nothing left to override.
 #
-# `tests/test_claude_agent_sdk_pin.py::TestTheOverrideIsHonest` re-derives that
-# import set from the installed wheel on every run and asserts each symbol
-# resolves under the installed `mcp`, so the override reds the moment the SDK
-# reaches for something mcp 2.x does not provide.
-#
-# An override is graph-wide, not per-requester: uv has no "override X only when
-# requested by Y". This is nonetheless scoped to the SDK in practice — it and
-# teatree are the only requesters of `mcp`, and teatree's own declaration is
-# already `mcp>=2,<3`, so the entry restates teatree's bound and changes nothing
-# else.
-override-dependencies = [ "mcp>=2,<3" ]
+# The wide bound is safe rather than merely resolvable because the SDK reaches
+# only the LOW-LEVEL server surface — `mcp.server.Server` plus types from
+# `mcp.types` — and never the `mcp.server.mcpserver.MCPServer` surface
+# `teatree.mcp.server` uses, so the two never touch the same symbols.
+# `tests/test_claude_agent_sdk_pin.py::TestTheSdkResolvesUnderTheLockedMcp`
+# re-derives that import set from the installed wheel on every run and reds if a
+# release re-narrows the bound or reaches for something mcp 2.x lacks.
+override-dependencies = [  ]
 
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`

@@ -38,6 +38,11 @@ from typing import TYPE_CHECKING, cast
 from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
+from teatree.core.factory.stalled_backlog import (
+    STALLED_BACKLOG_THRESHOLD,
+    STALLED_BACKLOG_WINDOW,
+    stranded_ticket_count,
+)
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
@@ -263,6 +268,36 @@ def _failed_task_signals() -> SignalCollection:
     )
 
 
+def _stalled_backlog_signals() -> SignalCollection:
+    """One CRITICAL when admitted work has been left with no execution path (#4704).
+
+    What "stranded" means, and why neither ``_failed_task_signals`` nor
+    ``StaleTicketsScanner`` covers it, is :mod:`teatree.core.factory.stalled_backlog`.
+    Fail-open, naming itself ``unread`` on a read it could not make.
+    """
+    try:
+        stalled = stranded_ticket_count()
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-stalled-backlog", "stalled-backlog health read failed — skipped", exc_info=True)
+        return SignalCollection(unread=("_stalled_backlog_signals",))
+    if stalled < STALLED_BACKLOG_THRESHOLD:
+        return SignalCollection()
+    hours = int(STALLED_BACKLOG_WINDOW.total_seconds() // 3600)
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="stalled-backlog",
+                severity=KnownIssue.Severity.CRITICAL,
+                kind="stalled_backlog",
+                summary=(
+                    f"{stalled} tickets stranded in started — newest task failed over {hours}h ago "
+                    "and nothing is pending or claimed; the dispatch lane is not running"
+                ),
+            ),
+        )
+    )
+
+
 def _harness_provider_consistency_signals() -> SignalCollection:
     """One CRITICAL per scope whose effective (agent_harness, agent_harness_provider) pair is inconsistent (#3688).
 
@@ -447,6 +482,7 @@ _COLLECTORS = (
     _overlay_health_signals,
     _stale_tick_signals,
     _failed_task_signals,
+    _stalled_backlog_signals,
     _harness_provider_consistency_signals,
     _fleet_loop_policy_signals,
     _admission_pressure_signals,
