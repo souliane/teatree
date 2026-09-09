@@ -35,6 +35,7 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.deferred_question import question_fingerprint
 from teatree.loop.inbound_reading import InboundReading
 from teatree.url_classify import find_forge_urls
+from teatree.utils.url_slug import slack_conversation_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ DISPATCH_PHASE = "answering"
 _ACTIVE_SCAN_LIMIT = 200
 
 _SLACK_ANSWER_KEY = "slack_answer"
+
+#: ``Ticket.short_description``'s own column width — the lane's card label is
+#: truncated to it rather than to a second hand-maintained number.
+_DESCRIPTION_LIMIT = 80
 
 
 class CoverageKind(StrEnum):
@@ -147,12 +152,22 @@ def dispatch_work(
     fingerprint: str,
     origin: WorkOrigin,
 ) -> Task:
-    """Mint ONE tracked lane for *text* through the ordinary Ticket/Session/Task path.
+    """Mint ONE conversation lane for *text* through the ordinary Ticket/Session/Task path.
 
     Nothing here is fire-and-forget: the Task is PENDING and claimable by the
     loop's own ``claim-next``, the Session gives it an identity, and the Ticket
     carries the message's origin so a later cycle (or a human) can trace the lane
     back to the DM that caused it — and so :func:`find_coverage` recognises it.
+
+    The Ticket is the lane's BOOKKEEPING row, not the tracked work item (#4527). It
+    is anchored on the synthetic-loop umbrella and described, so it is unique per
+    Slack message (the ts makes the dispatch idempotent under
+    ``unique_nonempty_issue_url``), recognisable to the artifact-terminal task sweep,
+    and never :meth:`~teatree.core.models.ticket.Ticket.is_admissible` — because at
+    dispatch time nobody has yet decided WHAT the work is. The work item is the real
+    forge issue the answering phase files through
+    :func:`~teatree.core.answering.work_item_filing.file_work_item`; only that row is
+    findable by intake, and only it may be announced to the owner.
     """
     overlay, channel, slack_ts, coalesced_ts, text = (
         origin.overlay,
@@ -161,21 +176,35 @@ def dispatch_work(
         origin.coalesced_ts,
         origin.text,
     )
-    ticket = Ticket.objects.create(
-        overlay=overlay,
-        role=Ticket.Role.AUTHOR,
-        extra={
-            _SLACK_ANSWER_KEY: {
-                "channel": channel,
-                "slack_ts": slack_ts,
-                "coalesced_ts": list(coalesced_ts),
-                "question": text,
-                "fingerprint": fingerprint,
-                "intent": str(reading.intent),
-                "work_summary": reading.work_summary,
-            }
+    subject = (reading.work_summary or text).strip()
+    ticket, _created = Ticket.objects.get_or_create(
+        issue_url=slack_conversation_anchor(channel=channel, slack_ts=slack_ts),
+        defaults={
+            "overlay": overlay,
+            "role": Ticket.Role.AUTHOR,
+            "short_description": subject[:_DESCRIPTION_LIMIT],
+            "extra": {
+                _SLACK_ANSWER_KEY: {
+                    "channel": channel,
+                    "slack_ts": slack_ts,
+                    "coalesced_ts": list(coalesced_ts),
+                    "question": text,
+                    "fingerprint": fingerprint,
+                    "intent": str(reading.intent),
+                    "implies_work": True,
+                    "work_summary": reading.work_summary,
+                }
+            },
         },
     )
+    if ticket.overlay != overlay:
+        # The lane's overlay is the QUEUE's, never one `save()` inferred from the umbrella
+        # anchor: `find_coverage` scans `ticket__overlay=<unit overlay>`, so a diverged
+        # value hides this lane and the next report of the same problem mints a rival.
+        # An EXISTING row is where that divergence survives, so this must not gate on
+        # `created` — a fresh row was just handed the queue's overlay and cannot diverge.
+        Ticket.objects.filter(pk=ticket.pk).update(overlay=overlay)
+        ticket.overlay = overlay
     session = Session.objects.create(ticket=ticket, overlay=overlay, agent_id=DISPATCH_PHASE)
     return Task.objects.create(
         ticket=ticket,
