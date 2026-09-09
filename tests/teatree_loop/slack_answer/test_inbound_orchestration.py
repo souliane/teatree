@@ -24,11 +24,13 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import DmContext, PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
+from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work, find_coverage
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -333,3 +335,96 @@ class TestNothingIsMarkedCompleteThatWasNot:
         assert InboundReaction.DONE not in backend.emojis
         row.refresh_from_db()
         assert row.loop_replied_at is None, "an unverified answer was stamped as replied"
+
+
+class TestTheDispatchedRowIsNeverAnUnfindableShell:
+    """Claim 5 (#4527) — the lane's Ticket must not look like tracked work nobody can find.
+
+    Every dispatch minted a row with a blank ``issue_url`` AND a blank
+    ``short_description``: intake discovers candidates from the forge, so such a
+    row can never be admitted, claimed, or found again. Fifty accumulated, each
+    the only surviving record of one owner request.
+    """
+
+    def test_the_row_is_described_and_anchored(self) -> None:
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
+
+        run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("fix interest-rate rounding on the offer PDF")),
+        )
+
+        ticket = Task.objects.get().ticket
+        assert ticket.short_description == "fix interest-rate rounding on the offer PDF", (
+            "the row carries no description, so every surface renders it as a nameless card"
+        )
+        assert is_synthetic_loop_umbrella_url(ticket.issue_url), (
+            f"the row is not anchored on the synthetic-loop umbrella: {ticket.issue_url!r}"
+        )
+        assert ticket.issue_url.endswith("/dm"), (
+            "the anchor fragment ends in digits, so derive_issue_number stamps the Slack ts as an issue number"
+        )
+        assert ticket.issue_number == "", f"a bogus forge issue number was derived: {ticket.issue_number!r}"
+
+    def test_the_conversation_row_is_not_mistaken_for_tracked_work(self) -> None:
+        """The anchor is bookkeeping — ``is_admissible`` is what says "intake could find this"."""
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
+
+        run_slack_answer_cycle(
+            messaging_resolver=_resolver(RecordingBackend()),
+            reader=_reader(_work("fix interest-rate rounding on the offer PDF")),
+        )
+
+        assert not Task.objects.get().ticket.is_admissible(), (
+            "the conversation row claims to be findable work; announcing it as `tracking as ticket N` is the trap"
+        )
+
+    def test_a_re_dispatch_of_the_same_message_reuses_one_row(self) -> None:
+        """The Slack ts is the identity — a retried cycle must not mint a second row for it."""
+        reading = _work("fix interest-rate rounding on the offer PDF")
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
+        origin = WorkOrigin(overlay="", channel=_CHANNEL, slack_ts="1.0", coalesced_ts=("1.0",), text="rounding")
+
+        first = dispatch_work(reading=reading, fingerprint="fp", origin=origin)
+        second = dispatch_work(reading=reading, fingerprint="fp", origin=origin)
+
+        assert first.ticket_id == second.ticket_id, "a retried dispatch forked a second row for one message"
+
+
+class TestADivergedLaneOverlayIsRepairedSoCoverageStillFindsIt:
+    """``find_coverage`` scans ``ticket__overlay=<queue overlay>``, so a diverged row is invisible.
+
+    The row diverges when it was minted before the queue's overlay was known and
+    ``Ticket.save`` inferred one from the umbrella anchor. Nothing re-dispatches a
+    lane it cannot see, so the next report of the same problem mints a rival.
+    """
+
+    def _dispatch(self, overlay: str) -> Task:
+        return dispatch_work(
+            reading=_work("fix interest-rate rounding on the offer PDF"),
+            fingerprint="fp-rounding",
+            origin=WorkOrigin(
+                overlay=overlay, channel=_CHANNEL, slack_ts="1.0", coalesced_ts=("1.0",), text="rounding"
+            ),
+        )
+
+    def test_a_re_dispatch_repoints_the_existing_row_at_the_queue_overlay(self) -> None:
+        self._dispatch("t3-other")
+
+        task = self._dispatch("t3-teatree")
+
+        assert Ticket.objects.get(pk=task.ticket_id).overlay == "t3-teatree"
+
+    def test_the_repaired_lane_is_visible_to_find_coverage(self) -> None:
+        self._dispatch("t3-other")
+        self._dispatch("t3-teatree")
+
+        coverage = find_coverage(
+            fingerprint="fp-rounding",
+            slack_ts="1.0",
+            coalesced_ts=("1.0",),
+            overlay="t3-teatree",
+            text="rounding",
+        )
+
+        assert coverage is not None, "the lane is invisible to the queue that owns it, so a rival will be minted"
