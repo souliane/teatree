@@ -6,7 +6,7 @@ Both questions are needed because the landing gate is answerable only against a
 base, and a long-lived branch is permanently ahead of its own — a bootstrap branch
 thousands of commits ahead of an ``Initial commit`` base makes
 ``worktree_has_commits_ahead`` true forever, so the landing gate cannot fire and
-``attempt_recorder._salvage_coding_result`` synthesizes ``files_modified`` from the
+``coding_result_salvage.salvage_coding_result`` synthesizes ``files_modified`` from the
 WHOLE branch diff. A toolless run that emitted one sentence of prose then records
 ``outcome=success`` carrying every file in the repo as its evidence.
 

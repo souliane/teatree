@@ -31,9 +31,9 @@ from teatree.docker.workflow import (
     launcher_wrapper_target,
     read_managed_launcher,
     remove_alias_block,
-    render_launcher_script,
     wrapper_path,
 )
+from teatree.docker.workflow import _render_launcher_script as render_launcher_script
 
 _USER_RC = """# the operator's own profile
 greet() {
