@@ -271,7 +271,7 @@ def live_foreign_owner_session(claim: LeaseClaim, session_id: str, now: datetime
     return claim.session_id if lease_is_live(claim, now, trust_pid_past_ttl=trust_pid_past_ttl) else ""
 
 
-def pid_is_foreign(stored_pid: int | None, current_pid: int | None) -> bool:
+def _pid_is_foreign(stored_pid: int | None, current_pid: int | None) -> bool:
     """Whether a live lease's ``owner_pid`` belongs to a DIFFERENT OS process (#1604).
 
     A live foreign-session lease whose ``owner_pid`` matches ``current_pid`` is a
@@ -297,4 +297,4 @@ def claim_pid_is_foreign(claim: LeaseClaim, current_pid: int | None) -> bool:
     """
     if not namespace_is_attributable(claim.owner_pid_namespace):
         return True
-    return pid_is_foreign(claim.owner_pid, current_pid)
+    return _pid_is_foreign(claim.owner_pid, current_pid)

@@ -24,7 +24,7 @@ TokenResolver = Callable[[int], str | None]
 
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
-_MRKDWN_LINK_RE = re.compile(r"<https?://[^\s|>]+\|[^>]+>")
+_MRKDWN_LINK_RE = re.compile(r"<https?://[^\s|>]+\|([^>]+)>")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _BARE_MR_RE = re.compile(r"(?<![A-Za-z0-9_/])!(\d+)(?![A-Za-z0-9_])")
 _BARE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_/])#(\d+)(?![A-Za-z0-9_])")
@@ -37,6 +37,17 @@ _PROSE_SPLIT_MIN_SENTENCES = 2
 _PROSE_SPLIT_MANY_SENTENCES = 3
 _INITIAL_TOKEN_LEN = 2
 _BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
+
+#: Maximum rendered line length for an outbound Slack message (#3809). Sized for
+#: a phone and a narrow DM column, where a longer line wraps at an arbitrary point.
+WRAP_WIDTH = 90
+
+# Bounded: CPython refuses a str->int conversion past 4300 digits, and the
+# conversion runs before any range check could reject the index.
+_PLACEHOLDER_RE = re.compile(r"\x00(\d{1,9})\x00")
+_LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+)")
+# Whitespace is what separates a heading from the `#4665` issue ref teatree writes constantly.
+_HEADING_RE = re.compile(r"#{1,6}\s")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
 # Lowercased abbreviation guard. Honorifics (Dr./Mr./Mrs./Ms./Prof./St.)
 # are deliberately NOT in this set: it is matched case-insensitively, so
@@ -114,10 +125,7 @@ def slack_linkify(
     if issue_resolver is not None:
         text = _BARE_ISSUE_RE.sub(_make_token_rewriter("#", issue_resolver), text)
 
-    def _restore(match: re.Match[str]) -> str:
-        return protected[int(match.group(1))]
-
-    return re.sub(r"\x00(\d+)\x00", _restore, text)
+    return _restore_placeholders(text, protected)
 
 
 def normalize_slack_message(text: str) -> str:
@@ -164,10 +172,7 @@ def normalize_slack_message(text: str) -> str:
     text = _split_glued_prose(text)
     text = _EXCESS_BLANK_RE.sub("\n\n", text)
 
-    def _restore(match: re.Match[str]) -> str:
-        return protected[int(match.group(1))]
-
-    return re.sub(r"\x00(\d+)\x00", _restore, text)
+    return _restore_placeholders(text, protected)
 
 
 def _normalize_bullets(text: str) -> str:
@@ -311,4 +316,168 @@ def _make_token_rewriter(sigil: str, resolver: TokenResolver) -> Callable[[re.Ma
     return _rewrite
 
 
-__all__ = ["TokenResolver", "normalize_slack_message", "slack_linkify"]
+def wrap_slack_message(text: str, *, width: int = WRAP_WIDTH) -> str:
+    """Return *text* with every wrappable line broken to at most *width* chars (#3809).
+
+    Applied at the Slack transport rather than at a composition seam, so a new
+    sender inherits the rule instead of having to remember a helper.
+
+    Left intact because breaking them harms readability rather than helping it:
+    fenced code, inline code spans, mrkdwn links, bare URLs, table rows,
+    headings, and any single whitespace-free token wider than *width*.
+
+    A ``- ``/``* `` bullet's continuation lines are indented under the marker and
+    a ``> `` quote's keep the quote prefix, so Slack still renders the structure.
+
+    Idempotent: lines are only ever broken at existing whitespace and never
+    rejoined, so every output line is already within *width* (bar the intact
+    spans above) and a second application is a no-op. A body with no line to
+    break comes back byte for byte, trailing newline and CRLF included: only a
+    bare LF is ever treated as a line boundary.
+    """
+    if not text:
+        return text
+    protected: list[str] = []
+    stashed = _stash_unwrappable(text, protected)
+    lines = stashed.split("\n")
+    wrapped = [_wrap_line(line, protected, width) for line in lines]
+    if wrapped == lines:
+        return text
+    return _restore_placeholders("\n".join(wrapped), protected)
+
+
+def slack_line_violations(text: str, *, width: int = WRAP_WIDTH) -> list[str]:
+    """Return the lines of *text* that exceed *width* and that wrapping could fix.
+
+    The oracle behind the #3809 acceptance test. It shares
+    :func:`wrap_slack_message`'s implementation rather than re-deriving the
+    carve-outs, so the test and the transform cannot disagree about what counts
+    as a sanctioned exception: a line the wrapper leaves alone is by definition
+    one it judged unbreakable.
+    """
+    if not text:
+        return []
+    protected: list[str] = []
+    stashed = _stash_unwrappable(text, protected)
+    return [
+        _restore_placeholders(line, protected)
+        for line in stashed.split("\n")
+        if _display_len(line, protected) > width and _wrap_line(line, protected, width) != line
+    ]
+
+
+def _stash_unwrappable(text: str, protected: list[str]) -> str:
+    """Replace every never-broken span with a NUL placeholder, longest form first.
+
+    Order is load-bearing: a mrkdwn link embeds a URL, so stashing links after
+    bare URLs would leave the link's own ``|label`` half exposed to the splitter.
+    """
+
+    def _stash(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00{len(protected) - 1}\x00"
+
+    for pattern in (_CODE_FENCE_RE, _INLINE_CODE_RE, _MRKDWN_LINK_RE, _BARE_URL_RE):
+        text = pattern.sub(_stash, text)
+    return text
+
+
+def _substitute_placeholders(text: str, resolve: Callable[[str], str], protected: list[str]) -> str:
+    """Apply *resolve* to every placeholder, repeatedly, until the text settles.
+
+    ``_stash_unwrappable`` stashes inner-first, so a stashed span can embed a
+    placeholder of its own: an inline code span inside a link label, or a bare
+    URL that swallowed a marker (NUL is not one of the characters that ends
+    one). A single pass reinstates the outer span with the inner marker still
+    in it, deleting the inner span and putting raw NULs on the wire. A span at
+    index ``i`` can only carry markers stashed before it, so the nesting is
+    strictly decreasing and one pass per stashed span reaches the fixpoint.
+    """
+
+    def _substitute(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return resolve(protected[index]) if index < len(protected) else match.group(0)
+
+    for _ in range(len(protected) + 1):
+        substituted = _PLACEHOLDER_RE.sub(_substitute, text)
+        if substituted == text:
+            break
+        text = substituted
+    return text
+
+
+def _restore_placeholders(text: str, protected: list[str]) -> str:
+    """Put every stashed span back, leaving an index we never issued as body text.
+
+    A message may legitimately contain the placeholder sequence; indexing the
+    stash with the body's own number raised ``IndexError`` at a transport whose
+    callers are contracted a return value, not an exception. Total for any
+    ``str``: the pattern bounds the digit run, so the conversion cannot raise
+    either.
+
+    An index the body supplied that IS in range still resolves to our span —
+    see the accepted-behaviour tests. Closing that needs an unforgeable
+    sentinel, which no in-band marker can be.
+    """
+    return _substitute_placeholders(text, lambda span: span, protected)
+
+
+def _rendered_span(span: str) -> str:
+    """What Slack actually shows for a stashed span — a link renders as its label alone."""
+    link = _MRKDWN_LINK_RE.fullmatch(span)
+    return link.group(1) if link else span
+
+
+def _display_len(text: str, protected: list[str]) -> int:
+    """Length of *text* as Slack renders it, where a link costs its label, not its URL.
+
+    Teatree's own reference convention puts a titled link on almost every line,
+    so measuring the raw ``<url|label>`` splits lines the reader sees far under
+    the limit — worse than not wrapping them at all.
+    """
+    return len(_substitute_placeholders(text, _rendered_span, protected))
+
+
+def _wrap_line(line: str, protected: list[str], width: int) -> str:
+    """Break one line at whitespace; return it unchanged when it must not be broken."""
+    if _display_len(line, protected) <= width:
+        return line
+    stripped = line.lstrip()
+    # A table row's columns are space-aligned, so any break destroys the alignment.
+    if not stripped or _HEADING_RE.match(stripped) or "|" in line:
+        return line
+    indent = line[: len(line) - len(stripped)]
+    marker, body = _split_list_or_quote_marker(stripped)
+    atoms = body.split()
+    if not atoms:
+        return line
+    # A quote's continuation stays quoted; a bullet's aligns under the marker.
+    continuation = indent + ("> " if marker.startswith(">") else " " * len(marker))
+    out: list[str] = []
+    current = indent + marker + atoms[0]
+    for atom in atoms[1:]:
+        trial = f"{current} {atom}"
+        if _display_len(trial, protected) <= width:
+            current = trial
+        else:
+            out.append(current)
+            current = continuation + atom
+    out.append(current)
+    return "\n".join(out)
+
+
+def _split_list_or_quote_marker(stripped: str) -> tuple[str, str]:
+    match = _LIST_OR_QUOTE_MARKER_RE.match(stripped)
+    if not match:
+        return "", stripped
+    return match.group(1), stripped[match.end() :]
+
+
+__all__ = [
+    "WRAP_WIDTH",
+    "TokenResolver",
+    "normalize_slack_message",
+    "slack_line_violations",
+    "slack_linkify",
+    "wrap_slack_message",
+]

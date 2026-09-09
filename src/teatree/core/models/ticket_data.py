@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from django.db import models
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from teatree.core.models.ticket import Ticket
 
 
@@ -27,9 +29,13 @@ class TicketFacet(models.Model):
         role: str
         extra: dict[str, Any]
         context: str
+        short_description: str
         remote_missing: bool
         expedited: bool
         issue_number: str
+        # Present only on rows from ``TicketQuerySet.unfindable()``, which annotates it;
+        # ``Ticket`` carries no creation stamp, so its oldest task IS the row's age.
+        oldest_task: "datetime | None"
         State: type["Ticket.State"]
         Role: type["Ticket.Role"]
         _TERMINAL_STATES: ClassVar[frozenset[str]]

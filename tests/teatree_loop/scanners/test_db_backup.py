@@ -2,9 +2,12 @@
 
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 from django.utils import timezone
 
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.db_backup import DbBackupScanner
 
 
@@ -37,3 +40,22 @@ class TestDbBackupScanner:
         payload = signals[0].payload
         assert payload["retention_days"] == 14
         assert payload["backup_dir"] == str(tmp_path)
+
+    def test_an_unreadable_backup_dir_raises_instead_of_going_silent(self, tmp_path: Path) -> None:
+        """A dir read failure must reach the dispatcher's alarm, not disappear as 'no backup due'.
+
+        Swallowing it into ``[]`` is indistinguishable from a genuinely fresh backup, so the
+        directive's own retention guarantee could lapse for good with nothing ever telling the
+        owner — the ``ScannerError`` path is what wires this scanner into the existing
+        DM-once-per-day escalation every other scanner already gets on a recoverable failure.
+        """
+        with (
+            patch(
+                "teatree.loop.scanners.db_backup.hours_since_last_backup",
+                side_effect=OSError("permission denied"),
+            ),
+            pytest.raises(ScannerError) as exc_info,
+        ):
+            DbBackupScanner(retention_days=7, cadence_hours=24, backup_dir=tmp_path).scan()
+        assert exc_info.value.scanner == "db_backup"
+        assert exc_info.value.error_class is ScannerErrorClass.UNKNOWN
