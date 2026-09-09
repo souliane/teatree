@@ -807,9 +807,12 @@ jobs:
   # back into one complete file and, ONLY when the drift gate fires (test set
   # changed, or aggregate per-test time moved past the threshold — never on pure
   # jitter), opens/updates ONE single refresh PR a human reviews and merges.
-  # The refresh branch name is STABLE (`ci/test-durations-refresh`) and force-
-  # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
-  # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
+  # The refresh branch name is STABLE (`ci/test-durations-refresh`), so an unmerged
+  # refresh is UPDATED in place instead of stacking a new dated PR every day (which
+  # piled up conflicting PRs — #3160 residual CI-3). It is REBUILT only while it carries
+  # nothing but the generated file; once it carries anything else, the base is merged
+  # under those commits instead, because rebuilding the ref byte-erased the review fixes
+  # pushed onto it and left the PR unfixable in place (#4717).
   # Never gates a PR; a merge failure or empty diff is a no-op.
   #
   # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
@@ -937,19 +940,22 @@ jobs:
             echo "No net change to dev/.test_durations — nothing to open."
             exit 0
           fi
-          # STABLE branch (CI-3): reused + force-updated so there is at most ONE open
-          # refresh PR, updated in place — never a new dated branch/PR each unmerged day.
+          # STABLE branch (CI-3): reused so there is at most ONE open refresh PR, updated
+          # in place — never a new dated branch/PR each unmerged day. The script UPDATES it
+          # rather than rebuilding the ref: `git checkout -B` here discarded every commit
+          # already on the branch, which is how #4655's review fixes were destroyed, and a
+          # refresh is precisely what creates the collateral those fixes address (#4717). It
+          # refuses, pushing nothing, on a conflict outside the generated file. The lease
+          # still guards a concurrent push, and the rebuild path still rewrites the ref.
           BRANCH="ci/test-durations-refresh"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add dev/.test_durations
-          git commit -m "chore(ci): refresh dev/.test_durations from the shard lane (#3160)"
+          uv run -p 3.13 python scripts/ci/durations_refresh_branch.py --branch "$BRANCH"
           git push --force-with-lease origin "$BRANCH"
           if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
             gh pr create \
               --title "chore(ci): refresh test shard durations" \
-              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green." \
+              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green. Fixes that this refresh's own review requires (raised timeout ceilings, markers, source edits) belong on this branch: the next refresh merges the base under them and preserves every path other than \`dev/.test_durations\`, or refuses and says why (#4717)." \
               --base main
             # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
             # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
