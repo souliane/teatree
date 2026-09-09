@@ -27,6 +27,7 @@ from teatree.agents.result_schema import (
 )
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 CONTRACT_HEADING = "# Result Envelope — REQUIRED OUTPUT CONTRACT"
 
@@ -43,7 +44,7 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         "review_verdict": {
             "verdict": "merge_safe",
             "reviewed_sha": "<the full 40-char head sha you were dispatched for>",
-            "reviewer_identity": "<your reviewer id>",
+            "reviewer_identity": REVIEWER_IDENTITY_INSTRUCTION,
             "gh_verify_result": "green",
             "blast_class": "logic",
             # Non-empty on a PASS: the example a reviewer copies outranks the prose
