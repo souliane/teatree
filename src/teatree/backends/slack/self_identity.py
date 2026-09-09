@@ -7,7 +7,7 @@ can apply them at its read chokepoint without a backwards import to the loop
 layer; the loop scanner re-exports them via
 :mod:`teatree.loop.scanners.slack_self_filter`.
 
-Three transforms, three failure doctrines:
+Four transforms, four failure doctrines:
 
 *   :func:`filter_self_messages` — DROP the bot's own DMs before they reach
     :class:`PendingChatInjection`, so the bot never "answers" its own outbound
@@ -24,8 +24,14 @@ Three transforms, three failure doctrines:
     of text it already wrote (#2089). **Fail-open**: an unresolved identity
     passes the batch through unchanged — the only cost is token waste, never a
     safety violation.
+*   :func:`is_self_originated` — REFUSE the event-driven answer wake for the
+    app's own returning posts (#4707), upstream of the three above so a
+    self-post costs no cycle at all. **Degrades, never fails**: it reads
+    ``bot_id`` / ``api_app_id`` off the event, so an unresolved identity loses
+    precision rather than the guard.
 """
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import cast
@@ -64,25 +70,23 @@ class OwnSlackIdentity:
         return bool(self.user_id or self.bot_id)
 
 
-def resolve_own_identity(backend: MessagingBackend) -> OwnSlackIdentity | None:
-    """Probe ``auth.test`` once and return the bot's own ids, or ``None``.
+#: Where a successful probe is memoised on the backend instance. The backend
+#: factory keeps one backend per overlay for the process life, so an instance
+#: memo is effectively process-wide.
+_IDENTITY_MEMO_ATTR = "_t3_own_slack_identity"
 
-    ``None`` means "identity unknown" — the call returned ``ok:false``,
-    the bot token is unconfigured (``auth_test`` returned ``{}``), or the
-    transport raised. Callers (the scanner) treat this as a hard
-    fail-closed signal and refuse to enqueue any row that turn.
+
+def identity_from_auth_test(response: RawAPIDict | None) -> OwnSlackIdentity | None:
+    """Read the bot's own ids out of an ``auth.test`` body, or ``None``.
 
     The Slack ``auth.test`` response shape:
     ``{"ok": true, "user_id": "U…", "bot_id": "B…", …}``. Either
     identifier in isolation is enough — bot-style messages don't always
     carry both — so the empty-string default for the missing field is
-    intentional.
+    intentional. Split out from :func:`resolve_own_identity` so a caller
+    holding a raw Slack response (the Socket Mode receiver's ``WebClient``)
+    parses it the same way as one holding a :class:`MessagingBackend`.
     """
-    try:
-        response = backend.auth_test()
-    except Exception as exc:  # noqa: BLE001 — fail-closed on transport failure
-        logger.warning("auth.test raised; cannot resolve own identity for self-filter: %s", exc)
-        return None
     if not response or not response.get("ok"):
         return None
     user_id = response.get("user_id", "")
@@ -92,8 +96,37 @@ def resolve_own_identity(backend: MessagingBackend) -> OwnSlackIdentity | None:
     if not isinstance(bot_id, str):
         bot_id = ""
     identity = OwnSlackIdentity(user_id=user_id, bot_id=bot_id)
-    if not identity.is_resolvable:
+    return identity if identity.is_resolvable else None
+
+
+def resolve_own_identity(backend: MessagingBackend) -> OwnSlackIdentity | None:
+    """Probe ``auth.test`` once per *backend* and return the bot's own ids, or ``None``.
+
+    ``None`` means "identity unknown" — the call returned ``ok:false``, the
+    bot token is unconfigured (``auth_test`` returned ``{}``), or the
+    transport raised. Callers (the scanner) treat this as a hard
+    fail-closed signal and refuse to enqueue any row that turn.
+
+    The "once" was aspirational until #4707: every call re-probed, so the
+    per-cycle callers together issued ~7 ``auth.test`` a minute and a
+    rate-limit there silently disabled the self-filter exactly when traffic
+    was highest. A resolved identity is now memoised on the backend
+    instance. Only successes are memoised, so a transient failure that later
+    recovers is re-probed, and a backend that refuses the attribute
+    (``__slots__``, frozen) merely keeps re-probing as before.
+    """
+    memo = getattr(backend, _IDENTITY_MEMO_ATTR, None)
+    if isinstance(memo, OwnSlackIdentity):
+        return memo
+    try:
+        response = backend.auth_test()
+    except Exception as exc:  # noqa: BLE001 — fail-closed on transport failure
+        logger.warning("auth.test raised; cannot resolve own identity for self-filter: %s", exc)
         return None
+    identity = identity_from_auth_test(response)
+    if identity is not None:
+        with contextlib.suppress(AttributeError):
+            setattr(backend, _IDENTITY_MEMO_ATTR, identity)
     return identity
 
 
@@ -172,6 +205,32 @@ def drop_on_behalf_messages(messages: list[RawAPIDict]) -> list[RawAPIDict]:
     return [m for m in messages if not is_on_behalf_posted(m)]
 
 
+def is_self_originated(message: RawAPIDict, identity: OwnSlackIdentity | None) -> bool:
+    """True iff this app produced *message*, rather than a human typing it (#4707).
+
+    What the event-driven answer wake is gated on, so the cycle can never be
+    woken by its own output — the self-feeding loop that put 2,391
+    ``chat.postMessage`` into the owner's DM in 24h. The three signals are the
+    union the downstream scanner already drops, ordered by what each needs:
+
+    *   ``api_app_id`` — posted through the Web API by an app, exactly
+        :func:`drop_on_behalf_messages`'s test, and structural so an
+        unresolved identity cannot cost it.
+    *   ``bot_id`` — any bot authorship. A bot-token post always carries it,
+        so this one breaks the loop even with ``auth.test`` unavailable; the
+        price is that a THIRD-party bot's DM waits for the cadence chain
+        rather than waking one immediately.
+    *   :func:`is_self_authored` — the precise match, once the identity
+        resolved.
+    """
+    if is_on_behalf_posted(message):
+        return True
+    bot_id = message.get("bot_id")
+    if isinstance(bot_id, str) and bot_id:
+        return True
+    return identity is not None and is_self_authored(message, identity)
+
+
 def is_tts_audio_file(file_entry: object) -> bool:
     """True iff a Slack ``files`` entry is an audio attachment (#2089).
 
@@ -230,8 +289,10 @@ __all__ = [
     "OwnSlackIdentity",
     "drop_on_behalf_messages",
     "filter_self_messages",
+    "identity_from_auth_test",
     "is_on_behalf_posted",
     "is_self_authored",
+    "is_self_originated",
     "is_thread_root",
     "is_tts_audio_file",
     "resolve_own_identity",
