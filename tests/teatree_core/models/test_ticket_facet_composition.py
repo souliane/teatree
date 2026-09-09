@@ -61,6 +61,9 @@ class TestStatusFacetCohesionSplit:
             "ticket_number",
             "has_shippable_diff",
             "artifacts",
+            "is_admissible",
+            "recorded_request",
+            "work_placed_elsewhere",
         }
 
     def test_both_facets_stay_abstract_so_no_field_moves(self) -> None:
