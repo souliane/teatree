@@ -12,8 +12,10 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import hooks.scripts.hook_router as router
-from hooks.scripts import gate_result, mr_validator
+from hooks.scripts import gate_result, mr_validator, t3_invocation
 from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
 from teatree.config import COLD_HOOK_SETTINGS
@@ -774,6 +776,12 @@ class TestValidatorRunsFromAContainerVisibleCwd:
     Patched at ``subprocess.run`` rather than at a module attribute so the assertion
     holds wherever the spawn lives — the point is the cwd the process actually gets.
     """
+
+    @pytest.fixture(autouse=True)
+    def _stub_the_prover(self):
+        # The probe is a subprocess.run too, so it inflates call_count past the real spawn.
+        with patch.object(t3_invocation, "container_path", return_value=None):
+            yield
 
     def _spawn(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -400,6 +400,8 @@ filterwarnings = [
   "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
   "ignore:POSTGRES_PASSWORD literal is deprecated.*:DeprecationWarning",
   "ignore:'BaseCommand' is deprecated.*:DeprecationWarning",
+  "ignore:'click.utils.get_binary_stream' is deprecated.*:DeprecationWarning",
+  "ignore:'click.utils.get_text_stream' is deprecated.*:DeprecationWarning",
 ]
 xfail_strict = true
 markers = [

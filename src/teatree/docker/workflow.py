@@ -108,7 +108,7 @@ def launcher_path(env: Mapping[str, str]) -> Path:
     return launcher_bin_dir(env) / "t3"
 
 
-def render_launcher_script(repo: Path) -> str:
+def _render_launcher_script(repo: Path) -> str:
     """The launcher's contents: ``exec`` *repo*'s container-wrapping entry.
 
     The checkout is baked in at install time and the script never consults its
@@ -194,7 +194,7 @@ def install_launcher(path: Path, repo: Path) -> LauncherInstall:
     :attr:`LauncherInstall.UNVERIFIED` — the caller must not act on it as an
     installed launcher.
     """
-    script = render_launcher_script(repo)
+    script = _render_launcher_script(repo)
     if path.is_symlink() or path.exists():
         managed = read_managed_launcher(path)
         if managed == script:

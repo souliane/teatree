@@ -10,6 +10,25 @@ type Ports = dict[str, int]
 type JSONObject = dict[str, object]
 
 
+class SlackAnswerContext(TypedDict, total=False):
+    """The reactive Slack-answer cycle's stamp on a conversation lane's ticket (#4527).
+
+    ``implies_work`` decides whether the answering phase owes a ``work_item``, and
+    ``work_issue_url`` records the findable row the request became — the two keys that
+    separate a handled request from a dropped one.
+    """
+
+    channel: str
+    slack_ts: str
+    coalesced_ts: list[str]
+    question: str
+    fingerprint: str
+    intent: str
+    implies_work: bool
+    work_summary: str
+    work_issue_url: str
+
+
 class VisualQAPageError(TypedDict):
     kind: str
     message: str
