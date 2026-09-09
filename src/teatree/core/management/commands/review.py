@@ -188,7 +188,14 @@ class Command(ReviewerPolicyCommands, MachineOutputCommand, RefusalExitTyperComm
         ticket_id: int,
         *,
         kind: Annotated[str, typer.Option(help="cold_review / integration_review.")] = "cold_review",
-        reviewer: Annotated[str, typer.Option("--reviewer", help="Reviewer identity (not a maker/loop role).")] = "",
+        reviewer: Annotated[
+            str,
+            typer.Option(
+                "--reviewer",
+                help="Reviewer identity: must carry a reviewer role word "
+                "(reviewer/cold/cr/critic/adjudicator/checker/codex), never maker/coding/loop.",
+            ),
+        ] = "",
         verdict: Annotated[str, typer.Option(help="Review verdict, e.g. merge_safe / hold / pass.")] = "",
         head_sha: Annotated[
             str, typer.Option("--head-sha", help="Full 40-char hex commit id of the reviewed tree.")
