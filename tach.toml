@@ -204,6 +204,7 @@ depends_on = [
   # transport rather than carrying a second, uncapped retry loop.
   "teatree.backends.http_retry",
   "teatree.core.modelkit",
+  "teatree.core.forge_url",
   "teatree.core.models.errors",
   "teatree.core.models",
   "teatree.core.schema_readiness",
@@ -229,6 +230,11 @@ depends_on = [
 
 [[modules]]
 path = "teatree.core.modelkit"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.forge_url"
 layer = "domain"
 depends_on = []
 
@@ -345,6 +351,7 @@ path = "teatree.core.models"
 layer = "domain"
 depends_on = [
   "teatree.core.claim_liveness",
+  "teatree.core.forge_url",
   "teatree.core.modelkit",
   "teatree.core.managers",
   "teatree.core.models.errors",
