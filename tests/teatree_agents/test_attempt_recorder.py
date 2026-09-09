@@ -305,7 +305,7 @@ class TestLandingVerifiedCompletion(TestCase):
         # the salvage yields nothing rather than completing on unknowable work.
         task = self._claimed()
         self._attach_worktree(task.ticket, commits_ahead=1)
-        with patch("teatree.agents.attempt_recorder.git.run", side_effect=OSError("boom")):
+        with patch("teatree.agents.coding_result_salvage.git.run", side_effect=OSError("boom")):
             record_result_envelope(task, {"summary": "committed but diff read broke"})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED

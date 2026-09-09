@@ -174,6 +174,35 @@ Idempotency key: `f"answer:{event.id}"` — derived from
 `IncomingEvent.id`, so a retried tick or a redelivery never double-posts
 the same answer. The reply transport short-circuits on a duplicate key.
 
+### 4b. Convert the Request into Tracked Work
+
+A reply is only half the deliverable. When the message that dispatched this task
+implied WORK — an instruction, a correction, or a question too open to answer from
+recorded state — the request must also become something intake can find, or it is
+dropped the moment the thread scrolls away. Fifty owner requests were lost exactly
+this way: acknowledged, "tracked" as a ticket with no `issue_url`, and invisible to
+every forge-scoped intake query thereafter.
+
+You cannot file it yourself (this phase has no shell). Return a `work_item` object in
+the same JSON result as your `answer`; the orchestrator files it and appends the
+clickable issue link to the reply it posts for you. Exactly one of three shapes:
+
+```json
+"work_item": {"existing_issue_url": "https://github.com/<owner>/<repo>/issues/<n>"}
+"work_item": {"title": "<imperative one-line title>", "body": "<what to do and why>"}
+"work_item": {"no_work_reason": "<why the reply settles it and nothing needs building>"}
+```
+
+- **Search the open backlog first.** Prefer `existing_issue_url` over filing a
+  near-duplicate — one issue per root cause (`AGENTS.md` § "Issue Creation").
+- **Paraphrase, never paste.** The body lands on a PUBLIC repo. Write what the work
+  is; do not quote the owner's message verbatim.
+- **`no_work_reason` is a real answer, not an escape hatch.** Use it when the reply
+  genuinely settles the request — never to avoid deciding.
+- **A result with no `work_item` on a work-implying task is refused** and the task is
+  re-dispatched with the contract restated. The refusal exists because a reply-only
+  result and a dropped request are otherwise indistinguishable.
+
 ### 5. Record & Report
 
 - The reply transport records the `ReplyDispatch` outcome
@@ -200,6 +229,10 @@ the same answer. The reply transport short-circuits on a duplicate key.
   authoritative-sounding answer.
 - **Don't duplicate.** Check the thread for an existing answer before
   posting.
+- **Never promise a bare ticket number.** The only thing announced to the owner is
+  the forge issue the `work_item` channel produced, rendered as a clickable link —
+  the orchestrator appends it. A row intake cannot find is worse than no row: it
+  converts a dropped request into one the owner believes is tracked.
 - **Read the setting, don't hard-code it.** Always resolve
   `get_effective_settings().require_human_approval_to_answer` at task
   start.
