@@ -40,18 +40,21 @@ STALLED_BACKLOG_THRESHOLD = 3
 def stranded_ticket_count() -> int:
     """Tickets in STARTED whose newest task FAILED outside the window, with none in flight."""
     from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
-    from django.db.models import Exists, Max, OuterRef  # noqa: PLC0415 — deferred with the app registry above
+    from django.db.models import Exists, Max, OuterRef, Subquery  # noqa: PLC0415 — deferred with the app registry above
 
     ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
-    in_flight = task_model.objects.filter(ticket=OuterRef("pk"), status__in=task_model.Status.active())
+    own_tasks = task_model.objects.filter(ticket=OuterRef("pk"))
     return (
         ticket_model.objects.filter(state=ticket_model.State.STARTED)
-        .annotate(newest_task_at=Max("tasks__created_at"))
+        .annotate(
+            newest_task_at=Max("tasks__created_at"),
+            # The NEWEST status, not "has a failed task": a later completion retires the failure.
+            newest_task_status=Subquery(own_tasks.order_by("-created_at", "-pk").values("status")[:1]),
+        )
         # The window is what separates a stranded ticket from one whose retry is in flight.
         .filter(newest_task_at__lt=timezone.now() - STALLED_BACKLOG_WINDOW)
-        .filter(tasks__status=task_model.Status.FAILED)
-        .exclude(Exists(in_flight))
-        .distinct()
+        .filter(newest_task_status=task_model.Status.FAILED)
+        .exclude(Exists(own_tasks.filter(status__in=task_model.Status.active())))
         .count()
     )

@@ -49,3 +49,12 @@ class TestStrandedTicketCount(TestCase):
         self._queued(2)
         Ticket.objects.update(state=Ticket.State.CODED)
         assert stranded_ticket_count() == 0
+
+    def test_a_later_completion_retires_an_older_failure(self) -> None:
+        # The tell is the NEWEST task having failed. An older failure that a later
+        # completed task superseded is not a ticket without an execution path.
+        self._queued(2)
+        for ticket in Ticket.objects.filter(state=Ticket.State.STARTED):
+            done = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.COMPLETED)
+            Task.objects.filter(pk=done.pk).update(created_at=timezone.now() - timedelta(hours=2, minutes=30))
+        assert stranded_ticket_count() == 0
