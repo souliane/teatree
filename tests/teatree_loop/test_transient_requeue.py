@@ -28,8 +28,8 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import requeue_transient_failed
 
 
-def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
+def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED, issue_url: str = "") -> Task:
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state, issue_url=issue_url)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
 
@@ -177,6 +177,35 @@ class TestTransientRequeue(TestCase):
         # DISTINCT transient errors so no stall — the CAP is what stops it.
         for i in range(cap):
             _add_failed_attempt(task, error=f"result_error: attempt {'x' * (i + 1)} died")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_synthetic_cadence_ticket_over_cap_is_reopened_not_escalated(self) -> None:
+        # architectural_review (and its cadence-scanner siblings) anchor on a synthetic
+        # placeholder ticket PhaseCadence re-fires forever — a lifetime attempt count is
+        # not a doom signal there the way it is for a one-shot deliverable ticket.
+        cap = max_phase_iterations()
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        for i in range(cap):
+            _add_failed_attempt(task, error=f"result_error: attempt {'x' * (i + 1)} died")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_synthetic_cadence_ticket_still_escalates_on_a_stall(self) -> None:
+        # The cap exemption must not swallow stall detection.
+        task = _failed_task(phase="architectural_review", issue_url="architectural-review://t3-teatree")
+        for _ in range(2):
+            _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
 
         reopened = requeue_transient_failed()
 
