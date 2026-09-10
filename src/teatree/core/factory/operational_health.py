@@ -38,13 +38,13 @@ from typing import TYPE_CHECKING, cast
 from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
+from teatree.core.factory.dream_staleness import dream_fallen_behind
 from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_THRESHOLD,
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
-from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.overlay_loader import get_all_overlays
@@ -477,37 +477,28 @@ def _reclaim_stall_signals() -> SignalCollection:
 
 
 def _dream_staleness_signals() -> SignalCollection:
-    """One signal while idle-time dream consolidation has gone stale (#1933, #3993).
+    """One signal while an ADMITTED dream consolidation has fallen behind (#1933, #3993, #4726).
 
-    Reads the exact same :class:`~teatree.core.models.dream_run_marker.DreamRunMarker`
-    the doctor checks ``_check_dream_staleness`` / ``_check_dream_consolidation_blocked``
-    already read — but those only fire when a human runs ``t3 doctor check``, so a stall
-    between runs pages nobody: the ten-day dream outage (#4681) went undetected for that
-    reason. This feeds the same read into the aggregator the loop tick and ``health show``
-    poll unattended. WARNING at the 48h staleness threshold, escalating to CRITICAL once a
-    pass that has succeeded before has missed ``CRITICAL_STALE_MULTIPLE`` windows running —
-    bootstrap (never succeeded) stays WARNING, mirroring the doctor check's own exclusion.
+    What "fallen behind" means — and why a loop the operator deliberately turned off is a
+    note rather than a fault on THIS surface — is :mod:`teatree.core.factory.dream_staleness`.
+    Fail-open, naming itself ``unread`` on a read it could not make.
     """
     try:
-        now = timezone.now()
-        stale = DreamRunMarker.objects.is_stale(now)
+        behind = dream_fallen_behind(timezone.now())
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-dream-staleness", "dream-staleness health read failed", exc_info=True)
         return SignalCollection(unread=("_dream_staleness_signals",))
-    if not stale:
+    if behind is None:
         return SignalCollection()
-    critical = DreamRunMarker.objects.is_critically_stale(now)
-    marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
-    succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
     return SignalCollection(
         (
             HealthSignal(
                 fingerprint="dream-consolidation-stale",
-                severity=KnownIssue.Severity.CRITICAL if critical else KnownIssue.Severity.WARNING,
+                severity=KnownIssue.Severity.CRITICAL if behind.critical else KnownIssue.Severity.WARNING,
                 kind="dream_staleness",
                 summary=(
-                    f"dream consolidation stale — no successful pass since {succeeded}; "
-                    "schedule `t3 dream tick` (#1933)"
+                    f"dream consolidation stale — no successful pass since "
+                    f"{behind.last_succeeded_at.isoformat()}; schedule `t3 dream tick` (#1933)"
                 ),
             ),
         )

@@ -37,7 +37,7 @@ from teatree.core.factory.operational_health import (
     reconcile_health,
 )
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_THRESHOLD
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Loop, LoopState, Prompt, Session, Task, Ticket
 from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS, DreamRunMarker
 from teatree.core.models.known_issue import KnownIssue
@@ -48,6 +48,8 @@ from teatree.utils.throttled_log import reset_throttle
 pytestmark = pytest.mark.django_db
 
 _OVERLAY_ON_FIRE = "overlay is on fire"
+
+
 _DB_LOCKED = "database is locked"
 _WEEK = 7 * 24 * 3600
 _GOVERNOR = "teatree.core.admission_governor"
@@ -514,26 +516,32 @@ class TestReclaimStallRaisesANamedCritical:
 
 
 class TestDreamStalenessSignals:
-    """#1933, #3993 — the same durable read the doctor check makes, on the always-on chip.
+    """#1933, #3993, #4726 — the aggregator's half: severity mapping, fail-open, wiring.
 
-    ``_check_dream_staleness`` / ``_check_dream_consolidation_blocked`` only fire when a
-    human runs ``t3 doctor check`` — the ten-day dream outage (#4681) went undetected
-    because nothing paged anyone between runs. This collector feeds the identical
-    ``DreamRunMarker`` read into the aggregator ``reconcile_health`` / the statusline chip
-    / ``t3 health show`` poll unattended.
+    What counts as a reportable stall (and which deliberate offs are suppressed) is
+    ``dream_fallen_behind``'s own contract, pinned in
+    ``tests/teatree_core/factory/test_dream_staleness.py``. Here the collector is judged on
+    what it does with that verdict.
     """
 
-    def test_bootstrap_never_succeeded_is_a_warning(self) -> None:
-        assert not DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).exists()
+    @pytest.fixture(autouse=True)
+    def _admitted_dream_loop(self) -> None:
+        prompt, _ = Prompt.objects.get_or_create(name="dream", defaults={"body": "consolidate"})
+        Loop.objects.update_or_create(
+            name=DreamRunMarker.NAME,
+            defaults={"prompt": prompt, "script": "", "delay_seconds": 86400, "enabled": True},
+        )
 
-        collection = _dream_staleness_signals()
-
-        assert [s.severity for s in collection.signals] == [KnownIssue.Severity.WARNING]
-        assert collection.signals[0].fingerprint == "dream-consolidation-stale"
-        assert collection.signals[0].kind == "dream_staleness"
-
-    def test_a_recent_success_emits_nothing(self) -> None:
+    def test_nothing_to_report_emits_nothing(self) -> None:
         DreamRunMarker.objects.mark_succeeded(timezone.now())
+
+        assert _dream_staleness_signals().signals == ()
+
+    def test_a_deliberate_off_emits_nothing(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+        LoopState.objects.pause(DreamRunMarker.NAME)
 
         assert _dream_staleness_signals().signals == ()
 
@@ -543,6 +551,8 @@ class TestDreamStalenessSignals:
         collection = _dream_staleness_signals()
 
         assert [s.severity for s in collection.signals] == [KnownIssue.Severity.WARNING]
+        assert collection.signals[0].fingerprint == "dream-consolidation-stale"
+        assert collection.signals[0].kind == "dream_staleness"
 
     def test_past_the_critical_multiple_escalates_to_critical(self) -> None:
         DreamRunMarker.objects.mark_succeeded(
@@ -554,6 +564,8 @@ class TestDreamStalenessSignals:
         assert [s.severity for s in collection.signals] == [KnownIssue.Severity.CRITICAL]
 
     def test_an_unreadable_marker_names_itself_unread(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS + 1))
+
         with patch.object(DreamRunMarker.objects, "is_stale", side_effect=OperationalError(_DB_LOCKED)):
             collection = _dream_staleness_signals()
 
@@ -573,3 +585,16 @@ class TestDreamStalenessSignals:
 
         assert report.status is HealthStatus.GREEN
         assert not KnownIssue.objects.open().filter(kind="dream_staleness").exists()
+
+    def test_the_collector_is_registered(self) -> None:
+        """Unpatched: every sibling test substitutes ``_COLLECTORS``, so nothing else pins this."""
+        assert _dream_staleness_signals in operational_health._COLLECTORS
+
+    def test_a_stale_admitted_dream_reddens_the_real_aggregator(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+
+        reconcile_health()
+
+        assert KnownIssue.objects.open().filter(kind="dream_staleness").exists()
