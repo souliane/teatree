@@ -8,14 +8,23 @@ enough to a real window is SNAPPED to the snippet's own bytes, and anything else
 rejected exactly as before.
 
 ``SequenceMatcher.ratio()`` is character-level and therefore polarity-blind — a
-single-token inversion scores 0.9818 against a dropped-article paraphrase's 0.9895, so no
-threshold can separate them (#4716). The ratio LOCATES the window; admission is decided by
-the token delta, and these tests pin both sides of that bound.
+single-token inversion scores 0.9818 against the observed dropped-article paraphrase's
+0.9149, so every threshold admitting the paraphrase admits the inversion (#4716). The ratio
+LOCATES the window; admission is decided by the token delta, and these tests pin both sides
+of that bound.
 """
+
+from difflib import SequenceMatcher
 
 import pytest
 
-from teatree.loops.dream.citation_snap import _SNAP_ADMISSIBLE_DELTA, _SNAP_MIN_CITATION_CHARS, _SNAP_NEGATORS
+from teatree.loops.dream.citation_snap import (
+    _SNAP_ADMISSIBLE_DELTA,
+    _SNAP_MIN_CITATION_CHARS,
+    _SNAP_NEGATORS,
+    _anchored_windows,
+    _window_bounds,
+)
 from teatree.loops.dream.engine import DistilledCluster, GroundingVerdict, check_grounding, normalize_ws
 
 _SNIPPET = (
@@ -43,6 +52,26 @@ _AFFIX_SNIPPET = (
 _NEGATOR_TAIL_SNIPPET = (
     "The publish step must never run twice on the same head, and the keystone refuses the "
     "second attempt because a repeat write is never idempotent."
+)
+#: A negating PREFIX far enough into the sentence that a citation can end on the bare stem.
+#: `_AFFIX_SNIPPET` cannot host that shape — its `disallowed` sits so near the start that a
+#: citation ending there is under the length floor and is refused before the head is read.
+_HEAD_AFFIX_TAIL_SNIPPET = (
+    "The keystone gate holds a merge whose branch the reviewer authored itself, because "
+    "clearing a review on your own work is disallowed. A second reviewer must record the "
+    "clear before the merge proceeds."
+)
+#: Verbatim from the 07:20 pass's rejection log — the model dropped "the".
+_OBSERVED_NEAR_MISS = "It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the p"
+_INVERTED_CITATION = (
+    "It runs BOTH the commit-stage and push-stage hooks; a bare `prek run --all-files` "
+    "RUNS the push-stage gates (comment-density, doc-update, ensure-pr, the public-repo "
+    "leak gate) that CI re-runs."
+)
+_INSERTED_NEVER_CITATION = (
+    "It runs BOTH the commit-stage and push-stage hooks; a bare `prek run --all-files` "
+    "never SKIPS the push-stage gates (comment-density, doc-update, ensure-pr, the "
+    "public-repo leak gate) that CI re-runs."
 )
 #: Tokens the allowlist may never carry. Swapping any of them for another admissible token
 #: changes what the sentence asserts, so a snap over one re-extracts a different rule.
@@ -88,8 +117,7 @@ def _verdict(citation: str, snippet: str = _SNIPPET) -> GroundingVerdict:
 
 class TestCitationSnap:
     def test_an_observed_near_miss_is_snapped_and_recorded(self) -> None:
-        # Verbatim from the 07:20 pass's rejection log — the model dropped "the".
-        near_miss = "It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the p"
+        near_miss = _OBSERVED_NEAR_MISS
         verdict = _verdict(near_miss)
         assert verdict.reason is None
         # The RECORDED citation is the snippet's own text, never the model's paraphrase.
@@ -112,7 +140,7 @@ class TestCitationSnap:
 
     def test_a_citation_below_the_length_floor_is_not_snapped(self) -> None:
         # Teeth: the SAME paraphrase snaps above the floor and is refused below it.
-        near_miss = "It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the p"
+        near_miss = _OBSERVED_NEAR_MISS
         assert _verdict(near_miss).reason is None
         truncated = near_miss[: _SNAP_MIN_CITATION_CHARS - 1]
         assert len(truncated) < _SNAP_MIN_CITATION_CHARS
@@ -127,12 +155,7 @@ class TestComposedQuoteIsRefused:
     """A located window is not enough — the token delta decides admission (#4716)."""
 
     def test_a_single_token_inversion_is_rejected(self) -> None:
-        inverted = (
-            "It runs BOTH the commit-stage and push-stage hooks; a bare `prek run --all-files` "
-            "RUNS the push-stage gates (comment-density, doc-update, ensure-pr, the public-repo "
-            "leak gate) that CI re-runs."
-        )
-        verdict = _verdict(inverted)
+        verdict = _verdict(_INVERTED_CITATION)
         assert verdict.reason is not None
         assert "runs" in verdict.reason
         assert "skips" in verdict.reason
@@ -142,15 +165,7 @@ class TestComposedQuoteIsRefused:
     @pytest.mark.parametrize(
         ("label", "citation", "snippet"),
         [
-            (
-                "inserted-never",
-                (
-                    "It runs BOTH the commit-stage and push-stage hooks; a bare `prek run --all-files` "
-                    "never SKIPS the push-stage gates (comment-density, doc-update, ensure-pr, the "
-                    "public-repo leak gate) that CI re-runs."
-                ),
-                _SNIPPET,
-            ),
+            ("inserted-never", _INSERTED_NEVER_CITATION, _SNIPPET),
             (
                 "inserted-does-not",
                 (
@@ -301,6 +316,27 @@ class TestAMorphologicalNegationIsRefused:
         verdict = _verdict(citation, _AFFIX_SNIPPET)
         assert verdict.reason is not None, label
 
+    def test_a_head_negation_at_the_citation_tail_is_refused(self) -> None:
+        """The only shape a head carve-out can excuse, so the only one that pins it closed.
+
+        Two of the three cases above put their affix at the citation's START, where the
+        positional guard short-circuits first; `harmless` -> `harm` reaches the check on the
+        `startswith` side. So reinstating `word.endswith(cut)` left every one of them green
+        while a head negation landing at the TAIL — `disallowed` quoted as `allowed` — was
+        admitted and re-extracted to the snippet's own `disallowed`, recording a quote
+        asserting the opposite of its own rule (#4716).
+        """
+        head_negated = (
+            "The keystone gate holds a merge whose branch the reviewer authored itself, because "
+            "clearing a review on your own work is allowed"
+        )
+        verdict = _verdict(head_negated, _HEAD_AFFIX_TAIL_SNIPPET)
+        assert verdict.reason is not None
+        # Anti-vacuity: it LOCATED a real window, so the refusal is the delta rule's own and
+        # not the cheaper "could not find it" this test would otherwise pass on.
+        assert "not present in a cited snippet" not in verdict.reason
+        assert "'allowed' where the snippet has 'disallowed" in verdict.reason
+
     def test_a_tail_cut_into_a_negator_is_rejected(self) -> None:
         cut_into_never = (
             "The publish step must never run twice on the same head, and keystone refuses the second "
@@ -315,3 +351,31 @@ class TestAMorphologicalNegationIsRefused:
             "attempt because a repeat write is never idemp"
         )
         assert _verdict(cut_into_idempotent, _NEGATOR_TAIL_SNIPPET).reason is None
+
+
+class TestTheRatioCannotSeparateThem:
+    """The premise the whole token-delta rule rests on, measured rather than asserted (#4716).
+
+    Both module docstrings quote these digits as the reason a threshold cannot do the job.
+    Nothing reproduced them, and one had already drifted to a figure that argued the opposite
+    way round — so the claim is measured here and the digits cannot go stale again.
+    """
+
+    @staticmethod
+    def _best_ratio(citation: str, snippet: str) -> float:
+        """The highest ratio `snap_citation` would score for *citation*, over the same windows."""
+        text = normalize_ws(snippet)
+        best = 0.0
+        for start in _anchored_windows(citation, text):
+            left, right = _window_bounds(text, start, len(citation))
+            best = max(best, SequenceMatcher(None, text[left:right], citation).ratio())
+        return best
+
+    def test_both_inversions_outscore_the_paraphrase_the_snap_exists_to_rescue(self) -> None:
+        inverted = self._best_ratio(_INVERTED_CITATION, _SNIPPET)
+        negated = self._best_ratio(_INSERTED_NEVER_CITATION, _SNIPPET)
+        paraphrase = self._best_ratio(_OBSERVED_NEAR_MISS, _SNIPPET)
+        assert (round(inverted, 4), round(negated, 4), round(paraphrase, 4)) == (0.9818, 0.9674, 0.9149)
+        # The consequence: every threshold low enough to admit the paraphrase admits both
+        # meaning-inverting quotes, which is why admission is a token-delta decision.
+        assert paraphrase < negated < inverted

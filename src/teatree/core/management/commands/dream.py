@@ -350,9 +350,10 @@ class Command(TyperCommand):
         # WALL-CLOCK budget above: two different bounds on the same pass.
         promotion = PromotionBudget.from_config()
         phases = self._gap_phases()
-        # Every tail phase is timed, because WHICH one consumes the tail was not
-        # answerable from the logs when the deadline SIGKILLed the pass short of its
-        # gates (#4671). The clause rides every pass line, green or not.
+        # The phases after the consolidation call are timed, because WHICH one consumes the
+        # tail was unanswerable from the logs of a pass the deadline SIGKILLed short of its
+        # gates (#4671). The clause rides the terminal pass line, green or not — so it names
+        # the sink on the next pass that survives, never on the killed one.
         timings = TailTimings()
         with timings.phase("eval-promote"):
             promoted = self._promote_candidates(

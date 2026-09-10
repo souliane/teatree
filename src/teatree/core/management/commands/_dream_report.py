@@ -66,14 +66,17 @@ class _ResultFragments:
 
 @dataclass
 class TailTimings:
-    """Per-phase wall clock for the pass's TAIL — everything after the distiller.
+    """Per-phase wall clock for the phases that run once ``run_consolidation`` has RETURNED.
 
-    The tail is where a pass dies: the distiller stops on its own budget and logs that it
-    did, then the tail runs unmetered until the external deadline SIGKILLs the process
-    group before the gates or the marker are reached (#4671). The pass emitted no per-phase
-    timing, so which tail phase consumed the time was unattributable from the logs — every
-    default-ON phase measures ~12s in isolation against the live corpus, so the sink is not
-    the tail's business logic and only in-situ timing can name it.
+    Not the whole tail: ``write_clusters``, the distill-cursor commit and the eval proposer
+    run INSIDE that call, so they fall outside this span and are still unmeasured.
+
+    Which tail phase consumes the time was unattributable from the logs of a pass the
+    external deadline SIGKILLed short of its gates (#4671), and every default-ON phase
+    measures ~12s in isolation against the live corpus, so the sink is not the tail's
+    business logic. The clause reaches the log only through the terminal pass line, so it
+    names the sink on a pass that SURVIVES to that line — a pass killed mid-tail emits
+    nothing, and this instrumentation cannot report on the kill it was motivated by.
 
     *clock* is injected so a test can assert the clause without sleeping.
     """

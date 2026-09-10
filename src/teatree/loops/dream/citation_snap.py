@@ -8,11 +8,13 @@ back the SNIPPET's own text, so what the ledger records is verbatim by construct
 
 That re-extraction is exactly why locating cannot be admitting. ``SequenceMatcher.ratio()``
 is character-level and blind to polarity: on one window a ``SKIPS`` -> ``RUNS`` inversion
-scores 0.9818 and an inserted ``never`` 0.9674, against 0.9895 for the dropped-article
-paraphrase the snap exists to rescue — so no threshold separates them, and re-extraction
-would leave a ledger row whose verbatim quote asserts the OPPOSITE of its own rule. The
-ratio therefore only nominates a window; the token delta between the citation and that
-window decides admission.
+scores 0.9818 and an inserted ``never`` 0.9674, while the observed dropped-article
+paraphrase the snap exists to rescue scores 0.9149 — so every threshold admitting the
+paraphrase admits both inversions, and re-extraction would leave a ledger row whose verbatim
+quote asserts the OPPOSITE of its own rule. The ratio therefore only nominates a window; the
+token delta between the citation and that window decides admission.
+``tests/teatree_loops/dream/test_citation_snap.py`` measures the three digits above, so they
+cannot drift back into an anecdote nobody can reproduce.
 """
 
 import re
