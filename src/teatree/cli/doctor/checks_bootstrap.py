@@ -51,9 +51,9 @@ def _teatree_repo_root() -> Path | None:
     uses. Typed ``| None`` so callers can treat a future non-editable/packaged
     layout (no repo root) uniformly with the template-absent skip.
     """
-    import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.cli.doctor import checkout_root  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    return Path(teatree.__file__).resolve().parents[2]
+    return checkout_root.installed_clone_root()
 
 
 def _slug_from_repo_url(url: str) -> str | None:

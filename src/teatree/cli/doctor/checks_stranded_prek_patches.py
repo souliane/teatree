@@ -59,8 +59,10 @@ def check_stranded_prek_patches() -> bool:
     invariant teatree broke, and a red check no command can clear is the one its
     reader learns to scroll past. Always returns ``True``.
     """
+    from teatree.cli.doctor import checkout_root  # noqa: PLC0415 — deferred: keeps CLI startup light
+
     try:
-        stranded = _stranded_patches(_patch_dir(), _repo_root())
+        stranded = _stranded_patches(_patch_dir(), checkout_root.doctor_checkout_root())
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(
             f"WARN  Stranded pre-commit stashes UNVERIFIED: the patch cache could not be read "
@@ -89,14 +91,6 @@ def _patch_dir() -> Path:
 
     home = os.environ.get("PREK_HOME")
     return (Path(home) if home else Path.home() / ".cache" / "prek") / "patches"
-
-
-def _repo_root() -> Path | None:
-    """This checkout's root, or ``None`` when the cwd is not in one."""
-    from teatree.utils.git_run import run  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    top = run(repo=str(Path.cwd()), args=["rev-parse", "--show-toplevel"])
-    return Path(top) if top else None
 
 
 def _stranded_patches(patch_dir: Path, repo_root: Path | None) -> list[tuple[Path, list[str]]]:
