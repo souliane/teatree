@@ -191,6 +191,7 @@ class TestClassifier(TestCase):
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",
             "agent_abandoned: agent failed the task without giving a reason",
+            "checkout_occupied: Checkout /w/t is already occupied by task:31 (session s1)",
         ]
         assert {classify_failure(r) for r in reasons} == set(FailureKind.values)
 
@@ -250,6 +251,14 @@ class TestCauselessKinds:
 
     def test_an_empty_fingerprint_is_dropped_as_before(self) -> None:
         assert stall_fingerprints([(FailureKind.UNCLASSIFIED, ""), (FailureKind.UNCLASSIFIED, "fp")]) == ["fp"]
+
+    def test_an_occupied_checkout_fingerprint_is_dropped_from_the_stall_comparison(self) -> None:
+        """#4742: the path/holder/timestamps all normalize away, so two refusals collide and stall."""
+        reason = "checkout_occupied: Checkout /w/t is already occupied by task:31, held since 2026-09-09T22:28:47."
+        fingerprint = terminal_reason_fingerprint(reason)
+        kind = classify_failure(reason)
+        assert kind == FailureKind.CHECKOUT_OCCUPIED
+        assert stall_fingerprints([(kind, fingerprint), (kind, fingerprint)]) == []
 
     def test_runtime_ceiling_reasons_never_collide_so_the_fingerprint_filter_has_nothing_to_drop(self) -> None:
         # The fact the corrected #4075 prose rests on: ``\b\d+\b`` has no word boundary

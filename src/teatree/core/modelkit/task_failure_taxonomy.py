@@ -111,6 +111,7 @@ class FailureKind(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled by an operator"
     SUPERSEDED = "superseded", "Superseded by rework"
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
+    CHECKOUT_OCCUPIED = "checkout_occupied", "Checkout held by another agent"
 
 
 class RecoveryStrategy(StrEnum):
@@ -144,6 +145,9 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.PROVISION_FAILED: Recovery(_RETRY, environmental=True),
     FailureKind.LANDING_UNVERIFIED: Recovery(_RETRY, environmental=True),
     FailureKind.HARNESS_CRASH: Recovery(_RETRY, environmental=True),
+    # The checkout was busy, not broken: the next tick re-checks the holder's liveness, and the
+    # #2009 iteration cap bounds a genuinely live holder rather than this reopening it forever.
+    FailureKind.CHECKOUT_OCCUPIED: Recovery(_RETRY, environmental=True),
     # A bounded correction exists; whether THIS task earns it is the sweep's own one-shot decision.
     FailureKind.NO_RESULT_ENVELOPE: Recovery(_CORRECT, environmental=False),
     FailureKind.EVIDENCE_MISSING: Recovery(_CORRECT, environmental=False),
@@ -191,7 +195,9 @@ _CAUSELESS: frozenset[str] = frozenset(
 #: text, so the fingerprint check still discriminates them. ``harness_crash`` is out for the
 #: same reason — a traceback names a code path, so a verbatim repeat of one is a defect
 #: recurring, and #4505 made it retryable, which is what put it in front of the stall at all.
-_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE})
+#: ``checkout_occupied`` is IN: its refusal names only the path, the holder and the lease
+#: window, every one of which ``normalize_terminal_reason`` masks (souliane/teatree#4742).
+_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE, FailureKind.CHECKOUT_OCCUPIED})
 
 #: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
 #: unrelated failures rather than one repeating defect. See the module docstring on why
@@ -229,6 +235,10 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
+    # Below the lease matchers on purpose: a heartbeat that LOST its checkout to a rival is
+    # recorded as ``stuck_loop: lease lost … is already occupied by …`` and stays LEASE_LOST.
+    # The bare phrase is what reaches the rows recorded before the prefix existed.
+    (FailureKind.CHECKOUT_OCCUPIED, ("checkout_occupied:", "is already occupied by")),
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
     # ``CredentialSpec._missing_message`` — both its branches carry this phrase.
     (FailureKind.CREDENTIAL_MISSING, ("credential available",)),

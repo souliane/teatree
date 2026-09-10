@@ -74,6 +74,12 @@ first. Nothing deletes, reaps or kills a checkout on the strength of it, and a
 lapsed lease grants the next requester without touching the previous holder's
 process, files or branch.
 
+A FINISHED holder hands its checkout on by itself (#4742). The heartbeat can only
+EXTEND a lease its own run still owns, never re-take one that run already released,
+and a claim whose `task:<pk>` holder the DB records as completed or failed is
+reclaimed by the next requester instead of blocking it for the rest of the TTL. A
+holder that is still pending or running is refused exactly as before.
+
 ```bash
 t3 <overlay> worktree occupancy                     # who holds what right now
 t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
@@ -85,13 +91,14 @@ claim around the run. Use them when you work a branch OUTSIDE the lifecycle
 (raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
 than walking into it.
 
-When a request is refused, the answer is to wait, work a different ticket, or —
-once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
-the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
+When a request is refused, the holder is live, so the answer is to wait or work a
+different ticket; `release-occupancy` is for a hand-driven claim whose owner is
+gone, since a dispatched task's claim now releases itself. Never delete the
+checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
 occupied checkout too; `--take-over` is the explicit override. The DB-home
 `worktree_occupancy_gate_enabled` is the kill switch, and
-`worktree_occupancy_lease_seconds` (default 1800) bounds a claim whose holder
-died without releasing.
+`worktree_occupancy_lease_seconds` (default 1800) is the backstop for a claim no
+holder-liveness check can resolve — a hand-driven one whose owner is gone.
 
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 

@@ -127,8 +127,8 @@ def _check_occupied_checkouts() -> bool:
 
     An occupied checkout is the system working as designed, so this is INFO: it
     exists so a second actor wondering why its request was refused can see WHO
-    holds the tree without reading the DB, and so a claim outliving its holder is
-    visible rather than only discoverable at the next refusal.
+    holds the tree without reading the DB. Only LIVE claims appear — one whose task
+    has finished is reclaimed by the next requester (#4742), so it is not a finding.
     """
     from teatree.core.worktree.occupancy import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
         held_worktrees,

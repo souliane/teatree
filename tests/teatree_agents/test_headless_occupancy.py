@@ -19,6 +19,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents import runner
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Worktree
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
@@ -146,3 +147,67 @@ class HeartbeatRenewalTests(_DispatchCase):
             runner._renew_lease_closing_connection(Task())
 
         renew_lease.assert_called_once()
+
+
+class FinishedHolderTests(_DispatchCase):
+    """#4742: the follow-on phase was refused a checkout its own predecessor had finished with."""
+
+    def finished_predecessor(self, status: Task.Status) -> Task:
+        predecessor = Task.objects.create(
+            ticket=self.ticket,
+            session=self.task.session,
+            phase="coding",
+            status=status,
+        )
+        acquire(self.worktree, holder=task_holder_id(predecessor), holder_session="", lease_seconds=1800)
+        return predecessor
+
+    def test_the_next_phase_runs_in_a_checkout_its_finished_predecessor_still_holds(self) -> None:
+        self.finished_predecessor(Task.Status.COMPLETED)
+        driver = mock.Mock(return_value=mock.Mock(spec=TaskAttempt))
+
+        self.dispatch(driver=driver)
+
+        driver.assert_called_once()
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.CLAIMED
+
+    def test_a_predecessor_that_failed_also_hands_its_checkout_on(self) -> None:
+        self.finished_predecessor(Task.Status.FAILED)
+        driver = mock.Mock(return_value=mock.Mock(spec=TaskAttempt))
+
+        self.dispatch(driver=driver)
+
+        driver.assert_called_once()
+
+    def test_a_predecessor_still_running_keeps_the_checkout(self) -> None:
+        """The control: a genuinely live holder is refused exactly as before."""
+        predecessor = self.finished_predecessor(Task.Status.CLAIMED)
+        driver = mock.Mock()
+
+        self.dispatch(driver=driver)
+
+        driver.assert_not_called()
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == task_holder_id(predecessor)
+
+    def test_the_refusal_names_itself_as_an_occupied_checkout(self) -> None:
+        acquire(self.worktree, holder="task:999", holder_session="operator-lane")
+
+        attempt = self.dispatch()
+
+        self.task.refresh_from_db()
+        assert attempt.failure_kind == FailureKind.CHECKOUT_OCCUPIED
+        assert self.task.failure_kind == FailureKind.CHECKOUT_OCCUPIED
+
+
+class LateHeartbeatTests(_DispatchCase):
+    def test_a_heartbeat_landing_after_the_run_released_mints_no_claim(self) -> None:
+        """The leak itself: the renewal re-took the checkout with no live holder left to release it."""
+        self.dispatch()
+
+        with pytest.raises(runner.LeaseLostError):
+            runner._renew_lease_closing_connection(self.task)
+
+        assert occupancy_holder(self.fresh()) is None

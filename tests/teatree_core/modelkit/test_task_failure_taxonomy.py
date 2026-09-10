@@ -19,6 +19,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     is_environmental,
     recovery_strategy,
 )
+from teatree.core.worktree.occupancy import CHECKOUT_OCCUPIED_PREFIX
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than
 #: derived, so the refactor cannot silently move the operator's diagnostic axis — which is also
@@ -33,6 +34,7 @@ _ENVIRONMENTAL_BEFORE = {
     FailureKind.RESULT_ERROR,
     FailureKind.PROVISION_FAILED,
     FailureKind.LANDING_UNVERIFIED,
+    FailureKind.CHECKOUT_OCCUPIED,
 }
 
 
@@ -193,3 +195,18 @@ class TestThePlanGateRefusalIsNamed:
 
     def test_it_is_not_environmental(self) -> None:
         assert is_environmental(FailureKind.PLAN_MISSING) is False
+
+
+class TestTheOccupiedCheckoutRefusalIsNamed:
+    """#4742: the refusal was ``unclassified``, so it consumed the repair loop's stall budget."""
+
+    def test_the_refusals_own_prefix_classifies_as_checkout_occupied(self) -> None:
+        """The drift detector: ``_MATCHERS`` spells the prefix literally, like its siblings."""
+        refusal = f"{CHECKOUT_OCCUPIED_PREFIX}Checkout /w/t is already occupied by task:31, held since ..."
+        assert classify_failure(refusal) == FailureKind.CHECKOUT_OCCUPIED
+
+    def test_it_is_environmental_so_it_never_counts_toward_the_stall_budget(self) -> None:
+        assert is_environmental(FailureKind.CHECKOUT_OCCUPIED) is True
+
+    def test_it_is_retried_once_the_holder_is_gone(self) -> None:
+        assert recovery_strategy(FailureKind.CHECKOUT_OCCUPIED) is RecoveryStrategy.RETRY

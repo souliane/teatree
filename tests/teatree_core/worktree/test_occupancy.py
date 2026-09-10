@@ -15,8 +15,10 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Worktree
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from teatree.core.models import Task, Worktree
 from teatree.core.worktree.occupancy import (
+    CHECKOUT_OCCUPIED_PREFIX,
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
     acquire,
@@ -99,6 +101,61 @@ class AcquireTests(_OccupancyCase):
         assert held is not None
         assert held.holder == "task:2"
 
+    def test_a_checkout_a_completed_task_still_holds_is_reclaimed(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1", lease_seconds=600)
+        acquire(self.fresh(), holder="task:next", holder_session="s2")
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == "task:next"
+
+    def test_a_checkout_a_failed_task_still_holds_is_reclaimed(self) -> None:
+        finished = TaskFactory(status=Task.Status.FAILED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1", lease_seconds=600)
+        acquire(self.fresh(), holder="task:next", holder_session="s2")
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == "task:next"
+
+    def test_a_checkout_a_claimed_task_holds_is_still_refused(self) -> None:
+        """The control: reclaim keys on the holder having FINISHED, not on the guard being off."""
+        running = TaskFactory(status=Task.Status.CLAIMED)
+        acquire(self.worktree, holder=task_holder_id(running), holder_session="s1", lease_seconds=600)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh(), holder="task:next", holder_session="s2")
+
+    def test_a_checkout_a_pending_task_holds_is_still_refused(self) -> None:
+        pending = TaskFactory(status=Task.Status.PENDING)
+        acquire(self.worktree, holder=task_holder_id(pending), holder_session="s1", lease_seconds=600)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh(), holder="task:next", holder_session="s2")
+
+    def test_a_hand_driven_holder_is_never_reclaimed(self) -> None:
+        acquire(self.worktree, holder="operator-alice", holder_session="s1", lease_seconds=600)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh(), holder="task:next", holder_session="s2")
+
+    def test_a_holder_naming_a_task_that_no_longer_exists_is_still_refused(self) -> None:
+        """A vanished row is not proof its agent finished, so the reclaim fails closed."""
+        acquire(self.worktree, holder="task:2147483000", holder_session="s1", lease_seconds=600)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh(), holder="task:next", holder_session="s2")
+
+    def test_the_reclaim_never_steals_from_a_rival_that_took_over_first(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1", lease_seconds=600)
+        stale = self.fresh()
+        acquire(self.fresh(), holder="task:rival", holder_session="s-rival", lease_seconds=600)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(stale, holder="task:next", holder_session="s2")
+
+    def test_the_refusal_carries_the_classifiable_prefix(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1")
+        with pytest.raises(WorktreeOccupiedError) as caught:
+            acquire(self.fresh(), holder="task:2", holder_session="s2")
+        assert str(caught.value).startswith(CHECKOUT_OCCUPIED_PREFIX)
+        assert classify_failure(str(caught.value)) == FailureKind.CHECKOUT_OCCUPIED
+
     def test_acquiring_writes_nothing_to_disk(self) -> None:
         before = sorted(p.name for p in self.checkout.iterdir())
         acquire(self.worktree, holder="task:1", holder_session="s1")
@@ -150,6 +207,23 @@ class RenewTests(_OccupancyCase):
         acquire(self.fresh(), holder="task:2", holder_session="s2")
         with pytest.raises(WorktreeOccupancyLostError, match=str(self.checkout)):
             renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1")
+
+    def test_the_heartbeat_mints_no_claim_once_its_own_run_released_the_checkout(self) -> None:
+        """The #4742 leak: a renewal whose write lands after the run's release re-minted a claim."""
+        acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
+        release(self.fresh(), holder="task:1", holder_session="s1")
+
+        with pytest.raises(WorktreeOccupancyLostError, match=str(self.checkout)):
+            renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1")
+
+        assert occupancy_holder(self.fresh()) is None
+        assert held_worktrees() == []
+
+    def test_the_heartbeat_keeps_the_instant_the_claim_was_taken(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
+        taken_at = self.fresh().occupied_at
+        renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1", lease_seconds=600)
+        assert self.fresh().occupied_at == taken_at
 
     def test_the_heartbeat_mints_no_claim_for_a_ticket_with_no_checkout(self) -> None:
         Worktree.objects.filter(pk=self.worktree.pk).delete()
@@ -213,6 +287,11 @@ class RefuseIfOccupiedTests(_OccupancyCase):
         assert held is not None
         assert held.holder == "task:7"
 
+    def test_a_claim_whose_task_has_finished_no_longer_refuses(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s7", lease_seconds=600)
+        refuse_if_ticket_checkout_occupied(self.ticket)
+
     def test_a_lapsed_claim_no_longer_refuses(self) -> None:
         acquire(self.worktree, holder="task:7", holder_session="s7", lease_seconds=60)
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
@@ -224,6 +303,11 @@ class HeldWorktreeReportTests(_OccupancyCase):
         acquire(self.worktree, holder="task:7", holder_session="s7", lease_seconds=60)
         assert [holder.holder for _, holder in held_worktrees()] == ["task:7"]
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        assert held_worktrees() == []
+
+    def test_a_claim_whose_task_has_finished_is_not_reported_as_held(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s7", lease_seconds=600)
         assert held_worktrees() == []
 
 
@@ -259,6 +343,11 @@ class LivenessAgreementTests(_OccupancyCase):
     def test_a_lapsed_claim_is_grantable_and_reports_no_holder(self) -> None:
         acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        self.assert_complementary()
+
+    def test_a_claim_whose_task_has_finished_is_grantable_and_reports_no_holder(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1", lease_seconds=600)
         self.assert_complementary()
 
     def test_a_claim_with_no_expiry_is_grantable_and_reports_no_holder(self) -> None:

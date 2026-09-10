@@ -1137,3 +1137,42 @@ class TestTheKindDecidesTheRecovery(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+_HISTORICAL_REFUSAL = (
+    "Checkout /w/t3-teatree/4719-data-loss/teatree is already occupied by task:3531 "
+    "(session s1), held since 2026-09-09T22:28:47+00:00, lease expires 2026-09-09T22:58:47+00:00."
+)
+
+
+class TestAnOccupiedCheckoutIsRetriedNotParked(TestCase):
+    """#4742: the refusal was unclassified, so it burned the stall budget and parked the ticket."""
+
+    def test_a_task_refused_its_checkout_is_reopened(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=_HISTORICAL_REFUSAL)
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+
+    def test_two_consecutive_refusals_still_reopen_rather_than_escalate(self) -> None:
+        """The holder being gone is not a defect recurring, so the two-strikes stall must not fire."""
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=_HISTORICAL_REFUSAL)
+        _add_failed_attempt(task, error=_HISTORICAL_REFUSAL)
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.exists()
+
+    def test_the_attempt_records_the_named_kind(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=_HISTORICAL_REFUSAL)
+
+        assert TaskAttempt.objects.get(task=task).failure_kind == FailureKind.CHECKOUT_OCCUPIED
