@@ -333,12 +333,12 @@ class TestHarnessProviderConsistencyCollector:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_consistent_effective_pair_yields_nothing(self) -> None:
-        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+        with patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}):
             assert _harness_provider_consistency_signals().signals == ()
 
     def test_preexisting_inconsistent_pair_yields_a_critical_signal(self) -> None:
         ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
-        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+        with patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}):
             signals = _harness_provider_consistency_signals().signals
         assert len(signals) == 1
         assert signals[0].severity == KnownIssue.Severity.CRITICAL
@@ -346,7 +346,10 @@ class TestHarnessProviderConsistencyCollector:
 
     def test_inconsistent_pair_reddens_the_chip_via_reconcile(self) -> None:
         ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
-        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+        with (
+            patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}),
+            patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}),
+        ):
             report = reconcile_health()
         assert report.status is HealthStatus.RED
 
