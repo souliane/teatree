@@ -51,13 +51,20 @@ def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
 
 @pytest.fixture
 def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A real git checkout as cwd, with a real empty PREK_HOME beside it."""
+    """A real git checkout with a real empty PREK_HOME, declared from a cwd that is not it.
+
+    The cwd is deliberately not the checkout: ``t3`` runs in a container whose WORKDIR is no
+    repository, so a fixture that chdirs into the repo tests a venue production never has (#4727).
+    """
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run([_GIT_BIN, "init", "-q", "-b", "main"], cwd=repo, check=True)
     (tmp_path / "prek" / "patches").mkdir(parents=True)
     monkeypatch.setenv("PREK_HOME", str(tmp_path / "prek"))
-    monkeypatch.chdir(repo)
+    elsewhere = tmp_path / "plain"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TEATREE_INVOCATION_CWD", str(repo))
     return repo
 
 
@@ -147,7 +154,7 @@ class TestStrandedPrekPatchCheck:
         assert ok is True
         assert "UNVERIFIED" in out
 
-    def test_outside_a_checkout_says_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_checkout_anywhere_says_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """With no git root there is no tree to compare a patch against."""
         (tmp_path / "prek" / "patches").mkdir(parents=True)
         _save_patch(tmp_path, "1000-6", path="f.txt", added="ORPHAN")
@@ -155,8 +162,24 @@ class TestStrandedPrekPatchCheck:
         plain = tmp_path / "plain"
         plain.mkdir()
         monkeypatch.chdir(plain)
+        monkeypatch.delenv("TEATREE_INVOCATION_CWD", raising=False)
+        monkeypatch.setattr("teatree.cli.doctor.checkout_root.installed_clone_root", lambda: plain)
 
         ok, out = _echoes(check_stranded_prek_patches)
 
         assert ok is True
         assert out == ""
+
+    def test_fires_from_the_installed_clone_when_nothing_is_declared(
+        self, checkout: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deployed venue: no declaration at all, so the clone is the only bearing left."""
+        monkeypatch.delenv("TEATREE_INVOCATION_CWD", raising=False)
+        monkeypatch.setattr("teatree.cli.doctor.checkout_root.installed_clone_root", lambda: checkout)
+        (checkout / "f.txt").write_text("base\n")
+        patch = _save_patch(tmp_path, "1000-7", path="f.txt", added="PRECIOUS-UNSTAGED-WORK")
+
+        ok, out = _echoes(check_stranded_prek_patches)
+
+        assert ok is True
+        assert str(patch) in out
