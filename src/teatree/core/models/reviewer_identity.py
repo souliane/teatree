@@ -45,19 +45,38 @@ REVIEWER_ROLE_COMPONENTS = frozenset({"reviewer", "cold", "cr", "critic", "adjud
 
 _IDENTITY_DELIMITERS = re.compile(r"[^a-z0-9]+")
 
+# An unsubstituted placeholder span. No real identity carries an angle bracket, so this
+# separates a recipe copied without filling it in from a reviewer the gate rejects — two
+# refusals whose remedies point opposite ways (#4730).
+_UNSUBSTITUTED_PLACEHOLDER = re.compile(r"<[^>]*>")
+
 # A maker ROLE word names who the identity is, so it refuses unconditionally.
 _MAKER_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
 
-#: What a dispatched reviewer is TOLD to return. Derived from the two sets above so the
-#: instruction cannot drift from the gate, and it states BOTH constraints: a positive one
-#: (44 of 51 recorded refusals named no admitting token) and the negative (7 more carried
-#: one but were refused for a maker word). The example is concrete because a model copies
-#: an example over prose, and a bare token would collide on the per-head unique index.
-REVIEWER_IDENTITY_INSTRUCTION = (
-    "cold-reviewer-<pr-or-task-id>"
-    " (must contain one of " + "/".join(sorted(REVIEWER_ROLE_COMPONENTS)) + ";"
-    " never " + "/".join(sorted(_MAKER_ROLE_WORDS)) + ")"
+#: The BOTH-constraints clause every recipe carries, derived from the two sets above so no
+#: surface can drift from the gate. It states a positive constraint (44 of 51 recorded
+#: refusals named no admitting token) and a negative one (7 more carried one but were
+#: refused for a maker word).
+REVIEWER_IDENTITY_CONSTRAINT = (
+    "must contain one of "
+    + "/".join(sorted(REVIEWER_ROLE_COMPONENTS))
+    + "; never "
+    + "/".join(sorted(_MAKER_ROLE_WORDS))
 )
+
+#: The span a surface leaves for the caller to fill in. Angle brackets are what make an
+#: unsubstituted copy detectable at the gate — no real identity carries one.
+REVIEWER_IDENTITY_PLACEHOLDER = "<pr-or-task-id>"
+
+#: What a SELF-NAMING surface tells its agent to return: the agent declares its OWN identity
+#: there, so a concrete copyable example is right — a model copies an example over prose,
+#: and a bare token would collide on the per-head unique index.
+REVIEWER_IDENTITY_INSTRUCTION = f"cold-reviewer-{REVIEWER_IDENTITY_PLACEHOLDER} ({REVIEWER_IDENTITY_CONSTRAINT})"
+
+#: What a CITING surface renders instead: a recipe naming ANOTHER actor must not hand over a
+#: ready-made identity, or the agent emits this generic name over the reviewer it was told to
+#: cite (what `keystone_merge_reviewer_is_independent` caught).
+REVIEWER_IDENTITY_CITATION = f"<the independent reviewer's id, e.g. codex — {REVIEWER_IDENTITY_CONSTRAINT}>"
 
 # A review PHASE word names what the identity is doing, and the periodic holistic pass
 # does it while implementing its own findings and opening its own PR (#4230) — a MAKER
@@ -79,7 +98,7 @@ _REVIEW_AUTHORING_IDENTITIES: tuple[tuple[str, ...], ...] = (
 )
 
 #: Which rule refused the identity — the message explains each one differently (#4408).
-RefusalClass = Literal["maker-role", "review-authoring"]
+RefusalClass = Literal["maker-role", "review-authoring", "unsubstituted-template"]
 
 
 def _identity_components(identity: str) -> tuple[str, ...]:
@@ -104,8 +123,14 @@ def _refusal_class(identity: str) -> RefusalClass | None:
     re-spelling under an exotic delimiter ("merge loop", "team.maker/x") escapes — a
     narrower split let a space buy admission (#4378). Incidental substrings ("decoding")
     are not matched because the split honours delimiters only.
+
+    An unsubstituted placeholder is checked FIRST because it names nobody: the instruction
+    carries "coding/loop/maker" as delimited components, so a verbatim copy was reported as
+    a maker attesting its own work and told to find another reviewer (#4730).
     """
     lowered = normalize_reviewer_identity(identity)
+    if _UNSUBSTITUTED_PLACEHOLDER.search(lowered):
+        return "unsubstituted-template"
     if any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES):
         return "maker-role"
     components = _identity_components(lowered)
@@ -182,6 +207,7 @@ _REFUSAL_REASONS: dict[RefusalClass, str] = {
     "review-authoring": (
         "is a review-AUTHORING non-reviewer role: it implements its own findings and opens its own PR (#4230)"
     ),
+    "unsubstituted-template": "is the identity recipe copied verbatim, so it names no actor at all",
 }
 _UNRECOGNISED_REASON = "names no recognised reviewer role, so it is refused fail-closed (#4241)"
 
@@ -189,10 +215,20 @@ _OVERRIDING_REMEDY = (
     "This refusal overrides the `independent_reviewer_identities` allowlist and survives any renaming, "
     "so the remedy is a review by someone else."
 )
+_TEMPLATE_REMEDY = (
+    f"Substitute the `{REVIEWER_IDENTITY_PLACEHOLDER}` span for the real PR or task id and drop the "
+    "parenthetical constraint — this is a copy-paste slip, not a rejected reviewer."
+)
 _CONFIGURE_REMEDY = (
     "If it is a human or an external reviewer, admit it on the record with "
     "`t3 <overlay> config_setting set independent_reviewer_identities '[\"<id>\"]'`."
 )
+
+_REMEDIES: dict[RefusalClass, str] = {
+    "maker-role": _OVERRIDING_REMEDY,
+    "review-authoring": _OVERRIDING_REMEDY,
+    "unsubstituted-template": _TEMPLATE_REMEDY,
+}
 
 
 def unrecognised_reviewer_message(identity: str, *, subject: str, verb: str) -> str:
@@ -212,7 +248,7 @@ def unrecognised_reviewer_message(identity: str, *, subject: str, verb: str) -> 
     """
     refusal = _refusal_class(identity)
     reason = _REFUSAL_REASONS[refusal] if refusal else _UNRECOGNISED_REASON
-    remedy = _OVERRIDING_REMEDY if refusal else _CONFIGURE_REMEDY
+    remedy = _REMEDIES[refusal] if refusal else _CONFIGURE_REMEDY
     return (
         f"identity {identity!r} {reason} — {subject} is {verb} by an independent cold "
         f"reviewer, never self-attested (§17.8 clause 3): an independent reviewer is a different "

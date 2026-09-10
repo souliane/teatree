@@ -22,6 +22,9 @@ from teatree.core.models import MergeClear, ReproWaiver, ReviewVerdict, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, diff_paths_are_substrate
 from teatree.core.models.review_verdict import ReviewVerdictError
 from teatree.core.models.reviewer_identity import (
+    REVIEWER_IDENTITY_CITATION,
+    REVIEWER_IDENTITY_INSTRUCTION,
+    REVIEWER_IDENTITY_PLACEHOLDER,
     REVIEWER_ROLE_COMPONENTS,
     is_independent_reviewer_identity,
     is_non_reviewer_role,
@@ -252,6 +255,56 @@ class TestRefusalMessagePublishesNoBypass(TestCase):
     def test_every_class_says_what_an_independent_reviewer_is(self) -> None:
         for identity in ("merge-loop", "ac-reviewing-codebase", "quarterly-drift-sweeper"):
             assert "authored the change" in unrecognised_reviewer_message(identity, **_SUBJECT_VERB), identity
+
+
+class TestAnUnsubstitutedTemplateIsACopyPasteSlip(TestCase):
+    """A recipe copied without filling in its placeholder is not an identity at all.
+
+    The instruction carries `coding/loop/maker` as delimited components, so a verbatim copy
+    was refused as `maker-role` — whose remedy ("a review by someone else") is the wrong
+    diagnosis for a copy-paste slip. Worse, the placeholder ALONE named no maker word and
+    named `cold`/`reviewer`, so it was ADMITTED: a literal template in the verdict ledger.
+    """
+
+    def test_the_bare_placeholder_is_refused(self) -> None:
+        assert is_independent_reviewer_identity(f"cold-reviewer-{REVIEWER_IDENTITY_PLACEHOLDER}") is False
+
+    def test_the_instruction_copied_verbatim_is_refused(self) -> None:
+        assert is_independent_reviewer_identity(REVIEWER_IDENTITY_INSTRUCTION) is False
+
+    def test_the_citation_copied_verbatim_is_refused(self) -> None:
+        assert is_independent_reviewer_identity(REVIEWER_IDENTITY_CITATION) is False
+
+    def test_any_leftover_angle_bracket_span_is_refused(self) -> None:
+        # The pr-merge redirect templated `<independent-reviewer>`, which names no maker word
+        # and no reviewer component either — refused fail-closed before, but as an unrecognised
+        # identity rather than as the copy-paste it is.
+        for template in ("<independent-reviewer>", "cold-reviewer-<id>", "<your-reviewer-id>"):
+            assert is_independent_reviewer_identity(template) is False, template
+            assert is_non_reviewer_role(template) is True, template
+
+    def test_it_is_diagnosed_as_a_template_not_as_a_maker(self) -> None:
+        message = unrecognised_reviewer_message(REVIEWER_IDENTITY_INSTRUCTION, **_SUBJECT_VERB)
+        assert "copied verbatim" in message
+        assert "maker/coding-agent/loop" not in message
+
+    def test_the_remedy_is_to_substitute_not_to_find_another_reviewer(self) -> None:
+        message = unrecognised_reviewer_message(REVIEWER_IDENTITY_INSTRUCTION, **_SUBJECT_VERB)
+        assert "a review by someone else" not in message
+        assert REVIEWER_IDENTITY_PLACEHOLDER in message
+
+    def test_it_quotes_no_admitted_literal(self) -> None:
+        message = unrecognised_reviewer_message(REVIEWER_IDENTITY_INSTRUCTION, **_SUBJECT_VERB)
+        for literal in re.findall(r"'([^']*)'", message):
+            assert is_independent_reviewer_identity(literal) is False, literal
+
+    def test_a_substituted_identity_is_still_admitted(self) -> None:
+        # The narrowing must cost nothing to the identity the instruction asks for.
+        assert is_independent_reviewer_identity("cold-reviewer-4730") is True
+
+    def test_the_other_refusal_classes_keep_their_own_diagnosis(self) -> None:
+        assert "maker/coding-agent/loop" in unrecognised_reviewer_message("merge-loop", **_SUBJECT_VERB)
+        assert "review-AUTHORING" in unrecognised_reviewer_message("ac-reviewing-codebase", **_SUBJECT_VERB)
 
 
 class TestUnrecognisedIdentityFailsClosed(TestCase):

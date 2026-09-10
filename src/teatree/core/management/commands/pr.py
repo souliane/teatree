@@ -62,6 +62,7 @@ from teatree.core.management.commands._test_plan.mr_post import TestPlanMediaErr
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_CITATION
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
@@ -492,7 +493,7 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
             f"`t3 <overlay> pr merge` is removed: FSM-incoherent post-#863 (no MergeClear "
             f"validation / SHA-binding / audit / mark_merged). Use the sanctioned keystone: "
             f"`t3 <overlay> ticket clear {pr} {slug} --reviewed-sha <sha> --reviewer-identity "
-            f"<independent-reviewer> --blast-class <substrate|logic|docs>` then `t3 <overlay> "
+            f'"{REVIEWER_IDENTITY_CITATION}" --blast-class <substrate|logic|docs>` then `t3 <overlay> '
             f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). §17.1 inv 8 / §17.4."
         )
         raise SystemExit(1)

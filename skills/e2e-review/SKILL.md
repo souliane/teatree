@@ -164,7 +164,7 @@ The threshold is configurable — `[teatree] e2e_confidence_threshold`, default 
 
 A verdict you only narrated is inert — the review loop reads the **recorded** verdict, never your prose, so the one action that advances or terminates the loop is the `review record` CLI call. Do not stop at writing findings: run it.
 
-The canonical command (generic placeholders — substitute your real overlay, PR id, slug, head SHA, and a findings file):
+The canonical command (generic placeholders — substitute your real overlay, PR id, slug, head SHA, and a findings file). `--reviewer-identity` is YOUR OWN id: you are the reviewer recording your own verdict, so substitute the placeholder and drop the parenthetical — do not name someone else:
 
 ```bash
 # Reached a verdict? RECORD it — bind to the EXACT 40-char reviewed head SHA.
@@ -177,7 +177,7 @@ HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a s
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict merge_safe \
-  --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)" \
   --gh-verify-result green
 ```
 
@@ -198,7 +198,7 @@ JSON
 t3 <overlay> review record <pr_id> <slug> \
   --reviewed-sha "$HEAD_SHA" \
   --verdict hold \
-  --reviewer-identity "<the independent reviewer's id, e.g. codex — must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker>" \
+  --reviewer-identity "cold-reviewer-<pr-or-task-id> (must contain one of adjudicator/checker/codex/cold/cr/critic/reviewer; never coding/loop/maker)" \
   --findings-json /tmp/findings.json
 ```
 

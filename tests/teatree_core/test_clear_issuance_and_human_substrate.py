@@ -44,6 +44,7 @@ from teatree.core.models import (
     ReviewVerdict,
     Ticket,
 )
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_CITATION
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
@@ -744,6 +745,15 @@ class TestPrMergeRedirectedToKeystone(TestCase):
         assert exc_info.value.code == 1
         assert "ticket merge" in err.getvalue()
         assert "ticket clear" in err.getvalue()
+
+    def test_the_redirect_recipe_constrains_the_reviewer_identity(self) -> None:
+        # An agent hitting the blocked command copies this recipe, so an unconstrained
+        # `<independent-reviewer>` teaches exactly the identity the CLEAR gate refuses.
+        err = io.StringIO()
+        with pytest.raises(SystemExit):
+            call_command("pr", "merge", "859", "souliane/teatree", stderr=err)
+        assert REVIEWER_IDENTITY_CITATION in err.getvalue()
+        assert "<independent-reviewer>" not in err.getvalue()
 
 
 def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
