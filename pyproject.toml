@@ -46,7 +46,10 @@ dependencies = [
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
   "django-tasks>=0.9,<1",
-  "django-tasks-db>=0.12,<1",
+  # 0.13.0 drops ``compat.TASK_CLASSES``' ``django.tasks.base.Task`` arm, so our
+  # ``from django.tasks import task`` declarations all raise SuspiciousOperation.
+  # Lift only with the migration off the third-party ``django_tasks`` app.
+  "django-tasks-db>=0.12,<0.13",
   "django-typer>=3.3,<4",
   # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn (a production
   # WSGI server, not Django's dev ``runserver``) — a RUNTIME command path, so it
@@ -60,7 +63,10 @@ dependencies = [
   # re-resolved an unbounded `>=1.27` to 2.0.0, so the server crashed on import
   # in production while every CI lane stayed green. Move this bound and the
   # imports together, never one alone.
-  "mcp>=2,<3",
+  # Also held below 2.1: 2.1.1 dropped the ``: {e}`` suffix from "Error executing
+  # tool {name}", so the gate still fires but its reason no longer reaches the
+  # caller. Lift together with the tests/teatree_mcp/ regexes asserting on it.
+  "mcp>=2,<2.1",
   # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
   # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
   # module — and ``t3 doctor``'s MCP skew check reaches it on every run. It was
