@@ -14,7 +14,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, Ticket
+from teatree.core.models import AutoReviewDispatch, Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
 #: Stamped onto ``execution_reason`` when a SUPERSEDED FAILED task is retired (its
@@ -34,6 +34,11 @@ LIVE_SUCCESSOR_STAMP = "[superseded-parked]"
 #: (#3556). The task is marked COMPLETED and the reviewer ticket is IGNORED so it
 #: drops out of every active scan instead of re-dispatching indefinitely.
 DEAD_REVIEW_STAMP = "[dead-review-retired]"
+#: Stamped onto ``execution_reason`` when a review is parked because the PR advanced past
+#: the head it was armed for (#4737). The row stays FAILED — no verdict landed — and drops
+#: out of the scan, because the recovery is the fresh dispatch at the NEW head that the
+#: sweep arms by itself, so a question would cost the owner one prompt per push.
+SUPERSEDED_HEAD_STAMP = "[head-superseded-parked]"
 
 
 def dispose_without_reopen(task: Task) -> bool:
@@ -45,6 +50,9 @@ def dispose_without_reopen(task: Task) -> bool:
     finishing it, so marking it COMPLETED would advance the ticket over the successor.
     """
     if _retire_if_dead_artifact(task):
+        return True
+    if _review_head_superseded(task):
+        _park_superseded_head(task)
         return True
     if _has_live_successor(task):
         _park_live_successor(task)
@@ -132,6 +140,35 @@ def _park_live_successor(task: Task) -> None:
     Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(execution_reason=reason)
 
 
+def _review_head_superseded(task: Task) -> bool:
+    """Whether *task*'s review claim was retired because the PR head moved past it (#4737).
+
+    Read from the claim's own recorded state, never from the forge: the recorder already
+    established the head moved when it superseded the claim, and re-asking would spend a
+    round trip per failed review per tick to re-derive a fact already written down.
+    """
+    if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
+        return False
+    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    return dispatch is not None and dispatch.state == AutoReviewDispatch.State.SUPERSEDED
+
+
+def _park_superseded_head(task: Task) -> None:
+    """Park a review whose PR advanced past the head it judged. Idempotent.
+
+    FAILED, not COMPLETED, for :func:`_park_live_successor`'s reason: no verdict landed, so
+    marking it COMPLETED would make it the ticket's newest completed task and
+    ``replay_orphaned_transitions`` would fire the reviewing transition over a review that
+    never concluded.
+    """
+    if SUPERSEDED_HEAD_STAMP in task.execution_reason:
+        return
+    reason = (
+        f"{task.execution_reason}\n{SUPERSEDED_HEAD_STAMP}".strip() if task.execution_reason else SUPERSEDED_HEAD_STAMP
+    )
+    Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(execution_reason=reason)
+
+
 def _review_target_dead(task: Task) -> bool:
     """Whether *task* is a review phase whose linked PR is provably MERGED/CLOSED (#3556).
 
@@ -197,6 +234,7 @@ def _retire_superseded(task: Task) -> None:
 __all__ = [
     "DEAD_REVIEW_STAMP",
     "LIVE_SUCCESSOR_STAMP",
+    "SUPERSEDED_HEAD_STAMP",
     "SUPERSEDED_STAMP",
     "dispose_without_reopen",
 ]

@@ -23,7 +23,8 @@ from teatree.agents import attempt_recorder
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
-from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead, LiveHeadRead
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
 from teatree.core.models import (
     AutoReviewDispatch,
     CodexReviewMarker,
@@ -42,6 +43,8 @@ from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
+    from unittest.mock import MagicMock
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -95,6 +98,14 @@ def _reviewing_task_on_reviewer_ticket(*, pr_id: int = _PR_ID, reviewed_sha: str
     )
     session = Session.objects.create(ticket=ticket, agent_id="external-review")
     return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.PENDING)
+
+
+def _live_head(sha: str, *, unreadable: bool = False) -> "AbstractContextManager[MagicMock]":
+    """Pin what the forge says the PR points at — no test may reach a real forge."""
+    return patch(
+        "teatree.core.review.verdict_head_binding.live_head_at",
+        return_value=LiveHeadRead(sha="" if unreadable else sha, unreadable=unreadable),
+    )
 
 
 def _verdict_envelope_without_reviewed_sha() -> dict[str, object]:
@@ -184,7 +195,8 @@ class TestVerdictBindsToTheDispatchHead(TestCase):
     def test_a_divergent_self_asserted_head_is_surfaced_instead_of_silently_recorded(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
 
-        attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        with _live_head(_HEAD):
+            attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
 
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
         assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
@@ -1003,3 +1015,132 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
         assert _pending_refusal_questions() == []
         _expire_codex_claims()
         assert CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) is not None
+
+
+_MOVED_HEAD = "3ad3bf39b0c15e7a284d6f9013cb57e28a4d10f6"
+
+
+class TestABranchThatAdvancedAfterDispatchStillRecords(TestCase):
+    """#4737: a review dispatched at A whose branch reaches B before the reviewer finishes.
+
+    The reviewer checked out the PR's CURRENT head, which is the right thing to do, and the
+    recorder threw the verdict away because it was not the SHA the dispatch pinned. Three
+    PRs, nine discarded verdicts, every one of them newer than the dispatch head — and the
+    identical refusal fingerprint parked the phase after two, so the PR stopped being
+    re-dispatched at all.
+    """
+
+    def test_a_verdict_at_the_live_head_is_recorded_at_that_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_OTHER_HEAD)
+        assert recorded.is_merge_safe()
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_the_landed_work_guard_finds_the_verdict_at_the_refreshed_head(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        dispatch.refresh_from_db()
+        assert dispatch.recorded_head_sha == _OTHER_HEAD
+        assert dispatch.state == AutoReviewDispatch.State.RESOLVED
+        assert _OTHER_HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
+
+    def test_the_refreshed_record_releases_the_per_mr_review_lock(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.RESOLVED
+
+    def test_an_abbreviated_live_head_records_at_the_full_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD[:12]), phase="reviewing")
+
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_OTHER_HEAD).exists()
+
+
+class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
+    """#4737 acceptance 3: a mismatch must never park the ticket with no path out."""
+
+    def test_a_moved_head_supersedes_the_claim_and_names_its_cause(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head(_MOVED_HEAD):
+            attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert attempt.error.startswith(HEAD_SUPERSEDED_PREFIX)
+        assert attempt.failure_kind == FailureKind.HEAD_SUPERSEDED
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.SUPERSEDED
+
+    def test_a_fresh_review_arms_at_the_new_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with _live_head(_MOVED_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        rearmed = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_MOVED_HEAD,
+            pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            overlay="teatree",
+        )
+        assert rearmed is not None
+        assert rearmed.head_sha == _MOVED_HEAD
+
+    def test_a_superseded_head_is_never_re_armed_for_the_tree_it_left_behind(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        with _live_head(_MOVED_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert (
+            AutoReviewDispatch.enqueue(
+                slug=_SLUG,
+                pr_id=_PR_ID,
+                head_sha=_HEAD,
+                pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+                overlay="teatree",
+            )
+            is None
+        )
+
+    def test_two_consecutive_moved_heads_do_not_stall_the_phase(self) -> None:
+        # The refusal masks its SHAs to one fingerprint, so before #4737 two of these parked
+        # the phase — which is why nine refused verdicts became three permanently stuck PRs.
+        task, _ = _reviewing_task_via_dispatch()
+        for _ in range(2):
+            with _live_head(_MOVED_HEAD):
+                record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        task.refresh_from_db()
+        task.check_requeue_allowed()
+
+
+class TestAnUnreadableForgeLeavesTheClaimAlone(TestCase):
+    def test_an_unreadable_live_head_refuses_without_spending_the_claim(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head("", unreadable=True):
+            attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert not attempt.error.startswith(HEAD_SUPERSEDED_PREFIX)
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED

@@ -84,6 +84,10 @@ SUPERSEDED_PREFIX = "superseded: "
 #: Prefix an agent-initiated failure that named no cause of its own carries.
 AGENT_ABANDONED_PREFIX = "agent_abandoned: "
 
+#: Prefix a review refusal carries when the PR head advanced past the tree the review
+#: was dispatched for, so the reviewer judged neither (souliane/teatree#4737).
+HEAD_SUPERSEDED_PREFIX = "head_superseded: "
+
 
 class FailureKind(models.TextChoices):
     """The named cause of a FAILED task, stamped on the attempt that failed it."""
@@ -111,6 +115,7 @@ class FailureKind(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled by an operator"
     SUPERSEDED = "superseded", "Superseded by rework"
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
+    HEAD_SUPERSEDED = "head_superseded", "PR head advanced past the reviewed tree"
 
 
 class RecoveryStrategy(StrEnum):
@@ -171,6 +176,10 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.CANCELLED: Recovery(_HALT, environmental=False),
     FailureKind.SUPERSEDED: Recovery(_HALT, environmental=False),
     FailureKind.AGENT_ABANDONED: Recovery(_HALT, environmental=False),
+    # The branch moved on: re-running THIS task re-reviews the head it pinned, which is no
+    # longer the PR's. A fresh dispatch at the new head is the recovery, so this row never
+    # reopens; environmental because nothing about the work is at fault.
+    FailureKind.HEAD_SUPERSEDED: Recovery(_HALT, environmental=True),
 }
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
@@ -191,7 +200,7 @@ _CAUSELESS: frozenset[str] = frozenset(
 #: text, so the fingerprint check still discriminates them. ``harness_crash`` is out for the
 #: same reason — a traceback names a code path, so a verbatim repeat of one is a defect
 #: recurring, and #4505 made it retryable, which is what put it in front of the stall at all.
-_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE})
+_TEXT_UNINFORMATIVE: frozenset[str] = frozenset({FailureKind.OUTAGE, FailureKind.HEAD_SUPERSEDED})
 
 #: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
 #: unrelated failures rather than one repeating defect. See the module docstring on why
@@ -211,6 +220,9 @@ _UNNAMED: frozenset[str] = frozenset(
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
+    # Ahead of SUPERSEDED: the reasons are tested by CONTAINMENT and "head_superseded: "
+    # contains "superseded: ", so the generic name would claim the specific one's rows.
+    (FailureKind.HEAD_SUPERSEDED, (HEAD_SUPERSEDED_PREFIX,)),
     (FailureKind.SUPERSEDED, (SUPERSEDED_PREFIX,)),
     (FailureKind.AGENT_ABANDONED, (AGENT_ABANDONED_PREFIX,)),
     (FailureKind.LEASE_LOST, ("stuck_loop: lease lost",)),

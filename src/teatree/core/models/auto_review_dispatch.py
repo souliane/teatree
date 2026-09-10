@@ -121,6 +121,8 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
         f'"{REVIEWER_IDENTITY_INSTRUCTION}", '
         f'"gh_verify_result": "green", "findings": [{{"severity": "low", '
         f'"summary": "<what you observed>", "file": "<path>", "line": 0}}]}}`. {ENVELOPE_FINDINGS_RULE} '
+        f"If the branch has advanced since this dispatch, review the head it points at NOW and "
+        f"return THAT full 40-char SHA — the recorder binds the verdict to it (souliane/teatree#4737). "
         f"Do NOT run `t3 <overlay> review record` — maker≠checker requires a different "
         f"actor to write the row: the orchestrator records the ReviewVerdict at head {head_sha[:8]} from "
         f"your envelope, and pr_sweep consumes it to auto-merge this own PR (#68)."
@@ -142,20 +144,25 @@ class AutoReviewDispatch(models.Model):
         DISPATCHED = "dispatched", "Dispatched"
         RESOLVED = "resolved", "Resolved"
         REFUSED = "refused", "Refused"
+        SUPERSEDED = "superseded", "Superseded by a newer head"
 
     #: In-flight: acquirable again only once ``deadline`` has passed.
     _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.DISPATCHED})
     #: Empty on purpose — unlike the per-MR lock, a terminal per-head claim stays
     #: terminal. RESOLVED means a verdict already covers that exact tree; REFUSED
     #: means a verdict for that exact tree is structurally unrecordable and a human
-    #: has been paged. Neither is re-armable, for opposite reasons, and both are
-    #: escaped the same way — by a new head (#4522).
+    #: has been paged. SUPERSEDED means the PR no longer points at that tree at all.
+    #: None is re-armable, for three different reasons, and all are escaped the same
+    #: way — by a new head (#4522, #4737).
     _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
 
     slug = models.CharField(max_length=255)
     pr_id = models.IntegerField()
     head_sha = models.CharField(max_length=64)
     pr_url = models.URLField(max_length=512, blank=True, default="")
+    #: The head the verdict actually landed at, when the branch advanced past ``head_sha``
+    #: mid-review. Empty on every claim whose reviewer bound to the head it was armed for.
+    recorded_head_sha = models.CharField(max_length=64, blank=True, default="")
     overlay = models.CharField(max_length=64, blank=True, default="")
     task = models.ForeignKey(
         "core.Task",
@@ -253,6 +260,50 @@ class AutoReviewDispatch(models.Model):
             head_sha=head_sha,
             to_state=cls.State.REFUSED,
         )
+
+    @classmethod
+    def mark_recorded_at(cls, *, slug: str, pr_id: int, head_sha: str, recorded_head_sha: str) -> bool:
+        """Terminal: the review this claim armed recorded its verdict at a NEWER head (#4737).
+
+        Returns ``True`` iff a row transitioned. :func:`~teatree.core.models.review_verdict.resolve_head_claims`
+        keys on the head the verdict LANDED at, so a claim pinned to the pre-push head is
+        invisible to it and would stay in flight until its deadline while the review it armed
+        has already concluded. Stamping the recorded head is also what keeps the writer's key
+        and the landed-work guard's key one fact rather than two (#4126).
+        """
+        return bool(
+            cls.objects.filter(slug=slug, pr_id=pr_id, head_sha=head_sha, state__in=cls._ACTIVE_STATES).update(
+                state=cls.State.RESOLVED,
+                resolved_at=timezone.now(),
+                recorded_head_sha=recorded_head_sha,
+            )
+        )
+
+    @classmethod
+    def mark_superseded(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        """Terminal: the PR advanced past this head while the review it armed was running (#4737).
+
+        Returns ``True`` iff a row transitioned. Asserts no verdict — like :meth:`mark_refused`
+        and unlike :meth:`mark_resolved` — but for the opposite reason: not that this tree is
+        unreviewable, that the PR has left it behind.
+
+        Unlike :meth:`mark_refused` it DOES release the per-MR
+        :class:`~teatree.core.models.mr_review_lock.MRReviewLock`. A refusal leaves some other
+        reviewer possibly still running against the MR, so the lock must stand; here the lock is
+        held for a tree that is no longer the PR's, and holding it would block the re-arm at the
+        new head that IS the recovery. Without the release the branch that moved would wait out
+        the lock's whole TTL before any reviewer could look at it again.
+        """
+        superseded = retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.SUPERSEDED,
+        )
+        if superseded:
+            MRReviewLock.resolve(slug=slug, pr_id=pr_id, holder=LOOP_SCANNER_HOLDER)
+        return superseded
 
     @classmethod
     def enqueue(

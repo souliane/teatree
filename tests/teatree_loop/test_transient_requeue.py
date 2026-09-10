@@ -11,13 +11,14 @@ never reopened. The hardest pin: it NEVER retries endlessly.
 """
 
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
 from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -26,6 +27,9 @@ from teatree.core.worktree.recovery_sweeps import run_boot_sweeps
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import requeue_transient_failed
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 
 def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED, issue_url: str = "") -> Task:
@@ -1136,4 +1140,69 @@ class TestTheKindDecidesTheRecovery(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+def _pr_is_live() -> "AbstractContextManager[mock.MagicMock]":
+    """Keep the dead-PR retirement out of the way — and every test off the real forge."""
+    return mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False)
+
+
+class TestSupersededHeadReviewIsParkedNotPaged(TestCase):
+    """A review whose PR moved on is parked, never escalated (#4737).
+
+    Its recovery is a fresh dispatch at the new head, which the sweep arms by itself — so
+    asking the owner adds nothing and costs a question per push. Three such questions
+    (767, 777, 778) are what the reported incident actually left behind.
+    """
+
+    _HEAD = "bf526560a1c4e7f80d329b6157ae4c02f8d1b3e9"
+    _REASON = f"{HEAD_SUPERSEDED_PREFIX}souliane/teatree#4716 advanced from bf526560 to 21023d20"
+
+    def _superseded_review(self, *, claim_state: str) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/souliane/teatree/pull/4716",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        AutoReviewDispatch.objects.create(
+            slug="souliane/teatree", pr_id=4716, head_sha=self._HEAD, task=task, state=claim_state
+        )
+        task.fail(reason=self._REASON)
+        _add_failed_attempt(task, error=self._REASON)
+        return task
+
+    def test_a_superseded_claim_parks_its_review_without_a_question(self) -> None:
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+
+        with _pr_is_live():
+            reopened = requeue_transient_failed()
+
+        assert reopened == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_parked_review_drops_out_of_the_next_scan(self) -> None:
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        with _pr_is_live(), mock.patch("teatree.loop.transient_requeue._escalate_once") as escalate:
+            requeue_transient_failed()
+
+        escalate.assert_not_called()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_a_still_live_claim_is_escalated_exactly_as_before(self) -> None:
+        # The control: only a claim the recorder actually superseded is parked, so this
+        # cannot read as "stop escalating failed reviews".
+        self._superseded_review(claim_state=AutoReviewDispatch.State.DISPATCHED)
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

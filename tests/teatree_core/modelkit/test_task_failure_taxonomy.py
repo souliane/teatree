@@ -12,12 +12,16 @@ import pytest
 
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
+    HEAD_SUPERSEDED_PREFIX,
     RECOVERY,
+    SUPERSEDED_PREFIX,
     FailureKind,
     RecoveryStrategy,
     classify_failure,
     is_environmental,
     recovery_strategy,
+    stall_fingerprints,
+    stall_kinds,
 )
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than
@@ -33,6 +37,14 @@ _ENVIRONMENTAL_BEFORE = {
     FailureKind.RESULT_ERROR,
     FailureKind.PROVISION_FAILED,
     FailureKind.LANDING_UNVERIFIED,
+}
+
+#: Kinds added to the axis SINCE, one deliberate line each. The guard below still pins every
+#: pre-existing kind exactly, so a silent move of the original set stays red; only a named
+#: addition passes.
+_ENVIRONMENTAL_ADDED = {
+    # A moved PR head is not a fault in the work — souliane/teatree#4737.
+    FailureKind.HEAD_SUPERSEDED,
 }
 
 
@@ -66,7 +78,11 @@ class TestTheOneWayInvariant:
 
 class TestTheEnvironmentalAxisIsUnmoved:
     def test_the_column_matches_the_pre_table_set(self) -> None:
-        assert {kind for kind, recovery in RECOVERY.items() if recovery.environmental} == _ENVIRONMENTAL_BEFORE
+        environmental = {kind for kind, recovery in RECOVERY.items() if recovery.environmental}
+        assert environmental == _ENVIRONMENTAL_BEFORE | _ENVIRONMENTAL_ADDED
+
+    def test_no_pre_table_kind_ever_left_the_axis(self) -> None:
+        assert {kind for kind, recovery in RECOVERY.items() if recovery.environmental} >= _ENVIRONMENTAL_BEFORE
 
     @pytest.mark.parametrize("kind", sorted(_ENVIRONMENTAL_BEFORE))
     def test_is_environmental_still_answers_for_each(self, kind: str) -> None:
@@ -193,3 +209,44 @@ class TestThePlanGateRefusalIsNamed:
 
     def test_it_is_not_environmental(self) -> None:
         assert is_environmental(FailureKind.PLAN_MISSING) is False
+
+
+class TestAMovedPrHeadIsItsOwnNamedCause:
+    """#4737: two legitimate pushes are two pushes, never one recurring defect.
+
+    The refusal masks its SHAs, so every moved head fingerprints identically — which is
+    how nine refused verdicts across three PRs became three permanently parked phases.
+    """
+
+    _REASON = f"{HEAD_SUPERSEDED_PREFIX}souliane/teatree#4716 advanced from bf526560 to 21023d20"
+
+    def test_the_reason_classifies_as_head_superseded(self) -> None:
+        assert classify_failure(self._REASON) == FailureKind.HEAD_SUPERSEDED
+
+    def test_the_generic_superseded_name_does_not_claim_it(self) -> None:
+        # The reasons are matched by CONTAINMENT and "head_superseded: " contains
+        # "superseded: ", so matcher ORDER is the whole guard here.
+        assert classify_failure(f"{SUPERSEDED_PREFIX}ticket reworked") == FailureKind.SUPERSEDED
+        assert classify_failure(self._REASON) != FailureKind.SUPERSEDED
+
+    def test_it_never_reopens_the_task_that_pinned_the_old_head(self) -> None:
+        assert recovery_strategy(FailureKind.HEAD_SUPERSEDED) is RecoveryStrategy.HALT
+
+    def test_it_is_environmental_because_nothing_about_the_work_is_at_fault(self) -> None:
+        assert is_environmental(FailureKind.HEAD_SUPERSEDED)
+        assert FailureKind.HEAD_SUPERSEDED in RECOVERY
+
+    def test_two_moved_heads_are_dropped_from_the_fingerprint_stall(self) -> None:
+        fingerprint = "b0dff8325c76"
+        pairs = [(FailureKind.HEAD_SUPERSEDED, fingerprint), (FailureKind.HEAD_SUPERSEDED, fingerprint)]
+
+        assert stall_fingerprints(pairs) == []
+
+    def test_two_moved_heads_are_dropped_from_the_named_cause_stall(self) -> None:
+        assert stall_kinds([FailureKind.HEAD_SUPERSEDED, FailureKind.HEAD_SUPERSEDED]) == []
+
+    def test_a_genuinely_repeating_defect_still_counts(self) -> None:
+        # The control: the stall detector must not read as "nothing ever stalls".
+        pairs = [(FailureKind.LANDING_UNVERIFIED, "aaaa"), (FailureKind.LANDING_UNVERIFIED, "aaaa")]
+
+        assert stall_fingerprints(pairs) == ["aaaa", "aaaa"]
