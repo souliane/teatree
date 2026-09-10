@@ -5,13 +5,13 @@ The constraint stays an EXACT pin, for a reason unrelated to the quarantine:
 this exact version (the CLI the wheel bundles and actually executes), and reds until that
 generation is re-derived from the new wheel. A ``>=`` floor makes that derivation impossible.
 
-The SDK declares ``mcp<2.0.0`` while teatree declares ``mcp>=2,<3``, so the pin resolves only
-behind the ``[tool.uv] override-dependencies`` entry in ``pyproject.toml``.
-:class:`TestTheOverrideIsHonest` is what earns that override the right to exist: it re-derives
-the SDK's ``mcp`` imports from the INSTALLED wheel on every run and asserts each module and
-symbol resolves under the installed ``mcp``. Without it the override would be a standing
-unverified assumption, and a future SDK release reaching for an mcp 1.x-only symbol would
-fail at runtime rather than in CI.
+The SDK's declared ``mcp>=1.23.0,<3.0.0`` admits teatree's own ``mcp>=2,<3``, so the
+``[tool.uv] override-dependencies`` entry it once needed is now empty. A bound that merely
+RESOLVES proves nothing about what the wheel imports, so :class:`TestTheSdkResolvesUnderTheLockedMcp`
+re-derives the SDK's ``mcp`` imports from the INSTALLED wheel on every run and asserts each
+module and symbol resolves under the locked ``mcp`` — and reds if a release re-narrows the
+bound, which is when the override has to come back. Without it a release reaching for an
+mcp 1.x-only symbol would fail at runtime rather than in CI.
 
 The pin is not a QUARANTINE. It used to carry a Dependabot ``ignore`` entry because a
 bundled claude CLI at/after 2.1.204 renders an ``AskUserQuestion`` call as a markdown chip
@@ -49,7 +49,7 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.139"
+_PINNED_VERSION = "0.2.152"
 _PACKAGE = "claude-agent-sdk"
 _SDK_MODULE = "claude_agent_sdk"
 
@@ -222,44 +222,31 @@ class TestClaudeAgentSdkPin:
         assert _locked_version() == _PINNED_VERSION
 
 
-class TestTheOverrideIsHonest:
-    """The ``mcp`` bound the SDK declares is overridden; these prove nothing real is masked.
+class TestTheSdkResolvesUnderTheLockedMcp:
+    """The SDK's own ``mcp`` bound is wide; these prove the locked 2.x really satisfies it.
 
-    ``claude-agent-sdk`` declares ``mcp<2.0.0`` while ``teatree.mcp`` imports the 2.0 layout
-    (``mcp.server.mcpserver.MCPServer``) under the project's ``mcp>=2,<3``. Left alone the two
-    are disjoint and ``uv sync`` fails before a single test runs, so ``pyproject.toml``'s
-    ``[tool.uv] override-dependencies`` replaces the SDK's bound with the project's own.
+    ``claude-agent-sdk`` declares ``mcp>=1.23.0,<3.0.0`` while ``teatree.mcp`` imports the 2.0
+    layout (``mcp.server.mcpserver.MCPServer``) under the project's ``mcp>=2,<3``. The two
+    resolve together with no override — but a bound that resolves is not evidence the wheel
+    works, and a wrong one is invisible: the resolver stops complaining and the break moves to
+    runtime. So the import set is RE-DERIVED from the installed wheel here rather than trusted,
+    and every module and symbol in it must resolve under the locked ``mcp``.
 
-    That is safe only because the SDK's cap is broader than its usage: it reaches only the
-    LOW-LEVEL ``mcp.server.Server`` and ``mcp.types`` surface, which mcp 2.x still provides,
-    and never the ``MCPServer`` surface teatree uses. An override that is wrong, though, is
-    invisible — the resolver stops complaining and the break moves to runtime. So the import
-    set is RE-DERIVED from the installed wheel here rather than trusted, and every module and
-    symbol in it must resolve under the installed ``mcp``.
+    The safety rests on the SDK reaching only the LOW-LEVEL ``mcp.server.Server`` and
+    ``mcp.types`` surface, which mcp 2.x still provides, and never the ``MCPServer`` surface
+    teatree uses.
     """
 
-    def test_pyproject_overrides_the_mcp_bound_to_the_projects_own(self) -> None:
-        overrides = {requirement.name: requirement for requirement in _override_requirements()}
-        assert _MCP in overrides, (
-            f"the SDK pin resolves only while `[tool.uv] override-dependencies` replaces its "
-            f"{_MCP} bound; without the entry `uv lock` fails with an opaque resolver error."
-        )
-        assert str(overrides[_MCP].specifier) == str(_project_requirement(_MCP).specifier), (
-            f"the {_MCP} override must restate the project's OWN bound and nothing wider — a "
-            "wider override would let the resolver pick a major the suite never runs against. "
-            f"Override: {overrides[_MCP]}; project: {_project_requirement(_MCP)}."
-        )
-
-    def test_the_override_still_has_something_to_override(self) -> None:
-        # When a release finally declares a bound the project's own already satisfies, the
-        # override is dead weight that would silently outlive its reason — so it reds here and
-        # gets deleted rather than accumulating.
+    def test_no_override_is_needed_for_the_declared_bound(self) -> None:
+        # The inverse of the tripwire that retired the override: a release that re-narrows the
+        # bound stops resolving against the project's own, so the entry has to come back.
         declared = _sdk_requirement_on(_MCP)
         locked = _locked_version_of(_MCP)
-        assert not declared.specifier.contains(locked), (
-            f"{_PACKAGE}=={_PINNED_VERSION} declares {declared}, which already admits the locked "
-            f"{_MCP}=={locked}. The `[tool.uv] override-dependencies` entry for {_MCP} is no "
-            "longer doing anything — remove it, and this test with it."
+        assert declared.specifier.contains(locked), (
+            f"{_PACKAGE}=={_PINNED_VERSION} declares {declared}, which excludes the locked "
+            f"{_MCP}=={locked}: `uv lock` now fails with an opaque resolver error. Restore the "
+            f"`[tool.uv] override-dependencies` entry (and the matching {UV_OVERRIDES_FILENAME} "
+            f"line) with the project's own bound, {_project_requirement(_MCP)}."
         )
 
     def test_every_mcp_module_the_sdk_imports_resolves(self) -> None:
@@ -284,16 +271,16 @@ class TestTheOverrideIsHonest:
             "masking a real incompatibility, not a bound that is merely broader than its usage."
         )
 
-    def test_the_walk_sees_the_surface_that_justifies_the_override(self) -> None:
-        # The control: a walk that found nothing would pass both assertions above. The override
-        # rests on the claim that the SDK touches only the LOW-LEVEL server surface, so the walk
-        # must actually see that surface — and must NOT see the one teatree migrated.
+    def test_the_walk_sees_the_surface_it_is_meant_to_check(self) -> None:
+        # The control: a walk that found nothing would pass both assertions above. The claim is
+        # that the SDK touches only the LOW-LEVEL server surface, so the walk must actually see
+        # that surface — and must NOT see the one teatree migrated.
         found = _sdk_mcp_imports()
         assert "Server" in found.get("mcp.server", set())
         assert "ToolAnnotations" in found.get("mcp.types", set())
         assert "mcp.server.mcpserver" not in found, (
             "the SDK now imports the same surface as `teatree.mcp.server`; the two no longer "
-            "sit on disjoint APIs and the override's justification needs re-deriving."
+            "sit on disjoint APIs and this file's compatibility claim needs re-deriving."
         )
 
     def test_the_locked_mcp_satisfies_the_projects_own_bound(self) -> None:
@@ -334,9 +321,10 @@ class TestTheOverrideReachesEveryInstallSurface:
             f"{path}: {command}" for path, command in _automated_uv_tool_installs() if command != "flagged"
         )
         assert not unflagged, (
-            "every unattended `uv tool install` of teatree must resolve with the override — via "
-            "`--overrides` on the command or an ambient `UV_OVERRIDE`. Without it uv ignores the "
-            f"`mcp` override entirely and the install fails to resolve at all. Missing it: {unflagged}"
+            "every unattended `uv tool install` of teatree must resolve with the overrides file "
+            "— via `--overrides` on the command or an ambient `UV_OVERRIDE`. The list is empty "
+            "today, so a site that drops the flag stays green until the next entry lands and "
+            f"then fails to resolve at all. Missing it: {unflagged}"
         )
 
     def test_the_sweep_sees_the_surface_it_is_meant_to_guard(self) -> None:

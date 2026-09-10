@@ -65,7 +65,10 @@
 #   5. Test suite            — build-image (builds/pushes BOTH the `-test` and
 #                              `-lint` tags; unconditional, feeds group 2's
 #                              `lint` job as well as this group), test-shard
-#                              (12-way coverage matrix),
+#                              (12-way coverage matrix), jscpd-scan (the
+#                              whole-tree duplication scan, relocated off the
+#                              shard lane by #4672 and gating through the
+#                              combiner's `needs`),
 #                              test (combiner = required `test (3.13)`),
 #                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
@@ -804,9 +807,12 @@ jobs:
   # back into one complete file and, ONLY when the drift gate fires (test set
   # changed, or aggregate per-test time moved past the threshold — never on pure
   # jitter), opens/updates ONE single refresh PR a human reviews and merges.
-  # The refresh branch name is STABLE (`ci/test-durations-refresh`) and force-
-  # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
-  # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
+  # The refresh branch name is STABLE (`ci/test-durations-refresh`), so an unmerged
+  # refresh is UPDATED in place instead of stacking a new dated PR every day (which
+  # piled up conflicting PRs — #3160 residual CI-3). It is REBUILT only while it carries
+  # nothing but the generated file; once it carries anything else, the base is merged
+  # under those commits instead, because rebuilding the ref byte-erased the review fixes
+  # pushed onto it and left the PR unfixable in place (#4717).
   # Never gates a PR; a merge failure or empty diff is a no-op.
   #
   # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
@@ -934,19 +940,22 @@ jobs:
             echo "No net change to dev/.test_durations — nothing to open."
             exit 0
           fi
-          # STABLE branch (CI-3): reused + force-updated so there is at most ONE open
-          # refresh PR, updated in place — never a new dated branch/PR each unmerged day.
+          # STABLE branch (CI-3): reused so there is at most ONE open refresh PR, updated
+          # in place — never a new dated branch/PR each unmerged day. The script UPDATES it
+          # rather than rebuilding the ref: `git checkout -B` here discarded every commit
+          # already on the branch, which is how #4655's review fixes were destroyed, and a
+          # refresh is precisely what creates the collateral those fixes address (#4717). It
+          # refuses, pushing nothing, on a conflict outside the generated file. The lease
+          # still guards a concurrent push, and the rebuild path still rewrites the ref.
           BRANCH="ci/test-durations-refresh"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add dev/.test_durations
-          git commit -m "chore(ci): refresh dev/.test_durations from the shard lane (#3160)"
+          uv run -p 3.13 python scripts/ci/durations_refresh_branch.py --branch "$BRANCH"
           git push --force-with-lease origin "$BRANCH"
           if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
             gh pr create \
               --title "chore(ci): refresh test shard durations" \
-              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green." \
+              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green. Fixes that this refresh's own review requires (raised timeout ceilings, markers, source edits) belong on this branch: the next refresh merges the base under them and preserves every path other than \`dev/.test_durations\`, or refuses and says why (#4717)." \
               --base main
             # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
             # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
@@ -988,6 +997,54 @@ jobs:
               ;;
           esac
 
+  # The whole-tree jscpd scan, relocated OFF the twelve-way shard lane (#4672).
+  # Measured 314s standalone on an idle 8-core box (1829 sources, 2.1M tokens)
+  # against the 300s ceiling it ran under, so every shard that drew it was one
+  # contention spike from a timeout that reds the required rollup — #2995 had
+  # already raised that ceiling 60s->300s for the same symptom. Here it runs ONCE,
+  # unsharded and serial, on the jscpd baked into the image, and still gates
+  # `test (3.13)` through the combiner's `needs` below. Relocation is by env-gated
+  # skipif, never `-m`: `shard_stats_plugin` records `selected` AFTER
+  # collection_modifyitems, so a marker filter would make sum(selected) < total and
+  # fail `check_shard_completeness.py`. `-s` keeps the elapsed/scale line the ledger
+  # prints on the PASS path in this log, which is what makes a future slowdown
+  # legible without downloading an artifact.
+  jscpd-scan:
+    needs: [preflight, build-image]
+    if: >
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Obtain the prebuilt test image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          fi
+      - name: Whole-tree jscpd scan coverage (unsharded, pinned engine)
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e PYTHONPATH=/app
+          -e TEATREE_JSCPD_SCAN=1
+          ${{ needs.build-image.outputs.image }}
+          uv run -p 3.13 pytest --no-header -q -s -n0
+          -o cache_dir=/tmp/.pytest_cache
+          tests/quality/test_jscpd_duplication.py
+
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).
   # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
@@ -1003,7 +1060,7 @@ jobs:
   # LOAD-BEARING: the job key `test` + matrix python-version "3.13" produce
   # `test (3.13)` — do NOT rename without updating branch protection.
   test:
-    needs: [preflight, test-shard]
+    needs: [preflight, test-shard, jscpd-scan]
     if: >
       always() &&
       (github.event_name != 'pull_request' ||
@@ -1023,6 +1080,16 @@ jobs:
           result='${{ needs.test-shard.result }}'
           if [ "$result" != "success" ]; then
             echo "::error::test-shard result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
+            exit 1
+          fi
+      # The relocated whole-tree jscpd scan (#4672) reaches merge protection only
+      # through this context, so its result is checked exactly like a shard's: a
+      # `needs:` alone still passes under `always()` when the needed job failed.
+      - name: Require the relocated jscpd scan to have passed
+        run: |
+          result='${{ needs.jscpd-scan.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::jscpd-scan result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
