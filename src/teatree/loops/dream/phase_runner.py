@@ -185,8 +185,7 @@ class MemoryPhaseRunner:
                 continue
             all_passed = all_passed and report.passed
             if not report.passed:
-                failed = ", ".join(g.name for g in report.gate_results if not g.passed)
-                clauses.append(f"gates FAILED ({failed})")
+                clauses.append(f"gates FAILED in {d.name} ({report.render_failures()})")
         gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
         return all_passed, gate_summary
 

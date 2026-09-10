@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0084_merge_reclaim_pressure"),
+        ("core", "0085_dream_marker_terminal_outcome"),
     ]
 
     operations = [

@@ -14,6 +14,7 @@ failure here, and raising a peg to make this green is the thing not to do.
 
 from uuid import uuid4
 
+import pytest
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
@@ -101,6 +102,8 @@ def _populate(scale: int) -> Ticket:
     return ticket
 
 
+# 172.0s recorded under the shard lane's 12-way contention: 96% of the `-o timeout=180` it enforces.
+@pytest.mark.timeout(240)
 class DashboardPageQueryPlansTestCase(TestCase):
     """Each page's plan, asserted at a small and a large population."""
 

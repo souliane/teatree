@@ -9,6 +9,7 @@ upper bound so a future N+1 regression turns it red.
 
 import uuid
 
+import pytest
 from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase
@@ -57,6 +58,8 @@ class BoardQueryBoundTestCase(TestCase):
         assert len(many) <= _BOARD_MAX_QUERIES, f"board over the {_BOARD_MAX_QUERIES}-query bound: {len(many)}"
 
 
+# 55.1s recorded under the shard lane's 12-way contention; 180 is the ceiling that lane enforces.
+@pytest.mark.timeout(180)
 class HealthQueryBoundTestCase(TestCase):
     def setUp(self) -> None:
         cache.clear()

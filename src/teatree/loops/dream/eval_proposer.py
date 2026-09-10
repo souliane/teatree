@@ -94,7 +94,7 @@ def default_eval_proposer(clusters: Sequence[DistilledCluster], extract: Consoli
             ProposedEval(
                 scenario_name=_eval_scenario_name(cluster.cluster_key),
                 drift_rule=cluster.rule,
-                seed_citation=cluster.verified_citation,
+                seed_citation=verdict.cluster.verified_citation,
                 source_files=[str(path) for path in verdict.cluster.source_files],
                 suggested_destination=cluster.durable_destination,
             )

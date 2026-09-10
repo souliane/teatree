@@ -849,3 +849,46 @@ class TestReportRender(SimpleTestCase):
         rendered = report.render()
         assert "retention" in rendered
         assert "FAIL" in rendered
+
+
+class TestRenderFailures:
+    """#4671 D3 — a gate refusal must name WHICH memory regressed, not just the gate."""
+
+    def test_render_failures_carries_detail_and_regressions(self) -> None:
+        report = gates.DreamQaReport(
+            gate_results=(
+                gates.GateResult(name="retention", passed=True, detail="all retained"),
+                gates.GateResult(
+                    name="interference",
+                    passed=False,
+                    detail="478/479 prior probe(s) answerable before the pass (1 stale), 1 lost across it",
+                    regressions=("feedback_lost.md",),
+                ),
+            )
+        )
+        rendered = report.render_failures()
+        assert "interference" in rendered
+        assert "1 lost across it" in rendered
+        assert "feedback_lost.md" in rendered
+        assert "retention" not in rendered  # passing gates stay out of the failure clause
+
+    def test_render_failures_bounds_a_long_regression_list(self) -> None:
+        report = gates.DreamQaReport(
+            gate_results=(
+                gates.GateResult(
+                    name="retention",
+                    passed=False,
+                    detail="12 probe(s) no longer answerable",
+                    regressions=tuple(f"mem_{i}.md" for i in range(12)),
+                ),
+            )
+        )
+        rendered = report.render_failures()
+        assert "mem_0.md" in rendered
+        assert "+7 more" in rendered  # first 5 named, the rest counted — never silently truncated
+
+    def test_render_failures_is_empty_when_every_gate_passed(self) -> None:
+        report = gates.DreamQaReport(
+            gate_results=(gates.GateResult(name="retention", passed=True, detail="all retained"),)
+        )
+        assert report.render_failures() == ""
