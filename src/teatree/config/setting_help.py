@@ -97,6 +97,7 @@ SETTING_HELP: dict[str, str] = {
     "db_backup_disabled": "stop scheduling database backups",
     "db_backup_retention_days": "days a database backup is kept before it is pruned",
     "deferred_question_age_ceiling_days": "days a deferred question may sit unresolved before it is escalated",
+    "deferred_question_max_escalations": "escalations an unanswered question gets before it is drained stale",
     "deny_circuit_breaker_enabled": "pause dispatch after repeated classifier denials instead of retrying",
     "deny_circuit_breaker_threshold": "consecutive denials that trip the circuit breaker",
     "directive_intake_per_tick": "how many owner directives the directive loop intakes per tick",

@@ -178,6 +178,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "worktree_occupancy_lease_seconds": _parse_strict_int,
     "task_attempt_retention_days": _parse_strict_int,
     "deferred_question_age_ceiling_days": _parse_strict_int,
+    "deferred_question_max_escalations": _parse_strict_int,
     "incoming_event_retention_days": _parse_strict_int,
     "park_attempt_retention_days": _parse_strict_int,
     "ticket_transition_prune_disabled": _parse_strict_bool,
