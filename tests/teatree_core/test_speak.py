@@ -481,7 +481,7 @@ class TestDeliverUserDmSidecarInitialComment:
     """F4.4: the sidecar attaches audio to an ALREADY-delivered DM.
 
     ``initial_comment`` controls the text posted alongside the audio: ``None``
-    (default) reuses ``text`` (the ``t3 speak-dm`` standalone path), while ``""``
+    (default) reuses ``text`` (a standalone audio DM), while ``""``
     posts NO comment so the notify path — which already delivered the text via
     ``post_message`` — does not send the body a second time. The audio is
     always synthesised from the full ``text`` either way.

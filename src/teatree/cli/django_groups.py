@@ -453,6 +453,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("reachability", "Report which automated resolvers can decide each pending question."),
             ("answer", "Resolve a pending question with a user answer."),
             ("dismiss", "Dismiss a pending question without answering it."),
+            ("mirror", "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap."),
             ("resurface", "Re-post the pending backlog to the user's Slack DM (away→present drain)."),
         ],
     ),
