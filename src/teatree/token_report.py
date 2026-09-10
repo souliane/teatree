@@ -43,7 +43,7 @@ from django.utils import timezone
 from rich.console import Console
 from rich.table import Table
 
-from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind, reading_from
 from teatree.llm.rate_limits import (
@@ -231,9 +231,14 @@ class TokenAccountRow:
 class TokenReport:
     """Build the per-account health rows from the configured ``pass`` lists.
 
-    Reuses a fresh cached health row with no probe; else reads the account token
-    from ``pass`` and probes it once, upserting the shared health cache. Both the
-    reader and the secret reader are injectable for a network-free test.
+    Reuses a cached health row only while it is fresh AND was probed with the credential
+    currently stored at that ``pass`` entry; else probes once and upserts the shared cache.
+    *refresh* forces the live probe regardless. Both the reader and the secret reader are
+    injectable for a network-free test.
+
+    Every OAuth account therefore costs one ``pass`` read per report even on a cache hit —
+    the token is what identifies the credential, and this is an explicit diagnostic, not the
+    selector's hot path (which stays cache-only and never reads a secret to route).
     """
 
     def __init__(
@@ -243,11 +248,13 @@ class TokenReport:
         secret_reader: SecretReader | None = None,
         api_key_reader: MeteredKeyReader | None = None,
         ad_hoc_tokens: list[str] | None = None,
+        refresh: bool = False,
     ) -> None:
         self._reader = reader or read_rate_limits
         self._secret_reader = secret_reader or read_pass
         self._api_key_reader = api_key_reader or read_api_key_status
         self._ad_hoc_tokens = _dedup_tokens(ad_hoc_tokens or [])
+        self._refresh = refresh
 
     def rows(self) -> list[TokenAccountRow]:
         now = timezone.now()
@@ -261,17 +268,21 @@ class TokenReport:
     def _row_for(self, kind: TokenKind, pass_path: str, scopes: tuple[str, ...], now: dt.datetime) -> TokenAccountRow:
         if kind is TokenKind.API_KEY:
             return self._api_key_row(pass_path, scopes)
-        cached = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
-        if cached is not None and cached.is_fresh(now):
-            return _oauth_row(pass_path, kind, scopes, cached, source=TokenSource.STORE)
         token = self._secret_reader(pass_path)
         if not token:
             return _blank_row(kind, pass_path, scopes, TokenStatus.MISSING, source=TokenSource.STORE)
+        fingerprint = fingerprint_token(token)
+        cached = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
+        if not self._refresh and cached is not None and cached.is_fresh(now) and cached.matches_credential(fingerprint):
+            return _oauth_row(pass_path, kind, scopes, cached, source=TokenSource.STORE)
         try:
             snapshot = self._reader(token, is_oauth=True)
         except RateLimitProbeError:
+            # The stored row is left alone: a transient outage must not discard the last reading.
             return _blank_row(kind, pass_path, scopes, TokenStatus.UNREACHABLE, source=TokenSource.STORE)
-        probed = AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=now)
+        probed = AnthropicTokenUsage.objects.record(
+            pass_path, reading_from(snapshot), now=now, token_fingerprint=fingerprint
+        )
         return _oauth_row(pass_path, kind, scopes, probed, source=TokenSource.STORE)
 
     def _api_key_row(self, pass_path: str, scopes: tuple[str, ...]) -> TokenAccountRow:

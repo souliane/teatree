@@ -15,9 +15,14 @@ builds the reading at the boundary. The :attr:`valid_until` policy lives HERE so
 has one home: a healthy verdict expires after :data:`HEALTH_TTL` (re-probe
 occasionally), an exhausted one is trusted until its blocking window(s) reset (so an
 exhausted account is NOT re-probed until it can free up).
+
+A verdict is bound to the CREDENTIAL it was probed with (:attr:`token_fingerprint`): an
+exhausted row outlives a rotation of the token at its ``pass_path``, so trusting it by age
+alone reports the previous account's exhaustion as the new one's.
 """
 
 import datetime as dt
+import hashlib
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -28,6 +33,15 @@ UTILIZATION_5H_LIMIT = 0.95
 UTILIZATION_7D_LIMIT = 0.99
 REJECTED_STATUS = "rejected"
 HEALTH_TTL = dt.timedelta(minutes=5)
+
+
+def fingerprint_token(token: str) -> str:
+    """The stored form of a probed token — a hash, so the cache never holds the secret.
+
+    ``""`` for an empty token is the UNKNOWN marker, which
+    :meth:`AnthropicTokenUsage.matches_credential` never matches.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
 
 
 def _is_exhausted(utilization_5h: float, utilization_7d: float, status_7d: str) -> bool:
@@ -107,13 +121,22 @@ class AnthropicTokenUsageManager(models.Manager["AnthropicTokenUsage"]):
     """Upsert helper for the per-``pass_path`` health cache."""
 
     def record(
-        self, pass_path: str, reading: TokenHealthReading, *, now: dt.datetime | None = None
+        self,
+        pass_path: str,
+        reading: TokenHealthReading,
+        *,
+        now: dt.datetime | None = None,
+        token_fingerprint: str | None = None,
     ) -> "AnthropicTokenUsage":
         """Upsert the health row for *pass_path* from a fresh probe's *reading*.
 
         Idempotent on the unique ``pass_path``: a re-probe updates the one row. The
         stored :attr:`valid_until` follows the reading's TTL/reset policy so a healthy
         token re-probes after :data:`HEALTH_TTL` and an exhausted one waits out its reset.
+
+        *token_fingerprint* binds the verdict to the credential that produced it; ``None``
+        keeps whatever is stored, for a writer holding a verdict but no token (the reactive
+        exhaustion recorder observes a mid-run limit, never the secret).
         """
         moment = now or timezone.now()
         row, _ = self.update_or_create(
@@ -128,9 +151,19 @@ class AnthropicTokenUsageManager(models.Manager["AnthropicTokenUsage"]):
                 "reset_7d": reading.reset_7d,
                 "checked_at": moment,
                 "valid_until": reading.valid_until(moment),
+                **({"token_fingerprint": token_fingerprint} if token_fingerprint is not None else {}),
             },
         )
         return row
+
+    def expire_all(self, now: dt.datetime | None = None) -> int:
+        """Stale every cached verdict, returning how many rows were expired.
+
+        Expire rather than delete: the readings stay renderable while nothing trusts them,
+        and the governor reads a stale row as "not currently known-blocked" — so a fleet
+        cached as spent stops denying dispatch the moment the operator switches account.
+        """
+        return self.update(valid_until=now or timezone.now())
 
 
 class AnthropicTokenUsage(models.Model):
@@ -138,7 +171,8 @@ class AnthropicTokenUsage(models.Model):
 
     Keyed by the unique :attr:`pass_path` (the credential's routed ``pass`` entry).
     :attr:`is_exhausted` is the routing verdict; :meth:`is_fresh` gates whether the
-    cache may be trusted without a re-probe.
+    cache may be trusted without a re-probe, and :meth:`matches_credential` gates whether
+    it describes the credential currently stored at that ``pass`` entry.
     """
 
     pass_path = models.CharField(max_length=255, unique=True)
@@ -151,6 +185,7 @@ class AnthropicTokenUsage(models.Model):
     reset_7d = models.DateTimeField(null=True, blank=True)
     checked_at = models.DateTimeField(default=timezone.now)
     valid_until = models.DateTimeField()
+    token_fingerprint = models.CharField(max_length=64, blank=True, default="")
 
     objects: ClassVar[AnthropicTokenUsageManager] = AnthropicTokenUsageManager()
 
@@ -169,6 +204,14 @@ class AnthropicTokenUsage(models.Model):
     def is_fresh(self, now: dt.datetime | None = None) -> bool:
         """Whether the cached verdict is still trusted (``valid_until`` in the future)."""
         return self.valid_until > (now or timezone.now())
+
+    def matches_credential(self, fingerprint: str) -> bool:
+        """Whether this verdict was probed with the credential *fingerprint* names.
+
+        An unrecorded fingerprint never matches, so a row written before the credential was
+        tracked re-probes exactly once rather than being trusted for an unknown account.
+        """
+        return bool(self.token_fingerprint) and self.token_fingerprint == fingerprint
 
     @property
     def earliest_reset(self) -> dt.datetime | None:
