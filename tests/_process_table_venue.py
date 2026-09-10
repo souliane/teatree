@@ -16,13 +16,20 @@ from teatree.core.cleanup import process_table
 
 
 @contextmanager
-def blinded_process_table(absent: Path) -> Iterator[None]:
-    """No table this venue can read — the fail-closed case."""
+def pinned_process_table(*, venue: Path, host: Path) -> Iterator[None]:
+    """Both roots named, so which table answers is the test's choice and not the box's."""
     with (
-        patch.object(process_table, "_HOST_PROC_ROOT", absent),
-        patch.object(process_table, "_OWN_PROC_ROOT", absent),
+        patch.object(process_table, "_HOST_PROC_ROOT", host),
+        patch.object(process_table, "_OWN_PROC_ROOT", venue),
         patch.object(process_table, "_CONTAINER_MARKERS", ()),
     ):
+        yield
+
+
+@contextmanager
+def blinded_process_table(absent: Path) -> Iterator[None]:
+    """No table this venue can read — the fail-closed case."""
+    with pinned_process_table(venue=absent, host=absent):
         yield
 
 
