@@ -36,7 +36,7 @@ runner = CliRunner()
 _SURVEY = "teatree.cli.reap_orphan_groups.survey_orphan_groups"
 _SETTLE_SECONDS = 0.4
 _POLL_SECONDS = 0.05
-_WAIT_SECONDS = 5.0
+_WAIT_SECONDS = 30.0
 
 
 def _group_is_alive(pgid: int) -> bool:
@@ -51,7 +51,10 @@ def _wait_for_group_death(pgid: int, timeout: float = _WAIT_SECONDS) -> bool:
     """Whether the group is gone within *timeout*.
 
     SIGTERM is asynchronous, so a read taken the instant ``--apply`` returns races the exit it
-    asked for; the bound stays short enough that a group which never dies still fails.
+    asked for. The bound is generous because the burners saturate a core each and the runner is
+    already oversubscribed under xdist, so a signalled spinner is not rescheduled promptly; the
+    poll returns the moment the group is gone, so a healthy box pays none of it and "30s" is
+    still decisively different from "never".
     """
     deadline = time.monotonic() + timeout
     while _group_is_alive(pgid):
