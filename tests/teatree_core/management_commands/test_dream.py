@@ -9,6 +9,7 @@ engine is a typed seam.
 
 import datetime as dt
 import tempfile
+from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import ClassVar
@@ -20,7 +21,9 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
+from teatree.core.models.dream_run_marker import OUTCOME_GATES_FAILED
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import (
@@ -2025,3 +2028,78 @@ class DreamRetryBackoffTestCase(_DreamTickEnabledMixin, TestCase):
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
             assert _run_dream("run") == 0
         engine.assert_called_once()
+
+
+class KilledPassLeavesNoOutcomeTestCase(TestCase):
+    """#4725 — the pre-pass clear is the whole killed-vs-withheld distinction.
+
+    Nothing pinned it: delete the clear and the suite stayed green while a pass killed
+    inside the 48h window reported the PREVIOUS pass's refusal as its own.
+
+    A SIGKILL is uncatchable and a ``KeyboardInterrupt`` is converted to a ``130`` return
+    by the typer runner, so the kill is modelled where it actually lands: the row is read
+    AT the engine seam, which is the row a pass killed at its deadline leaves behind.
+    """
+
+    def _seed_a_refused_pass(self) -> None:
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now() - dt.timedelta(hours=1),
+            outcome=OUTCOME_GATES_FAILED,
+            failure_detail="interference FAIL (1 lost)",
+        )
+
+    @staticmethod
+    def _row_at_the_kill_point(seen: dict[str, object]):
+        def _run(**_kwargs: object) -> DreamRunResult:
+            row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+            seen["outcome"] = row.last_outcome
+            seen["detail"] = row.last_failure_detail
+            seen["attempted"] = row.last_attempted_at
+            return _ok_result()
+
+        return _run
+
+    def test_a_pass_killed_mid_flight_leaves_no_outcome(self) -> None:
+        self._seed_a_refused_pass()
+        seen: dict[str, object] = {}
+        before = timezone.now()
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._row_at_the_kill_point(seen)):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert seen["outcome"] == ""
+        assert seen["detail"] == ""
+        assert seen["attempted"] >= before
+
+    def test_the_doctor_names_the_kill_rather_than_the_previous_refusal(self) -> None:
+        # The consequence the clear exists for, end to end: what `t3 doctor check` would
+        # have said had the pass died here.
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(days=30))
+        self._seed_a_refused_pass()
+        said: dict[str, str] = {}
+
+        def _run(**_kwargs: object) -> DreamRunResult:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                _check_dream_consolidation_blocked()
+            said["out"] = buf.getvalue()
+            return _ok_result()
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_run):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert "killed before reaching a verdict" in said["out"]
+        assert "every pass is being withheld" not in said["out"]
+        assert "interference FAIL" not in said["out"]
+
+    def test_a_dry_run_never_clears_the_previous_outcome(self) -> None:
+        self._seed_a_refused_pass()
+        seen: dict[str, object] = {}
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._row_at_the_kill_point(seen)):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
+
+        assert seen["outcome"] == OUTCOME_GATES_FAILED
+        row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert row.last_outcome == OUTCOME_GATES_FAILED
+        assert "interference FAIL" in row.last_failure_detail

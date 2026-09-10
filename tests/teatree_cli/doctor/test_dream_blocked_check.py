@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
 from teatree.core.models import DreamRunMarker
-from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS
+from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, OUTCOME_FAILED, STALE_THRESHOLD_HOURS
 
 _BLOCKED_HOURS = STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1
 #: The claim itself, not the bare word — the frozen wording legitimately says "not withheld".
@@ -135,9 +135,9 @@ class DreamBlockCauseAttributionTestCase(TestCase):
         DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
 
     def test_a_recent_attempt_with_no_terminal_outcome_reads_as_killed(self) -> None:
-        # The attempt anchor is stamped BEFORE the pass (#4355), so a SIGKILLed pass still
-        # moves it. Without a terminal outcome that read as a gate refusal and sent the
-        # operator hunting a gate that never ran — the observed 10-day misdiagnosis.
+        # This anchor is stamped BEFORE the pass (#4671 — it was terminal-only before, so
+        # a kill read as FROZEN), and now a SIGKILLed pass moves it. Without a terminal
+        # outcome that would read as a refusal and send the operator hunting a gate.
         self._blocked()
         DreamRunMarker.objects.mark_attempted(timezone.now())
         out = _blocked_output()
@@ -160,4 +160,18 @@ class DreamBlockCauseAttributionTestCase(TestCase):
         DreamRunMarker.objects.mark_attempted(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
         out = _blocked_output()
         assert "FROZEN" in out
+        assert "killed before reaching a verdict" not in out
+
+    def test_a_pass_that_could_not_be_evaluated_is_not_reported_as_withheld(self) -> None:
+        # `could not evaluate` is not `refused`: a raised pass, 0 members or a broken
+        # distiller all stamp OUTCOME_FAILED, and wearing the refusal's words sends the
+        # operator hunting a gate that reached no verdict on it.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now(), outcome=OUTCOME_FAILED, failure_detail="0 transcript members replayed"
+        )
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM not in out
+        assert "could not be evaluated" in out
+        assert "0 transcript members replayed" in out
         assert "killed before reaching a verdict" not in out

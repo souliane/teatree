@@ -55,11 +55,11 @@ class DreamRunMarkerManager(models.Manager["DreamRunMarker"]):
         (which keys on success) still fires when attempts keep failing.
 
         *outcome* is the pass's TERMINAL verdict, and its ABSENCE is the load-bearing
-        signal (#4671): the attempt anchor is stamped BEFORE the pass so a SIGKILLed pass
-        still moves it (#4355), which left a killed pass indistinguishable from a gate
-        refusal — the doctor asserted "every pass is being withheld" when no verdict had
-        been reached at all. A pre-pass stamp therefore CLEARS the previous outcome, so a
-        pass that dies mid-flight leaves it blank and the killed case is nameable.
+        signal (#4671): this anchor is stamped BEFORE the pass so a SIGKILLed pass still
+        moves it — it was terminal-only until #4671, and #4355 made the LOOP's anchor
+        pre-pass, not this one. That would leave a killed pass indistinguishable from a
+        gate refusal, so the pre-pass stamp also CLEARS the previous outcome: a pass that
+        dies mid-flight leaves it blank and the killed case is nameable.
         """
         self.update_or_create(
             name=DreamRunMarker.NAME,
