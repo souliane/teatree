@@ -11,6 +11,10 @@ from inside a container reaches whatever local process happens to hold it.
 SIGTERM only, with no escalation to SIGKILL: all 37 processes of the recorded incident
 exited on TERM. A survivor is reported rather than force-killed, because a group that
 ignores TERM is doing something the operator should look at.
+
+A survivor is read from ``/proc`` rather than from ``os.killpg(pgid, 0)``, which succeeds for
+a group whose every member is a zombie — so on any host whose pid 1 does not reap (a
+container started without an init), a SUCCESSFUL reap reported itself as a survivor.
 """
 
 import os
@@ -22,6 +26,7 @@ import typer
 from teatree.core.cleanup.orphan_process_groups import (
     GroupMember,
     OrphanGroup,
+    live_group_members,
     min_age_seconds_setting,
     survey_orphan_groups,
     venue_ancestry_pgids,
@@ -44,8 +49,11 @@ _PROTECTED: tuple[tuple[str, str], ...] = (
     ("uv", "teatree"),
 )
 
-#: How long TERM is given before survivors are counted.
-_TERM_GRACE_SECONDS = 1.0
+#: Upper bound on the wait for the group to die, shared by the whole batch. Generous because
+#: only a genuine survivor pays it: a signalled group that exits ends the poll at once, and a
+#: saturated box does not reschedule a TERMed spinner promptly.
+_TERM_GRACE_SECONDS = 30.0
+_POLL_SECONDS = 0.05
 _INIT_PGID = 1
 
 
@@ -85,12 +93,18 @@ def _term(pgid: int) -> str:
     return ""
 
 
-def _survivors(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except OSError:
-        return False
-    return True
+def _exit_report(pgid: int, *, deadline: float) -> str:
+    """``""`` once the group holds no live member, else why the reap cannot be claimed."""
+    while True:
+        survivors = live_group_members(pgid)
+        if survivors is None:
+            return "could not verify: this venue's own /proc is unreadable"
+        if not survivors:
+            return ""
+        if time.monotonic() >= deadline:
+            listed = ", ".join(str(pid) for pid in survivors)
+            return f"SURVIVED SIGTERM — pids {listed} — inspect it before forcing it down"
+        time.sleep(_POLL_SECONDS)
 
 
 def reap_orphan_groups(
@@ -135,14 +149,11 @@ def _plan(groups: list[OrphanGroup], *, protected_pgids: set[int], apply_now: bo
 
 def _execute(groups: list[OrphanGroup]) -> None:
     outcomes = {group.pgid: _term(group.pgid) for group in groups}
-    if groups:
-        time.sleep(_TERM_GRACE_SECONDS)
+    deadline = time.monotonic() + _TERM_GRACE_SECONDS
     for group in groups:
-        problem = outcomes[group.pgid]
+        problem = outcomes[group.pgid] or _exit_report(group.pgid, deadline=deadline)
         if problem:
             typer.echo(f"         pgid {group.pgid}: {problem}")
-        elif _survivors(group.pgid):
-            typer.echo(f"         pgid {group.pgid}: SURVIVED SIGTERM — inspect it before forcing it down")
         else:
             typer.echo(f"         pgid {group.pgid}: reclaimed ({group.cpu_seconds / 3600:.1f} CPU-hours stopped)")
 

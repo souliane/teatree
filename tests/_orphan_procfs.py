@@ -43,11 +43,16 @@ class PlantedProcess:
     start_ticks: int = 0
     cmdline: str = "sh -c :"
     nspids: tuple[int, ...] = field(default_factory=tuple)
+    stat_unreadable: bool = False
 
     def write(self, proc_root: Path) -> Path:
         pid_dir = proc_root / str(self.pid)
         pid_dir.mkdir(parents=True, exist_ok=True)
-        (pid_dir / "stat").write_text(self._stat_line(), encoding="utf-8")
+        if self.stat_unreadable:
+            # A DIRECTORY, not a chmod: CI containers run as root, where mode 000 still reads.
+            (pid_dir / "stat").mkdir(exist_ok=True)
+        else:
+            (pid_dir / "stat").write_text(self._stat_line(), encoding="utf-8")
         (pid_dir / "cmdline").write_bytes(self.cmdline.replace(" ", "\x00").encode("utf-8") + b"\x00")
         if self.nspids:
             rendered = _TAB.join(str(value) for value in self.nspids)

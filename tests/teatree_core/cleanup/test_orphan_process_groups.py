@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.cleanup.orphan_process_groups import scan_orphan_groups, survey_orphan_groups
+from teatree.core.cleanup.orphan_process_groups import live_group_members, scan_orphan_groups, survey_orphan_groups
 from tests._orphan_procfs import PlantedProcess, plant_uptime
 from tests._process_table_venue import pinned_process_table
 
@@ -171,3 +171,57 @@ class TestSurvey:
         PlantedProcess(pid=200, pgid=199, state="R", cmdline="/opt/build/teatree/tools/sh -c :").write(root)
 
         assert _scan(root)[0].members[0].program == "sh"
+
+
+class TestAnUnreadablePidCountsAsAlive:
+    """A pid whose ``stat`` will not read is ALIVE — dropping it fails OPEN on a kill path."""
+
+    def test_an_unreadable_leader_keeps_its_group_silent(self, tmp_path: Path) -> None:
+        root = _table(tmp_path)
+        PlantedProcess(pid=199, pgid=199, stat_unreadable=True).write(root)
+        PlantedProcess(pid=200, pgid=199, state="R", cpu_ticks=_BURNING_TICKS).write(root)
+
+        assert _scan(root) == []
+
+    def test_an_unrelated_unreadable_pid_does_not_hide_a_leaderless_group(self, tmp_path: Path) -> None:
+        # The control for the silence above: without it, suppressing everything would pass.
+        root = _table(tmp_path)
+        PlantedProcess(pid=300, pgid=300, stat_unreadable=True).write(root)
+        PlantedProcess(pid=200, pgid=199, state="R", cpu_ticks=_BURNING_TICKS).write(root)
+
+        assert [group.pgid for group in _scan(root)] == [199]
+
+
+class TestLiveGroupMembers:
+    """The survivor probe: a zombie holds no slot, so it is not a survivor of the TERM."""
+
+    def _venue(self, tmp_path: Path) -> Path:
+        return _table(tmp_path / "proc")
+
+    def test_a_zombie_member_is_not_live(self, tmp_path: Path) -> None:
+        venue = self._venue(tmp_path)
+        PlantedProcess(pid=200, pgid=199, state="Z").write(venue)
+        PlantedProcess(pid=201, pgid=199, state="S").write(venue)
+
+        with pinned_process_table(venue=venue, host=tmp_path / "absent"):
+            assert live_group_members(199) == (201,)
+
+    def test_a_wholly_reaped_group_has_no_live_members(self, tmp_path: Path) -> None:
+        venue = self._venue(tmp_path)
+        PlantedProcess(pid=200, pgid=199, state="Z").write(venue)
+
+        with pinned_process_table(venue=venue, host=tmp_path / "absent"):
+            assert live_group_members(199) == ()
+
+    def test_another_groups_member_is_not_counted(self, tmp_path: Path) -> None:
+        venue = self._venue(tmp_path)
+        PlantedProcess(pid=200, pgid=198, state="R").write(venue)
+
+        with pinned_process_table(venue=venue, host=tmp_path / "absent"):
+            assert live_group_members(199) == ()
+
+    def test_an_unreadable_venue_is_reported_rather_than_answered_empty(self, tmp_path: Path) -> None:
+        absent = tmp_path / "absent"
+
+        with pinned_process_table(venue=absent, host=absent):
+            assert live_group_members(199) is None

@@ -53,6 +53,9 @@ _MIN_STAT_FIELDS = 20
 #: Floors the burn-rate divisor so a group born this instant cannot divide by zero.
 _MIN_RATE_WINDOW_SECONDS = 1.0
 _PGRP = 2
+#: A reaped-but-unwaited process. It holds no slot the kernel counts, yet ``os.killpg(pgid, 0)``
+#: still succeeds for its group — which is why a survivor is read from here and not from a signal.
+_ZOMBIE = "Z"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,8 +230,8 @@ def scan_orphan_groups(
     uptime = _read_uptime(root)
     if uptime is None:
         return []
-    stats = _collect(root, exclude_nested_namespaces=exclude_nested_namespaces)
-    live_pids = {stat.pid for stat in stats}
+    stats, opaque_pids = _collect(root, exclude_nested_namespaces=exclude_nested_namespaces)
+    live_pids = {stat.pid for stat in stats} | opaque_pids
     grouped: dict[int, list[_Stat]] = {}
     for stat in stats:
         if stat.pgid > 0 and stat.pgid not in live_pids:
@@ -240,19 +243,28 @@ def scan_orphan_groups(
     return [group for group in found if group.age_seconds >= min_age_seconds and _is_burning(group)]
 
 
-def _collect(root: Path, *, exclude_nested_namespaces: bool) -> list[_Stat]:
+def _collect(root: Path, *, exclude_nested_namespaces: bool) -> tuple[list[_Stat], set[int]]:
+    """Every readable ``stat`` under *root*, and the pids that are there but would not read.
+
+    The second set is what keeps the reader from failing OPEN: a pid behind hidepid is ALIVE,
+    and dropping it makes the group it LEADS look leaderless — on a path that sends SIGTERM.
+    """
     try:
         pid_dirs = [entry for entry in root.iterdir() if entry.name.isdigit()]
     except OSError:
-        return []
+        return [], set()
     collected: list[_Stat] = []
+    opaque: set[int] = set()
     for pid_dir in pid_dirs:
         if exclude_nested_namespaces and _is_nested_namespace(pid_dir):
             continue
         stat = _read_stat(pid_dir)
         if stat is not None:
             collected.append(stat)
-    return collected
+        elif pid_dir.exists():
+            # Asked rather than inferred from the errno: still there, so it is not a vanished pid.
+            opaque.add(int(pid_dir.name))
+    return collected, opaque
 
 
 def _is_burning(group: OrphanGroup) -> bool:
@@ -285,6 +297,19 @@ def _build_group(
         signalable=signalable,
         source=source,
     )
+
+
+def live_group_members(pgid: int) -> tuple[int, ...] | None:
+    """Members of *pgid* still holding a slot, or ``None`` when this venue cannot look.
+
+    ``None`` is not "none left": a caller that cannot read the table must say so rather than
+    report a reap it did not witness.
+    """
+    root = venue_proc_root()
+    if root is None:
+        return None
+    stats, _ = _collect(root, exclude_nested_namespaces=False)
+    return tuple(sorted(stat.pid for stat in stats if stat.pgid == pgid and stat.state != _ZOMBIE))
 
 
 def venue_ancestry_pgids() -> set[int]:
@@ -336,6 +361,7 @@ __all__ = [
     "GroupMember",
     "OrphanGroup",
     "OrphanSurvey",
+    "live_group_members",
     "min_age_seconds_setting",
     "scan_orphan_groups",
     "survey_orphan_groups",

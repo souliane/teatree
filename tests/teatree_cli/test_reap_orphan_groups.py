@@ -30,6 +30,7 @@ from teatree.cli import app
 from teatree.cli.reap_orphan_groups import refusal_for
 from teatree.core.cleanup.orphan_process_groups import GroupMember, OrphanGroup, OrphanSurvey
 from teatree.core.models import ConfigSetting
+from tests._process_table_venue import blinded_process_table
 
 runner = CliRunner()
 
@@ -37,14 +38,50 @@ _SURVEY = "teatree.cli.reap_orphan_groups.survey_orphan_groups"
 _SETTLE_SECONDS = 0.4
 _POLL_SECONDS = 0.05
 _WAIT_SECONDS = 30.0
+_STATE_FIELD = 0
+_PGRP_FIELD = 2
+
+#: Holds the planted group's members as its own children so a TERMed one stays a ZOMBIE.
+#: Without a subreaper they reparent to pid 1, which on a docker-init box reaps them and
+#: hides the very state CI produces (its pytest IS pid 1 and reaps nothing).
+_SUBREAPER_HOLDER = """
+import ctypes, os, subprocess, sys
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+    raise SystemExit("PR_SET_CHILD_SUBREAPER refused")
+leader = subprocess.Popen(sys.argv[1], shell=True, start_new_session=True)
+print(os.getpgid(leader.pid), flush=True)
+leader.wait()
+sys.stdin.read()
+while True:
+    try:
+        os.wait()
+    except ChildProcessError:
+        break
+"""
+
+
+def _member_states(pgid: int) -> list[str]:
+    """Every member of *pgid* as the kernel reports it — the oracle, read straight from /proc.
+
+    Deliberately NOT the production probe: ``os.killpg(pgid, 0)`` succeeds for an all-zombie
+    group, so a test sharing that call structurally cannot catch the bug this file pins.
+    """
+    states = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            fields = raw[raw.rindex(")") + 1 :].split()
+        except (OSError, ValueError):
+            continue
+        if len(fields) > _PGRP_FIELD and fields[_PGRP_FIELD] == str(pgid):
+            states.append(fields[_STATE_FIELD])
+    return states
 
 
 def _group_is_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except OSError:
-        return False
-    return True
+    return any(state != "Z" for state in _member_states(pgid))
 
 
 def _wait_for_group_death(pgid: int, timeout: float = _WAIT_SECONDS) -> bool:
@@ -75,27 +112,35 @@ _BURN_SH = "i=0; while [ $i -lt 90000000 ]; do i=$((i+1)); done"
 def planted_leaderless_group(*, program: str = "sh", tail: str = "") -> Iterator[int]:
     """A real group whose leader has exited and whose child is still burning CPU.
 
+    Its members are held by a subreaper rather than pid 1, so a TERMed one stays a zombie
+    on every host — CI's shape, reproduced where docker-init would otherwise hide it.
+
     *program* selects the surviving child's PROGRAM WORD, which is what the never-reap
     rules key on — ``sh`` is unprotected, a ``python`` running teatree code is not.
     """
     burner = _BURN_SH if program == "sh" else _BURN_PY
     argv0 = "sh" if program == "sh" else sys.executable
     child = f"{argv0} -c {shlex.quote(burner)}"
-    leader = subprocess.Popen(  # noqa: S602 — the shell IS the subject: it plants the group
-        f"{child} {tail} & exec sleep 0",
-        shell=True,
-        start_new_session=True,
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _SUBREAPER_HOLDER, f"{child} {tail} & exec sleep 0"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
     )
-    pgid = os.getpgid(leader.pid)
-    leader.wait()
+    assert holder.stdin is not None
+    assert holder.stdout is not None
+    pgid = int(holder.stdout.readline())
     deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline and Path("/proc", str(leader.pid)).exists():
+    while time.monotonic() < deadline and Path("/proc", str(pgid)).exists():
         time.sleep(_POLL_SECONDS)
     try:
         yield pgid
     finally:
         with contextlib.suppress(OSError):
             os.killpg(pgid, signal.SIGKILL)
+        holder.stdin.close()
+        holder.wait(timeout=_WAIT_SECONDS)
+        holder.stdout.close()
 
 
 def _reap_now(*args: str):
@@ -136,22 +181,46 @@ class TestReapsARealLeaderlessGroup(django.test.TestCase):
             result = _reap_now("--pgid", str(pgid), "--apply")
 
             assert result.exit_code == 0, result.output
+            assert "reclaimed" in result.output
+            assert "SURVIVED" not in result.output
             assert _wait_for_group_death(pgid) is True
 
     def test_a_second_apply_on_a_reaped_group_is_a_no_op(self) -> None:
         with planted_leaderless_group() as pgid:
-            assert _reap_now("--pgid", str(pgid), "--apply").exit_code == 0
+            assert "SURVIVED" not in _reap_now("--pgid", str(pgid), "--apply").output
             assert _wait_for_group_death(pgid) is True
             # Idempotence: the group is already gone, so it is simply not found again.
             assert _reap_now("--pgid", str(pgid), "--apply").exit_code == 0
 
     def test_an_unrequested_group_is_untouched_when_one_pgid_is_named(self) -> None:
         with planted_leaderless_group() as kept, planted_leaderless_group() as reaped:
-            assert _reap_now("--pgid", str(reaped), "--apply").exit_code == 0
+            reap = _reap_now("--pgid", str(reaped), "--apply")
 
+            assert "SURVIVED" not in reap.output
             assert _wait_for_group_death(reaped) is True
             time.sleep(_SETTLE_SECONDS)
             assert _group_is_alive(kept) is True
+
+    def test_a_zombie_member_is_not_reported_as_a_survivor(self) -> None:
+        with planted_leaderless_group() as pgid:
+            result = _reap_now("--pgid", str(pgid), "--apply")
+
+            # The fixture control: without a real zombie the assertion below is vacuous.
+            assert "Z" in _member_states(pgid)
+            assert "SURVIVED" not in result.output
+            assert "reclaimed" in result.output
+
+    def test_an_unverifiable_table_is_reported_rather_than_claimed_as_reclaimed(self) -> None:
+        group = _synthetic()
+        with (
+            patch(_SURVEY, return_value=OrphanSurvey(groups=(group,), gaps=())),
+            blinded_process_table(Path("/nonexistent-proc")),
+            patch("os.killpg"),
+        ):
+            result = _reap_now("--pgid", str(group.pgid), "--apply")
+
+        assert "could not verify" in result.output
+        assert "reclaimed" not in result.output
 
 
 class TestRefusesWhatItMustNotSignal(django.test.TestCase):
