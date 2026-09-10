@@ -47,6 +47,20 @@ def _group_is_alive(pgid: int) -> bool:
     return True
 
 
+def _wait_for_group_death(pgid: int, timeout: float = _WAIT_SECONDS) -> bool:
+    """Whether the group is gone within *timeout*.
+
+    SIGTERM is asynchronous, so a read taken the instant ``--apply`` returns races the exit it
+    asked for; the bound stays short enough that a group which never dies still fails.
+    """
+    deadline = time.monotonic() + timeout
+    while _group_is_alive(pgid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_POLL_SECONDS)
+    return True
+
+
 #: A bounded CPU burner: runnable (so the group is detected) and self-terminating, so a
 #: test that dies before its cleanup cannot leave the box burning a core.
 _BURN_PY = "import time" + chr(10) + "e = time.time() + 60" + chr(10) + "while time.time() < e: pass"
@@ -119,11 +133,12 @@ class TestReapsARealLeaderlessGroup(django.test.TestCase):
             result = _reap_now("--pgid", str(pgid), "--apply")
 
             assert result.exit_code == 0, result.output
-            assert _group_is_alive(pgid) is False
+            assert _wait_for_group_death(pgid) is True
 
     def test_a_second_apply_on_a_reaped_group_is_a_no_op(self) -> None:
         with planted_leaderless_group() as pgid:
             assert _reap_now("--pgid", str(pgid), "--apply").exit_code == 0
+            assert _wait_for_group_death(pgid) is True
             # Idempotence: the group is already gone, so it is simply not found again.
             assert _reap_now("--pgid", str(pgid), "--apply").exit_code == 0
 
@@ -131,7 +146,7 @@ class TestReapsARealLeaderlessGroup(django.test.TestCase):
         with planted_leaderless_group() as kept, planted_leaderless_group() as reaped:
             assert _reap_now("--pgid", str(reaped), "--apply").exit_code == 0
 
-            assert _group_is_alive(reaped) is False
+            assert _wait_for_group_death(reaped) is True
             time.sleep(_SETTLE_SECONDS)
             assert _group_is_alive(kept) is True
 
