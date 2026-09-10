@@ -172,8 +172,10 @@ class DeferredQuestion(models.Model):
     )
     applied_at = models.DateTimeField(null=True, blank=True)
     # #4178 age-backstop stamps. An escalation records that a row has sat past the
-    # ceiling WITHOUT resolving it — the row stays pending, so directive #45's "an
-    # unresolved request is never silently dropped" holds.
+    # ceiling WITHOUT resolving it — the row stays pending. #4706 bounds that ladder:
+    # past deferred_question_max_escalations the sweep drains the row stale with an
+    # audited reason, so directive #45's "never silently dropped" holds as "never
+    # dropped unaudited, and never before the owner was asked N times".
     escalated_at = models.DateTimeField(null=True, blank=True)
     escalation_count = models.PositiveIntegerField(default=0)
 
@@ -297,6 +299,28 @@ class DeferredQuestion(models.Model):
             audience=cls.Audience.OWNER_QUESTION,
         ).order_by("created_at")
 
+    @classmethod
+    def supersedable(
+        cls,
+        *,
+        session_id: str,
+        run_id: str,
+        audience: str = Audience.OWNER_QUESTION,
+    ) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows a newer question of the same (session, run) may stale-mark, oldest first.
+
+        Three exclusions, each one a way the owner silently loses a question (#4721). A
+        DELIVERED row (``slack_ts != ""``) may already have the owner's Slack reply in
+        flight, and dismissing it strands that reply on a row nothing can bind it to. An
+        ``INTERNAL`` row is the box's own health queue, which ``task_repair`` records under
+        a session id of its own. And an unnameable scope matches NOTHING rather than
+        widening: a supersession that cannot say which run it belongs to would otherwise
+        sweep every pending row in the session.
+        """
+        if not session_id or not run_id:
+            return cls.objects.none()
+        return cls.pending().filter(session_id=session_id, run_id=run_id, audience=audience, slack_ts="")
+
     def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:
         """Stamp the Slack mirror coordinates single-use; ``True`` on the transition.
 
@@ -385,12 +409,14 @@ class DeferredQuestion(models.Model):
         candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
         return candidates[0] if len(candidates) == 1 else None
 
-    def mark_stale(self, reason: str) -> None:
+    def mark_stale(self, reason: str, *, resolver_id: str = "") -> None:
         """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.
 
         Used at capture-time supersession (a newer-generation question
         arrived) and as the terminal state for a reply that found no live
-        row. A no-op on an already-resolved row.
+        row. A no-op on an already-resolved row. *resolver_id* names the
+        automated resolver that decided it, so a sweep-driven dismissal is
+        distinguishable from a human one in the audit trail.
         """
         with transaction.atomic():
             row = (
@@ -409,6 +435,7 @@ class DeferredQuestion(models.Model):
                 question=row,
                 action="dismissed",
                 dismissed_reason=reason,
+                resolver_id=resolver_id,
             )
             self.dismissed_at = row.dismissed_at
             self.dismissed_reason = row.dismissed_reason

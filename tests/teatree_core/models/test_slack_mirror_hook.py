@@ -290,27 +290,78 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         # #3642: the interactive arm records the question too, so Slack can answer it.
         assert DeferredQuestion.objects.count() == 1
 
-    def test_supersession_marks_prior_generation_stale(self) -> None:
-        self._pin_state_dir()
+    def _ask(self, question: str, *, delivered_ts: str, **extra: str) -> None:
+        """Drive one loop-driven ask whose Slack mirror lands at *delivered_ts* (``""`` = undelivered)."""
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
-            patch.object(router, "_perform_slack_post", side_effect=["1700.0001", "1700.0005"]),
+            patch.object(router, "_perform_slack_post", return_value=delivered_ts),
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
             patch.object(router, "_read_dm_channel_cache", return_value="D-cached"),
         ):
-            router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
-            self.drain_stdout()
-            # A byte-identical re-ask is a harness RETRY (#4202) and binds to the live row,
-            # so supersession is only reachable from a genuinely different question.
-            router.handle_mirror_question_to_slack(self._payload("Merge it?", session_id="s-loop", run_id="r1"))
+            router.handle_mirror_question_to_slack(self._payload(question, **extra))
         self.drain_stdout()
+
+    def test_supersession_marks_prior_generation_stale(self) -> None:
+        """The control: an UNDELIVERED same-run row is still swept, so #4721 did not disable the feature."""
+        self._pin_state_dir()
+        # A byte-identical re-ask is a harness RETRY (#4202) and binds to the live row,
+        # so supersession is only reachable from a genuinely different question.
+        self._ask("Ship it?", delivered_ts="", session_id="s-loop", run_id="r1")
+        self._ask("Merge it?", delivered_ts="1700.0005", session_id="s-loop", run_id="r1")
+
         rows = list(DeferredQuestion.objects.order_by("generation"))
         assert len(rows) == 2
         assert rows[0].resolved_via == "stale"
         assert rows[0].is_pending is False
         assert rows[1].generation == 2
         assert rows[1].is_pending is True
+
+    def test_a_delivered_row_is_never_superseded(self) -> None:
+        """Its Slack thread may already carry the owner's reply (#4721)."""
+        self._pin_state_dir()
+        self._ask("Ship it?", delivered_ts="1700.0001", session_id="s-loop", run_id="r1")
+        self._ask("Merge it?", delivered_ts="1700.0005", session_id="s-loop", run_id="r1")
+
+        rows = list(DeferredQuestion.objects.order_by("generation"))
+        assert len(rows) == 2
+        assert rows[0].slack_ts == "1700.0001"
+        assert rows[0].is_pending is True, "a mirrored row awaiting a Slack reply was mass-dismissed"
+        assert rows[1].is_pending is True
+
+    def test_a_run_id_less_payload_supersedes_nothing(self) -> None:
+        """``_run_id`` degrading to the session id widened the sweep to the whole session (#4721)."""
+        self._pin_state_dir()
+        self._ask("Ship it?", delivered_ts="", session_id="s-loop")
+        self._ask("Merge it?", delivered_ts="", session_id="s-loop")
+
+        rows = list(DeferredQuestion.objects.order_by("pk"))
+        assert len(rows) == 2
+        assert [row.run_id for row in rows] == ["", ""]
+        assert rows[0].is_pending is True, "a supersession that cannot name its run swept the session"
+
+    def test_an_internal_row_in_the_same_run_is_never_superseded(self) -> None:
+        """The box's own health queue is not the owner's, even sharing a (session, run)."""
+        self._pin_state_dir()
+        internal = DeferredQuestion.record(
+            "repair-loop stalled",
+            session_id="s-loop",
+            run_id="r1",
+            audience=DeferredQuestion.Audience.INTERNAL,
+        )
+        self._ask("Ship it?", delivered_ts="", session_id="s-loop", run_id="r1")
+
+        internal.refresh_from_db()
+        assert internal.is_pending is True
+
+    def test_another_sessions_row_is_never_superseded(self) -> None:
+        """Pins the scope as per-session — the guard no test held before #4721."""
+        self._pin_state_dir()
+        foreign = DeferredQuestion.record("other session", session_id="s-other", run_id="r1")
+        self._ask("Ship it?", delivered_ts="", session_id="s-loop", run_id="r1")
+
+        foreign.refresh_from_db()
+        assert foreign.is_pending is True
 
     def test_teatree_unavailable_fails_open_no_deny(self) -> None:
         with (
