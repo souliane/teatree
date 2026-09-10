@@ -225,7 +225,15 @@ depends_on = [
   # The merged operating-mode resolver (teatree.core.mode_resolution, #61) reuses
   # the preset override/schedule resolver — a domain leaf depending only on
   # core.models, mirroring the loop_cadences edge above.
-  "teatree.loop.preset_resolution"
+  "teatree.loop.preset_resolution",
+  # Split out of teatree.core so the enable verdict below can read the mode mask
+  # without core and the verdict forming a cycle.
+  "teatree.core.mode_resolution",
+  # The ONE enable verdict (#4196) is domain policy over domain rows — Loop.enabled,
+  # LoopState, the mask — so the health chip gates on the same answer the tick does
+  # (#4726) rather than growing a second variant. Its siblings in teatree.loops stay
+  # orchestration and remain unreachable from here.
+  "teatree.loops.enable_verdict"
 ]
 
 [[modules]]
@@ -766,6 +774,16 @@ depends_on = ["teatree.core.models", "teatree.loop.preset_resolution"]
 path = "teatree.loop.preset_resolution"
 layer = "domain"
 depends_on = ["teatree.core.models"]
+
+[[modules]]
+path = "teatree.core.mode_resolution"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.live_presence", "teatree.loop.preset_resolution"]
+
+[[modules]]
+path = "teatree.loops.enable_verdict"
+layer = "domain"
+depends_on = ["teatree.core.mode_resolution", "teatree.core.models", "teatree.loop.loop_state_db"]
 
 [[modules]]
 path = "teatree.loop.scanners"
