@@ -74,13 +74,13 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
 from django.db import transaction
 
+from teatree.loops.dream.citation_snap import snap_citation
 from teatree.loops.dream.replay import ConsolidationExtract, build_extract, enumerate_members
 
 if TYPE_CHECKING:
@@ -240,11 +240,13 @@ def write_clusters(
 
     A cluster is rejected (counted, LOGGED at WARNING, never written) when its
     ``source_files`` is empty, cites a path not present in *extract*, or its
-    ``verified_citation`` is blank or does not appear (whitespace-normalized
-    substring) in a cited snippet's text — these are the hallucinated-rule shapes the
-    ledger must never persist, including a real-path-but-invented-quote citation.
-    :func:`check_grounding` names WHICH of the four failed, and the WARNING carries
-    that reason, so an ungrounded distiller batch is surfaced, not swallowed. A valid
+    ``verified_citation`` is blank, or does not appear (whitespace-normalized substring)
+    in a cited snippet's text AND cannot be snapped to a window whose token delta is
+    limited to articles and connectives (:func:`_snap_citation`) — a near-miss that adds,
+    drops or changes a meaning-bearing word is rejected as a composed quote. These are the
+    hallucinated-rule shapes the ledger must never persist, including a
+    real-path-but-invented-quote citation. :func:`check_grounding` names WHICH failed, and
+    the WARNING carries that reason, so an ungrounded distiller batch is surfaced. A valid
     cluster is upserted by ``cluster_key`` through the manager factory, so a
     re-run that re-clusters the same members updates the row in place instead of
     duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
@@ -286,8 +288,10 @@ def write_clusters(
 #: substring test. A decoded transcript may carry a smart quote / em-dash where the
 #: model's citation used the straight form (or the reverse), so both operands are
 #: folded SYMMETRICALLY (:func:`normalize_ws` runs on the snippet index AND on the
-#: citation). This stays a strict substring test — a canonical form on both sides,
-#: never a fuzzy / token-overlap match — so an invented citation is still rejected.
+#: citation). The fold canonicalises both sides of that substring test AND of the
+#: :func:`_snap_citation` fallback, where a citation the substring test misses is
+#: admitted only when its token delta against the located window is empty or limited to
+#: articles and light connectives — so an invented or composed citation is still rejected.
 _PUNCT_FOLD = str.maketrans(
     {
         "\u2018": "'",  # left single quotation mark
@@ -327,8 +331,10 @@ class GroundingVerdict:
 def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str]) -> GroundingVerdict:
     """Canonicalise *cluster*'s cited paths, then say WHY it is not grounded.
 
-    The four causes are reported apart because only the last is a citation problem;
-    one shared message sent every investigation to the citation (#4610).
+    The causes are reported apart because only the citation ones are a citation problem;
+    one shared message sent every investigation to the citation (#4610). The last two are
+    apart from each other too: a quote that located a real window and then changed a word
+    is a composed quote, and saying "not present" of it hides the word that was changed.
     """
     sources = [_resolve_cited_path(str(path), snippet_texts) for path in cluster.source_files if str(path).strip()]
     resolved = replace(cluster, source_files=sources)
@@ -337,82 +343,27 @@ def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str])
     uncited = [source for source in sources if source not in snippet_texts]
     if uncited:
         return GroundingVerdict(resolved, f"its cited path {uncited[0]!r} is not among the extract's snippets")
-    citation = normalize_ws(cluster.verified_citation)
+    return _check_citation(resolved, [snippet_texts[source] for source in sources])
+
+
+def _check_citation(resolved: DistilledCluster, snippets: Sequence[str]) -> GroundingVerdict:
+    """The citation half of :func:`check_grounding`: found, snapped, composed, or absent."""
+    citation = normalize_ws(resolved.verified_citation)
     if not citation:
         return GroundingVerdict(resolved, "its verified_citation is empty")
-    if any(citation in snippet_texts[source] for source in sources):
+    if any(citation in snippet for snippet in snippets):
         return GroundingVerdict(resolved, None)
-    snapped = _snap_citation(citation, [snippet_texts[source] for source in sources])
-    if snapped is not None:
-        return GroundingVerdict(replace(resolved, verified_citation=snapped), None)
+    snap = snap_citation(citation, snippets)
+    if snap.window is not None:
+        return GroundingVerdict(replace(resolved, verified_citation=snap.window), None)
+    if snap.composed:
+        return GroundingVerdict(
+            resolved,
+            f"its verified_citation nearly quotes a cited snippet but differs from it by "
+            f"{', '.join(snap.composed)} — a near-miss that changes a word is a composed quote, "
+            f"not a paraphrase",
+        )
     return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
-
-
-#: How close a citation must be to a real snippet window before it is snapped to it. High
-#: on purpose: the snap exists to rescue a dropped article or a re-punctuated clause, never
-#: to admit a quote the model composed.
-_SNAP_MIN_RATIO = 0.90
-#: Below this many characters a citation cannot identify one window rather than another, so
-#: a short generic fragment is rejected instead of snapped to an arbitrary match.
-_SNAP_MIN_CITATION_CHARS = 40
-#: Where alignment anchors are taken from within the citation. A near-miss diverges from
-#: the snippet somewhere, so anchoring at several offsets keeps one damaged region from
-#: hiding an otherwise exact quote.
-_SNAP_ANCHOR_OFFSETS = (0.0, 0.25, 0.5, 0.75)
-#: An anchor shorter than this matches too many places to locate a window.
-_SNAP_ANCHOR_CHARS = 24
-
-
-def _snap_citation(citation: str, snippets: Sequence[str]) -> str | None:
-    """The snippet's OWN text for the window *citation* nearly quotes, else ``None``.
-
-    The distiller reproduces a quote from memory and drops an article or re-punctuates a
-    clause, so a genuinely grounded rule is lost to a paraphrase — nine in one observed
-    pass (#4671). Rather than loosen the grounding test, the citation is re-EXTRACTED: an
-    anchor locates the window and the SNIPPET's bytes are returned, so what the ledger
-    records is verbatim by construction and the model's wording is never persisted.
-
-    Alignment is anchored rather than searched: scoring every window of a long snippet is
-    quadratic, and the tail this runs in has no time to spare.
-    """
-    if len(citation) < _SNAP_MIN_CITATION_CHARS:
-        return None
-    best: str | None = None
-    best_ratio = _SNAP_MIN_RATIO
-    for snippet in snippets:
-        for start in _anchored_windows(citation, snippet):
-            window = _window_at(snippet, start, len(citation))
-            ratio = SequenceMatcher(None, window, citation).ratio()
-            if ratio > best_ratio:
-                best, best_ratio = window, ratio
-    return best
-
-
-def _window_at(snippet: str, start: int, length: int) -> str:
-    """The *length*-ish slice of *snippet* at *start*, widened out to whole words.
-
-    A near-miss is shorter or longer than the text it quotes, so the anchor-derived offset
-    lands a few characters inside a word. Recording a citation that begins mid-token is
-    still verbatim but reads as damaged, so both ends move out to the nearest boundary.
-    """
-    left = snippet.rfind(" ", 0, start + 1) + 1 if start > 0 else 0
-    right = snippet.find(" ", left + length)
-    return snippet[left:] if right == -1 else snippet[left:right]
-
-
-def _anchored_windows(citation: str, snippet: str) -> set[int]:
-    """Candidate start offsets in *snippet* where *citation* may align."""
-    starts: set[int] = set()
-    for fraction in _SNAP_ANCHOR_OFFSETS:
-        offset = int(len(citation) * fraction)
-        anchor = citation[offset : offset + _SNAP_ANCHOR_CHARS]
-        if len(anchor) < _SNAP_ANCHOR_CHARS:
-            continue
-        found = snippet.find(anchor)
-        while found != -1:
-            starts.add(max(0, found - offset))
-            found = snippet.find(anchor, found + 1)
-    return starts
 
 
 def _resolve_cited_path(source: str, snippet_texts: Mapping[str, str]) -> str:
