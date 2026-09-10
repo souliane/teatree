@@ -223,6 +223,15 @@ class TestFailsClosed(_TeardownHarness):
         self.assert_nothing_reclaimed()
 
 
+class TestAbsentPr(_TeardownHarness):
+    def test_a_recorded_row_whose_pr_does_not_exist_does_not_block(self) -> None:
+        """#4739: ABSENT is definite evidence the PR is not open, so it is no blocker."""
+        PullRequest.objects.create(ticket=self.ticket, overlay="test", url=_MR_URL, repo="acme-org/backend", iid="7853")
+        with self._forge_cli(), self._forge_api(PrOpenState.ABSENT):
+            self._teardown()
+        self.assert_all_reclaimed()
+
+
 class TestOverride(_TeardownHarness):
     def test_allow_open_prs_reclaims_despite_an_open_mr(self) -> None:
         with self._forge_cli(open_branches={_OPEN_BRANCH}):

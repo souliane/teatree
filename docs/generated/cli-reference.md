@@ -11746,14 +11746,23 @@ Usage: t3 teatree ticket list-clears [OPTIONS]
  supported way to even enumerate them. This is that enumeration: unnarrowed,
  oldest first, standing named per row.
 
- Read-only. Nothing here consumes, voids or repairs a row; ``reconcile-clears``
- remains the only surface that spends one.
+ ``--probe`` additionally asks the forge about each LIVE row and
+ tags the ones whose PR does not exist ``phantom``, so a row nothing
+ can ever settle is visibly distinct from a genuine authorisation.
+ It costs one forge call per row, so it is opt-in and capped;
+ without it this read stays free and reaches no network.
+
+ Read-only either way. Nothing here consumes, voids or repairs a
+ row; ``reconcile-clears`` remains the only surface that spends one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Scope to one overlay's repos; empty reads the whole   │
-│                        ledger.                                               │
-│ --json                 Emit the rows as JSON.                                │
-│ --help                 Show this message and exit.                           │
+│ --overlay                  TEXT  Scope to one overlay's repos; empty reads   │
+│                                  the whole ledger.                           │
+│ --probe      --no-probe          Ask the forge which live rows point at a PR │
+│                                  that does not exist.                        │
+│                                  [default: no-probe]                         │
+│ --json                           Emit the rows as JSON.                      │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11773,6 +11782,10 @@ Usage: t3 teatree ticket reconcile-clears [OPTIONS]
  left
  exactly as it was. No ``MergeAudit`` is written — that would claim keystone
  provenance for a merge the keystone did not execute.
+
+ A row whose PR the forge says does not exist is DISPOSED of instead, with the
+ reason recorded — it can never acquire the evidence a settlement needs, so
+ refusing it forever is what left two phantom authorisations standing (#4739).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      Show what would be consumed without           │

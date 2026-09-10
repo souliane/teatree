@@ -115,6 +115,9 @@ def audit_github_pr(url: str) -> ReviewRunResult:
         if open_state is PrOpenState.UNKNOWN:
             msg = f"could not read the live state of {repo}#{pr_iid} — token missing or PR inaccessible"
             raise _ReviewRunAPIError(msg)
+        if open_state is PrOpenState.ABSENT:
+            msg = f"{repo}#{pr_iid} does not exist on the forge — there is nothing to audit"
+            raise _ReviewRunAPIError(msg)
         diff = diff_stats_from_files(host.get_pr_diff(repo=repo, pr_iid=pr_iid))
         approvals = host.get_mr_approvals(repo=repo, pr_iid=pr_iid)
         state = review_state_from_reviews(

@@ -6,11 +6,13 @@ still merge, so the assertion that carries the weight is the contrast: a row
 """
 
 from typing import cast
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.merge_backlog import ClearStanding, OutstandingClear
 from teatree.core.models import MergeClear
 
@@ -64,3 +66,54 @@ class ListClearsCommandTests(TestCase):
         clear.refresh_from_db()
         assert clear.consumed_at is None
         assert MergeClear.objects.filter(consumed_at__isnull=True).count() == 1
+
+
+class ProbePhantomTests(TestCase):
+    """``--probe`` asks the forge which live rows point at a PR that does not exist (#4739).
+
+    Off by default: the unnarrowed read stays free, and a phantom is only distinguishable
+    from a genuine standing authorisation by a forge call somebody has to pay for.
+    """
+
+    _READER = "teatree.backends.loader.pr_open_state"
+
+    @staticmethod
+    def _reads(state: str) -> object:
+        def read(pr_url: str) -> str:
+            return state
+
+        return read
+
+    def test_probe_retags_a_live_row_whose_pr_is_absent(self) -> None:
+        clear = _mis_issued(pr_id=4242)
+
+        with patch(self._READER, self._reads(PrOpenState.ABSENT)):
+            rows = _list_clears("--probe")
+
+        assert [(row.pk, row.standing) for row in rows] == [(clear.pk, ClearStanding.PHANTOM)]
+
+    def test_an_unreadable_probe_leaves_the_row_live(self) -> None:
+        clear = _mis_issued(pr_id=4242)
+
+        with patch(self._READER, self._reads(PrOpenState.UNKNOWN)):
+            rows = _list_clears("--probe")
+
+        assert [(row.pk, row.standing) for row in rows] == [(clear.pk, ClearStanding.LIVE)]
+
+    def test_without_probe_no_forge_call_is_made(self) -> None:
+        _mis_issued(pr_id=4242)
+
+        with patch(self._READER) as reader:
+            rows = _list_clears()
+
+        reader.assert_not_called()
+        assert [row.standing for row in rows] == [ClearStanding.LIVE]
+
+    def test_probe_never_mutates_the_ledger(self) -> None:
+        clear = _mis_issued(pr_id=4242)
+
+        with patch(self._READER, self._reads(PrOpenState.ABSENT)):
+            _list_clears("--probe")
+
+        clear.refresh_from_db()
+        assert clear.consumed_at is None

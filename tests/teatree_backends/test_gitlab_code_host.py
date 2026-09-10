@@ -8,7 +8,7 @@ from teatree.backends.gitlab.discussions import (
     _note_author,
     thread_opened_solely_by,
 )
-from teatree.core.backend_protocols import BackendResolutionError, DraftState, PullRequestSpec
+from teatree.core.backend_protocols import BackendResolutionError, DraftState, PrOpenState, PullRequestSpec
 
 
 def _project() -> ProjectInfo:
@@ -1712,3 +1712,38 @@ class TestCreatePrSetsReviewersAtomically:
             host.create_pr(self._spec(["alice", "bob"]))
 
         assert caplog.records == []
+
+
+# --- #4739 ABSENT: an MR 404 whose project resolves ---------------------------
+
+
+def _mr_404() -> httpx.HTTPStatusError:
+    response = _response(404)
+    return httpx.HTTPStatusError("404", request=response.request, response=response)
+
+
+def test_get_pr_open_state_mr_404_with_a_resolved_project_is_absent() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.side_effect = _mr_404()
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.ABSENT
+
+
+def test_get_pr_open_state_unresolvable_project_stays_unknown() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+def test_get_pr_open_state_non_404_status_error_is_unknown() -> None:
+    response = _response(500)
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.side_effect = httpx.HTTPStatusError("500", request=response.request, response=response)
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN

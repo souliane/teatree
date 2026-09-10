@@ -245,8 +245,16 @@ def _review_threads_page(
     return nodes, end_cursor
 
 
+def _repo_reads_back(owner: str, repo: str, *, token: str) -> bool:
+    """Whether ``repos/{owner}/{repo}`` itself resolves for this token (#4739)."""
+    try:
+        return isinstance(_gh_api_get(f"repos/{owner}/{repo}", token=token), dict)
+    except Exception:  # noqa: BLE001 — an unreadable repo is no evidence, so no ABSENT verdict.
+        return False
+
+
 def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:
-    """Return whether the PR at *pr_url* is genuinely open/merged/closed (#1074).
+    """Return whether the PR at *pr_url* is genuinely open/merged/closed/absent (#1074).
 
     Fetches the PR's real ``state``/``merged`` fields. ``state=="open"``
     → OPEN, ``merged is True`` → MERGED, ``state=="closed"`` without
@@ -254,6 +262,11 @@ def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:
     unparsable URL, or non-dict / unrecognised payload → ``UNKNOWN`` so
     the orphan sweep fails open (never reaps on doubt). GitLab's
     implementation maps the same ambiguity to ``UNKNOWN`` identically.
+
+    A 404 on the PR whose REPO still reads back is ``ABSENT`` (#4739) — a
+    permanent "no such PR", distinct from the transient failures above. The
+    repo probe is load-bearing: GitHub answers 404 for a repo the token cannot
+    see, so the PR 404 alone would convict every private repo of having no PRs.
     """
     match = PR_URL_RE.match(urlparse(pr_url).path)
     if match is None:
@@ -263,6 +276,10 @@ def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:
             f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}",
             token=token,
         )
+    except CommandFailedError as exc:
+        if is_not_found(exc) and _repo_reads_back(match["owner"], match["repo"], token=token):
+            return PrOpenState.ABSENT
+        return PrOpenState.UNKNOWN
     except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
         return PrOpenState.UNKNOWN
     return pr_open_state_from_payload(pr)

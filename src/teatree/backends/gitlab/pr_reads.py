@@ -10,8 +10,18 @@ An unresolvable project degrades to an empty list (list reads) or a structured
 
 from urllib.parse import quote_plus
 
+import httpx
+
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.core.backend_protocols import PrOpenState
 from teatree.types import RawAPIDict
+
+_MR_STATE_MAP: dict[str, PrOpenState] = {
+    "opened": PrOpenState.OPEN,
+    "merged": PrOpenState.MERGED,
+    "closed": PrOpenState.CLOSED,
+    "locked": PrOpenState.CLOSED,
+}
 
 
 class ProjectUnresolvedError(RuntimeError):
@@ -83,3 +93,27 @@ def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:
         "short_name": project.short_name,
         "default_branch": project.default_branch,
     }
+
+
+def project_pr_open_state(client: GitLabAPI, *, path: str, iid: str) -> PrOpenState:
+    """The MR's genuine open/merged/closed/absent state, ``UNKNOWN`` on any doubt (#1074).
+
+    A 404 on the MR of a project that DID resolve is ``ABSENT`` — the iid names no MR
+    that ever existed (#4739). An unresolvable project is ``UNKNOWN``, not ABSENT: it is
+    the same read failure a bad token produces, and it proves nothing about the iid.
+    """
+    try:
+        project = client.resolve_project(path)
+        if project is None:
+            return PrOpenState.UNKNOWN
+        mr = client.get_json(f"projects/{project.project_id}/merge_requests/{iid}")
+    except httpx.HTTPStatusError as exc:
+        return PrOpenState.ABSENT if exc.response.status_code == httpx.codes.NOT_FOUND else PrOpenState.UNKNOWN
+    except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
+        return PrOpenState.UNKNOWN
+    if not isinstance(mr, dict):
+        return PrOpenState.UNKNOWN
+    state = mr.get("state")
+    if not isinstance(state, str):
+        return PrOpenState.UNKNOWN
+    return _MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)

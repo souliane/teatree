@@ -44,6 +44,10 @@ class ClassifyTests(django.test.TestCase):
     def test_an_open_pr_is_a_stall(self) -> None:
         assert classify(self._clear(), read=_reads(PrOpenState.OPEN)) is ClearLiveness.STALLED
 
+    def test_an_absent_pr_is_a_phantom(self) -> None:
+        # #4739: the forge says this PR never existed, so no evidence can ever arrive.
+        assert classify(self._clear(), read=_reads(PrOpenState.ABSENT)) is ClearLiveness.PHANTOM
+
     def test_a_closed_pr_is_abandoned_not_a_stall(self) -> None:
         assert classify(self._clear(), read=_reads(PrOpenState.CLOSED)) is ClearLiveness.ABANDONED
 

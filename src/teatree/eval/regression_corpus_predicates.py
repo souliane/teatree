@@ -32,8 +32,6 @@ from teatree.eval.regression_corpus_fixtures import (
 from teatree.eval.regression_corpus_fixtures import git as _git
 
 if TYPE_CHECKING:
-    from django.db.models import Model
-
     from teatree.core.backend_protocols import MessagingBackend
 
 _SHA_A = "a" * 40
@@ -41,12 +39,22 @@ _SHA_B = "b" * 40
 
 
 @contextmanager
-def _ephemeral_row(row: "Model") -> Iterator[None]:
-    """Delete *row* on exit — the corpus runs against the LIVE control DB, not a test DB."""
-    try:
-        yield
-    finally:
-        row.delete()
+def _rolled_back() -> Iterator[None]:
+    """Doom every write in the block — the corpus runs against the LIVE control DB (#4739).
+
+    Delete-on-exit leaked two merge authorisations that stood ``live`` for five weeks: the
+    row is COMMITTED before the delete, so a process killed in that window leaves it behind.
+    Rollback has no such window — nothing the block writes is ever visible to another process.
+    """
+    from django.db import transaction  # noqa: PLC0415 — deferred: this module loads before Django is configured
+
+    with transaction.atomic():
+        try:
+            yield
+        finally:
+            # Set on the way OUT: Django refuses further queries once the flag is on, so
+            # dooming it up front would break the very writes the block exists to make.
+            transaction.set_rollback(True)
 
 
 def _seed_config_db(db: Path, key: str, value: object) -> None:
@@ -165,31 +173,31 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
 
     slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
     overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
-    clear = MergeClear.issue(
-        ClearRequest(
-            pr_id=pr_id,
-            slug=slug,
-            reviewed_sha=_SHA_A,
-            reviewer_identity=reviewer,
-            gh_verify_result="green",
-            blast_class="substrate",
-            human_authorizer="the-user",
-            executing_loop_identity=executor,
-        )
-    )
-
-    with _ephemeral_row(clear), _staged_overlay_autonomy(overlay_name, autonomy):
-        try:
-            _assert_clear_authorized(
-                clear=clear,
-                executing_loop_identity=executor,
-                slug=slug,
+    with _rolled_back():
+        clear = MergeClear.issue(
+            ClearRequest(
                 pr_id=pr_id,
+                slug=slug,
+                reviewed_sha=_SHA_A,
+                reviewer_identity=reviewer,
+                gh_verify_result="green",
+                blast_class="substrate",
+                human_authorizer="the-user",
+                executing_loop_identity=executor,
             )
-        except MergePreconditionError:
-            cleared_without_human = False
-        else:
-            cleared_without_human = True
+        )
+        with _staged_overlay_autonomy(overlay_name, autonomy):
+            try:
+                _assert_clear_authorized(
+                    clear=clear,
+                    executing_loop_identity=executor,
+                    slug=slug,
+                    pr_id=pr_id,
+                )
+            except MergePreconditionError:
+                cleared_without_human = False
+            else:
+                cleared_without_human = True
 
     return cleared_without_human is expect_cleared_without_human
 
@@ -205,15 +213,15 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
     from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     slug, pr_id, identity = "souliane/teatree", 4343, "loop-session"
-    clear = MergeClear.objects.create(
-        pr_id=pr_id,
-        slug=slug,
-        reviewed_sha=_SHA_B,
-        reviewer_identity=identity,
-        gh_verify_result=MergeClear.VerifyResult.GREEN,
-        blast_class=MergeClear.BlastClass.LOGIC,
-    )
-    with _ephemeral_row(clear):
+    with _rolled_back():
+        clear = MergeClear.objects.create(
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=_SHA_B,
+            reviewer_identity=identity,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
         try:
             _assert_clear_authorized(
                 clear=clear,
@@ -248,24 +256,20 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
 
     name = "regression-lease"
     foreign_alive_pid = os.getppid()
-    LoopLease.objects.filter(name=name).delete()
-    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800)
-    # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
-    LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
-    won_against_alive, _ = LoopLease.objects.claim_ownership(
-        name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
-    )
+    with _rolled_back():
+        LoopLease.objects.filter(name=name).delete()
+        claim = LoopLease.objects.claim_ownership
+        claim(name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800)
+        # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
+        LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
+        won_against_alive, _ = claim(name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800)
 
-    dead_pid = unused_pid()
-    LoopLease.objects.filter(name=name).update(
-        session_id="dead-owner",
-        owner_pid=dead_pid,
-        lease_expires_at=timezone.now() - timedelta(seconds=10),
-    )
-    won_against_dead, _ = LoopLease.objects.claim_ownership(
-        name, session_id="successor-session", owner_pid=os.getpid(), ttl_seconds=1800
-    )
-    LoopLease.objects.filter(name=name).delete()
+        LoopLease.objects.filter(name=name).update(
+            session_id="dead-owner",
+            owner_pid=unused_pid(),
+            lease_expires_at=timezone.now() - timedelta(seconds=10),
+        )
+        won_against_dead, _ = claim(name, session_id="successor-session", owner_pid=os.getpid(), ttl_seconds=1800)
     return won_against_alive is False and won_against_dead is True
 
 
@@ -414,10 +418,10 @@ def _check_ship_branch_reconcile_renamed() -> bool:
     from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415 — deferred: loaded per eval run
 
     issue_url = "https://github.com/souliane/teatree/issues/999999042"
-    Ticket.objects.filter(issue_url=issue_url).delete()
-    ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
-    prefix = f"{ticket.ticket_number}-"
-    try:
+    with _rolled_back():
+        Ticket.objects.filter(issue_url=issue_url).delete()
+        ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
+        prefix = f"{ticket.ticket_number}-"
         with tempfile.TemporaryDirectory() as raw:
             work = Path(raw)
             repo = seed_repo_on_branch(work, f"{prefix}ticket")
@@ -439,8 +443,6 @@ def _check_ship_branch_reconcile_renamed() -> bool:
             worktree.save(update_fields=["branch"])
             with without_git_overrides():
                 fell_back = resolve_and_reconcile_branch(ticket, worktree, str(repo))
-    finally:
-        ticket.delete()
 
     return adopted == f"{prefix}fix-foo" and reconciled_on_row == f"{prefix}fix-foo" and fell_back == f"{prefix}fix-foo"
 

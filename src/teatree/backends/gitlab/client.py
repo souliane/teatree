@@ -32,14 +32,6 @@ _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
 
 
-_GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
-    "opened": PrOpenState.OPEN,
-    "merged": PrOpenState.MERGED,
-    "closed": PrOpenState.CLOSED,
-    "locked": PrOpenState.CLOSED,
-}
-
-
 class _GitLabUser(TypedDict, total=False):
     """Subset of the GitLab user payload that teatree reads."""
 
@@ -338,30 +330,11 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return ReviewState.NONE
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
-        """Return whether the MR at *pr_url* is genuinely open/merged/closed (#1074).
-
-        Fetches the MR's real ``state`` field. ``opened`` → OPEN, ``merged``
-        → MERGED, ``closed``/``locked`` → CLOSED. Any exception, unresolvable
-        project, unparsable URL, or non-dict / unrecognised payload →
-        ``UNKNOWN`` so the orphan sweep fails open (never reaps on doubt).
-        GitHub's implementation maps the same ambiguity to ``UNKNOWN``.
-        """
+        """Return whether the MR at *pr_url* is genuinely open/merged/closed/absent (#1074)."""
         match = _MR_URL_RE.match(urlparse(pr_url).path)
         if match is None:
             return PrOpenState.UNKNOWN
-        try:
-            project = self._client.resolve_project(match["path"])
-            if project is None:
-                return PrOpenState.UNKNOWN
-            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
-        except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
-            return PrOpenState.UNKNOWN
-        if not isinstance(mr, dict):
-            return PrOpenState.UNKNOWN
-        state = cast("_GitLabMergeRequestSummary", mr).get("state")
-        if not isinstance(state, str):
-            return PrOpenState.UNKNOWN
-        return _GITLAB_MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)
+        return _pr_reads.project_pr_open_state(self._client, path=match["path"], iid=match["iid"])
 
     def get_pr_author(self, *, pr_url: str) -> str:
         """Return the MR author's GitLab username, or ``""`` when it can't be resolved.

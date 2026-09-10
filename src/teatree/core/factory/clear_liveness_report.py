@@ -14,15 +14,33 @@ rather than inferred from a missing local audit.
 real (the ledger is wrong and the reconciler should run) but it pages nobody and clears
 itself on the next reconcile pass.
 
+**WARN** — the forge says the PR does not exist, so the authorisation is a phantom
+(#4739). Reported rather than silent: unlike an unverifiable row this one HAS evidence,
+and the remedy it names can actually discharge it.
+
 A row the classifier could not verify produces no line at all: no evidence is not a
 finding.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
-from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, UnconsumedClear, unconsumed_actionable_clear_rows
-from teatree.core.merge.clear_liveness import PROBE_CAP, ClearLiveness, PrStateReader, probe, unverified_reader
+from teatree.core.factory.merge_backlog import (
+    STALE_CLEAR_HOURS,
+    ClearStanding,
+    OutstandingClear,
+    UnconsumedClear,
+    unconsumed_actionable_clear_rows,
+)
+from teatree.core.merge.clear_liveness import (
+    PROBE_CAP,
+    ClearLiveness,
+    PrStateReader,
+    classify,
+    probe,
+    unverified_reader,
+)
+from teatree.core.models.merge_clear import MergeClear
 
 #: How many backlog rows a finding names before it summarises the tail.
 LISTED = 5
@@ -32,6 +50,11 @@ _RECONCILE_REMEDY = (
     "run `t3 <overlay> ticket reconcile-clears` to consume it."
 )
 
+_PHANTOM_REMEDY = (
+    "the forge has no such PR, so no evidence can ever settle it — "
+    "run `t3 <overlay> ticket reconcile-clears` to dispose of it."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StaleClearReport:
@@ -39,6 +62,7 @@ class StaleClearReport:
 
     stalled: tuple[UnconsumedClear, ...] = ()
     settled: tuple[UnconsumedClear, ...] = ()
+    phantom: tuple[UnconsumedClear, ...] = ()
     unprobed: int = 0
 
     def lines(self) -> list[str]:
@@ -58,6 +82,12 @@ class StaleClearReport:
                 f"oldest {self.settled[0].describe()}. {_RECONCILE_REMEDY}"
             )
             rows += _tail(self.settled)
+        if self.phantom:
+            rows.append(
+                f"WARN  {len(self.phantom)} merge authorisation(s) whose PR does not exist on the "
+                f"forge — oldest {self.phantom[0].describe()}. {_PHANTOM_REMEDY}"
+            )
+            rows += _tail(self.phantom)
         if self.unprobed:
             rows.append(
                 f"WARN  {self.unprobed} further aged authorisation(s) were not checked against the "
@@ -99,5 +129,30 @@ def stale_clear_report(
         settled=tuple(
             UnconsumedClear.of(clear, now) for clear in probed.of(ClearLiveness.MERGED, ClearLiveness.ABANDONED)
         ),
+        phantom=tuple(UnconsumedClear.of(clear, now) for clear in probed.of(ClearLiveness.PHANTOM)),
         unprobed=len(probed.unprobed),
     )
+
+
+def probe_outstanding_phantoms(
+    rows: list[OutstandingClear],
+    *,
+    read: PrStateReader = unverified_reader,
+    cap: int = PROBE_CAP,
+) -> list[OutstandingClear]:
+    """Re-tag each LIVE row of *rows* whose PR the forge says does not exist (#4739).
+
+    Only LIVE rows are probed: a superseded or incomplete row cannot authorise a merge
+    whether or not its PR exists, so a forge call on one buys nothing. Every other row
+    is returned untouched and in place, so the caller's ordering survives.
+    """
+    live = [row for row in rows if row.standing is ClearStanding.LIVE][:cap]
+    if not live:
+        return rows
+    by_pk = MergeClear.objects.in_bulk([row.pk for row in live])
+    phantom = {
+        row.pk
+        for row in live
+        if (clear := by_pk.get(row.pk)) is not None and classify(clear, read=read) is ClearLiveness.PHANTOM
+    }
+    return [replace(row, standing=ClearStanding.PHANTOM) if row.pk in phantom else row for row in rows]

@@ -81,10 +81,30 @@ what may authorise a merge, and the standing-backlog population every merge-scop
 `t3 doctor check`, and `ticket reconcile-clears`) narrows to exactly that: actionable rows that no
 newer sibling or covering merge has superseded. An unconsumed row failing either test is therefore
 reported by nothing, which is the state a mis-issued CLEAR lands in — incomplete, or the original
-of a corrected reissue. `t3 <overlay> ticket list-clears [--overlay <name>] [--json]` is the
-deliberately unnarrowed read of the same scope and supersede context: every unconsumed CLEAR,
+of a corrected reissue. `t3 <overlay> ticket list-clears [--overlay <name>] [--probe] [--json]` is
+the deliberately unnarrowed read of the same scope and supersede context: every unconsumed CLEAR,
 oldest first, each tagged `live` / `superseded` / `incomplete`. It is read-only — `reconcile-clears`
 remains the only surface that spends a row, and no surface voids one.
+
+**A CLEAR whose PR never existed is DISPOSED of, not refused forever.** `reconcile-clears` settles
+only on definite forge evidence, and that fail-closed refusal left one class of row standing
+permanently: two `live` authorisations pointing at PR numbers the forge has never heard of, whose
+evidence can therefore never arrive, misreporting the ledger's answer to "what may merge?" for five
+weeks. The fourth `PrOpenState`, `ABSENT`, is that evidence — the PR endpoint answered 404 *while
+the repo itself read back*, which is what separates it from the `UNKNOWN` a private repo, a bad
+token or an outage produces. `clear_liveness` maps it to `ClearLiveness.PHANTOM`, and
+`reconcile-clears` spends the whole `(slug, pr_id)` family (the 404 is evidence about the PR number,
+not one row), recording a `MergeClearDisposal` per row rather than deleting anything — a disposed
+row must stay distinguishable from one a real merge consumed. A probe that merely *errored* still
+settles nothing. `list-clears --probe` tags the same rows `phantom` without mutating the ledger, and
+`t3 doctor check` WARNs on them naming `reconcile-clears` as the remedy.
+
+**Nothing that only exercises a gate may leave a row behind.** The pinned-regressions corpus runs
+against the LIVE control DB, and the two phantom authorisations above were its own leakage: it wrote
+real `MergeClear` rows for PR 4242/4343 to drive the merge guards and deleted them on the way out,
+so every pre-push run between the write and the delete was one kill away from stranding one. Those
+predicates now write inside a transaction that is rolled back rather than committed-then-deleted, so
+the window does not exist.
 
 **The issuance seam.** A CLEAR is created exclusively through the guarded factory `MergeClear.issue(ClearRequest)`, exposed as `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <id> --blast-class <substrate|logic|docs> [--forge <github|gitlab>] [--ticket-id N] [--human-authorize <id>]`. This is the orchestrator's *only* merge output (§17.8 clause 3). The factory enforces the contract before any row is written and refuses (raising `ClearIssuanceError`, no partial row) when: `blast_class`/`gh_verify_result`/`host_kind` is unknown; `reviewer_identity` is empty, equals the executing-loop identity, or is a maker/coding-agent/loop role (the author cannot self-attest its own review); `reviewed_sha` is not a hex commit id (a branch ref would not bind to the reviewed tree); or `--human-authorize` is given for a non-substrate `blast_class`. The command additionally resolves the repo slug AND the forge (`MergePreconditionError`, again no row) *before* calling the factory, so neither a CLEAR pointing at no resolvable repo nor one that could never bind a transport is left behind as an unconsumable orphan ratcheting the S4 stale-CLEAR signal. The maker/loop-role predicate is shared single-source with the `reviewing`-attestation guard (§17.6 candidate 13) so the two cannot drift. It also refuses the review-AUTHORING agents by name (the holistic pass that implements its own findings and opens its own PR), and that refusal survives decoration: appending a reviewer noun to such a name does not admit it, and the refusal text never names a token to append — a refusal that publishes its own bypass is a self-service exemption, so the only escape it names is the recorded `independent_reviewer_identities` allowlist, offered only for the class that allowlist can actually admit.
 

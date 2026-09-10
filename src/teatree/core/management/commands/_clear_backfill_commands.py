@@ -52,6 +52,9 @@ class ClearBackfillCommands(TyperCommand):
         self,
         *,
         overlay: Annotated[str, typer.Option(help="Scope to one overlay's repos; empty reads the whole ledger.")] = "",
+        probe: Annotated[
+            bool, typer.Option(help="Ask the forge which live rows point at a PR that does not exist.")
+        ] = False,
         json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
     ) -> list[OutstandingClear]:
         """List every unconsumed merge authorisation, each with the standing that hides it.
@@ -63,10 +66,23 @@ class ClearBackfillCommands(TyperCommand):
         supported way to even enumerate them. This is that enumeration: unnarrowed,
         oldest first, standing named per row.
 
-        Read-only. Nothing here consumes, voids or repairs a row; ``reconcile-clears``
-        remains the only surface that spends one.
+        ``--probe`` additionally asks the forge about each LIVE row and
+        tags the ones whose PR does not exist ``phantom``, so a row nothing
+        can ever settle is visibly distinct from a genuine authorisation.
+        It costs one forge call per row, so it is opt-in and capped;
+        without it this read stays free and reaches no network.
+
+        Read-only either way. Nothing here consumes, voids or repairs a
+        row; ``reconcile-clears`` remains the only surface that spends one.
         """
         rows = outstanding_clear_rows(overlay)
+        if probe:
+            from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: keeps CLI startup light
+            from teatree.core.factory.clear_liveness_report import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+                probe_outstanding_phantoms,
+            )
+
+            rows = probe_outstanding_phantoms(rows, read=pr_open_state)
         self.print_result = False
         human = "".join(f"{row.describe()}\n" for row in rows) or "no unconsumed merge authorisation\n"
         emit(
@@ -93,6 +109,10 @@ class ClearBackfillCommands(TyperCommand):
         it reports settled; a PR still open, or one whose state cannot be read, is left
         exactly as it was. No ``MergeAudit`` is written — that would claim keystone
         provenance for a merge the keystone did not execute.
+
+        A row whose PR the forge says does not exist is DISPOSED of instead, with the
+        reason recorded — it can never acquire the evidence a settlement needs, so
+        refusing it forever is what left two phantom authorisations standing (#4739).
         """
         from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -100,7 +120,7 @@ class ClearBackfillCommands(TyperCommand):
         lines = report.lines()
         self.print_result = False
         emit(
-            report.settled,
+            report.settled + report.disposed,
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),

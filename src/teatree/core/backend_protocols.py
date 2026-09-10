@@ -62,11 +62,18 @@ class PrOpenState(StrEnum):
     reviewer-assignment scan is NOT proof the PR closed (#1074). ``UNKNOWN``
     is the fail-open value: any auth error, network failure, unparsable URL,
     or unrecognised payload maps here, and the sweep never reaps on UNKNOWN.
+
+    ``ABSENT`` is the fourth DEFINITE state (#4739): the PR endpoint answered
+    404 while the repo itself read back, so the number names no PR that ever
+    existed. A 404 alone is NOT enough — GitHub 404s a repo the token cannot
+    see, and that PR 404 proves nothing — which is why the repo probe is what
+    separates this from ``UNKNOWN``.
     """
 
     OPEN = "open"
     MERGED = "merged"
     CLOSED = "closed"
+    ABSENT = "absent"
     UNKNOWN = "unknown"
 
 

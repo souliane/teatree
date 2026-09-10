@@ -193,3 +193,26 @@ class TestDoctorWiring(UnconsumedClearCheckBase):
             assert _run_loop_intent_gates() is True
             self._stranded(pr_id=4250, hours=STALE_CLEAR_HOURS + 1)
             assert _run_loop_intent_gates() is False
+
+
+class TestPhantomAuthorisationIsReported(UnconsumedClearCheckBase):
+    """#4739: a CLEAR whose PR the forge says never existed is a WARN, not silence.
+
+    Its sibling case — an UNKNOWN probe — stays no finding at all, because no evidence
+    is not a finding. A 404 IS evidence, and the remedy it names actually discharges it.
+    """
+
+    def test_an_absent_pr_warns_and_names_the_reconcile_remedy(self) -> None:
+        self._stranded(pr_id=4242, hours=187)
+
+        message = self._message(forge=PrOpenState.ABSENT)
+
+        assert self.verdict is True
+        assert "WARN" in message
+        assert "souliane/teatree#4242" in message
+        assert "reconcile-clears" in message
+
+    def test_an_absent_pr_is_never_a_fail(self) -> None:
+        self._stranded(pr_id=4242, hours=187)
+
+        assert self._run(forge=PrOpenState.ABSENT) is True

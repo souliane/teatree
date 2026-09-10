@@ -44,7 +44,18 @@ class ClearLiveness(StrEnum):
     STALLED = "stalled"
     MERGED = "merged"
     ABANDONED = "abandoned"
+    PHANTOM = "phantom"
     UNVERIFIED = "unverified"
+
+
+#: The forge's verdict on a PR → what it means for the CLEAR authorising it. A state
+#: absent from this table (notably ``UNKNOWN``) is no evidence at all, hence UNVERIFIED.
+_LIVENESS_BY_STATE: dict[str, ClearLiveness] = {
+    PrOpenState.OPEN: ClearLiveness.STALLED,
+    PrOpenState.MERGED: ClearLiveness.MERGED,
+    PrOpenState.CLOSED: ClearLiveness.ABANDONED,
+    PrOpenState.ABSENT: ClearLiveness.PHANTOM,
+}
 
 
 def unverified_reader(pr_url: str) -> str:  # noqa: ARG001 — the fail-safe reader ignores its input by design
@@ -69,6 +80,10 @@ def classify(clear: MergeClear, *, read: PrStateReader = unverified_reader) -> C
 
     Only a literal OPEN is a stall. A reader that raises is UNVERIFIED for this row
     alone — per-row isolation, so one unreadable PR never decides the others.
+
+    PHANTOM is the one verdict UNVERIFIED could never express (#4739): the forge says
+    the PR does not exist, so the evidence a reconcile waits for can never arrive and
+    the row would otherwise stand authorised forever.
     """
     url = clear_pr_url(clear)
     if not url:
@@ -77,13 +92,7 @@ def classify(clear: MergeClear, *, read: PrStateReader = unverified_reader) -> C
         state = read(url)
     except Exception:  # noqa: BLE001 — an unreadable forge is no evidence, never a verdict
         return ClearLiveness.UNVERIFIED
-    if state == PrOpenState.OPEN:
-        return ClearLiveness.STALLED
-    if state == PrOpenState.MERGED:
-        return ClearLiveness.MERGED
-    if state == PrOpenState.CLOSED:
-        return ClearLiveness.ABANDONED
-    return ClearLiveness.UNVERIFIED
+    return _LIVENESS_BY_STATE.get(state, ClearLiveness.UNVERIFIED)
 
 
 @dataclass(frozen=True, slots=True)

@@ -131,6 +131,43 @@ class TestPrOpenState:
             assert pr_reads.pr_open_state(pr_url="https://github.com/o/r/pull/7", token="t") == PrOpenState.UNKNOWN
 
 
+class TestPrOpenStateAbsent:
+    """#4739: a PR 404 is evidence only when the repo itself resolves."""
+
+    @staticmethod
+    def _routed(*, pr: object, repo: object):
+        def route(endpoint: str, *, token: str = "") -> object:
+            payload = pr if "/pulls/" in endpoint else repo
+            if isinstance(payload, Exception):
+                raise payload
+            return payload
+
+        return route
+
+    @staticmethod
+    def _gh_error(stderr: str) -> CommandFailedError:
+        return CommandFailedError(["gh", "api"], 1, "", stderr)
+
+    def _state(self, *, pr: object, repo: object) -> PrOpenState:
+        with patch.object(pr_reads, "_gh_api_get", side_effect=self._routed(pr=pr, repo=repo)):
+            return pr_reads.pr_open_state(pr_url="https://github.com/o/r/pull/7", token="t")
+
+    def test_pr_404_with_a_resolving_repo_is_absent(self) -> None:
+        assert self._state(pr=self._gh_error("gh: HTTP 404"), repo={"full_name": "o/r"}) == PrOpenState.ABSENT
+
+    def test_pr_404_with_an_unreadable_repo_is_unknown(self) -> None:
+        # GitHub 404s a repo the token cannot see, so the PR 404 proves nothing.
+        assert self._state(pr=self._gh_error("gh: HTTP 404"), repo=self._gh_error("gh: HTTP 404")) == (
+            PrOpenState.UNKNOWN
+        )
+
+    def test_a_non_404_pr_failure_is_unknown(self) -> None:
+        assert self._state(pr=self._gh_error("gh: HTTP 403"), repo={"full_name": "o/r"}) == PrOpenState.UNKNOWN
+
+    def test_a_non_dict_repo_payload_is_unknown(self) -> None:
+        assert self._state(pr=self._gh_error("gh: HTTP 404"), repo=["not", "a", "repo"]) == PrOpenState.UNKNOWN
+
+
 class TestPrAuthor:
     def test_returns_login(self) -> None:
         with patch.object(pr_reads, "_gh_api_get", return_value={"user": {"login": "souliane"}}):

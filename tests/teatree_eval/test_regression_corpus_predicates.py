@@ -9,8 +9,11 @@ itself (not just the corpus orchestration) is observable, plus an anti-vacuity
 proof: breaking the underlying real function flips a predicate to ``False``.
 """
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from unittest.mock import patch
 
+from django.db import connection, transaction
 from django.test import TestCase
 
 from teatree.config.resolution import get_effective_settings
@@ -162,3 +165,52 @@ class TestPredicatesLeaveNoDurableRows(TestCase):
         before = self._clear_pks()
         assert predicates._check_merge_precondition_maker_is_not_checker() is True
         assert self._clear_pks() == before
+
+
+class TestDbWritingPredicatesNeverCommit(TestCase):
+    """#4739: the corpus writes are rolled back, not deleted on the way out.
+
+    Delete-on-exit leaked two live merge authorisations into the operator's control DB
+    and re-leaked them on every pre-push run for five weeks, because a process killed
+    between the write and the delete has already committed. Rollback-only closes that
+    window by construction: the row never reaches a state a later process can observe.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _savepoint_depth_at_each_write() -> Iterator[list[int]]:
+        depths: list[int] = []
+
+        def wrapper(execute: Callable[..., object], sql: str, *rest: object) -> object:
+            if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                depths.append(len(connection.savepoint_ids))
+            return execute(sql, *rest)
+
+        with connection.execute_wrapper(wrapper):
+            yield depths
+
+    def _assert_every_write_is_doomed(self, predicate: Callable[[], bool]) -> None:
+        baseline = len(connection.savepoint_ids)
+        with (
+            patch("django.db.transaction.set_rollback", wraps=transaction.set_rollback) as doom,
+            self._savepoint_depth_at_each_write() as depths,
+        ):
+            assert predicate() is True
+        assert depths, "the predicate wrote nothing — this guard would be vacuous"
+        assert min(depths) > baseline, "a write happened outside the predicate's own transaction"
+        assert any(call.args[0] is True for call in doom.call_args_list), "the transaction was never doomed"
+
+    def test_substrate_human_authorize_never_commits(self) -> None:
+        self._assert_every_write_is_doomed(predicates._check_merge_precondition_substrate_human_authorize)
+
+    def test_substrate_full_autonomy_never_commits(self) -> None:
+        self._assert_every_write_is_doomed(predicates._check_merge_precondition_substrate_full_autonomy_holds)
+
+    def test_maker_is_not_checker_never_commits(self) -> None:
+        self._assert_every_write_is_doomed(predicates._check_merge_precondition_maker_is_not_checker)
+
+    def test_loop_owner_lease_never_commits(self) -> None:
+        self._assert_every_write_is_doomed(predicates._check_loop_owner_lease_pid_anchored)
+
+    def test_ship_branch_reconcile_never_commits(self) -> None:
+        self._assert_every_write_is_doomed(predicates._check_ship_branch_reconcile_renamed)

@@ -33,6 +33,13 @@ class TestVerifyPrExists(SimpleTestCase):
         for state in (PrOpenState.MERGED, PrOpenState.CLOSED):
             assert verify_pr_exists(_FakeHost(state), _URL).confirmed is True
 
+    def test_absent_state_is_not_confirmed(self) -> None:
+        # #4739: ABSENT is a definite verdict, but the definite answer is "no such PR" —
+        # confirming a create on it would record a phantom PR row.
+        outcome = verify_pr_exists(_FakeHost(PrOpenState.ABSENT), _URL)
+
+        assert outcome.confirmed is False
+
     def test_unknown_state_is_not_confirmed(self) -> None:
         outcome = verify_pr_exists(_FakeHost(PrOpenState.UNKNOWN), _URL)
 

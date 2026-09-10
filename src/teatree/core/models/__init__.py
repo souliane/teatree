@@ -77,6 +77,7 @@ from teatree.core.models.loop_schedule import ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.merge_clear_disposal import MergeClearDisposal
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
@@ -251,6 +252,7 @@ __all__ = [
     "MechanismSketchError",
     "MergeAudit",
     "MergeClear",
+    "MergeClearDisposal",
     "MergeableNotified",
     "Mode",
     "ModeManager",

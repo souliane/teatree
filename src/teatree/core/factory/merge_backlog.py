@@ -190,14 +190,19 @@ class ClearStanding(StrEnum):
     """Why an unconsumed CLEAR is, or is not, part of the standing merge backlog.
 
     ``LIVE`` is the population :func:`unconsumed_actionable_clear_rows` returns and
-    every existing surface reports. The other two are the rows those surfaces
-    deliberately filter out — correctly, because neither can authorise a merge — and
-    which therefore appear nowhere at all.
+    every existing surface reports. ``SUPERSEDED`` and ``INCOMPLETE`` are the rows those
+    surfaces deliberately filter out — correctly, because neither can authorise a merge
+    — and which therefore appear nowhere at all.
+
+    ``PHANTOM`` is the one standing no local query can decide (#4739): a LIVE row whose
+    PR the forge says does not exist. It is reached only by ``list-clears --probe``,
+    because separating it from a genuine standing authorisation costs a forge call.
     """
 
     LIVE = "live"
     SUPERSEDED = "superseded"
     INCOMPLETE = "incomplete"
+    PHANTOM = "phantom"
 
 
 @dataclass(frozen=True, slots=True)

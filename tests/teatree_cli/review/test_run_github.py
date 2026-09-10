@@ -160,6 +160,21 @@ class TestReviewRunGitHub:
         assert "verdict" not in payload
         assert "changes" not in payload
 
+    def test_a_pr_that_does_not_exist_fails_loud_rather_than_auditing(self) -> None:
+        """#4739: ABSENT is definite, and what it definitely says is "no such PR"."""
+        stub = _StubGitHubCodeHost(
+            files=[_file(path="src/foo.py", added=5, removed=2)],
+            open_state=PrOpenState.ABSENT,
+        )
+
+        with patch("teatree.backends.github.client.GitHubCodeHost", return_value=stub):
+            result = CliRunner().invoke(review_app, ["run", GITHUB_PR_URL])
+
+        assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["error"] == "api_unavailable"
+        assert "verdict" not in payload
+
     def test_backend_read_failure_surfaces_as_api_unavailable(self) -> None:
         class _RaisingHost:
             def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
