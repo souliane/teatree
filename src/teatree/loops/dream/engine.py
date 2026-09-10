@@ -242,7 +242,7 @@ def write_clusters(
     ``source_files`` is empty, cites a path not present in *extract*, or its
     ``verified_citation`` is blank, or does not appear (whitespace-normalized substring)
     in a cited snippet's text AND cannot be snapped to a window whose token delta is
-    limited to articles and connectives (:func:`_snap_citation`) — a near-miss that adds,
+    limited to articles (:func:`~teatree.loops.dream.citation_snap.snap_citation`) — one that adds,
     drops or changes a meaning-bearing word is rejected as a composed quote. These are the
     hallucinated-rule shapes the ledger must never persist, including a
     real-path-but-invented-quote citation. :func:`check_grounding` names WHICH failed, and
@@ -289,9 +289,9 @@ def write_clusters(
 #: model's citation used the straight form (or the reverse), so both operands are
 #: folded SYMMETRICALLY (:func:`normalize_ws` runs on the snippet index AND on the
 #: citation). The fold canonicalises both sides of that substring test AND of the
-#: :func:`_snap_citation` fallback, where a citation the substring test misses is
-#: admitted only when its token delta against the located window is empty or limited to
-#: articles and light connectives — so an invented or composed citation is still rejected.
+#: :func:`~teatree.loops.dream.citation_snap.snap_citation` fallback, where a citation the
+#: substring test misses is admitted only when its token delta against the located window is
+#: empty or limited to articles — so an invented or composed citation is still rejected.
 _PUNCT_FOLD = str.maketrans(
     {
         "\u2018": "'",  # left single quotation mark

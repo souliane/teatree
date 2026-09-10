@@ -36,13 +36,17 @@ _SNAP_ANCHOR_CHARS = 24
 #: How far past the located window the token delta is read. The window's own ends come from
 #: guessing its length from the citation's, so a difference there is this code's artefact.
 _SNAP_WINDOW_MARGIN_CHARS = 64
-#: The only token differences a snap may forgive: articles and light connectives, which
-#: cannot carry meaning alone, so re-extracting over them cannot change what a rule asserts.
-_SNAP_ADMISSIBLE_DELTA = frozenset(
-    {"a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "for", "as", "its", "that", "this", "with", "by"}
-)
+#: The only token differences a snap may forgive: articles, which assert nothing on their
+#: own. Connectives and prepositions are NOT meaning-free — `and` -> `or` turns a rule's
+#: conjunction into a disjunction and `on` -> `at` restates the relation, so a snap over one
+#: records a quote asserting something the cited snippet does not (#4716).
+_SNAP_ADMISSIBLE_DELTA = frozenset({"a", "an", "the"})
 #: Tokens that flip a rule's polarity, so the truncated-edge carve-out may never excuse one.
 _SNAP_NEGATORS = frozenset({"not", "never", "no", "none", "nor", "cannot", "without"})
+#: Suffixes whose removal negates the word they are cut from, so `harmless` -> `harm` wears a
+#: tail cut's shape. Named rather than failed-closed because a tail cut is the common
+#: near-miss the snap exists to rescue, unlike the head (see :func:`_is_truncated_edge`).
+_SNAP_NEGATING_SUFFIXES = ("less",)
 #: How much of a refused delta the rejection message spells out before eliding.
 _SNAP_RENDER_MAX_TOKENS = 8
 _SNAP_TOKEN_RE = re.compile(r"[0-9a-z]+(?:'[0-9a-z]+)*")
@@ -64,8 +68,8 @@ class CitationSnap:
 def snap_citation(citation: str, snippets: Sequence[str]) -> CitationSnap:
     """The snippet's OWN text for the window *citation* nearly quotes, else why not.
 
-    A located window is admitted only when its token delta against
-    :data:`_SNAP_ADMISSIBLE_DELTA` is empty; a refused one is skipped rather than returned,
+    A located window is admitted only when every token differing from the citation is an
+    article (:data:`_SNAP_ADMISSIBLE_DELTA`); a refused one is skipped rather than returned,
     so a later clean window can still admit.
 
     Alignment is anchored rather than searched: scoring every window of a long snippet is
@@ -114,13 +118,20 @@ def _refused_delta(window: Sequence[str], citation: Sequence[str]) -> Iterator[s
 
 
 def _is_truncated_edge(window: Sequence[str], citation: Sequence[str], span: tuple[int, int, int, int]) -> bool:
-    """True for the one-token stub a length-guessed window leaves at a citation's own edge."""
-    i1, i2, j1, j2 = span
-    if j2 - j1 != 1 or citation[j1] in _SNAP_NEGATORS:
+    """True for the one-token stub a length-guessed window leaves at a citation's TAIL.
+
+    The head is not carved out at all. A citation token that is the window token's SUFFIX is
+    indistinguishable from morphological negation — `unsafe` -> `safe`, `disallowed` ->
+    `allowed` — and a citation that genuinely begins mid-word is rare, so that edge fails
+    closed rather than admit a row whose quote asserts the opposite of its own rule (#4716).
+    """
+    i1, _, j1, j2 = span
+    if j2 - j1 != 1 or j2 != len(citation) or citation[j1] in _SNAP_NEGATORS:
         return False
-    if j2 == len(citation):
-        return window[i1].startswith(citation[j1]) and window[i1] not in _SNAP_NEGATORS
-    return j1 == 0 and window[i2 - 1].endswith(citation[j1]) and window[i2 - 1] not in _SNAP_NEGATORS
+    word, cut = window[i1], citation[j1]
+    if word in _SNAP_NEGATORS or not word.startswith(cut):
+        return False
+    return not word[len(cut) :].startswith(_SNAP_NEGATING_SUFFIXES)
 
 
 def _all_admissible(tokens: Sequence[str]) -> bool:

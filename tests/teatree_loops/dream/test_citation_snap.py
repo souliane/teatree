@@ -29,6 +29,46 @@ _NEGATED_SNIPPET = (
     "reach and escalates to the full sweep on a migration or a conftest edit. A lane that "
     "cannot classify a path runs everything rather than under-running the change."
 )
+_CONNECTIVE_SNIPPET = (
+    "The shipper must run the lint gate and the test gate before it opens the pull request "
+    "for review. A red pipeline or a stale branch holds the merge, so the shipper waits on "
+    "the tip and reports by comment."
+)
+_AFFIX_SNIPPET = (
+    "A reviewer is disallowed from clearing the merge on a branch it authored itself. "
+    "Retrying the publish step after a timeout is harmless when the write it repeats is "
+    "idempotent. An unsafe rerun of a publish step is refused by the keystone gate before "
+    "it records anything."
+)
+_NEGATOR_TAIL_SNIPPET = (
+    "The publish step must never run twice on the same head, and the keystone refuses the "
+    "second attempt because a repeat write is never idempotent."
+)
+#: Tokens the allowlist may never carry. Swapping any of them for another admissible token
+#: changes what the sentence asserts, so a snap over one re-extracts a different rule.
+_ASSERTION_BEARING = frozenset(
+    {
+        "and",
+        "or",
+        "nor",
+        "but",
+        "so",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "as",
+        "with",
+        "by",
+        "from",
+        "into",
+        "its",
+        "that",
+        "this",
+    }
+)
 
 
 def _cluster(citation: str) -> DistilledCluster:
@@ -156,6 +196,8 @@ class TestComposedQuoteIsRefused:
     def test_the_admissible_delta_carries_no_meaning(self) -> None:
         assert not _SNAP_ADMISSIBLE_DELTA & _SNAP_NEGATORS
         assert max(len(token) for token in _SNAP_ADMISSIBLE_DELTA) <= 4
+        # Polarity and length are not enough — `and`/`or` clear both and still flip a rule.
+        assert not _SNAP_ADMISSIBLE_DELTA & _ASSERTION_BEARING
 
 
 class TestParaphraseIsStillAdmitted:
@@ -195,3 +237,81 @@ class TestParaphraseIsStillAdmitted:
         verdict = _verdict(citation)
         assert verdict.reason is None, label
         assert verdict.cluster.verified_citation in normalize_ws(_SNIPPET)
+
+
+class TestASwappedConnectiveIsRefused:
+    """A connective or preposition is not meaning-free — swapping one rewrites the rule (#4716)."""
+
+    @pytest.mark.parametrize(
+        ("label", "citation"),
+        [
+            (
+                "and->or",
+                "The shipper must run the lint gate or the test gate before it opens the pull request for review.",
+            ),
+            (
+                "or->and",
+                (
+                    "A red pipeline and a stale branch holds the merge, so the shipper waits on the tip and "
+                    "reports by comment."
+                ),
+            ),
+            (
+                "for->to",
+                "The shipper must run the lint gate and the test gate before it opens the pull request to review.",
+            ),
+            (
+                "on->at",
+                (
+                    "A red pipeline or a stale branch holds the merge, so the shipper waits at the tip and "
+                    "reports by comment."
+                ),
+            ),
+            (
+                "by->with",
+                (
+                    "A red pipeline or a stale branch holds the merge, so the shipper waits on the tip and "
+                    "reports with comment."
+                ),
+            ),
+        ],
+    )
+    def test_a_swapped_connective_is_rejected(self, label: str, citation: str) -> None:
+        verdict = _verdict(citation, _CONNECTIVE_SNIPPET)
+        assert verdict.reason is not None, label
+        # It DID locate a real window, so the refusal must name the swap, not call it invented.
+        assert "not present in a cited snippet" not in verdict.reason, label
+
+
+class TestAMorphologicalNegationIsRefused:
+    """A negating affix wears the prefix/suffix shape the truncated-edge carve-out reads (#4716)."""
+
+    @pytest.mark.parametrize(
+        ("label", "citation"),
+        [
+            ("disallowed->allowed", "allowed from clearing the merge on branch it authored itself."),
+            ("harmless->harm", "Retrying publish step after a timeout is harm"),
+            (
+                "unsafe->safe",
+                "safe rerun of a publish step is refused by keystone gate before it records anything.",
+            ),
+        ],
+    )
+    def test_a_negating_affix_is_not_a_truncated_edge(self, label: str, citation: str) -> None:
+        verdict = _verdict(citation, _AFFIX_SNIPPET)
+        assert verdict.reason is not None, label
+
+    def test_a_tail_cut_into_a_negator_is_rejected(self) -> None:
+        cut_into_never = (
+            "The publish step must never run twice on the same head, and keystone refuses the second "
+            "attempt because a repeat write is nev"
+        )
+        assert _verdict(cut_into_never, _NEGATOR_TAIL_SNIPPET).reason is not None
+
+    def test_a_tail_cut_into_an_ordinary_word_is_still_admitted(self) -> None:
+        # The control: refusing this too would have closed the tail carve-out the snap needs.
+        cut_into_idempotent = (
+            "The publish step must never run twice on the same head, and keystone refuses the second "
+            "attempt because a repeat write is never idemp"
+        )
+        assert _verdict(cut_into_idempotent, _NEGATOR_TAIL_SNIPPET).reason is None
