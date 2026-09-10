@@ -242,6 +242,18 @@ class TestAllowlist:
     def test_every_entry_carries_a_justification(self) -> None:
         assert all(reason.strip() for reason in ALLOWED_NON_RESOLVING.values())
 
+    def test_a_retired_commands_removal_citation_is_exempt(self, tmp_path: Path) -> None:
+        assert "t3 speak-dm" in ALLOWED_NON_RESOLVING
+        _doc(tmp_path, "BLUEPRINT.md", "#4673 retired the mirror enricher and its `t3 speak-dm` worker.")
+        assert validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path).ok
+
+    def test_a_stale_citation_beside_removal_prose_is_still_caught(self, tmp_path: Path) -> None:
+        # The control: exemption keys on the command, never on the sentence around
+        # it, so removal prose cannot launder a genuinely stale live citation.
+        _doc(tmp_path, "BLUEPRINT.md", "#4673 deleted `t3 speak-dm`; run `t3 loop frobnicate` instead.")
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
+        assert [v.command for v in report.violations] == ["t3 loop frobnicate"]
+
 
 class TestShippedDocsResolve:
     """The engine walks the real repo tree without raising.

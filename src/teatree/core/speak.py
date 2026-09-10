@@ -261,7 +261,7 @@ def deliver_user_dm_sidecar(
 
     ``initial_comment`` controls the text posted ALONGSIDE the audio (F4.4).
     ``None`` (the default) reuses ``text`` as the audio DM's ``initial_comment``
-    — the ``t3 speak-dm`` path, whose audio DM stands on its own. The
+    — a standalone audio DM that nothing else has already posted. The
     :func:`teatree.core.notify._deliver_dm` caller passes ``""`` together with
     ``thread_ts`` set to the delivered message's ``ts``, so the audio threads
     UNDER the text DM that already landed with NO repeated text — the text is

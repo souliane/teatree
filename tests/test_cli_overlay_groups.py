@@ -17,6 +17,7 @@ from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
 from teatree.core.management.commands.loop_preset import Command as LoopPresetCommand
+from teatree.core.management.commands.questions import Command as QuestionsCommand
 
 
 def _ticket_subcommands() -> set[str]:
@@ -41,6 +42,10 @@ def _pr_subcommands() -> set[str]:
 
 def _learnings_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["learnings"].subcommands}
+
+
+def _questions_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["questions"].subcommands}
 
 
 def test_ticket_group_exposes_comment() -> None:
@@ -137,6 +142,20 @@ def test_learnings_group_dispatches_to_core() -> None:
 def test_learnings_subcommands_map_to_real_command_methods() -> None:
     for name in _learnings_subcommands():
         assert hasattr(LearningsCommand, name.replace("-", "_")), name
+
+
+def test_questions_group_exposes_every_management_subcommand() -> None:
+    # #4673 replaced the in-hook Slack-mirror transport with a `questions mirror`
+    # delivery kick on the management command, but DJANGO_GROUPS["questions"] was
+    # never updated — `t3 <overlay> questions mirror` answered "No such command"
+    # while `call_command("questions", "mirror", ...)` worked fine. Same regression
+    # shape as `test_loop_preset_group_exposes_every_management_subcommand` above,
+    # generalised via the resolved Click tree so an implicit (unnamed) `@command()`
+    # is still caught correctly.
+    click_cmd = typer.main.get_command(QuestionsCommand.typer_app)
+    defined = set(click_cmd.commands.keys())
+    bridged = _questions_subcommands()
+    assert defined <= bridged, f"unbridged questions subcommand(s): {sorted(defined - bridged)}"
 
 
 def test_no_group_registers_the_same_command_twice() -> None:

@@ -23,8 +23,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
 │ speak           Refuse to speak — local audio cannot reach the user.         │
-│ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
-│                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
 │                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
@@ -250,25 +248,6 @@ Usage: t3 speak [OPTIONS] TEXT
 │ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
 │                        creds).                                               │
 │ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 speak-dm`
-
-```
-Usage: t3 speak-dm [OPTIONS]
-
- Attach spoken audio to a user DM per  (no-op unless slack/local on).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel          TEXT  Slack DM channel id the audio attaches to.       │
-│                             [required]                                       │
-│ *  --text             TEXT  Text to speak. Use '-' to read it from stdin.    │
-│                             [required]                                       │
-│    --thread-ts        TEXT  Thread the audio DM under this ts.               │
-│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
-│                             Slack creds).                                    │
-│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -13120,6 +13099,8 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
 │ dismiss       Dismiss a pending question without answering it.               │
+│ mirror        Deliver ONE un-mirrored question now, bypassing the per-tick   │
+│               batch cap.                                                     │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -13250,6 +13231,31 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions mirror`
+
+```
+Usage: t3 teatree questions mirror [OPTIONS]
+
+ Deliver ONE un-mirrored question now, bypassing the per-tick batch cap.
+
+ Same
+ :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions
+ `
+ egress the tick scanner runs, so there is exactly one Slack chokepoint for
+ every deferred question. An unmatched *ref* is not an error: the tick drain
+ may have taken the row first, and the durable row remains the fallback.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ref            TEXT  The row's stable_notify_ref (its tool_use_id, or      │
+│                        '<instance>:<pk>').                                   │
+│ --user-id        TEXT  Slack user id to DM (defaults to the configured       │
+│                        user).                                                │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay bot     │
+│                        routing).                                             │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
