@@ -115,6 +115,7 @@
 "src/teatree/core/management/commands/review_request_post.py" = 4
 # 6: #4476's publish path resolves the forge backend, its models and the outbound
 # privacy scan at call time so the command module stays import-light.
+"src/teatree/core/review/live_head.py" = 1
 "src/teatree/core/review/verdict_findings_publish.py" = 6
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
