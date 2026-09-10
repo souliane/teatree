@@ -27,6 +27,7 @@ from teatree.core.worktree.branch_classification import (
     is_squash_merged,
     reset_forge_probe_cache,
 )
+from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.clone_paths import repair_stale_clone_path, resolve_clone_path
 from teatree.core.worktree.venue_safe_registry import prune_worktrees, worktree_branches, worktree_map
 from teatree.core.worktree.worktree_env import write_env_cache
@@ -212,6 +213,10 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
     direction: when it cannot confirm the content is merged it keeps the
     worktree, never removes it.
 
+    That probe is :func:`branch_landed_for_teardown`, not ``branch_redundancy``'s bare verdict
+    (#4719): a git-local rung reads the delta's PRIOR appearance on the target, which a later
+    commit over the same region does not erase. Keeping the ref does not make the loss free.
+
     Returns a one-line outcome — a removal, or a SKIPPED line when the worktree
     is kept (live work / uncommitted changes / genuinely-ahead work) or the
     removal failed.
@@ -237,7 +242,7 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str, *, dry_run: bool = 
     if (
         unsynced
         and not _branch_tree_matches_squash(repo, name)
-        and not branch_redundancy(repo, name, f"origin/{git.default_branch(repo)}").redundant
+        and not branch_landed_for_teardown(repo, name, f"origin/{git.default_branch(repo)}")
     ):
         return f"SKIPPED '{name}': {len(unsynced)} commit(s) ahead of origin/main — keeping {wt_path}"
     if dry_run:

@@ -275,3 +275,53 @@ class TestPruneDrainsForgeProvenBranches(TestCase):
 
         assert not any(line.startswith("Pruned squash-merged branch: feature") for line in lines)
         assert any("'feature'" in line and "not provably on" in line for line in lines), lines
+
+
+class TestGoneRemoteWorktreePrune(TestCase):
+    """The gone-remote worktree prune reads the same deletion predicate as the row guards (#4719).
+
+    ``branch_redundancy``'s synthetic-squash rung proves the branch's delta ONCE appeared on the
+    target, which a later commit over the same region does not erase — so a checkout whose content
+    will not merge clean was removed on that inference alone.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def _gone_remote_worktree(self, drift: tuple[str, str]) -> tuple[Path, Path]:
+        """A clean worktree on a squash-merged, forge-deleted branch, with *drift* on top."""
+        work = init_pushed_main(self.tmp_path)
+        wt_path = self.tmp_path / "checkout"
+        _run_git("worktree", "add", "-q", "-b", "feature", str(wt_path), cwd=work)
+        (wt_path / "feat.txt").write_text("v1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=wt_path)
+        _run_git("commit", "-q", "-m", "feat: add the feature", cwd=wt_path)
+        _run_git("push", "-q", "origin", "feature:feature", cwd=wt_path)
+        _run_git("merge", "-q", "--squash", "feature", cwd=work)
+        _run_git("commit", "-q", "-m", "feat: the feature (#4719)", cwd=work)
+        (work / drift[0]).write_text(drift[1], encoding="utf-8")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-q", "-m", "chore: work after the merge", cwd=work)
+        _run_git("push", "-q", "origin", "main", cwd=work)
+        _run_git("push", "-q", "origin", "--delete", "feature", cwd=work)
+        _run_git("fetch", "-q", "--prune", "origin", cwd=work)
+        return work, wt_path
+
+    def test_the_target_re_edited_the_same_region_keeps_the_checkout(self) -> None:
+        work, wt_path = self._gone_remote_worktree(drift=("feat.txt", "rewritten on the target\n"))
+
+        with forge_reporting():
+            lines = wcleanup._prune_gone_remote_worktrees(str(work), {"feature": str(wt_path)}, set())
+
+        assert any("SKIPPED 'feature'" in line for line in lines), lines
+        assert wt_path.exists(), "a checkout whose content is not on the target must survive"
+
+    def test_drift_on_another_file_is_still_reaped(self) -> None:
+        work, wt_path = self._gone_remote_worktree(drift=("base.txt", "base\nlater work\n"))
+
+        with forge_reporting():
+            lines = wcleanup._prune_gone_remote_worktrees(str(work), {"feature": str(wt_path)}, set())
+
+        assert any("Removed gone-remote worktree (branch kept): feature" in line for line in lines), lines
+        assert not wt_path.exists()
