@@ -76,7 +76,8 @@ def recover_account_switch(
 
     typer.echo(
         f"Account switch: {outcome.previous_fingerprint[:8]}… → {outcome.current_fingerprint[:8]}…. "
-        "Backend cache invalidated; re-probing connectors.",
+        f"Backend cache invalidated; token health expired ({outcome.token_health_rows_expired} row(s), "
+        "next `t3 tokens` re-probes); re-probing connectors.",
     )
     for probe in outcome.probes:
         status = "reachable" if probe.reachable else f"UNREACHABLE — {probe.detail}"

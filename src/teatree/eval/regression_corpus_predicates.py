@@ -297,8 +297,15 @@ def _check_account_switch_detect_and_recover() -> bool:
     def _unreachable_backends() -> "list[MessagingBackend]":
         return cast("list[MessagingBackend]", [StubBackend(ok=False)])
 
-    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=_reachable_backends)
-    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=_unreachable_backends)
+    def _no_token_health() -> int:
+        return 0
+
+    reachable = AccountSwitchRecovery(
+        reset_caches=_fake_reset, backends=_reachable_backends, expire_token_health=_no_token_health
+    )
+    unreachable_recovery = AccountSwitchRecovery(
+        reset_caches=_fake_reset, backends=_unreachable_backends, expire_token_health=_no_token_health
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
