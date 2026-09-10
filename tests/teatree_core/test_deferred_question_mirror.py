@@ -110,6 +110,48 @@ class TestMarkStale:
         assert row.audits.filter(action="dismissed").exists()
 
 
+class TestSupersedable:
+    """A newer question stale-marks only rows the owner cannot already be answering (#4721)."""
+
+    def _prior(self, **kwargs: object) -> DeferredQuestion:
+        fields: dict = {"session_id": "s1", "run_id": "r1", "generation": 1}
+        fields.update(kwargs)
+        return DeferredQuestion.record("prior", **fields)
+
+    def test_an_undelivered_same_run_row_is_supersedable(self) -> None:
+        row = self._prior()
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == [row]
+
+    def test_a_delivered_row_is_excluded(self) -> None:
+        self._prior(slack_ts="1700.0001", slack_channel="D1")
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
+
+    def test_another_sessions_row_is_excluded(self) -> None:
+        self._prior(session_id="s-other")
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
+
+    def test_another_runs_row_is_excluded(self) -> None:
+        self._prior(run_id="r-other")
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
+
+    def test_an_internal_row_is_excluded(self) -> None:
+        self._prior(audience=DeferredQuestion.Audience.INTERNAL)
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
+
+    def test_a_resolved_row_is_excluded(self) -> None:
+        row = self._prior()
+        row.mark_stale("already gone")
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
+
+    def test_an_unnameable_run_supersedes_nothing(self) -> None:
+        self._prior(run_id="")
+        assert list(DeferredQuestion.supersedable(session_id="s1", run_id="")) == []
+
+    def test_an_unnameable_session_supersedes_nothing(self) -> None:
+        self._prior(session_id="")
+        assert list(DeferredQuestion.supersedable(session_id="", run_id="r1")) == []
+
+
 class TestOptionsHash:
     def test_record_stores_options_hash(self) -> None:
         options = [{"label": "Yes"}, {"label": "No"}]

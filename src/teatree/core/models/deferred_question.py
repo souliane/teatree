@@ -299,6 +299,28 @@ class DeferredQuestion(models.Model):
             audience=cls.Audience.OWNER_QUESTION,
         ).order_by("created_at")
 
+    @classmethod
+    def supersedable(
+        cls,
+        *,
+        session_id: str,
+        run_id: str,
+        audience: str = Audience.OWNER_QUESTION,
+    ) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows a newer question of the same (session, run) may stale-mark, oldest first.
+
+        Three exclusions, each one a way the owner silently loses a question (#4721). A
+        DELIVERED row (``slack_ts != ""``) may already have the owner's Slack reply in
+        flight, and dismissing it strands that reply on a row nothing can bind it to. An
+        ``INTERNAL`` row is the box's own health queue, which ``task_repair`` records under
+        a session id of its own. And an unnameable scope matches NOTHING rather than
+        widening: a supersession that cannot say which run it belongs to would otherwise
+        sweep every pending row in the session.
+        """
+        if not session_id or not run_id:
+            return cls.objects.none()
+        return cls.pending().filter(session_id=session_id, run_id=run_id, audience=audience, slack_ts="")
+
     def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:
         """Stamp the Slack mirror coordinates single-use; ``True`` on the transition.
 
