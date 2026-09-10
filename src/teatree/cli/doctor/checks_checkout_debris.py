@@ -25,8 +25,14 @@ def check_checkout_untracked_debris() -> bool:
 
     Crash-proof and always returns ``True`` — advisory, not a correctness gate.
     """
+    from teatree.cli.doctor import checkout_root  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: keeps CLI startup light
+
     try:
-        paths = _untracked_paths(_repo_root())
+        paths = _untracked_paths(checkout_root.doctor_checkout_root())
+    except CommandFailedError as exc:
+        typer.echo(f"WARN  Checkout cleanliness UNVERIFIED: `git status` could not be read ({exc}).")
+        return True
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Checkout-cleanliness check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -43,24 +49,20 @@ def check_checkout_untracked_debris() -> bool:
     return True
 
 
-def _repo_root() -> Path | None:
-    """This checkout's root, or ``None`` when the cwd is not in one."""
-    from teatree.utils.git_run import run  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    top = run(repo=str(Path.cwd()), args=["rev-parse", "--show-toplevel"])
-    return Path(top) if top else None
-
-
 def _untracked_paths(repo_root: Path | None) -> list[str]:
-    """Top-level untracked, non-ignored entries — one per stray root item, not per file inside it."""
+    """Top-level untracked, non-ignored entries — one per stray root item, not per file inside it.
+
+    Read ``-z`` and fail-closed, because the two lenient readings are each wrong in a way the
+    caller cannot see: the text form C-quotes any path holding a space, yielding a string that
+    names no file, and a swallowed ``git status`` error is indistinguishable from a clean tree.
+    A rename's trailing old-path field never carries a status code, so it is skipped here.
+    """
     if repo_root is None:
         return []
-    from teatree.utils.git_status import status_porcelain  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git_status import status_porcelain_z_strict  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    out = status_porcelain(str(repo_root))
-    if not out:
-        return []
-    return sorted({line[3:] for line in out.splitlines() if line.startswith("??")})
+    fields = [field for field in status_porcelain_z_strict(str(repo_root)).split("\0") if field]
+    return sorted({field[3:] for field in fields if field.startswith("??")})
 
 
 __all__ = ["check_checkout_untracked_debris"]
