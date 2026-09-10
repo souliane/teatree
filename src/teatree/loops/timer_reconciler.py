@@ -40,6 +40,7 @@ import datetime as dt
 import logging
 import os
 
+from django.db.models import Q
 from django.tasks import task
 from django.utils import timezone
 
@@ -61,6 +62,9 @@ EXPIRE_INTERVAL_SECONDS = 3600
 #: collapses to one cycle plus one trailing catch-up instead of one cycle per
 #: event, whatever the burst's source (#4707).
 WAKE_MIN_INTERVAL_SECONDS = 10
+#: The key ``_run_slack_answer_cycle_under_lease`` returns only when a cycle actually
+#: ran — the debounce's one signal for telling a cycle from a run that stood down.
+CYCLE_REPORT_KEY = "processed"
 #: Grace past a tick's deadline before its still-RUNNING timer is deemed stranded.
 STUCK_GRACE_SECONDS = 60
 #: The headless-queue drain + stuck-run reaper cadence — the safety net that
@@ -148,17 +152,21 @@ def _pending_for_path(path: str) -> bool:
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
 
-def _finished_within(path: str, seconds: int) -> dt.datetime | None:
-    """When *path* last finished, if that was under *seconds* ago — else ``None``.
+def _cycle_finished_within(path: str, seconds: int) -> dt.datetime | None:
+    """When *path* last RAN A CYCLE, if that was under *seconds* ago — else ``None``.
 
-    The window is in the filter rather than applied to a newest-first scan so
-    the query stays bounded to the few rows the interval can hold.
+    Every execution stamps ``finished_at``, a coalescing one included, so a window
+    keyed on the path alone reads the coalescer's own finish and re-arms forever
+    (#4724). Ran-a-cycle is the cycle report's key, or a FAILED run that already
+    spent its Slack reads. The window stays in the filter so the query is bounded.
     """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     cutoff = timezone.now() - dt.timedelta(seconds=seconds)
     return (
         DBTaskResult.objects.filter(task_path=path, finished_at__gt=cutoff)
+        .filter(Q(return_value__has_key=CYCLE_REPORT_KEY) | Q(status=TaskResultStatus.FAILED))
         .order_by("-finished_at")
         .values_list("finished_at", flat=True)
         .first()
@@ -455,18 +463,20 @@ def wake_slack_answer() -> dict[str, int]:
 
     Two dedupes, because a pending wake is only half the burst. Against a
     PENDING wake: the queued one carries the work, so this one stands down.
-    Against a RECENTLY FINISHED one: a cycle takes ~2s, so events arriving
+    Against a RECENTLY FINISHED CYCLE: a cycle takes ~2s, so events arriving
     slower than that found nothing pending and bought a cycle each — 290 an
     hour at the peak of #4707. Inside the interval the wake re-arms itself once
     at the far edge and returns, which is a trailing-edge debounce: the burst
     costs O(1) cycles and its last event is still answered, one interval late
-    at worst rather than one cadence.
+    at worst rather than one cadence. Only a run that RAN the cycle counts —
+    counting the coalescing run's own finish re-armed the chain forever, which
+    killed the event-driven path at the first debounce (#4724).
     """
     if _pending_for_path(wake_slack_answer.module_path):
         return {"deduped": 1}
-    last_finished = _finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
-    if last_finished is not None:
-        wake_slack_answer.using(run_after=last_finished + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
+    last_cycle = _cycle_finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
+    if last_cycle is not None:
+        wake_slack_answer.using(run_after=last_cycle + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
         return {"coalesced": 1}
     return _run_slack_answer_cycle_under_lease()
 

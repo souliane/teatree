@@ -15,6 +15,7 @@ from unittest import mock
 import django.test
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
+from django_tasks_db.management.commands.db_worker import Worker
 from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core import mode_resolution
@@ -255,6 +256,37 @@ class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
         assert len(timer_chains.pending_loop_timers(LOOP)) == 1
 
 
+def _wake_worker() -> Worker:
+    """The real ``db_worker`` the loops queue runs under, batched so it never sleeps."""
+    return Worker(
+        queue_names=[timer_chains.LOOPS_QUEUE],
+        interval=0,
+        batch=True,
+        backend_name="default",
+        startup_delay=False,
+        max_tasks=None,
+        worker_id="test-worker",
+    )
+
+
+def _recorded_report(row: DBTaskResult) -> dict[str, int]:
+    """The row's RECORDED return value — read as ``object``, whose field default types it ``None``."""
+    report: object = row.return_value
+    assert isinstance(report, dict)
+    return report
+
+
+def _run_due_wakes(worker: Worker) -> list[DBTaskResult]:
+    """Execute every DUE wake through the worker's real claim -> call -> record path."""
+    # ``ready()``, never a hand-rolled ``run_after__lte``: an unscheduled enqueue stores a sentinel, not a time.
+    rows = list(DBTaskResult.objects.ready().filter(task_path=timer_reconciler.wake_slack_answer.module_path))
+    for row in rows:
+        row.claim(worker.worker_id)
+        worker.run_task(row)
+        row.refresh_from_db()
+    return rows
+
+
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestMaintenanceChains(django.test.TestCase):
     def setUp(self) -> None:
@@ -401,6 +433,7 @@ class TestMaintenanceChains(django.test.TestCase):
             backend_name="default",
             queue_name=timer_chains.LOOPS_QUEUE,
             finished_at=finished,
+            return_value={"processed": 0},
         )
 
         result = timer_reconciler.wake_slack_answer.func()
@@ -424,6 +457,7 @@ class TestMaintenanceChains(django.test.TestCase):
             backend_name="default",
             queue_name=timer_chains.LOOPS_QUEUE,
             finished_at=timezone.now() - dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS + 1),
+            return_value={"processed": 0},
         )
 
         result = timer_reconciler.wake_slack_answer.func()
@@ -441,12 +475,83 @@ class TestMaintenanceChains(django.test.TestCase):
             backend_name="default",
             queue_name=timer_chains.LOOPS_QUEUE,
             finished_at=timezone.now(),
+            return_value={"processed": 0},
         )
 
         result = timer_reconciler.wake_slack_answer.func()
 
         assert result["processed"] == 0
         assert "coalesced" not in result
+
+    def test_wake_debounce_chain_terminates_through_the_worker_path(self) -> None:
+        # #4724: driven through the REAL worker (a `.func()` call records no row), the
+        # re-armed wake must run its catch-up cycle and stop, not coalesce forever.
+        worker = _wake_worker()
+        t0 = timezone.now()
+        interval = dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS)
+        with mock.patch("django.utils.timezone.now") as now:
+            now.return_value = t0
+            timer_reconciler.wake_slack_answer.enqueue()
+            [first] = _run_due_wakes(worker)
+            assert _recorded_report(first)["processed"] == 0
+
+            now.return_value = t0 + dt.timedelta(seconds=3)
+            timer_reconciler.wake_slack_answer.enqueue()
+            [coalesced] = _run_due_wakes(worker)
+            assert _recorded_report(coalesced) == {"coalesced": 1}
+            rearmed = DBTaskResult.objects.filter(
+                task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+            )
+            assert rearmed.get().run_after == t0 + interval
+
+            now.return_value = t0 + interval
+            [catch_up] = _run_due_wakes(worker)
+            assert _recorded_report(catch_up)["processed"] == 0
+
+            for second in range(11, 41):
+                now.return_value = t0 + dt.timedelta(seconds=second)
+                assert _run_due_wakes(worker) == []
+
+    def test_wake_ignores_a_recent_coalescing_finish(self) -> None:
+        # Every execution stamps `finished_at`, a coalescing one included, so only a run
+        # that RAN the cycle may hold the next wake off (#4724).
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.wake_slack_answer.module_path,
+            status=TaskResultStatus.SUCCESSFUL,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=timezone.now() - dt.timedelta(seconds=2),
+            return_value={"coalesced": 1},
+        )
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result["processed"] == 0
+        assert "coalesced" not in result
+        assert not DBTaskResult.objects.filter(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_wake_debounces_behind_a_recent_failed_cycle(self) -> None:
+        # A cycle that raised still spent its Slack reads, so it rate-caps the burst too.
+        finished = timezone.now() - dt.timedelta(seconds=2)
+        DBTaskResult.objects.create(
+            task_path=timer_reconciler.wake_slack_answer.module_path,
+            status=TaskResultStatus.FAILED,
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name=timer_chains.LOOPS_QUEUE,
+            finished_at=finished,
+        )
+
+        result = timer_reconciler.wake_slack_answer.func()
+
+        assert result == {"coalesced": 1}
+        ready = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.wake_slack_answer.module_path, status=TaskResultStatus.READY
+        )
+        assert ready.get().run_after == finished + dt.timedelta(seconds=timer_reconciler.WAKE_MIN_INTERVAL_SECONDS)
 
     def test_wake_slack_answer_skips_when_lease_held(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
