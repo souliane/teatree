@@ -174,7 +174,8 @@ Usage: t3 agent [OPTIONS] [TASK]
  Launch Claude Code with auto-detected project context.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   task      [TASK]                                                           │
+│   task      [TASK]  What to work on (e.g. 'fix the sync bug', 'add a new     │
+│                     command')                                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --phase        TEXT  Explicit TeaTree phase override.                        │
@@ -240,7 +241,8 @@ Usage: t3 speak [OPTIONS] TEXT
  Refuse to speak — local audio cannot reach the user.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    text      TEXT  [required]                                              │
+│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
@@ -605,7 +607,7 @@ Usage: t3 ci cancel [OPTIONS] [BRANCH]
  Cancel stale CI pipelines for a branch.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   branch      [BRANCH]                                                       │
+│   branch      [BRANCH]  Branch name (default: current branch)                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -632,7 +634,7 @@ Usage: t3 ci fetch-errors [OPTIONS] [BRANCH]
  Fetch error logs from the latest CI pipeline.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   branch      [BRANCH]                                                       │
+│   branch      [BRANCH]  Branch name (default: current branch)                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -647,7 +649,7 @@ Usage: t3 ci fetch-failed-tests [OPTIONS] [BRANCH]
  Extract failed test IDs from the latest CI pipeline.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   branch      [BRANCH]                                                       │
+│   branch      [BRANCH]  Branch name (default: current branch)                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -662,7 +664,7 @@ Usage: t3 ci trigger-e2e [OPTIONS] [BRANCH]
  Trigger E2E tests on CI.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   branch      [BRANCH]                                                       │
+│   branch      [BRANCH]  Branch name (default: current branch)                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -698,7 +700,7 @@ Usage: t3 ci quality-check [OPTIONS] [BRANCH]
  Run quality analysis (fetch test report from latest pipeline).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   branch      [BRANCH]                                                       │
+│   branch      [BRANCH]  Branch name (default: current branch)                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -732,7 +734,8 @@ Usage: t3 codex review [OPTIONS] PR_URL
  use to spawn the codex agent.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    pr_url      TEXT  [required]                                            │
+│ *    pr_url      TEXT  PR URL, e.g. https://github.com/owner/repo/pull/123   │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --head-sha                 TEXT  Current head SHA of the PR. [required]   │
@@ -815,9 +818,10 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
  for a genuinely MR-wide (verdict-only) note.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
-│ *    note      TEXT     [required]                                           │
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+│ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file                      TEXT     File path for inline comment — REQUIRED │
@@ -920,9 +924,11 @@ Usage: t3 review post-comment [OPTIONS] REPO MR [NOTE]
  instead, or pass ``--force-general`` for a genuinely MR-wide note.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
-│      note      [NOTE]                                                        │
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+│      note      [NOTE]   Comment text (markdown). Omit and use -m/--body or   │
+│                         --body-file instead.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file                        TEXT     File path for inline comment — pair   │
@@ -1023,10 +1029,11 @@ Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
  Reply to a GitLab MR discussion thread (immediate, not draft).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo               TEXT     [required]                                  │
-│ *    mr                 INTEGER  [required]                                  │
-│ *    discussion_id      TEXT     [required]                                  │
-│ *    body               TEXT     [required]                                  │
+│ *    repo               TEXT     GitLab project path (e.g., my-org/my-repo)  │
+│                                  [required]                                  │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
+│ *    body               TEXT     Reply body (markdown) [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1049,8 +1056,9 @@ Usage: t3 review approve [OPTIONS] REPO MR
  `immediate`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1072,8 +1080,9 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
  `immediate`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1093,7 +1102,7 @@ Usage: t3 review checkout [OPTIONS] URL
  or not at all. Remove the worktree with ``git worktree remove`` when done.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  [required]                                               │
+│ *    url      TEXT  PR/MR URL whose head to materialise. [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --sha             TEXT  Full 40-char head SHA the checkout must land on.  │
@@ -1156,7 +1165,7 @@ Usage: t3 review run [OPTIONS] URL
      GitLab MR nor a GitHub PR URL).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  [required]                                               │
+│ *    url      TEXT  GitLab MR or GitHub PR URL to audit. [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1180,8 +1189,17 @@ Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
  audit row records who/what/when.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    target      TEXT  [required]                                            │
-│ *    action      TEXT  [required]                                            │
+│ *    target      TEXT  Scope identifier the recorded approval is bound to —  │
+│                        e.g. the MR ref `org/repo!42`, the PR url, or the     │
+│                        ticket+transition compound the gate emitted in its    │
+│                        `OnBehalfPostBlockedError` message.                   │
+│                        [required]                                            │
+│ *    action      TEXT  Action name the recorded approval authorises —        │
+│                        exactly the string in the gate's blocked-post message │
+│                        (`post_comment`, `reply_to_discussion`,               │
+│                        `approval_reaction`, etc.). Single-use; consumed when │
+│                        the next matching on-behalf attempt publishes.        │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --approver        TEXT  Identifier of the human user recording the        │
@@ -1203,9 +1221,9 @@ Usage: t3 review delete-draft-note [OPTIONS] REPO MR NOTE_ID
  Delete a draft note from a GitLab MR.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo         TEXT     [required]                                        │
-│ *    mr           INTEGER  [required]                                        │
-│ *    note_id      INTEGER  [required]                                        │
+│ *    repo         TEXT     GitLab project path [required]                    │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Draft note ID to delete [required]                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1226,9 +1244,9 @@ Usage: t3 review delete-discussion [OPTIONS] REPO MR NOTE_ID
  pre-gate (souliane/teatree#960).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo         TEXT     [required]                                        │
-│ *    mr           INTEGER  [required]                                        │
-│ *    note_id      INTEGER  [required]                                        │
+│ *    repo         TEXT     GitLab project path [required]                    │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Published note ID to delete [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1254,9 +1272,10 @@ Usage: t3 review delete-issue-note [OPTIONS] REPO ISSUE_IID NOTE_ID
  --approver <user-id>`).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo           TEXT     [required]                                      │
-│ *    issue_iid      INTEGER  [required]                                      │
-│ *    note_id        INTEGER  [required]                                      │
+│ *    repo           TEXT     GitLab project path (e.g., my-org/my-repo)      │
+│                              [required]                                      │
+│ *    issue_iid      INTEGER  Issue / work-item IID [required]                │
+│ *    note_id        INTEGER  Published note ID to delete [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1271,8 +1290,9 @@ Usage: t3 review publish-draft-notes [OPTIONS] REPO MR
  Publish all draft notes on a GitLab MR (bulk submit).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1287,8 +1307,8 @@ Usage: t3 review list-draft-notes [OPTIONS] REPO MR
  List draft notes on a GitLab MR.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     [required]                                           │
-│ *    mr        INTEGER  [required]                                           │
+│ *    repo      TEXT     GitLab project path [required]                       │
+│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1303,10 +1323,11 @@ Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
  Update a note on a GitLab MR — auto-detects draft vs published.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo         TEXT     [required]                                        │
-│ *    mr           INTEGER  [required]                                        │
-│ *    note_id      INTEGER  [required]                                        │
-│ *    body         TEXT     [required]                                        │
+│ *    repo         TEXT     GitLab project path (e.g., my-org/my-repo)        │
+│                            [required]                                        │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Note ID (draft or published) [required]           │
+│ *    body         TEXT     New comment body (markdown) [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1321,9 +1342,9 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
  Mark a GitLab MR discussion thread resolved or unresolved.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo               TEXT     [required]                                  │
-│ *    mr                 INTEGER  [required]                                  │
-│ *    discussion_id      TEXT     [required]                                  │
+│ *    repo               TEXT     GitLab project path [required]              │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
@@ -1347,7 +1368,13 @@ Usage: t3 review approve-live-post [OPTIONS] MR_URL
  live post against the same MR requires a fresh approval.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    mr_url      TEXT  [required]                                            │
+│ *    mr_url      TEXT  MR reference the live-post approval is scoped to —    │
+│                        accepts the GitLab/GitHub URL (e.g.                   │
+│                        ``https://gitlab.com/org/proj/-/merge_requests/42``)  │
+│                        or the canonical ``<org/proj>!<iid>`` token.          │
+│                        Single-use; consumed by the next matching ``t3 review │
+│                        post-comment <mr-url> ... --live``.                   │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --slack-ts              TEXT  Slack timestamp (e.g. ``1700000000.0001``) of  │
@@ -1383,7 +1410,14 @@ Usage: t3 review authorize [OPTIONS] SCOPE
  live post on the same MR requires a fresh ``authorize``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    scope      TEXT  [required]                                             │
+│ *    scope      TEXT  MR reference the authorization is scoped to — accepts  │
+│                       the GitLab/GitHub URL (e.g.                            │
+│                       ``https://gitlab.com/org/proj/-/merge_requests/42``)   │
+│                       or the canonical ``<org/proj>!<iid>`` token. Records   │
+│                       ONE durable authorization that lets the next ``t3      │
+│                       review post-comment <mr> ... --live`` publish — no     │
+│                       separate ``approve-live-post`` step.                   │
+│                       [required]                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --approver        TEXT  Identifier of the human user recording the        │
@@ -1777,7 +1811,7 @@ Usage: t3 eval capture-subagent [OPTIONS] NAME
  concurrent unrelated) sub-agent's file.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Scenario name whose transcript to capture. [required]   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │    --transcript-dir        PATH   Where to write <scenario>.jsonl (default:  │
@@ -2045,7 +2079,9 @@ Usage: t3 eval green-proof [OPTIONS] SUMMARY_JSON
  reds).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    summary_json      PATH  [required]                                      │
+│ *    summary_json      PATH  The merged eval-heal-<sha> §2.4 summary JSON to │
+│                              prove green.                                    │
+│                              [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -2082,7 +2118,9 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
  spend.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    dashboard_dir      PATH  [required]                                     │
+│ *    dashboard_dir      PATH  Directory holding the collected                │
+│                               eval-benchmark-*.html shards.                  │
+│                               [required]                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --expected-shards        INTEGER  Matrix leg count the run planned; fewer │
@@ -2101,7 +2139,9 @@ Usage: t3 eval merge-summaries [OPTIONS] INPUTS...
  Merge per-shard summary markdown into one dashboard (to --out or stdout).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    inputs      INPUTS...  [required]                                       │
+│ *    inputs      INPUTS...  Per-shard summary .md files, or a directory of   │
+│                             them.                                            │
+│                             [required]                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --run-url             TEXT  The workflow run URL (injected by the         │
@@ -2127,7 +2167,9 @@ Usage: t3 eval merge-summary-json [OPTIONS] INPUTS...
  stdout).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    inputs      INPUTS...  [required]                                       │
+│ *    inputs      INPUTS...  Per-shard summary .json files, or a directory of │
+│                             them.                                            │
+│                             [required]                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --sha                 TEXT  The commit SHA the run measured (injected).   │
@@ -2154,7 +2196,7 @@ Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
  ``transcript`` backend will read.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
@@ -2349,7 +2391,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
  Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --lane                                     TEXT     Run only scenarios in    │
@@ -2949,7 +2991,7 @@ Usage: t3 eval corpus show [OPTIONS] ENTRY_ID
  payloads).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    entry_id      TEXT  [required]                                          │
+│ *    entry_id      TEXT  Corpus entry id to inspect. [required]              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dir         PATH  Corpus directory (default: the shipped corpus).          │
@@ -2971,7 +3013,7 @@ Usage: t3 eval corpus grade [OPTIONS] [ENTRY_ID]
  row rather than silently agreeing with itself.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   entry_id      [ENTRY_ID]                                                   │
+│   entry_id      [ENTRY_ID]  Corpus entry id to grade (omit to grade all).    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dir                           PATH     Corpus directory (default: the      │
@@ -3036,7 +3078,9 @@ Usage: t3 eval label add [OPTIONS] SESSION_ID
  the file to edit.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    session_id      TEXT  [required]                                        │
+│ *    session_id      TEXT  Session id of an audited session to scaffold into │
+│                            the corpus.                                       │
+│                            [required]                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --entry-id        TEXT  Corpus entry id (default: derived from the session   │
@@ -3121,7 +3165,9 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
  escaped.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    summary_json      PATH  [required]                                      │
+│ *    summary_json      PATH  A merged eval-heal §2.4 summary JSON to audit   │
+│                              against.                                        │
+│                              [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
@@ -3266,7 +3312,7 @@ Usage: t3 tool privacy-scan [OPTIONS] [PATH]
  Scan text for privacy-sensitive patterns (emails, keys, IPs).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   path      [PATH]  [default: -]                                             │
+│   path      [PATH]  File or '-' for stdin [default: -]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3346,7 +3392,7 @@ Usage: t3 tool repo-mode [OPTIONS] [REPO]
  is cached 7 days per repo.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   repo      [REPO]  [default: .]                                             │
+│   repo      [REPO]  Repo path (default: current directory) [default: .]      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json             Emit machine-readable JSON.                               │
@@ -3372,7 +3418,9 @@ Usage: t3 tool analyze-video [OPTIONS] SOURCE
  ``--threshold T``, ``--output DIR``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    source      TEXT  [required]                                            │
+│ *    source      TEXT  Video file path or URL (GitLab/GitHub upload URLs are │
+│                        fetched authenticated)                                │
+│                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3399,7 +3447,7 @@ Usage: t3 tool sonar-check [OPTIONS] [REPO_PATH]
  Run local SonarQube analysis via Docker.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   repo_path      [REPO_PATH]                                                 │
+│   repo_path      [REPO_PATH]  Path to repo (default: current directory)      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --skip-baseline    --no-skip-baseline      Reuse previous baseline           │
@@ -3459,7 +3507,9 @@ Usage: t3 tool to-markdown [OPTIONS] FILE
  is absent, and non-zero with a clear message on a conversion failure.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    file      PATH  [required]                                              │
+│ *    file      PATH  Path to the attachment to convert (PDF, XLSX, DOCX,     │
+│                      PPTX, …).                                               │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3478,7 +3528,10 @@ Usage: t3 tool notion-download [OPTIONS] URL
  manual browser click is required.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  [required]                                               │
+│ *    url      TEXT  Either the `file://%7B…%7D` src from `notion-fetch`      │
+│                     (resolved automatically via Notion's API — no browser    │
+│                     click needed) or a pre-signed file.notion.so URL.        │
+│                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
@@ -3568,7 +3621,8 @@ Usage: t3 tool ai-sig-scan [OPTIONS] [PATH]
  only in /t3:rules and unenforced at the PR-body layer (PR #831 leak).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   path      [PATH]  [default: -]                                             │
+│   path      [PATH]  File or '-' for stdin (PR body / commit message)         │
+│                     [default: -]                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3673,8 +3727,8 @@ Usage: t3 tool figma-screenshot [OPTIONS] FILE_KEY NODE_ID
  limits.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    file_key      TEXT  [required]                                          │
-│ *    node_id       TEXT  [required]                                          │
+│ *    file_key      TEXT  Figma file key (from the file URL). [required]      │
+│ *    node_id       TEXT  Node/frame ID to render (e.g. `12:34`). [required]  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest   -d      PATH                        Output PNG path.                │
@@ -3692,8 +3746,8 @@ Usage: t3 tool figma-frames [OPTIONS] FILE_KEY NODE_ID
  List a node's child frames (name + ID) for navigation.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    file_key      TEXT  [required]                                          │
-│ *    node_id       TEXT  [required]                                          │
+│ *    file_key      TEXT  Figma file key. [required]                          │
+│ *    node_id       TEXT  Parent node ID to list children of. [required]      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3709,7 +3763,7 @@ Usage: t3 tool figma-comments [OPTIONS] FILE_KEY
  node.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    file_key      TEXT  [required]                                          │
+│ *    file_key      TEXT  Figma file key. [required]                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --node-id        TEXT  Restrict to comments anchored on this node.           │
@@ -3725,7 +3779,7 @@ Usage: t3 tool figma-components [OPTIONS] FILE_KEY
  Fetch component descriptions, variant properties, and styles (design tokens).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    file_key      TEXT  [required]                                          │
+│ *    file_key      TEXT  Figma file key. [required]                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3741,8 +3795,12 @@ Usage: t3 tool figma-compare [OPTIONS] DESIGN_IMAGE ACTUAL_SCREENSHOT
  evidence.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    design_image           PATH  [required]                                 │
-│ *    actual_screenshot      PATH  [required]                                 │
+│ *    design_image           PATH  Figma mockup PNG (e.g. from                │
+│                                   `figma-screenshot`).                       │
+│                                   [required]                                 │
+│ *    actual_screenshot      PATH  Playwright screenshot PNG to compare       │
+│                                   against.                                   │
+│                                   [required]                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Output side-by-side PNG path.                          │
@@ -3896,7 +3954,8 @@ Usage: t3 tool label-issues [OPTIONS] REPO
  Suggest labels for unlabeled open issues by keyword-matching title and body.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT  [required]                                              │
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Apply labels via `gh issue edit` (default: print only).     │
@@ -3912,7 +3971,8 @@ Usage: t3 tool find-duplicates [OPTIONS] REPO
  Flag pairs of open issues with near-identical titles.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT  [required]                                              │
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --threshold        FLOAT RANGE [0.0<=x<=1.0]  Similarity ratio required to   │
@@ -3930,7 +3990,8 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
  Scan for resolved-but-open and stale issues.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT  [required]                                              │
+│ *    repo      TEXT  Repository in owner/name form (e.g. souliane/teatree)   │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --stale-days            INTEGER  Inactivity threshold for stale-issue        │
@@ -3999,7 +4060,8 @@ Usage: t3 hook run [OPTIONS] NAME
  Run the portable hook ``name``; extra args pass through (e.g. ``--from-ref``).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Portable hook name, e.g. check_module_health.           │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4192,7 +4254,8 @@ Usage: t3 overlay install [OPTIONS] NAME
  Install an overlay editable into the current teatree workspace for dogfooding.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Overlay name as configured in the DB overlays registry. │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -4207,7 +4270,7 @@ Usage: t3 overlay uninstall [OPTIONS] NAME
  Uninstall an overlay from the current teatree workspace venv.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Overlay name to uninstall. [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -4397,7 +4460,7 @@ Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
  back via the standard TaskAttempt flow.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    task_id      INTEGER  [required]                                        │
+│ *    task_id      INTEGER  Task PK to mark claimed. [required]               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --claimed-by        TEXT  [default: loop-slot]                               │
@@ -4613,7 +4676,8 @@ Usage: t3 loop pause [OPTIONS] NAME
  or `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Mini-loop name (e.g. review, ship, dispatch).           │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --emergency          Required: this per-loop verb is emergency-only.         │
@@ -4631,7 +4695,7 @@ Usage: t3 loop resume [OPTIONS] NAME
  presets/schedules or `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --emergency          Required: this per-loop verb is emergency-only.         │
@@ -4649,7 +4713,7 @@ Usage: t3 loop disable [OPTIONS] NAME
  `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --emergency          Required: this per-loop verb is emergency-only.         │
@@ -4667,7 +4731,7 @@ Usage: t3 loop enable [OPTIONS] NAME
  `loop override`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --emergency          Required: this per-loop verb is emergency-only.         │
@@ -4685,8 +4749,8 @@ Usage: t3 loop override [OPTIONS] NAME STATE
  force-off (#3248).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name       TEXT  [required]                                             │
-│ *    state      TEXT  [required]                                             │
+│ *    name       TEXT  Mini-loop name. [required]                             │
+│ *    state      TEXT  on | off | clear. [required]                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --for           TEXT  TTL for the override (2h/30m/1d).                      │
@@ -4705,7 +4769,7 @@ Usage: t3 loop loop-state [OPTIONS] NAME
  refuses an unknown name).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Mini-loop name. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit JSON.                                                   │
@@ -4959,7 +5023,7 @@ Usage: t3 loop directives disable [OPTIONS] [SLOT_IDS]...
  Switch each named slot off by writing an empty, versioned override body.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   slot_ids      [SLOT_IDS]...                                                │
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch off.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --all           Switch every slot off.                                       │
@@ -4976,7 +5040,7 @@ Usage: t3 loop directives enable [OPTIONS] [SLOT_IDS]...
  one.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   slot_ids      [SLOT_IDS]...                                                │
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch back on.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --all           Switch every slot back on.                                   │
@@ -5274,7 +5338,7 @@ Usage: t3 goal set [OPTIONS] NAME
  Register (or re-arm) a standing verified-green goal.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Unique goal name (e.g. 'evals-green'). [required]       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --check        TEXT  Shell command that exits 0 when the goal is green.   │
@@ -5292,7 +5356,7 @@ Usage: t3 goal clear [OPTIONS] [NAME]
  Delete one named standing goal, or every goal when no name is given.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Goal name to clear; omit to clear ALL.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit JSON.                                                   │
@@ -5601,7 +5665,7 @@ Usage: t3 loops delete [OPTIONS] NAME
  just being blocked. `t3 setup` recreates a deleted shipped loop.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Loop to delete. [required]                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --confirm        TEXT  Typed phrase `stop-<name>`; required for a shipped    │
@@ -5795,7 +5859,7 @@ Usage: t3 notion fetch [OPTIONS] PAGE
  anyway for a genuine audit, use the separate ``audit-fetch`` command.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay         TEXT  Overlay whose token routing to use.                  │
@@ -5822,7 +5886,9 @@ Usage: t3 notion audit-fetch [OPTIONS] PAGE
  with no stamp, because there is nothing to warn about.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL of a page this surface refuses │
+│                      as dead.                                                │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --reason         TEXT  Why this dead page is being read. Blank does not   │
@@ -5842,7 +5908,7 @@ Usage: t3 notion comments [OPTIONS] PAGE
  List the open (unresolved) comments on a page or block.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page or block id / notion.so URL. [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Overlay whose token routing to use.                   │
@@ -5859,7 +5925,7 @@ Usage: t3 notion append [OPTIONS] PAGE
  Append content at the end of a page, then re-fetch to confirm it landed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay            TEXT  Overlay whose token routing to use.               │
@@ -5877,7 +5943,8 @@ Usage: t3 notion query [OPTIONS] DATABASE
  Query a Notion database (or data source) and emit the rows as JSON.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    database      TEXT  [required]                                          │
+│ *    database      TEXT  Database id, data-source id, or notion.so URL.      │
+│                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay            TEXT     Overlay whose token routing to use.            │
@@ -5902,7 +5969,8 @@ Usage: t3 notion doctor [OPTIONS] PAGE
  could not be established, and exits 14 on anything but ``OK``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL to probe reachability for.     │
+│                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Overlay whose token routing to use.                   │
@@ -5937,7 +6005,7 @@ Usage: t3 notion section show [OPTIONS] PAGE
  its body.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --heading        TEXT  Canonical H2 heading that identifies the owned     │
@@ -5962,7 +6030,7 @@ Usage: t3 notion section replace [OPTIONS] PAGE
  already answers whether the section exists, without writing).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --heading          TEXT  Canonical H2 heading that identifies the owned   │
@@ -6003,7 +6071,7 @@ Usage: t3 notion comment post [OPTIONS] PAGE
  the deliberate second copy.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --body-file              PATH  File holding the comment text (stored      │
@@ -6043,7 +6111,7 @@ Usage: t3 notion property get [OPTIONS] PAGE
  Print one page property — the poll a block-tree fetch cannot answer.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --name           TEXT  Property name, exactly as it reads in Notion.      │
@@ -6063,7 +6131,7 @@ Usage: t3 notion property set [OPTIONS] PAGE
  Write one page property, shaped by its own type and verified by re-read.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    page      TEXT  [required]                                              │
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --name           TEXT  Property name, exactly as it reads in Notion.      │
@@ -6120,7 +6188,7 @@ Usage: t3 prompts render [OPTIONS] NAME
  param or an unknown name is a loud error, never a silent wrong-render.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  The prompt name to render. [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --arg         TEXT  A declared-param value as KEY=VALUE (repeatable).        │
@@ -6216,9 +6284,14 @@ Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
      call (``missing_scope``, ``not_in_channel``, …).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    channel      TEXT  [required]                                           │
-│ *    ts           TEXT  [required]                                           │
-│ *    emoji        TEXT  [required]                                           │
+│ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
+│                         channel).                                            │
+│                         [required]                                           │
+│ *    ts           TEXT  Message timestamp (e.g. `1700000000.000100`).        │
+│                         [required]                                           │
+│ *    emoji        TEXT  Emoji name without colons (e.g. `eyes`,              │
+│                         `white_check_mark`).                                 │
+│                         [required]                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Overlay whose Slack credentials route the reaction.   │
@@ -6375,8 +6448,8 @@ Usage: t3 identities add [OPTIONS] PLATFORM HANDLE
  Add a trusted identity (idempotent on ``(platform, handle)``).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    platform      TEXT  [required]                                          │
-│ *    handle        TEXT  [required]                                          │
+│ *    platform      TEXT  github | gitlab | slack | internal [required]       │
+│ *    handle        TEXT  The forge handle / login to trust. [required]       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --note        TEXT  Free-form upkeep note.                                   │
@@ -6404,8 +6477,8 @@ Usage: t3 identities remove [OPTIONS] PLATFORM HANDLE
  Remove a trusted identity by ``(platform, handle)``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    platform      TEXT  [required]                                          │
-│ *    handle        TEXT  [required]                                          │
+│ *    platform      TEXT  github | gitlab | slack | internal [required]       │
+│ *    handle        TEXT  The forge handle / login to untrust. [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -6806,7 +6879,7 @@ Usage: t3 peer up [OPTIONS] [NAME]
  refused.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Peer label from the registry; omit for every peer.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --wait-seconds        FLOAT  How long to wait for the forward to start       │
@@ -6824,7 +6897,7 @@ Usage: t3 peer down [OPTIONS] [NAME]
  Close a forward teatree opened. One it did not open belongs to whoever did.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Peer label from the registry; omit for every peer.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -6840,7 +6913,7 @@ Usage: t3 peer status [OPTIONS] [NAME]
  opened it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]                                                           │
+│   name      [NAME]  Peer label from the registry; omit for every peer.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -6856,7 +6929,7 @@ Usage: t3 peer open [OPTIONS] NAME
  the host.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  [required]                                              │
+│ *    name      TEXT  Peer label from the registry. [required]                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --admin          That peer's Django admin instead of its board.              │
@@ -6982,7 +7055,7 @@ Usage: t3 teatree ship [OPTIONS] TICKET_ID
  Code to PR — create pull request for the ticket.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      TEXT  [required]                                         │
+│ *    ticket_id      TEXT  Ticket ID [required]                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --title        TEXT  PR title                                                │
@@ -7036,7 +7109,7 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
  Launch Claude Code with overlay context and auto-detected skills.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   task      [TASK]                                                           │
+│   task      [TASK]  What to work on                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --phase        TEXT  Explicit TeaTree phase override.                        │
@@ -8160,7 +8233,9 @@ Usage: t3 teatree wip set [OPTIONS] LEVEL
  Persist the global `` wip`` dial. A typo is rejected.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    level      TEXT  [required]                                             │
+│ *    level      TEXT  slow | medium | full | boost (aliases: low, normal,    │
+│                       high)                                                  │
+│                       [required]                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -8180,7 +8255,9 @@ Usage: t3 teatree wip boost [OPTIONS] CONCURRENCY
  clamped at admission by the PR-01 resource concurrency ceiling.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    concurrency      INTEGER  [required]                                    │
+│ *    concurrency      INTEGER  Target live worker count N the boost pool     │
+│                                refills to.                                   │
+│                                [required]                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -8198,7 +8275,9 @@ Usage: t3 teatree wip split [OPTIONS] WRITE
  what guarantees the next PR rebases against what just landed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    write      INTEGER  [required]                                          │
+│ *    write      INTEGER  WRITE-lane width N — how many implementation        │
+│                          workers run in parallel.                            │
+│                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -8245,7 +8324,7 @@ Usage: t3 teatree autonomy set [OPTIONS] LEVEL
  relaxed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    level      TEXT  [required]                                             │
+│ *    level      TEXT  babysit | notify | full [required]                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Overlay name to scope the value to (default: the      │

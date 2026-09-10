@@ -12,6 +12,6 @@
 # reds when the two drift, and when a `uv tool install` site drops the flag.
 #
 # There is NO entry today. `claude-agent-sdk` carried the only one — its declared
-# `mcp<2.0.0` against teatree's `mcp>=2,<3` — and 0.2.152 declares
+# `mcp<2.0.0` against teatree's `mcp>=2,<2.1` — and 0.2.152 declares
 # `mcp>=1.23.0,<3.0.0`, which admits that bound. The file stays committed and every
 # install keeps passing it, so re-adding an entry never means re-wiring the installs.

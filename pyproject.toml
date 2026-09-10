@@ -30,10 +30,18 @@ dependencies = [
   # wheel's ``claude_agent_sdk/_bundled/claude --version`` on every bump.
   #
   # The SDK's declared ``mcp>=1.23.0,<3.0.0`` already admits the project's own
-  # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
+  # ``mcp>=2,<2.1``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
   "claude-agent-sdk==0.2.152",
+  # Imported directly (cli/command_tree.py:25 and three more) yet only ever
+  # arrived transitively through typer/django-typer, so nothing pinned it.
+  # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
+  # AFTER ``TyperArgument`` set it pre-``super()``, so typer-declared positional
+  # help vanishes from ``t3 --help`` AND from the generated CLI reference — which
+  # ``docs-drift`` cannot catch, because it regenerates under the same click.
+  # Lift when typer stops setting ``self.help`` before ``super().__init__()``.
+  "click>=8.4,<8.5",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -46,8 +54,11 @@ dependencies = [
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
   "django-tasks>=0.9,<1",
-  # 0.13.0 drops ``compat.TASK_CLASSES``' ``django.tasks.base.Task`` arm, so our
-  # ``from django.tasks import task`` declarations all raise SuspiciousOperation.
+  # 0.13.0 collapses ``compat.TASK_CLASSES`` to the single ``django.tasks.base.Task``
+  # arm, dropping the third-party ``django_tasks.base.Task`` one. A ``@task``'s class
+  # is fixed at import time by the configured backend, and tests/django_settings.py
+  # pins ``django_tasks.backends.dummy.DummyBackend``, so ours are the dropped class
+  # and every enqueue raises SuspiciousOperation from ``DBTaskResult.task``.
   # Lift only with the migration off the third-party ``django_tasks`` app.
   "django-tasks-db>=0.12,<0.13",
   "django-typer>=3.3,<4",
@@ -63,9 +74,11 @@ dependencies = [
   # re-resolved an unbounded `>=1.27` to 2.0.0, so the server crashed on import
   # in production while every CI lane stayed green. Move this bound and the
   # imports together, never one alone.
-  # Also held below 2.1: 2.1.1 dropped the ``: {e}`` suffix from "Error executing
-  # tool {name}", so the gate still fires but its reason no longer reaches the
-  # caller. Lift together with the tests/teatree_mcp/ regexes asserting on it.
+  # Also held below 2.1: 2.1.x re-raises a plain exception as ``UnexpectedToolError``
+  # with the reason stripped (tools/base.py:210), keeping it only for ``ToolError`` /
+  # ``ResourceError`` / schema-validation failures. Our gate bodies raise plain
+  # ``RuntimeError`` / ``ValueError``, so the refusal still fires but its reason no
+  # longer reaches the caller. Lift by raising ``ToolError`` from those bodies.
   "mcp>=2,<2.1",
   # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
   # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
@@ -78,7 +91,7 @@ dependencies = [
   # for 72 consecutive watchdog passes. Same class as the ``coverage`` / ``pyyaml``
   # runtime-dep declarations above: a transitive arrival is not a declaration.
   # Bounded to the major whose module layout ``dep_skew`` imports, same posture as the
-  # ``mcp>=2,<3`` pin above: ``uv tool install`` re-resolves this declaration with no
+  # ``mcp>=2,<2.1`` pin above: ``uv tool install`` re-resolves this declaration with no
   # lockfile, so an unbounded floor lets the container run a major the test suite never
   # saw. ``<27`` admits the resolved 26.x line (uv.lock pins 26.2; the container has
   # independently resolved 26.3) with one full major of headroom.
@@ -101,7 +114,7 @@ dependencies = [
   # the ``anthropic`` package) — no ``claude`` CLI child, so a downstream harness
   # that forbids the Claude Code CLI can adopt these eval lanes
   # ([#3222](https://github.com/souliane/teatree/issues/3222)). The ``[mcp]``
-  # extra is deliberately ABSENT and cannot be added while ``mcp>=2,<3`` above
+  # extra is deliberately ABSENT and cannot be added while ``mcp>=2,<2.1`` above
   # holds: it resolves ``fastmcp-slim``, whose client imports ``mcp.McpError``,
   # which mcp 2.x renamed to ``MCPError``. Installing it yields a ``fastmcp``
   # module whose client raises on import — so Lane B's MCP toolset stays
@@ -175,14 +188,14 @@ dev = [
   "tach>=0.34",
   "trogon[typer]>=0.6",
   "ty>=0.0.18",
-  # Upper-bounded because ``django-typer`` gates it: 3.8.0 (the newest release)
-  # requires ``typer<0.26.0``. Without the ceiling the resolver takes typer 0.27,
-  # finds 3.8.0 unsatisfiable and backtracks to django-typer 3.5.1, which pulls
-  # ``typer-slim`` and ``click<8.4`` instead. That combination hands the CLI
-  # ``typer._click`` Command objects while the code reads the real ``click``
-  # context stack, so every command dies with "There is no active click context"
-  # (#4570). 3.5.1 also caps ``django<6.1``, which would block the Django 6.1
-  # move #4404 owns. Raise this ceiling only together with a django-typer
+  # Upper-bounded because ``django-typer`` gates it: 3.9.0 (the newest release the
+  # ``django-typer<4`` bound above admits) requires ``typer<0.26.0``. Without the
+  # ceiling the resolver takes typer 0.27, finds 3.9.0 unsatisfiable and backtracks
+  # to django-typer 3.5.1, which pulls ``typer-slim`` and ``click<8.4`` instead.
+  # That combination hands the CLI ``typer._click`` Command objects while the code
+  # reads the real ``click`` context stack, so every command dies with "There is no
+  # active click context" (#4570). 3.5.1 also caps ``django<6.1``, which would block
+  # the Django 6.1 move #4404 owns. Raise this ceiling only together with a django-typer
   # release that supports the newer typer.
   "typer>=0.12,<0.26",
 ]
@@ -205,7 +218,12 @@ mutation = [
 # `test-shuffle` CI lane installs this group and runs the order-fragile subset
 # shuffled (souliane/teatree#2359 Class B).
 shuffle = [
-  "pytest-randomly>=3.15",
+  # Held below 5: 5.0.0 makes ``pytest_collection_modifyitems`` a WRAPPER hookimpl
+  # so the shuffle now runs BEFORE pytest-django's stable grouping instead of after,
+  # remapping seed -> order. The lane's pinned seeds 1 and 7 then land a polluter
+  # next to its victim in ``tests/teatree_loop/scanners/`` and go red. The order
+  # dependence is real and pre-existing — lift with its fix in souliane/teatree#4756.
+  "pytest-randomly>=3.15,<5",
 ]
 # Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
 # (`--splits N --group K`, duration-balanced via a committed `.test_durations`)
@@ -744,7 +762,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 # one-line change rather than a re-wiring of every install surface.
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
-# replaced with the project's own `mcp>=2,<3` for the two to resolve together.
+# replaced with the project's own `mcp>=2,<2.1` for the two to resolve together.
 # 0.2.152 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
