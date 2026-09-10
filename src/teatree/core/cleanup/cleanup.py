@@ -332,12 +332,12 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
 
     **Squash-blindness (#4423).** Both signals above need the branch's tree to still equal
     the default branch's, so ANY later commit there defeats them and the worktree becomes
-    permanently unreclaimable. :func:`branch_is_landed` is the drift-tolerant fallback — would
-    merging this branch change the target at all — ANDed with the layered content verdict,
-    which is what keeps #2205's reverted local-only branch refused: its tree matches by
-    coincidence, and no content layer calls it redundant. It runs LAST because
-    ``remote_ref_was_present`` lets the signals above accept the ordinary squash with no forge
-    probe at all, and the verdict's first layer is one.
+    permanently unreclaimable. The drift-tolerant fallback — would merging this branch change
+    the target at all, ANDed with the layered content verdict — is the LAST rung of
+    :func:`_ref_captured_by_merge` itself, which is why there is no second accept here: since
+    #4719 that rung is :func:`branch_landed_for_teardown` (``redundant and (present or
+    forge-merged-tip)``), whose accept set strictly contains :func:`branch_is_landed`'s
+    (``present and redundant``), so a trailing ``branch_is_landed`` check could never fire.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
@@ -358,8 +358,6 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
         target.branch_to_delete,
         remote_ref_was_present=remote_ref_was_present,
     ):
-        return
-    if target.branch_to_delete is not None and branch_is_landed(repo_main, target.branch_to_delete):
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
     shas = ", ".join(preview)
