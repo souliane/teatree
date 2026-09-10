@@ -22,7 +22,8 @@ from pathlib import Path
 from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.models import Worktree
-from teatree.core.worktree.branch_classification import branch_redundancy, effective_default_target
+from teatree.core.worktree.branch_classification import effective_default_target
+from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -115,8 +116,17 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
     commit is absent-from-all-remotes by SHA even though its WORK is shipped.
     Treating that as unique work wrongly keeps a resolved orphan. So a branch
     counts as unique unpushed work only when its commits are absent from every
-    remote AND the landed ladder (:func:`branch_redundancy`) does NOT find the
-    work captured on the repo's default target.
+    remote AND the landed ladder does NOT find the work captured on the repo's
+    default target.
+
+    The ladder is consulted through :func:`branch_landed_for_teardown`, not the
+    bare :func:`~teatree.core.worktree.branch_classification.branch_redundancy`
+    (#4719): every git-local rung reads a patch's PRIOR appearance on the target,
+    which a later commit over the same region does not erase, and this reaper
+    disposes with ``git branch -D`` — a FORCE delete that takes an unmerged ref
+    with the checkout. :func:`~teatree.core.worktree.orphan_emit._work_bearing_record`
+    shares this function, so the surface that REPORTS the kept work and the pass
+    that refuses to reap it cannot drift apart.
 
     That target is :func:`effective_default_target` — the SAME resolution
     :func:`~teatree.core.worktree.orphan_emit._build_record` uses, so the two
@@ -149,4 +159,4 @@ def orphan_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
         return True
     if not absent:
         return False
-    return not branch_redundancy(probe_repo, branch, effective_default_target(repo)).redundant
+    return not branch_landed_for_teardown(probe_repo, branch, effective_default_target(repo))
