@@ -1,8 +1,10 @@
 """Fitness function: no text-bearing Slack egress bypasses the 90-char wrap (#3809).
 
 Three Slack wire calls carry a message body, and each has its own wrap seam:
-``chat.postMessage`` (``SlackBotBackend._post`` in the Django app,
-``hooks.slack_mirror.slack_post_message`` in the hook process),
+``chat.postMessage`` (``SlackBotBackend._post`` in the Django app — the hook
+process's own ``hooks.slack_mirror`` egress was retired by
+[#4673](https://github.com/souliane/teatree/issues/4673), which collapsed the
+loop-driven question mirror onto this same transport),
 ``files.completeUploadExternal``'s ``initial_comment`` (the audio DM, which
 never touches ``chat.postMessage`` at all), and the incoming webhook, which
 posts raw over ``httpx`` outside the backend transport entirely.
@@ -36,14 +38,13 @@ _TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "files.completeUploadExte
 
 #: The only modules that may NAME one of those methods in a call. ``egress``
 #: posts solely through the ``_post`` it is handed (the wrap seam), while
-#: ``slack_mirror`` and ``audio_upload`` wrap in their own bodies. ``bot`` is
-#: absent by construction: its seam dispatches on the *method* parameter, so it
-#: never names the string in a call. Anything else reaches Slack unwrapped.
+#: ``audio_upload`` wraps in its own body. ``bot`` is absent by construction:
+#: its seam dispatches on the *method* parameter, so it never names the string
+#: in a call. Anything else reaches Slack unwrapped.
 _WRAP_ROUTED_MODULES = frozenset(
     {
         "backends/slack/audio_upload.py",
         "backends/slack/egress.py",
-        "hooks/slack_mirror.py",
     }
 )
 

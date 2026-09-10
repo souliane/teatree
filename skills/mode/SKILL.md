@@ -116,12 +116,14 @@ Questions are never buffered on a mode — they are asked immediately
 **user-driven**:
 
 - **User-driven turn** (`is_live_user_turn` — a `UserPromptSubmit` for the same session
-  within `LIVE_TURN_FRESHNESS` = 90 s): the question renders **in-client**. This is the
+  within `LIVE_TURN_FRESHNESS` = 90 s): the question renders **in-client** and goes
+  nowhere else — it is not posted to Slack and not recorded ([#4673](https://github.com/souliane/teatree/issues/4673):
+  a recorded row with no Slack ts is exactly what the tick drain re-posts). This is the
   [#189](https://github.com/souliane/teatree/issues/189) escape that makes `/checking`
   work without a mode flip. It is intentionally far shorter than the 15-min
   `PRESENCE_FRESHNESS` used for the schedule upgrade.
-- **Autonomous / loop-driven turn**: the hook records a `DeferredQuestion`, mirrors it to
-  the user's Slack DM, and emits `permissionDecision=deny` naming the row id — a
+- **Autonomous / loop-driven turn**: the hook records a `DeferredQuestion`, kicks its
+  delivery to the user's Slack DM, and emits `permissionDecision=deny` naming the row id — a
   suspended autonomous session has no path to receive a Slack reply in-band. Invariant 9
   holds: autonomous questions are always captured.
 

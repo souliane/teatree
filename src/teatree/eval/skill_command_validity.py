@@ -95,6 +95,11 @@ ALLOWED_NON_RESOLVING: dict[str, str] = {
         "own */hook-config/tool-commands.json, so it is absent from a registry built "
         "for an overlay that ships none"
     ),
+    "t3 speak-dm": (
+        "a NEGATIVE existence claim — BLUEPRINT and the configuration appendix state "
+        "#4673 retired this worker, so the citation is correct precisely because it "
+        "does not resolve"
+    ),
 }
 
 
