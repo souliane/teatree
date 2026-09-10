@@ -4630,15 +4630,16 @@ def _supersede_pending_questions(data: dict) -> None:
 
     A loop-driven row the agent later re-asks on an attended turn would otherwise keep
     nagging from ``reask_escalated_questions`` after the owner has already answered.
+
+    Scoped by ``supersedable``: a raw ``pending()`` filter dismisses a DELIVERED row a Slack reply binds to,
+    sweeps the INTERNAL health queue, and — on the common run-less payload — erases the session's backlog (#4721).
     """
     if not bootstrap_teatree_django():
         return
     try:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
 
-        for prior in DeferredQuestion.pending().filter(
-            session_id=str(data.get("session_id", "")), run_id=_run_id(data)
-        ):
+        for prior in DeferredQuestion.supersedable(session_id=str(data.get("session_id", "")), run_id=_run_id(data)):
             prior.mark_stale("superseded by an in-client question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return

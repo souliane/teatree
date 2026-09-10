@@ -271,6 +271,75 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         kick.assert_not_called()
 
 
+class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
+    """The attended arm sweeps through the SAME three narrowings as capture (#4721, #4673).
+
+    ``_supersede_pending_questions`` reaches the same rows ``_capture_and_defer_question``
+    does, so an unnarrowed sweep here re-opens every way #4721 closed for the owner to lose
+    a question. The last three cases below are RED without :meth:`DeferredQuestion.supersedable`;
+    the first two pin the scope and the feature so the narrowing cannot become a disablement.
+    """
+
+    def _attended_ask(self, question: str = "Ship it?", **extra: str) -> None:
+        """Drive one attended non-owner ask — the in-client arm that sweeps and records nothing."""
+        payload: dict = {
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": question, "options": [{"label": "Yes"}]}]},
+        }
+        payload.update(extra)
+        with (
+            patch.object(router, "_is_live_user_turn", return_value=False),
+            patch.object(router, "_session_drives_loop", return_value=False),
+            patch.object(router, "_kick_question_drain"),
+        ):
+            assert router.handle_mirror_question_to_slack(payload) is False
+        self.drain_stdout()
+
+    def test_an_undelivered_same_run_row_is_still_superseded(self) -> None:
+        """The control: the narrowing must not amount to switching the sweep off."""
+        stale = DeferredQuestion.record("Ship it?", session_id="s-att", run_id="r1")
+        self._attended_ask(session_id="s-att", run_id="r1")
+
+        stale.refresh_from_db()
+        assert stale.is_pending is False, "the owner is still nagged for a decision made in-client"
+        assert stale.resolved_via == "stale"
+
+    def test_another_sessions_row_is_never_superseded(self) -> None:
+        foreign = DeferredQuestion.record("other session", session_id="s-other", run_id="r1")
+        self._attended_ask(session_id="s-att", run_id="r1")
+
+        foreign.refresh_from_db()
+        assert foreign.is_pending is True
+
+    def test_a_delivered_row_is_never_superseded(self) -> None:
+        """Dismissing it strands the owner's in-flight Slack reply on a row nothing can bind it to."""
+        delivered = DeferredQuestion.record(
+            "Ship it?", session_id="s-att", run_id="r1", slack_ts="1700.0001", slack_channel="D-cached"
+        )
+        self._attended_ask(session_id="s-att", run_id="r1")
+
+        delivered.refresh_from_db()
+        assert delivered.is_pending is True, "a mirrored row awaiting a Slack reply was dismissed"
+
+    def test_an_internal_row_in_the_same_run_is_never_superseded(self) -> None:
+        """The box's own health queue is not the owner's, even sharing a (session, run)."""
+        internal = DeferredQuestion.record(
+            "repair-loop stalled", session_id="s-att", run_id="r1", audience=DeferredQuestion.Audience.INTERNAL
+        )
+        self._attended_ask(session_id="s-att", run_id="r1")
+
+        internal.refresh_from_db()
+        assert internal.is_pending is True
+
+    def test_a_run_id_less_ask_supersedes_nothing(self) -> None:
+        """A real PreToolUse payload carries no run id, so an unscoped sweep is the COMMON case."""
+        backlog = DeferredQuestion.record("Ship it?", session_id="s-att")
+        self._attended_ask(session_id="s-att")
+
+        backlog.refresh_from_db()
+        assert backlog.is_pending is True, "an unscoped ask erased the session's whole pending backlog"
+
+
 class TestHooksJsonWiring(TestCase):
     def test_askuserquestion_matcher_lives_on_pretooluse(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
