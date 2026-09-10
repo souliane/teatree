@@ -4667,16 +4667,16 @@ def _kick_question_drain(ref: str) -> None:
 
 
 def _run_id(data: dict) -> str:
-    """Harness run id when the payload exposes one; fall back to session id.
+    """Harness run id when the payload exposes one; empty when it names no run.
 
-    The (session, run) pair scopes the generation cursor so a Slack reply
-    can never cross-apply between two distinct runs sharing a session id.
+    The (session, run) pair scopes the generation cursor and what a newer question may supersede; empty rather
+    than the session id, whose fallback widened that scope to the session's whole backlog (#4721).
     """
     for key in ("run_id", "agent_run_id", "tool_use_id"):
         value = str(data.get(key, "")).strip()
         if value:
             return value
-    return str(data.get("session_id", ""))
+    return ""
 
 
 def _options_hash(options: list[dict]) -> str:
@@ -4694,12 +4694,12 @@ def _first_question(data: dict) -> dict:
 def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[int | None, str]:
     """Record the loop-driven deny arm's durable ``DeferredQuestion`` (#1174, #4673).
 
-    It supersedes any pending older-generation row for the same (session, run) and
-    records the row UN-MIRRORED, so the one Slack egress
-    (``drain_unmirrored_deferred_questions`` -> ``notify_user``) delivers it and stamps
-    the mirror coordinates the reply matcher binds on. Returns ``(row id,
-    stable_notify_ref)``, or ``(None, "")`` when teatree is unavailable or there is
-    nothing to record — fails open, so the in-client modal renders.
+    It supersedes only the pending rows :meth:`DeferredQuestion.supersedable` still
+    allows — never one already delivered to Slack (#4721) — and records the row
+    UN-MIRRORED, so the one Slack egress (``drain_unmirrored_deferred_questions`` ->
+    ``notify_user``) delivers it and stamps the mirror coordinates the reply matcher
+    binds on. Returns ``(row id, stable_notify_ref)``, or ``(None, "")`` when teatree is
+    unavailable or there is nothing to record — fails open, so the in-client modal renders.
 
     *dedupe* makes the row itself the idempotency record: a harness retry returns the
     live row rather than superseding it into a twin ``live_for_reply`` cannot bind,
@@ -4723,7 +4723,7 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[in
         row = DeferredQuestion.pending().filter(dedupe_marker=marker).first() if marker else None
         generation = DeferredQuestion.next_generation(session_id=session_id, run_id=run_id)
         if row is None:
-            for prior in DeferredQuestion.pending().filter(session_id=session_id, run_id=run_id):
+            for prior in DeferredQuestion.supersedable(session_id=session_id, run_id=run_id):
                 prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None, ""
