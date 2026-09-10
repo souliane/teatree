@@ -491,7 +491,7 @@ AskUserQuestion (§17.1 invariant 9) carries a spoken rendition to the user's ph
 like any other `notify_user` DM — it IS one: the question is delivered by
 `drain_unmirrored_deferred_questions` → `notify_user`, whose speak sidecar attaches
 audio under the delivered text with an empty `initial_comment`. There is no separate
-mirror enricher and no `t3 speak-dm` worker; #4673 deleted both with the duplicate
+mirror enricher and no `speak-dm` worker; #4673 deleted both with the duplicate
 Slack ask they served. An attended question renders in the terminal only, so it has
 no DM to carry audio.
 
