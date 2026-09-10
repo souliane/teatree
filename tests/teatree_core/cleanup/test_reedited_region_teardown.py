@@ -22,8 +22,10 @@ from django.test import TestCase
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
+from teatree.core.worktree.orphan_emit import collect_orphan_emit_records
 from teatree.core.worktree.worktree_done import analyze_worktree_changes
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git, forge_reporting, squash_then_base_evolved
+from tests.teatree_core.orphan_fixture import OrphanWorktreeFixture
 
 _FEATURE = "feat.txt"
 
@@ -189,3 +191,57 @@ class TestTheForgeRecordAtTheExactTipStillStandsAlone:
 
         with forge_reporting():
             assert branch_landed_for_teardown(str(work), "feature", "origin/main") is False
+
+
+class TestARawOrphanGetsTheSameProtection(OrphanWorktreeFixture):
+    """The third destructive consumer: the reaper for checkouts no ``Worktree`` row tracks.
+
+    It reads :func:`orphan_has_unique_work`, not either guard above, and disposes with
+    ``git worktree remove`` plus ``git branch -D`` — a FORCE delete, so an unmerged ref goes
+    with the checkout. Its population is bare ``git worktree add`` checkouts with no row and
+    no PR, the one BLUEPRINT.md records reaching 183 on a single host.
+    """
+
+    def _squash_then_drift(self, branch: str, drift: tuple[str, str]) -> Path:
+        """A raw orphan on NO remote, squash-landed onto ``main``, then *drift* committed there."""
+        wt_path = self._add_orphan(branch, files={_FEATURE: "v1\n"})
+        (wt_path / _FEATURE).write_text("v2\n", encoding="utf-8")
+        _run_git("commit", "-q", "-a", "-m", "feat: refine the feature", cwd=wt_path)
+        _run_git("merge", "-q", "--squash", branch, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", f"feat: {branch} (#4719)", cwd=self.repo_main)
+        (self.repo_main / drift[0]).write_text(drift[1], encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "chore: work after the merge", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        return wt_path
+
+    def test_same_region_drift_keeps_the_orphan(self) -> None:
+        wt_path = self._squash_then_drift("4719-orphan-same-region", drift=(_FEATURE, "rewritten on the target\n"))
+
+        with forge_reporting():
+            results = self._reap()
+
+        assert wt_path.exists(), f"the only checkout of work on no remote was reaped: {results}"
+        assert any("unpushed work not on any remote" in line for line in results), results
+
+    def test_drift_on_another_file_still_reaps_the_orphan(self) -> None:
+        wt_path = self._squash_then_drift("4719-orphan-other-file", drift=("README", "x\nlater work\n"))
+
+        with forge_reporting():
+            results = self._reap()
+
+        assert not wt_path.exists(), f"a squash-landed orphan must still be reclaimed: {results}"
+        assert any("Reaped orphan worktree" in line for line in results), results
+
+    def test_emit_names_the_orphan_the_reaper_keeps(self) -> None:
+        """One predicate, so the surface that REPORTS the work and the pass that spares it agree."""
+        wt_path = self._squash_then_drift("4719-orphan-emit", drift=(_FEATURE, "rewritten on the target\n"))
+
+        with (
+            forge_reporting(),
+            patch("teatree.core.worktree.clone_paths.Path.cwd", return_value=self.repo_main),
+            patch("teatree.core.worktree.orphan_emit.is_clean_ignored", return_value=False),
+        ):
+            records = collect_orphan_emit_records(self.workspace)
+
+        assert [record.path for record in records] == [str(wt_path)], records

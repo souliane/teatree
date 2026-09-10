@@ -248,6 +248,9 @@ def _unpushed_commit_reasons(
     branch = target.branch_to_delete
     content_ref = branch if branch is not None else target.ref
     content_repo = str(repo_main) if branch is not None else target.probe_repo
+    # Neither rung below carries the #4719 presence conjunct, deliberately: each proves the
+    # branch's OWN commits are on the target's PUSHED history — every one patch-id-matched, or
+    # the tip tree identical to the forge's merge commit — so a copy outlives the teardown.
     if not content_equivalence_blockers(content_repo, content_ref, default_target):
         return []
     if branch is not None and _branch_tree_matches_squash(str(repo_main), branch):

@@ -118,8 +118,9 @@ def branch_landed_for_teardown(repo: str, branch: str, target: str = "") -> bool
     forge reporting that precisely these bytes merged, and it is the ONLY instrument that survives
     a squash whose content the base later evolved past (#4423). It stands alone, as it did before,
     and is asked directly rather than read off the deciding rung: which rung fired first says
-    nothing about whether that record exists. It runs second because it is the probe that can
-    reach the network, so a reclaimable branch pays for it only when presence cannot answer.
+    nothing about whether that record exists. It runs second only so the merged-tip lookup is
+    skipped when presence already answers — not to spare the network, which the
+    :func:`branch_redundancy` above has already reached unconditionally (both are memoised).
 
     An explicit *target* lets a caller that already resolved the default branch share that one ref,
     so the verdict and the presence probe can never measure against different bases.
