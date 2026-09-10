@@ -140,3 +140,42 @@ class TestLabellingNeverGatesTheRefreshPr:
             f"Every `--add-label` call must be non-fatal (`|| true`), else it re-introduces the "
             f"#4483 failure under `set -e`. Found: {labelling!r}"
         )
+
+
+class TestRefreshPreservesHandFixes:
+    """#4717: rebuilding the branch each run byte-erased the review fixes pushed onto it."""
+
+    def test_branch_is_built_by_the_preserving_script(self) -> None:
+        commands = _pr_step_commands()
+        assert "scripts/ci/durations_refresh_branch.py" in commands, (
+            "The refresh branch must be built by scripts/ci/durations_refresh_branch.py, which "
+            "preserves commits already on the branch instead of rebuilding the ref (#4717)."
+        )
+        assert '--branch "$BRANCH"' in commands, (
+            "The branch-building script must be told which branch to build, so the STABLE name "
+            "stays the single source of truth for both the build and the push (CI-3)."
+        )
+
+    def test_the_step_no_longer_rebuilds_the_branch_ref(self) -> None:
+        offenders = [line for line in _pr_step_commands().splitlines() if "checkout -B" in line]
+        assert not offenders, (
+            f"`git checkout -B` in the PR step rebuilds the refresh branch off main, discarding "
+            f"every commit already on it — that is how #4655's review fixes were destroyed "
+            f"(#4717). Build the branch through the preserving script instead. Found: {offenders!r}"
+        )
+
+    def test_the_push_still_uses_force_with_lease(self) -> None:
+        pushes = [line for line in _pr_step_commands().splitlines() if "git push" in line]
+        assert pushes, "The refresh must still push the branch."
+        assert all("--force-with-lease" in line for line in pushes), (
+            f"The push must keep --force-with-lease: the preserved path fast-forwards, but the "
+            f"fresh-rebuild path still rewrites the ref, and the lease is what guards a "
+            f"concurrent push. Found: {pushes!r}"
+        )
+
+    def test_the_pr_body_says_where_collateral_fixes_live(self) -> None:
+        assert "preserves every path other than" in _gh_pr_create_invocation(), (
+            "The refresh PR's body must tell a reviewer where the fixes that clear its own "
+            "review findings belong — nothing told them, which is how they were pushed onto a "
+            "branch that then erased them (#4717)."
+        )
