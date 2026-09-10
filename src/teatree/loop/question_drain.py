@@ -17,9 +17,13 @@ The sweep runs in two stages, and the split is the whole design:
     proof they answer nothing at all, so they add drains without ever suppressing one.
 * **backstop stage** — runs on every row the subject stage did NOT drain, including one
     it explicitly kept, so a KEEP is not a licence to sit forever. Past the age ceiling it
-    records an escalation, which is a state transition and never a resolution. The stamp
-    is rendered by :func:`~teatree.core.notify_question_drains.format_backlog_digest` and
-    ``t3 <overlay> questions list``, so the escalation reaches the owner.
+    records an escalation, which is a state transition and not a resolution; the stamp is
+    rendered by :func:`~teatree.core.notify_question_drains.format_backlog_digest` and
+    ``t3 <overlay> questions list``, so the escalation reaches the owner. That ladder is
+    BOUNDED (#4706): at ``deferred_question_max_escalations`` the row is drained STALE
+    with the count and age that decided it, because the escalation window rate-limits
+    re-asking without ever ending it — a row nobody answered escalated again every window,
+    forever, which is the flood this sweep now terminates.
 
 Both stages read one :class:`SweepContext`, built once per sweep.
 
@@ -36,10 +40,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from django.db.models import Max
 from django.utils import timezone
 
 from teatree.config.resolution import get_effective_settings
-from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_subjects import SubjectIndex
 
@@ -62,6 +67,14 @@ class Decision:
 
 
 @dataclass(frozen=True, slots=True)
+class NamedDecision:
+    """A verdict and the registry name that reached it — the name IS the audit's resolver."""
+
+    name: str
+    decision: Decision
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionReach:
     """Which resolvers can decide one pending row right now."""
 
@@ -74,6 +87,8 @@ class QuestionReach:
 class DrainReport:
     drained: int
     escalated: int
+    #: Rows the age ladder ran out of escalations on and drained STALE.
+    expired: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,16 +103,24 @@ class SweepContext:
     index: SubjectIndex
     now: datetime
     ceiling_days: int
+    #: Escalations a row gets before the ladder ends it; ``0`` leaves it unbounded.
+    max_escalations: int
     #: pks of the parked rows whose lane has since re-run to completion without them.
     superseded_parked: frozenset[int]
+    #: pks of the halt rows whose ticket has since run a phase to success.
+    cleared_halts: frozenset[int]
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
+        settings = get_effective_settings()
+        index = SubjectIndex.build(questions)
         return cls(
-            index=SubjectIndex.build(questions),
+            index=index,
             now=timezone.now(),
-            ceiling_days=int(get_effective_settings().deferred_question_age_ceiling_days),
+            ceiling_days=int(settings.deferred_question_age_ceiling_days),
+            max_escalations=int(settings.deferred_question_max_escalations),
             superseded_parked=_superseded_parked_questions(questions),
+            cleared_halts=_cleared_halt_questions(questions, index),
         )
 
 
@@ -114,6 +137,14 @@ def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Deci
 
 
 def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    """Climb the ladder one rung per ceiling window, then END it (#4178, #4706).
+
+    The escalation window is a rate limit, never a terminal state: once the last stamp
+    itself aged past the cutoff the row escalated AGAIN, so a question nobody answered
+    re-notified every window forever. The bound is what terminates it — and it is
+    reached only from the TOP of the ladder, so age alone never dismisses anything: a
+    41-day-old row that has never been escalated is escalated first, like any other.
+    """
     if context.ceiling_days <= 0:
         return None
     cutoff = context.now - timedelta(days=context.ceiling_days)
@@ -121,7 +152,29 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
         return None
     if question.escalated_at is not None and question.escalated_at > cutoff:
         return None
+    if 0 < context.max_escalations <= question.escalation_count:
+        waited = (context.now - question.created_at).days
+        return Decision(
+            Verdict.DRAIN,
+            f"unanswered through {question.escalation_count} escalations over {waited}d — decided by default",
+        )
     return Decision(Verdict.ESCALATE, f"pending past the {context.ceiling_days}d ceiling with no resolution")
+
+
+def _halt_trigger_cleared(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    """The halted ticket has since run a phase to SUCCESS — its trigger cannot recur; DRAIN.
+
+    ``_subject_terminal`` drains when the subject is finished and ``_parked_task_superseded``
+    when the parked lane re-ran; neither covers "the failure that raised this question can no
+    longer happen". Nine rows sharing one dispatch-failure fingerprint stayed pending after
+    that failure was fixed, because a halt question's only handle on its ticket is its text.
+
+    Positive-only: short of a success NEWER than the question it answers nothing, so it can
+    add a drain the FSM state cannot prove but never suppress one.
+    """
+    if question.pk not in context.cleared_halts:
+        return None
+    return Decision(Verdict.DRAIN, "the halted ticket has since run a phase to success")
 
 
 def _parked_task_superseded(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -207,6 +260,33 @@ def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> froze
     )
 
 
+def _cleared_halt_questions(questions: Sequence[DeferredQuestion], index: SubjectIndex) -> frozenset[int]:
+    """The halt rows whose ticket has recorded a SUCCESS attempt since the question.
+
+    Resolved once per sweep, in one aggregate. The success must POSTDATE the question:
+    an earlier one is what the ticket was doing before it got stuck, and reading it as
+    recovery would drain a live halt on its first tick.
+    """
+    halted = {
+        q.pk: (q.created_at, ticket) for q in questions if (ticket := index.halt_text_tickets.get(q.pk)) is not None
+    }
+    if not halted:
+        return frozenset()
+    latest_success = dict(
+        TaskAttempt.objects.filter(
+            task__ticket_id__in={ticket for _created, ticket in halted.values()},
+            outcome=TaskAttempt.Outcome.SUCCESS,
+        )
+        .values_list("task__ticket_id")
+        .annotate(latest=Max("started_at"))
+    )
+    return frozenset(
+        pk
+        for pk, (created_at, ticket) in halted.items()
+        if (success := latest_success.get(ticket)) is not None and success > created_at
+    )
+
+
 def _lane_moved_on(
     question: DeferredQuestion,
     parked: Task | None,
@@ -227,6 +307,7 @@ def _lane_moved_on(
 #: The two positive-only resolvers run FIRST: each answers ``None`` on anything short
 #: of proof, so they can only add a drain to what ``subject_terminal`` already decides.
 SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
+    ("halt_trigger_cleared", _halt_trigger_cleared),
     ("parked_task_superseded", _parked_task_superseded),
     ("pr_terminal", _pr_terminal),
     ("subject_terminal", _subject_terminal),
@@ -238,26 +319,33 @@ BACKSTOP_RESOLVERS: tuple[tuple[str, Resolver], ...] = (("age_ceiling", _age_cei
 def drain_pending_questions() -> DrainReport:
     """Resolve what is mechanically decidable in the pending backlog; escalate the rest.
 
-    Drains a row only on a ``DRAIN`` verdict from the subject stage, and escalates any
-    remaining row the backstop stage rules past the ceiling. Idempotent: ``mark_stale``
-    and ``mark_escalated`` are single-use CAS writes, and the escalation window keeps a
-    re-tick inside the ceiling from re-stamping.
+    Drains a row on a ``DRAIN`` verdict from either stage — the subject stage's, or the
+    backstop's own once the age ladder runs out of escalations — and escalates whatever
+    the backstop rules past the ceiling. Every drain names the resolver that decided it
+    in the audit row, so an automated dismissal is never mistaken for a human's.
+    Idempotent: ``mark_stale`` and ``mark_escalated`` are single-use CAS writes, and the
+    escalation window keeps a re-tick inside the ceiling from re-stamping.
     """
     pending = list(DeferredQuestion.pending())
     if not pending:
         return DrainReport(drained=0, escalated=0)
     context = SweepContext.build(pending)
-    drained = escalated = 0
+    drained = escalated = expired = 0
     for question in pending:
         subject = _first_decision(SUBJECT_RESOLVERS, question, context)
-        if subject is not None and subject.verdict is Verdict.DRAIN:
-            question.mark_stale(subject.reason)
+        if subject is not None and subject.decision.verdict is Verdict.DRAIN:
+            question.mark_stale(subject.decision.reason, resolver_id=subject.name)
             drained += 1
             continue
         backstop = _first_decision(BACKSTOP_RESOLVERS, question, context)
-        if backstop is not None and question.mark_escalated(backstop.reason):
+        if backstop is None:
+            continue
+        if backstop.decision.verdict is Verdict.DRAIN:
+            question.mark_stale(backstop.decision.reason, resolver_id=backstop.name)
+            expired += 1
+        elif question.mark_escalated(backstop.decision.reason):
             escalated += 1
-    return DrainReport(drained=drained, escalated=escalated)
+    return DrainReport(drained=drained, escalated=escalated, expired=expired)
 
 
 def question_reachability() -> list[QuestionReach]:
@@ -286,9 +374,9 @@ def question_reachability() -> list[QuestionReach]:
 
 def _first_decision(
     resolvers: Sequence[tuple[str, Resolver]], question: DeferredQuestion, context: SweepContext
-) -> Decision | None:
-    for _name, resolver in resolvers:
+) -> "NamedDecision | None":
+    for name, resolver in resolvers:
         decision = resolver(question, context)
         if decision is not None:
-            return decision
+            return NamedDecision(name=name, decision=decision)
     return None
