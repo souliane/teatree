@@ -304,6 +304,10 @@ def live_group_members(pgid: int) -> tuple[int, ...] | None:
 
     ``None`` is not "none left": a caller that cannot read the table must say so rather than
     report a reap it did not witness.
+
+    An opaque pid is deliberately NOT counted here, unlike in the leaderless scan: its pgid is
+    the very field that would not read, so counting it would make every group on a hidepid box
+    report a survivor forever.
     """
     root = venue_proc_root()
     if root is None:
