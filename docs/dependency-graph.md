@@ -65,6 +65,8 @@ graph TD
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
     teatree.core --> teatree.loop.preset_resolution
+    teatree.core --> teatree.core.mode_resolution
+    teatree.core --> teatree.loops.enable_verdict
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
@@ -304,6 +306,12 @@ graph TD
     teatree.loop.loop_state_db --> teatree.core.models
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
+    teatree.core.mode_resolution --> teatree.core.models
+    teatree.core.mode_resolution --> teatree.live_presence
+    teatree.core.mode_resolution --> teatree.loop.preset_resolution
+    teatree.loops.enable_verdict --> teatree.core.mode_resolution
+    teatree.loops.enable_verdict --> teatree.core.models
+    teatree.loops.enable_verdict --> teatree.loop.loop_state_db
     teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.scanners --> teatree.loop.question_binding
     teatree.loop.scanners --> teatree.loop.main_check_runs
