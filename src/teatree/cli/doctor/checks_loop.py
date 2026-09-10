@@ -163,19 +163,38 @@ def _check_dream_consolidation_blocked() -> bool:
 
 
 def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> str:
-    """Which of the two causes the marker's own attempt timestamp establishes (#4355).
+    """Which of the FOUR causes the marker establishes (#4355, #4671, #4725).
 
-    Naming the wrong one is expensive in both directions: "every pass is withheld" sends
+    Naming the wrong one is expensive in every direction: "every pass is withheld" sends
     the reader hunting a gate that is refusing when no pass ran, and the reverse sends
     them after a driver that is already firing every ten minutes.
+
+    The killed cause is one #4671 itself creates. #4355 made the LOOP's liveness anchor
+    pre-pass; THIS marker's attempt anchor stayed terminal-only, so a SIGKILLed pass
+    moved it not at all, went stale and read FROZEN — a mislabel, because the driver had
+    fired. (The ten-day "withheld" misreport came from a terminal stamp that DID land,
+    most plausibly the 0-members one below.) Stamping this anchor pre-pass corrects the
+    FROZEN mislabel and would make a kill read as a refusal in turn, so the same stamp
+    CLEARS the previous outcome: a recent attempt carrying none died before reaching one.
+
+    ``OUTCOME_FAILED`` is the fourth: a raised pass, 0 members or a broken distiller
+    could not EVALUATE the corpus, which is not the same claim as refusing it.
     """
     from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+        OUTCOME_FAILED,
         STALE_THRESHOLD_HOURS,
     )
 
     attempted = marker.last_attempted_at if marker else None
     if attempted is not None and (now - attempted) < dt.timedelta(hours=STALE_THRESHOLD_HOURS):
-        return "every pass is being withheld,"
+        outcome = marker.last_outcome if marker else ""
+        if not outcome:
+            return "the last pass was killed before reaching a verdict,"
+        detail = (marker.last_failure_detail if marker else "").strip()
+        quoted = f" ({detail})" if detail else ""
+        if outcome == OUTCOME_FAILED:
+            return f"the last pass could not be evaluated{quoted},"
+        return f"every pass is being withheld{quoted},"
     since = f"since {attempted.isoformat()}" if attempted else "ever"
     return f"and no pass has been attempted {since} — the loop is FROZEN, not withheld —"
 

@@ -9,6 +9,8 @@ engine is a typed seam.
 
 import datetime as dt
 import tempfile
+from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from typing import ClassVar
@@ -20,7 +22,9 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
+from teatree.core.models.dream_run_marker import OUTCOME_FAILED, OUTCOME_GATES_FAILED
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import (
@@ -694,13 +698,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         assert "OK    dream pass" in out
 
 
-class DreamAcceptanceGateWiringTestCase(TestCase):
-    """A failing §4 acceptance gate must NOT stamp the pass succeeded (#2545).
-
-    The gates make the pass anti-vacuous: a lossy / delete-only / no-op
-    consolidation FAILS a gate, and the command must keep staleness firing
-    rather than launder it into a success. The memory dir is a TMP fixture.
-    """
+class _AcceptanceGatePassMixin:
+    """Drive one whole pass to a terminal verdict with the §4 gates' report injected."""
 
     def setUp(self) -> None:
         import tempfile  # noqa: PLC0415
@@ -712,10 +711,10 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
         _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
-    def _run(self, stdout: StringIO, *, report: DreamQaReport) -> int:
+    def _run(self, stdout: StringIO, *, report: DreamQaReport, result: "DreamRunResult | None" = None) -> int:
         """Run one pass and return the command's exit code (0 when it did not raise)."""
         with (
-            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=result or _ok_result()),
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
             patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=report),
@@ -735,6 +734,15 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
             except SystemExit as exit_signal:
                 return int(exit_signal.code or 0)
         return 0
+
+
+class DreamAcceptanceGateWiringTestCase(_AcceptanceGatePassMixin, TestCase):
+    """A failing §4 acceptance gate must NOT stamp the pass succeeded (#2545).
+
+    The gates make the pass anti-vacuous: a lossy / delete-only / no-op
+    consolidation FAILS a gate, and the command must keep staleness firing
+    rather than launder it into a success. The memory dir is a TMP fixture.
+    """
 
     def test_failing_gate_does_not_stamp_succeeded(self) -> None:
         failing = DreamQaReport(gate_results=(GateResult(name="retention", passed=False, detail="lost mem_a"),))
@@ -2025,3 +2033,123 @@ class DreamRetryBackoffTestCase(_DreamTickEnabledMixin, TestCase):
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
             assert _run_dream("run") == 0
         engine.assert_called_once()
+
+
+class RefusedPassStampsWhichGateRefusedTestCase(_AcceptanceGatePassMixin, TestCase):
+    """#4716 — the refused half of the terminal stamp, the mirror of the KILLED half below.
+
+    Gutting both kwargs of the terminal ``mark_attempted`` left 990 dream tests green: every
+    one of them read the pass LINE, and nothing read back the row the doctor quotes. So a
+    refusal reported itself on stdout while the marker said only that an attempt happened —
+    the exact state a killed pass leaves, which is the distinction #4725 exists to keep.
+    """
+
+    def _marker(self) -> DreamRunMarker:
+        return DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+
+    def test_a_refused_pass_records_the_verdict_and_the_gate_that_refused(self) -> None:
+        failing = DreamQaReport(gate_results=(GateResult(name="interference", passed=False, detail="1 lost"),))
+        assert self._run(StringIO(), report=failing) == 1
+
+        marker = self._marker()
+        assert marker.last_outcome == OUTCOME_GATES_FAILED
+        assert "interference" in marker.last_failure_detail
+        assert "1 lost" in marker.last_failure_detail
+
+    def test_a_broken_distiller_records_the_other_verdict_of_the_same_stamp(self) -> None:
+        # The `if not gates_passed else` arm: passing gates, a raised batch. Same call site,
+        # so a stamp that always says `gates_failed` names a gate that did not refuse.
+        passing = DreamQaReport(gate_results=(GateResult(name="interference", passed=True, detail="ok"),))
+        broken = replace(_ok_result(), failed_batches=1)
+        assert self._run(StringIO(), report=passing, result=broken) == 1
+
+        marker = self._marker()
+        assert marker.last_outcome == OUTCOME_FAILED
+        assert "distiller FAILED" in marker.last_failure_detail
+
+    def test_the_doctor_quotes_the_refusing_gate_rather_than_sending_the_reader_to_re_run(self) -> None:
+        # The consequence the stamp exists for: what `t3 doctor check` says after the refusal.
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(days=30))
+        failing = DreamQaReport(gate_results=(GateResult(name="interference", passed=False, detail="1 lost"),))
+        self._run(StringIO(), report=failing)
+
+        said = StringIO()
+        with redirect_stdout(said):
+            _check_dream_consolidation_blocked()
+        assert "interference" in said.getvalue()
+        assert "killed before reaching a verdict" not in said.getvalue()
+
+
+class KilledPassLeavesNoOutcomeTestCase(TestCase):
+    """#4725 — the pre-pass clear is the whole killed-vs-withheld distinction.
+
+    Nothing pinned it: delete the clear and the suite stayed green while a pass killed
+    inside the 48h window reported the PREVIOUS pass's refusal as its own.
+
+    A SIGKILL is uncatchable and a ``KeyboardInterrupt`` is converted to a ``130`` return
+    by the typer runner, so the kill is modelled where it actually lands: the row is read
+    AT the engine seam, which is the row a pass killed at its deadline leaves behind.
+    """
+
+    def _seed_a_refused_pass(self) -> None:
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now() - dt.timedelta(hours=1),
+            outcome=OUTCOME_GATES_FAILED,
+            failure_detail="interference FAIL (1 lost)",
+        )
+
+    @staticmethod
+    def _row_at_the_kill_point(seen: dict[str, object]):
+        def _run(**_kwargs: object) -> DreamRunResult:
+            row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+            seen["outcome"] = row.last_outcome
+            seen["detail"] = row.last_failure_detail
+            seen["attempted"] = row.last_attempted_at
+            return _ok_result()
+
+        return _run
+
+    def test_a_pass_killed_mid_flight_leaves_no_outcome(self) -> None:
+        self._seed_a_refused_pass()
+        seen: dict[str, object] = {}
+        before = timezone.now()
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._row_at_the_kill_point(seen)):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert seen["outcome"] == ""
+        assert seen["detail"] == ""
+        assert seen["attempted"] >= before
+
+    def test_the_doctor_names_the_kill_rather_than_the_previous_refusal(self) -> None:
+        # The consequence the clear exists for, end to end: what `t3 doctor check` would
+        # have said had the pass died here.
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(days=30))
+        self._seed_a_refused_pass()
+        said: dict[str, str] = {}
+
+        def _run(**_kwargs: object) -> DreamRunResult:
+            buf = StringIO()
+            with redirect_stdout(buf):
+                _check_dream_consolidation_blocked()
+            said["out"] = buf.getvalue()
+            return _ok_result()
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_run):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert "killed before reaching a verdict" in said["out"]
+        assert "every pass is being withheld" not in said["out"]
+        assert "interference FAIL" not in said["out"]
+
+    def test_a_dry_run_never_clears_the_previous_outcome(self) -> None:
+        self._seed_a_refused_pass()
+        seen: dict[str, object] = {}
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._row_at_the_kill_point(seen)):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
+
+        assert seen["outcome"] == OUTCOME_GATES_FAILED
+        row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert row.last_outcome == OUTCOME_GATES_FAILED
+        assert "interference FAIL" in row.last_failure_detail

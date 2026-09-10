@@ -85,6 +85,12 @@ class BatchDistillOutcome:
     away, told apart from the ones the count cap never selected. A pass that stops on
     the clock and says nothing about it reads identically to a pass that finished, which
     is how a 30-minute overrun stayed invisible for weeks.
+
+    ``rotation_len`` and ``rotation_advance`` describe the SWEEP the cursor is walking —
+    how many batches rotate and how many this pass consumed. A deferral percentage alone
+    reads as a queue that never drains ("91% deferred every night"); with these the same
+    pass reports how many passes a full sweep takes, which is what says whether the
+    rotation converges (#4671).
     """
 
     clusters: list[DistilledCluster]
@@ -96,6 +102,15 @@ class BatchDistillOutcome:
     deferred_members: int = 0
     next_cursor: int | None = None
     budget_stopped_batches: int = 0
+    rotation_len: int = 0
+    rotation_advance: int = 0
+
+    @property
+    def sweep_passes(self) -> int:
+        """Passes this rotation needs to visit every batch once, 0 when it cannot advance."""
+        if self.rotation_len <= 0 or self.rotation_advance <= 0:
+            return 0
+        return -(-self.rotation_len // self.rotation_advance)
 
 
 @dataclass(slots=True)
@@ -307,6 +322,10 @@ def distill_in_batches(
     # it: a clock-truncated UNCAPPED pass that did not advance would re-distil the same
     # head next pass and never reach the corpus's tail.
     resumable = capped or stopped > 0
+    next_cursor = selection.cursor_after(len(reached)) if resumable and not dry_run and consolidated else None
+    # rotation_advance must agree with next_cursor: a withheld cursor (a failed/broken
+    # batch, or a dry run) means the rotation did NOT move, whatever `reached` says (#4671).
+    rotation_advance = max(0, len(reached) - selection.head_len) if next_cursor is not None else 0
     return BatchDistillOutcome(
         clusters=list(tally.merged.values()),
         empty_batches=tally.empty,
@@ -315,8 +334,10 @@ def distill_in_batches(
         diagnostics=tuple(tally.diagnostics),
         snippets_distilled=tally.distilled_snippets,
         deferred_members=sum(len(batch.snippets) for i, batch in enumerate(batches) if i not in distilled),
-        next_cursor=selection.cursor_after(len(reached)) if resumable and not dry_run and consolidated else None,
+        next_cursor=next_cursor,
         budget_stopped_batches=stopped,
+        rotation_len=selection.rotation_len,
+        rotation_advance=rotation_advance,
     )
 
 

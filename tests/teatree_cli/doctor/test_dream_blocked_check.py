@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
 from teatree.core.models import DreamRunMarker
-from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS
+from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, OUTCOME_FAILED, STALE_THRESHOLD_HOURS
 
 _BLOCKED_HOURS = STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1
 #: The claim itself, not the bare word — the frozen wording legitimately says "not withheld".
@@ -57,9 +57,13 @@ class DreamBlockedDoctorCheckTestCase(TestCase):
         assert "FAIL" in out
         assert "t3 dream run" in out
 
-    def test_a_recently_attempted_pass_reads_as_withheld(self) -> None:
+    def test_a_recently_attempted_pass_that_reached_a_verdict_reads_as_withheld(self) -> None:
+        # #4671 sharpened the premise: a recent attempt alone no longer proves withholding,
+        # because the attempt anchor is stamped BEFORE the pass and a SIGKILLed pass moves
+        # it too. Withholding is claimed only once a terminal refusal was RECORDED; the
+        # hard-FAIL verdict itself is unchanged either way.
         DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
-        DreamRunMarker.objects.mark_attempted(timezone.now())
+        DreamRunMarker.objects.mark_attempted(timezone.now(), outcome="gates_failed", failure_detail="interference")
         assert _WITHHELD_CLAIM in _blocked_output()
 
     def test_an_unattempted_pass_says_frozen_and_does_not_claim_withholding(self) -> None:
@@ -122,3 +126,52 @@ def _calls_feeding_the_exit_code() -> set[str]:
         for call in ast.walk(node.value)
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
     }
+
+
+class DreamBlockCauseAttributionTestCase(TestCase):
+    """#4671 D4 — a pass killed before any verdict must not be reported as withheld."""
+
+    def _blocked(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+
+    def test_a_recent_attempt_with_no_terminal_outcome_reads_as_killed(self) -> None:
+        # This anchor is stamped BEFORE the pass (#4671 — it was terminal-only before, so
+        # a kill read as FROZEN), and now a SIGKILLed pass moves it. Without a terminal
+        # outcome that would read as a refusal and send the operator hunting a gate.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(timezone.now())
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM not in out
+        assert "killed before reaching a verdict" in out
+
+    def test_a_recorded_gate_refusal_still_reads_as_withheld_and_quotes_the_gate(self) -> None:
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now(), outcome="gates_failed", failure_detail="interference FAIL (1 lost) [lost: foo.md]"
+        )
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM in out
+        assert "interference FAIL" in out
+        assert "foo.md" in out
+
+    def test_no_attempt_at_all_still_reads_as_frozen(self) -> None:
+        # Behaviour preservation: the #4355 FROZEN branch is unchanged by the new field.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(timezone.now() - dt.timedelta(hours=_BLOCKED_HOURS))
+        out = _blocked_output()
+        assert "FROZEN" in out
+        assert "killed before reaching a verdict" not in out
+
+    def test_a_pass_that_could_not_be_evaluated_is_not_reported_as_withheld(self) -> None:
+        # `could not evaluate` is not `refused`: a raised pass, 0 members or a broken
+        # distiller all stamp OUTCOME_FAILED, and wearing the refusal's words sends the
+        # operator hunting a gate that reached no verdict on it.
+        self._blocked()
+        DreamRunMarker.objects.mark_attempted(
+            timezone.now(), outcome=OUTCOME_FAILED, failure_detail="0 transcript members replayed"
+        )
+        out = _blocked_output()
+        assert _WITHHELD_CLAIM not in out
+        assert "could not be evaluated" in out
+        assert "0 transcript members replayed" in out
+        assert "killed before reaching a verdict" not in out

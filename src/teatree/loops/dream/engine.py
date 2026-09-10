@@ -80,6 +80,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from django.db import transaction
 
+from teatree.loops.dream.citation_snap import snap_citation
 from teatree.loops.dream.replay import ConsolidationExtract, build_extract, enumerate_members
 
 if TYPE_CHECKING:
@@ -239,11 +240,13 @@ def write_clusters(
 
     A cluster is rejected (counted, LOGGED at WARNING, never written) when its
     ``source_files`` is empty, cites a path not present in *extract*, or its
-    ``verified_citation`` is blank or does not appear (whitespace-normalized
-    substring) in a cited snippet's text — these are the hallucinated-rule shapes the
-    ledger must never persist, including a real-path-but-invented-quote citation.
-    :func:`check_grounding` names WHICH of the four failed, and the WARNING carries
-    that reason, so an ungrounded distiller batch is surfaced, not swallowed. A valid
+    ``verified_citation`` is blank, or does not appear (whitespace-normalized substring)
+    in a cited snippet's text AND cannot be snapped to a window whose token delta is
+    limited to articles (:func:`~teatree.loops.dream.citation_snap.snap_citation`) — one that adds,
+    drops or changes a meaning-bearing word is rejected as a composed quote. These are the
+    hallucinated-rule shapes the ledger must never persist, including a
+    real-path-but-invented-quote citation. :func:`check_grounding` names WHICH failed, and
+    the WARNING carries that reason, so an ungrounded distiller batch is surfaced. A valid
     cluster is upserted by ``cluster_key`` through the manager factory, so a
     re-run that re-clusters the same members updates the row in place instead of
     duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
@@ -285,8 +288,10 @@ def write_clusters(
 #: substring test. A decoded transcript may carry a smart quote / em-dash where the
 #: model's citation used the straight form (or the reverse), so both operands are
 #: folded SYMMETRICALLY (:func:`normalize_ws` runs on the snippet index AND on the
-#: citation). This stays a strict substring test — a canonical form on both sides,
-#: never a fuzzy / token-overlap match — so an invented citation is still rejected.
+#: citation). The fold canonicalises both sides of that substring test AND of the
+#: :func:`~teatree.loops.dream.citation_snap.snap_citation` fallback, where a citation the
+#: substring test misses is admitted only when its token delta against the located window is
+#: empty or limited to articles — so an invented or composed citation is still rejected.
 _PUNCT_FOLD = str.maketrans(
     {
         "\u2018": "'",  # left single quotation mark
@@ -326,8 +331,10 @@ class GroundingVerdict:
 def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str]) -> GroundingVerdict:
     """Canonicalise *cluster*'s cited paths, then say WHY it is not grounded.
 
-    The four causes are reported apart because only the last is a citation problem;
-    one shared message sent every investigation to the citation (#4610).
+    The causes are reported apart because only the citation ones are a citation problem;
+    one shared message sent every investigation to the citation (#4610). The last two are
+    apart from each other too: a quote that located a real window and then changed a word
+    is a composed quote, and saying "not present" of it hides the word that was changed.
     """
     sources = [_resolve_cited_path(str(path), snippet_texts) for path in cluster.source_files if str(path).strip()]
     resolved = replace(cluster, source_files=sources)
@@ -336,12 +343,27 @@ def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str])
     uncited = [source for source in sources if source not in snippet_texts]
     if uncited:
         return GroundingVerdict(resolved, f"its cited path {uncited[0]!r} is not among the extract's snippets")
-    citation = normalize_ws(cluster.verified_citation)
+    return _check_citation(resolved, [snippet_texts[source] for source in sources])
+
+
+def _check_citation(resolved: DistilledCluster, snippets: Sequence[str]) -> GroundingVerdict:
+    """The citation half of :func:`check_grounding`: found, snapped, composed, or absent."""
+    citation = normalize_ws(resolved.verified_citation)
     if not citation:
         return GroundingVerdict(resolved, "its verified_citation is empty")
-    if not any(citation in snippet_texts[source] for source in sources):
-        return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
-    return GroundingVerdict(resolved, None)
+    if any(citation in snippet for snippet in snippets):
+        return GroundingVerdict(resolved, None)
+    snap = snap_citation(citation, snippets)
+    if snap.window is not None:
+        return GroundingVerdict(replace(resolved, verified_citation=snap.window), None)
+    if snap.composed:
+        return GroundingVerdict(
+            resolved,
+            f"its verified_citation nearly quotes a cited snippet but differs from it by "
+            f"{', '.join(snap.composed)} — a near-miss that changes a word is a composed quote, "
+            f"not a paraphrase",
+        )
+    return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
 
 
 def _resolve_cited_path(source: str, snippet_texts: Mapping[str, str]) -> str:
@@ -433,11 +455,16 @@ def run_consolidation(
         extract, distiller=distill.distiller or sdk_distill, dry_run=dry_run, budget=distill.budget
     )
     if outcome.deferred_members:
+        sweep = outcome.sweep_passes
         logger.warning(
             "dream pass DEFERRED %d of %d snippet(s) — the per-pass batch cap bound; "
-            "they are carried to the next pass by the distill cursor, not dropped.",
+            "they are carried to the next pass by the distill cursor, not dropped. "
+            "The cursor advanced %d of %d rotating batch(es), so a full corpus sweep takes %s.",
             outcome.deferred_members,
             len(extract.snippets),
+            outcome.rotation_advance,
+            outcome.rotation_len,
+            f"~{sweep} pass(es)" if sweep else "UNBOUNDED passes — the cursor did not advance",
         )
     clusters = outcome.clusters
     # ONE transaction for the rows and for the cursor that CLAIMS those rows exist. The

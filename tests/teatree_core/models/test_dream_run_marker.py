@@ -96,3 +96,28 @@ class TestStr(TestCase):
 
         assert marker.last_succeeded_at is None
         assert str(marker) == "dream-run<dream:succeeded=never>"
+
+
+class TestTerminalOutcome(TestCase):
+    """#4671 D4 — a pass killed before any verdict must not read as a gate refusal."""
+
+    def test_mark_attempted_clears_the_previous_terminal_outcome(self) -> None:
+        now = timezone.now()
+        DreamRunMarker.objects.mark_attempted(now, outcome="gates_failed", failure_detail="interference FAIL (x)")
+        DreamRunMarker.objects.mark_attempted(now)
+        row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert row.last_outcome == ""
+        assert row.last_failure_detail == ""
+
+    def test_a_recorded_refusal_survives_for_the_doctor_to_quote(self) -> None:
+        now = timezone.now()
+        DreamRunMarker.objects.mark_attempted(now)
+        DreamRunMarker.objects.mark_attempted(now, outcome="gates_failed", failure_detail="interference FAIL (1 lost)")
+        row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert row.last_outcome == "gates_failed"
+        assert "interference FAIL" in row.last_failure_detail
+
+    def test_mark_succeeded_records_the_stamped_outcome(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now())
+        row = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert row.last_outcome == "stamped"

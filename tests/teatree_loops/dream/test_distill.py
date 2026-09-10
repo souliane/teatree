@@ -245,6 +245,19 @@ class ABrokenPassHoldsTheCursorTestCase(TestCase):
         assert outcome.broken_batches == 0
         assert outcome.next_cursor is not None
 
+    def test_a_broken_reply_reports_no_rotation_advance(self) -> None:
+        """rotation_advance must agree with next_cursor (#4671): a parked rotation is not a moving one."""
+        outcome = self._capped_outcome(_unparsable)
+
+        assert outcome.next_cursor is None
+        assert outcome.rotation_advance == 0
+
+    def test_a_healthy_pass_reports_the_rotation_advance_it_committed(self) -> None:
+        outcome = self._capped_outcome(_healthy_empty)
+
+        assert outcome.next_cursor is not None
+        assert outcome.rotation_advance > 0
+
 
 class _FakeClock:
     """A monotonic clock a test advances by hand, so a wall-clock bound needs no sleep."""
