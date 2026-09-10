@@ -49,7 +49,6 @@ from teatree.core.management.commands.workspace import _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
-from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
@@ -59,8 +58,6 @@ from tests.teatree_core.management_commands._overlays import (
     FullProvisioning,
     _patch_overlays,
 )
-
-_NOT_REDUNDANT = RedundancyVerdict(redundant=False, forge_merged=False)
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -2193,7 +2190,7 @@ class TestPruneBranches(TestCase):
             patch.object(git_mod, "default_branch", return_value="main"),
             patch.object(git_mod, "unsynced_commits", return_value=["abc123 chore: cve fix"]),
             patch.object(git_mod, "commits_absent_from_all_remotes", return_value=["abc123 chore: cve fix"]),
-            patch.object(cleanup_mod, "branch_redundancy", return_value=_NOT_REDUNDANT),
+            patch.object(cleanup_mod, "branch_landed_for_teardown", return_value=False),
             patch.object(git_mod, "worktree_remove", return_value=True) as mock_wt_rm,
             patch.object(git_mod, "branch_delete", return_value=True) as mock_br_del,
             patch("teatree.utils.run.subprocess.run", return_value=forge_silent),
