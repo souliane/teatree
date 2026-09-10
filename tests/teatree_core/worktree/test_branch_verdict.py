@@ -15,7 +15,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.worktree import branch_classification
-from teatree.core.worktree.branch_verdict import branch_is_landed, branch_verdict_report, render_verdict
+from teatree.core.worktree.branch_verdict import (
+    branch_is_landed,
+    branch_landed_for_teardown,
+    branch_verdict_report,
+    render_verdict,
+)
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -187,6 +192,15 @@ class TestTheTargetIsResolvedNotHardcoded(BranchVerdictCase):
 
         assert branch_verdict_report(str(repo), "feature", target="main").target == "main"
 
+    def _feature_squashed_onto_release(self) -> Path:
+        repo = self._repo_with_branch("one.py")
+        run_git(repo, "checkout", "-q", "-b", "release", "main")
+        run_git(repo, "merge", "-q", "--squash", "feature")
+        run_git(repo, "commit", "-q", "-m", "feat: one (#1)")
+        run_git(repo, "push", "-q", "origin", "release")
+        run_git(repo, "fetch", "-q", "origin")
+        return repo
+
     def test_branch_is_landed_measures_against_an_explicit_target(self) -> None:
         """#4423 — the cleanup guard shares its already-resolved default with the probe.
 
@@ -194,12 +208,18 @@ class TestTheTargetIsResolvedNotHardcoded(BranchVerdictCase):
         nothing else, so a ``branch_is_landed`` that dropped the argument and re-resolved the
         repo default would answer False for the very ref the caller named.
         """
-        repo = self._repo_with_branch("one.py")
-        run_git(repo, "checkout", "-q", "-b", "release", "main")
-        run_git(repo, "merge", "-q", "--squash", "feature")
-        run_git(repo, "commit", "-q", "-m", "feat: one (#1)")
-        run_git(repo, "push", "-q", "origin", "release")
-        run_git(repo, "fetch", "-q", "origin")
+        repo = self._feature_squashed_onto_release()
 
         assert branch_is_landed(str(repo), "feature", "origin/release") is True
         assert branch_is_landed(str(repo), "feature") is False
+
+    def test_the_teardown_predicate_measures_against_an_explicit_target(self) -> None:
+        """#4719 — the two teardown guards share their already-resolved default with the probe.
+
+        The stricter deletion predicate needs its own pin: it ANDs extra rungs onto
+        :func:`branch_is_landed`, so the target could be re-resolved there and nowhere else.
+        """
+        repo = self._feature_squashed_onto_release()
+
+        assert branch_landed_for_teardown(str(repo), "feature", "origin/release") is True
+        assert branch_landed_for_teardown(str(repo), "feature") is False

@@ -31,11 +31,10 @@ from teatree.core.worktree._overlay_teardown import reap_external_resources, run
 from teatree.core.worktree.branch_classification import (
     _branch_pr_is_merged,
     _branch_tree_matches_squash,
-    branch_redundancy,
     content_equivalence_blockers,
     effective_default_target,
 )
-from teatree.core.worktree.branch_verdict import branch_is_landed
+from teatree.core.worktree.branch_verdict import branch_is_landed, branch_landed_for_teardown
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree.worktree_paths import worktree_dir_for
@@ -264,6 +263,16 @@ def _ref_captured_by_merge(repo: str, ref: str, branch: str | None, *, remote_re
     (:func:`branch_redundancy` — patch-id, synthetic-squash, ancestor, blob
     content, and the forge's merge record at the exact tip), every rung of
     which fails CLOSED.
+
+    **The git-local rungs alone do not authorise the delete (#4719).** They read a
+    patch's PRIOR appearance on the target, which a later commit over the same
+    region does not erase — so a branch on NO remote whose content will not merge
+    clean was reaped, destroying the only checkout of it.
+    :func:`branch_landed_for_teardown` ANDs them with present-tense presence, and a
+    target that re-edited the branch's own region therefore reads NOT landed: the
+    worktree is KEPT — recover it with ``workspace salvage``, or pass ``force=True``
+    to discard it deliberately. The forge's record at the exact tip still stands
+    alone there, so #4423's reclaim is unaffected.
     """
     if (
         remote_ref_was_present or (branch is not None and _branch_pr_is_merged(repo, branch))
@@ -271,7 +280,7 @@ def _ref_captured_by_merge(repo: str, ref: str, branch: str | None, *, remote_re
         return True
     if branch is None:
         return False
-    return branch_redundancy(repo, branch, effective_default_target(repo)).redundant
+    return branch_landed_for_teardown(repo, branch, effective_default_target(repo))
 
 
 def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
