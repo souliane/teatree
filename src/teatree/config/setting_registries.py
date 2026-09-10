@@ -254,6 +254,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dashboard_logo": _parse_strict_str,
     "db_backup_disabled": _parse_strict_bool,
     "db_backup_cadence_hours": _parse_overridable_positive_int(24),
+    "skill_pin_stale_fail_days": _parse_overridable_positive_int(14),
     "db_backup_retention_days": _parse_overridable_positive_int(7),
     "orchestrate_claim_enabled": _parse_strict_bool,
     "boost_concurrency": _parse_strict_int,

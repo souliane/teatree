@@ -94,10 +94,12 @@ from teatree.cli.doctor.checks_session import (
     _check_slack_socket_mode,
 )
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
+from teatree.cli.doctor.checks_skill_requires import _check_required_tier_requires_resolve
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
+from teatree.cli.doctor.checks_sweep_policy import _check_sweep_policy_declared
 from teatree.cli.doctor.checks_test_durations import (
     check_test_durations_coverage,
     check_test_durations_freshness,
@@ -180,6 +182,7 @@ __all__ = (
     "_check_pyright_lsp_plugin",
     "_check_recommended_skills",
     "_check_reconciliation_ledger",
+    "_check_required_tier_requires_resolve",
     "_check_root_disk_headroom",
     "_check_scratch_sweep_probe",
     "_check_shipped_seed_inertness",
@@ -192,6 +195,7 @@ __all__ = (
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
     "_check_starved_intake_candidates",
+    "_check_sweep_policy_declared",
     "_check_t3_launcher_managed",
     "_check_t3_master_unheld_while_loops_tick",
     "_check_t3_shim_receipt",

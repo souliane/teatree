@@ -188,6 +188,10 @@ class _LoopFlagAndCredentialSettings:
     db_backup_disabled: bool = False
     db_backup_cadence_hours: int = 24
     db_backup_retention_days: int = 7
+    # #4677 — how long a FIRST-PARTY skill pin may trail its source before
+    # `t3 doctor check` turns its WARN into a FAIL. A third-party pin is never
+    # gated by it: pinning away from an upstream head is the point of pinning.
+    skill_pin_stale_fail_days: int = 14
     # Directive #3 — idle usage-window auto-recovery, a SETTLING ``FEATURE_FLAGS``
     # entry (graduated DARK->SETTLING by #3691, default ON). When ON (the default) a
     # Claude usage-window limit (~5h session / 7-day weekly) PARKS the task (returns it

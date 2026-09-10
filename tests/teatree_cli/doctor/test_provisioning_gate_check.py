@@ -46,6 +46,7 @@ def _run(
     *,
     which: object = None,
     search_dirs: list[Path] | None = None,
+    cache_root: Path | None = None,
 ) -> tuple[bool, str]:
     app = typer.Typer()
     dirs = [project_root / "skills", home / ".claude" / "skills"] if search_dirs is None else search_dirs
@@ -57,6 +58,7 @@ def _run(
             home=home,
             search_dirs=dirs,
             which=which or (lambda _name: "/usr/bin/jq"),
+            cache_root=cache_root if cache_root is not None else project_root / "no-cache",
         )
         raise typer.Exit(code=0 if ok else 1)
 
@@ -86,6 +88,71 @@ class TestMandatedSkillAbsent:
         _, output = _run(project_root, home)
 
         assert "apm.yml" in output
+
+
+class TestMandatedBundleAbsent:
+    """A REQUIRED whole-repo bundle is gated exactly as hard as a single skill (#4677)."""
+
+    @pytest.fixture
+    def bundle_root(self, project_root: Path) -> Path:
+        (project_root / "apm.yml").write_text(
+            _manifest_body(*_DECLARED_SKILLS, "obra/superpowers#1f20bef"), encoding="utf-8"
+        )
+        return project_root
+
+    def test_an_unfetched_bundle_fails_and_is_named(self, bundle_root: Path, home: Path) -> None:
+        ok, output = _run(bundle_root, home)
+
+        assert not ok
+        assert "FAIL" in output
+        assert "obra/superpowers" in output
+
+    def test_the_failure_says_the_mandate_covers_every_skill_the_repo_publishes(
+        self, bundle_root: Path, home: Path
+    ) -> None:
+        _, output = _run(bundle_root, home)
+
+        assert "bundle (every skill it publishes)" in output
+
+    def test_the_failure_carries_the_exact_remediation(self, bundle_root: Path, home: Path) -> None:
+        _, output = _run(bundle_root, home)
+
+        assert "apm install obra/superpowers#1f20bef" in output
+
+    def test_a_fetched_bundle_whose_skills_are_all_loadable_is_silent(
+        self, bundle_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        cache = tmp_path / "cache" / "obra-superpowers@1f20bef" / "skills"
+        for name in ("writing-plans", "using-superpowers"):
+            (cache / name).mkdir(parents=True)
+            (cache / name / "SKILL.md").write_text("---\n", encoding="utf-8")
+        for name in ("ac-python", "ac-django", "writing-plans"):
+            installed = home / ".claude" / "skills" / name
+            installed.mkdir()
+            (installed / "SKILL.md").write_text("---\n", encoding="utf-8")
+
+        ok, output = _run(bundle_root, home, cache_root=tmp_path / "cache")
+
+        # `using-superpowers` is never installed by design, so its absence is not a gap.
+        assert ok
+        assert "FAIL" not in output
+
+    def test_a_fetched_bundle_with_one_skill_missing_still_fails(
+        self, bundle_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        cache = tmp_path / "cache" / "obra-superpowers@1f20bef" / "skills"
+        for name in ("writing-plans", "systematic-debugging"):
+            (cache / name).mkdir(parents=True)
+            (cache / name / "SKILL.md").write_text("---\n", encoding="utf-8")
+        for name in ("ac-python", "ac-django", "writing-plans"):
+            installed = home / ".claude" / "skills" / name
+            installed.mkdir()
+            (installed / "SKILL.md").write_text("---\n", encoding="utf-8")
+
+        ok, output = _run(bundle_root, home, cache_root=tmp_path / "cache")
+
+        assert not ok
+        assert "obra/superpowers" in output
 
 
 class TestProvisionedDependencyIsSilent:

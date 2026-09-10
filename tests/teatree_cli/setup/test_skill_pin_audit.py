@@ -58,11 +58,47 @@ class TestSkillPinAuditor:
 
         lines, record = _audit(repo, tmp_path)
 
-        assert any(line.startswith("INFO") and moved_to in line for line in lines)
+        # `team/skills` under a `team/thing` manifest is the owner's OWN repo, so
+        # trailing it is drift (WARN) rather than a deliberate hold (#4677).
+        assert any(line.startswith("WARN") and moved_to in line for line in lines)
         assert not any(line.startswith("FAIL") for line in lines)
         audit = read_pin_audit(record)
         assert audit is not None
         assert [status.head_sha for status in audit.statuses] == [moved_to]
+
+    def test_a_third_party_pin_the_source_moved_past_stays_a_suggestion(
+        self, repo: Path, tmp_path: Path, source: Path
+    ) -> None:
+        pinned = run_git(source, "rev-parse", "HEAD")
+        (source / _SKILL / "SKILL.md").write_text("---\nname: ac-python\n---\nfixed\n", encoding="utf-8")
+        run_git(source, "commit", "-qam", "fix the skill")
+        _declare(repo, f"{_OWNER_REPO}/{_SKILL}#{pinned}")
+        (repo / "apm.yml").write_text(
+            f"name: somebody-else/thing\ndependencies:\n  apm:\n  - {_OWNER_REPO}/{_SKILL}#{pinned}\n",
+            encoding="utf-8",
+        )
+
+        lines, _ = _audit(repo, tmp_path)
+
+        assert any(line.startswith("INFO") and "held deliberately" in line for line in lines)
+
+    def test_how_long_a_pin_has_trailed_survives_the_next_measurement(
+        self, repo: Path, tmp_path: Path, source: Path
+    ) -> None:
+        pinned = run_git(source, "rev-parse", "HEAD")
+        (source / _SKILL / "SKILL.md").write_text("---\nname: ac-python\n---\nfixed\n", encoding="utf-8")
+        run_git(source, "commit", "-qam", "fix the skill")
+        _declare(repo, f"{_OWNER_REPO}/{_SKILL}#{pinned}")
+
+        _, record = _audit(repo, tmp_path)
+        first = read_pin_audit(record)
+        _, record = _audit(repo, tmp_path)
+        second = read_pin_audit(record)
+
+        assert first is not None
+        assert second is not None
+        assert first.behind_since
+        assert second.behind_since == first.behind_since
 
     def test_pin_at_the_source_head_says_so_without_suggesting_a_bump(
         self, repo: Path, tmp_path: Path, source: Path

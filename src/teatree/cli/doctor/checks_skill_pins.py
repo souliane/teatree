@@ -15,8 +15,11 @@ ages, and an aged verdict presented as today's answer is exactly the silent-pass
 this family of checks exists to remove. Past the freshness horizon the finding
 becomes UNVERIFIED again rather than staying green.
 
-Nothing here gates. A pin may be held on purpose, so a trailing pin is INFO and
-the check's return value is always ``True``.
+What a trailing pin MEANS depends on its trust class (#4677). A THIRD-PARTY pin
+may be held on purpose, so it stays an INFO that gates nothing. A FIRST-PARTY one
+— the owner's own repo, which nobody chose to trail — is drift: it WARNs, and once
+it has trailed past ``skill_pin_stale_fail_days`` it FAILs. An age the record never
+carried is UNKNOWN, and unknown never gates.
 """
 
 import datetime as dt
@@ -28,10 +31,12 @@ from teatree.provisioning.declared import (
     DeclarationUnreadableError,
     pinned_specs_in_apm_manifest,
     project_root_for_running_code,
+    skill_bump_remediation,
 )
 from teatree.provisioning.skill_pin import (
     MEASUREMENT_HORIZON,
     PinAudit,
+    SkillPinStatus,
     default_record_path,
     pin_advisory_lines,
     read_pin_audit,
@@ -46,13 +51,17 @@ def _check_skill_pin_freshness(
     record_path: Path | None = None,
     now: dt.datetime | None = None,
     manifest: Path | None = None,
+    stale_fail_days: int | None = None,
 ) -> bool:
-    """INFO-suggest a bump for each declared skill pin its source has moved past.
+    """Report each declared skill pin its source has moved past, per trust class.
 
     Silent only when a RECENT measurement found every DECLARED pin at its source's
     head — the one state that has actually been verified. Absent, aged, unmeasurable,
-    or simply never measured each report themselves. Crash-proof and always ``True``:
-    an advisory may never redden a doctor run.
+    or simply never measured each report themselves. Crash-proof: a check that could
+    not run reports UNVERIFIED and passes, because a crash proves nothing about a pin.
+
+    Returns ``False`` only for a FIRST-PARTY pin that has trailed its source past
+    *stale_fail_days*. Every other finding here is advisory.
 
     *manifest* is the declaration surface the recorded measurement is checked for
     COVERAGE against, defaulting to the running code's own ``apm.yml``; it is a
@@ -62,23 +71,40 @@ def _check_skill_pin_freshness(
     try:
         path = default_record_path() if record_path is None else record_path
         moment = dt.datetime.now(tz=dt.UTC) if now is None else now
-        for line in _freshness_lines(path, moment, manifest):
+        threshold = _stale_fail_days() if stale_fail_days is None else stale_fail_days
+        lines, ok = _freshness_report(path, moment, manifest, threshold)
+        for line in lines:
             typer.echo(line)
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Skill-pin freshness check crashed ({exc.__class__.__name__}: {exc}) — UNVERIFIED.")
-    return True
+        return True
+    return ok
 
 
-def _freshness_lines(path: Path, now: dt.datetime, manifest: Path | None) -> list[str]:
-    """Everything the recorded measurement at *path* has to say as of *now*."""
+def _stale_fail_days() -> int:
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    return load_config().user.skill_pin_stale_fail_days
+
+
+def _freshness_report(
+    path: Path,
+    now: dt.datetime,
+    manifest: Path | None,
+    stale_fail_days: int,
+) -> tuple[list[str], bool]:
+    """Everything the recorded measurement at *path* says as of *now*, and whether it passes."""
     audit = read_pin_audit(path)
     if audit is None:
-        return [
-            (
-                f"WARN  Skill-pin freshness is UNVERIFIED: no measurement is recorded at {path}. Whether the "
-                f"declared skill pins have fallen behind their sources is UNKNOWN — run `t3 setup` to measure it."
-            )
-        ]
+        return (
+            [
+                (
+                    f"WARN  Skill-pin freshness is UNVERIFIED: no measurement is recorded at {path}. Whether the "
+                    f"declared skill pins have fallen behind their sources is UNKNOWN — run `t3 setup` to measure it."
+                )
+            ],
+            True,
+        )
     lines: list[str] = []
     if not audit.is_fresh(now=now):
         days = audit.age(now=now) // _DAY
@@ -87,7 +113,38 @@ def _freshness_lines(path: Path, now: dt.datetime, manifest: Path | None) -> lis
             f"(taken {audit.measured_at.date().isoformat()}), past the {MEASUREMENT_HORIZON.days}-day horizon, "
             f"so it is evidence about then and not about now — re-run `t3 setup` to re-measure."
         )
-    return lines + _unmeasured_pin_lines(audit, manifest) + pin_advisory_lines(audit.statuses)
+    lines += _unmeasured_pin_lines(audit, manifest)
+    stale = _stale_first_party_lines(audit, now, stale_fail_days)
+    advisories = [
+        line
+        for status, line in _advisory_by_status(audit)
+        if not (status.first_party and _is_stale(audit, status, now, stale_fail_days))
+    ]
+    return lines + advisories + stale, not stale
+
+
+def _advisory_by_status(audit: PinAudit) -> list[tuple[SkillPinStatus, str]]:
+    """Each status paired with the line it produces, so one can be swapped for a FAIL."""
+    return [(status, line) for status in audit.statuses for line in pin_advisory_lines([status])]
+
+
+def _is_stale(audit: PinAudit, status: SkillPinStatus, now: dt.datetime, stale_fail_days: int) -> bool:
+    days = audit.days_behind(status.spec, now=now)
+    return status.is_behind and days is not None and days >= stale_fail_days
+
+
+def _stale_first_party_lines(audit: PinAudit, now: dt.datetime, stale_fail_days: int) -> list[str]:
+    """One FAIL per first-party pin that has trailed its source past the threshold."""
+    return [
+        (
+            f"FAIL  Skill pin {status.name!r} has trailed its FIRST-PARTY source for "
+            f"{audit.days_behind(status.spec, now=now)} days (threshold {stale_fail_days}): "
+            f"{status.spec} against {status.source_repo}. Every consumer has been reading the pre-drift "
+            f"version that whole time. Fix: {skill_bump_remediation(status.bumped_spec)}."
+        )
+        for status in audit.statuses
+        if status.first_party and _is_stale(audit, status, now, stale_fail_days)
+    ]
 
 
 def _unmeasured_pin_lines(audit: PinAudit, manifest: Path | None) -> list[str]:

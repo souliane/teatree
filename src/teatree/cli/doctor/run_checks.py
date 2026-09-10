@@ -105,11 +105,13 @@ from teatree.cli.doctor.checks_session import (
     _check_slack_socket_mode,
 )
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
+from teatree.cli.doctor.checks_skill_requires import _check_required_tier_requires_resolve
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
 from teatree.cli.doctor.checks_sweep_forge import _check_sweep_repos_resolve_a_forge
+from teatree.cli.doctor.checks_sweep_policy import _check_sweep_policy_declared
 from teatree.cli.doctor.checks_test_durations import (
     check_test_durations_coverage,
     check_test_durations_freshness,
@@ -152,12 +154,8 @@ def _optional_tooling_advisories() -> None:
     _check_tmp_tmpfs_sizing()
     _check_scratch_sweep_probe()
     _check_recommended_skills()
-    # The other half of the drift gate in `_run_provisioning_gates`: that one asks
-    # whether the INSTALL left the pin, this one whether the PIN left its source.
-    # It reads `t3 setup`'s recorded measurement rather than the network, so it
-    # stays on doctor's offline fast path, and it only ever suggests — a pin may
-    # be held deliberately.
-    _check_skill_pin_freshness()
+    # #4677: an absent SWEEP_POLICY silently makes every repo `bulk-update`.
+    _check_sweep_policy_declared()
 
 
 def _run_worker_gates() -> bool:
@@ -279,14 +277,35 @@ def _check_enabled_but_unprovisioned() -> bool:
     The Notion gate is the same shape over a CREDENTIAL: an overlay declaring a
     ``notion_token_pass_key`` has enabled Notion, and until this ran a box with no
     token reported healthy right up to the first read that failed at point of use.
+
+    Pin freshness (#4677) joins the family for the FIRST-PARTY half only: an owner's
+    own skills repo that moved on a month ago is a mandate nobody is meeting, and it
+    lived as an INFO in ``t3 setup``'s output that nothing read for 31 days. A
+    third-party pin still gates nothing — that check returns ``True`` for it.
+
+    The requires-resolution gate (#4677) closes the same class one edge further in: a
+    skill can be installed and still have its own ``requires:`` resolve to nothing,
+    which is warn-and-pass for an optional external skill and a silent mandate breach
+    for one the manifest declares REQUIRED.
     """
     declared = _check_declared_dependencies_provisioned()
     review_skills = _check_configured_review_skills()
     pyright_lsp = _check_pyright_lsp_plugin()
     dispatched_skills = _check_dispatched_overlay_skills()
     skill_drift = _check_skill_source_drift()
+    pin_freshness = _check_skill_pin_freshness()
+    requires_resolve = _check_required_tier_requires_resolve()
     notion = _check_notion_credentials()
-    return declared and review_skills and pyright_lsp and dispatched_skills and skill_drift and notion
+    return (
+        declared
+        and review_skills
+        and pyright_lsp
+        and dispatched_skills
+        and skill_drift
+        and pin_freshness
+        and requires_resolve
+        and notion
+    )
 
 
 def _run_daily_advisories() -> None:

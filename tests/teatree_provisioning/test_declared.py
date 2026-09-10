@@ -8,6 +8,7 @@ import pytest
 from teatree.provisioning.declared import (
     DeclarationUnreadableError,
     binaries_declared_in_pyproject,
+    bundles_declared_in_apm_manifest,
     declared_dependencies,
     integrations_declared_in_claude_settings,
     skills_declared_in_apm_manifest,
@@ -67,6 +68,37 @@ class TestSkillsDeclaredInApmManifest:
             skills_declared_in_apm_manifest(_write_manifest(tmp_path, "dependencies: [oh: no\n"))
 
 
+class TestBundlesDeclaredInApmManifest:
+    def test_a_pinned_whole_repo_bundle_is_enumerated_as_its_own_kind(self, tmp_path: Path) -> None:
+        declared = bundles_declared_in_apm_manifest(_write_manifest(tmp_path))
+
+        assert [dep.name for dep in declared] == ["obra/superpowers"]
+        assert declared[0].kind == "bundle"
+        assert declared[0].source == "obra/superpowers#1f20bef"
+
+    def test_the_unpinned_self_entry_is_not_a_bundle_mandate(self, tmp_path: Path) -> None:
+        # `souliane/teatree` names the package this manifest describes, not a skill
+        # source — enumerating it would mandate installing teatree from itself.
+        declared = bundles_declared_in_apm_manifest(_write_manifest(tmp_path))
+
+        assert "souliane/teatree" not in {dep.name for dep in declared}
+
+    def test_single_skill_entries_are_left_to_the_skill_reader(self, tmp_path: Path) -> None:
+        declared = bundles_declared_in_apm_manifest(_write_manifest(tmp_path))
+
+        assert all("/skills/" not in dep.source for dep in declared)
+
+    def test_remediation_is_the_runnable_install_line_for_the_declared_spec(self, tmp_path: Path) -> None:
+        declared = bundles_declared_in_apm_manifest(_write_manifest(tmp_path))
+
+        assert "apm install obra/superpowers#1f20bef" in declared[0].remediation
+        assert "t3 setup" in declared[0].remediation
+
+    def test_an_absent_manifest_raises_rather_than_reporting_zero_bundles(self, tmp_path: Path) -> None:
+        with pytest.raises(DeclarationUnreadableError):
+            bundles_declared_in_apm_manifest(tmp_path / "nope.yml")
+
+
 class TestBinariesDeclaredInPyproject:
     def test_required_binaries_are_read_from_the_declared_table(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
@@ -123,7 +155,7 @@ class TestDeclaredDependencies:
 
         enumeration = declared_dependencies(project_root=tmp_path, home=home)
 
-        assert {dep.kind for dep in enumeration.dependencies} == {"skill", "binary", "integration"}
+        assert {dep.kind for dep in enumeration.dependencies} == {"skill", "bundle", "binary", "integration"}
         assert enumeration.unreadable == []
 
     def test_one_unreadable_surface_neither_hides_the_others_nor_passes_as_empty(

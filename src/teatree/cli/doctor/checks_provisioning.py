@@ -23,8 +23,10 @@ from teatree.provisioning.probes import BinaryResolver, unprovisioned
 
 
 def _render(gap: DeclaredDependency) -> str:
+    # A bundle names a repo, so "it" reads as one skill unless the row says otherwise.
+    what = "bundle (every skill it publishes)" if gap.kind == "bundle" else gap.kind
     return (
-        f"FAIL  Declared dependency not provisioned: {gap.kind} {gap.name!r} "
+        f"FAIL  Declared dependency not provisioned: {what} {gap.name!r} "
         f"(declared in {gap.declared_in}) — the configuration mandates it but nothing installed it, "
         f"so anything depending on it silently does nothing. Fix: {gap.remediation}."
     )
@@ -42,6 +44,7 @@ def _check_declared_dependencies_provisioned(
     home: Path | None = None,
     search_dirs: Sequence[Path] | None = None,
     which: BinaryResolver | None = None,
+    cache_root: Path | None = None,
 ) -> bool:
     """FAIL when any configuration-declared dependency is not actually provisioned.
 
@@ -66,6 +69,7 @@ def _check_declared_dependencies_provisioned(
         search_dirs=_default_search_dirs() if search_dirs is None else search_dirs,
         home=Path.home() if home is None else home,
         which=which,
+        cache_root=cache_root,
     )
     for gap in gaps:
         typer.echo(_render(gap))

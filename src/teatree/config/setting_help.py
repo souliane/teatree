@@ -94,6 +94,7 @@ SETTING_HELP: dict[str, str] = {
     "dashboard_instance_label": "name shown in the dashboard header, to tell two boxes apart",
     "dashboard_logo": "static path of the logo shown in the dashboard header",
     "db_backup_cadence_hours": "hours between database backups",
+    "skill_pin_stale_fail_days": "days a first-party skill pin may trail its source before doctor FAILs",
     "db_backup_disabled": "stop scheduling database backups",
     "db_backup_retention_days": "days a database backup is kept before it is pruned",
     "deferred_question_age_ceiling_days": "days a deferred question may sit unresolved before it is escalated",

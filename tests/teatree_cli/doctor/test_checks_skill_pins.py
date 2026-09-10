@@ -1,10 +1,14 @@
-"""The pin-freshness advisory reads the recorded measurement, offline, and never gates.
+"""The pin-freshness check reads the recorded measurement, offline.
 
 Doctor is the fast offline lane, so the comparison it reports was taken
 elsewhere. What is pinned here is that reading a record can produce every answer
 EXCEPT a quiet pass it did not earn: no record and an aged record are both
 reported as unverified, a recorded suggestion renders a pasteable bump, and a
 DECLARED pin the record never covered is unverified rather than absent.
+
+A THIRD-PARTY trailing pin still gates nothing — it may be held on purpose. A
+FIRST-PARTY one is drift, so it WARNs and, once it has trailed past the
+configured threshold, FAILs (#4677).
 """
 
 import datetime as dt
@@ -177,3 +181,73 @@ class TestDeclaredPinCoverage:
 
         assert ok is True
         assert "UNVERIFIED" in output
+
+
+class TestFirstPartyDriftHasConsequence:
+    """A first-party pin trailing its source WARNs, then FAILs once it is old (#4677)."""
+
+    _NOW = dt.datetime(2026, 8, 4, tzinfo=dt.UTC)
+
+    def _record_behind(self, tmp_path: Path, *, behind_days: int) -> Path:
+        record = tmp_path / "audit.json"
+        write_pin_audit(
+            PinAudit(
+                measured_at=self._NOW - dt.timedelta(hours=1),
+                statuses=(_status(head_sha=_MOVED_TO, first_party=True),),
+                behind_since={_SPEC: self._NOW - dt.timedelta(days=behind_days)},
+            ),
+            record,
+        )
+        return record
+
+    def test_a_recently_drifted_first_party_pin_warns_without_failing(self, tmp_path: Path, manifest: Path) -> None:
+        ok, output = _run(self._record_behind(tmp_path, behind_days=1), now=self._NOW, manifest=manifest)
+
+        assert ok is True
+        assert "WARN" in output
+        assert "FAIL" not in output
+
+    def test_a_long_drifted_first_party_pin_fails_and_names_its_age(self, tmp_path: Path, manifest: Path) -> None:
+        ok, output = _run(self._record_behind(tmp_path, behind_days=31), now=self._NOW, manifest=manifest)
+
+        assert ok is False
+        assert "FAIL" in output
+        assert "31 days" in output
+        assert "ac-python" in output
+
+    def test_the_failure_still_carries_the_pasteable_bump(self, tmp_path: Path, manifest: Path) -> None:
+        _, output = _run(self._record_behind(tmp_path, behind_days=31), now=self._NOW, manifest=manifest)
+
+        assert f"apm install team/skills/ac-python#{_MOVED_TO}" in output
+
+    def test_a_long_drifted_third_party_pin_never_fails(self, tmp_path: Path, manifest: Path) -> None:
+        record = tmp_path / "audit.json"
+        write_pin_audit(
+            PinAudit(
+                measured_at=self._NOW - dt.timedelta(hours=1),
+                statuses=(_status(head_sha=_MOVED_TO),),
+                behind_since={_SPEC: self._NOW - dt.timedelta(days=365)},
+            ),
+            record,
+        )
+
+        ok, output = _run(record, now=self._NOW, manifest=manifest)
+
+        assert ok is True
+        assert "FAIL" not in output
+
+    def test_a_drifted_pin_with_no_recorded_age_warns_rather_than_failing(self, tmp_path: Path, manifest: Path) -> None:
+        # An age the record never carried is UNKNOWN, and unknown never gates.
+        record = tmp_path / "audit.json"
+        write_pin_audit(
+            PinAudit(
+                measured_at=self._NOW - dt.timedelta(hours=1),
+                statuses=(_status(head_sha=_MOVED_TO, first_party=True),),
+            ),
+            record,
+        )
+
+        ok, output = _run(record, now=self._NOW, manifest=manifest)
+
+        assert ok is True
+        assert "WARN" in output

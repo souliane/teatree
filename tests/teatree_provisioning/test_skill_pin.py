@@ -8,12 +8,22 @@ whole check exists for, that a source it cannot reach is reported as unknown
 rather than as agreement.
 """
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
 
-from teatree.provisioning.declared import skills_declared_in_apm_manifest
-from teatree.provisioning.skill_pin import measure_skill_pins, pin_advisory_lines
+from teatree.provisioning.declared import bundles_declared_in_apm_manifest, skills_declared_in_apm_manifest
+from teatree.provisioning.skill_pin import (
+    PinAudit,
+    SkillPinStatus,
+    carry_behind_since,
+    first_party_owner,
+    measure_skill_pins,
+    pin_advisory_lines,
+    read_pin_audit,
+    write_pin_audit,
+)
 from tests._git_repo import make_git_repo, run_git
 
 _SKILL = "ac-python"
@@ -160,3 +170,156 @@ class TestSymbolicPinsAreNotShaPins:
 
         assert status.is_behind
         assert not status.is_current
+
+
+class TestFirstPartyOwner:
+    """Which pins are the owner's OWN is read from the manifest, not an allowlist (#4677)."""
+
+    def test_the_owner_is_read_from_the_manifests_own_name(self, tmp_path: Path) -> None:
+        manifest = _write_manifest(tmp_path, [f"{_OWNER_REPO}/{_SKILL}#d0008a3"])
+
+        assert first_party_owner(manifest) == "team"
+
+    def test_a_manifest_naming_no_owner_classifies_nothing_as_first_party(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "apm.yml"
+        manifest.write_text("dependencies:\n  apm:\n  - a/b#c\n", encoding="utf-8")
+
+        assert first_party_owner(manifest) == ""
+
+
+class TestFirstPartyPinsAreDriftNotAHold:
+    """A first-party pin trailing its source is drift; a third-party one may be held (#4677)."""
+
+    def _behind(self, tmp_path: Path, source: Path, *, owner: str) -> list:
+        pinned = run_git(source, "rev-parse", "HEAD")
+        (source / _SKILL / "SKILL.md").write_text("---\nname: ac-python\n---\nfixed\n", encoding="utf-8")
+        run_git(source, "commit", "-qam", "fix the skill")
+        manifest = _write_manifest(tmp_path, [f"{_OWNER_REPO}/{_SKILL}#{pinned}"])
+        declared = skills_declared_in_apm_manifest(manifest)
+        return measure_skill_pins(declared, remote_base=_remote_base(tmp_path), first_party_owner=owner)
+
+    def test_a_first_party_pin_behind_its_source_is_a_warn_not_an_info(self, tmp_path: Path, source: Path) -> None:
+        [status] = self._behind(tmp_path, source, owner="team")
+
+        assert status.first_party
+        [line] = pin_advisory_lines([status])
+        assert line.startswith("WARN")
+
+    def test_the_held_deliberately_caveat_is_not_offered_for_a_first_party_pin(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        [status] = self._behind(tmp_path, source, owner="team")
+
+        [line] = pin_advisory_lines([status])
+        assert "held deliberately" not in line
+        assert "drift" in line
+
+    def test_a_third_party_pin_keeps_the_info_and_its_caveat(self, tmp_path: Path, source: Path) -> None:
+        [status] = self._behind(tmp_path, source, owner="somebody-else")
+
+        assert not status.first_party
+        [line] = pin_advisory_lines([status])
+        assert line.startswith("INFO")
+        assert "held deliberately" in line
+
+    def test_an_unclassified_measurement_stays_third_party(self, tmp_path: Path, source: Path) -> None:
+        # No owner passed: nothing may be promoted to first-party by accident.
+        [status] = self._behind(tmp_path, source, owner="")
+
+        assert not status.first_party
+
+
+class TestBundlePinsAreMeasured:
+    """The manifest's only third-party pin is a bundle, and it is measured (#4677)."""
+
+    @pytest.fixture
+    def bundle(self, tmp_path: Path) -> Path:
+        origin = make_git_repo(tmp_path / "obra" / "superpowers")
+        (origin / "skills" / "writing-plans").mkdir(parents=True)
+        (origin / "skills" / "writing-plans" / "SKILL.md").write_text("---\n", encoding="utf-8")
+        run_git(origin, "add", "-A")
+        run_git(origin, "commit", "-q", "-m", "publish")
+        return origin
+
+    def test_a_whole_repo_bundle_pin_is_compared_against_its_source(self, tmp_path: Path, bundle: Path) -> None:
+        pinned = run_git(bundle, "rev-parse", "HEAD")
+        (bundle / "skills" / "writing-plans" / "SKILL.md").write_text("---\nx\n", encoding="utf-8")
+        run_git(bundle, "commit", "-qam", "move on")
+        manifest = _write_manifest(tmp_path, [f"obra/superpowers#{pinned}"])
+
+        [status] = measure_skill_pins(bundles_declared_in_apm_manifest(manifest), remote_base=_remote_base(tmp_path))
+
+        assert status.is_behind
+        assert status.spec == f"obra/superpowers#{pinned}"
+
+
+class TestBehindSinceIsCarriedForward:
+    """How LONG a pin has been behind is the fact one measurement cannot hold (#4677)."""
+
+    _SPEC = "team/skills/ac-python#aaaaaaa"
+
+    def _behind_status(self) -> SkillPinStatus:
+        return SkillPinStatus(
+            name="ac-python", spec=self._SPEC, pinned_ref="aaaaaaa", head_sha="b" * 40, branch="main", first_party=True
+        )
+
+    def _current_status(self) -> SkillPinStatus:
+        return SkillPinStatus(
+            name="ac-python", spec=self._SPEC, pinned_ref="b" * 40, head_sha="b" * 40, branch="main", first_party=True
+        )
+
+    def test_a_newly_behind_pin_is_stamped_with_the_moment_it_was_seen(self) -> None:
+        first_seen = dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
+
+        carried = carry_behind_since([self._behind_status()], previous=None, now=first_seen)
+
+        assert carried == {self._SPEC: first_seen}
+
+    def test_a_still_behind_pin_keeps_its_original_timestamp(self) -> None:
+        first_seen = dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
+        previous = PinAudit(measured_at=first_seen, behind_since={self._SPEC: first_seen})
+
+        carried = carry_behind_since(
+            [self._behind_status()], previous=previous, now=dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+        )
+
+        # Re-stamping on every setup run would reset the age forever, so a pin could
+        # never mature past the FAIL threshold however long it trailed.
+        assert carried == {self._SPEC: first_seen}
+
+    def test_a_pin_that_caught_up_is_dropped_rather_than_kept_stale(self) -> None:
+        first_seen = dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
+        previous = PinAudit(measured_at=first_seen, behind_since={self._SPEC: first_seen})
+
+        carried = carry_behind_since(
+            [self._current_status()], previous=previous, now=dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+        )
+
+        assert carried == {}
+
+    def test_the_stamp_round_trips_through_the_recorded_measurement(self, tmp_path: Path) -> None:
+        first_seen = dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
+        record = tmp_path / "audit.json"
+        write_pin_audit(
+            PinAudit(
+                measured_at=dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+                statuses=(self._behind_status(),),
+                behind_since={self._SPEC: first_seen},
+            ),
+            record,
+        )
+
+        audit = read_pin_audit(record)
+
+        assert audit is not None
+        assert audit.behind_since == {self._SPEC: first_seen}
+        assert audit.days_behind(self._SPEC, now=dt.datetime(2026, 9, 15, tzinfo=dt.UTC)) == 45
+
+    def test_a_record_written_before_the_stamp_existed_still_reads(self, tmp_path: Path) -> None:
+        record = tmp_path / "audit.json"
+        record.write_text('{"measured_at": "2026-08-01T00:00:00+00:00", "statuses": []}', encoding="utf-8")
+
+        audit = read_pin_audit(record)
+
+        assert audit is not None
+        assert audit.behind_since == {}

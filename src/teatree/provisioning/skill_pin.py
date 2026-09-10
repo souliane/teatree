@@ -21,11 +21,15 @@ The comparison is deliberately shaped like its sibling:
     unresolvable ref makes the pin UNMEASURABLE, never current, because "the pin
     is at head" and "I could not reach the source" are different answers.
 
-Nothing here gates. A pin may be held deliberately — an operator pinning away
-from head is exercising the point of pinning — so the output is a suggestion
-carrying the sha to move to, and the rendering lives here rather than in one
-caller because both the measuring surface and the reporting surface must say it
-in the same voice.
+A pin's TRUST CLASS decides what a trailing pin means (#4677). "A pin may be
+held deliberately" is right for a THIRD-PARTY source — pinning away from head is
+the point of pinning — and wrong for the owner's OWN repo, where trailing it is
+drift nobody chose. The class is derived from the manifest's own ``name:`` owner
+rather than an allowlist, so a source added later is classified with no edit here
+and no second list to drift.
+
+The rendering lives here rather than in one caller because both the measuring
+surface and the reporting surface must say it in the same voice.
 """
 
 import dataclasses
@@ -37,8 +41,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from teatree.provisioning.declared import DeclaredDependency, skill_bump_remediation
-from teatree.provisioning.skill_source import parse_skill_source
+from teatree.provisioning.skill_bundle import parse_bundle_source
+from teatree.provisioning.skill_source import SkillSource, parse_skill_source
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 #: Where an ``<owner>/<repo>`` spec is fetched from, matching the installer's own base.
@@ -47,6 +54,7 @@ DEFAULT_REMOTE_BASE = "https://github.com/"
 MEASUREMENT_HORIZON = dt.timedelta(days=14)
 
 _LS_REMOTE_TIMEOUT_SECONDS = 30
+_APM_MANIFEST_NAME_KEY = "name"
 _SHORT_SHA = 12
 _HEAD = "HEAD"
 _BRANCH_PREFIX = "refs/heads/"
@@ -130,6 +138,9 @@ class SkillPinStatus:
     head_sha: str = ""
     branch: str = ""
     unmeasurable: str = ""
+    #: Whether the source is the manifest owner's OWN repo. Defaults false so an
+    #: unclassified measurement is never promoted into the stricter class.
+    first_party: bool = False
 
     @property
     def is_symbolic(self) -> bool:
@@ -180,24 +191,51 @@ class SkillPinStatus:
         return f"{self.spec.partition('#')[0]}#{self.head_sha}"
 
 
+def first_party_owner(manifest: Path) -> str:
+    """The owner segment of the manifest's own ``name:``, or ``""`` when it names none.
+
+    The whole first-party predicate, and deliberately derived rather than declared:
+    an allowlist would be a second list to keep in step with the manifest, and the
+    failure mode of a stale allowlist is a first-party source silently policed as
+    third-party — the exact silence this classification exists to remove.
+    """
+    try:
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return ""
+    name = data.get(_APM_MANIFEST_NAME_KEY) if isinstance(data, dict) else None
+    return name.strip("/").split("/")[0] if isinstance(name, str) and "/" in name else ""
+
+
+def _source_for(dependency: DeclaredDependency) -> SkillSource | None:
+    return (
+        parse_bundle_source(dependency.source) if dependency.kind == "bundle" else parse_skill_source(dependency.source)
+    )
+
+
 def measure_skill_pins(
     declared: Sequence[DeclaredDependency],
     *,
     remote_base: str = DEFAULT_REMOTE_BASE,
+    first_party_owner: str = "",
 ) -> list[SkillPinStatus]:
-    """Compare every PINNED skill in *declared* against its source's current head.
+    """Compare every PINNED skill or bundle in *declared* against its source's head.
 
     An entry carrying no ``#<ref>`` is skipped rather than reported: it declares
     no pin, so it already tracks whatever the source publishes and there is
     nothing to bump. One remote read per repo, not per skill — several skills
     commonly share a source.
+
+    *first_party_owner* classifies each measured pin; empty leaves every status
+    third-party, so a caller that has not read the manifest cannot promote a
+    source into the stricter class by omission.
     """
     heads: dict[str, RemoteHead] = {}
     statuses: list[SkillPinStatus] = []
     for dependency in declared:
-        if dependency.kind != "skill" or not dependency.source:
+        if dependency.kind not in {"skill", "bundle"} or not dependency.source:
             continue
-        source = parse_skill_source(dependency.source)
+        source = _source_for(dependency)
         if source is None:
             statuses.append(
                 SkillPinStatus(
@@ -222,6 +260,7 @@ def measure_skill_pins(
                 head_sha=head.sha,
                 branch=head.branch,
                 unmeasurable=head.unreachable,
+                first_party=bool(first_party_owner) and source.owner_repo.split("/")[0] == first_party_owner,
             )
         )
     return statuses
@@ -253,6 +292,13 @@ def pin_advisory_lines(statuses: Sequence[SkillPinStatus]) -> list[str]:
                 f"{status.pinned_ref!r}, but {status.source_repo} was only read at its default branch "
                 f"({status.branch or _HEAD}). The two were never compared, which is not the same answer as current."
             )
+        elif status.is_behind and status.first_party:
+            lines.append(
+                f"WARN  Skill pin {status.name!r} trails its FIRST-PARTY source: pinned at "
+                f"{_short(status.pinned_ref)}, {status.source_repo} {status.branch or _HEAD} is at "
+                f"{_short(status.head_sha)}. Bump: {skill_bump_remediation(status.bumped_spec)}. The owner's "
+                f"own repo having moved on is drift, not a deliberate hold."
+            )
         elif status.is_behind:
             lines.append(
                 f"INFO  Skill pin {status.name!r} trails its source: pinned at {_short(status.pinned_ref)}, "
@@ -265,22 +311,49 @@ def pin_advisory_lines(statuses: Sequence[SkillPinStatus]) -> list[str]:
 
 @dataclass(frozen=True, slots=True)
 class PinAudit:
-    """A completed measurement, and WHEN it was taken.
+    """A completed measurement, WHEN it was taken, and how long each pin has trailed.
 
     The timestamp is half the record. A pin comparison is evidence about the
     moment it ran, so a reader that could not see the age would present a
     months-old "current" as today's answer — the shape of clean report this
     module exists to stop.
+
+    ``behind_since`` is the other half no single measurement can hold: "behind" is
+    a state, and only its DURATION distinguishes a pin that moved yesterday from
+    one nobody has touched for a month. It is what lets a WARN mature into a FAIL.
     """
 
     measured_at: dt.datetime
     statuses: tuple[SkillPinStatus, ...] = ()
+    behind_since: dict[str, dt.datetime] = dataclasses.field(default_factory=dict)
 
     def age(self, *, now: dt.datetime) -> dt.timedelta:
         return now - self.measured_at
 
     def is_fresh(self, *, now: dt.datetime, horizon: dt.timedelta = MEASUREMENT_HORIZON) -> bool:
         return self.age(now=now) <= horizon
+
+    def days_behind(self, spec: str, *, now: dt.datetime) -> int | None:
+        """Whole days *spec* has trailed its source, or ``None`` when that is unknown."""
+        since = self.behind_since.get(spec)
+        return None if since is None else (now - since).days
+
+
+def carry_behind_since(
+    statuses: Sequence[SkillPinStatus],
+    *,
+    previous: PinAudit | None,
+    now: dt.datetime,
+) -> dict[str, dt.datetime]:
+    """The ``behind_since`` stamps for *statuses*, keeping each pin's ORIGINAL moment.
+
+    Re-stamping a still-behind pin on every run would reset its age forever, so no
+    pin could ever mature past a threshold however long it trailed — which is the
+    failure this whole stamp exists to make impossible. A pin that has caught up is
+    dropped rather than carried, so the record only ever describes the present.
+    """
+    carried = {} if previous is None else previous.behind_since
+    return {status.spec: carried.get(status.spec, now) for status in statuses if status.is_behind}
 
 
 def default_record_path() -> Path:
@@ -300,6 +373,7 @@ def write_pin_audit(audit: PinAudit, path: Path) -> bool:
     payload = {
         "measured_at": audit.measured_at.isoformat(),
         "statuses": [dataclasses.asdict(status) for status in audit.statuses],
+        "behind_since": {spec: since.isoformat() for spec, since in audit.behind_since.items()},
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,8 +394,15 @@ def read_pin_audit(path: Path) -> PinAudit | None:
         data = json.loads(path.read_text(encoding="utf-8"))
         measured_at = dt.datetime.fromisoformat(data["measured_at"])
         statuses = tuple(SkillPinStatus(**row) for row in data["statuses"])
-    except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+        # Absent in a record written before the stamp existed: an unknown age, which
+        # every reader renders as "cannot say", never as "behind for zero days".
+        behind_since = {
+            spec: _aware(dt.datetime.fromisoformat(since)) for spec, since in (data.get("behind_since") or {}).items()
+        }
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError, AttributeError):
         return None
-    if measured_at.tzinfo is None:
-        measured_at = measured_at.replace(tzinfo=dt.UTC)
-    return PinAudit(measured_at=measured_at, statuses=statuses)
+    return PinAudit(measured_at=_aware(measured_at), statuses=statuses, behind_since=behind_since)
+
+
+def _aware(moment: dt.datetime) -> dt.datetime:
+    return moment.replace(tzinfo=dt.UTC) if moment.tzinfo is None else moment

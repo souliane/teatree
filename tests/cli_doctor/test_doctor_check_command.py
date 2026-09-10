@@ -62,6 +62,29 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # tests/cli_doctor/test_configured_review_skills_check.py; pin it to a pass
     # here so this aggregation smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_configured_review_skills", lambda: True)
+    # The requires-resolution gate (#4677) resolves each skill's `requires:` against the
+    # runner's real skill-install state — the superpowers methodology skills are an
+    # external apm bundle absent on CI runners, so it FAILs deterministically off-box.
+    # It is exercised end-to-end against staged manifests and search dirs in
+    # tests/teatree_cli/doctor/test_checks_skill_requires.py; pin it to a pass here so
+    # this aggregation smoke test stays deterministic.
+    # The declared-dependency gate probes the runner's real skill-install state, which
+    # since #4677 includes the `obra/superpowers` BUNDLE — an external apm dependency
+    # absent on CI runners, so it FAILs off-box for the same reason
+    # `_check_configured_review_skills` above does. Pinned at the BUNDLE PROBE, never
+    # the check: the binary, integration and single-skill probes still run for real, so
+    # the negative tests below (a missing required tool must still FAIL) keep their
+    # teeth. The bundle probe is exercised both ways in
+    # tests/teatree_cli/doctor/test_provisioning_gate_check.py.
+    monkeypatch.setattr("teatree.provisioning.probes.bundle_is_provisioned", lambda *_a, **_k: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_check_required_tier_requires_resolve", lambda: True)
+    # The pin-freshness gate (#4677) reads the pin measurement `t3 setup` recorded on
+    # THIS box, and FAILs when a first-party pin has trailed its source past the
+    # threshold — a genuine finding about the runner, not about the dispatch under test.
+    # Its bands are exercised against written records in
+    # tests/teatree_cli/doctor/test_checks_skill_pins.py; pin it to a pass here so this
+    # smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_skill_pin_freshness", lambda: True)
     # The git-hooks gate probes the checkouts the runner really lives in — on a CI
     # runner (and any fresh clone) `.git/hooks` holds only samples, so it FAILs
     # deterministically off-box. It is exercised end-to-end in

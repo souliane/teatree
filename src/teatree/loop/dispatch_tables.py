@@ -351,6 +351,10 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #4451: the scanner flags stale ratchet pins on the core clone; the executor
     # only reports them. Never an agent — nothing here writes a fix.
     "ratchet.stale_pins": ("mechanical", "report_ratchet_staleness"),
+    # #4677: the scanner flags a FIRST-PARTY skill source that moved past its pin;
+    # the executor opens the apm.yml bump PR. Mechanical-only — the change is a
+    # one-line sha rewrite that a human reviews like any other PR, never an agent.
+    "skill_pin.behind": ("mechanical", "open_skill_pin_bump_pr"),
 }
 
 

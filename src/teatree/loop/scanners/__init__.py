@@ -59,6 +59,7 @@ from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 from teatree.loop.scanners.self_update import SelfUpdateScanner
+from teatree.loop.scanners.skill_pin_refresh import SkillPinRefreshScanner
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher, SlackBroadcastsScanner
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
@@ -127,6 +128,7 @@ __all__ = [
     "Scanner",
     "ScanningNewsScanner",
     "SelfUpdateScanner",
+    "SkillPinRefreshScanner",
     "SlackBroadcastsScanner",
     "SlackDmInboundScanner",
     "SlackMentionsScanner",

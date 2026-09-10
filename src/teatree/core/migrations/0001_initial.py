@@ -300,6 +300,15 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "skill_pin_refresh",
+        21600,
+        None,
+        None,
+        "Reads the teatree core clone's apm.yml every 6h and opens a PR bumping any FIRST-PARTY skill pin its source has moved past (#4677). Third-party pins are never fetched and never bumped. Default-OFF.",
+        False,
+        False,
+    ),
+    (
         "memory_skim",
         604800,
         None,

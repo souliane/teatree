@@ -42,6 +42,12 @@ Same regex+semicolon shape as the other knobs in that file. Two policies are rec
 
 Repos absent from `SWEEP_POLICY` default to `bulk-update` so existing behavior is unchanged for unconfigured repos.
 
+**Say it out loud when no policy is configured.** When `~/.ac-reviewing-codebase` is absent, or carries no
+`SWEEP_POLICY` line, the sweep report OPENS with one line naming the absent file and stating that all N repos
+are defaulting to `bulk-update` — so "no policy was configured" is never mistaken for "bulk-update was
+chosen". `t3 doctor check` reports the same gap as an INFO (`checks_sweep_policy`); neither gates, because the
+file is an owner preference and the conservative default is a legitimate choice.
+
 ### Mergeable colleague-facing MRs are notify-only
 
 When a self-authored MR on a **colleague-facing** repo turns green, is not draft, not conflicted, and up to date with main but has no independent CLEAR, the loop's `PrSweepScanner` does NOT auto-merge it and does NOT auto-request review (a colleague-facing overlay runs `autonomy notify`, whose resolved `review_request_post_disabled = true` blocks the review-request post). It DMs you the MR link + "mergeable, ready to request review" **once per head** (idempotent via the `MergeableNotified` ledger; re-fires only on a new commit), so you can decide when to request a colleague's review. The DM is the only action — colleague review remains the merge gate.

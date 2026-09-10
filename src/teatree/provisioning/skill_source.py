@@ -77,11 +77,48 @@ def parse_skill_source(spec: str) -> SkillSource | None:
     )
 
 
-def _link(link: Path, target: Path) -> None:
+def link_skill(link: Path, target: Path) -> None:
     """Point *link* at *target*, replacing whatever was there."""
     if link.is_symlink() or link.exists():
         link.unlink()
     link.symlink_to(target)
+
+
+def checkout_skill_source(source: SkillSource, *, cache_root: Path, remote_base: str) -> Path | None:
+    """*source*'s local checkout at its declared ref, cloning it once when absent.
+
+    Module-level because the whole-repo bundle installer
+    (:mod:`teatree.provisioning.skill_bundle`) fetches the same way from the same
+    cache — one fetch path, so the two installers can never disagree about which
+    directory a declared ``(repo, ref)`` resolves to.
+    """
+    destination = cache_root / source.cache_name
+    if not (destination / ".git").exists():
+        cache_root.mkdir(parents=True, exist_ok=True)
+        url = source.remote_url(remote_base)
+        result = run_allowed_to_fail(
+            ["git", "clone", "--quiet", url, str(destination)],
+            expected_codes=None,
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not clone declared skill source %s: %s", url, result.stderr.strip())
+            return None
+    if source.ref:
+        checkout = run_allowed_to_fail(
+            ["git", "-C", str(destination), "checkout", "--quiet", source.ref],
+            expected_codes=None,
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+        if checkout.returncode != 0:
+            logger.warning(
+                "Declared skill source %s has no ref %s: %s",
+                source.owner_repo,
+                source.ref,
+                checkout.stderr.strip(),
+            )
+            return None
+    return destination
 
 
 class MandatedSkillInstaller:
@@ -104,7 +141,7 @@ class MandatedSkillInstaller:
             return InstallOutcome.ALREADY_PRESENT
         carried = self._plugin_copy(dependency.name)
         if carried is not None:
-            _link(link_dir / dependency.name, carried)
+            link_skill(link_dir / dependency.name, carried)
             return InstallOutcome.INSTALLED
         source = parse_skill_source(dependency.source)
         if source is None:
@@ -115,7 +152,7 @@ class MandatedSkillInstaller:
         target = checkout / source.subpath
         if not (target / "SKILL.md").is_file():
             return InstallOutcome.UNAVAILABLE
-        _link(link_dir / dependency.name, target)
+        link_skill(link_dir / dependency.name, target)
         return InstallOutcome.INSTALLED
 
     def _plugin_copy(self, name: str) -> Path | None:
@@ -126,31 +163,4 @@ class MandatedSkillInstaller:
         return candidate if (candidate / "SKILL.md").is_file() else None
 
     def _checkout(self, source: SkillSource) -> Path | None:
-        """Return the source repo's local checkout, cloning it once when absent."""
-        destination = self.cache_root / source.cache_name
-        if not (destination / ".git").exists():
-            self.cache_root.mkdir(parents=True, exist_ok=True)
-            url = source.remote_url(self.remote_base)
-            result = run_allowed_to_fail(
-                ["git", "clone", "--quiet", url, str(destination)],
-                expected_codes=None,
-                timeout=_CLONE_TIMEOUT_SECONDS,
-            )
-            if result.returncode != 0:
-                logger.warning("Could not clone declared skill source %s: %s", url, result.stderr.strip())
-                return None
-        if source.ref:
-            checkout = run_allowed_to_fail(
-                ["git", "-C", str(destination), "checkout", "--quiet", source.ref],
-                expected_codes=None,
-                timeout=_CLONE_TIMEOUT_SECONDS,
-            )
-            if checkout.returncode != 0:
-                logger.warning(
-                    "Declared skill source %s has no ref %s: %s",
-                    source.owner_repo,
-                    source.ref,
-                    checkout.stderr.strip(),
-                )
-                return None
-        return destination
+        return checkout_skill_source(source, cache_root=self.cache_root, remote_base=self.remote_base)

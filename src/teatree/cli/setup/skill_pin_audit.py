@@ -9,19 +9,31 @@ report it later without a round trip of its own.
 Its sibling :class:`teatree.cli.setup.mandated_skills.MandatedSkillProvisioner`
 covers the absence of a mandated skill; this covers the age of the pin that
 mandates it. Neither can fail a setup run: a skill nobody could install is the
-doctor gate's business, and a pin held deliberately is nobody's business at all.
+doctor gate's business, and so is a first-party pin that has drifted too long.
+
+The record carries WHEN each pin was first seen behind (#4677), read back from the
+previous run — a single measurement can say a pin trails its source but never for
+how long, and duration is what separates a bump landing tomorrow from a mandate
+nobody has met for a month.
 """
 
 import datetime as dt
 from collections.abc import Callable
 from pathlib import Path
 
-from teatree.provisioning.declared import DeclarationUnreadableError, skills_declared_in_apm_manifest
+from teatree.provisioning.declared import (
+    DeclarationUnreadableError,
+    bundles_declared_in_apm_manifest,
+    skills_declared_in_apm_manifest,
+)
 from teatree.provisioning.skill_pin import (
     DEFAULT_REMOTE_BASE,
     PinAudit,
+    carry_behind_since,
+    first_party_owner,
     measure_skill_pins,
     pin_advisory_lines,
+    read_pin_audit,
     write_pin_audit,
 )
 
@@ -46,8 +58,9 @@ class SkillPinAuditor:
         recorded as measured, and a later doctor run must see "never taken"
         instead of "every pin was current".
         """
+        manifest = self.repo / _APM_MANIFEST
         try:
-            declared = skills_declared_in_apm_manifest(self.repo / _APM_MANIFEST)
+            declared = skills_declared_in_apm_manifest(manifest) + bundles_declared_in_apm_manifest(manifest)
         except DeclarationUnreadableError as exc:
             echo(
                 f"WARN  Skill-pin freshness is UNVERIFIED: {exc}. The declared pins could not be "
@@ -55,10 +68,17 @@ class SkillPinAuditor:
             )
             return
 
-        statuses = measure_skill_pins(declared, remote_base=self.remote_base)
+        now = dt.datetime.now(tz=dt.UTC)
+        statuses = measure_skill_pins(
+            declared, remote_base=self.remote_base, first_party_owner=first_party_owner(manifest)
+        )
         for line in pin_advisory_lines(statuses):
             echo(line)
-        audit = PinAudit(measured_at=dt.datetime.now(tz=dt.UTC), statuses=tuple(statuses))
+        audit = PinAudit(
+            measured_at=now,
+            statuses=tuple(statuses),
+            behind_since=carry_behind_since(statuses, previous=read_pin_audit(self.record_path), now=now),
+        )
         if not write_pin_audit(audit, self.record_path):
             echo(
                 f"WARN  Skill-pin measurement could not be recorded at {self.record_path} — "

@@ -26,12 +26,13 @@ from typing import Literal
 
 import yaml
 
-type DependencyKind = Literal["skill", "binary", "integration"]
+type DependencyKind = Literal["skill", "bundle", "binary", "integration"]
 
 _APM_MANIFEST = "apm.yml"
 _PYPROJECT = "pyproject.toml"
 _CLAUDE_SETTINGS = (".claude", "settings.json")
 _MIN_SKILL_SPEC_SEGMENTS = 3
+_BUNDLE_SPEC_SEGMENTS = 2
 
 _BINARY_REMEDIATION = "install it and put it on PATH, then re-run `t3 doctor check`"
 _INTEGRATION_REMEDIATION = "run `t3 setup` to re-register the plugin, or disable it in ~/.claude/settings.json"
@@ -81,6 +82,18 @@ def skill_remediation(spec: str) -> str:
     )
 
 
+def bundle_remediation(spec: str) -> str:
+    """The runnable fix for an absent mandated bundle, naming its declared source.
+
+    Deliberately the same pasteable shape as :func:`skill_remediation`: a reader
+    fixing a FAIL should not have to notice which KIND the row was to know what to run.
+    """
+    return (
+        f"`apm install {spec}` — or run `t3 setup` in this environment, "
+        "which provisions every declared skill dependency idempotently"
+    )
+
+
 def skill_bump_remediation(spec: str) -> str:
     """The runnable fix for a pin its source has moved past, at the NEW spec.
 
@@ -106,9 +119,8 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
 
     An entry of shape ``<owner>/<repo>/<subpath>[#<ref>]`` names ONE skill (its
     last path segment). A two-segment entry is a whole-repo bundle that names no
-    single skill, so it declares nothing enumerable here — and therefore nothing
-    the pin surface can measure either, which is why
-    :func:`pinned_specs_in_apm_manifest` exists alongside this.
+    single skill, so it is enumerated by :func:`bundles_declared_in_apm_manifest`
+    instead — a different install and a different probe, never a dropped mandate.
     """
     declared: list[DeclaredDependency] = []
     for spec in _apm_entries(manifest):
@@ -121,6 +133,36 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
                 name=segments[-1],
                 declared_in=f"{_APM_MANIFEST} → dependencies.apm",
                 remediation=skill_remediation(spec),
+                source=spec,
+            )
+        )
+    return declared
+
+
+def bundles_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
+    """Mandated whole-repo bundles from ``apm.yml``'s ``dependencies.apm`` list.
+
+    The sibling of :func:`skills_declared_in_apm_manifest`, for the shape that one
+    drops. A two-segment entry names a REPO rather than one skill, so it is a
+    different install (every skill the repo publishes) and a different probe — but
+    it is mandated exactly as hard, and routing it to neither reader is what left
+    ``obra/superpowers`` with no installer while doctor stayed silent.
+
+    A two-segment entry carrying NO ``#<ref>`` is excluded: ``souliane/teatree`` is
+    the package this manifest describes, not a skill source to fetch.
+    """
+    declared: list[DeclaredDependency] = []
+    for spec in _apm_entries(manifest):
+        body, _, ref = spec.partition("#")
+        segments = body.strip("/").split("/")
+        if len(segments) != _BUNDLE_SPEC_SEGMENTS or not ref.strip():
+            continue
+        declared.append(
+            DeclaredDependency(
+                kind="bundle",
+                name="/".join(segments),
+                declared_in=f"{_APM_MANIFEST} → dependencies.apm",
+                remediation=bundle_remediation(spec),
                 source=spec,
             )
         )
@@ -236,6 +278,7 @@ def declared_dependencies(*, project_root: Path, home: Path) -> Enumeration:
     """Every mandated dependency across all three declaration surfaces."""
     readers = (
         lambda: skills_declared_in_apm_manifest(project_root / _APM_MANIFEST),
+        lambda: bundles_declared_in_apm_manifest(project_root / _APM_MANIFEST),
         lambda: binaries_declared_in_pyproject(project_root / _PYPROJECT),
         lambda: integrations_declared_in_claude_settings(home.joinpath(*_CLAUDE_SETTINGS)),
     )

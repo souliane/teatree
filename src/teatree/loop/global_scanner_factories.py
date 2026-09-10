@@ -31,6 +31,7 @@ from teatree.loop.scanners import (
     Scanner,
     ScanningNewsScanner,
     SelfUpdateScanner,
+    SkillPinRefreshScanner,
     SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
@@ -320,6 +321,23 @@ def _ratchet_staleness_scanner() -> RatchetStalenessScanner | None:
     if repo is None:
         return None
     return RatchetStalenessScanner(repo=repo)
+
+
+def _skill_pin_refresh_scanner() -> SkillPinRefreshScanner | None:
+    """Build the first-party skill-pin refresher (#4677) — the core clone gates it.
+
+    Returns ``None`` when no editable teatree clone resolves: the manifest whose pins
+    are measured is that clone's own ``apm.yml``, so with no clone there is nothing to
+    read and the loop is silent rather than guessing at a path. Like ``ratchet_repair``
+    it carries no config kill-switch: the ``skill_pin_refresh`` ``Loop`` row is the
+    on/off decision, and while it is disabled the fan-out never calls ``build_jobs``.
+    """
+    from teatree.paths import get_data_dir  # noqa: PLC0415 — deferred: keeps the import graph off teatree.paths
+
+    repo = _resolve_t3_repo()
+    if repo is None:
+        return None
+    return SkillPinRefreshScanner(repo=repo, cache_root=get_data_dir("skill-sources"))
 
 
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:

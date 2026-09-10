@@ -5,13 +5,11 @@ import shutil
 from pathlib import Path
 
 from teatree.cli.doctor import DoctorService
+from teatree.provisioning.excluded_skills import CORE_EXCLUDED_SKILLS
 
 logger = logging.getLogger(__name__)
 
-# Skills that conflict with teatree's multi-repo architecture.
-# Always excluded — not user-configurable.  Users can add extra
-# exclusions via the ``excluded_skills`` setting in the DB config store.
-CORE_EXCLUDED_SKILLS = ["using-superpowers", "using-git-worktrees"]
+__all__ = ["CORE_EXCLUDED_SKILLS", "SkillLinker"]
 
 
 def _is_within(path: Path, root: Path) -> bool:

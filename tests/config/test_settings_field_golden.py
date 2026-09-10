@@ -69,6 +69,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "dashboard_instance_label",
         "dashboard_logo",
         "db_backup_cadence_hours",
+        "skill_pin_stale_fail_days",
         "db_backup_disabled",
         "db_backup_retention_days",
         "deferred_question_age_ceiling_days",

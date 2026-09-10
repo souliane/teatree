@@ -117,6 +117,44 @@ def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
             typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
 
 
+def _collect_skill_source_cache(repo: Path, claude_skills: Path) -> None:
+    """Remove skill-source checkouts no declaration names and no install links into."""
+    from teatree.provisioning.skill_cache_gc import collect_unreferenced  # noqa: PLC0415 — lazy CLI import
+
+    referenced = _referenced_checkouts(repo)
+    if referenced is None:
+        return
+    link_dirs = [claude_skills, *(skills_dir for _label, skills_dir in agent_skill_dirs())]
+    collected = collect_unreferenced(get_data_dir("skill-sources"), referenced=referenced, link_dirs=link_dirs)
+    if collected:
+        typer.echo(f"OK    Collected {len(collected)} unreferenced skill-source checkout(s).")
+
+
+def _referenced_checkouts(repo: Path) -> set[str] | None:
+    """Cache directory names every declared ``(source, ref)`` resolves to.
+
+    ``None`` when the manifest could not be read: "I could not read the mandate" may
+    never authorise a delete, so the collection is skipped rather than run blind.
+    """
+    from teatree.provisioning.declared import (  # noqa: PLC0415 — lazy CLI import
+        DeclarationUnreadableError,
+        bundles_declared_in_apm_manifest,
+        skills_declared_in_apm_manifest,
+    )
+    from teatree.provisioning.skill_bundle import parse_bundle_source  # noqa: PLC0415 — lazy CLI import
+    from teatree.provisioning.skill_source import parse_skill_source  # noqa: PLC0415 — lazy CLI import
+
+    manifest = repo / "apm.yml"
+    try:
+        declared = skills_declared_in_apm_manifest(manifest)
+        bundles = bundles_declared_in_apm_manifest(manifest)
+    except DeclarationUnreadableError:
+        return None
+    sources = [parse_skill_source(dep.source) for dep in declared]
+    sources += [parse_bundle_source(dep.source) for dep in bundles]
+    return {source.cache_name for source in sources if source is not None}
+
+
 def _install_checkout_git_config(repo: Path) -> None:
     """Install the per-checkout git config every checkout teatree commits from needs.
 
@@ -231,6 +269,11 @@ def run(
     # record. Suggestion-only, and a source it cannot reach is reported unknown
     # rather than current.
     SkillPinAuditor(repo, default_record_path()).audit(typer.echo)
+
+    # The cache is keyed per (source, ref), so every pin bump mints a directory and
+    # leaves the previous one unread forever — one had sat there seven weeks. Runs
+    # AFTER every install above, so a checkout this run just made is referenced.
+    _collect_skill_source_cache(repo, claude_skills)
 
     if not skip_plugin:
         PluginRegistrar(repo).install()

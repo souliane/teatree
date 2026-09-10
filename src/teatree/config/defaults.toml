@@ -145,6 +145,7 @@ outer_loop_max_per_week = 1 # int — outer-loop runs allowed per week
 outer_loop_measure_days = 7 # int — days of history the outer loop measures over
 outer_loop_stop_after_consecutive_failures = 3 # int — consecutive failures that stop the outer loop
 sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
+skill_pin_stale_fail_days = 14 # int — days a first-party skill pin may trail its source before doctor FAILs
 triage_assessor_cadence_hours = 24 # int — hours between triage assessor runs
 triage_assessor_enabled = true # bool — run the triage assessor over untriaged issues
 triage_assessor_max_issues_per_tick = 10 # int — issues the triage assessor may assess in one tick
@@ -522,6 +523,12 @@ colleague_facing = false
 default_enabled = false
 description = "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair (#4451). Observe-only: it writes nothing and opens nothing. Default-OFF."
 
+[loops.skill_pin_refresh]
+delay_seconds = 21600
+colleague_facing = false
+default_enabled = false
+description = "Reads the teatree core clone's apm.yml every 6h and opens a PR bumping any FIRST-PARTY skill pin its source has moved past (#4677). Third-party pins are never fetched and never bumped. Default-OFF."
+
 [loops.memory_skim]
 delay_seconds = 604800
 colleague_facing = false
@@ -624,6 +631,7 @@ outer_loop = false
 directive_loop = false
 ci_eval_heal = false
 ratchet_repair = false
+skill_pin_refresh = false
 memory_skim = false
 
 [modes.off]
@@ -657,6 +665,7 @@ outer_loop = false
 directive_loop = false
 ci_eval_heal = false
 ratchet_repair = false
+skill_pin_refresh = false
 memory_skim = false
 
 [schedules.standard]

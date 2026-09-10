@@ -15,7 +15,9 @@ agents:
 # `dependencies.apm` is the REQUIRED tier and its only declaration surface:
 # `teatree.provisioning.declared` enumerates it, `t3 setup` provisions each entry,
 # and `t3 doctor check` FAILs on any that is still absent (BLUEPRINT.md § the
-# declared-dependency provisioning gate). The three `souliane/skills` companions
+# declared-dependency provisioning gate). A three-segment entry names ONE skill; a
+# two-segment one is a whole-repo BUNDLE, installed as every skill the repo
+# publishes and probed against that same set (#4677). The three `souliane/skills` companions
 # are mandatory, not suggestions — the architectural-review scanner and the
 # `architectural_review_skill` / `review_skill` settings resolve against
 # `ac-reviewing-codebase`, so a box without it runs its periodic review with no
