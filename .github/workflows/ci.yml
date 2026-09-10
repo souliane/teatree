@@ -1245,10 +1245,14 @@ jobs:
       # destabilising them; the plugin is isolated to this lane.
       - run: uv sync --group shuffle
       # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/`` tests
-      # on the pre-fix code); the others widen order coverage. ``-n0`` is serial so a
-      # single in-process collection order runs end to end (xdist would isolate the
-      # polluter from the victim across workers). The four seeds are MATRIXED so each
-      # runs as its own ~5-7-min parallel job over the curated set (#3160).
+      # on the pre-fix code); the others widen order coverage. The seed -> order map
+      # belongs to pytest-randomly, so these four are only meaningful under the ``<5``
+      # pin in ``[dependency-groups].shuffle`` — 5.0.0 shuffles ahead of pytest-django's
+      # grouping and remaps every seed, so re-record all four when that pin lifts.
+      # ``-n0`` is serial so a single in-process collection order runs end to end
+      # (xdist would isolate the polluter from the victim across workers). The four
+      # seeds are MATRIXED so each runs as its own ~5-7-min parallel job over the
+      # curated set (#3160).
       # ``leak_sentinel_plugin`` runs WARN-ONLY: a process-global env/cwd polluter is
       # NAMED (not just its downstream victim) without failing the lane.
       - name: Run the curated order-safe set under shuffled collection (seed ${{ matrix.seed }})

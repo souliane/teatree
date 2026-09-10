@@ -3620,19 +3620,18 @@ _TICK_DISPATCH_OWNER_DIRECTIVE = (
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
     "TEATREE — Claude account switch detected (`/login`).\n\n"
-    "The active Claude account changed since teatree last recovered the "
-    "connectors, so the in-process MCP/backend token cache may still route "
-    "Slack/Notion calls to the OLD workspace: delivery returns ok while the new "
-    "account sees nothing (souliane/teatree#1176), so nothing at the call site "
-    "will tell you. Run `t3 setup recover-account-switch` NOW. It invalidates "
-    "the backend cache, re-probes only this account's connectors (a live "
-    "`auth.test` each plus a 30s-bounded `claude mcp list`), and records the new "
-    "fingerprint — which is what stops this notice repeating every session. "
-    "This fires only on an ACTUAL switch, so it is a rare one-off, not a "
-    "session-start ritual. Do NOT reach for `t3 doctor check` instead: it is "
-    "containerized and sweeps every check, costing MINUTES, and it must never "
-    "sit on the session-start path. If the recovery reports a connector "
-    "unreachable, re-auth it in the Claude.ai UI and re-run the recovery."
+    "The active Claude account changed since teatree last recovered the connectors, so the in-process "
+    "MCP/backend token cache may still route Slack/Notion calls to the OLD workspace: delivery returns ok while "
+    "the new account sees nothing (souliane/teatree#1176), so nothing at the call site will tell you. The cached "
+    "per-account token health goes stale the same way — an exhausted verdict is trusted until its window resets, "
+    "so the governor keeps denying every dispatch on the OLD account's exhaustion (souliane/teatree#4736). "
+    "Run `t3 setup recover-account-switch` NOW. It invalidates the backend cache, expires the token-health cache "
+    "so the next `t3 tokens` re-probes, re-probes only this account's connectors (a live `auth.test` each plus a "
+    "30s-bounded `claude mcp list`), and records the new fingerprint — which is what stops this notice repeating "
+    "every session. This fires only on an ACTUAL switch, so it is a rare one-off, not a session-start ritual. "
+    "Do NOT reach for `t3 doctor check` instead: it is containerized and sweeps every check, costing MINUTES, "
+    "and it must never sit on the session-start path. If the recovery reports a connector unreachable, re-auth "
+    "it in the Claude.ai UI and re-run the recovery."
 )
 
 _MCP_CONNECTIVITY_DIRECTIVE = (

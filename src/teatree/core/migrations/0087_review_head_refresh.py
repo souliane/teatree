@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0085_dream_marker_terminal_outcome"),
+        ("core", "0086_anthropictokenusage_token_fingerprint"),
     ]
 
     operations = [

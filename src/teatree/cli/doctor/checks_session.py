@@ -34,7 +34,8 @@ def _check_account_switch() -> bool:
     if outcome.all_reachable:
         typer.echo(
             f"OK    Claude account switch recovered ({outcome.previous_fingerprint[:8]}… → "
-            f"{outcome.current_fingerprint[:8]}…); backend cache reinvalidated, connectors reachable.",
+            f"{outcome.current_fingerprint[:8]}…); backend cache reinvalidated, token health expired "
+            f"({outcome.token_health_rows_expired} row(s)), connectors reachable.",
         )
         return True
     unreachable = ", ".join(f"{p.name} ({p.detail})" for p in outcome.probes if not p.reachable)

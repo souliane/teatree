@@ -5,7 +5,8 @@ session, the in-process MCP/backend token cache keeps routing to the *old*
 account: outbound Slack/Notion calls return ``ok`` but land in a workspace the
 new account no longer reads, so the user sees nothing (souliane/teatree#1176,
 #1239). This module handles the in-session side: detect the switch, invalidate
-the backend cache, re-probe connector reachability, and surface the result.
+the backend cache and the per-account token-health cache, re-probe connector
+reachability, and surface the result.
 
 The account identity is the ``oauthAccount.accountUuid`` in ``~/.claude.json``.
 This module is the single reader of that value (``current_account_fingerprint``
@@ -29,12 +30,14 @@ from teatree.core.account_fingerprint import current_account_fingerprint, load_r
 from teatree.core.backend_factory import iter_overlay_backends, reset_backend_caches
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.mcp_connectivity import McpConnectivityOutcome
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 
 logger = logging.getLogger(__name__)
 
 type CacheReset = Callable[[], None]
 type BackendsProvider = Callable[[], list[MessagingBackend]]
 type McpConnectivityProbe = Callable[[], McpConnectivityOutcome]
+type TokenHealthExpiry = Callable[[], int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +66,7 @@ class AccountSwitchOutcome:
     probes: tuple[ConnectorProbeResult, ...] = field(default_factory=tuple)
     mcp_ok: bool = True
     mcp_findings: tuple[str, ...] = field(default_factory=tuple)
+    token_health_rows_expired: int = 0
 
     @property
     def all_reachable(self) -> bool:
@@ -77,6 +81,16 @@ class AccountSwitchOutcome:
 def overlay_messaging_backends() -> list[MessagingBackend]:
     """Every registered overlay's messaging backend, built fresh from config."""
     return [b.messaging for b in iter_overlay_backends() if b.messaging is not None]
+
+
+def expire_token_health_cache() -> int:
+    """Stale every cached per-account rate-limit verdict, returning the row count.
+
+    An exhausted verdict is trusted until its blocking window resets (days), so after a
+    switch the governor would keep denying every dispatch on the PREVIOUS account's
+    exhaustion — while the operator holds a freshly-authenticated one (#4736).
+    """
+    return AnthropicTokenUsage.objects.expire_all()
 
 
 def probe_connectors(backends: list[MessagingBackend]) -> list[ConnectorProbeResult]:
@@ -107,14 +121,16 @@ def probe_connectors(backends: list[MessagingBackend]) -> list[ConnectorProbeRes
 class AccountSwitchRecovery:
     """The detect-invalidate-reprobe cycle, with injectable I/O seams.
 
-    ``reset_caches`` and ``backends`` default to the production overlay factory;
-    tests and the deterministic eval pass stubs so the cycle runs with no
-    network or ``pass`` store. The class owns the policy (when a switch counts,
-    what to invalidate, what to probe); the seams own only the I/O.
+    ``reset_caches``, ``backends`` and ``expire_token_health`` default to the
+    production overlay factory / health cache; tests and the deterministic eval
+    pass stubs so the cycle runs with no network, DB or ``pass`` store. The class
+    owns the policy (when a switch counts, what to invalidate, what to probe);
+    the seams own only the I/O.
     """
 
     reset_caches: CacheReset = reset_backend_caches
     backends: BackendsProvider = overlay_messaging_backends
+    expire_token_health: TokenHealthExpiry = expire_token_health_cache
 
     def run(self, *, home: Path | None = None) -> AccountSwitchOutcome:
         home = home if home is not None else Path.home()
@@ -123,9 +139,13 @@ class AccountSwitchRecovery:
         switched = bool(current) and bool(previous) and current != previous
 
         probes: tuple[ConnectorProbeResult, ...] = ()
+        expired = 0
         if switched:
-            logger.info("account switch detected: %s -> %s; invalidating backend cache", previous, current)
+            logger.info(
+                "account switch detected: %s -> %s; invalidating backend + token-health caches", previous, current
+            )
             self.reset_caches()
+            expired = self.expire_token_health()
             probes = tuple(probe_connectors(self.backends()))
 
         outcome = AccountSwitchOutcome(
@@ -133,6 +153,7 @@ class AccountSwitchRecovery:
             previous_fingerprint=previous,
             switched=switched,
             probes=probes,
+            token_health_rows_expired=expired,
         )
 
         if current and (not switched or outcome.all_reachable):
@@ -145,11 +166,11 @@ def detect_and_recover_account_switch(*, home: Path | None = None) -> AccountSwi
     """Detect a ``/login`` switch, invalidate the cache, and re-probe connectors.
 
     Compares the active account fingerprint against the last-recorded one. On a
-    genuine switch (both non-empty and different): reset the backend cache and
-    re-probe each messaging connector's live reachability. The new fingerprint
-    is recorded only when recovery genuinely succeeded — a no-switch run (first
-    run or unchanged account) or a switch where every connector probed
-    reachable. A switch that left a connector unreachable does NOT record, so
+    genuine switch (both non-empty and different): reset the backend cache, expire
+    the cached per-account token health, and re-probe each messaging connector's
+    live reachability. The new fingerprint is recorded only when recovery genuinely
+    succeeded — a no-switch run (first run or unchanged account) or a switch where
+    every connector probed reachable. A switch that left a connector unreachable does NOT record, so
     the next session re-detects the switch and the heartbeat keeps surfacing
     until the bridge is actually fixed. An empty active fingerprint ("cannot
     tell") never claims a switch and never records. Thin convenience wrapper
@@ -164,6 +185,7 @@ __all__ = [
     "ConnectorProbeResult",
     "current_account_fingerprint",
     "detect_and_recover_account_switch",
+    "expire_token_health_cache",
     "load_recorded_fingerprint",
     "overlay_messaging_backends",
     "probe_connectors",

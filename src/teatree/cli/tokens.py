@@ -15,12 +15,18 @@ _ADHOC_HELP = (
     "freshly-minted token before saving it. Warning: a token on the command line is visible "
     "in 'ps' output and your shell history."
 )
+_REFRESH_HELP = (
+    "Ignore the cached health and live-probe every configured account — the escape after "
+    "rotating a token or switching account with /login, whose exhausted verdict would "
+    "otherwise be trusted until its window resets."
+)
 
 
 def tokens(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the structured report as JSON."),
     tokens: list[str] | None = typer.Option(None, "--token", help=_ADHOC_HELP),
+    refresh: bool = typer.Option(False, "--refresh", help=_REFRESH_HELP),
 ) -> None:
     """Show per-account Anthropic 5h / weekly token utilization + status."""
     ensure_django()
@@ -31,4 +37,4 @@ def tokens(
     # seam (JSON to stdout under ``--json``, the human table to stderr); call it for
     # the side effect. The ad-hoc tokens ride a plain kwarg — never re-serialised
     # into an argv the classifier scans.
-    call_command("tokens", json_output=json_output, tokens=tokens)
+    call_command("tokens", json_output=json_output, tokens=tokens, refresh=refresh)

@@ -10,8 +10,14 @@ import datetime as dt
 import pytest
 from django.test import TestCase
 
+from teatree.core.admission_governor import read_quota_signal
 from teatree.core.models import AnthropicTokenUsage
-from teatree.core.models.anthropic_token_usage import HEALTH_TTL, AnthropicTokenUsageManager, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import (
+    HEALTH_TTL,
+    AnthropicTokenUsageManager,
+    TokenHealthReading,
+    fingerprint_token,
+)
 
 _NOW = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
 
@@ -167,3 +173,90 @@ class TestRowHealthAccessors(TestCase):
         assert "anthropic/x/oauth" in rendered
         assert "5h=0.30" in rendered
         assert "7d=0.80" in rendered
+
+
+class TestFingerprintToken:
+    def test_is_deterministic(self) -> None:
+        assert fingerprint_token("TOK-alpha") == fingerprint_token("TOK-alpha")
+
+    def test_differs_across_tokens(self) -> None:
+        assert fingerprint_token("TOK-alpha") != fingerprint_token("TOK-beta")
+
+    def test_never_contains_the_token(self) -> None:
+        token = "TOK-super-secret"
+        assert token not in fingerprint_token(token)
+
+    def test_empty_token_is_the_unknown_marker(self) -> None:
+        assert fingerprint_token("") == ""
+
+
+class TestRecordCarriesTheProbedCredential(TestCase):
+    def test_record_stores_the_probed_fingerprint(self) -> None:
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
+        )
+        assert row.token_fingerprint == fingerprint_token("TOK-a")
+
+    def test_record_without_a_fingerprint_keeps_the_stored_one(self) -> None:
+        AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
+        )
+        row = AnthropicTokenUsage.objects.record("anthropic/acct", _reading(u5=0.5), now=_NOW)
+        assert row.token_fingerprint == fingerprint_token("TOK-a")
+
+    def test_record_overwrites_the_fingerprint_on_a_rotation(self) -> None:
+        AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
+        )
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-b")
+        )
+        assert row.token_fingerprint == fingerprint_token("TOK-b")
+
+    def test_a_fresh_row_defaults_to_the_unknown_fingerprint(self) -> None:
+        row = AnthropicTokenUsage.objects.record("anthropic/acct", _reading(), now=_NOW)
+        assert row.token_fingerprint == ""
+
+
+class TestMatchesCredential(TestCase):
+    def test_matches_the_fingerprint_it_was_probed_with(self) -> None:
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
+        )
+        assert row.matches_credential(fingerprint_token("TOK-a")) is True
+
+    def test_does_not_match_a_rotated_credential(self) -> None:
+        row = AnthropicTokenUsage.objects.record(
+            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
+        )
+        assert row.matches_credential(fingerprint_token("TOK-b")) is False
+
+    def test_an_unknown_stored_fingerprint_never_matches(self) -> None:
+        row = AnthropicTokenUsage.objects.record("anthropic/acct", _reading(), now=_NOW)
+        assert row.matches_credential(fingerprint_token("TOK-a")) is False
+
+
+class TestExpireAll(TestCase):
+    def test_expires_every_row_and_returns_the_count(self) -> None:
+        AnthropicTokenUsage.objects.record("anthropic/a", _reading(), now=_NOW)
+        AnthropicTokenUsage.objects.record("anthropic/b", _reading(), now=_NOW)
+
+        assert AnthropicTokenUsage.objects.expire_all(now=_NOW) == 2
+        assert not any(row.is_fresh(_NOW) for row in AnthropicTokenUsage.objects.all())
+
+    def test_expiring_an_empty_cache_is_zero(self) -> None:
+        assert AnthropicTokenUsage.objects.expire_all(now=_NOW) == 0
+
+    def test_keeps_the_rows_for_display(self) -> None:
+        AnthropicTokenUsage.objects.record("anthropic/a", _reading(u5=0.42), now=_NOW)
+        AnthropicTokenUsage.objects.expire_all(now=_NOW)
+        assert AnthropicTokenUsage.objects.get(pass_path="anthropic/a").utilization_5h == pytest.approx(0.42)
+
+    def test_expiring_a_spent_fleet_unblocks_the_governor(self) -> None:
+        for path in ("anthropic/a", "anthropic/b"):
+            AnthropicTokenUsage.objects.record(path, _reading(u5=1.0, reset_5h=_NOW + dt.timedelta(hours=3)), now=_NOW)
+        assert read_quota_signal(_NOW).all_accounts_exhausted is True
+
+        AnthropicTokenUsage.objects.expire_all(now=_NOW)
+
+        assert read_quota_signal(_NOW).all_accounts_exhausted is False

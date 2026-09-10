@@ -7,10 +7,13 @@ construction is intercepted so the cycle never touches a real ``pass`` store or
 Slack.
 """
 
+import datetime as dt
 import json
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.account_fingerprint import fingerprint_switched
 from teatree.core.account_switch import (
@@ -18,10 +21,12 @@ from teatree.core.account_switch import (
     AccountSwitchRecovery,
     ConnectorProbeResult,
     current_account_fingerprint,
+    expire_token_health_cache,
     load_recorded_fingerprint,
     probe_connectors,
     record_fingerprint,
 )
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 
 
 def _write_active_account(home: Path, account_uuid: str, email: str = "user@example.com") -> None:
@@ -109,7 +114,9 @@ class TestDetectAndRecover:
         def _reset() -> None:
             self.reset_calls += 1
 
-        recovery = AccountSwitchRecovery(reset_caches=_reset, backends=lambda: list(self.backends))
+        recovery = AccountSwitchRecovery(
+            reset_caches=_reset, backends=lambda: list(self.backends), expire_token_health=lambda: 0
+        )
         return recovery.run(home=home)
 
     def test_first_run_records_fingerprint_no_switch(self, tmp_path: Path) -> None:
@@ -200,3 +207,78 @@ class TestModuleWrappers:
         overlays = [SimpleNamespace(messaging=backend), SimpleNamespace(messaging=None)]
         monkeypatch.setattr(account_switch, "iter_overlay_backends", lambda: overlays)
         assert account_switch.overlay_messaging_backends() == [backend]
+
+
+class TestTokenHealthExpiryOnSwitch:
+    """A `/login` expires the cached per-account token health (#4736).
+
+    An exhausted row is trusted until its blocking window resets, so without this the
+    governor kept denying every dispatch on the OLD account's exhaustion — the switch
+    being the very remedy the operator reached for.
+    """
+
+    def _run(self, home: Path, *, expired: int = 0) -> tuple[AccountSwitchOutcome, list[str]]:
+        calls: list[str] = []
+
+        def _expire() -> int:
+            calls.append("expire")
+            return expired
+
+        recovery = AccountSwitchRecovery(
+            reset_caches=lambda: None,
+            backends=lambda: [_FakeBackend(ok=True, name="slack")],
+            expire_token_health=_expire,
+        )
+        return recovery.run(home=home), calls
+
+    def test_switch_expires_the_token_health_cache(self, tmp_path: Path) -> None:
+        _write_active_account(tmp_path, "uuid-B")
+        record_fingerprint("uuid-A", home=tmp_path)
+
+        outcome, calls = self._run(tmp_path, expired=3)
+
+        assert outcome.switched is True
+        assert calls == ["expire"]
+        assert outcome.token_health_rows_expired == 3
+
+    def test_no_switch_leaves_the_token_health_cache_alone(self, tmp_path: Path) -> None:
+        _write_active_account(tmp_path, "uuid-A")
+        record_fingerprint("uuid-A", home=tmp_path)
+
+        outcome, calls = self._run(tmp_path)
+
+        assert outcome.switched is False
+        assert calls == []
+        assert outcome.token_health_rows_expired == 0
+
+    def test_first_run_leaves_the_token_health_cache_alone(self, tmp_path: Path) -> None:
+        _write_active_account(tmp_path, "uuid-A")
+
+        _outcome, calls = self._run(tmp_path)
+
+        assert calls == []
+
+
+class TestTokenHealthExpiryDefaultSeam(TestCase):
+    """The production seam expires real rows — the wiring, not a stub (#4736)."""
+
+    def test_the_default_seam_expires_a_spent_row(self) -> None:
+        now = timezone.now()
+        AnthropicTokenUsage.objects.record(
+            "anthropic/acct",
+            TokenHealthReading(
+                organization_id="org-old",
+                utilization_5h=1.0,
+                utilization_7d=0.0,
+                status_5h="rejected",
+                status_7d="allowed",
+                reset_5h=now + dt.timedelta(hours=3),
+                reset_7d=None,
+            ),
+            now=now,
+        )
+        assert AnthropicTokenUsage.objects.get(pass_path="anthropic/acct").is_fresh(now) is True
+
+        assert expire_token_health_cache() == 1
+
+        assert AnthropicTokenUsage.objects.get(pass_path="anthropic/acct").is_fresh() is False

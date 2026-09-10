@@ -27,7 +27,7 @@ class TestTokensCliDelegation:
             result = runner.invoke(_app, [])
         assert result.exit_code == 0
         ensure_mock.assert_called_once_with()
-        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None)
+        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, refresh=False)
 
     def test_passes_the_json_flag(self) -> None:
         with (
@@ -36,16 +36,31 @@ class TestTokensCliDelegation:
         ):
             result = runner.invoke(_app, ["--json"])
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("tokens", json_output=True, tokens=None)
+        call_mock.assert_called_once_with("tokens", json_output=True, tokens=None, refresh=False)
 
     def test_passes_repeated_token_options_in_order(self) -> None:
         with (
             patch("teatree.cli.tokens.ensure_django"),
             patch("django.core.management.call_command") as call_mock,
         ):
-            result = runner.invoke(_app, ["--token", "sk-ant-oat01-A", "--token", "sk-ant-api03-B"])
+            result = runner.invoke(_app, ["--token", "TOK-oauth-A", "--token", "TOK-apikey-B"])
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("tokens", json_output=False, tokens=["sk-ant-oat01-A", "sk-ant-api03-B"])
+        call_mock.assert_called_once_with(
+            "tokens", json_output=False, tokens=["TOK-oauth-A", "TOK-apikey-B"], refresh=False
+        )
+
+    def test_passes_the_refresh_flag(self) -> None:
+        with (
+            patch("teatree.cli.tokens.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(_app, ["--refresh"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, refresh=True)
+
+    def test_refresh_option_help_names_the_stale_verdict_it_escapes(self) -> None:
+        option = inspect.signature(tokens).parameters["refresh"].default
+        assert "/login" in option.help
 
     def test_token_option_help_warns_about_command_line_exposure(self) -> None:
         option = inspect.signature(tokens).parameters["tokens"].default

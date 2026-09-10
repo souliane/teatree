@@ -18,7 +18,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading, fingerprint_token
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
@@ -40,6 +40,21 @@ def _snapshot(*, org: str, u5h: float = 0.1, u7d: float = 0.1, status_7d: str = 
         unified_5h_utilization=u5h,
         unified_5h_reset=reset,
         unified_7d_status=status_7d,
+        unified_7d_utilization=u7d,
+        unified_7d_reset=reset,
+        retry_after=None,
+    )
+
+
+def _live_snapshot(*, org: str, u5h: float = 0.09, u7d: float = 0.28) -> RateLimitSnapshot:
+    """A healthy snapshot whose windows reset in the FUTURE, so its cached row stays fresh."""
+    reset = timezone.now() + dt.timedelta(hours=3)
+    return RateLimitSnapshot(
+        organization_id=org,
+        unified_5h_status="allowed",
+        unified_5h_utilization=u5h,
+        unified_5h_reset=reset,
+        unified_7d_status="allowed",
         unified_7d_utilization=u7d,
         unified_7d_reset=reset,
         retry_after=None,
@@ -216,6 +231,7 @@ class TokenReportRowsTest(TestCase):
                 reset_7d=None,
             ),
             now=timezone.now(),
+            token_fingerprint=fingerprint_token("TOK-cached"),
         )
         secrets = RecordingSecretReader({"anthropic/oauth/cached": "TOK-cached"})
         reader = FakeReader({})
@@ -225,7 +241,7 @@ class TokenReportRowsTest(TestCase):
         assert rows[0].status is TokenStatus.HEALTHY
         assert rows[0].organization_id == "org-cached"
         assert reader.calls == []
-        assert secrets.calls == []
+        assert secrets.calls == ["anthropic/oauth/cached"]
 
     def test_no_configured_accounts_yields_no_rows(self) -> None:
         assert TokenReport(reader=FakeReader({}), secret_reader=RecordingSecretReader({})).rows() == []
@@ -692,3 +708,184 @@ class TokensCommandAdHocTest(TestCase):
         out = buf.getvalue()
         assert "anthropic/oauth/only-pass" in out
         assert "token[1]" not in out
+
+
+_ROTATION_ACCOUNT = "anthropic/acct/oauth-token"
+
+
+class CredentialRotationTest(TestCase):
+    """A cached verdict belongs to the credential it was probed with (#4736).
+
+    An exhausted row is trusted until its blocking window resets (days), so before this
+    the operator's `/login` to a fresh account was invisible: the report — and the
+    governor reading the same cache — served the OLD account's 100% for the full window.
+    """
+
+    def _exhausted_row(self, *, probed_with: str | None) -> None:
+        now = timezone.now()
+        AnthropicTokenUsage.objects.record(
+            _ROTATION_ACCOUNT,
+            TokenHealthReading(
+                organization_id="org-old",
+                utilization_5h=1.0,
+                utilization_7d=0.0,
+                status_5h="rejected",
+                status_7d="allowed",
+                reset_5h=now + dt.timedelta(hours=3),
+                reset_7d=now + dt.timedelta(days=3),
+            ),
+            now=now,
+            token_fingerprint=fingerprint_token(probed_with) if probed_with is not None else None,
+        )
+
+    def test_rotated_credential_re_probes_instead_of_serving_the_stale_verdict(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with="TOK-old")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({"TOK-new": _snapshot(org="org-new", u5h=0.09, u7d=0.28)})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].status is TokenStatus.HEALTHY
+        assert rows[0].organization_id == "org-new"
+        assert reader.calls == [("TOK-new", True)]
+
+    def test_the_re_probe_rebinds_the_row_to_the_new_credential(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with="TOK-old")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({"TOK-new": _snapshot(org="org-new", u5h=0.09)})
+
+        TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        cached = AnthropicTokenUsage.objects.get(pass_path=_ROTATION_ACCOUNT)
+        assert cached.token_fingerprint == fingerprint_token("TOK-new")
+        assert cached.organization_id == "org-new"
+
+    def test_a_row_with_no_recorded_credential_is_re_probed(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with=None)
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({"TOK-new": _snapshot(org="org-new", u5h=0.09)})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].status is TokenStatus.HEALTHY
+        assert reader.calls == [("TOK-new", True)]
+
+    def test_the_re_probe_settles_so_a_later_report_reuses_the_cache(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with=None)
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({"TOK-new": _live_snapshot(org="org-new")})
+
+        TokenReport(reader=reader, secret_reader=secrets).rows()
+        second = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert second[0].organization_id == "org-new"
+        assert reader.calls == [("TOK-new", True)]
+
+    def test_the_same_credential_still_reuses_the_cache_without_probing(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with="TOK-same")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-same"})
+        reader = FakeReader({})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].status is TokenStatus.EXHAUSTED
+        assert rows[0].organization_id == "org-old"
+        assert reader.calls == []
+
+    def test_a_deleted_pass_entry_reports_missing_not_the_cached_verdict(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with="TOK-old")
+        secrets = RecordingSecretReader({})
+        reader = FakeReader({})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].status is TokenStatus.MISSING
+        assert reader.calls == []
+
+    def test_an_unreachable_re_probe_keeps_the_stored_reading(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._exhausted_row(probed_with="TOK-old")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({}, unreachable={"TOK-new"})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].status is TokenStatus.UNREACHABLE
+        cached = AnthropicTokenUsage.objects.get(pass_path=_ROTATION_ACCOUNT)
+        assert cached.organization_id == "org-old"
+        assert cached.token_fingerprint == fingerprint_token("TOK-old")
+
+    def test_the_fingerprint_is_never_emitted_in_the_payload(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-new"})
+        reader = FakeReader({"TOK-new": _snapshot(org="org-new")})
+
+        payload = json.dumps([row.as_dict() for row in TokenReport(reader=reader, secret_reader=secrets).rows()])
+
+        assert fingerprint_token("TOK-new") not in payload
+        assert "TOK-new" not in payload
+
+
+class RefreshFlagTest(TestCase):
+    """`t3 tokens --refresh` — the operator's non-DB escape from a stale verdict (#4736)."""
+
+    def _fresh_healthy_row(self, secret: str) -> None:
+        AnthropicTokenUsage.objects.record(
+            _ROTATION_ACCOUNT,
+            TokenHealthReading(
+                organization_id="org-cached",
+                utilization_5h=0.1,
+                utilization_7d=0.1,
+                status_5h="allowed",
+                status_7d="allowed",
+                reset_5h=None,
+                reset_7d=None,
+            ),
+            now=timezone.now(),
+            token_fingerprint=fingerprint_token(secret),
+        )
+
+    def test_refresh_probes_despite_a_fresh_matching_row(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._fresh_healthy_row("TOK-same")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-same"})
+        reader = FakeReader({"TOK-same": _snapshot(org="org-live", u5h=0.42)})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets, refresh=True).rows()
+
+        assert rows[0].organization_id == "org-live"
+        assert reader.calls == [("TOK-same", True)]
+
+    def test_without_refresh_the_fresh_matching_row_is_reused(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._fresh_healthy_row("TOK-same")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "TOK-same"})
+        reader = FakeReader({})
+
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+
+        assert rows[0].organization_id == "org-cached"
+        assert reader.calls == []
+
+    def test_the_command_refresh_flag_forces_a_live_probe(self) -> None:
+        _configure(TokenKind.OAUTH, [_ROTATION_ACCOUNT])
+        self._fresh_healthy_row("SECRET-CLI-TOKEN")
+        secrets = RecordingSecretReader({_ROTATION_ACCOUNT: "SECRET-CLI-TOKEN"})
+        reader = FakeReader({"SECRET-CLI-TOKEN": _snapshot(org="org-live", u5h=0.42)})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_rate_limits", reader),
+        ):
+            call_command("tokens", json_output=True, refresh=True, stdout=buf)
+
+        payload = json.loads(buf.getvalue())
+        assert payload[0]["organization_id"] == "org-live"
+        assert "SECRET-CLI-TOKEN" not in buf.getvalue()
+        assert reader.calls == [("SECRET-CLI-TOKEN", True)]
