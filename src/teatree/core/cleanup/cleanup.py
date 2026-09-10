@@ -155,6 +155,10 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     defeats, leaving only the forge. :func:`branch_is_landed` answers from git first, ANDing the
     layered content verdict with present-tense proof that merging the branch would leave the
     target's tree untouched, so it is ordered between them.
+
+    Deliberately the stricter :func:`branch_is_landed`, not the :func:`branch_landed_for_teardown`
+    the other three destroy sites read: the only branches the wider one adds are
+    ``redundant and forge-merged-at-tip``, which :func:`_branch_pr_is_merged` below already takes.
     """
     branch = target.branch_to_delete
     if branch is None:
