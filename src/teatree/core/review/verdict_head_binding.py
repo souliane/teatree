@@ -61,7 +61,9 @@ def resolve_verdict_head(
     """
     probe = read_live_head or live_head_at
     claimed = asserted.strip().lower()
-    pinned = dispatch_head.strip().lower()
+    # Bound verbatim, compared case-folded: the bound head is re-compared against the
+    # source spelling, so a fold would read an unmoved head as a rebind.
+    pinned = dispatch_head.strip()
     if not claimed:
         return HeadBinding(
             error=(
@@ -70,7 +72,7 @@ def resolve_verdict_head(
                 "verdict is not recorded. Return that full 40-char head, which your brief named"
             ),
         )
-    if _abbreviates(claimed, pinned):
+    if _abbreviates(claimed, pinned.lower()):
         return HeadBinding(head=pinned)
 
     live = probe(slug=pr.slug, pr_id=pr.pr_id, host_kind=pr.host_kind)
@@ -82,10 +84,10 @@ def resolve_verdict_head(
                 f"now — the verdict is not recorded. Retry the read; the claim is untouched"
             ),
         )
-    current = live.sha.strip().lower()
-    if _abbreviates(claimed, current):
+    current = live.sha.strip()
+    if _abbreviates(claimed, current.lower()):
         return HeadBinding(head=current)
-    if current != pinned:
+    if current.lower() != pinned.lower():
         return HeadBinding(
             error=(
                 f"{HEAD_SUPERSEDED_PREFIX}{pr.slug}#{pr.pr_id} advanced from {dispatch_head[:8]} to "

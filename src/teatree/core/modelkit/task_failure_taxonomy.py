@@ -176,9 +176,7 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.CANCELLED: Recovery(_HALT, environmental=False),
     FailureKind.SUPERSEDED: Recovery(_HALT, environmental=False),
     FailureKind.AGENT_ABANDONED: Recovery(_HALT, environmental=False),
-    # The branch moved on: re-running THIS task re-reviews the head it pinned, which is no
-    # longer the PR's. A fresh dispatch at the new head is the recovery, so this row never
-    # reopens; environmental because nothing about the work is at fault.
+    # Re-running re-reviews the head this task pinned; the recovery is a fresh dispatch.
     FailureKind.HEAD_SUPERSEDED: Recovery(_HALT, environmental=True),
 }
 

@@ -9,7 +9,7 @@ nine discarded verdicts, every one of them newer than the dispatch head.
 The control these pin alongside the fix: a SHA that is on neither head is still refused.
 """
 
-from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
@@ -133,10 +133,31 @@ class TestAnUnreadableForgeRefusesRatherThanGuesses:
         assert not binding.superseded
         assert not binding.error.startswith(HEAD_SUPERSEDED_PREFIX)
 
-    def test_the_unreadable_sentinel_never_arrives_as_a_bindable_head(self) -> None:
-        probe = _Probe(LiveHeadRead(sha=HEAD_SHA_UNREADABLE, unreadable=True))
 
-        binding = _resolve(HEAD_SHA_UNREADABLE, probe)
+class TestTheBoundHeadIsSpelledAsTheSourceSpelledIt:
+    """The bound head is re-compared against the source spelling, so a case fold diverges.
 
-        assert binding.head == ""
-        assert binding.error != ""
+    The pre-fix recorder wrote the dispatch head verbatim. A bound head that is silently
+    lowercased compares unequal to it, so an UNMOVED head reads as a rebind and restamps
+    the resolver key with a spelling the source never used.
+    """
+
+    def test_an_upper_case_dispatch_head_binds_verbatim(self) -> None:
+        binding = resolve_verdict_head(
+            asserted=_DISPATCH,
+            dispatch_head=_DISPATCH.upper(),
+            pr=PrRef(slug=_SLUG, pr_id=_PR_ID, host_kind="github"),
+            read_live_head=_moved(),
+        )
+
+        assert binding.head == _DISPATCH.upper()
+
+    def test_an_upper_case_live_head_binds_verbatim(self) -> None:
+        binding = _resolve(_LIVE, _Probe(LiveHeadRead(sha=_LIVE.upper(), unreadable=False)))
+
+        assert binding.head == _LIVE.upper()
+
+    def test_an_upper_case_live_head_that_matches_the_pinned_one_is_not_a_supersede(self) -> None:
+        binding = _resolve(_ELSEWHERE, _Probe(LiveHeadRead(sha=_DISPATCH.upper(), unreadable=False)))
+
+        assert not binding.superseded

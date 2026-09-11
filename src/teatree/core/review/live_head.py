@@ -15,6 +15,7 @@ import logging
 from typing import Protocol
 
 from teatree.core.modelkit.forge_readability import LiveHeadRead
+from teatree.utils.pr_ref import PrRef
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,7 @@ def live_head_at(*, slug: str, pr_id: int, host_kind: str = "github") -> LiveHea
     compares unequal to every reviewed tree, so a forge hiccup would read as a branch
     that moved and spend a claim the reviewer could still have satisfied.
     """
-    from teatree.core.merge.ci_rollup import CodeHostQuery  # noqa: PLC0415 — deferred: core.merge cycle
-    from teatree.utils.pr_ref import PrRef  # noqa: PLC0415 — deferred: paired with the query above
+    from teatree.core.merge.ci_rollup import CodeHostQuery  # noqa: PLC0415 — deferred: ci_rollup needs the app registry
 
     try:
         return CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)).live_head_read()

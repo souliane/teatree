@@ -38,6 +38,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.phase_landing import phase_landing_evidence
+from teatree.core.models.review_target import review_target_for_task, verdict_at
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 
@@ -1103,22 +1104,23 @@ class TestAHeadThatMovedPastBothTreesReArmsInsteadOfParking(TestCase):
         assert rearmed is not None
         assert rearmed.head_sha == _MOVED_HEAD
 
-    def test_a_superseded_head_is_never_re_armed_for_the_tree_it_left_behind(self) -> None:
+    def test_a_superseded_head_is_never_re_armed_even_once_its_deadline_lapses(self) -> None:
+        # A DISPATCHED claim refuses re-arming too, but only until its deadline passes —
+        # so the expiry is what separates "spent for good" from "merely in flight".
         task, _ = _reviewing_task_via_dispatch()
 
         with _live_head(_MOVED_HEAD):
             record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+        _expire_every_claim()
 
-        assert (
-            AutoReviewDispatch.enqueue(
-                slug=_SLUG,
-                pr_id=_PR_ID,
-                head_sha=_HEAD,
-                pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
-                overlay="teatree",
-            )
-            is None
-        )
+        assert _enqueue(head_sha=_HEAD) is None
+
+    def test_a_still_dispatched_head_is_re_armed_once_its_deadline_lapses(self) -> None:
+        """The control that makes the assertion above discriminate."""
+        _reviewing_task_via_dispatch()
+        _expire_every_claim()
+
+        assert _enqueue(head_sha=_HEAD) is not None
 
     def test_two_consecutive_moved_heads_do_not_stall_the_phase(self) -> None:
         # The refusal masks its SHAs to one fingerprint, so before #4737 two of these parked
@@ -1144,3 +1146,64 @@ class TestAnUnreadableForgeLeavesTheClaimAlone(TestCase):
         dispatch.refresh_from_db()
         assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
         assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
+
+
+class TestTheTicketPathBindsTheSameHeadTheDispatchPathDoes(TestCase):
+    """#4737 follow-up: 1454 of 2152 verdict-review tasks carry no dispatch row.
+
+    On that majority the resolver reads ``ticket.extra["reviewed_sha"]``, so a verdict
+    recorded at a refreshed live head left the writer's key and the reader's key naming
+    different trees: the row existed and nothing the system owns could find it.
+    """
+
+    def test_the_reviewer_ticket_is_restamped_at_the_head_the_verdict_landed_on(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket()
+
+        with _live_head(_OTHER_HEAD):
+            attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert attempt.error == ""
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra["reviewed_sha"] == _OTHER_HEAD
+
+    def test_the_resolver_re_reads_the_head_the_verdict_landed_on(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        task.refresh_from_db()
+        target = review_target_for_task(task)
+        assert target is not None
+        assert target.head_sha == _OTHER_HEAD
+        assert verdict_at(target) is not None
+
+    def test_the_landed_work_guard_finds_the_verdict_on_the_ticket_path(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        task.refresh_from_db()
+        assert _OTHER_HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
+
+    def test_an_unmoved_head_leaves_the_stamp_exactly_as_it_was(self) -> None:
+        # The control: the restamp fires only on a rebind, so it cannot read as
+        # "overwrite reviewed_sha on every recording".
+        task = _reviewing_task_on_reviewer_ticket()
+
+        record_result_envelope(task, _verdict_envelope(reviewed_sha=_HEAD), phase="reviewing")
+
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra["reviewed_sha"] == _HEAD
+
+    def test_a_concurrent_writers_key_survives_the_restamp(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket()
+        task.ticket.merge_extra(set_keys={"pr_urls": ["https://github.com/souliane/teatree/pull/4242"]})
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        task.ticket.refresh_from_db()
+        assert task.ticket.extra["pr_urls"] == ["https://github.com/souliane/teatree/pull/4242"]
+        assert task.ticket.extra["reviewed_sha"] == _OTHER_HEAD

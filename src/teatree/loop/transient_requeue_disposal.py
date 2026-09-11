@@ -13,8 +13,8 @@ is finishing it, so marking it COMPLETED would advance the ticket over the succe
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import AutoReviewDispatch, Task, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from teatree.core.models import Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
 #: Stamped onto ``execution_reason`` when a SUPERSEDED FAILED task is retired (its
@@ -41,17 +41,21 @@ DEAD_REVIEW_STAMP = "[dead-review-retired]"
 SUPERSEDED_HEAD_STAMP = "[head-superseded-parked]"
 
 
-def dispose_without_reopen(task: Task) -> bool:
+def dispose_without_reopen(task: Task, *, error: str) -> bool:
     """Dispose of a FAILED row the sweep must neither reopen nor escalate; ``True`` if handled.
 
-    Two dispositions, differing in whether the phase's work is over. A DEAD ARTIFACT is
+    Three dispositions, differing in whether the phase's work is over. A DEAD ARTIFACT is
     retired COMPLETED — nothing can still land, so the row's transition is inert. A row
     with a LIVE SUCCESSOR is parked FAILED — its phase is unfinished and someone else is
-    finishing it, so marking it COMPLETED would advance the ticket over the successor.
+    finishing it, so marking it COMPLETED would advance the ticket over the successor. A
+    review whose PR MOVED PAST the head it judged is parked FAILED too, and is keyed on the
+    failure *error* rather than on the dispatch claim's state: only a quarter of
+    verdict-review tasks hold a claim row, so a claim-keyed test left a legitimate push
+    escalating one question per push on the other three quarters (#4737).
     """
     if _retire_if_dead_artifact(task):
         return True
-    if _review_head_superseded(task):
+    if classify_failure(error) == FailureKind.HEAD_SUPERSEDED:
         _park_superseded_head(task)
         return True
     if _has_live_successor(task):
@@ -138,19 +142,6 @@ def _park_live_successor(task: Task) -> None:
         f"{task.execution_reason}\n{LIVE_SUCCESSOR_STAMP}".strip() if task.execution_reason else LIVE_SUCCESSOR_STAMP
     )
     Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(execution_reason=reason)
-
-
-def _review_head_superseded(task: Task) -> bool:
-    """Whether *task*'s review claim was retired because the PR head moved past it (#4737).
-
-    Read from the claim's own recorded state, never from the forge: the recorder already
-    established the head moved when it superseded the claim, and re-asking would spend a
-    round trip per failed review per tick to re-derive a fact already written down.
-    """
-    if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
-        return False
-    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-    return dispatch is not None and dispatch.state == AutoReviewDispatch.State.SUPERSEDED
 
 
 def _park_superseded_head(task: Task) -> None:

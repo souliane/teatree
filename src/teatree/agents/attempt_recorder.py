@@ -409,7 +409,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         if isinstance(exc, ChecksContradictionError):
             _latch_checks_contradiction(target, task=task, reason=str(exc))
         return f"review verdict recording refused: {exc}"
-    _rebind_claim_to_recorded_head(target, dispatch_head=dispatch_head)
+    _rebind_claim_to_recorded_head(task, target, dispatch_head=dispatch_head)
     return _unpersisted_verdict_error(target)
 
 
@@ -522,21 +522,30 @@ def _supersede_moved_head(target: ReviewTarget) -> None:
     AutoReviewDispatch.mark_superseded(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
 
 
-def _rebind_claim_to_recorded_head(target: ReviewTarget, *, dispatch_head: str) -> None:
-    """Point the armed claim at the head the verdict actually landed on; no-op when unmoved.
+def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget, *, dispatch_head: str) -> None:
+    """Point whatever key the resolver reads at the head the verdict landed on; no-op when unmoved.
 
     ``ReviewVerdict.record`` retires the claim keyed on the RECORDED head, which is not the
     pinned one once the branch advanced — so without this the spent claim stays in flight and
     the landed-work guard keeps looking up a tree nobody ended up reviewing.
+
+    Both resolver keys are stamped, because :func:`review_target_for_task` reads a different
+    one on each path and only the dispatch path carried a writer: on the 1454 of 2152
+    verdict-review tasks holding no dispatch row the verdict landed at the live head while
+    ``extra["reviewed_sha"]`` still named the pinned one, so the resolver re-read a tree the
+    row is not on and the system could not find its own verdict.
     """
-    if target.head_sha == dispatch_head or target.armed_by is not AutoReviewDispatch:
+    if target.head_sha == dispatch_head:
         return
-    AutoReviewDispatch.mark_recorded_at(
-        slug=target.slug,
-        pr_id=target.pr_id,
-        head_sha=dispatch_head,
-        recorded_head_sha=target.head_sha,
-    )
+    if target.armed_by is AutoReviewDispatch:
+        AutoReviewDispatch.mark_recorded_at(
+            slug=target.slug,
+            pr_id=target.pr_id,
+            head_sha=dispatch_head,
+            recorded_head_sha=target.head_sha,
+        )
+        return
+    task.ticket.merge_extra(set_keys={"reviewed_sha": target.head_sha})
 
 
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:

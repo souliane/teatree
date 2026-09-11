@@ -81,9 +81,6 @@ class TestTheEnvironmentalAxisIsUnmoved:
         environmental = {kind for kind, recovery in RECOVERY.items() if recovery.environmental}
         assert environmental == _ENVIRONMENTAL_BEFORE | _ENVIRONMENTAL_ADDED
 
-    def test_no_pre_table_kind_ever_left_the_axis(self) -> None:
-        assert {kind for kind, recovery in RECOVERY.items() if recovery.environmental} >= _ENVIRONMENTAL_BEFORE
-
     @pytest.mark.parametrize("kind", sorted(_ENVIRONMENTAL_BEFORE))
     def test_is_environmental_still_answers_for_each(self, kind: str) -> None:
         assert is_environmental(kind)

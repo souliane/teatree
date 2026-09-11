@@ -186,9 +186,9 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
     non-terminal ticket is still never left silent (reopened, disposed, retried, or
     escalated), it just can no longer take the whole tick down with it.
     """
-    if dispose_without_reopen(task):
-        return 0
     error = _latest_error(task)
+    if dispose_without_reopen(task, error=error):
+        return 0
     if not error:
         # No recorded error → neither transient nor deterministic; must not freeze.
         _escalate_once(task, reason="failed with no recorded error")

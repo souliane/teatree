@@ -8,7 +8,7 @@ spending a review claim the reviewer could still have satisfied.
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from teatree.core.modelkit.forge_readability import LiveHeadRead
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, LiveHeadRead
 from teatree.core.review.live_head import live_head_at
 
 if TYPE_CHECKING:
@@ -63,3 +63,34 @@ class TestAFailedReadIsNeverASilentEmpty:
         # task on a forge hiccup instead of refusing the one verdict and retrying.
         with _query(OSError("connection reset by peer")):
             assert live_head_at(slug=_SLUG, pr_id=_PR_ID).unreadable
+
+
+class TestTheUnreadableSentinelNeverEscapesAsAHead:
+    """A forge that declined names no head, so the sentinel must never reach a comparison.
+
+    It is a truthy string, and the recorder binds a verdict to whatever head it is handed
+    — so a sentinel that survived the read would bind a verdict to a tree that is not one.
+    """
+
+    @staticmethod
+    def _backend(raw_sha: str) -> "AbstractContextManager[MagicMock]":
+        class _Backend:
+            @staticmethod
+            def fetch_live_head_sha(*, slug: str, pr_id: int) -> str:
+                del slug, pr_id
+                return raw_sha
+
+        return patch("teatree.core.merge.ci_rollup._code_host_for", return_value=_Backend())
+
+    def test_a_declining_backend_answers_unreadable_with_no_sha(self) -> None:
+        with self._backend(HEAD_SHA_UNREADABLE):
+            read = live_head_at(slug=_SLUG, pr_id=_PR_ID)
+
+        assert read.sha == ""
+        assert read.unreadable
+
+    def test_a_backend_that_named_a_head_is_not_reported_unreadable(self) -> None:
+        with self._backend(_HEAD):
+            read = live_head_at(slug=_SLUG, pr_id=_PR_ID)
+
+        assert (read.sha, read.unreadable) == (_HEAD, False)
