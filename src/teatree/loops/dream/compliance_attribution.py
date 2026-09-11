@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
-from teatree.loops.dream.transcript_extract import looks_like_user_correction
+from teatree.loops.dream.transcript_extract import looks_like_agent_authored_turn, looks_like_user_correction
 
 #: Tokens shorter than this carry no topical signal — a correction sharing only
 #: "the"/"not" with a memory is not a recurrence of that memory's rule.
@@ -54,6 +54,33 @@ _WORD_RE = re.compile(r"[a-z][a-z0-9_]+")
 _NAME_LINE_RE = re.compile(r"^name:\s*(?P<slug>[\w\-]+)", re.MULTILINE)
 
 
+#: The memory kinds that STATE a rule the agent can be non-compliant with. A `project`
+#: state log or a `reference` pointer records something; it instructs nothing, so a
+#: correction can never be a recurrence OF one.
+_RULE_MEMORY_TYPES = frozenset({"feedback", "user"})
+
+#: The pre-frontmatter corpus encodes the kind in the slug instead of a `type:` field.
+_LEGACY_RULE_SLUG_PREFIX = "feedback_"
+
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(?P<block>.*?)\r?\n---\s*$", re.DOTALL | re.MULTILINE)
+_TYPE_LINE_RE = re.compile(r"^[ \t]*type:[ \t]*[\"']?(?P<kind>[\w-]+)", re.MULTILINE)
+
+
+def is_rule_memory(slug: str, text: str) -> bool:
+    """True when this memory states a RULE, so a correction can be a recurrence of it.
+
+    Reads the leading frontmatter block ONLY — a `type:` mentioned in the body is prose,
+    and the index files (which carry no frontmatter at all) are not memories.
+    """
+    if slug.startswith(_LEGACY_RULE_SLUG_PREFIX):
+        return True
+    match = _FRONTMATTER_RE.search(text)
+    if match is None:
+        return False
+    kind = _TYPE_LINE_RE.search(match.group("block"))
+    return kind is not None and kind.group("kind").lower() in _RULE_MEMORY_TYPES
+
+
 @dataclass(frozen=True, slots=True)
 class _MemoryRule:
     slug: str
@@ -74,28 +101,47 @@ def _memory_slug(snippet: WeightedSnippet) -> str:
 def _memory_rules(extract: ConsolidationExtract) -> list[_MemoryRule]:
     """Every memory available this pass as a (slug, distinctive-tokens) rule, indexed by slug.
 
-    A COMPLETE index over the pass's memory members keyed by slug (F6.5), not a
+    A COMPLETE index over the pass's RULE memories keyed by slug (F6.5), not a
     first-wins sample: a memory whose snippet recurs (or whose slug collides) unions
     its distinctive tokens onto ONE rule rather than spawning two half-populated rules
-    the attribution could pick between arbitrarily.
+    the attribution could pick between arbitrarily. Non-rule memories are excluded by
+    :func:`is_rule_memory` — they instruct nothing, so nothing can recur against them.
     """
     by_slug: dict[str, set[str]] = {}
     for snippet in extract.snippets:
         if snippet.kind != "memory":
             continue
         slug = _memory_slug(snippet)
+        if not is_rule_memory(slug, snippet.text):
+            continue
         tokens = _significant_tokens(snippet.text) | _significant_tokens(slug)
         by_slug.setdefault(slug, set()).update(tokens)
     return [_MemoryRule(slug=slug, tokens=frozenset(tokens)) for slug, tokens in by_slug.items()]
 
 
+#: Snippet kinds that carry no human turn: the memory corpus itself, and the two channels
+#: whose user-role turns are the orchestrator briefing itself. Named as an exclusion rather
+#: than an allowlist of human kinds so a NEW human source (the owner's Slack DMs were one)
+#: keeps reaching the detector instead of silently going unread.
+_NON_HUMAN_TURN_KINDS = frozenset({"memory", "subagent", "task_output"})
+
+
+def rule_memory_slugs(extract: ConsolidationExtract) -> set[str]:
+    """The slugs of every RULE memory this pass carries — the universe a recurrence may name."""
+    return {rule.slug for rule in _memory_rules(extract)}
+
+
 def _correction_lines(extract: ConsolidationExtract) -> list[str]:
-    """Every user-correction line across the transcript snippets (LLM-free ground truth)."""
+    """Every HUMAN correction line across the transcript snippets (LLM-free ground truth)."""
     lines: list[str] = []
     for snippet in extract.snippets:
-        if snippet.kind == "memory":
+        if snippet.kind in _NON_HUMAN_TURN_KINDS:
             continue
-        lines.extend(line for line in snippet.text.splitlines() if looks_like_user_correction(line))
+        lines.extend(
+            line
+            for line in snippet.text.splitlines()
+            if looks_like_user_correction(line) and not looks_like_agent_authored_turn(line)
+        )
     return lines
 
 
