@@ -11,13 +11,14 @@ never reopened. The hardest pin: it NEVER retries endlessly.
 """
 
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
 from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -25,7 +26,11 @@ from teatree.core.repair_loop import max_phase_iterations
 from teatree.core.worktree.recovery_sweeps import run_boot_sweeps
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
-from teatree.loop.transient_requeue import requeue_transient_failed
+from teatree.loop.transient_requeue import HALT_STAMP, _non_terminal_failed_tasks, requeue_transient_failed
+from teatree.loop.transient_requeue_disposal import SUPERSEDED_HEAD_STAMP
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 
 def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED, issue_url: str = "") -> Task:
@@ -1136,4 +1141,128 @@ class TestTheKindDecidesTheRecovery(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+_REASON = f"{HEAD_SUPERSEDED_PREFIX}souliane/teatree#4716 advanced from bf526560 to 21023d20"
+
+
+def _pr_is_live() -> "AbstractContextManager[mock.MagicMock]":
+    """Keep the dead-PR retirement out of the way — and every test off the real forge."""
+    return mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False)
+
+
+class TestSupersededHeadReviewIsParkedNotPaged(TestCase):
+    """A review whose PR moved on is parked, never escalated (#4737).
+
+    Its recovery is a fresh dispatch at the new head, which the sweep arms by itself — so
+    asking the owner adds nothing and costs a question per push. Three such questions
+    (767, 777, 778) are what the reported incident actually left behind.
+    """
+
+    _HEAD = "bf526560a1c4e7f80d329b6157ae4c02f8d1b3e9"
+
+    def _superseded_review(self, *, claim_state: str, reason: str = _REASON) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/souliane/teatree/pull/4716",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        AutoReviewDispatch.objects.create(
+            slug="souliane/teatree", pr_id=4716, head_sha=self._HEAD, task=task, state=claim_state
+        )
+        task.fail(reason=reason)
+        _add_failed_attempt(task, error=reason)
+        return task
+
+    def test_a_superseded_claim_parks_its_review_without_a_question(self) -> None:
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+
+        with _pr_is_live():
+            reopened = requeue_transient_failed()
+
+        assert reopened == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_parked_review_leaves_the_scan_set_entirely(self) -> None:
+        # The stamp has to be in the QUERY's exclude list, not merely re-parked each tick:
+        # a FAILED set that keeps every parked review degrades tick latency linearly.
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        assert task.pk not in {scanned.pk for scanned in _non_terminal_failed_tasks()}
+
+    def test_a_review_that_failed_for_any_other_cause_is_escalated_as_before(self) -> None:
+        # The control: only the head-moved cause is parked, so this cannot read as
+        # "stop escalating failed reviews".
+        self._superseded_review(claim_state=AutoReviewDispatch.State.DISPATCHED, reason="the reviewer vanished mid-run")
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_the_park_is_recorded_on_the_row_itself(self) -> None:
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+
+    def test_a_second_sweep_never_doubles_the_stamp(self) -> None:
+        task = self._superseded_review(claim_state=AutoReviewDispatch.State.SUPERSEDED)
+
+        with _pr_is_live():
+            requeue_transient_failed()
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.execution_reason.count(SUPERSEDED_HEAD_STAMP) == 1
+
+
+class TestTheTicketPathParksAMovedHeadToo(TestCase):
+    """#4737 follow-up: the majority of verdict-review tasks hold no dispatch row at all.
+
+    Keyed on the claim's state, the park fired on 24% of the population — so on the other
+    76% a legitimate push still escalated a ``DeferredQuestion``, once per push.
+    """
+
+    def _moved_head_review(self, *, reason: str = _REASON) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/souliane/teatree/pull/4716",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.fail(reason=reason)
+        _add_failed_attempt(task, error=reason)
+        return task
+
+    def test_a_moved_head_with_no_claim_row_is_parked_without_a_question(self) -> None:
+        task = self._moved_head_review()
+
+        with _pr_is_live():
+            reopened = requeue_transient_failed()
+
+        assert reopened == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        assert HALT_STAMP not in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_any_other_failure_with_no_claim_row_still_escalates(self) -> None:
+        self._moved_head_review(reason="the reviewer vanished mid-run")
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
