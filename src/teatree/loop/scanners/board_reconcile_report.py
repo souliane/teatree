@@ -18,6 +18,7 @@ class BoardAction(StrEnum):
     ADVANCED_MERGED = "advanced_merged"
     ADVANCED_DELIVERED = "advanced_delivered"
     IGNORED_CLOSED = "ignored_closed"
+    IGNORED_ISSUE_CLOSED = "ignored_issue_closed"
     REVIEW_CLOSED = "review_closed"
     REVIVED_REOPENED = "revived_reopened"
     REFUSED = "refused"

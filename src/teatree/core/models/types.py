@@ -123,6 +123,10 @@ class TicketExtra(TypedDict, total=False):
     # Board reconcile rule E's revival cap. Undeclared it is stripped by every
     # ladder transition, so the cap reads 0 forever and never fires (#4152).
     reopen_revivals: int
+    # Board reconcile rule F's record of WHY the forge closed a retired pre-ship
+    # ticket's issue. Undeclared it is stripped by ``ignore()``'s own rewrite, leaving
+    # a NOT_PLANNED retirement indistinguishable from a COMPLETED one (#4711).
+    issue_close_reason: str
     visual_qa: VisualQASummary
     branch: str
     # #33 per-repo branch override map (repo → branch). A ticket whose repos

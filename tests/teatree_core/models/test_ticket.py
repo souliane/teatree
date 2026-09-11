@@ -719,6 +719,28 @@ class TestTicketStateSets(TestCase):
         # intake can never re-admit an issue a live ticket already holds (#4133).
         assert Ticket.issue_owning_states() == frozenset(Ticket.State.values) - {Ticket.State.IGNORED}
 
+    def test_pre_ship_states_membership(self) -> None:
+        assert Ticket.pre_ship_states() == frozenset(
+            {
+                Ticket.State.NOT_STARTED,
+                Ticket.State.SCOPED,
+                Ticket.State.STARTED,
+                Ticket.State.PLANNED,
+                Ticket.State.CODED,
+                Ticket.State.TESTED,
+                Ticket.State.REVIEWED,
+            },
+        )
+
+    def test_pre_ship_and_post_ship_partition_every_state(self) -> None:
+        # Derived, not enumerated (#4711): a State added later must land in exactly one
+        # of the two sets, so it cannot escape BOTH the completion rule and rule F.
+        post_ship = Ticket.completable_states() | Ticket.merged_states()
+        terminals = {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+        assert Ticket.pre_ship_states() & post_ship == frozenset()
+        assert Ticket.pre_ship_states() & terminals == frozenset()
+        assert Ticket.pre_ship_states() | post_ship | terminals == frozenset(Ticket.State.values)
+
     def test_every_set_member_is_a_real_state(self) -> None:
         valid = set(Ticket.State.values)
         for name in (
@@ -727,6 +749,7 @@ class TestTicketStateSets(TestCase):
             "completable_states",
             "merged_states",
             "issue_owning_states",
+            "pre_ship_states",
         ):
             states = getattr(Ticket, name)()
             assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"

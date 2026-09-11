@@ -1,18 +1,19 @@
-"""Issue-level forge reads — the two verdicts the board reconcile asks about an issue.
+"""Issue-level forge reads — the three verdicts the board reconcile asks about an issue.
 
-Both resolve the per-URL code host with the owning overlay's credentials and read the
-one ``CodeHostBackend.get_issue`` seam, so a caller never branches on platform. They
-fail in OPPOSITE directions on purpose, because their consumers act on opposite
-answers: an uncertain "is it done?" must not advance a ticket, and an uncertain "was
-it reopened?" must not revive one.
+All three resolve the per-URL code host with the owning overlay's credentials and read
+the one ``CodeHostBackend.get_issue`` seam, so a caller never branches on platform. They
+fail in OPPOSITE directions on purpose, because their consumers act on opposite answers:
+an uncertain "is it done?" must not advance a ticket, an uncertain "was it reopened?"
+must not revive one, and an uncertain "did it close?" must not retire one.
 
 Split out of ``backends.loader`` so that module stays about RESOLVING a backend; these
-two are reads performed THROUGH one.
+three are reads performed THROUGH one.
 """
 
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.backends.issue_close import UNKNOWN_VERDICT, IssueCloseVerdict, close_verdict_from_payload
 from teatree.backends.issue_reopen import reopen_state_from_payload
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.backend_protocols import IssueReopenState
@@ -63,3 +64,22 @@ def issue_reopen_state(overlay: "OverlayBase", issue_url: str) -> IssueReopenSta
         logger.warning("Failed to fetch issue %s — skipping reopen check", issue_url)
         return IssueReopenState.UNKNOWN
     return reopen_state_from_payload(issue_data)
+
+
+def issue_close_verdict(overlay: "OverlayBase", issue_url: str) -> IssueCloseVerdict:
+    """Whether the forge reports *issue_url* CLOSED, and why, via that same ``get_issue`` seam.
+
+    Fail-CLOSED: an unresolvable host, a fetch failure, or any payload
+    :func:`~teatree.backends.issue_close.close_verdict_from_payload` cannot classify all
+    return UNKNOWN. The board reconcile RETIRES a pre-ship ticket on this verdict, so an
+    unreachable forge must never read as "closed" (#4711).
+    """
+    host = get_code_host_for_url(overlay, issue_url)
+    if host is None:
+        return UNKNOWN_VERDICT
+    try:
+        issue_data = host.get_issue(issue_url)
+    except Exception:  # noqa: BLE001 — a fetch failure is UNKNOWN, never an abort of the sweep
+        logger.warning("Failed to fetch issue %s — skipping close check", issue_url)
+        return UNKNOWN_VERDICT
+    return close_verdict_from_payload(issue_data)

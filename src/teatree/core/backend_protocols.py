@@ -85,6 +85,21 @@ class IssueReopenState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class IssueOpenState(StrEnum):
+    """Whether the forge reports an ISSUE as open or closed, per its own payload.
+
+    Three-valued for the same reason as :class:`IssueReopenState`: ``UNKNOWN`` is the
+    fail-CLOSED value — a fetch error, an error payload, an unresolvable host, a state
+    string no forge teatree speaks to uses — and no caller may retire a ticket on it,
+    because a board that believes an unreachable forge closed an issue retires live
+    work (#4711).
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+
 class DraftState(StrEnum):
     """Whether a pull/merge request is in DRAFT state on the forge.
 
