@@ -1102,10 +1102,17 @@ Usage: t3 review checkout [OPTIONS] URL
 
  Materialise a detached review worktree at the exact reviewed head.
 
- Prints ``{"worktree": ..., "ref": ..., "sha": ..., "url": ...}`` on success.
- A HEAD that does not equal ``--sha`` is a hard failure, never a fallback to
- whatever tree happened to be reachable — the review runs on the pushed head
- or not at all. Remove the worktree with ``git worktree remove`` when done.
+ Prints ``{"worktree": ..., "ref": ..., "sha": ..., "url": ..., "run_tests":
+ ...}``
+ on success. A HEAD that does not equal ``--sha`` is a hard failure, never a
+ fallback to whatever tree happened to be reachable — the review runs on the
+ pushed head or not at all. Remove the worktree with ``git worktree remove``
+ when done.
+
+ ``run_tests`` names the sanctioned runner for the fresh checkout, because the
+ step after this one is running the affected tests and a reviewer left to
+ improvise one reaches for a raw invocation nobody can reconstruct later
+ (souliane/teatree#4746).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    url      TEXT  PR/MR URL whose head to materialise. [required]          │

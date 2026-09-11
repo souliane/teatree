@@ -115,7 +115,9 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
         f"{head_sha[:8]}. You have the shell: check the reviewed head out with "
         f"`t3 review checkout {pr_url} --sha {head_sha}` (verify-or-fail; never a raw "
         f"`git worktree add <branch>`), audit the diff shape with `t3 review run {pr_url}`, and run the "
-        f"affected tests in that checkout before voting merge_safe. Then RETURN your verdict in the "
+        f"affected tests in that checkout with `cd <worktree> && t3 <overlay> run tests -- <paths>` "
+        f"(it provisions the bare checkout and reports the argv+cwd it spawned; never hand-roll a "
+        f"raw pytest) before voting merge_safe. Then RETURN your verdict in the "
         f'result envelope: `"review_verdict": '
         f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
         f'"{REVIEWER_IDENTITY_INSTRUCTION}", '
