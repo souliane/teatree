@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.backends.issue_reads import issue_is_done, issue_reopen_state
-from teatree.core.backend_protocols import IssueReopenState
+from teatree.backends.issue_reads import issue_close_verdict, issue_is_done, issue_reopen_state
+from teatree.core.backend_protocols import IssueOpenState, IssueReopenState
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
@@ -100,3 +100,28 @@ class TestIssueReopenState:
     def test_unknown_on_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_host(monkeypatch, _IssueHost(None, raises=True))
         assert issue_reopen_state(cast("OverlayBase", _build_overlay()), "https://x/1") is IssueReopenState.UNKNOWN
+
+
+class TestIssueCloseVerdict:
+    """The close seam rule F RETIRES a pre-ship ticket on — every uncertainty is UNKNOWN (#4711)."""
+
+    def _patch_host(self, monkeypatch: pytest.MonkeyPatch, host: object | None) -> None:
+        monkeypatch.setattr("teatree.backends.issue_reads.get_code_host_for_url", lambda _overlay, _url: host)
+
+    def _verdict(self, monkeypatch: pytest.MonkeyPatch, host: object | None) -> object:
+        self._patch_host(monkeypatch, host)
+        return issue_close_verdict(cast("OverlayBase", _build_overlay()), "https://x/1")
+
+    def test_closed_carries_the_forge_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        verdict = self._verdict(monkeypatch, _IssueHost({"state": "closed", "state_reason": "not_planned"}))
+        assert (verdict.state, verdict.reason) == (IssueOpenState.CLOSED, "not_planned")
+
+    def test_an_open_issue_reads_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._verdict(monkeypatch, _IssueHost({"state": "open"})).state is IssueOpenState.OPEN
+
+    def test_unknown_when_no_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._verdict(monkeypatch, None).state is IssueOpenState.UNKNOWN
+
+    def test_unknown_on_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unreachable forge must never read as "the owner closed it"."""
+        assert self._verdict(monkeypatch, _IssueHost(None, raises=True)).state is IssueOpenState.UNKNOWN

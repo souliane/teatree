@@ -135,6 +135,24 @@ class TicketStateSetsModel(TicketFacet):
         return frozenset({cls.State.SHIPPED, cls.State.IN_REVIEW, cls.State.MERGED})
 
     @classmethod
+    def pre_ship_states(cls) -> frozenset[str]:
+        """States in which NOTHING has shipped yet — the board janitor's rule-F candidates.
+
+        Derived as the complement of the post-ship walk, the merged-or-past lifecycle and
+        the two terminals, so a state added later cannot escape both this set and
+        ``completable_states()`` unnoticed. A ticket here whose own issue the forge closed
+        never shipped anything, which is why rule F retires it to IGNORED rather than
+        walking it to DELIVERED — that walk would claim a delivery that never happened
+        (#4711).
+        """
+        return (
+            frozenset(cls.State.values)
+            - cls.completable_states()
+            - cls.merged_states()
+            - {cls.State.REVIEW_POSTED, cls.State.IGNORED}
+        )
+
+    @classmethod
     def issue_owning_states(cls) -> frozenset[str]:
         """States in which a ticket OWNS its issue URL, so intake must not re-admit it.
 
