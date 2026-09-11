@@ -32,7 +32,12 @@ if TYPE_CHECKING:
 class ReviewTarget:
     """The pull request a reviewing task's verdict binds to, and the head it judged.
 
-    ``head_sha`` is empty when the PR is known but the tree under review is not — a
+    ``head_sha`` is the tree the verdict binds to: the head the review was ARMED for,
+    unless the branch advanced mid-review and the verdict landed at the newer one
+    (``AutoReviewDispatch.recorded_head_sha``), which is then the head every consumer
+    must read — the writer's key and the landed-work guard's key are one fact (#4737).
+
+    It is empty when the PR is known but the tree under review is not — a
     reviewer ticket whose ``reviewed_sha`` was never stamped. That is a distinct state from
     "no PR at all" (which resolves to ``None``): the verdict IS owed to a merge guard here,
     so the writer refuses rather than dropping it, while a task answerable for no PR keeps
@@ -42,6 +47,8 @@ class ReviewTarget:
     slug: str
     pr_id: int
     head_sha: str
+    #: The forge the PR lives on, so a live-head read addresses the right API (#4737).
+    host_kind: str = "github"
     #: The identity this dispatch path holds the per-MR review lock under, or ``""`` for a
     #: path that took none and cannot know whose identity did (``MRReviewLock.resolve``
     #: releases on the unnamed one, never on a named non-holder).
@@ -65,10 +72,12 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
     """
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if dispatch is not None:
+        dispatched_pr = pr_ref_from_url(dispatch.pr_url)
         return ReviewTarget(
             slug=dispatch.slug,
             pr_id=dispatch.pr_id,
-            head_sha=dispatch.head_sha.strip(),
+            head_sha=(dispatch.recorded_head_sha or dispatch.head_sha).strip(),
+            host_kind="github" if dispatched_pr is None else dispatched_pr.host_kind,
             lock_holder=LOOP_SCANNER_HOLDER,
             armed_by=AutoReviewDispatch,
         )
@@ -79,6 +88,7 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
         slug=reviewed_pr.slug,
         pr_id=reviewed_pr.pr_id,
         head_sha=str((task.ticket.extra or {}).get("reviewed_sha", "")).strip(),
+        host_kind=reviewed_pr.host_kind,
     )
 
 

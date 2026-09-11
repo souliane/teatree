@@ -1,4 +1,4 @@
-"""The ``0087`` data migration unflags recurrences a brief minted, and only those.
+"""The ``0088`` data migration unflags recurrences a brief minted, and only those.
 
 Anti-vacuous in both directions: dropping the ``RunPython`` leaves the brief-minted
 rows flagged and the first three assertions go RED; widening the predicate to cover
@@ -11,8 +11,8 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
-_BEFORE = ("core", "0086_anthropictokenusage_token_fingerprint")
-_AFTER = ("core", "0087_unflag_misattributed_compliance_recurrences")
+_BEFORE = ("core", "0087_review_head_refresh")
+_AFTER = ("core", "0088_unflag_misattributed_compliance_recurrences")
 
 
 @pytest.mark.timeout(240)

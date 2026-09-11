@@ -126,3 +126,47 @@ class TestVerdictReadBack(TestCase):
         assert target is not None
 
         assert verdict_at(target) is None
+
+
+class TestTheForgeTheLiveHeadReadAddresses(TestCase):
+    """``host_kind`` routes the #4737 live-head read; a wrong forge reads the wrong API."""
+
+    _GITLAB_URL = "https://gitlab.com/acme/group/widget/-/merge_requests/77"
+
+    def _dispatch_task(self, *, pr_url: str) -> Task:
+        dispatch = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_DISPATCH_HEAD,
+            pr_url=pr_url,
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        assert dispatch.task is not None
+        return dispatch.task
+
+    def test_a_gitlab_dispatch_url_resolves_to_gitlab(self) -> None:
+        target = review_target_for_task(self._dispatch_task(pr_url=self._GITLAB_URL))
+
+        assert target is not None
+        assert target.host_kind == "gitlab"
+
+    def test_a_github_dispatch_url_resolves_to_github(self) -> None:
+        target = review_target_for_task(self._dispatch_task(pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}"))
+
+        assert target is not None
+        assert target.host_kind == "github"
+
+    def test_a_dispatch_url_no_parser_recognises_falls_back_to_github(self) -> None:
+        # A claim row can carry a hand-written or truncated URL; the read must still
+        # address SOME forge rather than resolving to an empty host kind.
+        target = review_target_for_task(self._dispatch_task(pr_url="https://example.invalid/not-a-pr"))
+
+        assert target is not None
+        assert target.host_kind == "github"
+
+    def test_a_gitlab_reviewer_ticket_resolves_to_gitlab(self) -> None:
+        target = review_target_for_task(_reviewer_task(issue_url=self._GITLAB_URL, extra={"reviewed_sha": _HEAD}))
+
+        assert target is not None
+        assert (target.slug, target.pr_id, target.host_kind) == ("acme/group/widget", 77, "gitlab")

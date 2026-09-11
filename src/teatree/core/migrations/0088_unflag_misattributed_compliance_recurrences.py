@@ -75,7 +75,7 @@ def unflag_misattributed_recurrences(apps, schema_editor) -> None:
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0086_anthropictokenusage_token_fingerprint")]
+    dependencies = [("core", "0087_review_head_refresh")]
 
     operations = [
         migrations.RunPython(unflag_misattributed_recurrences, migrations.RunPython.noop),

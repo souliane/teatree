@@ -190,6 +190,7 @@ class TestClassifier(TestCase):
             "plan_missing: refusing to dispatch t3:coder for ticket 7 (coding)",
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",
+            "head_superseded: the PR head advanced past the reviewed tree",
             "agent_abandoned: agent failed the task without giving a reason",
         ]
         assert {classify_failure(r) for r in reasons} == set(FailureKind.values)
