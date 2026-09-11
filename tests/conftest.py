@@ -35,6 +35,10 @@ os.environ.pop("DJANGO_SETTINGS_MODULE", None)
 # when extra overlays are editable-installed for dogfooding (see #120). Tests
 # that exercise overlay resolution override via monkeypatch.setenv/delenv.
 os.environ["T3_OVERLAY_NAME"] = "t3-teatree"
+# The 10s default was sized on an idle dev box; queued behind 11 other shards a scan
+# reports a broken scanner and blocks clean content. 45s clears every contended scan
+# measured here, and stays under the 60s per-test `timeout` so a hang still fails loud.
+os.environ["T3_BANNED_TERMS_SCAN_TIMEOUT_S"] = "45"
 
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
