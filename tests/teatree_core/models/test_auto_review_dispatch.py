@@ -184,6 +184,11 @@ class TestContractMatchesPhaseToolGrant:
         contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
         assert "t3 review checkout" in contract
 
+    def test_contract_names_the_sanctioned_test_runner_not_just_the_obligation(self) -> None:
+        """An unnamed runner is what sent a cold reviewer to a hand-rolled pytest (#4746)."""
+        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
+        assert "run tests" in contract
+
     def test_contract_states_maker_checker_as_the_reason_for_the_record_ban(self) -> None:
         contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
         assert "maker" in contract.lower()

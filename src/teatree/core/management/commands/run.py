@@ -1,10 +1,10 @@
 import os
+import shlex
 import urllib.request
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from teatree.core.models import Worktree
 
 import typer
@@ -12,11 +12,30 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_name_resolution import overlay_name_of
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import get_worktree_ports
-from teatree.utils.run import run_streamed
+from teatree.utils.run import CommandFailedError, run_streamed
+
+# uv's own error PREFIX when the project environment holds no such executable — anchored on
+# `error:` so a suite that merely prints the phrase is not mistaken for one that never ran.
+_UNSPAWNABLE_MARKER = "error: failed to spawn"
+
+# A task leaf forwards everything after ``--`` verbatim, including a LEADING option:
+# without this, `run tests -- --collect-only` was parsed as the leaf's own flag and refused.
+_TASK_CONTEXT_SETTINGS = {
+    "allow_extra_args": True,
+    "allow_interspersed_args": False,
+    "ignore_unknown_options": True,
+}
+
+
+def _unspawnable_message(label: str, runner: str, cwd: str, detail: str) -> str:
+    """Name the command that provisions *cwd*, rather than restate the spawn failure."""
+    overlay = overlay_name_of(get_overlay()) or "<overlay>"
+    return f"{label} could not start {runner!r} in {cwd} ({detail}).\nFix: t3 {overlay} worktree provision --path {cwd}"
 
 
 class Command(TyperCommand):
@@ -137,7 +156,7 @@ class Command(TyperCommand):
             raise SystemExit(1)
         return result.detail
 
-    @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+    @command(context_settings=_TASK_CONTEXT_SETTINGS)
     def tests(
         self,
         ctx: typer.Context,
@@ -164,7 +183,7 @@ class Command(TyperCommand):
             missing_message="No test command configured in the overlay.",
         )
 
-    @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+    @command(context_settings=_TASK_CONTEXT_SETTINGS)
     def lint(
         self,
         ctx: typer.Context,
@@ -215,12 +234,27 @@ class Command(TyperCommand):
             cwd = None
             cmd_env: dict[str, str] = {}
 
+        # A plain-list command otherwise inherits whatever cwd the outer ``uv --directory``
+        # hop chose, so ``--path`` resolved the row while the runner measured another
+        # checkout — measured reporting the main clone's rootdir for a worktree (#4746).
+        cwd = cwd or worktree.worktree_path or None
+
         args.extend(extra_args)
         env: dict[str, str] = {**os.environ, **get_overlay().provisioning.env_extra(worktree), **cmd_env}
         env.pop("VIRTUAL_ENV", None)
 
-        rc = run_streamed(args, cwd=cwd, env=env, check=False)
-        if rc != 0:
-            self.stderr.write(f"{label} failed (exit {rc}).")
-            raise SystemExit(1)
+        spawn_cwd = str(cwd) if cwd is not None else str(Path.cwd())
+        self.stderr.write(f"{label}: {shlex.join(args)} (cwd={spawn_cwd})")
+
+        try:
+            run_streamed(args, cwd=cwd, env=env, check=True)
+        except OSError as exc:
+            self.stderr.write(_unspawnable_message(label, args[0], spawn_cwd, str(exc)))
+            raise SystemExit(1) from None
+        except CommandFailedError as exc:
+            if _UNSPAWNABLE_MARKER in exc.stderr.lower():
+                self.stderr.write(_unspawnable_message(label, args[0], spawn_cwd, f"exit {exc.returncode}"))
+                raise SystemExit(1) from None
+            self.stderr.write(f"{label} failed (exit {exc.returncode}).")
+            raise SystemExit(1) from None
         return f"{label} completed."
