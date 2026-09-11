@@ -16,12 +16,14 @@ over a no-op review.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import AutoReviewDispatch, ReviewVerdict, Task
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
@@ -171,7 +173,11 @@ class TestReviewerEnvelopeUnblocksTheMergeSweep:
         task = _reviewing_task()
         stale = "0" * 39 + "1"
 
-        attempt = record_result_envelope(task, _returned_envelope(reviewed_sha=stale), phase="reviewing")
+        with patch(
+            "teatree.core.review.verdict_head_binding.live_head_at",
+            return_value=LiveHeadRead(sha=_HEAD, unreadable=False),
+        ):
+            attempt = record_result_envelope(task, _returned_envelope(reviewed_sha=stale), phase="reviewing")
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED

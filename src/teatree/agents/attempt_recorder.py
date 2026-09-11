@@ -47,10 +47,12 @@ from teatree.core.models import (
     Task,
     TaskAttempt,
 )
-from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.verdict_head_binding import resolve_verdict_head
+from teatree.utils.pr_ref import PrRef
 
 
 @dataclasses.dataclass(frozen=True)
@@ -366,11 +368,17 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             f"verdict would bind to no tree and no merge guard could ever read it"
         )
 
-    binding_error = _head_binding_error(
-        asserted=str(envelope.get("reviewed_sha") or "").strip(), dispatch_head=target.head_sha
+    binding = resolve_verdict_head(
+        asserted=str(envelope.get("reviewed_sha") or "").strip(),
+        dispatch_head=target.head_sha,
+        pr=PrRef(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind),
     )
-    if binding_error:
-        return binding_error
+    if binding.error:
+        if binding.superseded:
+            _supersede_moved_head(target)
+        return binding.error
+    dispatch_head = target.head_sha
+    target = dataclasses.replace(target, head_sha=binding.head)
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -401,6 +409,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         if isinstance(exc, ChecksContradictionError):
             _latch_checks_contradiction(target, task=task, reason=str(exc))
         return f"review verdict recording refused: {exc}"
+    _rebind_claim_to_recorded_head(task, target, dispatch_head=dispatch_head)
     return _unpersisted_verdict_error(target)
 
 
@@ -502,45 +511,41 @@ def _unpersisted_verdict_error(target: ReviewTarget) -> str:
     )
 
 
-#: Shortest self-asserted prefix that still identifies the dispatch head — git's own
-#: abbreviation floor. Anything shorter is read as a divergence, not an abbreviation.
-_MIN_ABBREVIATED_SHA_LEN = 7
+def _supersede_moved_head(target: ReviewTarget) -> None:
+    """Retire the claim for a head the PR has advanced past, so review re-arms at the new one.
 
-
-def _head_binding_error(*, asserted: str, dispatch_head: str) -> str:
-    """Refuse a verdict that does not bind to the dispatched tree, or ``""`` (#4126, #4168).
-
-    The verdict is recorded at the DISPATCH head because that is the key the landed-work
-    guard (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`) reads: a
-    verdict written at the reviewer's own ``reviewed_sha`` is unreachable there, so the
-    reviewing row stays ``failed`` and is re-dispatched forever. Recording a divergent
-    self-assertion at the dispatch head anyway would be worse — it would vouch for a tree
-    nobody reviewed — so the divergence is surfaced instead, and a reviewer that judged a
-    different tree than it was dispatched for becomes a finding rather than a silent miss.
-    An abbreviated head that prefixes the dispatch head asserts the same tree.
-
-    An OMITTED head is refused on the same reasoning (#4168): treating it as agreement
-    enforced the rule only against reviewers that disclose a head, so a reviewer that said
-    nothing got ``merge_safe`` recorded at the dispatch head with no check performed at all.
-    The shell sibling (``t3 <overlay> review record``) already refuses an empty ``--reviewed-sha``, and
-    ``build_review_contract`` hands the reviewer the literal 40-char head, so disclosing it
-    costs a compliant reviewer nothing.
+    Scoped to the #68 dispatch ledger on purpose: it is the only per-head claim the PR sweep
+    re-arms, so superseding a codex marker would release a review lock nothing re-takes.
     """
-    claimed = asserted.lower()
-    head = dispatch_head.strip().lower()
-    if not claimed:
-        return (
-            "review verdict omits reviewed_sha — the head it bound to is undisclosed, so nothing "
-            f"was checked against the head this review was dispatched for ({dispatch_head}); the "
-            "verdict is not recorded. Return that full 40-char head, which your brief named"
+    if target.armed_by is not AutoReviewDispatch:
+        return
+    AutoReviewDispatch.mark_superseded(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+
+
+def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget, *, dispatch_head: str) -> None:
+    """Point whatever key the resolver reads at the head the verdict landed on; no-op when unmoved.
+
+    ``ReviewVerdict.record`` retires the claim keyed on the RECORDED head, which is not the
+    pinned one once the branch advanced — so without this the spent claim stays in flight and
+    the landed-work guard keeps looking up a tree nobody ended up reviewing.
+
+    Both resolver keys are stamped, because :func:`review_target_for_task` reads a different
+    one on each path and only the dispatch path carried a writer: on the 1454 of 2152
+    verdict-review tasks holding no dispatch row the verdict landed at the live head while
+    ``extra["reviewed_sha"]`` still named the pinned one, so the resolver re-read a tree the
+    row is not on and the system could not find its own verdict.
+    """
+    if target.head_sha == dispatch_head:
+        return
+    if target.armed_by is AutoReviewDispatch:
+        AutoReviewDispatch.mark_recorded_at(
+            slug=target.slug,
+            pr_id=target.pr_id,
+            head_sha=dispatch_head,
+            recorded_head_sha=target.head_sha,
         )
-    if len(claimed) >= _MIN_ABBREVIATED_SHA_LEN and head.startswith(claimed):
-        return ""
-    return (
-        f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
-        f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
-        f"dispatched for is itself a finding; the verdict is not recorded"
-    )
+        return
+    task.ticket.merge_extra(set_keys={"reviewed_sha": target.head_sha})
 
 
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:

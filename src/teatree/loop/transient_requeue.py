@@ -132,7 +132,7 @@ from teatree.core.repair_loop import (
 from teatree.failure_signatures import is_spawn_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
-from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, dispose_without_reopen
+from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, SUPERSEDED_HEAD_STAMP, dispose_without_reopen
 
 logger = logging.getLogger(__name__)
 
@@ -186,9 +186,9 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
     non-terminal ticket is still never left silent (reopened, disposed, retried, or
     escalated), it just can no longer take the whole tick down with it.
     """
-    if dispose_without_reopen(task):
-        return 0
     error = _latest_error(task)
+    if dispose_without_reopen(task, error=error):
+        return 0
     if not error:
         # No recorded error → neither transient nor deterministic; must not freeze.
         _escalate_once(task, reason="failed with no recorded error")
@@ -340,7 +340,9 @@ def _non_terminal_failed_tasks() -> list[Task]:
     """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
 
     Excluding the parked rows — :data:`HALT_STAMP` (escalated) and
-    :data:`~teatree.loop.transient_requeue_disposal.LIVE_SUCCESSOR_STAMP` (a live successor holds the phase) — keeps the
+    :data:`~teatree.loop.transient_requeue_disposal.LIVE_SUCCESSOR_STAMP` (a live successor holds the
+    phase) and :data:`~teatree.loop.transient_requeue_disposal.SUPERSEDED_HEAD_STAMP` (the PR moved past
+    the reviewed head) — keeps the
     per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
     would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
     per-task N+1 that :func:`_latest_error` would otherwise issue for every FAILED row.
@@ -350,6 +352,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
         .exclude(ticket__state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
         .exclude(execution_reason__contains=HALT_STAMP)
         .exclude(execution_reason__contains=LIVE_SUCCESSOR_STAMP)
+        .exclude(execution_reason__contains=SUPERSEDED_HEAD_STAMP)
         .select_related("ticket")
         .prefetch_related("attempts"),
     )
