@@ -126,7 +126,7 @@ def _reactive_slot_directives() -> list[str]:
 
 
 def _worker_flock_held() -> bool:
-    """Whether a live process holds the worker singleton flock, right now."""
+    """Whether a running process holds the worker singleton flock, right now."""
     from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
 
     if not bootstrap_teatree_django():
@@ -426,11 +426,11 @@ def _write_reactive_prose(directives: list[str], stream: _Writable) -> None:
         stream.write(
             "Session setup: `t3 worker` is RUNNING and drives the reactive infra loops "
             "(slack-answer, self-improve, drain-queue) as worker chains — register NO `/loop` and "
-            "NO cron for them. Confirm with `t3 worker status`.\n"
+            "NO cron for them. `t3 worker status` shows it.\n"
         )
         return
     stream.write(
-        f"Session setup: no live worker, so this session drives the {len(directives)} reactive infra loops — "
+        f"Session setup: no worker is running, so this session drives the {len(directives)} reactive infra loops — "
         f"sub-minute cadence, so use the `/loop <duration>` form (NOT a cron). Check `t3 worker status` first; "
         f"if it reports RUNNING, register nothing. Otherwise run each slash command in this session:\n"
     )
@@ -447,49 +447,3 @@ def loop_name_from_prompt(prompt: str) -> str | None:
     """The ``--loop <name>`` a per-loop tick prompt runs, or ``None`` when it is not one."""
     match = _RUN_CMD_RE.search(prompt)
     return match.group("name") if match else None
-
-
-def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, the loop OWNER registers the reactive infra ``/loop``s.
-
-    PR-28 retired the per-enabled-DB-loop ``CronCreate`` mirror (the worker owns that
-    cadence now), so this emits ONLY the three reactive infra ``/loop <duration>``
-    slots (Slack-answer, self-improve, drain-queue) via the bare sibling
-    :mod:`loop_registrations`. Fail-open: no reactive slot resolvable emits nothing.
-    Emit-once per session, keyed on the ``loop-pending`` marker (also the
-    ``_skill_loading_exempt`` bootstrap signal), so a repeated prompt does not re-nag.
-
-    It ALSO delivers the standing directives (#4166) — same sibling, emitted
-    BEFORE the owner election because the INJECTED shape reaches every engaged
-    session; the sibling gates the self-waking shape itself, per slot.
-    """
-    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
-        _claim_loop_ownership,
-        _cleanup_stale_pending,
-        _ensure_state_dir,
-        _loop_auto_load_active,
-        _session_owns_loop,
-        _state_file,
-    )
-
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    emit_standing_directives_once(session_id, sys.stdout)
-    if not _loop_auto_load_active(session_id):
-        return
-    _claim_loop_ownership(session_id)
-    # STICKY ELECTION (#2650): only the OWNER registers. A session that did NOT
-    # win/hold the tick-owner record (a DIFFERENT live session owns it) registers
-    # NOTHING and writes no pending marker — the loser backs off automatically.
-    # ``_session_owns_loop`` reads what ``_claim_loop_ownership`` just decided under the
-    # flock (file owner + the #1604 ``_pid_is_foreign`` DB cross-check).
-    if not _session_owns_loop(session_id):
-        return
-    _ensure_state_dir()
-    _cleanup_stale_pending(session_id)
-    pending = _state_file(session_id, "loop-pending")
-    if pending.is_file():  # reactive registrations already emitted this session — do not re-nag
-        return
-    if emit_loop_registrations(sys.stdout):
-        pending.write_text("1", encoding="utf-8")

@@ -123,9 +123,9 @@ from hooks.scripts.handlers.classifier_denial import (
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
+from hooks.scripts.loop_prompt_registration import handle_enforce_loop_on_prompt
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
 from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
-from hooks.scripts.loop_registrations import handle_enforce_loop_on_prompt
 from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
 from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
