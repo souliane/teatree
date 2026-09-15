@@ -67,6 +67,32 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - To run only the tests for a specific file or directory, append the path after `--`: `t3 <overlay> run tests -- path/to/test_file.py` (extra args after `--` are forwarded to pytest). This scopes verification to the changed module instead of firing the whole suite locally.
 - **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it. <!-- local-verification: cited-not-prescribed -->
 
+### Branch Currency Before Gates — a clean tree is not a mergeable tree
+
+`t3 tool verify-gates` validates the CURRENT worktree against ITSELF. It says nothing about whether the branch still merges into its target, so a ticket can pass every local gate and still be unmergeable. A coding phase that finished cleanly proves none of it: one commit, a clean `git status`, and a `git log origin/main..HEAD` showing only the ticket's own commit are all consistent with a branch that is dozens of commits behind, because the local `origin/main` ref is only as fresh as the last fetch.
+
+So the testing phase's FIRST action is the currency read, before any gate or test run:
+
+```bash
+git fetch origin <default-branch>
+gh pr view <n> --repo <owner>/<repo> --json mergeable,mergeStateStatus
+```
+
+`mcp__teatree__pr_for_ticket` / `mcp__teatree__github_pr_get` answer the same question when the MCP server is connected.
+
+A headless testing dispatch is handed the verdict already: the `PHASE: testing — branch-currency preflight` block is read at prompt-build time and names the behind-by count plus any conflicting paths `git merge-tree` predicts. **When that block says `UNVERIFIED`, run the two commands yourself** — UNVERIFIED means the fetch or the count could not be read at dispatch, never that the branch is current.
+
+On a predicted conflict (or a `CONFLICTING` / `DIRTY` `mergeStateStatus`):
+
+1. `git merge --no-edit origin/<default-branch>` — **merge, never rebase** (the `/t3:sweeping-prs` convention).
+2. Resolve each conflicting path by re-deriving intent from the ticket + commit message — never a blind `--ours` / `--theirs`.
+3. Grep the tree for every consumer of whatever the conflict touched. A modify/delete conflict leaves stale references the conflict itself never names — a hardcoded module-path set in a fitness test, a BLUEPRINT paragraph, a skill bullet, a test importing the deleted module.
+4. Re-run the targeted tests **and** `t3 tool verify-gates` on the MERGED tree, then commit the merge and push.
+
+A merge that touches an un-modellable path (a CI workflow file) escalates `dev/test-affected.sh` to FULL. In a one-shot headless turn, do not block on that — the gate requirement is `t3 tool verify-gates`, which is prek-based and fast; pair it with the test files the diff and the conflict actually touch.
+
+Worked example: [#4673](https://github.com/souliane/teatree/issues/4673) — the branch looked ready, was 11 commits behind, and carried a modify/delete conflict whose resolution needed four downstream edits, none of them visible from `git log origin/main..HEAD` alone.
+
 ### Local Test Selection — the testing phase's default lane (#113, [#3994](https://github.com/souliane/teatree/issues/3994))
 
 `t3 tool affected-tests` selects only the pytest tests a diff affects. On the teatree repo it is **what the testing phase runs**, not an optional accelerator: a local whole-tree sweep re-pays for the run CI's required sharded lane is about to make anyway, and measured across 71 FSM transitions that duplication was most of a 3.5h ticket against a 30m target. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. What is unchanged by making it the default: the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.

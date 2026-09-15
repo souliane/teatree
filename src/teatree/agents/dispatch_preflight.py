@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.branch_currency import fetch_target_head, predict_merge_conflicts
+from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -178,4 +180,127 @@ def _epoch_to_utc(epoch: str) -> datetime | None:
     try:
         return datetime.fromtimestamp(int(epoch), tz=UTC)
     except (ValueError, OverflowError, OSError):
+        return None
+
+
+@dataclass(frozen=True)
+class BranchCurrency:
+    """One dispatch-time reading of whether the ticket branch still merges.
+
+    ``verified`` is ``False`` when the target could not be fetched OR the
+    behind-count could not be read — two causes, one consequence: currency is
+    UNSTATED. Collapsing either into ``behind_count=0`` would render a stale
+    read as "current", the precise false clean this block exists to prevent.
+    """
+
+    branch: str
+    target: str
+    head_sha: str
+    behind_count: int
+    conflicting_paths: tuple[str, ...] | None
+    verified: bool
+
+    @property
+    def short_sha(self) -> str:
+        return self.head_sha[:12]
+
+
+def resolve_branch_currency(task: "Task") -> "BranchCurrency | None":
+    """Read the ticket branch's mergeability against its target; ``None`` with no worktree.
+
+    Fetches through :func:`fetch_target_head` rather than
+    :func:`~teatree.core.worktree.branch_currency.branch_behind_target` because
+    the latter returns ``None`` for BOTH a failed fetch and an already-current
+    branch, and telling those apart is the whole contract here.
+    """
+    worktree = dispatch_worktree_path(task.ticket)
+    if not worktree:
+        return None
+    branch = _branch(worktree)
+    target = _target_ref(task, worktree, branch)
+    head = _head_sha(worktree)
+    behind = _behind_count(worktree, target) if fetch_target_head(worktree, target) else None
+    if behind is None:
+        return BranchCurrency(branch, target, head, 0, None, verified=False)
+    conflicts = predict_merge_conflicts(worktree, "HEAD", target) if behind > 0 else ()
+    return BranchCurrency(branch, target, head, behind, conflicts, verified=True)
+
+
+_CURRENCY_HEADER = "DISPATCH PREFLIGHT — branch currency (a clean local tree is NOT proof of mergeability):"
+
+_UNVERIFIED_HINT = (
+    "  Run `git fetch origin` and `gh pr view <n> --repo <slug> --json mergeable,mergeStateStatus` "
+    "yourself BEFORE running any gate."
+)
+
+
+def branch_currency_brief_lines(task: "Task") -> tuple[str, ...]:
+    """Render the testing brief's branch-currency block — never empty.
+
+    A missing worktree, a failed fetch and an unreadable count each render an
+    explicit UNVERIFIED directive instead of ``()``: an omitted block reads as
+    "checked, nothing to report", which is the silent-empty degradation
+    ``/t3:rules`` § "External Read Failure Must Fail Loud" forbids.
+    """
+    currency = resolve_branch_currency(task)
+    if currency is None:
+        return ("", _CURRENCY_HEADER, "  UNVERIFIED — no ticket worktree materialised at dispatch.", _UNVERIFIED_HINT)
+    if not currency.verified:
+        return (
+            "",
+            _CURRENCY_HEADER,
+            f"  UNVERIFIED — could not read {currency.branch or 'HEAD'} against {currency.target} at dispatch.",
+            _UNVERIFIED_HINT,
+        )
+    if currency.behind_count == 0:
+        return (
+            "",
+            _CURRENCY_HEADER,
+            f"  {currency.branch or 'HEAD'} is current with {currency.target} (fetched at dispatch).",
+        )
+    return ("", _CURRENCY_HEADER, *_behind_lines(currency))
+
+
+def _merge_directive(target: str) -> tuple[str, ...]:
+    return (
+        "  Merge it in BEFORE gating — `t3 tool verify-gates` judges this tree against itself, never",
+        f"  whether it still merges. Run `git merge --no-edit {target}` (merge, NEVER rebase), re-run",
+        "  the targeted tests and `t3 tool verify-gates` on the MERGED tree, then commit the merge.",
+    )
+
+
+def _behind_lines(currency: "BranchCurrency") -> tuple[str, ...]:
+    behind = f"  HEAD {currency.short_sha} is {currency.behind_count} commit(s) behind {currency.target}"
+    directive = _merge_directive(currency.target)
+    if currency.conflicting_paths is None:
+        return (f"{behind}; conflict prediction unavailable.", _UNVERIFIED_HINT, *directive)
+    if not currency.conflicting_paths:
+        return (f"{behind} and merges clean.", *directive)
+    return (
+        f"{behind} and CONFLICTS on: {', '.join(currency.conflicting_paths)}",
+        *directive,
+        "  Resolve each conflicting path by re-deriving intent from the ticket + commit message (never",
+        "  a blind ours/theirs), then grep the tree for every consumer of what the conflict touched.",
+    )
+
+
+def _target_ref(task: "Task", worktree: str, branch: str) -> str:
+    try:
+        return resolve_target_branch(task.ticket, worktree, branch=branch)
+    except (OSError, CommandFailedError):
+        return "origin/main"
+
+
+def _head_sha(worktree: str) -> str:
+    try:
+        return git.head_sha(repo=worktree)
+    except (OSError, CommandFailedError):
+        return ""
+
+
+def _behind_count(worktree: str, target: str) -> int | None:
+    """``HEAD..target`` commit count, or ``None`` when the range cannot be read."""
+    try:
+        return git.rev_count(repo=worktree, range_spec=f"HEAD..{target}")
+    except (OSError, CommandFailedError, ValueError):
         return None
