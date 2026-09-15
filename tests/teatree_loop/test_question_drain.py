@@ -525,21 +525,34 @@ class TestTheAgeLadderTerminates(TestCase):
         assert question.is_pending
 
 
-def _halt_question(ticket_pk: int) -> DeferredQuestion:
-    """The shape ``stuck_ticket_redispatch._escalate_once`` records.
+#: The pre-#4748 marker, which named the ticket but not the halted lane.
+_LEGACY_HALT_MARKER = "[stuck-redispatch-halt ticket={pk}]"
 
-    The subject lives in the question TEXT — no marker, no session, no parked task —
-    so before #4706 no subject source could name it and only the backstop saw the row.
-    """
-    return DeferredQuestion.record(
-        f"{STUCK_HALT_MARKER.format(pk=ticket_pk)} Stuck ticket {ticket_pk} has no work in flight "
+
+def _halt_body(marker: str, ticket_pk: int) -> str:
+    return (
+        f"{marker} Stuck ticket {ticket_pk} has no work in flight "
         "but re-dispatch is halted. How should it proceed — investigate, rework, or ignore?"
     )
 
 
-def _attempt(ticket: Ticket, *, phase: str, exit_code: int) -> TaskAttempt:
+def _halt_question(ticket_pk: int, *, phase: str = "coding") -> DeferredQuestion:
+    """The shape ``stuck_ticket_redispatch._escalate_once`` records.
+
+    The subject AND the halted lane live in the question TEXT — no marker, no session,
+    no parked task — so the text is the only handle either resolver has on them.
+    """
+    return DeferredQuestion.record(_halt_body(STUCK_HALT_MARKER.format(pk=ticket_pk, phase=phase), ticket_pk))
+
+
+def _legacy_halt_question(ticket_pk: int) -> DeferredQuestion:
+    return DeferredQuestion.record(_halt_body(_LEGACY_HALT_MARKER.format(pk=ticket_pk), ticket_pk))
+
+
+def _attempt(ticket: Ticket, *, phase: str, exit_code: int | None, error: str = "") -> TaskAttempt:
+    """One attempt on the ``(ticket, phase)`` lane — exit 0 with no error is the SUCCESS."""
     task = _completed(ticket, phase=phase)
-    return TaskAttempt.objects.create(task=task, exit_code=exit_code, error="" if exit_code == 0 else "boom")
+    return TaskAttempt.objects.create(task=task, exit_code=exit_code, error=error)
 
 
 class TestHaltTriggerCleared(TestCase):
@@ -568,7 +581,7 @@ class TestHaltTriggerCleared(TestCase):
     def test_a_halt_question_whose_ticket_only_failed_since_is_kept(self) -> None:
         ticket = _ticket(Ticket.State.STARTED)
         question = _halt_question(ticket.pk)
-        _attempt(ticket, phase="coding", exit_code=1)
+        _attempt(ticket, phase="coding", exit_code=1, error="boom")
 
         assert drain_pending_questions().drained == 0
         question.refresh_from_db()
@@ -617,3 +630,111 @@ class TestHaltTriggerCleared(TestCase):
 
         assert reach.has_subject
         assert reach.decisions["halt_trigger_cleared"] == Verdict.DRAIN
+
+
+class TestHaltClearingIsLaneKeyed(TestCase):
+    """Only the HALTED lane's own recovery clears a halt question (#4748).
+
+    Every lane of a ticket runs on its own cadence — the auto-scheduled ``short_describe``
+    exits 0 on a ticket whose coding phase is halted — so a ticket-wide success silenced a
+    live halt permanently: the escalation guards count dismissed rows, so the ticket could
+    never signal again.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
+
+    def test_a_success_on_another_lane_does_not_clear_the_halted_lane(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="short_describe", exit_code=0)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_success_on_the_halted_lane_still_clears_it(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="short_describe", exit_code=0)
+        _attempt(ticket, phase="reviewing", exit_code=0)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_task_stored_under_a_lane_spelling_variant_is_the_same_lane(self) -> None:
+        # `Task.phase` holds whichever accepted spelling its producer wrote.
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="review", exit_code=0)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_marker_spelling_variant_is_the_same_lane(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="review")
+        _attempt(ticket, phase="reviewing", exit_code=0)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_failure_on_a_spelling_variant_of_the_halted_lane_keeps_the_row(self) -> None:
+        # Both spellings reduce to ONE lane, so the variant failure is the latest attempt.
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="reviewing", exit_code=0)
+        _attempt(ticket, phase="review", exit_code=1, error="boom")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_later_failure_on_the_halted_lane_keeps_the_row(self) -> None:
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="reviewing", exit_code=0)
+        _attempt(ticket, phase="reviewing", exit_code=1, error="boom")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_a_later_refusal_on_the_halted_lane_keeps_the_row(self) -> None:
+        # An envelope refusal is exit 0 WITH an error, so an exit-code reader counts it green.
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="reviewing", exit_code=0)
+        _attempt(ticket, phase="reviewing", exit_code=0, error="envelope refused")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_an_in_flight_attempt_after_the_success_still_clears(self) -> None:
+        # A blank outcome is neither a success nor a failure, so it decides nothing.
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _halt_question(ticket.pk, phase="reviewing")
+        _attempt(ticket, phase="reviewing", exit_code=0)
+        _attempt(ticket, phase="reviewing", exit_code=None)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_legacy_marker_naming_no_lane_is_never_cleared(self) -> None:
+        # A row that names no lane cannot prove the halted one recovered — abstain (#3692).
+        ticket = _ticket(Ticket.State.STARTED)
+        question = _legacy_halt_question(ticket.pk)
+        _attempt(ticket, phase="coding", exit_code=0)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+        reach = next(r for r in question_reachability() if r.question_id == question.pk)
+        assert reach.has_subject
+        assert "halt_trigger_cleared" not in reach.decisions

@@ -237,6 +237,33 @@ class TestStuckTicketRedispatch(TestCase):
             )
             TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
 
+    def test_the_escalation_marker_names_the_halted_lane(self) -> None:
+        # #4748: the drain keys on (ticket, phase), and the TEXT is its only handle.
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        self._burn_planning_budget(ticket)
+
+        assert redispatch_stuck_tickets() == 0
+        assert f"[stuck-redispatch-halt ticket={ticket.pk} phase=planning]" in DeferredQuestion.objects.get().question
+
+    def test_a_legacy_phaseless_row_still_suppresses_a_fresh_escalation(self) -> None:
+        # Rows recorded before the lane was carried must keep deduping, or every halted
+        # ticket escalates a second time the first tick after deploy.
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        self._burn_planning_budget(ticket)
+        DeferredQuestion.record(f"[stuck-redispatch-halt ticket={ticket.pk}] Stuck and halted.")
+
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_a_prefix_sharing_ticket_pk_is_not_mistaken_for_this_one(self) -> None:
+        # A bare `contains` on the prefix would match ticket=1 against ticket=1234.
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        self._burn_planning_budget(ticket)
+        DeferredQuestion.record(f"[stuck-redispatch-halt ticket={ticket.pk}0 phase=coding] Another ticket.")
+
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.filter(question__contains=f"ticket={ticket.pk} ").count() == 1
+
     def test_answered_escalation_does_not_re_escalate(self) -> None:
         # #6: an escalated stuck ticket is parked. Answering the question must NOT spawn
         # a fresh escalation on the next tick (the old open-only dedup re-fired here).

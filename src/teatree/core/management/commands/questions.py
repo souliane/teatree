@@ -1,6 +1,6 @@
 """``t3 teatree questions`` — manage the away-mode deferred-question backlog (#58).
 
-Three subcommands operate on the durable :class:`DeferredQuestion` queue
+These subcommands operate on the durable :class:`DeferredQuestion` queue
 populated when availability=away (BLUEPRINT §17.1 invariant 9):
 
 * ``t3 teatree questions list`` — print pending questions, oldest first.
@@ -8,6 +8,9 @@ populated when availability=away (BLUEPRINT §17.1 invariant 9):
     user answer; writes a :class:`DeferredQuestionAudit` row.
 * ``t3 teatree questions dismiss <id> [--reason ...]`` — dismiss a question
     the user no longer wants to answer; writes an audit row.
+* ``t3 teatree questions reopen <id> [--note ...]`` — put a DISMISSED question
+    back in the pending queue when a resolver dropped a live one; resets the
+    escalation ladder so it is asked again, and writes an audit row.
 * ``t3 teatree questions reachability`` — which automated resolvers can decide
     each pending row, and how many can be decided by none (#4178).
 * ``t3 teatree questions mirror --ref <ref>`` — deliver ONE un-mirrored row
@@ -48,6 +51,9 @@ class DeferredQuestionRow(TypedDict):
     created_at: str | None
     escalated_at: str | None
     escalation_count: int
+    #: Why a dismissed row was dropped — what an operator picks a `questions reopen` id from.
+    dismissed_reason: str
+    resolved_via: str
 
 
 class QuestionReachRow(TypedDict):
@@ -183,6 +189,8 @@ class Command(MachineOutputCommand):
                 "created_at": row.created_at.isoformat() if row.created_at is not None else None,
                 "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,
                 "escalation_count": row.escalation_count,
+                "dismissed_reason": row.dismissed_reason,
+                "resolved_via": row.resolved_via,
             }
             for row in rows
         ]
@@ -345,6 +353,47 @@ class Command(MachineOutputCommand):
         if not dismissed:
             raise SystemExit(1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
+
+    @command()
+    def reopen(
+        self,
+        question_ids: Annotated[
+            list[int],
+            typer.Argument(help="One or more dismissed question ids to put back in the pending queue."),
+        ],
+        note: Annotated[
+            str,
+            typer.Option("--note", help="Why the dismissal was wrong (audit trail)."),
+        ] = "dismissed in error",
+        resolver_id: Annotated[
+            str,
+            typer.Option("--resolver", help="Identity of the reopener (audit trail)."),
+        ] = "",
+    ) -> str:
+        """Put dismissed questions back in the pending queue.
+
+        The recovery path for a drain an automated resolver reached wrongly: every
+        dismissal is a single-use CAS, so without this the question could never be
+        asked again. Reopening resets the escalation ladder, so the row is a fresh ask
+        rather than one the next sweep immediately re-drains at the bound.
+
+        Takes MANY ids and reopens each in its own transaction, mirroring ``dismiss``:
+        a row that is pending or answered skips instead of rolling back the batch.
+        """
+        clean_note = note.strip() or "dismissed in error"
+        reopened: list[int] = []
+        skipped: list[int] = []
+        for question_id in question_ids:
+            row = DeferredQuestion.objects.filter(pk=question_id).first()
+            if row is None or not row.reopen(note=clean_note, resolver_id=resolver_id):
+                skipped.append(question_id)
+                continue
+            reopened.append(row.pk)
+        if skipped:
+            self.stderr.write(f"not found, still pending or answered: {', '.join(str(i) for i in skipped)}")
+        if not reopened:
+            raise SystemExit(1)
+        return f"reopened {len(reopened)}: {', '.join(f'#{pk}' for pk in reopened)}."
 
     @command()
     def mirror(

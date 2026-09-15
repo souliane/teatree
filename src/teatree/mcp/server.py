@@ -483,7 +483,7 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
         "question_list",
         _question_list,
         "- question_list(limit): the pending DeferredQuestion backlog awaiting the "
-        "user's answer (pairs with the question_answer write tool).",
+        "user's answer (pairs with the question_answer / question_reopen write tools).",
     ),
     _ReadTool("loop_stats", _loop_stats, "- loop_stats(overlay): task-status counts plus the dead-letter total."),
     _ReadTool(

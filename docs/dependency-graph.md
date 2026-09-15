@@ -391,6 +391,7 @@ graph TD
     teatree.loop.slack_answer --> teatree.agents
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
+    teatree.loop.slack_answer --> teatree.core.modelkit
     teatree.loop.slack_answer --> teatree.core.models
     teatree.loop.slack_answer --> teatree.loop.inbound_classifier
     teatree.loop.slack_answer --> teatree.loop.inbound_reading

@@ -53,6 +53,7 @@ _WRITE_TOOLS = {
     "task_fail",
     "notify_user",
     "question_answer",
+    "question_reopen",
     "worktree_teardown",
     "review_post_draft_note",
     "review_post_comment",

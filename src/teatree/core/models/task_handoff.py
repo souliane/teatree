@@ -9,7 +9,8 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 ``Task`` so they stay free of model-class state, mirroring ``task_repair.py``.
 """
 
-from teatree.core.models.deferred_question import DeferredQuestion, is_tool_lack_selfreport, question_fingerprint
+from teatree.core.modelkit.question_text import is_tool_lack_selfreport, question_fingerprint
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 

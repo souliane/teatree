@@ -34,9 +34,10 @@ sweep treats ``None`` as KEEP.
 """
 
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import PullRequest, Session, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.repair_halt_reconcile import repair_marker_subject_tickets
@@ -82,6 +83,8 @@ class SubjectIndex:
     parked_task_tickets: dict[int, int]
     #: question pk -> the ticket pk its stuck-redispatch-halt TEXT names.
     halt_text_tickets: dict[int, int]
+    #: question pk -> the halted LANE its marker names, absent on a pre-#4748 row.
+    halt_text_phases: dict[int, str]
     session_tickets: dict[int, int]
     ticket_states: dict[int, str]
     #: subject ticket pk -> the state of every pull request recorded against it.
@@ -106,6 +109,7 @@ class SubjectIndex:
             marker_tickets=markers,
             parked_task_tickets=parked,
             halt_text_tickets=halted,
+            halt_text_phases=_halt_text_phases(questions, halted.keys()),
             session_tickets=sessions,
             ticket_states=_ticket_states(subjects),
             ticket_pr_states=_ticket_pr_states(subjects),
@@ -162,7 +166,7 @@ def _parked_task_answer(index: SubjectIndex, question: DeferredQuestion) -> Subj
 
 
 def _stuck_halt_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
-    """The ticket a ``[stuck-redispatch-halt ticket=N]`` question names in its own text.
+    """The ticket a ``[stuck-redispatch-halt ticket=N phase=P]`` question names in its own text.
 
     ``stuck_ticket_redispatch._escalate_once`` records the question with no dedupe
     marker, no session and no parked task, so the text is the ONLY handle on its
@@ -219,6 +223,12 @@ def _halt_text_ticket_ids(questions: Sequence[DeferredQuestion]) -> dict[int, in
         return {}
     live = set(Ticket.objects.filter(pk__in=set(named.values())).values_list("pk", flat=True))
     return {pk: ticket for pk, ticket in named.items() if ticket in live}
+
+
+def _halt_text_phases(questions: Sequence[DeferredQuestion], subject_pks: Collection[int]) -> dict[int, str]:
+    """Question pk -> the canonical halted lane, for the rows whose marker names one."""
+    matched = ((q.pk, STUCK_HALT_PK_RE.search(q.question)) for q in questions if q.pk in subject_pks)
+    return {pk: normalize_phase(match.group(2)) for pk, match in matched if match is not None and match.group(2)}
 
 
 def _session_ticket_ids(session_pks: set[int]) -> dict[int, int]:

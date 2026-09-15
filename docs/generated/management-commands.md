@@ -412,6 +412,7 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending questions with a user answer (resumes any parked headless task) |
 | `dismiss` | Dismiss pending questions without answering them |
+| `reopen` | Put dismissed questions back in the pending queue |
 | `mirror` | Deliver ONE un-mirrored question now, bypassing the per-tick batch cap |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List pending deferred questions, oldest first |

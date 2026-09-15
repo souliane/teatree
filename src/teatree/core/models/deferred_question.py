@@ -25,8 +25,6 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
-import hashlib
-import re
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
@@ -35,67 +33,6 @@ from django.utils import timezone
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
-
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def question_fingerprint(text: str) -> str:
-    """A normalized-text fingerprint that collapses cosmetically-different clones.
-
-    Lowercases, strips, and collapses runs of whitespace before hashing, so eight
-    "I lack the tools to review" review-failure clones — differing only in
-    trailing whitespace or casing — map to one marker and dedup to a single
-    :class:`DeferredQuestion` instead of eight identical rows.
-    """
-    normalized = _WHITESPACE_RE.sub(" ", text.strip().lower())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
-
-
-#: Signals that a ``needs_user_input`` reason is a tool-lack / mis-provisioned
-#: DISPATCH fault — a session reporting it lacks the tools / checkout / access to do
-#: its assigned work — not a genuine decision the owner must make. Any one branch is
-#: sufficient. Each keys on a signal owner *decision* questions do not carry, so a
-#: real "how should I proceed on X?" ("cannot decide", "no clean approach") stays
-#: OWNER_QUESTION. Branches (4)-(7) were added after (1)-(3) still leaked review
-#: parks that reported the same fault by its consequence/symptom (#201/#202).
-_TOOL_LACK_SELFREPORT_RE = re.compile(
-    r"(?:"
-    # (1) capability negation adjacent to a tool word
-    r"\b(?:lack|lacks|lacking|no|without|missing|denied|deprived of)\b[^.]{0,40}?"
-    r"\b(?:shell|bash|gh|tool|tools|toolset)\b"
-    r"|\bshell[- ]?denied\b"  # (2) bare "shell-denied"
-    r"|\bneeds?\b[^.]{0,40}?\bsession\b[^.]{0,40}?\btool"  # (3) hand-off phrasings
-    r"|\bsession with (?:the )?(?:standard )?tool"
-    r"|\bpicked up by (?:a )?session\b"
-    # (4) dispatch-provisioning phrase ("tool access") — only in a provisioning report
-    r"|\btool access\b"
-    # (5) no accessible checkout / working tree / working copy / repo access
-    r"|\bno\b[^.]{0,30}?\b(?:accessible )?(?:checkout|working tree|working copy|repo(?:sitory)? access)\b"
-    # (6) internal task-context tools (TaskGet/TaskList/TaskRead) returning nothing
-    r"|\btask(?:get|list|read)\b[^.]{0,60}?\b(?:returned nothing|nothing|empty|unavailable|no rows)\b"
-    # (7) inability to do tool-requiring work (the consequence phrasing of a lack)
-    r"|\b(?:cannot|can't|can not|unable to|couldn't|could not)\b[^.]{0,60}?"
-    r"\b(?:inspect|make code changes|run the required|run [^.]{0,20}?verify-gates|verify-gates"
-    r"|clone|check ?out|apply the patch)\b"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def is_tool_lack_selfreport(text: str) -> bool:
-    """True if *text* is an agent's own "I lack the tools to proceed" dispatch fault.
-
-    An agent that stops with ``needs_user_input`` because its session was
-    dispatched WITHOUT the shell / ``gh`` / toolset / checkout its own work needs is
-    reporting a DISPATCH fault — a phase mis-provisioned for its job — not asking the
-    owner to decide anything. Surfacing that self-report to the owner's DM is the
-    exact leak this classifier defends (it reached the owner as "*Pending question* …
-    This session lacks any shell/write tool …", and later as the review-phase
-    "launched without … tool access, so I cannot inspect the PR diff …" / "no shell,
-    TaskGet/TaskList returned nothing" leaks). Such a reason is recorded ``INTERNAL``
-    — logged / statusline-only, never DM'd. See ``_TOOL_LACK_SELFREPORT_RE``.
-    """
-    return bool(_TOOL_LACK_SELFREPORT_RE.search(_WHITESPACE_RE.sub(" ", text.strip())))
 
 
 class DeferredQuestionError(ValueError):
@@ -109,9 +46,10 @@ class DeferredQuestion(models.Model):
     payload; the hook layer (see ``hook_router.handle_mirror_question_to_slack``)
     is the only producer. Single-use: once :meth:`consume` stamps either
     ``answered_at`` or ``dismissed_at``, the row no longer matches a
-    pending-question scan. The original ``tool_use_id`` (when the harness
-    emits one) is stored verbatim so audits can be cross-referenced to
-    the transcript.
+    pending-question scan — :meth:`reopen` is the one audited way back, for a
+    DISMISSAL an automated resolver got wrong. The original ``tool_use_id``
+    (when the harness emits one) is stored verbatim so audits can be
+    cross-referenced to the transcript.
     """
 
     STATUS_PENDING = "pending"
@@ -467,6 +405,42 @@ class DeferredQuestion(models.Model):
             self.escalation_count = row.escalation_count
             return True
 
+    def reopen(self, *, note: str, resolver_id: str = "") -> bool:
+        """Put a DISMISSED row back in the pending queue; ``True`` on the transition.
+
+        The recovery path for a dismissal an automated resolver reached wrongly (#4748):
+        every drain is single-use, so without this a question the sweep dropped could
+        never be asked again, and the escalation guards count dismissed rows.
+
+        Scoped to a dismissal — an ANSWERED row is never reopened, because its answer may
+        already have been applied and resuming the parked task a second time would replay
+        it. The age ladder is RESET rather than carried: the reopened row is a fresh ask,
+        and leaving the count would re-drain it STALE on the very next sweep.
+
+        ``slack_ts`` is kept so a reply still in flight on the original DM binds back to
+        this row; ``questions resurface`` re-delivers it when a new thread is wanted.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=False)
+                .first()
+            )
+            if row is None:
+                return False
+            row.dismissed_at = None
+            row.dismissed_reason = ""
+            row.resolved_via = self.ResolvedVia.UNRESOLVED
+            row.escalated_at = None
+            row.escalation_count = 0
+            row.save(
+                update_fields=["dismissed_at", "dismissed_reason", "resolved_via", "escalated_at", "escalation_count"]
+            )
+            DeferredQuestionAudit.objects.create(question=row, action="reopened", note=note, resolver_id=resolver_id)
+            self.refresh_from_db()
+            return True
+
     def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
         """Resolve this pending row with *answer*, stamping ``resolved_via``.
 
@@ -578,7 +552,7 @@ class DeferredQuestionAudit(models.Model):
         on_delete=models.CASCADE,
         related_name="audits",
     )
-    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated"
+    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated" | "reopened"
     answer_text = models.TextField(blank=True, default="")
     dismissed_reason = models.TextField(blank=True, default="")
     # Why a NON-resolving action fired. Separate from ``dismissed_reason`` because an

@@ -61,13 +61,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STUCK_IDLE_HOURS = 6
 
-#: The subject ticket a halt question names. Public because the question carries no
-#: dedupe marker, session or parked task, so the TEXT is the only handle the question
-#: drain has on its subject (:mod:`teatree.loop.question_subjects`).
-STUCK_HALT_MARKER = "[stuck-redispatch-halt ticket={pk}]"
-#: Extracts the ticket pk from an escalation marker so an already-escalated ticket is
-#: skipped without re-running its per-ticket budget query every tick (bounds the sweep).
-STUCK_HALT_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
+#: The subject ticket AND the halted lane a halt question names. Public because the
+#: question carries no dedupe marker, session or parked task, so the TEXT is the only
+#: handle the question drain has on either (:mod:`teatree.loop.question_subjects`).
+STUCK_HALT_MARKER = "[stuck-redispatch-halt ticket={pk} phase={phase}]"
+#: The pk-only prefix every marker generation shares — the dedupe key, since a row
+#: recorded before the lane was carried has no phase to match on.
+STUCK_HALT_PREFIX = "[stuck-redispatch-halt ticket="
+#: Extracts the ticket pk, and the halted lane where one was recorded, from an escalation
+#: marker. The phase group is optional so a pre-#4748 row still names its subject; a row
+#: it cannot name a lane for is one no lane-keyed resolver may decide.
+STUCK_HALT_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)(?: phase=([\w-]+))?\]")
 
 #: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
@@ -127,7 +131,7 @@ def _redispatch_one(candidate: _Candidate) -> int:
     """
     halt = _budget_halt_reason(candidate.ticket, phase=candidate.phase)
     if halt is not None:
-        _escalate_once(candidate.ticket, reason=halt)
+        _escalate_once(candidate.ticket, phase=candidate.phase, reason=halt)
         return 0
     return _redispatch(candidate)
 
@@ -139,10 +143,15 @@ def _already_escalated_ticket_pks() -> set[int]:
     never re-escalated when its question is answered/dismissed and never re-budget-
     queried every tick.
     """
-    texts = DeferredQuestion.objects.filter(question__contains="[stuck-redispatch-halt ticket=").values_list(
+    texts = DeferredQuestion.objects.filter(question__contains=STUCK_HALT_PREFIX).values_list("question", flat=True)
+    return {int(m.group(1)) for text in texts if (m := STUCK_HALT_PK_RE.search(text))}
+
+
+def _already_escalated(ticket_pk: int) -> bool:
+    texts = DeferredQuestion.objects.filter(question__contains=f"{STUCK_HALT_PREFIX}{ticket_pk}").values_list(
         "question", flat=True
     )
-    return {int(m.group(1)) for text in texts if (m := STUCK_HALT_PK_RE.search(text))}
+    return any((m := STUCK_HALT_PK_RE.search(text)) and int(m.group(1)) == ticket_pk for text in texts)
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
@@ -258,7 +267,7 @@ def _redispatch(candidate: _Candidate) -> int:
     try:
         _schedule_for_candidate(candidate)
     except InvalidTransitionError as exc:
-        _escalate_once(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
+        _escalate_once(ticket, phase=candidate.phase, reason=f"could not schedule {candidate.phase!r}: {exc}")
         return 0
     return 1
 
@@ -345,17 +354,20 @@ def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:
     return [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
 
 
-def _escalate_once(ticket: Ticket, *, reason: str) -> None:
+def _escalate_once(ticket: Ticket, *, phase: str, reason: str) -> None:
     """Record a durable escalation for a budget-halted stuck ticket, once per ticket.
 
     Idempotent: a per-ticket marker deduped across ALL questions (answered or not) so a
     halted stuck ticket escalates exactly once and answering/dismissing the question
     never resurrects a fresh one. Reuses the §17.1 invariant 9 surface (statusline /
     ``t3 teatree questions list`` / Slack DM).
+
+    Deduped on the pk-only PREFIX, not the whole marker, so a row recorded before the
+    lane was carried still suppresses a fresh escalation; the prefix alone would also
+    match ``ticket=13`` against ``ticket=135``, so each candidate's pk is re-parsed.
     """
-    marker = STUCK_HALT_MARKER.format(pk=ticket.pk)
-    already = DeferredQuestion.objects.filter(question__contains=marker).exists()
-    if already:
+    marker = STUCK_HALT_MARKER.format(pk=ticket.pk, phase=normalize_phase(phase))
+    if _already_escalated(ticket.pk):
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"
     question = (

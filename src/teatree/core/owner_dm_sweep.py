@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from teatree.core.models.deferred_question import question_fingerprint
+from teatree.core.modelkit.question_text import question_fingerprint
 from teatree.core.owner_threads import OwnerThread, open_owner_threads, resolve_owner_thread
 from teatree.url_classify import find_forge_urls
 

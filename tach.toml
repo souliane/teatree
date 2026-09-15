@@ -939,6 +939,7 @@ depends_on = [
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.core.models",
   "teatree.loop.inbound_classifier",
   "teatree.loop.inbound_reading",

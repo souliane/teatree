@@ -31,8 +31,8 @@ import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
+from teatree.core.modelkit.question_text import question_fingerprint
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.deferred_question import question_fingerprint
 from teatree.loop.inbound_reading import InboundReading
 from teatree.url_classify import find_forge_urls
 from teatree.utils.url_slug import slack_conversation_anchor

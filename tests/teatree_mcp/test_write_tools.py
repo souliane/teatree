@@ -118,6 +118,24 @@ class TestQuestionAnswer(TestCase):
         assert row.answered_at is not None
 
 
+class TestQuestionReopen(TestCase):
+    def test_reopens_a_dismissed_question(self) -> None:
+        row = DeferredQuestion.record("How should this halt proceed?")
+        row.mark_stale("the halted lane has since run to success", resolver_id="halt_trigger_cleared")
+
+        result = _call("question_reopen", {"question_id": row.pk, "note": "the coding lane is still halted"})
+
+        row.refresh_from_db()
+        assert result["ok"] is True
+        assert row.is_pending
+
+    def test_an_already_pending_question_surfaces_the_refusal(self) -> None:
+        row = DeferredQuestion.record("How should this halt proceed?")
+
+        with pytest.raises(Exception, match="still pending or answered"):
+            _call("question_reopen", {"question_id": row.pk, "note": "nothing to undo"})
+
+
 class TestLifecycleTools(TestCase):
     def test_visit_phase_records_on_the_session(self) -> None:
         ticket = TicketFactory(state=Ticket.State.STARTED)

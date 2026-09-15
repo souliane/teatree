@@ -306,6 +306,21 @@ async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp"
     return await sync_to_async(_answer, thread_sensitive=True)()
 
 
+async def _question_reopen(question_id: int, note: str, *, resolver: str = "mcp") -> dict[str, Any]:
+    """Put a DISMISSED DeferredQuestion back in the pending queue (single-use CAS + audit row).
+
+    Wraps ``t3 teatree questions reopen`` — the recovery path for a drain an
+    automated resolver reached wrongly. Resets the escalation ladder, exactly
+    like the CLI.
+    """
+
+    def _reopen() -> dict[str, Any]:
+        run_command("questions", "reopen", question_id, note=note, resolver_id=resolver)
+        return {"ok": True, "question_id": question_id}
+
+    return await sync_to_async(_reopen, thread_sensitive=True)()
+
+
 async def _worktree_teardown(path: str, *, force: bool = False) -> str:
     """Tear down the ticket workspace *path* resolves to (bounded-duration; provisioning stays CLI).
 
@@ -508,6 +523,14 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _WRITE,
         "call_command('questions', 'answer', …)",
         "- question_answer(question_id, text, resolver): answer a pending DeferredQuestion (single-use, audited).",
+    ),
+    _WriteTool(
+        "question_reopen",
+        _question_reopen,
+        _WRITE,
+        "call_command('questions', 'reopen', …)",
+        "- question_reopen(question_id, note, resolver): put a DISMISSED DeferredQuestion back in the "
+        "pending queue when a drain resolver dropped a live one (single-use, audited, resets the ladder).",
     ),
     _WriteTool(
         "worktree_teardown",

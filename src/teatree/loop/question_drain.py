@@ -40,10 +40,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from django.db.models import Max
 from django.utils import timezone
 
 from teatree.config.resolution import get_effective_settings
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_subjects import SubjectIndex
@@ -107,7 +107,7 @@ class SweepContext:
     max_escalations: int
     #: pks of the parked rows whose lane has since re-run to completion without them.
     superseded_parked: frozenset[int]
-    #: pks of the halt rows whose ticket has since run a phase to success.
+    #: pks of the halt rows whose own halted lane has since run to success.
     cleared_halts: frozenset[int]
 
     @classmethod
@@ -162,19 +162,20 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
 
 
 def _halt_trigger_cleared(question: DeferredQuestion, context: SweepContext) -> Decision | None:
-    """The halted ticket has since run a phase to SUCCESS — its trigger cannot recur; DRAIN.
+    """The HALTED LANE has since run to SUCCESS — its trigger cannot recur; DRAIN.
 
     ``_subject_terminal`` drains when the subject is finished and ``_parked_task_superseded``
     when the parked lane re-ran; neither covers "the failure that raised this question can no
     longer happen". Nine rows sharing one dispatch-failure fingerprint stayed pending after
     that failure was fixed, because a halt question's only handle on its ticket is its text.
 
-    Positive-only: short of a success NEWER than the question it answers nothing, so it can
-    add a drain the FSM state cannot prove but never suppress one.
+    Positive-only: short of a success NEWER than the question, on the lane the question
+    itself names, it answers nothing — so it can add a drain the FSM state cannot prove but
+    never suppress one.
     """
     if question.pk not in context.cleared_halts:
         return None
-    return Decision(Verdict.DRAIN, "the halted ticket has since run a phase to success")
+    return Decision(Verdict.DRAIN, "the halted lane has since run to success")
 
 
 def _parked_task_superseded(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -261,30 +262,55 @@ def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> froze
 
 
 def _cleared_halt_questions(questions: Sequence[DeferredQuestion], index: SubjectIndex) -> frozenset[int]:
-    """The halt rows whose ticket has recorded a SUCCESS attempt since the question.
+    """The halt rows whose HALTED LANE has since run to success (#4748).
 
-    Resolved once per sweep, in one aggregate. The success must POSTDATE the question:
-    an earlier one is what the ticket was doing before it got stuck, and reading it as
-    recovery would drain a live halt on its first tick.
+    Keyed on ``(ticket, phase)`` like its :func:`_lane_moved_on` sibling, because a
+    ticket's lanes run on their own cadences: the auto-scheduled ``short_describe`` exits
+    0 while the coding phase that raised the halt is still halted, so a ticket-wide read
+    called an unrelated lane's success a recovery — permanently, since the re-escalation
+    guards count dismissed rows and the ticket could never signal again.
+
+    The clearing success must be the lane's LATEST terminal attempt (a failure after it is
+    the halt recurring) and must POSTDATE the question (an earlier one is what the ticket
+    was doing before it got stuck).
+
+    Positive-only: a row whose marker names no lane is left undecided rather than matched
+    against an arbitrary phase, so this can still only ever ADD a drain.
     """
     halted = {
-        q.pk: (q.created_at, ticket) for q in questions if (ticket := index.halt_text_tickets.get(q.pk)) is not None
+        q.pk: (q.created_at, ticket, phase)
+        for q in questions
+        if (ticket := index.halt_text_tickets.get(q.pk)) is not None and (phase := index.halt_text_phases.get(q.pk))
     }
     if not halted:
         return frozenset()
-    latest_success = dict(
-        TaskAttempt.objects.filter(
-            task__ticket_id__in={ticket for _created, ticket in halted.values()},
-            outcome=TaskAttempt.Outcome.SUCCESS,
-        )
-        .values_list("task__ticket_id")
-        .annotate(latest=Max("started_at"))
-    )
+    latest = _latest_terminal_outcomes({(ticket, phase) for _created, ticket, phase in halted.values()})
     return frozenset(
         pk
-        for pk, (created_at, ticket) in halted.items()
-        if (success := latest_success.get(ticket)) is not None and success > created_at
+        for pk, (created_at, ticket, phase) in halted.items()
+        if (finished := latest.get((ticket, phase))) is not None
+        and finished[0] == TaskAttempt.Outcome.SUCCESS
+        and finished[1] > created_at
     )
+
+
+def _latest_terminal_outcomes(lanes: set[tuple[int, str]]) -> dict[tuple[int, str], tuple[str, datetime]]:
+    """Each lane's newest FINISHED attempt as ``(outcome, started_at)``, in one query.
+
+    An in-flight attempt (blank outcome) is excluded rather than ranked: it is neither a
+    success nor a failure, so a lane whose newest row is still running is judged on the
+    last result it actually produced.
+    """
+    rows = (
+        TaskAttempt.objects.filter(
+            task__ticket_id__in={ticket for ticket, _phase in lanes},
+            task__phase__in={spelling for _ticket, phase in lanes for spelling in phase_spellings(phase)},
+        )
+        .exclude(outcome="")
+        .order_by("started_at", "pk")
+        .values_list("task__ticket_id", "task__phase", "outcome", "started_at")
+    )
+    return {(ticket, normalize_phase(phase)): (outcome, started_at) for ticket, phase, outcome, started_at in rows}
 
 
 def _lane_moved_on(

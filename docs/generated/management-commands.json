@@ -812,6 +812,10 @@
           "name": "dismiss"
         },
         {
+          "help": "Put dismissed questions back in the pending queue",
+          "name": "reopen"
+        },
+        {
           "help": "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap",
           "name": "mirror"
         },

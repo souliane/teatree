@@ -68,7 +68,7 @@ broken control plane must interrupt the user, not silence them.
 
 ## CLI surface
 
-The deferred-question verbs below have MCP twins — prefer `mcp__teatree__question_list` (the bare pending backlog) and `mcp__teatree__question_answer`; the block is the CLI fallback for a session whose MCP server isn't connected, and `--all` has no MCP filter.
+The deferred-question verbs below have MCP twins — prefer `mcp__teatree__question_list` (the bare pending backlog), `mcp__teatree__question_answer` and `mcp__teatree__question_reopen`; the block is the CLI fallback for a session whose MCP server isn't connected, and `--all` has no MCP filter.
 
 ```bash
 # The active mode, the layer that decided it, and the per-loop verdict table.
@@ -100,6 +100,9 @@ t3 teatree questions list --all    # include answered/dismissed
 # Resolve one — writes a `DeferredQuestionAudit` row.
 t3 teatree questions answer 42 "yes, ship it"
 t3 teatree questions dismiss 42 --reason "stale"
+
+# Undo a dismissal an automated resolver got wrong — pending again, ladder reset.
+t3 teatree questions reopen 42 --note "the coding lane is still halted"
 
 # Re-post the pending backlog to the user's Slack DM (idempotent).
 t3 teatree questions resurface
