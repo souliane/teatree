@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==1.4.0",
+      "description": "requirements line 7: anthropic==1.5.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@1.4.0",
+      "purl": "pkg:pypi/anthropic@1.5.0",
       "type": "library",
-      "version": "1.4.0"
+      "version": "1.5.0"
     },
     {
       "bom-ref": "requirements-L9",
@@ -512,7 +512,7 @@
     },
     {
       "bom-ref": "requirements-L117",
-      "description": "requirements line 117: jiter==0.16.0",
+      "description": "requirements line 117: jiter==0.17.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -521,9 +521,9 @@
         }
       ],
       "name": "jiter",
-      "purl": "pkg:pypi/jiter@0.16.0",
+      "purl": "pkg:pypi/jiter@0.17.0",
       "type": "library",
-      "version": "0.16.0"
+      "version": "0.17.0"
     },
     {
       "bom-ref": "requirements-L121",
@@ -557,7 +557,7 @@
     },
     {
       "bom-ref": "requirements-L127",
-      "description": "requirements line 127: logfire-api==5.0.0",
+      "description": "requirements line 127: logfire-api==5.1.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -566,9 +566,9 @@
         }
       ],
       "name": "logfire-api",
-      "purl": "pkg:pypi/logfire-api@5.0.0",
+      "purl": "pkg:pypi/logfire-api@5.1.0",
       "type": "library",
-      "version": "5.0.0"
+      "version": "5.1.0"
     },
     {
       "bom-ref": "requirements-L129",
@@ -632,7 +632,7 @@
     },
     {
       "bom-ref": "requirements-L139",
-      "description": "requirements line 139: openai==3.8.0",
+      "description": "requirements line 139: openai==3.13.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -641,9 +641,9 @@
         }
       ],
       "name": "openai",
-      "purl": "pkg:pypi/openai@3.8.0",
+      "purl": "pkg:pypi/openai@3.13.0",
       "type": "library",
-      "version": "3.8.0"
+      "version": "3.13.0"
     },
     {
       "bom-ref": "requirements-L141",
@@ -722,7 +722,7 @@
     },
     {
       "bom-ref": "requirements-L161",
-      "description": "requirements line 161: pydantic-ai-slim==2.40.0",
+      "description": "requirements line 161: pydantic-ai-slim==2.43.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -731,9 +731,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.40.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.43.0",
       "type": "library",
-      "version": "2.40.0"
+      "version": "2.43.0"
     },
     {
       "bom-ref": "requirements-L163",
@@ -752,7 +752,7 @@
     },
     {
       "bom-ref": "requirements-L165",
-      "description": "requirements line 165: pydantic-graph==2.40.0",
+      "description": "requirements line 165: pydantic-graph==2.43.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -761,9 +761,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.40.0",
+      "purl": "pkg:pypi/pydantic-graph@2.43.0",
       "type": "library",
-      "version": "2.40.0"
+      "version": "2.43.0"
     },
     {
       "bom-ref": "requirements-L167",
@@ -797,7 +797,7 @@
     },
     {
       "bom-ref": "requirements-L171",
-      "description": "requirements line 171: pyjwt==2.13.0",
+      "description": "requirements line 171: pyjwt==2.14.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -806,9 +806,9 @@
         }
       ],
       "name": "pyjwt",
-      "purl": "pkg:pypi/pyjwt@2.13.0",
+      "purl": "pkg:pypi/pyjwt@2.14.0",
       "type": "library",
-      "version": "2.13.0"
+      "version": "2.14.0"
     },
     {
       "bom-ref": "requirements-L173",
@@ -902,7 +902,7 @@
     },
     {
       "bom-ref": "requirements-L187",
-      "description": "requirements line 187: regex==2026.9.3",
+      "description": "requirements line 187: regex==2026.9.10",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -911,9 +911,9 @@
         }
       ],
       "name": "regex",
-      "purl": "pkg:pypi/regex@2026.9.3",
+      "purl": "pkg:pypi/regex@2026.9.10",
       "type": "library",
-      "version": "2026.9.3"
+      "version": "2026.9.10"
     },
     {
       "bom-ref": "requirements-L189",
@@ -1142,7 +1142,7 @@
     },
     {
       "bom-ref": "requirements-L247",
-      "description": "requirements line 247: tzdata==2026.3 ; sys_platform == 'win32'",
+      "description": "requirements line 247: tzdata==2026.4 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1151,9 +1151,9 @@
         }
       ],
       "name": "tzdata",
-      "purl": "pkg:pypi/tzdata@2026.3",
+      "purl": "pkg:pypi/tzdata@2026.4",
       "type": "library",
-      "version": "2026.3"
+      "version": "2026.4"
     },
     {
       "bom-ref": "requirements-L249",

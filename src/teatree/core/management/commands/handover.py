@@ -61,7 +61,7 @@ class _RecordedBarrier:
     @property
     def payload_is_empty(self) -> bool:
         """Whether the PERSISTED payload holds nothing — ``True`` when the row is gone."""
-        return not (self.row.payload.strip() if self.row else "")
+        return self.row is None or not self.row.payload.strip()
 
     @property
     def last_barrier_at(self) -> str | None:
