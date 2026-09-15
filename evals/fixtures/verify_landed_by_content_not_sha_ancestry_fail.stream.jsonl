@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-verify_landed_by_content_not_sha_ancestry-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me double-check the ancestry the other way round."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git log origin/main..84df33adff --oneline", "description": "check the range"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The range is non-empty and the ancestry probe exited 1, so the change did not land."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

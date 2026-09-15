@@ -169,6 +169,20 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Read the state the claim is ABOUT, never a local proxy for it.** Step 3 says read the output; this says read the right thing. A claim about what LANDED is settled by reading the pushed commit, the remote, or the deployed surface — never the working tree, which goes on showing your edit whether or not it travelled. The recurring shape: a correction made after `git add` never reaches the commit, because the pre-commit runner stashes the unstaged change, commits the INDEX, and restores afterwards — so the file on disk still looks right and a local look "confirms" a fix that is absent from the remote history. Reasoning correctly about that mechanism is not the read. Name the read that settles it — `git show origin/<branch>:<path>` — and where you cannot run it yet, say the status is unsettled until you have.
 
+**On a squash-merging repo, a sha-ancestry probe answers the landed question WRONGLY — read the content (do X, never Y).** A squash-merge rewrites the branch's commits into a new commit on the default branch, so the original sha is an ancestor of nothing and every per-commit / ancestor / range test reports successfully-landed work as absent.
+
+```bash
+# do X — the content IS the answer, and `-S` also dates it (was this live when <thing> ran?):
+git show origin/main:<path> | grep -n '<symbol the change added>'
+git log -1 -S'<symbol>' -- <path>
+t3 <overlay> workspace branch-verdict <branch>   # the whole-branch question, one call
+# never Y — these answer by sha or ancestry, which a squash-merge defeats:
+git merge-base --is-ancestor <sha> origin/main   # FORBIDDEN as a landed-ness test
+git log origin/main..<sha>                       # FORBIDDEN — same question, range spelling
+```
+
+The reverse direction is a DIFFERENT question and stays fine: `git merge-base --is-ancestor origin/main HEAD` asks whether main has reached your branch (currency), which no squash defeats.
+
 **Multi-deliverable tickets: measure done from the SPEC, not the artifacts you produced (Non-Negotiable).** On a ticket with more than one deliverable, a completeness assertion — "done", "no blockers anywhere", "everything is here", "ready to merge/review" — is measured from **every deliverable the authoritative spec defines (incl. the spec's comments) verified on the actual merge target**, never from the artifacts you happen to have in hand. The recurring, highest-severity failure: claiming "no blockers anywhere" while the crucial deliverable was registered on the wrong surface and its fix was stranded off the merge target — invisible to a check that only inspects what exists. A false completion claim that propagates downstream is not an internal slip. Before any completion claim on a multi-deliverable ticket:
 
 1. **Read the authoritative spec and its comments first.** A claim emitted before the spec source was read leans on proxies (the work item, repo docs, the baseline). If you have not read the spec, you cannot claim done.

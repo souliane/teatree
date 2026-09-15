@@ -52,6 +52,8 @@ class TestTheIncidentShapeWarns:
             "git branch --merged",
             "git merge-base --is-ancestor HEAD origin/main",
             "git log HEAD --not origin/main --oneline",
+            "git log origin/main..84df33adff",
+            "git -C /some/worktree log --oneline origin/main..84df33adff -- src/x.py",
             "cd /some/worktree && git cherry origin/main HEAD",
             "git -C /some/worktree cherry origin/main HEAD",
         ],
@@ -61,6 +63,15 @@ class TestTheIncidentShapeWarns:
 
         assert "workspace branch-verdict" in advisory
         assert "squash-merge" in advisory
+
+    def test_advisory_names_the_per_change_content_remedy(self) -> None:
+        # ``branch-verdict`` answers for a whole BRANCH. The ledger rule is about verifying
+        # ONE change landed, which no branch verdict answers — so the advisory must carry the
+        # content read too, or a caller nudged off the sha probe has nowhere to go.
+        advisory = _advisory("git merge-base --is-ancestor HEAD origin/main")
+
+        assert "git show origin/main:" in advisory
+        assert "-S" in advisory
 
 
 class TestLegitimateShapesAreSilent:
@@ -77,7 +88,13 @@ class TestLegitimateShapesAreSilent:
         [
             "git cherry upstream/topic HEAD",
             "git branch --merged release/2024-06",
+            # ``skills/review/SKILL.md`` prescribes this before reading a diff. It asks whether
+            # main has reached HEAD — the opposite direction to the landed-ness question, and
+            # one a squash-merge does not defeat.
+            "git merge-base --is-ancestor origin/main HEAD || git merge origin/main --no-edit",
             "git log origin/main..HEAD --oneline",
+            "git log origin/main..feature-branch",
+            "git log origin/main...84df33adff",
             "git diff origin/main...HEAD",
             "git log HEAD --not --remotes --oneline",
             "echo 'run git cherry origin/main HEAD to check'",
