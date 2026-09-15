@@ -603,3 +603,152 @@ class TestRunBackendSurfacesComposeExit(TestCase):
 
             assert exc_info.value.code == 1
             assert "exit 1" in err.getvalue()
+
+
+class TestRunTaskSpawnBinding(TestCase):
+    """The spawn is bound to the resolved worktree, and an unreachable runner names its fix (#4746)."""
+
+    @staticmethod
+    def _register(wt_dir: Path) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_tests_spawn_cwd_is_the_resolved_worktree(self) -> None:
+        """Measured: `--path <worktree>` spawned in the main clone, reporting its rootdir (#4746)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
+                call_command("run", "tests", path=str(wt_dir))
+
+            assert mock_run.call_args.kwargs["cwd"] == str(wt_dir)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_lint_spawn_cwd_is_the_resolved_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
+                call_command("run", "lint", path=str(wt_dir))
+
+            assert mock_run.call_args.kwargs["cwd"] == str(wt_dir)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reports_the_runner_configuration_it_spawned(self) -> None:
+        """A reviewer comparing a local run against CI needs the argv and the tree it ran in."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            err = io.StringIO()
+            with patch.object(utils_run_mod, "Popen", _popen_mock()):
+                call_command("run", "tests", path=str(wt_dir), stderr=err)
+
+            printed = err.getvalue()
+            assert "echo tests /tmp/backend" in printed
+            assert str(wt_dir) in printed
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_unspawnable_runner_names_the_provisioning_fix(self) -> None:
+        """The bare `Failed to spawn` is what pushed reviewers off the sanctioned CLI (#4746)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            err = io.StringIO()
+            with (
+                patch.object(
+                    utils_run_mod,
+                    "Popen",
+                    _popen_mock(returncode=2, stderr="error: Failed to spawn: `pytest`\n"),
+                ),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "tests", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            printed = err.getvalue()
+            assert "worktree provision --path" in printed
+            assert str(wt_dir) in printed
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_absent_runner_binary_is_a_hint_not_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            err = io.StringIO()
+            with (
+                patch.object(utils_run_mod, "Popen", MagicMock(side_effect=FileNotFoundError("echo"))),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "tests", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            assert "worktree provision --path" in err.getvalue()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_suite_that_ran_and_failed_keeps_the_plain_message(self) -> None:
+        """Mislabelling a real test failure as a provisioning gap would send the caller nowhere."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            err = io.StringIO()
+            with (
+                patch.object(utils_run_mod, "Popen", _popen_mock(returncode=1, stderr="1 failed\n")),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "tests", path=str(wt_dir), stderr=err)
+
+            assert exc_info.value.code == 1
+            printed = err.getvalue()
+            assert "Tests failed (exit 1)." in printed
+            assert "worktree provision --path" not in printed
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_a_suite_that_merely_prints_the_phrase_is_not_a_provisioning_gap(self) -> None:
+        """This repo's own tests carry the phrase, so the marker is anchored on uv's `error:`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "backend"
+            wt_dir.mkdir()
+            self._register(wt_dir)
+
+            err = io.StringIO()
+            with (
+                patch.object(
+                    utils_run_mod,
+                    "Popen",
+                    _popen_mock(returncode=1, stderr="E       assert 'Failed to spawn' in printed\n"),
+                ),
+                pytest.raises(SystemExit),
+            ):
+                call_command("run", "tests", path=str(wt_dir), stderr=err)
+
+            printed = err.getvalue()
+            assert "Tests failed (exit 1)." in printed
+            assert "worktree provision --path" not in printed
