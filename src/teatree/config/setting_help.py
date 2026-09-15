@@ -86,6 +86,7 @@ SETTING_HELP: dict[str, str] = {
     "colleague_repo_url_pattern": "regex matching repo URLs owned by colleagues rather than the operator",
     "completion_claim_gate_enabled": "refuse a multi-deliverable completion claim carrying no evidence map",
     "config_overwrite_gate_enabled": "refuse a blind overwrite of a config file that was not read first",
+    "cron_loop_shell_gate_enabled": "refuse a harness cron that shells a t3 loop command the worker drives",
     "contribute": "allow a retro to edit teatree's own skills",
     "contribute_plugin_dir": "directory holding the plugin a contribute run writes to",
     "cost_model_prices": "price per model, used to cost a run",

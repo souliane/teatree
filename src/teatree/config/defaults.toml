@@ -250,6 +250,7 @@ brief_anchor_gate_enabled = true # bool — lint a sub-agent brief that asserts 
 brief_anchor_gate_refuse = false # bool — refuse an unanchored sub-agent brief outright instead of warning
 completion_claim_gate_enabled = true # bool — refuse a multi-deliverable completion claim carrying no evidence map
 config_overwrite_gate_enabled = true # bool — refuse a blind overwrite of a config file that was not read first
+cron_loop_shell_gate_enabled = true # bool — refuse a harness cron that shells a t3 loop command the worker drives
 deny_circuit_breaker_enabled = true # bool — pause dispatch after repeated classifier denials instead of retrying
 deny_circuit_breaker_threshold = 3 # int — consecutive denials that trip the circuit breaker
 dispatch_quote_gate_on_task_create_enabled = false # bool — check quoting of a task-list entry when it is created

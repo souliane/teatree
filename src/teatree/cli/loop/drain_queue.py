@@ -10,6 +10,7 @@ back by ``teatree.cli.loop`` and registered via
 
 import typer
 
+from teatree.cli.loop.reactive_start import worker_already_drives
 from teatree.loop.loop_cadences import reactive_slot
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -71,6 +72,8 @@ def drain_queue_start_command() -> None:
     drain-queue ``/loop`` slot. Override the cadence via ``T3_QUEUE_DRAIN_CADENCE``
     (seconds; floor 10).
     """
+    if worker_already_drives("drain-queue"):
+        return
     register_command = reactive_slot("loop-drain-queue").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the drain-queue loop:")
     typer.echo(f"    {register_command}")
