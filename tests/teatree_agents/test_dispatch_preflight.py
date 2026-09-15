@@ -1,12 +1,18 @@
-"""Dispatch preflight head-state resolution + maker-brief block (PR-12)."""
+"""Dispatch preflight head-state resolution + maker-brief block (PR-12), branch currency (#2663)."""
 
+import shutil
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.agents.dispatch_preflight import head_state_brief_lines, resolve_head_state, review_diff_brief_lines
+from teatree.agents.dispatch_preflight import (
+    branch_currency_brief_lines,
+    head_state_brief_lines,
+    resolve_head_state,
+    review_diff_brief_lines,
+)
 from teatree.core.models import Session, Task, Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 
@@ -137,3 +143,116 @@ class TestReviewDiffBriefLines(TestCase):
             assert "DIFF UNDER REVIEW" in block
             assert "widget.py" in block
             assert "def widget" in block
+
+
+def _remote_and_clone(root: Path) -> tuple[Path, Path]:
+    """A bare ``origin`` holding ``main``, plus a clone checked out on a feature branch."""
+    seed = make_git_repo(root / "seed", default_branch="main")
+    (seed / "a.txt").write_text("base\n")
+    run_git(seed, "add", "a.txt")
+    run_git(seed, "commit", "-q", "-m", "seed a.txt")
+    bare = root / "remote.git"
+    run_git(root, "clone", "-q", "--bare", str(seed), str(bare))
+    clone = root / "clone"
+    run_git(root, "clone", "-q", str(bare), str(clone))
+    run_git(clone, "checkout", "-q", "-b", "feat-x")
+    return bare, clone
+
+
+def _push_to_remote(root: Path, bare: Path, *, filename: str, content: str, branch: str = "main") -> None:
+    push = root / f"push-{branch.replace('/', '-')}-{filename}"
+    run_git(root, "clone", "-q", str(bare), str(push))
+    run_git(push, "checkout", "-q", "-B", branch)
+    (push / filename).write_text(content)
+    run_git(push, "add", filename)
+    run_git(push, "commit", "-q", "-m", f"advance {filename}")
+    run_git(push, "push", "-q", "origin", branch)
+
+
+def _commit_on_branch(clone: Path, *, filename: str, content: str) -> None:
+    (clone / filename).write_text(content)
+    run_git(clone, "add", filename)
+    run_git(clone, "commit", "-q", "-m", f"branch edit {filename}")
+
+
+def _currency_task(clone: Path, *, issue: str, extra: dict | None = None) -> Task:
+    ticket = Ticket.objects.create(issue_url=issue, extra=extra or {})
+    Worktree.objects.create(ticket=ticket, repo_path=str(clone), branch="feat-x", extra={"worktree_path": str(clone)})
+    session = Session.objects.create(ticket=ticket)
+    return Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+
+class TestBranchCurrencyBriefLines(TestCase):
+    """#2663 dream gap: a testing dispatch must carry a fetched mergeability verdict."""
+
+    def test_conflicting_branch_names_the_path_and_prescribes_merge_not_rebase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bare, clone = _remote_and_clone(root)
+            _commit_on_branch(clone, filename="a.txt", content="branch side\n")
+            _push_to_remote(root, bare, filename="a.txt", content="main side\n")
+
+            brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/1")))
+
+            assert "CONFLICTS on: a.txt" in brief
+            assert "git merge --no-edit origin/main" in brief
+            assert "NEVER rebase" in brief
+
+    def test_behind_but_clean_prescribes_merging_before_gating(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bare, clone = _remote_and_clone(root)
+            _commit_on_branch(clone, filename="a.txt", content="branch side\n")
+            _push_to_remote(root, bare, filename="b.txt", content="unrelated\n")
+
+            brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/2")))
+
+            assert "1 commit(s) behind origin/main and merges clean." in brief
+            assert "CONFLICTS" not in brief
+
+    def test_current_branch_states_the_check_ran(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, clone = _remote_and_clone(Path(tmp))
+
+            brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/3")))
+
+            assert "feat-x is current with origin/main (fetched at dispatch)." in brief
+            assert "UNVERIFIED" not in brief
+
+    def test_no_worktree_is_loud_not_empty(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://e.test/i/4")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+        lines = branch_currency_brief_lines(task)
+
+        assert lines != ()
+        assert "UNVERIFIED — no ticket worktree materialised at dispatch." in "\n".join(lines)
+
+    def test_failed_fetch_is_unverified_never_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = _remote_and_clone(Path(tmp))
+            shutil.rmtree(bare)
+
+            brief = "\n".join(branch_currency_brief_lines(_currency_task(clone, issue="https://e.test/i/5")))
+
+            assert "UNVERIFIED" in brief
+            assert "is current with" not in brief
+
+    def test_ticket_target_override_is_honoured_over_origin_main(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bare, clone = _remote_and_clone(root)
+            _push_to_remote(root, bare, filename="b.txt", content="on the integration branch\n", branch="release/x")
+
+            task = _currency_task(clone, issue="https://e.test/i/6", extra={"target_branch": "release/x"})
+            brief = "\n".join(branch_currency_brief_lines(task))
+
+            assert "origin/release/x" in brief
+            assert "origin/main" not in brief
+
+    def test_a_non_git_worktree_renders_unverified_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            brief = "\n".join(branch_currency_brief_lines(_currency_task(Path(tmp), issue="https://e.test/i/7")))
+
+            assert "UNVERIFIED" in brief

@@ -31,6 +31,28 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: shipping — auto-review gate" in lines
 
 
+class TestTestingPhaseBranchCurrency(TestCase):
+    """#2663: a testing dispatch carries the branch-currency verdict, and only it does."""
+
+    _HEADER = "PHASE: testing — branch-currency preflight"
+
+    def test_testing_carries_the_branch_currency_preflight(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("testing"), [])
+
+    def test_the_test_alias_resolves_to_the_same_block(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("test"), [])
+
+    def test_a_worktreeless_ticket_is_loud_rather_than_silently_empty(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+
+        assert "UNVERIFIED" in brief
+        assert "no ticket worktree materialised at dispatch" in brief
+
+    def test_other_phases_are_unchanged(self) -> None:
+        for phase in ("coding", "reviewing", "shipping", "planning"):
+            assert self._HEADER not in "\n".join(phase_specific_lines(_task(phase), []))
+
+
 class TestFixRecordDirective(TestCase):
     """#4520: the FixRecord directive is KIND-conditional, so a feature brief is unchanged."""
 
