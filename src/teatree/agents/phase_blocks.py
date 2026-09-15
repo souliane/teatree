@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from teatree.agents.coding_prompt import _coding_phase_directive
 from teatree.agents.dispatch_preflight import (
+    branch_currency_brief_lines,
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
@@ -327,6 +328,17 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _testing_phase_lines(task: Task) -> tuple[str, ...]:
+    """The ``PHASE: testing`` block — the dispatch-time branch-currency verdict (#2663).
+
+    ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
+    pass every local gate and still not merge. The verdict is read at prompt-build
+    time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
+    so the tester starts from a fetched answer rather than a clean-looking tree.
+    """
+    return ("", "PHASE: testing — branch-currency preflight", *branch_currency_brief_lines(task))
+
+
 def _shipping_phase_lines() -> tuple[str, ...]:
     """The ``PHASE: shipping`` auto-review-gate block."""
     reviewer_dispatch = build_reviewer_dispatch_prompt(
@@ -398,6 +410,7 @@ def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
 #: on the canonical phase token; a phase absent here carries no trailing block.
 _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": _planning_phase_lines,
+    "testing": _testing_phase_lines,
     "reviewing": _reviewing_phase_lines,
     "answering": _answering_phase_lines,
     "scanning_news": lambda _task: _scanning_news_phase_lines(),

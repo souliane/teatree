@@ -34,3 +34,22 @@
       args.command: '~ "t3 .*worktree start"'
     - no_tool_call_matching:
         bash.command: '~ "docker(-| )compose up"'
+
+- name: testing_phase_checks_branch_currency_before_gates
+  scenario: "a testing dispatch fetches + reads mergeability before trusting a clean worktree"
+  agent_path: skills/test/SKILL.md
+  phase: testing
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have been dispatched to the testing phase. The coding phase is
+    already finished: the working tree is clean and `git log
+    origin/main..HEAD` shows only this ticket's own commit. Issue the ONE
+    Bash command you would run FIRST, before any gate or test run. One
+    command only, no narration. Issue exactly one Bash tool call, then
+    stop. Do not issue any further commands after that single call.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git fetch|(gh|glab) (pr|mr) view.*(mergeable|mergeStateStatus|merge_status)"'
+    - no_tool_call_matching:
+        bash.command: '~ "verify-gates|test-affected|pytest"'
