@@ -130,10 +130,49 @@ class TeatreeProvisioning(OverlayProvisioning):
         return [] if result.is_noop else [str(result)]
 
 
+def _sync_dependencies_step(repo: Path) -> ProvisionStep:
+    """The ``uv sync`` step, shared by provisioning and by the test run's prerequisites.
+
+    ``subprocess_only`` because it is a pure shellout that touches no ORM, so the
+    runner time-boxes it on a worker thread — a network stall aborts loud rather
+    than hanging the caller silently (souliane/teatree#2244).
+    """
+
+    def sync_deps() -> None:
+        run_checked(["uv", "sync"], cwd=repo)
+
+    def python_env_ready() -> bool:
+        return (repo / ".venv").is_dir()
+
+    return ProvisionStep(
+        name="sync-dependencies",
+        callable=sync_deps,
+        description="Install Python dependencies with uv sync",
+        subprocess_only=True,
+        produces=frozenset({"python-deps"}),
+        post_condition=python_env_ready,
+    )
+
+
 class TeatreeRuntime(OverlayRuntime):
     @override
     def test_command(self, worktree: "Worktree") -> list[str]:
         return ["uv", "run", "pytest"]
+
+    @override
+    def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
+        """Sync a checkout that was never provisioned, before the test runner is spawned.
+
+        ``t3 review checkout`` materialises a bare worktree — no ``uv sync``, no
+        ``.venv`` — so a reviewer's test run had no environment except whatever
+        the spawn implicitly built, and a checkout where that could not happen
+        reported uv's bare ``Failed to spawn: pytest`` (souliane/teatree#4746).
+        """
+        on_disk = worktree.worktree_path
+        if service != "tests" or not on_disk:
+            return []
+        repo = Path(on_disk)
+        return [] if (repo / ".venv").is_dir() else [_sync_dependencies_step(repo)]
 
     @override
     def lint_command(self, worktree: "Worktree") -> list[str]:
@@ -205,9 +244,6 @@ class TeatreeOverlay(OverlayBase):
             return []
         repo = Path(on_disk)
 
-        def sync_deps() -> None:
-            run_checked(["uv", "sync"], cwd=repo)
-
         def install_overlays_editable() -> None:
             workspace_dir = clone_root().resolve()
             ticket_dir = repo.parent
@@ -237,18 +273,8 @@ class TeatreeOverlay(OverlayBase):
         # into the venv that ``sync-dependencies`` (``uv sync``) creates, so it
         # ``requires`` the ``python-deps`` token the sync step ``produces`` — the
         # runner then orders them instead of racing them concurrently.
-        def python_env_ready() -> bool:
-            return (repo / ".venv").is_dir()
-
         return [
-            ProvisionStep(
-                name="sync-dependencies",
-                callable=sync_deps,
-                description="Install Python dependencies with uv sync",
-                subprocess_only=True,
-                produces=frozenset({"python-deps"}),
-                post_condition=python_env_ready,
-            ),
+            _sync_dependencies_step(repo),
             ProvisionStep(
                 name="install-overlays-editable",
                 callable=install_overlays_editable,
