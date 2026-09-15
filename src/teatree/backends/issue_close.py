@@ -1,6 +1,6 @@
 """Read a forge issue payload for the one fact "did the forge close this issue?" (#4711).
 
-A pre-ship ticket is the factory's claim that work is still to do; its issue being
+A pre-ship ticket is the factory's claim that work is outstanding; its issue being
 closed is the owner's statement that it is not. Every other board-reconcile rule
 resolves a ticket's URL as a PULL REQUEST, so a pre-ship ticket whose ``issue_url``
 names an ISSUE the forge closed reached no rule at all and stayed a dispatch source
