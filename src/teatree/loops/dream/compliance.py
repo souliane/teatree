@@ -33,7 +33,7 @@ withholding) so an escalation ticket can never leak a banned term.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -216,18 +216,23 @@ def _cluster_slugs(cluster: DistilledCluster) -> set[str]:
 
 def reclassify_recurring_memory_clusters(
     clusters: Sequence[DistilledCluster],
+    *,
+    rule_slugs: Collection[str],
 ) -> list[DistilledCluster]:
     """Redirect a MEMORY_ONLY cluster whose rule already recurred off the memory destination.
 
     The binding rule: a rule that already has a durable memory and recurs must NOT
     produce ANOTHER memory. So a cluster destined for a memory file
     (:func:`_is_memory_only`) whose cited slug already shows a recurrence in the
-    audit ledger is reclassified to a teatree-core destination — Pass-2 triage then
+    audit ledger AND is in *rule_slugs* is reclassified to a teatree-core destination.
+    The intersection is load-bearing: the ledger holds rows minted before the rule
+    universe was bounded, so an unfiltered recurrence redirects a legitimate
+    keep-as-memory cluster forever. Pass-2 triage then
     reads it as a core gap and drives an umbrella checkbox + scheduled gate/eval fix
     instead of re-promoting a memory. A cluster already destined for a core path, or
     whose rule has no recurrence on record, is returned untouched.
     """
-    recurring = _recurring_rule_slugs()
+    recurring = _recurring_rule_slugs() & set(rule_slugs)
     if not recurring:
         return list(clusters)
     out: list[DistilledCluster] = []

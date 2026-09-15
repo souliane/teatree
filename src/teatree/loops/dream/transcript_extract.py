@@ -160,6 +160,52 @@ def looks_like_user_correction(line: str) -> bool:
     return "!!" in line
 
 
+#: A user turn longer than this is an orchestrator brief, not a human correction —
+#: a person types a sentence, a dispatch pastes a ticket, a phase and a blocker list.
+_MAX_CORRECTION_CHARS = 800
+
+#: Openers that only a dispatch brief or a skill-load turn carries. They arrive on the
+#: USER channel because the harness speaks as the user, so role alone cannot tell them
+#: from a human turn.
+_AGENT_AUTHORED_OPENERS = (
+    "work on ticket",
+    "you are `",
+    "you are the ",
+    "you are reviewing",
+    "cold review",
+    "independent cold review",
+    "read-only",
+    "<command-message>",
+    "<command-name>",
+    "<skill-format>",
+    "base directory for this skill:",
+)
+
+#: A dispatch brief states the lifecycle phase it is dispatching and why; a human never does.
+_DISPATCH_FIELDS = ("current phase:", "reason:")
+
+_ROLE_HEADER_RE = re.compile(r'^\{"role":\s*"\w+"\}\s*')
+
+
+def looks_like_agent_authored_turn(line: str) -> bool:
+    """True when a USER-role turn was written by the harness, not by a person.
+
+    The compliance accountant treats a user turn as ground truth that the agent was
+    corrected. Headless dispatch briefs, sub-agent briefs and skill-load turns all
+    arrive on that same channel, and they quote rule prose ("do not", "never", "stop")
+    at length — so they match every correction cue while correcting nobody.
+    """
+    if _USER_TURN_HINT not in line or not _USER_TURN_RE.search(line):
+        return False
+    body = _ROLE_HEADER_RE.sub("", line.strip()).lstrip()
+    lowered = body.lower()
+    if len(body) > _MAX_CORRECTION_CHARS:
+        return True
+    if lowered.startswith(_AGENT_AUTHORED_OPENERS):
+        return True
+    return all(field in lowered for field in _DISPATCH_FIELDS)
+
+
 def looks_like_user_ask(line: str) -> bool:
     """True when *line* reads like a raw USER directive/request t3 could automate.
 
@@ -358,6 +404,7 @@ __all__ = [
     "TRANSCRIPT_SIGNALS",
     "decode_transcript_line",
     "high_signal_lines",
+    "looks_like_agent_authored_turn",
     "looks_like_learning",
     "looks_like_user_ask",
     "looks_like_user_correction",

@@ -260,8 +260,9 @@ def write_clusters(
     the tally is computed but nothing is written.
     """
     from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters  # noqa: PLC0415 — import cycle
+    from teatree.loops.dream.compliance_attribution import rule_memory_slugs  # noqa: PLC0415 — import cycle
 
-    clusters = reclassify_recurring_memory_clusters(clusters)
+    clusters = reclassify_recurring_memory_clusters(clusters, rule_slugs=rule_memory_slugs(extract))
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     snippet_weights = {str(snippet.path): snippet.weight for snippet in extract.snippets}
     written = 0
