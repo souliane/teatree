@@ -285,6 +285,52 @@ class TestMaintenanceChains(django.test.TestCase):
             == 1
         )
 
+    def test_seeds_the_self_improve_chain(self) -> None:
+        # The third reactive slot: drain-queue and slack-answer already ran as worker
+        # chains, so only self-improve still forced a session to register a `/loop`.
+        timer_reconciler.ensure_maintenance_chains()
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_self_improve.module_path).count() == 1
+
+        timer_reconciler.ensure_maintenance_chains()
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_self_improve.module_path).count() == 1
+
+    def test_run_self_improve_reschedules_itself(self) -> None:
+        result = timer_reconciler.run_self_improve.func()
+        assert "deduped" not in result
+        pending = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.run_self_improve.module_path, status=TaskResultStatus.READY
+        )
+        assert pending.count() == 1
+
+    def test_run_self_improve_self_dedups(self) -> None:
+        timer_reconciler.run_self_improve.using(run_after=timezone.now()).enqueue()
+        result = timer_reconciler.run_self_improve.func()
+        assert result == {"deduped": 1}
+
+    def test_run_self_improve_releases_its_lease(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        timer_reconciler.run_self_improve.func()
+
+        assert LoopLease.objects.acquire(timer_reconciler.SELF_IMPROVE_LEASE, owner="owner-session")
+
+    def test_run_self_improve_skips_when_lease_held(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        LoopLease.objects.acquire(timer_reconciler.SELF_IMPROVE_LEASE, owner="owner-session")
+
+        assert timer_reconciler.run_self_improve.func() == {"skipped_lease_held": 1}
+
+    def test_run_self_improve_survives_a_body_fault(self) -> None:
+        # Successor-first: a raising body must never orphan the chain.
+        with mock.patch.object(timer_reconciler, "_run_self_improve_cycle_under_lease", side_effect=RuntimeError("x")):
+            assert timer_reconciler.run_self_improve.func() == {"error": 1}
+
+        pending = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.run_self_improve.module_path, status=TaskResultStatus.READY
+        )
+        assert pending.count() == 1
+
     def test_drain_chain_reschedules_itself(self) -> None:
         result = timer_reconciler.drain_chain.func()
         assert "deduped" not in result

@@ -67,6 +67,7 @@ from hooks.scripts.completion_claim_gate import handle_completion_claim_gate
 from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
 from hooks.scripts.coverage_gate import coverage_finding_for_command as _coverage_finding_for_command
 from hooks.scripts.coverage_gate import is_merge_class_command as _is_merge_class_command
+from hooks.scripts.cron_loop_shell_gate import handle_block_cron_loop_shell
 from hooks.scripts.cron_tracking import (
     cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
 )
@@ -122,9 +123,9 @@ from hooks.scripts.handlers.classifier_denial import (
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
+from hooks.scripts.loop_prompt_registration import handle_enforce_loop_on_prompt
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
 from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
-from hooks.scripts.loop_registrations import emit_loop_registrations, emit_standing_directives_once
 from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
 from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
@@ -779,43 +780,6 @@ def _claim_loop_ownership(session_id: str) -> None:
             box[0] = registry
             return
         box[0] = _tick_owner_record(session_id, "")
-
-
-def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, the loop OWNER registers the reactive infra ``/loop``s.
-
-    PR-28 retired the per-enabled-DB-loop ``CronCreate`` mirror (the worker owns that
-    cadence now), so this emits ONLY the three reactive infra ``/loop <duration>``
-    slots (Slack-answer, self-improve, drain-queue) via the bare sibling
-    :mod:`loop_registrations`. Fail-open: no reactive slot resolvable emits nothing.
-    Emit-once per session, keyed on the ``loop-pending`` marker (also the
-    ``_skill_loading_exempt`` bootstrap signal), so a repeated prompt does not re-nag.
-
-    It ALSO delivers the standing directives (#4166) — same sibling, emitted
-    BEFORE the owner election because the INJECTED shape reaches every engaged
-    session; the sibling gates the self-waking shape itself, per slot.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    emit_standing_directives_once(session_id, sys.stdout)
-    if not _loop_auto_load_active(session_id):
-        return
-    _claim_loop_ownership(session_id)
-    # STICKY ELECTION (#2650): only the OWNER registers. A session that did NOT
-    # win/hold the tick-owner record (a DIFFERENT live session owns it) registers
-    # NOTHING and writes no pending marker — the loser backs off automatically.
-    # ``_session_owns_loop`` reads what ``_claim_loop_ownership`` just decided under the
-    # flock (file owner + the #1604 ``_pid_is_foreign`` DB cross-check).
-    if not _session_owns_loop(session_id):
-        return
-    _ensure_state_dir()
-    _cleanup_stale_pending(session_id)
-    pending = _state_file(session_id, "loop-pending")
-    if pending.is_file():  # reactive registrations already emitted this session — do not re-nag
-        return
-    if emit_loop_registrations(sys.stdout):
-        pending.write_text("1", encoding="utf-8")
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
@@ -5266,6 +5230,7 @@ _HANDLERS: dict[str, list] = {
         handle_allow_classifier_relax_settings_write,
         handle_block_edit_before_planned,
         handle_block_config_overwrite,
+        handle_block_cron_loop_shell,
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
         handle_block_second_branch,

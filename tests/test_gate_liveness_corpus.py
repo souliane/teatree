@@ -289,6 +289,22 @@ def _config_overwrite_cfg(ctx: GateContext) -> Path:
     return cfg
 
 
+def _cron_loop_shell_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "CronCreate",
+        "tool_input": {"cron": "*/12 * * * *", "prompt": "Run `t3 loops tick --loop dispatch` in Bash"},
+    }
+
+
+def _cron_loop_shell_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "CronCreate",
+        "tool_input": {"cron": "*/12 * * * *", "prompt": "/followup"},
+    }
+
+
 def _block_config_overwrite_deny(ctx: GateContext) -> dict:
     cfg = _config_overwrite_cfg(ctx)
     return {
@@ -1066,6 +1082,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Write",
         deny_input=_block_config_overwrite_deny,
         allow_input=_block_config_overwrite_allow,
+    ),
+    GateRow(
+        gate_id="block-cron-loop-shell",
+        handler=router.handle_block_cron_loop_shell,
+        event="PreToolUse",
+        matched="CronCreate",
+        deny_input=_cron_loop_shell_deny,
+        allow_input=_cron_loop_shell_allow,
     ),
     GateRow(
         gate_id="protect-default-branch",
