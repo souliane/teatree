@@ -454,6 +454,43 @@ class RunComplianceEscalationTestCase(TestCase):
 class BuildComplianceSnapshotTestCase(TestCase):
     """The detect→snapshot helper counts observed instructions across the corpus."""
 
+    def test_observed_count_excludes_non_rule_memories(self) -> None:
+        # The denominator is the instruction surface actually exercised. Counting a
+        # per-ticket state log as an instruction inflated it toward a flattering rate.
+        log = (
+            "---\nname: ticket-9001-notes\nmetadata:\n  type: project\n---\n"
+            "The sweep is still waiting on the fold approval.\n"
+        )
+        rule_only = build_compliance_snapshot(_extract(_memory_snippet("feedback_x.md", _MEMORY_BODY)))
+        with_log = build_compliance_snapshot(
+            _extract(
+                _memory_snippet("feedback_x.md", _MEMORY_BODY),
+                _memory_snippet("ticket-9001-notes.md", log),
+            )
+        )
+        assert with_log.instructions_observed == rule_only.instructions_observed
+
+    def test_a_dispatch_brief_never_mints_a_recurrence(self) -> None:
+        # The exact shape that minted this ticket's own gap: a headless brief quoting
+        # rule prose, scored against a memory that states no rule.
+        log = (
+            "---\nname: ticket-9001-fold-into-9002-pending-approval\nmetadata:\n  type: project\n---\n"
+            "The sweep proposes folding ticket 9001 into 9002; approval is pending. "
+            "Do not re-propose it. Re-check the worktree and the branch review state.\n"
+        )
+        brief = (
+            '{"role": "user"} Work on ticket 9001. Issue: <issue-url> Current phase: coding '
+            "Reason: the fold approval is pending; do not re-propose it, and never "
+            "force-push the worktree branch under review.\n"
+        )
+        result = build_compliance_snapshot(
+            _extract(
+                _memory_snippet("ticket-9001-fold-into-9002-pending-approval.md", log),
+                _transcript_snippet("session-a.jsonl", brief),
+            )
+        )
+        assert not [f for f in result.findings if f.is_recurrence]
+
     def test_observed_count_includes_memory_and_directive_rules(self) -> None:
         extract = _extract(
             _memory_snippet("feedback_askuserquestion_overuse.md", _MEMORY_BODY),
