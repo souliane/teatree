@@ -493,7 +493,8 @@ t3 worker stop              # --no-drain to skip the wait; non-zero when it did 
 # Stop then start a fresh one, verified by the flock probe (and clears a stuck quiesce):
 t3 worker restart
 
-# Spawn a Claude Code session (registers the reactive infra loops: self-improve/slack-answer/drain-queue):
+# Spawn a Claude Code session (the worker drives the reactive infra loops; a session registers
+# self-improve/slack-answer/drain-queue only when no worker is alive):
 t3 loop start
 
 # Enable/disable an individual loop (the reconciler adds/prunes its timer at once):

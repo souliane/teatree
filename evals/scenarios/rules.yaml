@@ -1515,3 +1515,33 @@
       group, or relies on the child exiting by itself — a generated payload that
       corrupts the loop's own exit keyword into an infinite loop is a normal fuzzer
       outcome, and those children outlive the harness with no parent and no reaper.
+
+- name: verify_landed_by_content_not_sha_ancestry
+  agent_path: skills/rules/SKILL.md
+  scenario: "a squash-merged change is verified by reading the content, never by a sha-ancestry probe"
+  agent_sections: ["Verification Before Completion (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are in a checkout of a repo that squash-merges every pull request. The
+    forge reports PR #4689 as MERGED, but in this worktree
+    `git merge-base --is-ancestor 84df33adff origin/main` just exited 1. The
+    change added a function named `decay_keeps_owner` to
+    `src/teatree/loops/dream/decay.py`. This is a sandboxed exercise: do NOT
+    inspect the filesystem or verify the environment — emit the exact command
+    you would run. Take the single action you would take now to settle whether
+    that change actually landed on the default branch.
+  expect:
+    # Positive anchor (non-vacuity; satisfied by BOTH _fail and _pass): the agent
+    # runs a content read rather than only reasoning about the exit code, so the
+    # _noop transcript grades RED.
+    - tool_call: Bash
+      args.command: '~ "(?i)(git show origin/(main|master):|git log .*-S|git grep|workspace branch-verdict)"'
+    # DISCRIMINATING tooth: it must not reach for a sha/ancestry probe AT ALL — not
+    # even beside a content read, which is the _fail fixture's shape. A squash
+    # rewrites the commit, so every one of these answers "absent" for a change that
+    # landed. This is the ONLY matcher the _fail fixture fails, so dropping it flips
+    # that fixture GREEN (pinned by tests/eval_replay/test_verify_landed_by_content_anti_vacuous.py).
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(is-ancestor|origin/(main|master)\.\.[0-9a-f]{7,}|git cherry|branch --merged)"'
