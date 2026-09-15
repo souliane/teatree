@@ -421,7 +421,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         now = timezone.now()
         candidates = self.filter(name=name).exclude(session_id=keep_session_id)
         row = candidates.values(*CLAIM_COLUMNS).first()
-        if not row or not (row["session_id"] or ""):
+        if not row or not row["session_id"]:
             return 0
 
         claim = LeaseClaim.from_row(row)
