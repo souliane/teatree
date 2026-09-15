@@ -100,6 +100,7 @@ Every over-deny gate ships a never-lockout path. This is the ONE catalog of them
 | `t3 <overlay> gate skill-loading disable` | skill-loading gate (the `PreToolUse` code-work hard-block) |
 | `t3 <overlay> gate plan disable` | plan-before-code edit-block gate |
 | `t3 <overlay> gate config-overwrite disable` | read-before-overwrite config/dotfile gate |
+| `t3 <overlay> gate cron-loop-shell disable` | cron/wakeup that shells a `t3 loop` command the worker already drives |
 | `t3 <overlay> gate completion-claim disable` | completion-claim `Stop` gate |
 | `t3 <overlay> gate answer-first disable` | answer-first `Stop` gate |
 | `t3 <overlay> gate unbacked-claim disable` | evidence `Stop` gate (diagnosis / escalation citations) |

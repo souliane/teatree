@@ -125,6 +125,25 @@ def _reactive_slot_directives() -> list[str]:
         return []
 
 
+def _worker_flock_held() -> bool:
+    """Whether a running process holds the worker singleton flock, right now."""
+    from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
+
+    if not bootstrap_teatree_django():
+        return False
+    from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held  # noqa: PLC0415 — deferred: cold-hook import
+
+    return bool(flock_is_held(WORKER_SINGLETON))
+
+
+def _worker_is_alive() -> bool:
+    """Whether a worker is driving the reactive slots; fail-safe to False (emit the registrations)."""
+    try:
+        return _worker_flock_held()
+    except Exception:  # noqa: BLE001 — an unprovable probe must not silently suppress the registrations.
+        return False
+
+
 def _worker_owns_cadence() -> bool:
     """Whether ``loop_runner_enabled`` resolves ON (the worker drives the loops); fail-safe OFF."""
     try:
@@ -402,9 +421,18 @@ def emit_loop_registrations(stream: _Writable) -> bool:
 
 
 def _write_reactive_prose(directives: list[str], stream: _Writable) -> None:
+    """Either the registrations, or — while a worker drives them — the one line saying not to."""
+    if _worker_is_alive():
+        stream.write(
+            "Session setup: `t3 worker` is RUNNING and drives the reactive infra loops "
+            "(slack-answer, self-improve, drain-queue) as worker chains — register NO `/loop` and "
+            "NO cron for them. `t3 worker status` shows it.\n"
+        )
+        return
     stream.write(
-        f"Session setup: register the {len(directives)} reactive infra loops — sub-minute cadence, so use "
-        f"the `/loop <duration>` form (NOT a cron). Run each slash command in this session:\n"
+        f"Session setup: no worker is running, so this session drives the {len(directives)} reactive infra loops — "
+        f"sub-minute cadence, so use the `/loop <duration>` form (NOT a cron). Check `t3 worker status` first; "
+        f"if it reports RUNNING, register nothing. Otherwise run each slash command in this session:\n"
     )
     for directive in directives:
         stream.write(f"  - {directive}\n")
