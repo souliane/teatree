@@ -76,6 +76,12 @@ HEADLESS_LEASE_SECONDS = 300
 #: SAME slot the ``loop_slack_answer`` mgmt command / interactive ``/loop`` slot
 #: acquires, so the headless worker can never double-post against an owner session.
 SLACK_ANSWER_LEASE = "loop-slack-answer"
+#: The machine-wide lease the self-improve cycle runs under — the SAME slot the
+#: ``loop_self_improve`` mgmt command / interactive ``/loop`` slot acquires, so the
+#: worker chain and an owner session can never run two cycles at once.
+SELF_IMPROVE_LEASE = "loop-self-improve"
+#: The only tier with detectors wired; the mgmt command refuses the rest.
+SELF_IMPROVE_TIER = "cheap"
 
 
 def ensure_loop_timers() -> dict[str, int]:
@@ -440,6 +446,54 @@ def run_slack_answer() -> dict[str, int]:
         return {"error": 1}
 
 
+def _run_self_improve_cycle_under_lease() -> dict[str, int]:
+    """Run one cheap-tier self-improve cycle under the shared ``loop-self-improve`` lease.
+
+    Mirrors :func:`_run_slack_answer_cycle_under_lease`: a held lease means an owner
+    session (or another worker) is already running the cycle, so this returns
+    ``{"skipped_lease_held": 1}`` rather than starting a second one.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: task-body import
+    from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415 — deferred: task-body import
+
+    owner = f"worker-{os.getpid()}"
+    if not LoopLease.objects.acquire(SELF_IMPROVE_LEASE, owner=owner):
+        return {"skipped_lease_held": 1}
+    try:
+        result = run_tier(SELF_IMPROVE_TIER, auto_fix_callable=self_improve_rerender)
+    finally:
+        LoopLease.objects.release(SELF_IMPROVE_LEASE, owner=owner)
+    if result.skipped:
+        return {"skipped_budget": 1}
+    return {"reports": len(result.reports), "actions": len(result.actions)}
+
+
+@task(queue_name=LOOPS_QUEUE)
+def run_self_improve() -> dict[str, int]:
+    """Re-schedule at its cadence, THEN run one cheap-tier self-improve cycle headless.
+
+    The third reactive slot to move onto the worker. Slack-answer and drain-queue
+    already ran as worker chains, so self-improve was the only one a session still had
+    to register a ``/loop`` for — which is why the session-setup prose kept asking for
+    all three and recurrently produced hand-run loop crons (#2663). Successor-FIRST and
+    self-deduping, so a body fault never orphans the chain.
+    """
+    from teatree.loop.loop_cadences import self_improve_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
+
+    if _pending_for_path(run_self_improve.module_path):
+        return {"deduped": 1}
+
+    run_self_improve.using(
+        run_after=timezone.now() + dt.timedelta(seconds=self_improve_cadence_seconds()),
+    ).enqueue()
+    try:
+        return _run_self_improve_cycle_under_lease()
+    except Exception:
+        logger.exception("run_self_improve body failed; successor already queued, the chain survives")
+        return {"error": 1}
+
+
 @task(queue_name=LOOPS_QUEUE)
 def wake_slack_answer() -> dict[str, int]:
     """Run ONE Slack-answer cycle immediately, triggered by an inbound Slack event.
@@ -474,10 +528,13 @@ def wake_slack_answer() -> dict[str, int]:
 def ensure_maintenance_chains() -> None:
     """Seed every maintenance chain if absent.
 
-    Reconcile, prune, expire, drain, slack-answer, off-live-tick drive, usage-window
-    recovery, preset transitions, and statusline refresh.
+    Reconcile, prune, expire, drain, slack-answer, self-improve, off-live-tick drive,
+    usage-window recovery, preset transitions, and statusline refresh.
     """
-    from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
+    from teatree.loop.loop_cadences import (  # noqa: PLC0415 — deferred: tick-time import
+        self_improve_cadence_seconds,
+        slack_answer_cadence_seconds,
+    )
     from teatree.loops.off_live_tick_driver import ensure_off_live_tick_driver_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.statusline_refresh import ensure_statusline_refresh_chain  # noqa: PLC0415 — cycle-safe
@@ -501,6 +558,10 @@ def ensure_maintenance_chains() -> None:
     # session's ``/loop`` slot before. Lease-guarded against the owner session.
     if not _pending_for_path(run_slack_answer.module_path):
         run_slack_answer.using(run_after=now + dt.timedelta(seconds=slack_answer_cadence_seconds())).enqueue()
+    # The self-improve cycle, armed headless for the same reason: it was the last
+    # reactive slot still depending on a live session to register its ``/loop``.
+    if not _pending_for_path(run_self_improve.module_path):
+        run_self_improve.using(run_after=now + dt.timedelta(seconds=self_improve_cadence_seconds())).enqueue()
     # The off-live-tick driver. Without it directive_loop / dream / outer_loop have NO
     # driver at all: the live fan-out excludes them, the reconciler above builds them no
     # chain, and the cron their docstrings promised was never installed anywhere.

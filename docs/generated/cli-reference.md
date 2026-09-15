@@ -7170,6 +7170,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
 │                    (self-rescue).                                            │
+│ cron-loop-shell    Cron-shells-a-t3-loop gate (the worker owns loop cadence) │
+│                    kill-switch (self-rescue).                                │
 │ completion-claim   Completion-claim gate (on-target evidence before done)    │
 │                    kill-switch (self-rescue).                                │
 │ answer-first       Answer-first gate (answer the user's question, do not     │
@@ -7390,6 +7392,60 @@ Usage: t3 teatree gate config-overwrite disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate config-overwrite enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate cron-loop-shell`
+
+```
+Usage: t3 teatree gate cron-loop-shell [OPTIONS] COMMAND [ARGS]...
+
+ Cron-shells-a-t3-loop gate (the worker owns loop cadence) kill-switch
+ (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell status`
+
+```
+Usage: t3 teatree gate cron-loop-shell status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell disable`
+
+```
+Usage: t3 teatree gate cron-loop-shell disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell enable`
+
+```
+Usage: t3 teatree gate cron-loop-shell enable [OPTIONS]
 
  Re-enable the gate.
 

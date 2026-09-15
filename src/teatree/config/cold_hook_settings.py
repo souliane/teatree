@@ -55,6 +55,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "general_purpose_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "merged_detection_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "config_overwrite_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "cron_loop_shell_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "main_clone_guard_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),

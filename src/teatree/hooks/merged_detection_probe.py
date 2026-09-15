@@ -16,6 +16,19 @@ sha with the very same ``merge-base --is-ancestor``, and a coder rebasing runs
 ``git cherry`` against their own upstream — neither names a default branch, so
 neither is recognised here.
 
+For ``merge-base --is-ancestor`` the target alone is not enough, because the
+default branch appears on both sides of a legitimate split: ``is-ancestor <x>
+<default>`` asks "is my work on main?" (landed-ness), while ``is-ancestor
+<default> <x>`` asks the reverse, "has main reached my branch?" — the
+branch-currency check ``skills/review/SKILL.md`` prescribes before reading a
+diff, which a squash-merge does not defeat. So the DIRECTION decides: only the
+default branch in the LAST operand is the landed-ness question.
+
+``git log <default>..<sha>`` is the same question spelled as a range, and is
+recognised only with a pinned sha on the right: ``origin/main..HEAD`` and
+``origin/main..<branch>`` are the routine reads ``skills/debug`` and
+``skills/workspace`` prescribe, so they stay silent.
+
 The bare ``git branch --merged`` (no operand) IS recognised: with no commit
 argument git answers against HEAD, which in a sweep across worktrees is the same
 landed-ness question by another spelling.
@@ -32,6 +45,9 @@ from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
 #: The shapes a default-branch target may be written as. Comparing against one of
 #: these is what makes a probe a landed-ness question.
 _DEFAULT_BRANCH_RE: Final[re.Pattern[str]] = re.compile(r"^(?:origin/)?(?:main|master)$")
+
+#: ``<default>..<sha>`` — a pinned sha on the right, so a branch or ``HEAD`` range is not one.
+_DEFAULT_RANGE_TO_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^(?:origin/)?(?:main|master)\.\.[0-9a-f]{7,40}$")
 
 _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 #: Leaders that run the NEXT word rather than being the command themselves.
@@ -89,10 +105,23 @@ def _probe_shape(args: list[str]) -> str | None:
         return "git cherry against the default branch"
     if subcommand == "branch" and _merged_flag_targets_default(rest):
         return "git branch --merged"
-    if subcommand == "merge-base" and "--is-ancestor" in rest and any(map(_is_default_target, _operands(rest))):
+    if subcommand == "merge-base" and "--is-ancestor" in rest and _is_default_target(_last_operand(rest)):
         return "git merge-base --is-ancestor against the default branch"
-    if subcommand == "log" and _is_default_target(_value_after(rest, "--not")):
+    if subcommand == "log":
+        return _log_probe_shape(rest)
+    return None
+
+
+def _log_probe_shape(args: list[str]) -> str | None:
+    """The landed-ness question a ``git log`` invocation asks, or ``None``.
+
+    Two spellings of one question: EXCLUDING the default branch, and RANGING from it
+    to a pinned sha.
+    """
+    if _is_default_target(_value_after(args, "--not")):
         return "git log --not <default branch>"
+    if any(_DEFAULT_RANGE_TO_SHA_RE.match(operand) for operand in _operands(args)):
+        return "git log <default branch>..<sha>"
     return None
 
 
@@ -130,6 +159,11 @@ def _value_after(args: list[str], flag: str) -> str | None:
 
 def _first_operand(args: list[str]) -> str | None:
     return next(iter(_operands(args)), None)
+
+
+def _last_operand(args: list[str]) -> str | None:
+    operands = _operands(args)
+    return operands[-1] if operands else None
 
 
 def _operands(args: list[str]) -> list[str]:

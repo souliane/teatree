@@ -53,7 +53,9 @@ _ADVISORY: Final[str] = (
     "That misread escalated three already-merged branches to the owner as false completions. "
     "The canonical answer is the three-layer content classifier (cherry-zero / synthetic-squash "
     "/ branch-merged): run `t3 <overlay> workspace branch-verdict <branch>` for one branch's "
-    "verdict, or `t3 <overlay> workspace emit` for the sweep. If this probe is asking something "
+    "verdict, or `t3 <overlay> workspace emit` for the sweep. To verify ONE change landed, read "
+    "the content rather than the sha: `git show origin/main:<path> | grep -n '<symbol>'` or "
+    "`git log -1 -S'<symbol>' -- <path>`. If this probe is asking something "
     "else, add `[merge-detect-ok: <reason>]` to the command; to silence the nudge entirely run "
     "`t3 <overlay> gate merged-detect disable`.\n"
 )

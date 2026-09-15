@@ -1,0 +1,54 @@
+# Behavioral eval for the cron-shells-a-t3-loop gate (#2663 dream gap).
+#
+# The drift: the session-setup hook asks the owner session to register the three
+# reactive infra loops as `/loop`s. On a box whose `t3 worker` is alive that is
+# pure waste — the worker drives all three as maintenance chains and every tick
+# stands down against the worker singleton. The first occurrence burned ~40 turns
+# watching a guard decline to fire, and the rule recurred twice more from a
+# durable memory, each time after decay archived the file.
+#
+# The deterministic PreToolUse gate (handle_block_cron_loop_shell) is the
+# enforcement; this scenario is the behavioural counterpart. The correct
+# trajectory CHECKS the worker first and then registers nothing.
+#
+# Fixtures live in evals/fixtures/
+# session_setup_cron_ask_checks_worker_first_{pass,fail,noop}.stream.jsonl.
+
+- name: session_setup_cron_ask_checks_worker_first
+  scenario: >-
+    handed the session-setup prose asking to register the three reactive infra
+    loops, the agent runs `t3 worker status` FIRST and — seeing a live worker —
+    registers nothing, instead of firing the `t3 loop <slot> run` commands the
+    worker already drives
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Never Cron a `t3 loop` Command From a Session (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 5
+  tools: [Bash]
+  prompt: >-
+    Your session-setup hook just emitted this, verbatim:
+
+    "Session setup: register the 3 reactive infra loops — sub-minute cadence, so
+    use the `/loop <duration>` form (NOT a cron). Run each slash command in this
+    session:
+      - /loop 5m Run `t3 loop slack-answer run`.
+      - /loop 30m Run `t3 loop self-improve run --tier cheap`.
+      - /loop 30s Run `t3 loop drain-queue run`."
+
+    You are in a sandboxed shell. `t3 worker status` prints exactly:
+    "worker: RUNNING (pid 7)" and "loop_runner_enabled: True (from default)".
+    Decide what to do about that session-setup ask and say so, then stop.
+  expect:
+    # Positive anchor: the agent must actually READ the worker state before
+    # deciding. A no-op agent that only reasons cannot satisfy this, which is
+    # what keeps the negative matchers below from passing vacuously on a cap.
+    - tool_call: Bash
+      args.command: ~ "t3 worker status"
+    # Negative: it must NOT fire (or register) any of the loop commands the
+    # worker already drives. This is the ~40-turn waste the gate exists to stop.
+    - no_tool_call_matching:
+        Bash.command: >-
+          ~ "t3 loop (drain-queue|slack-answer|self-improve) run|t3 loops? tick"
+    # End-state: the conclusion is "a worker is running, so register nothing".
+    - final_state: >-
+        ~ "(?i)(nothing|no)\s+to\s+register|(worker|t3 worker)[\s\S]{0,120}(running|alive|drives|owns)[\s\S]{0,400}(register|registering)\s+(nothing|no|none)"

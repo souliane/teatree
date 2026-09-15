@@ -37,6 +37,7 @@ GATE_KEY = "orchestrator_bash_gate_enabled"
 SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
+CRON_LOOP_SHELL_GATE_KEY = "cron_loop_shell_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
 ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
@@ -245,6 +246,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="config-overwrite",
         key=CONFIG_OVERWRITE_GATE_KEY,
         label="Read-before-overwrite config/dotfile gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="cron-loop-shell",
+        key=CRON_LOOP_SHELL_GATE_KEY,
+        label="Cron-shells-a-t3-loop gate (the worker owns loop cadence)",
     )
 
     _register_keyed_gate(

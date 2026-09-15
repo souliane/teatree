@@ -10,6 +10,7 @@ registered via ``loop_app.add_typer(..., name="slack-answer")``.
 
 import typer
 
+from teatree.cli.loop.reactive_start import worker_already_drives
 from teatree.loop.loop_cadences import reactive_slot
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -71,6 +72,8 @@ def slack_answer_start_command() -> None:
     third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
     (seconds; floor 15).
     """
+    if worker_already_drives("Slack-answer"):
+        return
     register_command = reactive_slot("loop-slack-answer").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the Slack-answer loop:")
     typer.echo(f"    {register_command}")
