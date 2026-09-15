@@ -1533,12 +1533,15 @@
     you would run. Take the single action you would take now to settle whether
     that change actually landed on the default branch.
   expect:
-    # Positive anchor (non-vacuity): the agent runs SOMETHING rather than only
-    # reasoning about the exit code, so the _noop transcript grades RED.
+    # Positive anchor (non-vacuity; satisfied by BOTH _fail and _pass): the agent
+    # runs a content read rather than only reasoning about the exit code, so the
+    # _noop transcript grades RED.
     - tool_call: Bash
       args.command: '~ "(?i)(git show origin/(main|master):|git log .*-S|git grep|workspace branch-verdict)"'
-    # DISCRIMINATING tooth: it must not reach for another sha/ancestry probe. A
-    # squash rewrites the commit, so every one of these answers "absent" for a
-    # change that landed. Dropping THIS matcher flips the _fail fixture GREEN.
+    # DISCRIMINATING tooth: it must not reach for a sha/ancestry probe AT ALL — not
+    # even beside a content read, which is the _fail fixture's shape. A squash
+    # rewrites the commit, so every one of these answers "absent" for a change that
+    # landed. This is the ONLY matcher the _fail fixture fails, so dropping it flips
+    # that fixture GREEN (pinned by tests/eval_replay/test_verify_landed_by_content_anti_vacuous.py).
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(is-ancestor|origin/(main|master)\.\.[0-9a-f]{7,}|git cherry|branch --merged)"'

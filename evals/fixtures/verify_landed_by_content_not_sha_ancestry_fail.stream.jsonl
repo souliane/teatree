@@ -1,5 +1,6 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-verify_landed_by_content_not_sha_ancestry-fail", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me double-check the ancestry the other way round."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me check the ancestry the other way round, then read the file too."}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git log origin/main..84df33adff --oneline", "description": "check the range"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "git show origin/main:src/teatree/loops/dream/decay.py | grep -n 'decay_keeps_owner'", "description": "read the content on main"}}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The range is non-empty and the ancestry probe exited 1, so the change did not land."}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}
