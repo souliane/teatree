@@ -136,8 +136,12 @@ class MergeConflict:
     conflicting_paths: tuple[str, ...]
 
 
-def _merge_tree_conflicts(repo: str, reviewed_sha: str, target: str) -> tuple[str, ...] | None:
+def predict_merge_conflicts(repo: str, reviewed_sha: str, target: str = "origin/main") -> tuple[str, ...] | None:
     """Predict conflicts of merging ``target`` into ``reviewed_sha``, no mutation.
+
+    Public because a caller that has ALREADY fetched (the testing-phase brief,
+    which fetches once through :func:`fetch_target_head`) must be able to predict
+    without paying a second fetch, which :func:`sha_conflicts_with_target` would.
 
     Uses ``git merge-tree --write-tree`` (git ≥ 2.38): a pure object-DB
     merge that never touches the index or worktree, so it is safe to run
@@ -175,7 +179,7 @@ def sha_conflicts_with_target(repo: str, reviewed_sha: str, target: str = "origi
     behind = _rev_count(repo, f"{reviewed_sha}..{target}")
     if behind <= 0:
         return None
-    conflicts = _merge_tree_conflicts(repo, reviewed_sha, target)
+    conflicts = predict_merge_conflicts(repo, reviewed_sha, target)
     if not conflicts:
         return None
     return MergeConflict(
@@ -211,7 +215,7 @@ def commits_between_touching_paths(
     ``()`` ⇒ the base is current OR no intervening commit touched a declared seam;
     a non-empty tuple ⇒ the plan's base moved and the move touched a seam (the plan
     is stale). ``None`` ⇒ inconclusive (unresolvable ``base_sha``/range, old git)
-    so the caller fails OPEN — same posture as :func:`_merge_tree_conflicts`. An
+    so the caller fails OPEN — same posture as :func:`predict_merge_conflicts`. An
     empty ``paths`` short-circuits to ``()`` (a ``no_seams`` plan has nothing to
     guard). The caller is expected to have fetched already.
     """

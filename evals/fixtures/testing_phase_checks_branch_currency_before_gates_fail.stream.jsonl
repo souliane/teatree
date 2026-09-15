@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-testing_phase_checks_branch_currency_before_gates-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "tree is clean and the log shows only my commit, so I can gate straight away."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 tool verify-gates", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
