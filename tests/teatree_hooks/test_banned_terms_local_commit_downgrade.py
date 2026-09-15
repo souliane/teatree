@@ -38,6 +38,9 @@ from teatree.hooks import _repo_visibility, banned_terms_scanner
 
 _PUBLIC_SLUG = "souliane/teatree"
 
+# See the fixture's docstring for why the shell hook is not exec'd per scan here.
+pytestmark = pytest.mark.usefixtures("in_process_banned_terms_scanner")
+
 
 def _seed_config_db(db_path: Path, rows: dict[str, object]) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
