@@ -79,6 +79,22 @@ class TestReviewCheckoutSucceeds:
         assert head_sha(payload["worktree"]) == pushed_head
         assert (Path(payload["worktree"]) / "README.md").read_text() == "reviewed head\n"
 
+    def test_names_the_sanctioned_runner_for_the_fresh_checkout(
+        self, clone_with_pushed_head: tuple[Path, str], tmp_path: Path
+    ) -> None:
+        """A reviewer left to improvise a runner reaches for one nobody can reconstruct (#4746)."""
+        clone, pushed_head = clone_with_pushed_head
+        review_root = tmp_path / "review-roots"
+        review_root.mkdir()
+
+        result = CliRunner().invoke(
+            review_app,
+            ["checkout", PR_URL, "--sha", pushed_head, "--repo", str(clone), "--base-dir", str(review_root)],
+        )
+
+        payload = json.loads(result.output.strip())
+        assert payload["run_tests"] == f"cd {payload['worktree']} && t3 <overlay> run tests -- <paths>"
+
 
 class TestReviewCheckoutRefusesDivergence:
     def test_wrong_sha_exits_one_with_stale_checkout_and_no_worktree_path(

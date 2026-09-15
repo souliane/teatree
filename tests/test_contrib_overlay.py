@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import subprocess
+import tempfile
 from collections.abc import Callable
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -475,6 +476,64 @@ class TestGetTestCommand(TestCase):
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         assert overlay.runtime.test_command(worktree) == ["uv", "run", "pytest"]
+
+
+class TestTestsPreRunSteps(TestCase):
+    """A checkout with no environment is synced by a NAMED step before pytest is spawned (#4746).
+
+    ``t3 review checkout`` materialises a bare worktree — no ``uv sync``, no
+    ``.venv`` — so the test runner's only environment was whatever the spawn
+    implicitly built, and a checkout where that could not happen reported uv's
+    bare ``Failed to spawn: pytest``.
+    """
+
+    def _worktree(self, path: Path | str) -> Worktree:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch="main",
+            extra={"worktree_path": str(path)},
+        )
+
+    def test_syncs_dependencies_when_the_checkout_has_no_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = self._worktree(tmp)
+            steps = TeatreeOverlay().runtime.pre_run_steps(worktree, "tests")
+
+            assert [step.name for step in steps] == ["sync-dependencies"]
+            assert all(step.subprocess_only for step in steps)
+
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as mock_run:
+                steps[0].callable()
+
+            assert mock_run.call_args.args[0] == ["uv", "sync"]
+            assert mock_run.call_args.kwargs["cwd"] == str(Path(tmp))
+
+    def test_no_step_when_the_checkout_already_has_a_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".venv").mkdir()
+            worktree = self._worktree(tmp)
+
+            assert TeatreeOverlay().runtime.pre_run_steps(worktree, "tests") == []
+
+    def test_no_step_for_a_service_that_is_not_the_test_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = self._worktree(tmp)
+
+            assert TeatreeOverlay().runtime.pre_run_steps(worktree, "backend") == []
+
+    def test_no_step_when_the_worktree_is_not_materialised(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        bare = Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch="main",
+        )
+
+        assert TeatreeOverlay().runtime.pre_run_steps(bare, "tests") == []
 
 
 class TestGetLintCommand(TestCase):
