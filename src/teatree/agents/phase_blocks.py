@@ -24,6 +24,7 @@ from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
+from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -37,33 +38,52 @@ _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
     "   correctness | robustness (failure modes) | maintainability | coherence | reliability | proactivity.",
 )
 
+#: Appended when the dispatch named the identity: what the agent must do with it, and the one
+#: spelling the orchestrator will still refuse rather than replace.
+_ASSIGNED_IDENTITY_LINES: tuple[str, ...] = (
+    "`reviewer_identity` is ASSIGNED above — return it verbatim. You do not choose it: the",
+    "orchestrator records the verdict under it, so an omitted or respelt value is replaced by it",
+    "rather than refused. An identity naming a maker/coding/loop role is the one exception — that",
+    "is you declaring yourself the author, and it still records nothing.",
+)
+
+
 # The reviewer returns its verdict in the result envelope rather than writing the
 # row itself: maker≠checker requires a different actor, so the orchestrator records
 # it server-side. The phase carries the shell (``phase_tools.VERDICT_REVIEW_PHASES``).
-_REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
-    "",
-    "RECORD YOUR VERDICT BY RETURNING IT (do NOT try `t3 <overlay> review record` — maker≠checker",
-    "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
-    "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
-    '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
-    f'                     "reviewer_identity": "{REVIEWER_IDENTITY_INSTRUCTION}",',
-    '                     "gh_verify_result": "green"|"pending"|"failed",',
-    '                     "blast_class": "substrate"|"logic"|"docs",',
-    '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
-    ENVELOPE_FINDINGS_RULE,
-    "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
-    "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for (`git rev-parse HEAD`):",
-    "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
-    "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
-    "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
-    "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
-    "dispatched one, so a verdict that names no head records nothing at all.",
-    "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
-    "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
-    "was cut, not what this PR did. Re-measure it on the MERGE RESULT — `t3 review merge-tree` extracts one",
-    'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
-    "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
-)
+def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
+    """The verdict-return directive; *identity* is the assigned one, ``""`` to self-name.
+
+    An ASSIGNED identity is a literal to copy, so the agent chooses nothing and the value
+    the verdict lands under is the dispatch's (#2663); without one — a review answerable for
+    no pull request — the agent must satisfy the gate's vocabulary itself.
+    """
+    return (
+        "",
+        "RECORD YOUR VERDICT BY RETURNING IT (do NOT try `t3 <overlay> review record` — maker≠checker",
+        "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
+        "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
+        '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
+        f'                     "reviewer_identity": "{identity or REVIEWER_IDENTITY_INSTRUCTION}",',
+        '                     "gh_verify_result": "green"|"pending"|"failed",',
+        '                     "blast_class": "substrate"|"logic"|"docs",',
+        '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
+        ENVELOPE_FINDINGS_RULE,
+        "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
+        "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for (`git rev-parse HEAD`):",
+        "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
+        "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
+        "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
+        "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
+        "dispatched one, so a verdict that names no head records nothing at all.",
+        "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
+        "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
+        "was cut, not what this PR did. Re-measure it on the MERGE RESULT — `t3 review merge-tree` extracts one",
+        'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
+        "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
+        *(_ASSIGNED_IDENTITY_LINES if identity else ()),
+    )
+
 
 # Injected into an answering brief: the answering phase is denied the
 # shell (agents/answerer.md tools = Read/Grep/Glob only), so it CANNOT post the
@@ -73,7 +93,7 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
 # in-thread — answering the owner is not a post on the owner's behalf, so it
 # is never approval-gated or deferred (an on-behalf reply to a third party
 # still routes through the DeferredQuestion approval path).
-# Symmetric to ``_REVIEW_VERDICT_RETURN_LINES`` — without this directive the
+# Symmetric to ``_review_verdict_return_lines`` — without this directive the
 # shell-denied answerer returns a prose summary with no ``answer`` field and the
 # phase evidence gate refuses ("missing required evidence for phase 'answering'").
 _ANSWER_RETURN_LINES: tuple[str, ...] = (
@@ -112,7 +132,7 @@ _WORK_ITEM_RETURN_LINES: tuple[str, ...] = (
 # not only as prose or a PlanArtifact. Without this reinforcing directive the
 # planner produced a plan but returned a summary-only envelope, and the attempt
 # was refused for "missing required evidence for phase 'planning'" then re-run.
-# Symmetric to ``_REVIEW_VERDICT_RETURN_LINES`` / ``_ANSWER_RETURN_LINES``.
+# Symmetric to ``_review_verdict_return_lines`` / ``_ANSWER_RETURN_LINES``.
 _PLAN_RETURN_LINES: tuple[str, ...] = (
     "",
     "RETURN YOUR PLAN IN THE ENVELOPE (the phase evidence gate refuses a run with no `plan_text`):",
@@ -152,7 +172,7 @@ _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
 # the DoD gate refuses DELIVERED without a recorded FixRecord, and the envelope is the
 # only thing that writes one. Kind-conditional rather than phase-conditional, so a
 # feature-ticket brief is byte-identical to what it was. Symmetric to
-# ``_REVIEW_VERDICT_RETURN_LINES``. The fields are spelled out rather than derived from
+# ``_review_verdict_return_lines``. The fields are spelled out rather than derived from
 # ``FIX_RECORD_FIELDS`` because each carries prose no tuple can supply; drift is caught
 # mechanically instead, by the test asserting every declared field appears here.
 _FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
@@ -292,7 +312,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "1. Do a thorough code review of all changes on this ticket's branch.",
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
-        *_REVIEW_VERDICT_RETURN_LINES,
+        *_review_verdict_return_lines(assigned_reviewer_identity_for(task)),
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
     ]

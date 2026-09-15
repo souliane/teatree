@@ -74,7 +74,7 @@ from django.utils import timezone
 from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
-from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -118,11 +118,13 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
         f"affected tests in that checkout before voting merge_safe. Then RETURN your verdict in the "
         f'result envelope: `"review_verdict": '
         f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
-        f'"{REVIEWER_IDENTITY_INSTRUCTION}", '
+        f'"{assigned_reviewer_identity(pr_id)}", '
         f'"gh_verify_result": "green", "findings": [{{"severity": "low", '
         f'"summary": "<what you observed>", "file": "<path>", "line": 0}}]}}`. {ENVELOPE_FINDINGS_RULE} '
         f"If the branch has advanced since this dispatch, review the head it points at NOW and "
         f"return THAT full 40-char SHA — the recorder binds the verdict to it (souliane/teatree#4737). "
+        f"Your `reviewer_identity` is ASSIGNED as `{assigned_reviewer_identity(pr_id)}` — return it verbatim; "
+        f"an omitted or respelt value is replaced by it, and only a maker/coding/loop role still records nothing. "
         f"Do NOT run `t3 <overlay> review record` — maker≠checker requires a different "
         f"actor to write the row: the orchestrator records the ReviewVerdict at head {head_sha[:8]} from "
         f"your envelope, and pr_sweep consumes it to auto-merge this own PR (#68)."

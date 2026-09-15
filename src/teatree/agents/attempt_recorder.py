@@ -49,6 +49,11 @@ from teatree.core.models import (
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
+from teatree.core.models.reviewer_identity import (
+    assigned_reviewer_identity,
+    is_independent_reviewer_identity,
+    is_non_reviewer_role,
+)
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
@@ -324,7 +329,7 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
 #: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
 #: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
 #: hands the verdict back through this seam: its headless brief
-#: (``prompt._REVIEW_VERDICT_RETURN_LINES``) returns the envelope rather than
+#: (``phase_blocks._review_verdict_return_lines``) returns the envelope rather than
 #: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
 #: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
 #: membership here is currently dormant (nothing in production returns an
@@ -333,9 +338,23 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
 #: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
 #: shell-only.
 _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
-#: Default reviewer identity when the envelope omits one — a non-maker/loop token
-#: (``ReviewVerdict.record`` refuses a maker/coding/loop identity, §17.8 clause 3).
-_DEFAULT_HEADLESS_REVIEWER = "headless-reviewer"
+
+
+def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEnvelope") -> str:
+    """Which identity the verdict lands under — the returned one, or the dispatch's (#2663).
+
+    A returned identity the gate cannot admit is REPLACED, not refused: the dispatch already
+    named one, so discarding a finished review over the agent's spelling buys nothing (22
+    attempts and $104 in one billing cycle, 17 of them the single word ``claude:review``).
+    An admitted identity is kept verbatim, so two genuine reviewers at one head stay two rows
+    and a second reviewer cannot overwrite the first one's hold. A maker/review-authoring role
+    is kept too — that is the agent declaring itself the author, which no dispatch may overrule,
+    and ``ReviewVerdict.record`` still refuses it.
+    """
+    returned = str(envelope.get("reviewer_identity") or "").strip()
+    if returned and (is_independent_reviewer_identity(returned) or is_non_reviewer_role(returned)):
+        return returned
+    return assigned_reviewer_identity(target.pr_id)
 
 
 def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -391,7 +410,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             slug=target.slug,
             reviewed_sha=target.head_sha,
             verdict=str(envelope.get("verdict", "")),
-            reviewer_identity=str(envelope.get("reviewer_identity") or _DEFAULT_HEADLESS_REVIEWER),
+            reviewer_identity=_recorded_reviewer_identity(target, envelope),
             findings=findings,
             gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
             blast_class=str(envelope.get("blast_class") or "logic"),

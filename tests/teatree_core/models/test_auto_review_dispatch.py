@@ -9,7 +9,7 @@ import pytest
 from django.utils import timezone
 
 from teatree.agents.envelope_contract import envelope_example
-from teatree.agents.phase_blocks import _REVIEW_VERDICT_RETURN_LINES
+from teatree.agents.phase_blocks import _review_verdict_return_lines
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, JSONSchema, ReviewVerdictEnvelope
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
@@ -150,7 +150,7 @@ def _reviewing_capability_claims() -> dict[str, str]:
         "ReviewVerdictEnvelope docstring": ReviewVerdictEnvelope.__doc__ or "",
         # The block the headless brief actually appends. Absent from this set it
         # kept telling reviewers "this phase has no shell" for the whole of #3775.
-        "headless reviewing brief lines": "\n".join(_REVIEW_VERDICT_RETURN_LINES),
+        "headless reviewing brief lines": "\n".join(_review_verdict_return_lines("")),
     }
 
 
@@ -225,7 +225,7 @@ def _code_owned_reviewer_briefs() -> dict[str, str]:
     """The reviewer-facing briefs this repo renders, each of which must carry the rule."""
     return {
         "stamped execution_reason contract": build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL),
-        "headless reviewing brief lines": "\n".join(_REVIEW_VERDICT_RETURN_LINES),
+        "headless reviewing brief lines": "\n".join(_review_verdict_return_lines("")),
         "reviewer agent definition": REVIEWER_AGENT_MD.read_text(encoding="utf-8"),
     }
 

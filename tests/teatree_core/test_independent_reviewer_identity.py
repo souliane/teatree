@@ -23,8 +23,10 @@ from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, di
 from teatree.core.models.review_verdict import ReviewVerdictError
 from teatree.core.models.reviewer_identity import (
     REVIEWER_ROLE_COMPONENTS,
+    assigned_reviewer_identity,
     is_independent_reviewer_identity,
     is_non_reviewer_role,
+    normalize_reviewer_identity,
     unrecognised_reviewer_message,
 )
 
@@ -360,3 +362,23 @@ class TestConfigResolver(TestCase):
 
     def test_unconfigured_deployment_resolves_empty(self) -> None:
         assert effective_independent_reviewer_identities(UserSettings()) == frozenset()
+
+
+class TestAssignedReviewerIdentity(TestCase):
+    """The identity the DISPATCH assigns must satisfy the gate it will be judged by (#2663)."""
+
+    def test_it_is_per_pr_and_admitted(self) -> None:
+        assert assigned_reviewer_identity(4658) == "cold-reviewer-4658"
+        assert is_independent_reviewer_identity("cold-reviewer-4658") is True
+
+    def test_it_carries_no_maker_or_review_authoring_word(self) -> None:
+        assert is_non_reviewer_role(assigned_reviewer_identity(4658)) is False
+
+    def test_it_is_already_canonical(self) -> None:
+        # The upsert keys on the normalized form, so an assigned identity that normalized
+        # to something else would key to a row nothing else can find.
+        identity = assigned_reviewer_identity(4658)
+        assert normalize_reviewer_identity(identity) == identity
+
+    def test_two_pull_requests_do_not_share_one_identity(self) -> None:
+        assert assigned_reviewer_identity(4658) != assigned_reviewer_identity(4659)

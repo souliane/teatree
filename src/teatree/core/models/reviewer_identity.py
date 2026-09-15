@@ -59,6 +59,17 @@ REVIEWER_IDENTITY_INSTRUCTION = (
     " never " + "/".join(sorted(_MAKER_ROLE_WORDS)) + ")"
 )
 
+
+def assigned_reviewer_identity(pr_id: int) -> str:
+    """The identity the DISPATCH gives a headless review of ``pr_id`` (#2663).
+
+    Per PULL REQUEST, never per task: ``ReviewVerdict.record`` upserts on the normalized
+    identity and a hold is lifted only by that same identity, so a per-task spelling would
+    key every re-review to a fresh row and leave its own hold standing forever.
+    """
+    return f"cold-reviewer-{pr_id}"
+
+
 # A review PHASE word names what the identity is doing, and the periodic holistic pass
 # does it while implementing its own findings and opening its own PR (#4230) — a MAKER
 # wearing a review word. It refuses only when nothing else in the identity names a

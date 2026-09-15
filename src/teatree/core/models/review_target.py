@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -90,6 +91,17 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
         head_sha=str((task.ticket.extra or {}).get("reviewed_sha", "")).strip(),
         host_kind=reviewed_pr.host_kind,
     )
+
+
+def assigned_reviewer_identity_for(task: "Task") -> str:
+    """The identity *task*'s review is assigned, or ``""`` when it is answerable for no PR.
+
+    One answer for both halves of the seam — the brief that hands the literal to the agent
+    and the recorder that writes it — so the value the reviewer is told cannot drift from
+    the value the verdict lands under.
+    """
+    target = review_target_for_task(task)
+    return "" if target is None else assigned_reviewer_identity(target.pr_id)
 
 
 def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
