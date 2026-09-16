@@ -33,6 +33,10 @@ pytestmark = pytest.mark.skipif(
 
 _GREEN = '{"ok": true, "findings": []}'
 _RED = '{"ok": false, "findings": [{"level": "FAIL", "message": "Compose service teatree-worker is exited"}]}'
+_HALTED = (
+    '{"ok": false, "findings": [{"level": "FAIL", '
+    '"message": "loop tick action halted while loop_runner_enabled is ON"}]}'
+)
 
 _ALL_UP = "\n".join(
     f"{svc}\trunning\tUp 8 hours"
@@ -113,6 +117,9 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
     env["TEATREE_WATCHDOG_RED_STATE"] = str(tmp_path / "red.state")
     env["TEATREE_WATCHDOG_DEPLOY_PENDING_STATE"] = str(tmp_path / "pending.state")
     env["TEATREE_WATCHDOG_LIVENESS_STATE"] = str(tmp_path / "liveness.state")
+    env["TEATREE_WATCHDOG_RESTART_STATE"] = str(tmp_path / "restart.state")
+    env["TEATREE_WATCHDOG_RESTART_ESCALATE_AFTER"] = "3"
+    env["TEATREE_WATCHDOG_RESTART_WINDOW"] = "3600"
     env["TEATREE_WATCHDOG_DEPLOY_LOCK"] = str(tmp_path / "absent.lock")
     env.setdefault("STUB_DOCTOR_JSON", _GREEN)
     env.setdefault("STUB_PS_BEFORE", _ALL_UP)
@@ -218,3 +225,68 @@ class TestDeployWindowDoesNotPage:
         )
 
         assert "restarted" not in dm
+
+
+class TestIneffectiveRestartEscalation:
+    def test_third_restart_escalates_once_with_reason_and_duration(self, tmp_path: Path) -> None:
+        _run_pass(
+            tmp_path,
+            label="1",
+            STUB_PS_BEFORE=_WORKER_DOWN,
+            STUB_PS_AFTER=_ALL_UP,
+            STUB_DOCTOR_JSON=_HALTED,
+        )
+        ledger = (tmp_path / "restart.state").read_text(encoding="utf-8").split()
+        ledger[0] = str(int(time.time()) - 20 * 60)
+        (tmp_path / "restart.state").write_text(" ".join(ledger), encoding="utf-8")
+        _run_pass(
+            tmp_path,
+            label="2",
+            STUB_PS_BEFORE=_WORKER_DOWN,
+            STUB_PS_AFTER=_ALL_UP,
+            STUB_DOCTOR_JSON=_HALTED,
+        )
+
+        escalated = _run_pass(
+            tmp_path,
+            label="3",
+            STUB_PS_BEFORE=_WORKER_DOWN,
+            STUB_PS_AFTER=_ALL_UP,
+            STUB_DOCTOR_JSON=_HALTED,
+        )
+        repeated = _run_pass(
+            tmp_path,
+            label="4",
+            STUB_PS_BEFORE=_WORKER_DOWN,
+            STUB_PS_AFTER=_ALL_UP,
+            STUB_DOCTOR_JSON=_HALTED,
+        )
+
+        assert "ineffective restart" in escalated.lower()
+        assert "halted" in escalated
+        assert "20 min" in escalated
+        assert "found stack services DOWN and ran" not in escalated
+        assert "ineffective restart" not in repeated.lower()
+        assert "found stack services DOWN and ran" not in repeated
+
+    def test_healthy_pass_resets_the_restart_episode(self, tmp_path: Path) -> None:
+        for label in ("1", "2"):
+            _run_pass(
+                tmp_path,
+                label=label,
+                STUB_PS_BEFORE=_WORKER_DOWN,
+                STUB_PS_AFTER=_ALL_UP,
+                STUB_DOCTOR_JSON=_HALTED,
+            )
+        _run_pass(tmp_path, label="healthy", STUB_PS_BEFORE=_ALL_UP, STUB_PS_AFTER=_ALL_UP)
+
+        for label in ("3", "4"):
+            dm = _run_pass(
+                tmp_path,
+                label=label,
+                STUB_PS_BEFORE=_WORKER_DOWN,
+                STUB_PS_AFTER=_ALL_UP,
+                STUB_DOCTOR_JSON=_HALTED,
+            )
+
+        assert "ineffective restart" not in dm.lower()
