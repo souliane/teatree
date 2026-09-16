@@ -10,6 +10,7 @@ of the stack it watches) can restart the stack and DM the owner. Each says REPAI
     worker, admin, or the watchdog itself — stuck ``Created``/``Exited`` (REPORTS),
 - a free worker flock while the loop machinery has queued, overdue work (REPORTS),
 - an ``execute_task`` claimed RUNNING with no live worker to finish it (REPORTS),
+- enabled active work with no task attempt started past the inactivity threshold (REPORTS),
 - a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
 - a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
 - a runtime clone that has drifted off its default branch (REPORTS),
@@ -41,6 +42,7 @@ from teatree.cli.doctor.self_heal_frozen_fleet import check_frozen_fleet_under_k
 from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
 from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
 from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
+from teatree.cli.doctor.self_heal_task_activity import check_task_attempt_activity
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"
@@ -363,6 +365,10 @@ def _check_stranded_task() -> bool:
     return False
 
 
+def _check_task_attempt_activity() -> bool:
+    return check_task_attempt_activity(now=_now(), runner_on=_Probe.loop_runner_on)
+
+
 def _check_stale_loop_timer() -> bool:
     """FAIL when a READY loop timer is older than 2x its cadence (a wedged drain).
 
@@ -524,6 +530,7 @@ def run_self_heal_checks() -> bool:
         _check_compose_stack,
         _check_loop_worker_alive,
         _check_stranded_task,
+        _check_task_attempt_activity,
         _check_stale_loop_timer,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,

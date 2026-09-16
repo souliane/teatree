@@ -101,3 +101,11 @@ class TestCeilingNotReservationIsDocumented:
     def test_compose_states_the_sizing_principle(self) -> None:
         text = COMPOSE_FILE.read_text(encoding="utf-8").lower()
         assert "ceiling, not a reservation" in text
+
+
+class TestContainerLogRetention:
+    def test_every_service_rotates_json_logs(self) -> None:
+        expected = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
+
+        for service, config in _services().items():
+            assert config.get("logging") == expected, service

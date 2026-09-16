@@ -44,6 +44,12 @@ name: teatree
 # shared root to point at.
 x-uv-project-python-root: &uv-project-python-root /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
 
+x-teatree-logging: &teatree-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-teatree-common: &teatree-common
   # Pull a PUBLISHED self-contained image by setting TEATREE_IMAGE (the publish
   # workflow's lockfile-keyed tag, #3451) in a `.env` next to this file or in the
@@ -73,6 +79,7 @@ x-teatree-common: &teatree-common
     # local runs take their config from the host environment and the DB instead.
     - path: teatree.env
       required: false
+  logging: *teatree-logging
   # All services mount all state so admin and worker share ONE db.sqlite3 and one
   # editable install. The worktrees and workspaces are HOST bind mounts at their
   # canonical absolute paths, so the container and the host see the same files
@@ -596,6 +603,7 @@ services:
     # `compose exec` inside an app container, not from this container's network.
     network_mode: "none"
     init: true
+    logging: *teatree-logging
     # 256m: measured at 61 MiB, ~48% of the old 128m cap. It is the supervisor
     # that resurrects everything else, so it is the last container that should
     # ever OOM; 256m buys ~4x observed peak for 128 MiB of ceiling that stays
