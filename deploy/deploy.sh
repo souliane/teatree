@@ -217,6 +217,17 @@ worker_state_for_drain() {
     docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null
 }
 
+worker_state_after_stop() {
+    local ids cid
+    ids="$(compose ps --all --quiet teatree-worker 2>/dev/null)" || return 1
+    cid="${ids%%$'\n'*}"
+    if [ -z "$cid" ]; then
+        echo absent
+        return 0
+    fi
+    docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null
+}
+
 # Docker installed + enabled on boot (so the stack autostarts after a reboot,
 # alongside the compose restart policies). is-active needs no root, so the
 # common case (docker already running) never invokes sudo.
@@ -473,11 +484,18 @@ wait_for_init() {
 # worker before proceeding: a crash-looping entrypoint must not contend with init for
 # the runtime clone. Any interrupted task re-queues PENDING via its lease lapse.
 contain_worker_for_deploy() {
-    local state
+    local require_admin="${1:-false}" state
+    if [ "$require_admin" = true ] && ! admin_answers; then
+        echo "deploy: FATAL — teatree-worker could not drain and admin is not answering; refusing to stop the only live control-plane route." >&2
+        return 1
+    fi
     echo "deploy: stopping the old teatree-worker because it could not be proven quiescent ..." >&2
-    compose stop teatree-worker >/dev/null 2>&1 || true
+    if ! compose stop teatree-worker >/dev/null 2>&1; then
+        echo "deploy: FATAL — compose could not stop teatree-worker; refusing to run init/swap." >&2
+        return 1
+    fi
 
-    if ! state="$(worker_state_for_drain)"; then
+    if ! state="$(worker_state_after_stop)"; then
         echo "deploy: FATAL — could not verify teatree-worker containment before init/swap." >&2
         return 1
     fi
@@ -517,7 +535,7 @@ drain_worker() {
         t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}"; then
         return 0
     fi
-    contain_worker_for_deploy
+    contain_worker_for_deploy true
 }
 
 # init's own clear runs BEFORE this convergence quiesces the worker, so nothing else
