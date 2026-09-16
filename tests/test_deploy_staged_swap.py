@@ -37,7 +37,23 @@ _SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener te
 _DOCKER_STUB = f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
 if [ "$1" = inspect ]; then
-    printf '%s\\n' "${{STUB_INIT_STATE:-exited 0}}"
+    case "${{3:-}}" in
+    *"State.ExitCode"*)
+        printf '%s\\n' "${{STUB_INIT_STATE:-exited 0}}"
+        ;;
+    *"RestartCount"*)
+        [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
+        worker_state="${{STUB_WORKER_STATUS:-running}}"
+        [ -f "${{STUB_WORKER_STATE_FILE:-/dev/null}}" ] && worker_state="$(cat "$STUB_WORKER_STATE_FILE")"
+        printf '%s/%s\\n' "$worker_state" "${{STUB_WORKER_RESTART_COUNT:-0}}"
+        ;;
+    *"State.Status"*)
+        [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
+        worker_state="${{STUB_WORKER_STATUS:-running}}"
+        [ -f "${{STUB_WORKER_STATE_FILE:-/dev/null}}" ] && worker_state="$(cat "$STUB_WORKER_STATE_FILE")"
+        printf '%s\\n' "$worker_state"
+        ;;
+    esac
     exit 0
 fi
 if [ "$1" != compose ]; then
@@ -59,12 +75,13 @@ exec)
     shift || true
     case "$*" in
     *"worker status"*) printf '{{"running": true}}\\n' ;;
+    *"worker drain"*) exit "${{STUB_DRAIN_EXIT:-${{STUB_EXEC_EXIT:-0}}}}" ;;
     esac
     exit "${{STUB_EXEC_EXIT:-0}}"
     ;;
 ps)
     case "$*" in
-    *--quiet*) printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}" ;;
+    *--quiet*|*-q*) printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}" ;;
     esac
     exit 0
     ;;
@@ -73,7 +90,17 @@ config)
     exit 0
     ;;
 build) exit "${{STUB_BUILD_EXIT:-0}}" ;;
-up) exit "${{STUB_UP_EXIT:-0}}" ;;
+stop)
+    [ "${{STUB_STOP_EXIT:-0}}" -eq 0 ] || exit "$STUB_STOP_EXIT"
+    printf '%s' exited >|"${{STUB_WORKER_STATE_FILE}}"
+    exit 0
+    ;;
+up)
+    case " $* " in
+    *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
+    esac
+    exit "${{STUB_UP_EXIT:-0}}"
+    ;;
 esac
 exit 0
 """
@@ -139,8 +166,11 @@ def _run(checkout: Path, tmp_path: Path, **env_extra: str) -> tuple[subprocess.C
     env.update(
         PATH=f"{stub_bin}{os.pathsep}{env['PATH']}",
         HOME=str(home),
+        GITLAB_TOKEN="stub-token",
+        NOTION_TOKEN="stub-token",
         STUB_DOCKER_LOG=str(docker_log),
         STUB_CURL_COUNT=str(tmp_path / "curl.count"),
+        STUB_WORKER_STATE_FILE=str(tmp_path / "worker.state"),
         TEATREE_DEPLOY_LOCK=str(tmp_path / "deploy.lock"),
         TEATREE_DEPLOY_LOG_ARCHIVE_DIR=str(tmp_path / "archive"),
         TEATREE_ADMIN_SWAP_BUDGET="2",
@@ -221,7 +251,7 @@ class TestTheControlPlaneIsNeverWhollyAbsent:
         _, calls = _run(checkout, tmp_path)
         init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
         assert init_at != -1, "init must be brought up on its own, with the old generation still serving"
-        inspected_at = next((i for i, c in enumerate(calls) if c.startswith("inspect ")), -1)
+        inspected_at = next((i for i, c in enumerate(calls) if "State.ExitCode" in c), -1)
         admin_at = _index_of(calls, lambda a: _is_up(a) and "teatree-admin" in _up_services(a))
         assert init_at < inspected_at < admin_at, "init's exit must be observed before the dashboard is swapped"
 
@@ -254,6 +284,62 @@ class TestInFlightWorkSurvivesTheSwap:
         worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
         assert resume_at != -1, "nothing re-opens admission once init's own clear has already run"
         assert worker_at < resume_at
+
+    def test_a_crash_loop_is_stopped_before_init_when_it_cannot_be_drained(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_RESTART_COUNT="3",
+            STUB_DRAIN_EXIT="1",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert stop_at != -1, "a worker that cannot drain must be contained before migrations"
+        assert stop_at < init_at
+
+    def test_a_crash_loop_is_stopped_even_when_a_drain_exec_temporarily_answers(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_RESTART_COUNT="3",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert stop_at != -1, "a restart loop is not contained by one successful exec"
+        assert stop_at < init_at
+
+    def test_init_is_aborted_when_a_worker_cannot_be_drained_or_stopped(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_RESTART_COUNT="3",
+            STUB_DRAIN_EXIT="1",
+            STUB_STOP_EXIT="1",
+        )
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert init_at == -1, "init must not race a live old worker after containment fails"
+        assert "could not contain teatree-worker" in proc.stderr
+
+    def test_init_is_aborted_when_the_old_worker_state_is_unreadable(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_WORKER_INSPECT_EXIT="1")
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert init_at == -1, "an unreadable old worker must not be mistaken for an absent worker"
+        assert "could not determine teatree-worker state" in proc.stderr
 
 
 class TestLogsSurviveTheRecreate:

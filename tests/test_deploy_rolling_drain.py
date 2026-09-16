@@ -73,6 +73,9 @@ def _run_worker_function(
 ) -> subprocess.CompletedProcess[str]:
     """Run one of deploy.sh's real worker-state functions with deterministic Docker replies."""
     harness = tmp_path / "worker-running.sh"
+    helper = ""
+    if function != "worker_state_for_drain":
+        helper = f"{_extract_shell_function('worker_state_for_drain')}\n"
     harness.write_text(
         "#!/usr/bin/env bash\n"
         "set -u\n"
@@ -89,6 +92,7 @@ def _run_worker_function(
         "  fi\n"
         "  return 1\n"
         "}\n"
+        f"{helper}"
         f"{_extract_shell_function(function)}\n"
         f"{function}\n",
         encoding="utf-8",
@@ -274,29 +278,28 @@ class TestDeployDebounce:
 
 class TestDeployDrain:
     @pytest.mark.parametrize("docker_status", ["running", "restarting"])
-    def test_crash_looping_worker_is_present_for_drain(self, tmp_path: Path, docker_status: str) -> None:
+    def test_active_worker_state_is_visible_to_drain(self, tmp_path: Path, docker_status: str) -> None:
         result = _run_worker_function(
             tmp_path,
-            function="worker_present_for_drain",
+            function="worker_state_for_drain",
             docker_status=docker_status,
             restart_count=3,
         )
 
-        assert result.returncode == 0, (
-            "a crash-looping worker container still exists and must enter the drain path "
-            "instead of being skipped as absent"
-        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == docker_status
 
     @pytest.mark.parametrize("docker_status", ["exited", "dead"])
-    def test_stopped_worker_is_not_present_for_drain(self, tmp_path: Path, docker_status: str) -> None:
+    def test_stopped_worker_state_is_visible_to_drain(self, tmp_path: Path, docker_status: str) -> None:
         result = _run_worker_function(
             tmp_path,
-            function="worker_present_for_drain",
+            function="worker_state_for_drain",
             docker_status=docker_status,
             restart_count=1,
         )
 
-        assert result.returncode != 0
+        assert result.returncode == 0
+        assert result.stdout.strip() == docker_status
 
     def test_never_restarted_running_worker_is_a_healthy_fallback(self, tmp_path: Path) -> None:
         result = _run_worker_function(
@@ -318,14 +321,16 @@ class TestDeployDrain:
     def test_deploy_script_drains_the_running_worker_before_the_swap(self) -> None:
         body = _DEPLOY_SH.read_text(encoding="utf-8")
         staged = _staged_swap_block(body)
-        drains = [m.start() for m in re.finditer(r"^\s+drain_worker$", staged, re.MULTILINE)]
+        drains = [m.start() for m in re.finditer(r"^\s+drain_worker \|\| return 1$", staged, re.MULTILINE)]
         # init clears worker_quiescing as its last act, so the gate is asserted once
         # before migrations and re-asserted between init and the worker's recreate.
         assert len(drains) == 2, f"the staged swap must drain either side of init; found {len(drains)}"
         assert drains[0] < staged.index("up -d --no-deps teatree-init")
         assert staged.index("up -d --no-deps teatree-init") < drains[1] < staged.index("up -d --no-deps teatree-worker")
-        # Guarded by container presence (nothing to drain otherwise) and non-fatal on overrun.
-        assert "worker_present_for_drain || return 0" in body
+        # Guarded by container presence (nothing to drain otherwise); a failed drain
+        # must stop and verify the old worker or fail the staged swap before init.
+        assert "worker_state_for_drain" in body
+        assert "contain_worker_for_deploy" in body
         assert "TEATREE_DRAIN_TIMEOUT" in body
 
     def test_fresh_worker_init_clears_the_quiescing_gate(self) -> None:

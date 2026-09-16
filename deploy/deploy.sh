@@ -206,12 +206,15 @@ worker_running() {
     [ "$state" = "running/0" ]
 }
 
-worker_present_for_drain() {
-    local cid state
-    cid="$(compose ps -q teatree-worker 2>/dev/null || true)"
-    [ -n "$cid" ] || return 1
-    state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || true)"
-    [ "$state" = "running" ] || [ "$state" = "restarting" ]
+worker_state_for_drain() {
+    local ids cid
+    ids="$(compose ps -q teatree-worker 2>/dev/null)" || return 1
+    cid="${ids%%$'\n'*}"
+    if [ -z "$cid" ]; then
+        echo absent
+        return 0
+    fi
+    docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null
 }
 
 # Docker installed + enabled on boot (so the stack autostarts after a reboot,
@@ -465,16 +468,56 @@ wait_for_init() {
 # Quiesce the RUNNING worker: `t3 worker drain` sets the `worker_quiescing` admission
 # gate (the claim path then admits ZERO new work) and waits up to
 # TEATREE_DRAIN_TIMEOUT seconds for every live CLAIMED lease to finish. The
-# supervisor is never stopped, so in-flight sub-agents keep renewing and complete. On
-# a grace overrun the drain exits non-zero (code 3); we still PROCEED — a stuck task
-# re-queues PENDING via its lease lapse and the fresh worker picks it up.
+# supervisor stays up while that succeeds, so in-flight sub-agents keep renewing and
+# complete. If the drain cannot run or its grace expires, STOP and verify the old
+# worker before proceeding: a crash-looping entrypoint must not contend with init for
+# the runtime clone. Any interrupted task re-queues PENDING via its lease lapse.
+contain_worker_for_deploy() {
+    local state
+    echo "deploy: stopping the old teatree-worker because it could not be proven quiescent ..." >&2
+    compose stop teatree-worker >/dev/null 2>&1 || true
+
+    if ! state="$(worker_state_for_drain)"; then
+        echo "deploy: FATAL — could not verify teatree-worker containment before init/swap." >&2
+        return 1
+    fi
+    case "$state" in
+    absent | exited | dead)
+        echo "deploy: old teatree-worker stopped; interrupted work will re-queue via its lease lapse." >&2
+        return 0
+        ;;
+    *)
+        echo "deploy: FATAL — could not contain teatree-worker (state: ${state:-unreadable}); refusing to run init." >&2
+        return 1
+        ;;
+    esac
+}
+
 drain_worker() {
-    worker_present_for_drain || return 0
+    local state
+    if ! state="$(worker_state_for_drain)"; then
+        echo "deploy: FATAL — could not determine teatree-worker state; refusing to run init." >&2
+        return 1
+    fi
+    case "$state" in
+    absent | exited | dead) return 0 ;;
+    restarting)
+        contain_worker_for_deploy
+        return
+        ;;
+    running) ;;
+    *)
+        echo "deploy: FATAL — could not determine teatree-worker state (${state:-unreadable}); refusing to run init." >&2
+        return 1
+        ;;
+    esac
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
     _DRAINED=true
-    compose exec -T teatree-worker \
-        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" ||
-        echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
+    if compose exec -T teatree-worker \
+        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}"; then
+        return 0
+    fi
+    contain_worker_for_deploy
 }
 
 # init's own clear runs BEFORE this convergence quiesces the worker, so nothing else
@@ -541,7 +584,7 @@ staged_swap() {
     # against a fully live stack, and a build failure costs no availability at all.
     compose build || return 1
 
-    drain_worker
+    drain_worker || return 1
 
     archive_service_logs teatree-init
     compose up -d --no-deps teatree-init || return 1
@@ -551,7 +594,7 @@ staged_swap() {
     # init clears worker_quiescing as its last act, so re-assert the gate: without
     # this the still-live old worker resumes admission and can claim — then lose —
     # a task in the seconds before it is swapped.
-    drain_worker
+    drain_worker || return 1
 
     swap_admin || return 1
 
