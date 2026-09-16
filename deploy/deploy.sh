@@ -197,12 +197,14 @@ worker_running() {
         | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
         return 0
     fi
-    # Fallback when the exec itself fails: a healthy worker is running, no restarts.
+    # Fallback when the exec itself fails: an existing running/restarting worker
+    # still has to enter the drain path. In particular, a crash loop must not look
+    # absent merely because the status exec raced one of its restarts.
     local cid state
     cid="$(compose ps -q teatree-worker 2>/dev/null || true)"
     [ -n "$cid" ] || return 1
-    state="$(docker inspect -f '{{.State.Status}}/{{.RestartCount}}' "$cid" 2>/dev/null || true)"
-    [ "$state" = "running/0" ]
+    state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || true)"
+    [ "$state" = "running" ] || [ "$state" = "restarting" ]
 }
 
 # Docker installed + enabled on boot (so the stack autostarts after a reboot,

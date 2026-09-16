@@ -880,7 +880,16 @@ ensure_clone() {
             git -C "$CLONE_DIR" checkout --force "$default_branch"
         fi
         git -C "$CLONE_DIR" merge --ff-only "origin/$default_branch" || {
-            echo "entrypoint: $CLONE_DIR default branch '$default_branch' has diverged (local commits that cannot fast-forward) - reconcile it on the box and re-run Deploy" >&2
+            if git -C "$CLONE_DIR" merge-base --is-ancestor HEAD "origin/$default_branch"; then
+                echo "entrypoint: $CLONE_DIR could not fast-forward '$default_branch' for a non-history reason - read the Git error above (for example an index lock or permission problem), fix it, and re-run Deploy" >&2
+            else
+                local ancestry_status=$?
+                if [ "$ancestry_status" -eq 1 ]; then
+                    echo "entrypoint: $CLONE_DIR default branch '$default_branch' has diverged (local commits that cannot fast-forward) - reconcile it on the box and re-run Deploy" >&2
+                else
+                    echo "entrypoint: $CLONE_DIR could not fast-forward '$default_branch', and Git could not determine its ancestry - read the Git errors above, fix them, and re-run Deploy" >&2
+                fi
+            fi
             exit 1
         }
         return 0
