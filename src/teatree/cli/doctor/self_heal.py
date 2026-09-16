@@ -10,7 +10,7 @@ of the stack it watches) can restart the stack and DM the owner. Each says REPAI
     worker, admin, or the watchdog itself — stuck ``Created``/``Exited`` (REPORTS),
 - a free worker flock while the loop machinery has queued, overdue work (REPORTS),
 - an ``execute_task`` claimed RUNNING with no live worker to finish it (REPORTS),
-- enabled active work with no task attempt started past the inactivity threshold (REPORTS),
+- enabled active work with no running or recently completed task attempt (REPORTS),
 - a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
 - a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
 - a runtime clone that has drifted off its default branch (REPORTS),

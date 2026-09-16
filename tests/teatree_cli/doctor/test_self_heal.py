@@ -287,6 +287,9 @@ class TaskAttemptActivityCheckTest(TestCase):
     def _backdate_attempt(self, attempt: TaskAttempt, *, minutes: int) -> None:
         TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - dt.timedelta(minutes=minutes))
 
+    def _end_attempt(self, attempt: TaskAttempt, *, minutes: int) -> None:
+        TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=timezone.now() - dt.timedelta(minutes=minutes))
+
     def test_old_active_task_without_attempts_fails(self) -> None:
         task = TaskFactory(status=Task.Status.PENDING)
         self._backdate_task(task, minutes=31)
@@ -309,7 +312,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         assert ok is True
         assert out == ""
 
-    def test_old_attempt_for_active_work_fails(self) -> None:
+    def test_old_live_attempt_for_active_work_passes(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)
         self._backdate_task(task, minutes=60)
         attempt = TaskAttemptFactory(task=task)
@@ -318,8 +321,34 @@ class TaskAttemptActivityCheckTest(TestCase):
         with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
+        assert ok is True
+        assert out == ""
+
+    def test_old_ended_attempt_with_no_successor_fails(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=60)
+        self._end_attempt(attempt, minutes=31)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
         assert ok is False
         assert "31 min" in out
+
+    def test_recently_ended_old_attempt_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=60)
+        self._end_attempt(attempt, minutes=5)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
 
     def test_no_active_work_passes(self) -> None:
         task = TaskFactory(status=Task.Status.COMPLETED)
