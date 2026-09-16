@@ -128,6 +128,10 @@ class LoopWorkerExecutorCrashError(RuntimeError):
     """
 
 
+class LoopWorkerExecutorStopError(RuntimeError):
+    pass
+
+
 class KillSwitchUnreadableError(RuntimeError):
     """The kill-switch read UNREADABLE for too many consecutive polls (F7).
 
@@ -139,6 +143,7 @@ class KillSwitchUnreadableError(RuntimeError):
 
 
 _CRASH_MESSAGE = "A loops/default executor thread died and exhausted its respawn budget; exiting non-zero."
+_STOP_MESSAGE = "The executor pool did not stop within its bounded grace period; exiting non-zero."
 _UNREADABLE_MESSAGE = "The loop_runner_enabled kill-switch was unreadable for too many polls; exiting non-zero."
 
 
@@ -302,13 +307,28 @@ class LoopWorker:
     def _start_executor_pool(self) -> None:
         self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(self._seams.executor_queues)]
 
-    def _stop_executor_pool(self) -> None:
+    def _stop_executor_pool(self) -> bool:
         for slot in self._slots:
             slot.executor.running = False
         for slot in self._slots:
             slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
         self._seams.kill_ticks()
-        self._slots = []
+        for slot in self._slots:
+            if slot.handle.is_alive():
+                slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
+        self._slots = [slot for slot in self._slots if slot.handle.is_alive()]
+        return not self._slots
+
+    def _ensure_executor_pool_stopped(self) -> None:
+        if not self._stop_executor_pool():
+            raise LoopWorkerExecutorStopError(_STOP_MESSAGE)
+
+    def _shutdown(self) -> None:
+        self.request_stop()
+        try:
+            self._ensure_executor_pool_stopped()
+        finally:
+            self._release_t3_master()
 
     def _respawn_dead_executors(self) -> bool:
         """Respawn any executor thread that died; return True iff one exhausted its respawn budget.
@@ -417,8 +437,9 @@ class LoopWorker:
                 if state is LoopRunnerState.OFF:
                     unreadable_polls = 0
                     if self._slots:
-                        self._stop_executor_pool()
+                        self._ensure_executor_pool_stopped()
                     seams.sleep(seams.poll_seconds)
+                    self._per_poll_maintenance()
                     continue
                 if state is LoopRunnerState.UNREADABLE:
                     # F7: a read FAILURE is not an OFF — never a clean exit. Retry a few
@@ -442,11 +463,7 @@ class LoopWorker:
                     break
                 self._per_poll_maintenance()
         finally:
-            self.request_stop()
-            self._stop_executor_pool()
-            # Hand t3-master back so a restarting worker (or an operator's session)
-            # finds an unowned slot instead of waiting out this process's TTL.
-            self._release_t3_master()
+            self._shutdown()
         if crashed:
             raise LoopWorkerExecutorCrashError(_CRASH_MESSAGE)
         if unreadable:

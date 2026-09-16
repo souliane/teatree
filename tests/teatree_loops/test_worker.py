@@ -27,6 +27,7 @@ from teatree.loops.worker import (
     LOOPS_EXECUTOR_FLOOR,
     LoopWorker,
     LoopWorkerExecutorCrashError,
+    LoopWorkerExecutorStopError,
     WorkerSeams,
     build_executor_queues,
     default_queue_executor_count,
@@ -66,6 +67,12 @@ class _FakeHandle:
     def is_alive(self) -> bool:
         return self._alive
 
+    def join(self, timeout: float | None = None) -> None:
+        self.joined = True
+        self._alive = False
+
+
+class _StuckHandle(_FakeHandle):
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
 
@@ -214,6 +221,34 @@ def test_disabled_at_boot_keeps_worker_alive_without_executors_and_resumes() -> 
     assert all(handle.joined for handle in handles)
 
 
+def test_disabled_worker_continues_supervisor_maintenance() -> None:
+    claims: list[int] = []
+    reaps: list[int] = []
+    reclaims: list[int] = []
+    worker = None
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 2:
+            worker.request_stop()
+
+    worker, built, _ = _make_worker(
+        enabled=lambda: False,
+        sleep=sleep,
+        claim_master=lambda: claims.append(1),
+        reap_leases=lambda: reaps.append(1),
+        reclaim_leases=lambda: reclaims.append(1),
+    )
+    worker.run()
+
+    assert not built
+    assert len(claims) == 3
+    assert len(reaps) == 2
+    assert len(reclaims) == 2
+
+
 def test_kill_switch_flip_off_stops_pool_then_flip_on_restarts_it() -> None:
     states = iter([True, False, True])
     worker = None
@@ -237,6 +272,43 @@ def test_kill_switch_flip_off_stops_pool_then_flip_on_restarts_it() -> None:
     assert len(built) == built_at_pause * 2
     assert all(not executor.running for executor in built)
     assert all(handle.joined for handle in handles)
+
+
+def test_surviving_executor_fails_before_reenabled_pool_can_overlap() -> None:
+    states = iter([True, False, True])
+    spawned: list[_StuckHandle] = []
+    worker = None
+    polls = 0
+
+    def spawn(_executor: _FakeExecutor) -> _StuckHandle:
+        handle = _StuckHandle()
+        spawned.append(handle)
+        return handle
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 3:
+            worker.request_stop()
+
+    worker = LoopWorker(
+        _liveness_seams(
+            enabled=lambda: next(states, True),
+            spawn=spawn,
+            make_executor=_FakeExecutor,
+            sleep=sleep,
+            reclaim_leases=lambda: None,
+            reap_leases=lambda: None,
+            claim_master=lambda: None,
+            release_master=lambda: None,
+        )
+    )
+
+    with pytest.raises(LoopWorkerExecutorStopError, match="executor pool did not stop"):
+        worker.run()
+
+    assert len(spawned) == 1
+    assert [slot.handle for slot in worker._slots] == spawned
 
 
 def test_stop_signal_tears_the_pool_down() -> None:

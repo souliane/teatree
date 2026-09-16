@@ -37,13 +37,15 @@ class _FakeExecutor:
 class _FakeHandle:
     def __init__(self) -> None:
         self.joined = False
+        self._alive = True
 
     def is_alive(self) -> bool:
-        return True
+        return self._alive
 
     def join(self, timeout: float | None = None) -> None:
         _ = timeout
         self.joined = True
+        self._alive = False
 
 
 def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopWorker:

@@ -24,12 +24,14 @@ class _FakeExecutor:
 class _FakeHandle:
     def __init__(self) -> None:
         self.joined = False
+        self._alive = True
 
     def is_alive(self) -> bool:
-        return True
+        return self._alive
 
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
+        self._alive = False
 
 
 def _worker(states: list[LoopRunnerState], *, max_unreadable_polls: int = 3):
