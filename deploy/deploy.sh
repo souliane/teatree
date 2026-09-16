@@ -197,9 +197,16 @@ worker_running() {
         | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
         return 0
     fi
-    # Fallback when the exec itself fails: an existing running/restarting worker
-    # still has to enter the drain path. In particular, a crash loop must not look
-    # absent merely because the status exec raced one of its restarts.
+    # Fallback when the exec itself fails: only a running container that has never
+    # restarted is healthy enough to certify final convergence.
+    local cid state
+    cid="$(compose ps -q teatree-worker 2>/dev/null || true)"
+    [ -n "$cid" ] || return 1
+    state="$(docker inspect -f '{{.State.Status}}/{{.RestartCount}}' "$cid" 2>/dev/null || true)"
+    [ "$state" = "running/0" ]
+}
+
+worker_present_for_drain() {
     local cid state
     cid="$(compose ps -q teatree-worker 2>/dev/null || true)"
     [ -n "$cid" ] || return 1
@@ -462,7 +469,7 @@ wait_for_init() {
 # a grace overrun the drain exits non-zero (code 3); we still PROCEED — a stuck task
 # re-queues PENDING via its lease lapse and the fresh worker picks it up.
 drain_worker() {
-    worker_running || return 0
+    worker_present_for_drain || return 0
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
     _DRAINED=true
     compose exec -T teatree-worker \

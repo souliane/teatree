@@ -63,10 +63,15 @@ def _extract_shell_function(name: str) -> str:
     raise AssertionError(not_found)
 
 
-def _run_worker_running(
-    tmp_path: Path, *, docker_status: str, restart_count: int, container_id: str = "worker-id"
+def _run_worker_function(
+    tmp_path: Path,
+    *,
+    function: str,
+    docker_status: str,
+    restart_count: int,
+    container_id: str = "worker-id",
 ) -> subprocess.CompletedProcess[str]:
-    """Run deploy.sh's real ``worker_running`` with deterministic Docker replies."""
+    """Run one of deploy.sh's real worker-state functions with deterministic Docker replies."""
     harness = tmp_path / "worker-running.sh"
     harness.write_text(
         "#!/usr/bin/env bash\n"
@@ -84,8 +89,40 @@ def _run_worker_running(
         "  fi\n"
         "  return 1\n"
         "}\n"
+        f"{_extract_shell_function(function)}\n"
+        f"{function}\n",
+        encoding="utf-8",
+    )
+    return subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False)
+
+
+def _run_final_convergence(
+    tmp_path: Path, *, docker_status: str, restart_count: int
+) -> subprocess.CompletedProcess[str]:
+    """Run deploy.sh's real final convergence predicate with deterministic Docker replies."""
+    body = _DEPLOY_SH.read_text(encoding="utf-8")
+    start = body.rfind('\nif [ "$admin_up" = true ] && ')
+    assert start != -1, "deploy.sh's final convergence predicate moved — re-anchor this probe"
+    harness = tmp_path / "final-convergence.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        "compose() {\n"
+        '  if [ "$1" = exec ]; then return 1; fi\n'
+        "  if [ \"$1\" = ps ]; then printf '%s\\n' 'worker-id'; return 0; fi\n"
+        "  return 1\n"
+        "}\n"
+        "docker() {\n"
+        '  if [ "$1" = inspect ]; then\n'
+        f"    if [[ \"$3\" == *RestartCount* ]]; then printf '%s/%s\\n' '{docker_status}' '{restart_count}';\n"
+        f"    else printf '%s\\n' '{docker_status}'; fi\n"
+        "    return 0\n"
+        "  fi\n"
+        "  return 1\n"
+        "}\n"
         f"{_extract_shell_function('worker_running')}\n"
-        "worker_running\n",
+        "admin_up=true\n"
+        f"{body[start:]}\n",
         encoding="utf-8",
     )
     return subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False)
@@ -238,7 +275,12 @@ class TestDeployDebounce:
 class TestDeployDrain:
     @pytest.mark.parametrize("docker_status", ["running", "restarting"])
     def test_crash_looping_worker_is_present_for_drain(self, tmp_path: Path, docker_status: str) -> None:
-        result = _run_worker_running(tmp_path, docker_status=docker_status, restart_count=3)
+        result = _run_worker_function(
+            tmp_path,
+            function="worker_present_for_drain",
+            docker_status=docker_status,
+            restart_count=3,
+        )
 
         assert result.returncode == 0, (
             "a crash-looping worker container still exists and must enter the drain path "
@@ -247,9 +289,31 @@ class TestDeployDrain:
 
     @pytest.mark.parametrize("docker_status", ["exited", "dead"])
     def test_stopped_worker_is_not_present_for_drain(self, tmp_path: Path, docker_status: str) -> None:
-        result = _run_worker_running(tmp_path, docker_status=docker_status, restart_count=1)
+        result = _run_worker_function(
+            tmp_path,
+            function="worker_present_for_drain",
+            docker_status=docker_status,
+            restart_count=1,
+        )
 
         assert result.returncode != 0
+
+    def test_never_restarted_running_worker_is_a_healthy_fallback(self, tmp_path: Path) -> None:
+        result = _run_worker_function(
+            tmp_path,
+            function="worker_running",
+            docker_status="running",
+            restart_count=0,
+        )
+
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("docker_status", ["running", "restarting"])
+    def test_crash_looping_worker_cannot_satisfy_final_convergence(self, tmp_path: Path, docker_status: str) -> None:
+        result = _run_final_convergence(tmp_path, docker_status=docker_status, restart_count=3)
+
+        assert result.returncode != 0
+        assert "stack converged" not in result.stdout
 
     def test_deploy_script_drains_the_running_worker_before_the_swap(self) -> None:
         body = _DEPLOY_SH.read_text(encoding="utf-8")
@@ -260,8 +324,8 @@ class TestDeployDrain:
         assert len(drains) == 2, f"the staged swap must drain either side of init; found {len(drains)}"
         assert drains[0] < staged.index("up -d --no-deps teatree-init")
         assert staged.index("up -d --no-deps teatree-init") < drains[1] < staged.index("up -d --no-deps teatree-worker")
-        # Guarded by worker_running (nothing to drain otherwise) and non-fatal on overrun.
-        assert "worker_running || return 0" in body
+        # Guarded by container presence (nothing to drain otherwise) and non-fatal on overrun.
+        assert "worker_present_for_drain || return 0" in body
         assert "TEATREE_DRAIN_TIMEOUT" in body
 
     def test_fresh_worker_init_clears_the_quiescing_gate(self) -> None:
