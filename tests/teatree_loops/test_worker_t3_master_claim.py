@@ -47,8 +47,17 @@ class _FakeHandle:
 
 
 def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopWorker:
-    """A worker that supervises for *polls* polls, then a clean kill-switch OFF."""
+    """A worker that supervises for *polls* polls, then receives a stop signal while OFF."""
     states = iter([LoopRunnerState.ON] * polls)
+    worker = None
+
+    def read_state() -> LoopRunnerState:
+        try:
+            return next(states)
+        except StopIteration:
+            worker.request_stop()
+            return LoopRunnerState.OFF
+
     noop: dict[str, Any] = {
         "reconcile": lambda: None,
         "seed_chains": lambda: None,
@@ -60,7 +69,7 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         "release_master": lambda: None,
     }
     seams = WorkerSeams(
-        read_state=lambda: next(states, LoopRunnerState.OFF),
+        read_state=read_state,
         make_executor=_FakeExecutor,
         spawn=lambda _executor: _FakeHandle(),
         sleep=lambda _s: None,
@@ -68,7 +77,8 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         executor_queues=("loops",),
         **(noop | overrides),
     )
-    return LoopWorker(seams)
+    worker = LoopWorker(seams)
+    return worker
 
 
 class TestClaimSeamWiring:
