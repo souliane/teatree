@@ -10,9 +10,9 @@ A supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s 
 polls each executor thread's :meth:`is_alive`, respawning any that a swallowed error
 (a ``DBTaskResult`` ``OperationalError`` inside ``db_worker``) silently killed — so a
 dead executor never freezes the whole box while the process still looks healthy. It
-stops every executor on a flip-off or a SIGTERM/SIGINT, joining and — after the join
-timeout — SIGKILLing any in-flight tick process group the join left orphaned, then
-exiting; when a single executor exhausts its respawn budget the worker exits NON-ZERO
+stops every executor on a flip-off, idles until a flip-on rebuilds the pool, and exits
+only on SIGTERM/SIGINT; shutdown joins the pool and SIGKILLs any in-flight tick process
+group the join left orphaned. When a single executor exhausts its respawn budget the worker exits NON-ZERO
 (loud, never silent) so the OS/container restarts it fresh rather than limping with a
 dead pool. The flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
 at most one worker per box. At startup the worker reconciles the loop-timer chains, seeds
@@ -134,7 +134,7 @@ class KillSwitchUnreadableError(RuntimeError):
     Raised out of :meth:`LoopWorker.run` so the worker exits NON-ZERO: a persistent
     kill-switch read failure is a real fault the supervisor must restart the worker
     for, never a clean exit-0 that ``restart: on-failure`` ignores while the factory
-    sits silently dead. A legitimate OFF is a clean stop; only "cannot confirm" crashes.
+    sits silently dead. A legitimate OFF idles in-process; only "cannot confirm" crashes.
     """
 
 
@@ -283,7 +283,7 @@ class _Slot:
 
 
 class LoopWorker:
-    """Supervised executor pool: reconcile, drain K queues, respawn dead threads, stop on kill-switch/signal."""
+    """Supervised executor pool: reconcile, drain K queues, pause on kill-switch, stop on signal."""
 
     def __init__(self, seams: WorkerSeams | None = None) -> None:
         self._seams = seams or WorkerSeams()
@@ -298,6 +298,17 @@ class LoopWorker:
     def _spawn_slot(self, queue: str, index: int, *, respawns: int = 0) -> _Slot:
         executor = self._seams.make_executor(queue, f"worker-{os.getpid()}-{index}-{queue}")
         return _Slot(queue=queue, index=index, executor=executor, handle=self._seams.spawn(executor), respawns=respawns)
+
+    def _start_executor_pool(self) -> None:
+        self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(self._seams.executor_queues)]
+
+    def _stop_executor_pool(self) -> None:
+        for slot in self._slots:
+            slot.executor.running = False
+        for slot in self._slots:
+            slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
+        self._seams.kill_ticks()
+        self._slots = []
 
     def _respawn_dead_executors(self) -> bool:
         """Respawn any executor thread that died; return True iff one exhausted its respawn budget.
@@ -384,7 +395,7 @@ class LoopWorker:
         self._reclaim_dead_owner_leases()
 
     def run(self) -> None:
-        """Reconcile, expire stale jobs, start the executors, supervise (kill-switch + liveness), then join and exit."""
+        """Reconcile, expire stale jobs, and supervise a kill-switch-controlled executor pool."""
         seams = self._seams
         # Ownership and driving are ONE startup (#3968): the slot is claimed before the
         # chains that fire ticks exist, so `t3 loop owner` can never report "unclaimed"
@@ -397,8 +408,6 @@ class LoopWorker:
         # them the instant the worker starts (the default-ON flip's load-jam class).
         seams.expire()
 
-        self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(seams.executor_queues)]
-
         crashed = False
         unreadable = False
         unreadable_polls = 0
@@ -406,7 +415,11 @@ class LoopWorker:
             while not self._stop.is_set():
                 state = seams.read_state()
                 if state is LoopRunnerState.OFF:
-                    break  # a legitimate kill-switch OFF is a clean stop (exit 0).
+                    unreadable_polls = 0
+                    if self._slots:
+                        self._stop_executor_pool()
+                    seams.sleep(seams.poll_seconds)
+                    continue
                 if state is LoopRunnerState.UNREADABLE:
                     # F7: a read FAILURE is not an OFF — never a clean exit. Retry a few
                     # polls (a blip recovers), then crash so restart:on-failure restarts us.
@@ -421,21 +434,16 @@ class LoopWorker:
                         break
                 else:
                     unreadable_polls = 0  # ON — a recovered read resets the streak.
+                    if not self._slots:
+                        self._start_executor_pool()
                 seams.sleep(seams.poll_seconds)
-                if self._respawn_dead_executors():
+                if self._slots and self._respawn_dead_executors():
                     crashed = True
                     break
                 self._per_poll_maintenance()
         finally:
             self.request_stop()
-            for slot in self._slots:
-                slot.executor.running = False
-            for slot in self._slots:
-                slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
-            # The daemon-join above never reaches a tick SUBPROCESS: a kill-switch flip
-            # or SIGTERM mid-tick orphans it with no deadline owner. Kill any in-flight
-            # tick process group so no zombie/orphan outlives the worker's shutdown.
-            seams.kill_ticks()
+            self._stop_executor_pool()
             # Hand t3-master back so a restarting worker (or an operator's session)
             # finds an unowned slot instead of waiting out this process's TTL.
             self._release_t3_master()

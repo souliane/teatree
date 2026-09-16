@@ -296,8 +296,8 @@ def stop_command() -> None:
     typer.echo(
         "To stop the loops, turn the kill-switch off:\n"
         "    t3 <overlay> config_setting set loop_runner_enabled false\n"
-        "Then stop the worker that drains their timer chains: t3 <overlay> worker (Ctrl+C), "
-        "or check it with `t3 worker status`. Re-enable with `loop_runner_enabled true`."
+        "The worker stays alive and idle so `loop_runner_enabled true` resumes without a restart. "
+        "To end the worker process itself, run `t3 worker stop`; check it with `t3 worker status`."
     )
 
 
