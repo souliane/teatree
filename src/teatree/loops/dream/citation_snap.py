@@ -58,7 +58,7 @@ _SNAP_CLAUSE_BREAKS = ".;:!?"
 #: `doesn't` -> `does` wear a tail cut's shape. Named rather than failed-closed because a tail
 #: cut is the common near-miss the snap exists to rescue, unlike the head (see
 #: :func:`_is_truncated_edge`).
-_SNAP_NEGATING_SUFFIXES = ("less", _SNAP_CONTRACTED_NEGATION)
+_SNAP_NEGATING_SUFFIXES = ("less", _SNAP_CONTRACTED_NEGATION, "'t")
 #: How much of a refused delta the rejection message spells out before eliding.
 _SNAP_RENDER_MAX_TOKENS = 8
 _SNAP_TOKEN_RE = re.compile(r"[0-9a-z]+(?:'[0-9a-z]+)*")
@@ -124,8 +124,12 @@ def verbatim_spans(citation: str, snippet: str) -> Iterator[tuple[int, int]]:
     A bare substring test reads `does` out of `doesn't` and `allowed` out of `disallowed`, so
     it records a quote asserting the opposite of the word it was cut from (#2663). All
     occurrences are yielded because only some of them may sit against a negator.
+
+    The boundary also refuses a stem cut off an APOSTROPHE contraction: `can't` is `ca`+`n't`
+    and `won't` is `wo`+`n't`, so the letter before the cut carries no `n` to catch — only
+    the apostrophe itself marks the edge, on either side of it.
     """
-    pattern = rf"(?<![0-9A-Za-z]){re.escape(citation)}(?![0-9A-Za-z])"
+    pattern = rf"(?<![0-9A-Za-z])(?<!'){re.escape(citation)}(?!'?[0-9A-Za-z])"
     return (match.span() for match in re.finditer(pattern, snippet))
 
 
