@@ -83,9 +83,9 @@ class MeasuredTree:
     def on_integration_branch(self) -> bool:
         """Is HEAD the branch this clone exists to HOLD rather than develop on?
 
-        A fork whose work lands on a long-lived integration branch declares it as
-        ``teatree.targetBranch``, and its clone sits there the way ours sits on the
-        default — same structural non-target, same refusal.
+        A fork whose work lands on a long-lived integration branch declares it in
+        git config under ``_TARGET_BRANCH_CONFIG_KEY``, and its clone sits there the
+        way ours sits on the default — same structural non-target, same refusal.
         """
         return bool(self.branch) and self.branch in {self.default_branch, self.target_branch}
 
