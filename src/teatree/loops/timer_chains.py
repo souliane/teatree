@@ -115,7 +115,8 @@ class LoopRunnerState(enum.Enum):
     FAILURE, so a failed DB read of the switch looked identical to "operator turned
     it off" — the worker then clean-exited 0 and ``restart: on-failure`` never
     restarted a worker downed by a blip. ``UNREADABLE`` names the "cannot confirm"
-    case so the worker can crash-restart on it while a genuine OFF still stops cleanly.
+    case so UNREADABLE exits non-zero for supervisor restart while a genuine OFF
+    cleanly idles in-process with executor dispatch paused.
     """
 
     ON = "on"

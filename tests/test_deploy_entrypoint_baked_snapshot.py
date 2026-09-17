@@ -149,6 +149,27 @@ class TestEnsureCloneOnline:
         assert result.returncode == 0, result.stderr
         assert (fresh / ".git").exists()
 
+    def test_index_lock_failure_is_not_mislabeled_as_diverged_history(self, tmp_path: Path) -> None:
+        origin = _make_origin_and_clone(tmp_path)
+        (origin.clone / ".git" / "index.lock").touch()
+
+        result = _run_ensure_clone(tmp_path, clone_dir=origin.clone, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode != 0
+        assert "index.lock" in result.stderr
+        assert "has diverged" not in result.stderr
+
+    def test_diverged_history_is_still_diagnosed_as_diverged(self, tmp_path: Path) -> None:
+        origin = _make_origin_and_clone(tmp_path)
+        (origin.clone / "local.txt").write_text("local\n", encoding="utf-8")
+        _git(origin.clone, "add", "local.txt")
+        _git(origin.clone, "commit", "-m", "local-only")
+
+        result = _run_ensure_clone(tmp_path, clone_dir=origin.clone, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode != 0
+        assert "has diverged" in result.stderr
+
 
 class TestEnsureCloneOffline:
     def test_existing_clone_runs_baked_snapshot_without_fetching(self, tmp_path: Path) -> None:

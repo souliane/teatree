@@ -15,6 +15,11 @@ quote asserts the OPPOSITE of its own rule. The ratio therefore only nominates a
 token delta between the citation and that window decides admission.
 ``tests/teatree_loops/dream/test_citation_snap.py`` measures the three digits above, so they
 cannot drift back into an anecdote nobody can reproduce.
+
+The same inversion reaches a quote that changed no word at all, by where it was CUT: a span
+lifted from just after ``must never``, or from inside ``doesn't``, is verbatim and asserts the
+opposite of its own sentence (#2663). So a match must fall on whole words
+(:func:`verbatim_spans`) and carry no negator at either edge (:func:`negated_edge`).
 """
 
 import re
@@ -45,10 +50,15 @@ _SNAP_WINDOW_MARGIN_CHARS = 64
 _SNAP_ADMISSIBLE_DELTA = frozenset({"a", "an", "the"})
 #: Tokens that flip a rule's polarity, so the truncated-edge carve-out may never excuse one.
 _SNAP_NEGATORS = frozenset({"not", "never", "no", "none", "nor", "cannot", "without"})
-#: Suffixes whose removal negates the word they are cut from, so `harmless` -> `harm` wears a
-#: tail cut's shape. Named rather than failed-closed because a tail cut is the common
-#: near-miss the snap exists to rescue, unlike the head (see :func:`_is_truncated_edge`).
-_SNAP_NEGATING_SUFFIXES = ("less",)
+#: The open-ended half of that set: `doesn't`, `won't`, `isn't` are one token to :func:`_tokens`.
+_SNAP_CONTRACTED_NEGATION = "n't"
+#: Punctuation closing the clause a negator governs, so a quote past one kept its own polarity.
+_SNAP_CLAUSE_BREAKS = ".;:!?"
+#: Suffixes whose removal negates the word they are cut from, so `harmless` -> `harm` and
+#: `doesn't` -> `does` wear a tail cut's shape. Named rather than failed-closed because a tail
+#: cut is the common near-miss the snap exists to rescue, unlike the head (see
+#: :func:`_is_truncated_edge`).
+_SNAP_NEGATING_SUFFIXES = ("less", _SNAP_CONTRACTED_NEGATION, "'t")
 #: How much of a refused delta the rejection message spells out before eliding.
 _SNAP_RENDER_MAX_TOKENS = 8
 _SNAP_TOKEN_RE = re.compile(r"[0-9a-z]+(?:'[0-9a-z]+)*")
@@ -61,10 +71,12 @@ class CitationSnap:
     ``window`` is the snippet's own text to record, ``None`` when nothing was admitted.
     ``composed`` names the token delta of the closest window that WAS located and then
     refused, so the rejection can say which word the model changed rather than "not found".
+    ``cut_at`` names the negator a window matching word for word was refused for instead.
     """
 
     window: str | None
     composed: tuple[str, ...]
+    cut_at: str = ""
 
 
 def snap_citation(citation: str, snippets: Sequence[str]) -> CitationSnap:
@@ -84,6 +96,7 @@ def snap_citation(citation: str, snippets: Sequence[str]) -> CitationSnap:
     best_ratio = _SNAP_MIN_RATIO
     composed: tuple[str, ...] = ()
     composed_ratio = _SNAP_MIN_RATIO
+    cut_at = ""
     for snippet in snippets:
         for start in _anchored_windows(citation, snippet):
             left, right = _window_bounds(snippet, start, len(citation))
@@ -94,8 +107,59 @@ def snap_citation(citation: str, snippets: Sequence[str]) -> CitationSnap:
             if delta and ratio > composed_ratio:
                 composed, composed_ratio = delta, ratio
             elif not delta and ratio > best_ratio:
+                # The delta forgives a dropped negator as a free edge-delete of its own margin.
+                cut = negated_edge(snippet, left, right)
+                if cut:
+                    cut_at = cut_at or cut
+                    continue
                 best, best_ratio = snippet[left:right], ratio
-    return CitationSnap(best, () if best is not None else composed)
+    if best is not None:
+        return CitationSnap(best, ())
+    return CitationSnap(None, composed, "" if composed else cut_at)
+
+
+def verbatim_spans(citation: str, snippet: str) -> Iterator[tuple[int, int]]:
+    """Every place *snippet* quotes *citation* on WHOLE words, in order.
+
+    A bare substring test reads `does` out of `doesn't` and `allowed` out of `disallowed`, so
+    it records a quote asserting the opposite of the word it was cut from (#2663). All
+    occurrences are yielded because only some of them may sit against a negator.
+
+    The boundary also refuses a stem cut off an APOSTROPHE contraction: `can't` is `ca`+`n't`
+    and `won't` is `wo`+`n't`, so the letter before the cut carries no `n` to catch — only
+    the apostrophe itself marks the edge, on either side of it. An apostrophe is an edge only
+    with a letter on its far side: `agent'|s` is a cut inside a word, `'|prek run` is a quote.
+    """
+    pattern = rf"(?<![0-9A-Za-z])(?<![0-9A-Za-z]'){re.escape(citation)}(?!'?[0-9A-Za-z])"
+    return (match.span() for match in re.finditer(pattern, snippet))
+
+
+def negated_edge(snippet: str, left: int, right: int) -> str:
+    """The negator ``snippet[left:right]`` is cut away from, or ``""`` when it is not.
+
+    A span starting just after `must never`, or stopping just before it, re-extracts as the
+    plain assertion of what its own sentence forbids — verbatim and inverted at once. Only the
+    ADJACENT token is read: a negator further out governs a clause this cannot delimit, and
+    refusing on one would reject most quotes of any negated sentence (#2663).
+    """
+    before = _tokens(_last_clause(snippet[:left]))
+    after = _tokens(_first_clause(snippet[right:]))
+    if before and _is_negator(before[-1]):
+        return before[-1]
+    return after[0] if after and _is_negator(after[0]) else ""
+
+
+def _is_negator(token: str) -> bool:
+    return token in _SNAP_NEGATORS or token.endswith(_SNAP_CONTRACTED_NEGATION)
+
+
+def _last_clause(before: str) -> str:
+    return before[max(before.rfind(mark) for mark in _SNAP_CLAUSE_BREAKS) + 1 :]
+
+
+def _first_clause(after: str) -> str:
+    breaks = [found for mark in _SNAP_CLAUSE_BREAKS if (found := after.find(mark)) != -1]
+    return after[: min(breaks)] if breaks else after
 
 
 def _tokens(text: str) -> list[str]:
@@ -186,4 +250,4 @@ def _anchored_windows(citation: str, snippet: str) -> set[int]:
     return starts
 
 
-__all__ = ["CitationSnap", "snap_citation"]
+__all__ = ["CitationSnap", "negated_edge", "snap_citation", "verbatim_spans"]

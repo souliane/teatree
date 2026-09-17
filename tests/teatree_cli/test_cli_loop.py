@@ -337,6 +337,8 @@ class TestStopCommand:
 
         assert result.exit_code == 0
         assert "loop_runner_enabled" in result.stdout
+        assert "worker stays alive and idle" in result.stdout
+        assert "t3 worker stop" in result.stdout
         assert "/loop unregister" not in result.stdout
 
 

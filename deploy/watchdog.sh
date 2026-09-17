@@ -97,6 +97,16 @@ RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
 # the fact.
 LIVENESS_STATE="${TEATREE_WATCHDOG_LIVENESS_STATE:-/var/tmp/teatree-watchdog-liveness.state}"
 
+RESTART_STATE="${TEATREE_WATCHDOG_RESTART_STATE:-/var/tmp/teatree-watchdog-restart.state}"
+RESTART_ESCALATE_AFTER="${TEATREE_WATCHDOG_RESTART_ESCALATE_AFTER:-3}"
+RESTART_WINDOW="${TEATREE_WATCHDOG_RESTART_WINDOW:-1800}"
+RESTART_ESCALATION_DUE=false
+RESTART_EPISODE_FIRST=0
+RESTART_EPISODE_LAST=0
+RESTART_EPISODE_COUNT=0
+RESTART_EPISODE_ESCALATED=false
+RESTART_EPISODE_DIGEST=""
+
 # Undelivered-page ledger: "<epoch> <key> <base64-body>" per line, newest last, capped.
 UNDELIVERED_STATE="${TEATREE_WATCHDOG_UNDELIVERED_STATE:-/var/tmp/teatree-watchdog-undelivered.state}"
 UNDELIVERED_MAX="${TEATREE_WATCHDOG_UNDELIVERED_MAX:-50}"
@@ -307,6 +317,55 @@ announce_repaired_services() {
     notify_owner "watchdog:repaired:$(printf '%s' "$down" | _stable_key):$(day_bucket)"
 }
 
+_write_restart_state() {
+  printf '%s' "$1" >"$RESTART_STATE" 2>/dev/null ||
+    log "could not persist the restart-episode ledger at $RESTART_STATE"
+}
+
+_observe_restart_episode() {
+  local down="$1" now="$2" first=0 last=0 count=0 escalated=0 previous_digest="" digest
+  RESTART_ESCALATION_DUE=false
+  RESTART_EPISODE_ESCALATED=false
+  [ -n "$down" ] || {
+    _write_restart_state ""
+    return 0
+  }
+  deploy_in_flight && return 0
+  digest="$(printf '%s' "$down" | _stable_key)"
+  read -r first last count escalated previous_digest <"$RESTART_STATE" 2>/dev/null || true
+  case "$first:$last:$count:$escalated" in *[!0-9:]*) first=0; last=0; count=0; escalated=0 ;; esac
+  if [ "$digest" = "$previous_digest" ] && [ "$((now - last))" -le "$RESTART_WINDOW" ]; then
+    count=$((count + 1))
+  else
+    first="$now"
+    count=1
+    escalated=0
+  fi
+  RESTART_EPISODE_FIRST="$first"
+  RESTART_EPISODE_LAST="$now"
+  RESTART_EPISODE_COUNT="$count"
+  RESTART_EPISODE_DIGEST="$digest"
+  [ "$escalated" -eq 1 ] && RESTART_EPISODE_ESCALATED=true
+  if [ "$count" -ge "$RESTART_ESCALATE_AFTER" ] && [ "$escalated" -eq 0 ]; then
+    RESTART_ESCALATION_DUE=true
+  fi
+  _write_restart_state "$first $now $count $escalated $digest"
+}
+
+_announce_restart_escalation() {
+  local json="$1" now="$2" down="$3" reason services duration
+  [ "$RESTART_ESCALATION_DUE" = true ] || return 0
+  reason="$(printf '%s' "$json" | _fail_messages | cut -f2- | paste -sd ';' -)"
+  [ -n "$reason" ] || reason="doctor reported no specific FAIL reason"
+  services="$(printf '%s\n' "$down" | paste -sd, -)"
+  duration="$(((now - RESTART_EPISODE_FIRST) / 60))"
+  printf 'teatree watchdog ESCALATION: %s ineffective restart attempts for %s over ~%s min; the services keep returning DOWN between passes. Latest reason: %s' \
+    "$RESTART_EPISODE_COUNT" "$services" "$duration" "$reason" |
+    notify_owner "watchdog:restart-escalation:$RESTART_EPISODE_DIGEST:$RESTART_EPISODE_FIRST"
+  _write_restart_state "$RESTART_EPISODE_FIRST $RESTART_EPISODE_LAST $RESTART_EPISODE_COUNT 1 $RESTART_EPISODE_DIGEST"
+  RESTART_EPISODE_ESCALATED=true
+}
+
 # Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
 # stdout into DOCTOR_RAW regardless of doctor's exit code. This is the heart of
 # the #3440 fix: a red-findings verdict exits NON-ZERO yet is a healthy RUN of
@@ -462,7 +521,7 @@ stack_recently_recreated() {
   [ "${#ids[@]}" -gt 0 ] || return 1
   while IFS=$'\t' read -r created restarts state; do
     [ -n "$created" ] || continue
-    if ! epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+    if ! epoch="$(_rfc3339_epoch "$created")"; then
       log "unreadable container creation time ('$created') — not treating the stack as mid-deploy"
       continue
     fi
@@ -474,6 +533,11 @@ stack_recently_recreated() {
     return 0
   done < <(docker inspect --format '{{.Created}}'$'\t''{{.RestartCount}}'$'\t''{{.State.Status}}' "${ids[@]}" 2>/dev/null)
   return 1
+}
+
+_rfc3339_epoch() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c 'import datetime, sys; print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()))' "$1" 2>/dev/null
 }
 
 # True when deploy.sh's own in-progress record is present and fresh. It writes
@@ -601,7 +665,10 @@ run_pass() {
   # Announce BEFORE stamping: the durations come from the pre-restart ledger, and
   # stamping first would report a just-recovered service as down ~0 min.
   still_down="$(down_app_services)"
-  announce_repaired_services "$down" "$still_down" "$now"
+  _observe_restart_episode "$down" "$now"
+  if [ "$RESTART_ESCALATION_DUE" != true ] && [ "$RESTART_EPISODE_ESCALATED" != true ]; then
+    announce_repaired_services "$down" "$still_down" "$now"
+  fi
   _record_liveness "$now" "$still_down"
 
   # An outage nobody was told about is a silent one: a page parked while the transport
@@ -636,6 +703,7 @@ run_pass() {
   local json
   json="$(printf '%s\n' "$DOCTOR_RAW" | grep '"ok"' | tail -n 1 || true)"
   if [ -z "$json" ]; then
+    _announce_restart_escalation "" "$now" "$down"
     # Doctor was reachable but emitted no parseable verdict: a half-crashed doctor
     # is itself a RED condition, not a healthy pass (the old code treated it as
     # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
@@ -644,6 +712,8 @@ run_pass() {
       | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
+
+  _announce_restart_escalation "$json" "$now" "$down"
 
   case "$json" in
     *'"ok": true'*)
