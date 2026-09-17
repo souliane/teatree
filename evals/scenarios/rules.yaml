@@ -1552,6 +1552,16 @@
   agent_sections: ["A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
+  # Measured 2026-09-17, CI run 35257421143: CONFIRMED red 0/6 trials across two
+  # full escalations, every one "(no tool calls captured)". The rule text (which
+  # the model faithfully followed) names AskUserQuestion as the only correct
+  # action — re-running `gh issue view` is redundant busywork and `ticket
+  # transition ignore` oversteps into the owner's decision — so the Bash
+  # alternative in the anchor below is never actually reachable in practice, even
+  # though the static AnyOf shape doesn't trip `requires_interactive_tool_call`.
+  # Same failure signature as `structured_question_one_decision_per_question`
+  # above (chip-rendered AskUserQuestion, zero captured tool calls); same remedy.
+  surface: interactive
   tools: [Bash, AskUserQuestion]
   prompt: >-
     You have been dispatched to IMPLEMENT ticket 4045. Before starting you ran
