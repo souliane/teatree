@@ -191,6 +191,32 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         assert newest.state == Ticket.State.IGNORED
         assert older.state == Ticket.State.PLANNED
 
+    def test_remaining_of_one_lets_rule_e_take_the_only_probe(self) -> None:
+        """#4808 FINDING 2: the reservation floor is ``remaining // 2``, which is 0 at remaining==1.
+
+        A rule-E DELIVERED candidate exists alongside this test's own rule-F
+        candidate, so — unlike ``test_the_probe_budget_bounds_the_rule`` above,
+        which passes only because it has no rule-E candidate — this actually
+        exercises the smallest budget where the two rules compete. Rule E runs
+        first and the floor guarantees F nothing at ``remaining == 1``: E takes
+        the sole probe and F is never even read this run.
+        """
+        delivered = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.DELIVERED,
+            issue_url="https://github.com/souliane/teatree/issues/9001",
+        )
+        ticket = self._ticket()
+
+        with _forge(_NOT_PLANNED):
+            report = reconcile_board(probe_budget=1)
+
+        ticket.refresh_from_db()
+        delivered.refresh_from_db()
+        assert ticket.state == Ticket.State.PLANNED
+        assert delivered.state == Ticket.State.DELIVERED
+        assert report.probes == 1
+
     def test_a_url_no_overlay_owns_is_never_charged_as_a_probe(self) -> None:
         """The reported spend counts reads ISSUED, not candidates considered."""
         self._ticket()

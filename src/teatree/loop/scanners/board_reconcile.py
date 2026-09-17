@@ -186,9 +186,14 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
     pool is typically far larger than rule F's pre-ship pool, so letting E spend the
     whole post-B/C remainder (the original split) starved F to near zero on a live
     board — measured at 2 probes/run against 46 candidates (#4711 follow-up). Rule E is
-    now CAPPED at half of what B/C left, guaranteeing F at least the other half; either
-    rule's unused share still rolls to the other, so the total cost never exceeds
-    *probe_budget*.
+    now CAPPED at half of what B/C left, OR at rule F's own live candidate count,
+    whichever is smaller — a fixed half still stranded probes whenever F's queue was
+    shorter than its reservation (measured: 5 probes spent of 10 available when F had 0
+    candidates against 10 rule-E ones). Only E's unused share rolls forward to F, because
+    E runs first; F's own unused share can never roll back to E, since E has already
+    spent its capped share by the time F runs. The reservation is a floor, not a
+    guarantee at every budget: ``remaining // 2`` is 0 when *remaining* is 0 or 1, so at
+    those smallest budgets rule E can still take the only probe even when F has work.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
@@ -202,7 +207,7 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     remaining = probe_budget - len(states)
-    reserved_for_f = max(remaining // 2, 0)
+    reserved_for_f = min(max(remaining // 2, 0), _rule_f_candidate_count(overlay))
     reopened, reopen_probes = _reopened_issue_transitions(
         overlay=overlay, dry_run=dry_run, probe_budget=remaining - reserved_for_f
     )
@@ -215,6 +220,26 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
     )
     transitions.extend(closed)
     return transitions, len(states) + reopen_probes + close_probes
+
+
+def _rule_f_candidate_count(overlay: str) -> int:
+    """Rule F's raw pre-ship candidate count — an upper bound for its probe reservation.
+
+    A plain DB ``count()``, never a forge read, so it costs nothing to call before E
+    runs. It is an upper bound rather than an exact figure: the real
+    ``already_moved`` exclusion (rows E revives this same tick) is not known yet, but
+    that can only make the reservation too generous, never starve F below what it
+    will actually spend.
+    """
+    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    return scoped(
+        Ticket.objects.filter(state__in=Ticket.pre_ship_states())
+        .exclude(issue_url="")
+        .exclude(role=Ticket.Role.REVIEWER)
+        .filter(remote_missing=False),
+        overlay,
+    ).count()
 
 
 def _settled_states() -> frozenset[str]:

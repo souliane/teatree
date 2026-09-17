@@ -665,6 +665,23 @@ class TestReopenedIssueRule(TestCase):
 
         assert len(urls.call_args.args[0]) == 1
 
+    def test_rule_e_is_not_capped_when_rule_f_has_no_candidates(self) -> None:
+        """#4808: the reservation is demand-aware — F's cap can't exceed its own candidates.
+
+        Ten DELIVERED candidates outnumber the ten-probe budget and rule F is
+        completely inert (no pre-ship tickets at all). A FIXED half-split
+        (``remaining // 2``) would still hand F a reservation of 5 it has nothing
+        to spend on and cap rule E at the other 5, stranding half the budget —
+        measured at 5 probes/10 on the pre-fix split versus all 10 here.
+        """
+        for n in range(10):
+            self._delivered(url=f"https://github.com/souliane/teatree/issues/60{n}")
+
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=set()) as urls:
+            reconcile_board(probe_budget=10)
+
+        assert len(urls.call_args.args[0]) == 10
+
 
 class TestReportIsObservable(TestCase):
     """The janitor must report WHAT it changed and WHY, independent of the tick's own message."""
