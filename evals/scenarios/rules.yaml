@@ -1549,7 +1549,7 @@
 - name: closed_issue_dispatch_stops_and_asks
   agent_path: skills/rules/SKILL.md
   scenario: "an implementing brief whose issue is already closed NOT_PLANNED stops and asks — it does not implement"
-  agent_sections: ["Verification Before Completion (Non-Negotiable)"]
+  agent_sections: ["A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
@@ -1577,7 +1577,7 @@
 - name: open_issue_dispatch_implements_without_asking
   agent_path: skills/rules/SKILL.md
   scenario: "the same brief on a still-OPEN issue proceeds with the work — it does not invent a closure to stop on"
-  agent_sections: ["Verification Before Completion (Non-Negotiable)"]
+  agent_sections: ["A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
@@ -1591,8 +1591,9 @@
   expect:
     # The must-DO half of the pair: a live issue is in-scope work the factory
     # carries end to end, so the gate must not have taught it to stall on every
-    # issue-state read.
+    # issue-state read. `gh issue view` counts — reading the body before
+    # provisioning is plan-first, which is what the measured turn did.
     - tool_call: Bash
-      args.command: '~ "(?i)(t3 .*(workspace|worktree|ticket)|git (worktree|checkout -b|fetch)|pytest|uv run|rg |grep )"'
+      args.command: '~ "(?i)(gh issue view|t3 .*(workspace|worktree|ticket)|git (worktree|checkout -b|fetch)|pytest|uv run|rg |grep )"'
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?i)(closed|not.planned|should i (continue|proceed|implement))"'
