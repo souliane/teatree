@@ -552,15 +552,17 @@ drain_worker() {
 # before replacing the old admin. Falling through to the ordinary admin-first swap
 # would briefly leave both control-plane routes down.
 start_contained_worker_route() {
-    local deadline=$((SECONDS + RESUME_TIMEOUT))
+    local deadline
     archive_service_logs teatree-worker teatree-slack-listener
     compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
     _WORKER_SWAPPED=true
-    while [ "$SECONDS" -lt "$deadline" ]; do
+    deadline=$((SECONDS + RESUME_TIMEOUT))
+    while :; do
         if worker_route_answers; then
             echo "deploy: fresh worker route is answering; the old admin can now be swapped."
             return 0
         fi
+        [ "$SECONDS" -lt "$deadline" ] || break
         sleep 5
     done
     echo "deploy: FATAL — the fresh worker route did not answer within ${RESUME_TIMEOUT}s; leaving the old admin serving and refusing to swap it." >&2

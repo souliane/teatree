@@ -86,7 +86,13 @@ class TestDeployShRunDerivesWorkerCaps:
             "    exec) echo '{\"running\": true}'; exit 0;;\n"
             # The staged swap polls init's terminal state before it swaps anything.
             "    ps) echo stubcid; exit 0;;\n"
-            "    inspect) echo 'exited 0'; exit 0;;\n"
+            "    inspect)\n"
+            '      case "$*" in\n'
+            "        *State.ExitCode*) echo 'exited 0';;\n"
+            "        *State.Status*RestartCount*) echo 'running/0';;\n"
+            "        *State.Status*) echo running;;\n"
+            "      esac\n"
+            "      exit 0;;\n"
             "  esac\n"
             "done\n"
             "exit 0\n",
