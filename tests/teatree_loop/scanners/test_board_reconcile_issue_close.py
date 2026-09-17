@@ -220,6 +220,27 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLANNED
 
+    def test_rule_f_still_gets_probes_when_rule_e_candidates_exceed_the_remaining_budget(self) -> None:
+        """The starvation this pins (#4711 follow-up): E's DELIVERED pool must not eat F's whole share.
+
+        Five rule-E candidates outnumber the tiny budget below, so under the original
+        "E spends the whole remainder" split F would have been left with 0 probes.
+        """
+        for n in range(5):
+            Ticket.objects.create(
+                overlay="t3-teatree",
+                state=Ticket.State.DELIVERED,
+                issue_url=f"https://github.com/souliane/teatree/issues/50{n}",
+            )
+        ticket = self._ticket()
+
+        with _forge(_NOT_PLANNED):
+            report = reconcile_board(probe_budget=4)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert [t.action for t in report.applied if t.ticket_id == ticket.pk] == [BoardAction.IGNORED_ISSUE_CLOSED]
+
 
 @contextlib.contextmanager
 def _dirty(paths: list[str]) -> Iterator[None]:

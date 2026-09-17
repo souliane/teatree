@@ -182,8 +182,12 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
 
     Newest-ticket-first, because a freshly merged PR is what makes the board
     untrustworthy minute to minute; the budget is what keeps an unbounded backlog
-    from turning the janitor into the thing that saturates the box. Rules E and F each
-    spend what the rules before them left, so the whole run still costs at most
+    from turning the janitor into the thing that saturates the box. Rule E's DELIVERED
+    pool is typically far larger than rule F's pre-ship pool, so letting E spend the
+    whole post-B/C remainder (the original split) starved F to near zero on a live
+    board — measured at 2 probes/run against 46 candidates (#4711 follow-up). Rule E is
+    now CAPPED at half of what B/C left, guaranteeing F at least the other half; either
+    rule's unused share still rolls to the other, so the total cost never exceeds
     *probe_budget*.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
@@ -197,14 +201,16 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
+    remaining = probe_budget - len(states)
+    reserved_for_f = max(remaining // 2, 0)
     reopened, reopen_probes = _reopened_issue_transitions(
-        overlay=overlay, dry_run=dry_run, probe_budget=probe_budget - len(states)
+        overlay=overlay, dry_run=dry_run, probe_budget=remaining - reserved_for_f
     )
     transitions.extend(reopened)
     closed, close_probes = closed_issue_transitions(
         overlay=overlay,
         dry_run=dry_run,
-        probe_budget=probe_budget - len(states) - reopen_probes,
+        probe_budget=remaining - reopen_probes,
         already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
     )
     transitions.extend(closed)
