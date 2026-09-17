@@ -523,7 +523,7 @@ class TestReopenedIssueRule(TestCase):
     def test_a_delivered_ticket_behind_a_reopened_issue_is_revived(self) -> None:
         ticket = self._delivered()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             report = reconcile_board()
 
         ticket.refresh_from_db()
@@ -534,7 +534,7 @@ class TestReopenedIssueRule(TestCase):
         """The false-positive population — delivered, issue never closed — must not be re-run."""
         ticket = self._delivered()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=set()):
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
@@ -543,7 +543,7 @@ class TestReopenedIssueRule(TestCase):
     def test_the_reopened_lane_is_idempotent(self) -> None:
         ticket = self._delivered()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             assert len(reconcile_board().applied) == 1
             assert reconcile_board().applied == ()
 
@@ -554,7 +554,7 @@ class TestReopenedIssueRule(TestCase):
         """A reviewer ticket's ``issue_url`` IS a PR — rules B/C own it, not this one."""
         reviewer = self._delivered(role=Ticket.Role.REVIEWER)
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             assert reconcile_board().applied == ()
 
         reviewer.refresh_from_db()
@@ -563,7 +563,7 @@ class TestReopenedIssueRule(TestCase):
     def test_dry_run_reports_the_revival_without_writing(self) -> None:
         ticket = self._delivered()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             report = reconcile_board(dry_run=True)
 
         ticket.refresh_from_db()
@@ -596,7 +596,7 @@ class TestReopenedIssueRule(TestCase):
         ticket = self._delivered()
         applied = 0
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             for _ in range(board_reconcile.MAX_REOPEN_REVIVALS + 2):
                 applied += len(reconcile_board().applied)
                 ticket.refresh_from_db()
@@ -609,7 +609,7 @@ class TestReopenedIssueRule(TestCase):
         """The cap must not become the silence this rule exists to remove."""
         ticket = self._capped()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             assert reconcile_board().applied == ()
             assert reconcile_board().applied == ()
 
@@ -621,7 +621,7 @@ class TestReopenedIssueRule(TestCase):
         """Answering does not move the ticket off DELIVERED, so a per-PENDING guard would re-ask hourly."""
         ticket = self._capped()
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
             reconcile_board()
             DeferredQuestion.objects.update(answered_at=timezone.now())
             reconcile_board()
@@ -660,7 +660,7 @@ class TestReopenedIssueRule(TestCase):
         for n in range(3):
             self._delivered(url=f"https://github.com/souliane/teatree/issues/70{n}")
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=set()) as urls:
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)) as urls:
             reconcile_board(probe_budget=1)
 
         assert len(urls.call_args.args[0]) == 1
@@ -677,10 +677,25 @@ class TestReopenedIssueRule(TestCase):
         for n in range(10):
             self._delivered(url=f"https://github.com/souliane/teatree/issues/60{n}")
 
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=set()) as urls:
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)) as urls:
             reconcile_board(probe_budget=10)
 
         assert len(urls.call_args.args[0]) == 10
+
+    def test_a_url_no_overlay_owns_is_never_charged_as_a_probe(self) -> None:
+        """#4808 FINDING 3 (pre-existing): the reported spend counts reads ISSUED, not candidates considered.
+
+        Rule F already had this guarantee (``_closed_issue_verdicts``); rule E's
+        ``_reopened_issue_transitions`` used to charge ``len(probed)`` regardless of
+        whether any read was actually issued, so a ticket whose overlay was not
+        installed here was charged for a read that never happened.
+        """
+        self._delivered()
+
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value={}):
+            report = reconcile_board()
+
+        assert (report.applied, report.probes) == ((), 0)
 
 
 class TestReportIsObservable(TestCase):

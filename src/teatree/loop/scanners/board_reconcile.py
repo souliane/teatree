@@ -405,31 +405,36 @@ def _reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: in
             len(candidates),
             len(candidates) - len(probed),
         )
-    reopened = _reopened_issue_urls(probed)
+    reopened, reads = _reopened_issue_urls(probed)
     transitions = collect(
         [t for t in probed if t.issue_url in reopened],
         lambda ticket: _revive_reopened(ticket, dry_run=dry_run),
     )
-    return transitions, len(probed)
+    return transitions, reads
 
 
-def _reopened_issue_urls(tickets: "list[Ticket]") -> set[str]:
+def _reopened_issue_urls(tickets: "list[Ticket]") -> tuple[set[str], int]:
     """The subset of *tickets*' issue URLs their own overlay's forge reports as REOPENED.
 
     Grouped by the ticket's own overlay for the same reason rule D groups: each URL is
     judged by the overlay that owns it, and a ticket whose overlay is not installed here
     is simply not judged. Only a DEFINITE ``REOPENED`` counts — the ``UNKNOWN`` every
     failure and every forge without a reopen marker collapses to leaves the ticket alone.
+
+    The second element counts the reads actually ISSUED, not the candidates considered
+    (mirrors rule F's ``_closed_issue_verdicts``), so a ticket whose overlay is not
+    installed here is never charged against the probe budget.
     """
     from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: registry read at call time
 
     overlays = get_all_overlays()
-    return {
+    judged = [ticket for ticket in tickets if ticket.overlay in overlays]
+    reopened = {
         ticket.issue_url
-        for ticket in tickets
-        if ticket.overlay in overlays
-        and issue_reopen_state(overlays[ticket.overlay], ticket.issue_url) is IssueReopenState.REOPENED
+        for ticket in judged
+        if issue_reopen_state(overlays[ticket.overlay], ticket.issue_url) is IssueReopenState.REOPENED
     }
+    return reopened, len(judged)
 
 
 def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | None:
