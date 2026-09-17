@@ -199,3 +199,42 @@ class TestAnsweringWorkItemBlock(TestCase):
         lines = phase_specific_lines(self._answering_task(implies_work=False), [])
 
         assert not any("work_item" in line for line in lines)
+
+
+class TestReviewingGreenProofBinding(TestCase):
+    """#4720: a reviewing brief binds `verify-gates` to the head, so it cannot grade the default branch."""
+
+    _HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+    def _reviewer_task(self, *, issue_url: str, reviewed_sha: str) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.STARTED,
+            issue_url=issue_url,
+            extra={"reviewed_sha": reviewed_sha} if reviewed_sha else {},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def _brief(self, **kwargs: str) -> str:
+        return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
+
+    def test_brief_names_the_head_and_the_expect_sha_command(self) -> None:
+        brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
+        assert f"GREEN-PROOF BINDING: the head under review is {self._HEAD}." in brief
+        assert f"t3 tool verify-gates --expect-sha {self._HEAD}" in brief
+        assert "https://github.com/o/r/pull/42" in brief
+
+    def test_brief_names_the_forge_check_runs_as_the_merge_authority(self) -> None:
+        assert "check-runs" in self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
+
+    def test_no_recorded_head_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha="")
+
+    def test_a_ticket_answerable_for_no_pull_request_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in self._brief(
+            issue_url="https://github.com/o/r/issues/42", reviewed_sha=self._HEAD
+        )
+
+    def test_a_coding_brief_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in "\n".join(phase_specific_lines(_task("coding"), []))

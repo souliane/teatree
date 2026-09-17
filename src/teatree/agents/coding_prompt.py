@@ -138,7 +138,8 @@ def _coding_phase_directive(
         f"VERIFY (CI-parity): before declaring done, run `{_VERIFY_GATES_COMMAND}`. It runs BOTH the",
         "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
         "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
-        "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
+        "re-runs. Report the SHA it says it measured TOGETHER WITH its exit code as the green-proof —",
+        "an exit code alone does not say which tree earned it, and a commit-stage-only run is not proof.",
         *_TEST_SELECTION_LINES,
         *_HEARTBEAT_DM_LINES,
     ]

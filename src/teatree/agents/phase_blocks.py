@@ -25,6 +25,7 @@ from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
+from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -293,6 +294,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "1. Do a thorough code review of all changes on this ticket's branch.",
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
+        *_green_proof_binding_lines(task),
         *_REVIEW_VERDICT_RETURN_LINES,
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
@@ -300,6 +302,31 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
     if fanout := _phase_fanout_directive(task):
         lines.append(fanout)
     return tuple(lines)
+
+
+def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
+    """Bind the reviewer's green-proof to the dispatched head, or ``()`` (#4720).
+
+    ``t3 tool verify-gates`` grades whatever tree the shell is in, and a reviewer
+    never leaves the main clone unless they make a worktree — so it measured
+    ``origin/main`` and exited 0 while the reviewed head carried six failing
+    check-runs, across eight consecutive reviews of one PR.
+    """
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return ()
+    head = target.head_sha
+    return (
+        "",
+        f"GREEN-PROOF BINDING: the head under review is {head}.",
+        "`t3 tool verify-gates` grades whatever tree your shell is in — from the main clone it",
+        "measures the default branch and says nothing about this PR. Bind it to the head, or do",
+        "not report it at all:",
+        f"  t3 review checkout {task.ticket.issue_url} --sha {head} --base-dir /var/tmp",
+        f"  cd <that dir> && t3 tool verify-gates --expect-sha {head}",
+        "Report its exit code WITH the SHA it printed. It covers the prek hooks only — the merge",
+        f"authority is the forge's check-runs at {head[:12]}, so read those before grading CI green.",
+    )
 
 
 def _answering_phase_lines(task: Task) -> tuple[str, ...]:

@@ -4027,12 +4027,20 @@ Usage: t3 tool verify-gates [OPTIONS]
  pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
- gate). The full test suite is NOT a push gate -- push -> CI runs it. Report
- this command's exit code as the green-proof
- before declaring a branch review-ready -- not a commit-stage-only run.
+ gate). The full test suite is NOT a push gate -- push -> CI runs it.
+
+ Report the measured SHA it prints TOGETHER WITH its exit code as the
+ green-proof — an exit code alone does not say which tree earned it. Exits 2
+ without grading anything when the tree is not a git checkout, is not the
+ ``--expect-sha`` target, or is a clean main clone on its default branch.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
+│                                 at; any other tree is refused.               │
+│                                 [env var: T3_VERIFY_GATES_EXPECT_SHA]        │
+│ --allow-main-clone              Grade a clean main clone on its default      │
+│                                 branch (refused by default).                 │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
