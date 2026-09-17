@@ -135,19 +135,27 @@ class TicketStateSetsModel(TicketFacet):
         return frozenset({cls.State.SHIPPED, cls.State.IN_REVIEW, cls.State.MERGED})
 
     @classmethod
-    def dispositionable_states(cls) -> frozenset[str]:
-        """Pre-ship states whose remote issue drifting still warrants a disposition.
+    def pre_ship_states(cls) -> frozenset[str]:
+        """States in which NOTHING has shipped yet — the board janitor's rule-F candidates.
 
-        Derived as everything before SHIPPED rather than enumerated: the hand-written
-        list this replaces omitted PLANNED, and every one of the twelve tickets the
-        owner closed NOT_PLANNED in the 2026-08-31 tracker sweep sat exactly there —
-        so the disposition scanner never fetched their issue, the auto-ignore it
-        drives never fired, and the coder was re-offered each one indefinitely
-        (#2663). SHIPPED and past is ``completable_states()``' half of the ladder:
-        once a PR exists the question is completion, not cancellation.
+        Derived as the complement of the post-ship walk, the merged-or-past lifecycle and
+        the two terminals, so a state added later cannot escape both this set and
+        ``completable_states()`` unnoticed. A ticket here whose own issue the forge closed
+        never shipped anything, which is why rule F retires it to IGNORED rather than
+        walking it to DELIVERED — that walk would claim a delivery that never happened
+        (#4711).
+
+        The disposition scanner (#2663) reads it too, under its own name no longer:
+        every state here is exactly what a hand-written list previously enumerated as
+        "dispositionable" and separately omitted PLANNED from — deriving both callers off
+        one method means a state added later can't drift the two out of sync again.
         """
-        shipped = cls.state_index(cls.State.SHIPPED)
-        return frozenset(state for state in cls.State.values if cls.state_index(state) < shipped)
+        return (
+            frozenset(cls.State.values)
+            - cls.completable_states()
+            - cls.merged_states()
+            - {cls.State.REVIEW_POSTED, cls.State.IGNORED}
+        )
 
     @classmethod
     def issue_owning_states(cls) -> frozenset[str]:

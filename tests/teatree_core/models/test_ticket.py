@@ -720,8 +720,8 @@ class TestTicketStateSets(TestCase):
         # intake can never re-admit an issue a live ticket already holds (#4133).
         assert Ticket.issue_owning_states() == frozenset(Ticket.State.values) - {Ticket.State.IGNORED}
 
-    def test_dispositionable_states_membership(self) -> None:
-        assert Ticket.dispositionable_states() == frozenset(
+    def test_pre_ship_states_membership(self) -> None:
+        assert Ticket.pre_ship_states() == frozenset(
             {
                 Ticket.State.NOT_STARTED,
                 Ticket.State.SCOPED,
@@ -733,28 +733,26 @@ class TestTicketStateSets(TestCase):
             },
         )
 
-    def test_dispositionable_states_includes_planned(self) -> None:
-        # The #2663 defect: the scanner's hand-listed set skipped PLANNED, so twelve
-        # tickets whose issue the owner closed NOT_PLANNED were never auto-ignored.
-        assert Ticket.State.PLANNED in Ticket.dispositionable_states()
+    def test_pre_ship_and_post_ship_partition_every_state(self) -> None:
+        # Derived, not enumerated (#4711): a State added later must land in exactly one
+        # of the two sets, so it cannot escape BOTH the completion rule and rule F.
+        post_ship = Ticket.completable_states() | Ticket.merged_states()
+        terminals = {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+        assert Ticket.pre_ship_states() & post_ship == frozenset()
+        assert Ticket.pre_ship_states() & terminals == frozenset()
+        assert Ticket.pre_ship_states() | post_ship | terminals == frozenset(Ticket.State.values)
 
-    def test_dispositionable_states_is_every_pre_ship_state(self) -> None:
-        # Derived intent: the pre-PR states an operator can still cancel. SHIPPED and
-        # everything past it belong to the post-ship completion sweep instead, so the
-        # two sets partition the non-terminal ladder with RETROSPECTED the only gap
-        # (it sits between MERGED and DELIVERED, past every disposition decision).
-        shipped = Ticket.state_index(Ticket.State.SHIPPED)
-        pre_ship = {state for state in Ticket.State.values if Ticket.state_index(state) < shipped}
-        assert Ticket.dispositionable_states() == frozenset(pre_ship)
+    def test_pre_ship_states_includes_planned(self) -> None:
+        # The #2663 defect: the disposition scanner's hand-listed set skipped PLANNED,
+        # so twelve tickets whose issue the owner closed NOT_PLANNED were never
+        # auto-ignored.
+        assert Ticket.State.PLANNED in Ticket.pre_ship_states()
 
-    def test_dispositionable_and_completable_states_are_disjoint(self) -> None:
-        assert not (Ticket.dispositionable_states() & Ticket.completable_states())
-
-    def test_every_dispositionable_state_can_be_ignored(self) -> None:
-        # The set only pays off if the auto-ignore the signal drives is a legal FSM
+    def test_every_pre_ship_state_can_be_ignored(self) -> None:
+        # The disposition scanner's auto-ignore only pays off if it is a legal FSM
         # edge from every member — a state in the set the FSM refuses would emit a
         # signal the mechanical handler can never act on.
-        for state in sorted(Ticket.dispositionable_states()):
+        for state in sorted(Ticket.pre_ship_states()):
             ticket = Ticket.objects.create(overlay="acme", issue_url=f"https://example.com/issues/{state}", state=state)
             assert can_proceed(ticket.ignore), f"ignore must be reachable from {state}"
 
@@ -766,7 +764,7 @@ class TestTicketStateSets(TestCase):
             "completable_states",
             "merged_states",
             "issue_owning_states",
-            "dispositionable_states",
+            "pre_ship_states",
         ):
             states = getattr(Ticket, name)()
             assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"

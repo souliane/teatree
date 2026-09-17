@@ -13,8 +13,8 @@ The other two only **report** — the dispatcher sends them to the statusline
 ``action_needed`` zone, because whether a reassignment or a pulled label should
 cancel the work is the operator's call.
 
-The walked set is ``Ticket.dispositionable_states()``, every state before
-SHIPPED. Past that a PR exists and the question is completion rather than
+The walked set is ``Ticket.pre_ship_states()``, every state before SHIPPED.
+Past that a PR exists and the question is completion rather than
 cancellation — ``TicketCompletionScanner`` and ``MyPrsScanner`` own it.
 """
 
@@ -192,7 +192,7 @@ class TicketDispositionScanner:
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
         qs = (
-            ticket_model.objects.filter(state__in=ticket_model.dispositionable_states())
+            ticket_model.objects.filter(state__in=ticket_model.pre_ship_states())
             .exclude(issue_url="")
             .filter(remote_missing=False)
         )

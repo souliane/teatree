@@ -155,17 +155,17 @@ class TicketDispositionScannerTests(TestCase):
         assert [s.payload["reason"] for s in signals] == ["issue_closed"]
         assert signals[0].payload["ticket_state"] == Ticket.State.PLANNED
 
-    def test_walks_every_dispositionable_state(self) -> None:
-        for state in sorted(Ticket.dispositionable_states()):
+    def test_walks_every_pre_ship_state(self) -> None:
+        for state in sorted(Ticket.pre_ship_states()):
             Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)
         host = _Host(
             issues_by_url={
                 f"{self.URL}/{state}": {**self._open_ready_issue(), "state": "closed"}
-                for state in Ticket.dispositionable_states()
+                for state in Ticket.pre_ship_states()
             },
         )
         signals = self._scanner(host).scan()
-        assert sorted(s.payload["ticket_state"] for s in signals) == sorted(Ticket.dispositionable_states())
+        assert sorted(s.payload["ticket_state"] for s in signals) == sorted(Ticket.pre_ship_states())
 
     def test_skips_tickets_in_post_pr_states(self) -> None:
         for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED, Ticket.State.DELIVERED):
