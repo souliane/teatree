@@ -95,7 +95,7 @@ Run this **before** the cleanup checklist. Resolve any conflicts the same way yo
 cd <worktree> && t3 <overlay> run tests -- <paths>   # `--path` also works; everything after `--` reaches pytest verbatim
 ```
 
-Where it differs from CI: this lane inherits the `pyproject.toml` addopts (`-n auto --reuse-db`, no coverage), while CI's authority lane is a 12-way `pytest-split` shard adding `--doctest-modules --cov` and enforcing the 93% floor over the combined shards. So a green local run proves the selected tests pass, never the coverage floor — say which you ran when the verdict leans on it.
+Where it differs from CI: this lane inherits the `pyproject.toml` addopts (`-n auto --reuse-db`, no coverage), while CI's authority lane is a 12-way `pytest-split` shard adding `--doctest-modules --cov` and enforcing the 93% floor over the combined shards. So a green local run proves the selected tests pass, never the coverage floor — say which you ran when the verdict leans on it. The same applies to `t3 tool verify-gates`: it takes no target, so grade the reviewed head (`t3 review checkout <pr-url> --sha <head>`, then `t3 tool verify-gates --expect-sha <head>`) and quote the SHA it says it measured — an exit code from the main clone is a green for `origin/main`, not for the PR, and the forge at the reviewed SHA (`gh api repos/<o>/<r>/commits/<sha>/check-runs`) stays the authority on CI.  <!-- mcp-ratchet: allow — the per-SHA check-runs read has no MCP tool, and `gh pr checks` answers only for the PR's CURRENT head, which is the confusion this line exists to prevent -->
 
 #### Two Axes: Read the Diff Three-Dot, MEASURE on the Merge Result (Non-Negotiable)
 

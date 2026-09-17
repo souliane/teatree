@@ -69,7 +69,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Branch Currency Before Gates — a clean tree is not a mergeable tree
 
-`t3 tool verify-gates` validates the CURRENT worktree against ITSELF. It says nothing about whether the branch still merges into its target, so a ticket can pass every local gate and still be unmergeable. A coding phase that finished cleanly proves none of it: one commit, a clean `git status`, and a `git log origin/main..HEAD` showing only the ticket's own commit are all consistent with a branch that is dozens of commits behind, because the local `origin/main` ref is only as fresh as the last fetch.
+`t3 tool verify-gates` validates whatever worktree you run it in, against ITSELF — it prints the checkout, SHA and branch it measured, so quote that SHA with the exit code and bind the run with `--expect-sha <head>` when a specific head is the target. It says nothing about whether the branch still merges into its target, so a ticket can pass every local gate and still be unmergeable. A coding phase that finished cleanly proves none of it: one commit, a clean `git status`, and a `git log origin/main..HEAD` showing only the ticket's own commit are all consistent with a branch that is dozens of commits behind, because the local `origin/main` ref is only as fresh as the last fetch.
 
 So the testing phase's FIRST action is the currency read, before any gate or test run:
 
