@@ -119,7 +119,7 @@ def _live_owner(slot: str) -> str:
     from django.utils import timezone  # noqa: PLC0415 — deferred: keeps this module importable pre-Django
 
     row = LoopLease.objects.filter(name=slot).values("owner", "lease_expires_at").first()
-    if not row or not (row["owner"] or ""):
+    if not row or not row["owner"]:
         return ""
     expires = row["lease_expires_at"]
     return str(row["owner"]) if expires is not None and expires > timezone.now() else ""
