@@ -559,6 +559,27 @@ class TestAnIrregularContractionIsNotATruncatedEdge:
         verdict = _verdict(cut_after_apostrophe, _POSSESSIVE_SNIPPET)
         assert verdict.reason is not None
 
+    @pytest.mark.parametrize(
+        ("label", "snippet"),
+        [
+            ("opening-quote-mid-sentence", "Before pushing run 'prek run --all-files' once and read its exit code."),
+            ("opening-quote-at-snippet-start", "'prek run --all-files' is the whole gate and nothing else is."),
+            (
+                "curly-quote-folded-by-normalize_ws",
+                "The skill says \u2018prek run --all-files\u2019 before every push.",
+            ),
+        ],
+    )
+    def test_a_citation_after_an_opening_quote_is_still_verbatim(self, label: str, snippet: str) -> None:
+        # The control the left-edge rule must not break: `'prek` is a quoted phrase, `agent'|s`
+        # is a cut inside a word, and only a letter BEFORE the apostrophe tells them apart.
+        # Short enough that the snap cannot rescue it, so the strict path alone decides.
+        quoted = "prek run --all-files"
+        assert len(quoted) < _SNAP_MIN_CITATION_CHARS
+        verdict = _verdict(quoted, snippet)
+        assert verdict.reason is None, label
+        assert verdict.cluster.verified_citation == quoted, label
+
     def test_a_citation_through_the_whole_contraction_is_still_admitted(self) -> None:
         # The control: quoting PAST the apostrophe, not stopping at it, is a real quote.
         whole_word = normalize_ws("The keystone refuses the merge because a stale branch can't clear the gate")

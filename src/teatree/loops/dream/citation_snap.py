@@ -127,9 +127,10 @@ def verbatim_spans(citation: str, snippet: str) -> Iterator[tuple[int, int]]:
 
     The boundary also refuses a stem cut off an APOSTROPHE contraction: `can't` is `ca`+`n't`
     and `won't` is `wo`+`n't`, so the letter before the cut carries no `n` to catch — only
-    the apostrophe itself marks the edge, on either side of it.
+    the apostrophe itself marks the edge, on either side of it. An apostrophe is an edge only
+    with a letter on its far side: `agent'|s` is a cut inside a word, `'|prek run` is a quote.
     """
-    pattern = rf"(?<![0-9A-Za-z])(?<!'){re.escape(citation)}(?!'?[0-9A-Za-z])"
+    pattern = rf"(?<![0-9A-Za-z])(?<![0-9A-Za-z]'){re.escape(citation)}(?!'?[0-9A-Za-z])"
     return (match.span() for match in re.finditer(pattern, snippet))
 
 
