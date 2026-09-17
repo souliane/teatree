@@ -146,6 +146,27 @@ class TicketDispositionScannerTests(TestCase):
         reasons = sorted(s.payload["reason"] for s in signals)
         assert reasons == ["issue_closed", "label_removed", "unassigned"]
 
+    def test_flags_closed_issue_on_a_planned_ticket(self) -> None:
+        # #2663: PLANNED was missing from the walked set, so the twelve tickets whose
+        # issue the owner closed NOT_PLANNED were re-offered to the coder forever.
+        self._ticket(state=Ticket.State.PLANNED)
+        host = _Host(issues_by_url={self.URL: {**self._open_ready_issue(), "state": "closed"}})
+        signals = self._scanner(host).scan()
+        assert [s.payload["reason"] for s in signals] == ["issue_closed"]
+        assert signals[0].payload["ticket_state"] == Ticket.State.PLANNED
+
+    def test_walks_every_dispositionable_state(self) -> None:
+        for state in sorted(Ticket.dispositionable_states()):
+            Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)
+        host = _Host(
+            issues_by_url={
+                f"{self.URL}/{state}": {**self._open_ready_issue(), "state": "closed"}
+                for state in Ticket.dispositionable_states()
+            },
+        )
+        signals = self._scanner(host).scan()
+        assert sorted(s.payload["ticket_state"] for s in signals) == sorted(Ticket.dispositionable_states())
+
     def test_skips_tickets_in_post_pr_states(self) -> None:
         for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED, Ticket.State.DELIVERED):
             Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)

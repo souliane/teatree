@@ -135,6 +135,21 @@ class TicketStateSetsModel(TicketFacet):
         return frozenset({cls.State.SHIPPED, cls.State.IN_REVIEW, cls.State.MERGED})
 
     @classmethod
+    def dispositionable_states(cls) -> frozenset[str]:
+        """Pre-ship states whose remote issue drifting still warrants a disposition.
+
+        Derived as everything before SHIPPED rather than enumerated: the hand-written
+        list this replaces omitted PLANNED, and every one of the twelve tickets the
+        owner closed NOT_PLANNED in the 2026-08-31 tracker sweep sat exactly there —
+        so the disposition scanner never fetched their issue, the auto-ignore it
+        drives never fired, and the coder was re-offered each one indefinitely
+        (#2663). SHIPPED and past is ``completable_states()``' half of the ladder:
+        once a PR exists the question is completion, not cancellation.
+        """
+        shipped = cls.state_index(cls.State.SHIPPED)
+        return frozenset(state for state in cls.State.values if cls.state_index(state) < shipped)
+
+    @classmethod
     def issue_owning_states(cls) -> frozenset[str]:
         """States in which a ticket OWNS its issue URL, so intake must not re-admit it.
 

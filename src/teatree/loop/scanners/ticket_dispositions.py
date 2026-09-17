@@ -7,14 +7,15 @@ Three signals can suggest a ticket should be ignored or torn down:
 2. The issue was reassigned away from the active user.
 3. The configured ready-label was removed by a colleague.
 
-This scanner only **reports** these conditions — it never transitions the
-:class:`Ticket` or tears down the worktree on its own. The dispatcher routes
-each finding to the statusline ``action_needed`` zone so the operator can
-review and decide (transition to ``IGNORED``, run ``worktree teardown``,
-reassign back, etc.).
+``issue_closed`` is acted on: ``loop.dispatch`` routes it to the mechanical
+``ignore_disposed_ticket`` (#1087), which transitions the ticket to ``IGNORED``.
+The other two only **report** — the dispatcher sends them to the statusline
+``action_needed`` zone, because whether a reassignment or a pulled label should
+cancel the work is the operator's call.
 
-Tickets past ``REVIEWED`` are skipped: once the PR exists, the disposition
-concept no longer applies — ``MyPrsScanner`` already covers post-PR state.
+The walked set is ``Ticket.dispositionable_states()``, every state before
+SHIPPED. Past that a PR exists and the question is completion rather than
+cancellation — ``TicketCompletionScanner`` and ``MyPrsScanner`` own it.
 """
 
 import logging
@@ -27,6 +28,7 @@ from django.apps import apps
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.gates.closed_issue_dispatch_gate import CLOSED_ISSUE_STATES
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
@@ -35,10 +37,6 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
-
-# States in which disposition checks make sense — pre-PR work the operator can
-# still cancel without tearing down published artifacts.
-_DISPOSITIONABLE_STATES: frozenset[str] = frozenset({"not_started", "scoped", "started", "coded", "tested", "reviewed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +116,7 @@ class TicketDispositionScanner:
     Iterates the local :class:`Ticket` table (filtered by *overlay_name* when
     set) and calls :meth:`CodeHostBackend.get_issue` once per active ticket
     with a non-empty ``issue_url``. Emits a ``ticket.disposition_candidate``
-    signal per detected drift; the operator decides whether to dispose.
+    signal per detected drift; ``issue_closed`` auto-ignores, the rest ask.
 
     ``user_identity_aliases`` lists usernames/handles that all map to the
     operating human (e.g. a GitHub login, a GitLab username, an internal
@@ -194,7 +192,7 @@ class TicketDispositionScanner:
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
         qs = (
-            ticket_model.objects.filter(state__in=_DISPOSITIONABLE_STATES)
+            ticket_model.objects.filter(state__in=ticket_model.dispositionable_states())
             .exclude(issue_url="")
             .filter(remote_missing=False)
         )
@@ -215,7 +213,7 @@ class TicketDispositionScanner:
         actionable signal.
         """
         reasons: list[_DispositionReason] = []
-        if snap.state in {"closed", "completed", "cancelled"}:
+        if snap.state in CLOSED_ISSUE_STATES:
             reasons.append(_DispositionReason("issue_closed"))
         if (
             author
