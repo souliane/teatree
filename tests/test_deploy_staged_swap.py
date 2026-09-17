@@ -36,8 +36,27 @@ _SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener te
 
 _DOCKER_STUB = f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
+stub_worker_state() {{
+    local state="${{STUB_WORKER_STATUS:-running}}"
+    [ -f "${{STUB_WORKER_STATE_FILE:-/dev/null}}" ] && state="$(cat "$STUB_WORKER_STATE_FILE")"
+    printf '%s\\n' "$state"
+}}
 if [ "$1" = inspect ]; then
-    printf '%s\\n' "${{STUB_INIT_STATE:-exited 0}}"
+    case "${{3:-}}" in
+    *"State.ExitCode"*)
+        printf '%s\\n' "${{STUB_INIT_STATE:-exited 0}}"
+        ;;
+    *"RestartCount"*)
+        [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
+        worker_state="$(stub_worker_state)"
+        printf '%s/%s\\n' "$worker_state" "${{STUB_WORKER_RESTART_COUNT:-0}}"
+        ;;
+    *"State.Status"*)
+        [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
+        worker_state="$(stub_worker_state)"
+        printf '%s\\n' "$worker_state"
+        ;;
+    esac
     exit 0
 fi
 if [ "$1" != compose ]; then
@@ -58,12 +77,39 @@ exec)
     done
     shift || true
     case "$*" in
-    *"worker status"*) printf '{{"running": true}}\\n' ;;
+    *"worker status"*)
+        [ -z "${{STUB_WORKER_STATUS_EXIT:-}}" ] || exit "$STUB_WORKER_STATUS_EXIT"
+        if [ "$(stub_worker_state)" = running ]; then
+            printf '{{"running": true}}\\n'
+        else
+            printf '{{"running": false}}\\n'
+            exit 1
+        fi
+        ;;
+    *"worker drain"*)
+        drain_count=0
+        [ -f "${{STUB_DRAIN_COUNT_FILE:-/dev/null}}" ] && drain_count="$(cat "$STUB_DRAIN_COUNT_FILE")"
+        drain_count=$((drain_count + 1))
+        printf '%s' "$drain_count" >|"${{STUB_DRAIN_COUNT_FILE}}"
+        if [ -n "${{STUB_DRAIN_FAIL_AFTER:-}}" ] && [ "$drain_count" -gt "$STUB_DRAIN_FAIL_AFTER" ]; then
+            exit 1
+        fi
+        exit "${{STUB_DRAIN_EXIT:-${{STUB_EXEC_EXIT:-0}}}}"
+        ;;
     esac
     exit "${{STUB_EXEC_EXIT:-0}}"
     ;;
 ps)
     case "$*" in
+    *"--all --quiet teatree-init"*) printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}" ;;
+    *"--all --quiet teatree-worker"*)
+        [ "$(stub_worker_state)" = absent ] || printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}"
+        ;;
+    *"-q teatree-worker"*)
+        case "$(stub_worker_state)" in
+        running|restarting) printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}" ;;
+        esac
+        ;;
     *--quiet*) printf '%s\\n' "${{STUB_CONTAINER_ID:-stubcid}}" ;;
     esac
     exit 0
@@ -73,7 +119,16 @@ config)
     exit 0
     ;;
 build) exit "${{STUB_BUILD_EXIT:-0}}" ;;
-up) exit "${{STUB_UP_EXIT:-0}}" ;;
+stop)
+    printf '%s' "${{STUB_STOP_STATE:-exited}}" >|"${{STUB_WORKER_STATE_FILE}}"
+    exit "${{STUB_STOP_EXIT:-0}}"
+    ;;
+up)
+    case " $* " in
+    *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
+    esac
+    exit "${{STUB_UP_EXIT:-0}}"
+    ;;
 esac
 exit 0
 """
@@ -81,6 +136,7 @@ exit 0
 # Answers until STUB_CURL_FAIL_AFTER calls have been served, so a test can model a
 # dashboard that was up before its swap and never came back after it.
 _CURL_STUB = """#!/usr/bin/env bash
+printf 'curl %s\\n' "$*" >>"${STUB_DOCKER_LOG:-/dev/null}"
 n=0
 if [ -n "${STUB_CURL_COUNT:-}" ]; then
     [ -f "$STUB_CURL_COUNT" ] && n="$(cat "$STUB_CURL_COUNT")"
@@ -139,8 +195,12 @@ def _run(checkout: Path, tmp_path: Path, **env_extra: str) -> tuple[subprocess.C
     env.update(
         PATH=f"{stub_bin}{os.pathsep}{env['PATH']}",
         HOME=str(home),
+        GITLAB_TOKEN="stub-token",
+        NOTION_TOKEN="stub-token",
         STUB_DOCKER_LOG=str(docker_log),
         STUB_CURL_COUNT=str(tmp_path / "curl.count"),
+        STUB_DRAIN_COUNT_FILE=str(tmp_path / "drain.count"),
+        STUB_WORKER_STATE_FILE=str(tmp_path / "worker.state"),
         TEATREE_DEPLOY_LOCK=str(tmp_path / "deploy.lock"),
         TEATREE_DEPLOY_LOG_ARCHIVE_DIR=str(tmp_path / "archive"),
         TEATREE_ADMIN_SWAP_BUDGET="2",
@@ -188,6 +248,46 @@ def _up_services(args: list[str]) -> list[str]:
     return [a for a in args[1:] if not a.startswith("-")]
 
 
+def _assert_fresh_worker_route_precedes_admin_swap(calls: list[str], *, after: int) -> None:
+    worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
+    worker_ready_at = _index_of(calls, lambda a: "worker status --json" in " ".join(a))
+    admin_at = _index_of(calls, lambda a: _is_up(a) and "teatree-admin" in _up_services(a))
+    admin_ready_at = next((i for i, call in enumerate(calls) if i > admin_at and call.startswith("curl ")), -1)
+    final_worker_ready_at = next(
+        (
+            i
+            for i, call in enumerate(calls)
+            if i > admin_ready_at and "worker status --json" in " ".join(_compose_args(call))
+        ),
+        -1,
+    )
+    assert worker_at != -1, "the contained worker is never recreated"
+    assert worker_ready_at != -1, "the fresh worker route is never positively proved"
+    assert admin_at != -1, "the admin is never swapped"
+    assert after < worker_at < worker_ready_at < admin_at, (
+        "a contained worker must be recreated and proved before the old admin is swapped"
+    )
+    assert admin_at < admin_ready_at < final_worker_ready_at, (
+        "the successful deploy must finish with both the admin and worker routes proved"
+    )
+
+    admin_serving = True
+    worker_serving = False
+    for call in calls[after + 1 :]:
+        args = _compose_args(call)
+        if _is_up(args) and "teatree-worker" in _up_services(args):
+            worker_serving = False
+        elif "worker status --json" in " ".join(args):
+            worker_serving = True
+        if _is_up(args) and "teatree-admin" in _up_services(args):
+            admin_serving = False
+        elif call.startswith("curl "):
+            admin_serving = True
+        assert admin_serving or worker_serving, f"both control-plane routes are down at: {call}"
+    assert admin_serving
+    assert worker_serving
+
+
 class TestTheControlPlaneIsNeverWhollyAbsent:
     def test_no_single_recreate_takes_the_dashboard_and_the_worker_together(
         self, checkout: Path, tmp_path: Path
@@ -221,7 +321,7 @@ class TestTheControlPlaneIsNeverWhollyAbsent:
         _, calls = _run(checkout, tmp_path)
         init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
         assert init_at != -1, "init must be brought up on its own, with the old generation still serving"
-        inspected_at = next((i for i, c in enumerate(calls) if c.startswith("inspect ")), -1)
+        inspected_at = next((i for i, c in enumerate(calls) if "State.ExitCode" in c), -1)
         admin_at = _index_of(calls, lambda a: _is_up(a) and "teatree-admin" in _up_services(a))
         assert init_at < inspected_at < admin_at, "init's exit must be observed before the dashboard is swapped"
 
@@ -254,6 +354,139 @@ class TestInFlightWorkSurvivesTheSwap:
         worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
         assert resume_at != -1, "nothing re-opens admission once init's own clear has already run"
         assert worker_at < resume_at
+
+    def test_a_crash_loop_is_stopped_before_init_when_it_cannot_be_drained(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_RESTART_COUNT="3",
+            STUB_DRAIN_EXIT="1",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert stop_at != -1, "a worker that cannot drain must be contained before migrations"
+        assert stop_at < init_at
+        _assert_fresh_worker_route_precedes_admin_swap(calls, after=init_at)
+
+    def test_a_crash_loop_is_stopped_even_when_a_drain_exec_temporarily_answers(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_RESTART_COUNT="3",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert stop_at != -1, "a restart loop is not contained by one successful exec"
+        assert stop_at < init_at
+
+    def test_a_failed_drain_does_not_stop_the_running_worker_when_admin_is_down(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", STUB_CURL_FAIL_AFTER="0")
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert stop_at == -1, "the worker is the sole control-plane route while admin is down"
+        assert init_at == -1
+        assert "admin" in proc.stderr
+
+    def test_a_failed_drain_stops_the_running_worker_only_after_admin_answers(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1")
+
+        admin_probe_at = next((i for i, call in enumerate(calls) if call.startswith("curl ")), -1)
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        stopped_state_at = _index_of(calls, lambda a: a[:4] == ["ps", "--all", "--quiet", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert admin_probe_at < stop_at < stopped_state_at < init_at
+        _assert_fresh_worker_route_precedes_admin_swap(calls, after=init_at)
+
+    def test_second_failed_drain_restores_the_worker_route_before_admin_swap(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_FAIL_AFTER="1")
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        assert proc.returncode == 0, proc.stderr
+        assert init_at != -1
+        assert init_at < stop_at, "this must exercise containment after init"
+        _assert_fresh_worker_route_precedes_admin_swap(calls, after=stop_at)
+
+    def test_an_unproven_fresh_worker_route_leaves_the_old_admin_serving(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS="restarting",
+            STUB_WORKER_STATUS_EXIT="1",
+            TEATREE_RESUME_TIMEOUT="1",
+        )
+
+        worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
+        worker_ready_at = _index_of(calls, lambda a: "worker status --json" in " ".join(a))
+        admin_at = _index_of(calls, lambda a: _is_up(a) and "teatree-admin" in _up_services(a))
+        assert proc.returncode != 0
+        assert worker_at < worker_ready_at
+        assert admin_at == -1, "an unproven worker cannot protect the admin swap"
+        assert "fresh worker route did not answer" in proc.stderr
+
+    def test_second_failed_drain_preserves_the_worker_when_admin_is_down_after_init(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_DRAIN_FAIL_AFTER="1",
+            STUB_CURL_FAIL_AFTER="0",
+        )
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
+        assert proc.returncode != 0
+        assert init_at != -1, "the first drain must succeed so this proves the post-init path"
+        assert stop_at == -1
+        assert worker_at == -1
+
+    @pytest.mark.parametrize("stopped_state", ["absent", "exited"])
+    def test_a_nonzero_stop_aborts_even_when_the_worker_looks_stopped(
+        self, checkout: Path, tmp_path: Path, stopped_state: str
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_DRAIN_EXIT="1",
+            STUB_STOP_EXIT="1",
+            STUB_STOP_STATE=stopped_state,
+        )
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        worker_at = _index_of(calls, lambda a: _is_up(a) and "teatree-worker" in _up_services(a))
+        assert proc.returncode != 0
+        assert init_at == -1
+        assert worker_at == -1
+        assert "stop" in proc.stderr
+
+    def test_init_is_aborted_when_the_old_worker_state_is_unreadable(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_WORKER_INSPECT_EXIT="1")
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert init_at == -1, "an unreadable old worker must not be mistaken for an absent worker"
+        assert "could not determine teatree-worker state" in proc.stderr
 
 
 class TestLogsSurviveTheRecreate:
