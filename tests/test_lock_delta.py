@@ -11,10 +11,10 @@ tests that matter: a minor move, a major move, and a version string it cannot
 parse must all refuse auto-merge. A classifier that only ever says ``true``
 guards nothing.
 
-``scripts/ci/lock_delta.py`` imports no ``teatree``: the lock-refresh job runs
-``uv lock --upgrade`` and no ``uv sync``, exactly the constraint
-``scripts/ci/audit_canary.py`` documents, so reaching into the package would add
-a full install to the job.
+``scripts/ci/lock_delta.py`` imports no ``teatree``: it classifies the resolve
+before the job materialises any environment, so reaching into the package would
+pull a full install ahead of that step. The SBOM regeneration below is the one
+step that does need an env, and it runs after the classifier for that reason.
 """
 
 import re
@@ -35,6 +35,7 @@ _SCRIPT = _REPO_ROOT / "scripts" / "ci" / "lock_delta.py"
 _PR_STEP = "Open or update the lock-refresh PR"
 _UPGRADE_RUN = "uv lock --upgrade"
 _BRANCH_PREFIX = "chore/uv-lock-upgrade"
+_SBOM_RUN = "scripts/hooks/generate_sbom.sh"
 
 
 def _lock(*packages: tuple[str, str]) -> str:
@@ -329,3 +330,41 @@ class TestWorkflowWiring:
         )
         assert "headRefName" in run, reuse_hint
         assert _BRANCH_PREFIX in run, reuse_hint
+
+    def test_the_sbom_is_regenerated_after_the_resolve(self) -> None:
+        stale_sbom_hint = (
+            "`dist/sbom.json` is a COMMITTED artifact derived from the lockfile, so a resolve "
+            "that moves any non-dev version leaves it stale and the required `sbom` gate red by "
+            "construction — every weekly refresh then waits on a human to regenerate it (#4658, #4786)."
+        )
+        assert any(_SBOM_RUN in step.get("run", "") for step in _steps()), stale_sbom_hint
+        assert _index_of_run(_UPGRADE_RUN) < _index_of_run(_SBOM_RUN), (
+            "The SBOM must be regenerated AFTER `uv lock --upgrade` — one taken before the "
+            "resolve describes the versions it replaced."
+        )
+
+    def test_the_regenerated_sbom_is_committed_with_the_lockfile(self) -> None:
+        match = re.search(r"git add ([^\n]+)", _step_named(_PR_STEP)["run"])
+        assert match is not None, "The PR step must stage what the refresh regenerated."
+        staged = match.group(1).split()
+        assert "uv.lock" in staged
+        assert "dist/sbom.json" in staged, (
+            "A regenerated SBOM left unstaged never reaches the PR, so the `sbom` gate stays red "
+            "on a branch whose own working copy was correct."
+        )
+
+    def test_the_staging_command_survives_the_dist_ignore_rule(self) -> None:
+        match = re.search(r"git add ([^\n]+)", _step_named(_PR_STEP)["run"])
+        assert match is not None
+        completed = subprocess.run(
+            ["git", "add", "--dry-run", *match.group(1).split()],  # noqa: S607 — git from PATH, as the job resolves it
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            "`dist/` is gitignored and a negation cannot re-include a file under an excluded "
+            "directory, so a bare path-add of `dist/sbom.json` refuses — and `set -euo pipefail` "
+            f"turns that refusal into a dead job that never opens the PR:\n{completed.stderr}"
+        )

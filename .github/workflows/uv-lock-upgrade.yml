@@ -110,6 +110,14 @@ jobs:
             --before "${RUNNER_TEMP}/uv.lock.before" \
             --after uv.lock \
             --body-out "${RUNNER_TEMP}/lock-refresh-body.md"
+      # `dist/sbom.json` is generated FROM the lockfile and committed, so a resolve that
+      # moves a non-dev version leaves the required `sbom` gate red by construction. The
+      # two commands mirror that gate exactly, so what lands here is what it regenerates.
+      - name: Regenerate the lock-derived SBOM
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          uv sync
+          scripts/hooks/generate_sbom.sh
       - name: Open or update the lock-refresh PR
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -140,7 +148,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add uv.lock
+          # `-u` because `dist/` is gitignored and a negation cannot re-include a file
+          # under an excluded directory, so a bare path-add refuses and `set -e` kills the job.
+          git add -u uv.lock dist/sbom.json
           git commit -m "chore(deps): weekly uv.lock upgrade"
           git push --force-with-lease origin "$BRANCH"
           # The body states what the resolve MOVED. #4432 claimed a Django 6.1 update its
