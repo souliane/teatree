@@ -160,6 +160,7 @@ _DRAINED=false
 _SWAP_DONE=false
 _INIT_RAN=false
 _WORKER_SWAPPED=false
+_WORKER_CONTAINED=false
 # Clears the in-progress record above (#4339). The `if` guards `${DEPLOY_LOCK:-}`
 # rather than a bare `$DEPLOY_LOCK` so this stays a safe no-op wherever the var is
 # unset — e.g. this fail-safe block lifted verbatim into a test harness that never
@@ -190,13 +191,17 @@ _clear_quiescing_if_stranded() {
 }
 trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT
 
+# A route proof is stronger than a container-state proof: the fresh process must
+# answer through the CLI before the sibling control-plane route is replaced.
+worker_route_answers() {
+    compose exec -T teatree-worker t3 worker status --json 2>/dev/null \
+        | grep -q '"running"[[:space:]]*:[[:space:]]*true'
+}
+
 # The admin can serve while the worker crash-loops, so a converged deploy must
 # confirm the worker process itself is running.
 worker_running() {
-    if compose exec -T teatree-worker t3 worker status --json 2>/dev/null \
-        | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
-        return 0
-    fi
+    if worker_route_answers; then return 0; fi
     # Fallback when the exec itself fails: only a running container that has never
     # restarted is healthy enough to certify final convergence.
     local cid state
@@ -501,6 +506,7 @@ contain_worker_for_deploy() {
     fi
     case "$state" in
     absent | exited | dead)
+        _WORKER_CONTAINED=true
         echo "deploy: old teatree-worker stopped; interrupted work will re-queue via its lease lapse." >&2
         return 0
         ;;
@@ -518,7 +524,10 @@ drain_worker() {
         return 1
     fi
     case "$state" in
-    absent | exited | dead) return 0 ;;
+    absent | exited | dead)
+        _WORKER_CONTAINED=true
+        return 0
+        ;;
     restarting)
         contain_worker_for_deploy
         return
@@ -536,6 +545,26 @@ drain_worker() {
         return 0
     fi
     contain_worker_for_deploy true
+}
+
+# A failed drain takes the old worker route out of service deliberately. Once init
+# has converged the schema, restore that route from the fresh image and PROVE it
+# before replacing the old admin. Falling through to the ordinary admin-first swap
+# would briefly leave both control-plane routes down.
+start_contained_worker_route() {
+    local deadline=$((SECONDS + RESUME_TIMEOUT))
+    archive_service_logs teatree-worker teatree-slack-listener
+    compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+    _WORKER_SWAPPED=true
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if worker_route_answers; then
+            echo "deploy: fresh worker route is answering; the old admin can now be swapped."
+            return 0
+        fi
+        sleep 5
+    done
+    echo "deploy: FATAL — the fresh worker route did not answer within ${RESUME_TIMEOUT}s; leaving the old admin serving and refusing to swap it." >&2
+    return 1
 }
 
 # init's own clear runs BEFORE this convergence quiesces the worker, so nothing else
@@ -614,11 +643,17 @@ staged_swap() {
     # a task in the seconds before it is swapped.
     drain_worker || return 1
 
+    if [ "$_WORKER_CONTAINED" = true ]; then
+        start_contained_worker_route || return 1
+    fi
+
     swap_admin || return 1
 
-    archive_service_logs teatree-worker teatree-slack-listener
-    compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
-    _WORKER_SWAPPED=true
+    if [ "$_WORKER_CONTAINED" != true ]; then
+        archive_service_logs teatree-worker teatree-slack-listener
+        compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+        _WORKER_SWAPPED=true
+    fi
     resume_admission
 
     local rest

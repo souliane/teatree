@@ -150,7 +150,11 @@ If either drain of a running worker fails, `deploy.sh` first proves the admin is
 answering before it stops that worker; otherwise it aborts with the worker still
 serving. A non-zero `compose stop` always aborts. After a successful stop, the
 deploy reads the stopped container through `compose ps --all --quiet` and proceeds
-only when its state is `exited`/`dead` or the container is absent.
+only when its state is `exited`/`dead` or the container is absent. That containment
+is an explicit alternate path through stages 5–6: after init, the deploy recreates
+the worker from the fresh image and positively proves its CLI route before it swaps
+the old admin. It never treats the failed drain as an ordinary success or leaves the
+contained worker stopped while replacing the only remaining route.
 
 **An aborted convergence fails towards a stall, not a mismatch.** A run that
 drains and then dies before the swap leaves the gate ON, so an EXIT trap clears it
