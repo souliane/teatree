@@ -22,6 +22,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 2a. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
 3. [A Diagnosis Cites What Was Read](#a-diagnosis-cites-what-was-read-non-negotiable)
 4. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
+4c. [A Dispatch on a Closed Issue Halts and Asks](#a-dispatch-on-a-closed-issue-halts-and-asks-non-negotiable)
 5. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
 6. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
 7. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
@@ -230,6 +231,17 @@ Enforced by the BLOCKING Stop gate `handle_unbacked_claim_gate` (`hooks/scripts/
 - **Say so when a handed-down criterion is unfalsifiable.** It is a defect in the spec, not a licence to satisfy it cheaply — surface it and add the positive pair before implementing.
 
 The E2E-scoped statements of the same principle are `/t3:e2e` § "Writing Tests" (author side) and `/t3:e2e-review` § "Test the ticket, not the MR diff" (reviewer side): a test built against the diff's current behaviour passes regardless of whether the feature is correct. This section is the general form — apply it to acceptance criteria; they apply it to tests.
+
+## A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)
+
+A brief is written when the task is QUEUED; the issue can close before the agent starts. So the issue's live state — never the brief — decides whether the work is still wanted. Read it before the first edit of an implementing dispatch (coding, testing, e2e, shipping) and act on what it says.
+
+- **A CLOSED issue halts the dispatch.** `state: CLOSED`, most sharply with `stateReason: NOT_PLANNED`, means the owner already decided against this work; implementing it overrules them and the lines can never land. No edit, no commit, no push, no PR.
+- **The halt is a real question, not a prose sign-off.** The two decisions — reopen the issue because the close was wrong, or ignore the ticket because it was right — are the owner's. A turn that only narrates the conflict leaves the ticket to be re-offered next tick, so the same cycle burns again. An implementing dispatch (coding, testing, e2e, shipping) is a HEADLESS run with no `AskUserQuestion` tool on its surface — see § "Always Use AskUserQuestion for Questions" — so the halt is `t3 <overlay> questions record "…"`, the same durable path every other headless blocker uses, not the interactive tool.
+- **An OPEN issue is in-scope work you carry forward.** `state: OPEN` with a recorded plan and no blocker is the ordinary case: read the issue body, provision the worktree, write the failing test. Do not manufacture a closure to stall on, and do not ask whether to proceed — the absence of a blocker IS the signal to proceed (`/t3:internals` § "Lifecycle Phases").
+- **A state you could not read lets the dispatch through.** A forge outage or an unclassifiable payload is not evidence of a closure. Uncertainty resolves toward proceeding, because a wrong halt blocks live work while a genuine closure is caught by the next disposition sweep anyway.
+
+The deterministic backstop is `teatree.core.gates.closed_issue_dispatch_gate.closed_issue_dispatch_refusal` at the pre-harness dispatch seam beside the plan gate: it refuses an implementing dispatch whose issue the forge reports closed before a turn is billed, and records `FailureKind.ISSUE_CLOSED` (HALT) on the attempt. It fires only once a brief has already reached dispatch — the discipline above is what keeps it from having to.
 
 ## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
 

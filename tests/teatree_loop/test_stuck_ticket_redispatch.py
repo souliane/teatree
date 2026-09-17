@@ -17,7 +17,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, FailureKind
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -524,6 +524,27 @@ class TestFailingCandidates(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_two_closed_issue_refusals_halt_and_carry_their_own_name(self) -> None:
+        # #2663 end to end: the pre-harness gate's refusal reaches the sweep as a NAMED
+        # cause and the ticket is escalated, never re-offered. The halt itself is the
+        # fingerprint stall's (one phase's two refusals are verbatim-identical, which
+        # that check already caught); what the new kind adds is the name on the card —
+        # left ``unclassified`` an operator reading the escalation sees no cause at all.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for _ in range(2):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error="issue_closed: refusing to dispatch t3:tester for ticket 7 (testing) — CLOSED (not_planned)",
+            )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        kinds = {a.failure_kind for t in ticket.tasks.all() for a in t.attempts.all()}
+        assert kinds == {FailureKind.ISSUE_CLOSED}
 
     def test_repeated_unclassified_failures_are_not_a_named_cause_stall(self) -> None:
         # ``unclassified`` is the ABSENCE of a name, so two unrelated failures both land

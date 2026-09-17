@@ -144,6 +144,11 @@ class TicketStateSetsModel(TicketFacet):
         never shipped anything, which is why rule F retires it to IGNORED rather than
         walking it to DELIVERED — that walk would claim a delivery that never happened
         (#4711).
+
+        The disposition scanner (#2663) reads it too, under its own name no longer:
+        every state here is exactly what a hand-written list previously enumerated as
+        "dispositionable" and separately omitted PLANNED from — deriving both callers off
+        one method means a state added later can't drift the two out of sync again.
         """
         return (
             frozenset(cls.State.values)
