@@ -69,8 +69,8 @@ class _DispatchProbe(TestCase):
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(harness_mod, "ClaudeSDKClient", _make_client),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
-            patch("teatree.core.backend_registry.get_backend_provider", return_value=_Provider(host)),
-            patch("teatree.core.overlay_loader.get_overlay_for_ticket", return_value=object()),
+            patch("teatree.core.gates.closed_issue_dispatch_gate.get_backend_provider", return_value=_Provider(host)),
+            patch("teatree.core.gates.closed_issue_dispatch_gate.get_overlay_for_ticket", return_value=object()),
         ):
             run_agent(task, phase=phase, overlay_skill_metadata={})
         task.refresh_from_db()

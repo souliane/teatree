@@ -31,8 +31,11 @@ import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.backend_registry import get_backend_provider
+from teatree.core.forge_url import is_forge_url
 from teatree.core.gates.plan_dispatch_gate import IMPLEMENTING_PHASES, SUBAGENT_BY_IMPLEMENTING_PHASE
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.overlay_loader import get_overlay_for_ticket
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -104,12 +107,9 @@ def closed_issue_dispatch_refusal(ticket: "Ticket", *, phase: str) -> str | None
     every ticket already known to have no remote — so a dispatch is byte-identical
     to today unless the forge positively says the issue is closed.
     """
-    from teatree.core.forge_url import is_forge_url  # noqa: PLC0415 — deferred: ORM/app-registry
-    from teatree.core.models.ticket import Ticket as TicketModel  # noqa: PLC0415 — deferred: ORM/app-registry
-
     if normalize_phase(phase) not in IMPLEMENTING_PHASES:
         return None
-    if ticket.role == TicketModel.Role.REVIEWER:
+    if ticket.role == ticket.Role.REVIEWER:
         return None
     if not is_forge_url(ticket.issue_url) or ticket.remote_missing:
         return None
@@ -121,9 +121,6 @@ def closed_issue_dispatch_refusal(ticket: "Ticket", *, phase: str) -> str | None
 
 def _fetch_issue(ticket: "Ticket") -> object:
     """*ticket*'s live issue payload, or ``None`` for every failure — the fail-open read."""
-    from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415 — deferred: ORM/app-registry
-    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: ORM/app-registry
-
     try:
         host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
         if host is None:

@@ -56,8 +56,8 @@ def _ticket(**overrides: object) -> Ticket:
 
 def _refusal(ticket: Ticket, *, phase: str = "coding", host: _Host | None) -> str | None:
     with (
-        patch("teatree.core.backend_registry.get_backend_provider", return_value=_Provider(host)),
-        patch("teatree.core.overlay_loader.get_overlay_for_ticket", return_value=object()),
+        patch("teatree.core.gates.closed_issue_dispatch_gate.get_backend_provider", return_value=_Provider(host)),
+        patch("teatree.core.gates.closed_issue_dispatch_gate.get_overlay_for_ticket", return_value=object()),
     ):
         return closed_issue_dispatch_refusal(ticket, phase=phase)
 
