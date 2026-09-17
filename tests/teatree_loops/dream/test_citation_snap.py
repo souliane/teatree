@@ -21,6 +21,7 @@ import pytest
 from teatree.loops.dream.citation_snap import (
     _SNAP_ADMISSIBLE_DELTA,
     _SNAP_MIN_CITATION_CHARS,
+    _SNAP_NEGATING_SUFFIXES,
     _SNAP_NEGATORS,
     _anchored_windows,
     _window_bounds,
@@ -97,6 +98,24 @@ _ASSERTION_BEARING = frozenset(
         "that",
         "this",
     }
+)
+
+
+#: A contracted negation, whose stem is a real word asserting the opposite of the whole.
+_CONTRACTED_SNIPPET = (
+    "The affected lane selects the tests the diff can reach, so it doesn't run the whole "
+    "suite on every push. A lane that cannot classify a path escalates instead."
+)
+#: A negator governing the clause a quote can start just after, dropping it.
+_ADJACENT_NEGATOR_SNIPPET = (
+    "The push path is guarded twice. Before a public push the agent must never disable the "
+    "privacy gate before pushing to a public repository, because the leak gate re-runs in CI "
+    "and a bypass there is permanent."
+)
+#: The same shape at the other edge: a quote can stop just before the negator.
+_TRAILING_NEGATOR_SNIPPET = (
+    "The keystone refuses the second attempt on the same head because a repeat write there "
+    "is never idempotent, and the audit row says so."
 )
 
 
@@ -379,3 +398,101 @@ class TestTheRatioCannotSeparateThem:
         # The consequence: every threshold low enough to admit the paraphrase admits both
         # meaning-inverting quotes, which is why admission is a token-delta decision.
         assert paraphrase < negated < inverted
+
+
+class TestAMidWordEdgeIsNotVerbatim:
+    """A substring is not a quote: `does` sits inside `doesn't`, `allowed` inside `disallowed`."""
+
+    def test_a_citation_cut_out_of_a_contracted_negation_is_refused(self) -> None:
+        cut_from_contraction = "The affected lane selects the tests the diff can reach, so it does"
+        assert cut_from_contraction in normalize_ws(_CONTRACTED_SNIPPET)
+        assert _verdict(cut_from_contraction, _CONTRACTED_SNIPPET).reason is not None
+
+    def test_a_citation_cut_out_of_a_negating_prefix_is_refused(self) -> None:
+        cut_from_prefix = "allowed from clearing the merge on a branch it authored itself"
+        assert cut_from_prefix in normalize_ws(_AFFIX_SNIPPET)
+        verdict = _verdict(cut_from_prefix, _AFFIX_SNIPPET)
+        assert verdict.reason is not None
+        assert "disallowed" in verdict.reason
+
+    def test_a_word_bounded_quote_is_still_admitted_untouched(self) -> None:
+        # The control: word-bounding the test must not cost an ordinary verbatim citation.
+        exact = normalize_ws("Retrying the publish step after a timeout is harmless")
+        verdict = _verdict(exact, _AFFIX_SNIPPET)
+        assert verdict.reason is None
+        assert verdict.cluster.verified_citation == exact
+
+    def test_a_mid_word_tail_cut_still_falls_through_to_the_snap(self) -> None:
+        # The control the word-bounded test must not break: a cut into an ordinary word is
+        # no longer verbatim, so the snap decides it and re-extracts the whole word.
+        cut_into_idempotent = (
+            "The keystone refuses the second attempt on the same head because a repeat write there is never idemp"
+        )
+        verdict = _verdict(cut_into_idempotent, _TRAILING_NEGATOR_SNIPPET)
+        assert verdict.reason is None
+        assert "never idempotent" in verdict.cluster.verified_citation
+
+
+class TestAQuoteCutAtANegatorIsRefused:
+    """Re-extracting a span cut away from its own negator records the opposite rule (#2663)."""
+
+    @pytest.mark.parametrize(
+        ("label", "citation", "snippet"),
+        [
+            (
+                "verbatim-after-never",
+                ("disable the privacy gate before pushing to a public repository, because the leak gate re-runs in CI"),
+                _ADJACENT_NEGATOR_SNIPPET,
+            ),
+            (
+                "snapped-after-never",
+                ("disable privacy gate before pushing to a public repository, because the leak gate re-runs in CI"),
+                _ADJACENT_NEGATOR_SNIPPET,
+            ),
+            (
+                "verbatim-before-never",
+                "The keystone refuses the second attempt on the same head because a repeat write there is",
+                _TRAILING_NEGATOR_SNIPPET,
+            ),
+        ],
+    )
+    def test_a_quote_cut_at_a_negator_is_refused(self, label: str, citation: str, snippet: str) -> None:
+        verdict = _verdict(citation, snippet)
+        assert verdict.reason is not None, label
+        # Anti-vacuity: it DID quote a real window, so the refusal is this rule's own and not
+        # the cheaper "could not find it" the test would otherwise pass on.
+        assert "not present in a cited snippet" not in verdict.reason, label
+        assert "never" in verdict.reason, label
+
+    def test_a_quote_past_a_clause_break_is_admitted(self) -> None:
+        # The control: only the ADJACENT token is read, so a negator in the previous sentence
+        # leaves the quote alone.
+        past_the_break = normalize_ws(
+            "Before a public push the agent must never disable the privacy gate before pushing"
+        )
+        assert _verdict(past_the_break, _ADJACENT_NEGATOR_SNIPPET).reason is None
+
+    def test_a_quote_that_keeps_the_negator_is_admitted(self) -> None:
+        # The control that keeps the rule honest: a dropped article beside a RETAINED negator
+        # is the paraphrase the snap exists to rescue.
+        keeps_never = "keystone refuses the second attempt on the same head because a repeat write there is never"
+        verdict = _verdict(keeps_never, _TRAILING_NEGATOR_SNIPPET)
+        assert verdict.reason is None
+        assert "is never" in verdict.cluster.verified_citation
+
+
+class TestAContractedNegationIsNotATruncatedEdge:
+    """`doesn't` -> `does` wears a tail cut's shape while asserting the opposite (#2663)."""
+
+    def test_a_tail_cut_at_the_contraction_boundary_is_refused(self) -> None:
+        # Dropping an article keeps the strict test away, so the snap's carve-out decides.
+        cut_at_the_boundary = "The affected lane selects tests the diff can reach, so it does"
+        assert _verdict(cut_at_the_boundary, _CONTRACTED_SNIPPET).reason is not None
+
+    def test_a_tail_cut_past_the_contraction_boundary_is_still_admitted(self) -> None:
+        # The control: `doe` is no word, so re-extraction inverts nothing and the rescue holds.
+        cut_past_the_boundary = "The affected lane selects tests the diff can reach, so it doe"
+        assert _verdict(cut_past_the_boundary, _CONTRACTED_SNIPPET).reason is None
+
+    def test_the_negating_suffixes_are_the_ones_that_leave_a_word_behind(self) -> None:
+        assert _SNAP_NEGATING_SUFFIXES == ("less", "n't")
