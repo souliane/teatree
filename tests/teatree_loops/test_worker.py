@@ -2,8 +2,7 @@
 
 Pure supervision/lifecycle logic with injected collaborators — no real threads, DB,
 or clock. Verifies startup reconciliation, the executor split (2 ``loops`` + a
-host-scaled ``default`` pool floored at 2), and that a kill-switch flip-off OR a
-stop signal tears the pool down.
+host-scaled ``default`` pool floored at 2), kill-switch pause/resume, and shutdown.
 """
 
 import contextlib
@@ -28,6 +27,7 @@ from teatree.loops.worker import (
     LOOPS_EXECUTOR_FLOOR,
     LoopWorker,
     LoopWorkerExecutorCrashError,
+    LoopWorkerExecutorStopError,
     WorkerSeams,
     build_executor_queues,
     default_queue_executor_count,
@@ -69,6 +69,12 @@ class _FakeHandle:
 
     def join(self, timeout: float | None = None) -> None:
         self.joined = True
+        self._alive = False
+
+
+class _StuckHandle(_FakeHandle):
+    def join(self, timeout: float | None = None) -> None:
+        self.joined = True
 
 
 def _make_worker(*, enabled, sleep, **seam_overrides):
@@ -95,6 +101,7 @@ def _make_worker(*, enabled, sleep, **seam_overrides):
         sleep=sleep,
         poll_seconds=0.0,
         reclaim_leases=seam_overrides.get("reclaim_leases") or (lambda: None),
+        reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
     )
@@ -103,10 +110,14 @@ def _make_worker(*, enabled, sleep, **seam_overrides):
 
 def test_supervisor_reclaims_dead_owner_leases_each_poll() -> None:
     reclaims: list[int] = []
-    states = iter([True, False])  # one supervised poll, then flip off
+    worker = None
+
+    def sleep(_seconds: float) -> None:
+        worker.request_stop()
+
     worker, _built, _ = _make_worker(
-        enabled=lambda: next(states, False),
-        sleep=lambda _s: None,
+        enabled=lambda: True,
+        sleep=sleep,
         reclaim_leases=lambda: reclaims.append(1),
     )
     worker.run()
@@ -118,10 +129,14 @@ def test_supervisor_survives_a_reclaim_error() -> None:
         msg = "db hiccup"
         raise RuntimeError(msg)
 
-    states = iter([True, False])
+    worker = None
+
+    def sleep(_seconds: float) -> None:
+        worker.request_stop()
+
     worker, _built, handles = _make_worker(
-        enabled=lambda: next(states, False),
-        sleep=lambda _s: None,
+        enabled=lambda: True,
+        sleep=sleep,
         reclaim_leases=_boom,
     )
     worker.run()  # a reclaim error must never crash the supervisor
@@ -130,9 +145,14 @@ def test_supervisor_survives_a_reclaim_error() -> None:
 
 def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     order: list[str] = []
+    worker = None
+
+    def sleep(_seconds: float) -> None:
+        worker.request_stop()
+
     worker, _built, _ = _make_worker(
-        enabled=lambda: False,  # exit immediately after startup
-        sleep=lambda _s: None,
+        enabled=lambda: True,
+        sleep=sleep,
         reconcile=lambda: order.append("reconcile"),
         seed_chains=lambda: order.append("seed"),
         expire=lambda: order.append("expire"),
@@ -167,19 +187,128 @@ def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPat
 def test_spawns_host_scaled_loops_and_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch BEFORE _make_worker so the WorkerSeams default_factory reads the host size.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 3)
-    worker, built, _ = _make_worker(enabled=lambda: False, sleep=lambda _s: None)
+    worker = None
+
+    def sleep(_seconds: float) -> None:
+        worker.request_stop()
+
+    worker, built, _ = _make_worker(enabled=lambda: True, sleep=sleep)
     worker.run()
     queues = [executor.queue for executor in built]
     assert queues.count("loops") == 3
     assert queues.count("default") == 3
 
 
-def test_kill_switch_flip_off_stops_and_joins_all_executors() -> None:
-    states = iter([True, False])  # enabled for one poll, then flipped off
-    worker, built, handles = _make_worker(enabled=lambda: next(states, False), sleep=lambda _s: None)
+def test_disabled_at_boot_keeps_worker_alive_without_executors_and_resumes() -> None:
+    states = iter([False, True])
+    worker = None
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            assert not built
+        else:
+            worker.request_stop()
+
+    worker, built, handles = _make_worker(enabled=lambda: next(states, True), sleep=sleep)
     worker.run()
+
+    assert polls == 2
+    assert built
     assert all(not executor.running for executor in built)
     assert all(handle.joined for handle in handles)
+
+
+def test_disabled_worker_continues_supervisor_maintenance() -> None:
+    claims: list[int] = []
+    reaps: list[int] = []
+    reclaims: list[int] = []
+    worker = None
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 2:
+            worker.request_stop()
+
+    worker, built, _ = _make_worker(
+        enabled=lambda: False,
+        sleep=sleep,
+        claim_master=lambda: claims.append(1),
+        reap_leases=lambda: reaps.append(1),
+        reclaim_leases=lambda: reclaims.append(1),
+    )
+    worker.run()
+
+    assert not built
+    assert len(claims) == 3
+    assert len(reaps) == 2
+    assert len(reclaims) == 2
+
+
+def test_kill_switch_flip_off_stops_pool_then_flip_on_restarts_it() -> None:
+    states = iter([True, False, True])
+    worker = None
+    built_at_pause = 0
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal built_at_pause, polls
+        polls += 1
+        if polls == 2:
+            built_at_pause = len(built)
+            assert all(not executor.running for executor in built)
+            assert all(handle.joined for handle in handles)
+        elif polls == 3:
+            worker.request_stop()
+
+    worker, built, handles = _make_worker(enabled=lambda: next(states, True), sleep=sleep)
+    worker.run()
+
+    assert built_at_pause == len(build_executor_queues())
+    assert len(built) == built_at_pause * 2
+    assert all(not executor.running for executor in built)
+    assert all(handle.joined for handle in handles)
+
+
+def test_surviving_executor_fails_before_reenabled_pool_can_overlap() -> None:
+    states = iter([True, False, True])
+    spawned: list[_StuckHandle] = []
+    worker = None
+    polls = 0
+
+    def spawn(_executor: _FakeExecutor) -> _StuckHandle:
+        handle = _StuckHandle()
+        spawned.append(handle)
+        return handle
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 3:
+            worker.request_stop()
+
+    worker = LoopWorker(
+        _liveness_seams(
+            enabled=lambda: next(states, True),
+            spawn=spawn,
+            make_executor=_FakeExecutor,
+            sleep=sleep,
+            reclaim_leases=lambda: None,
+            reap_leases=lambda: None,
+            claim_master=lambda: None,
+            release_master=lambda: None,
+        )
+    )
+
+    with pytest.raises(LoopWorkerExecutorStopError, match="executor pool did not stop"):
+        worker.run()
+
+    assert len(spawned) == 1
+    assert [slot.handle for slot in worker._slots] == spawned
 
 
 def test_stop_signal_tears_the_pool_down() -> None:
@@ -195,6 +324,7 @@ def test_stop_signal_tears_the_pool_down() -> None:
 
 
 def _liveness_seams(*, enabled, spawn, make_executor, **overrides) -> WorkerSeams:
+    sleep = overrides.pop("sleep", lambda _seconds: None)
     return WorkerSeams(
         read_state=lambda: _state_from_bool(enabled),
         reconcile=lambda: None,
@@ -203,7 +333,7 @@ def _liveness_seams(*, enabled, spawn, make_executor, **overrides) -> WorkerSeam
         make_executor=make_executor,
         spawn=spawn,
         kill_ticks=lambda: None,
-        sleep=lambda _s: None,
+        sleep=sleep,
         poll_seconds=0.0,
         executor_queues=("loops",),
         **overrides,
@@ -224,9 +354,14 @@ def test_dead_executor_thread_is_respawned() -> None:
     def spawn(_executor: _FakeExecutor) -> _FakeHandle:
         return _FakeHandle(alive=next(alive_flags, True))
 
-    states = iter([True, False])  # one supervisory poll, then stop
-    seams = _liveness_seams(enabled=lambda: next(states, False), spawn=spawn, make_executor=make_executor)
-    LoopWorker(seams).run()
+    worker = None
+
+    def sleep(_seconds: float) -> None:
+        worker.request_stop()
+
+    seams = _liveness_seams(enabled=lambda: True, spawn=spawn, make_executor=make_executor, sleep=sleep)
+    worker = LoopWorker(seams)
+    worker.run()
 
     assert len(built) == 2  # the original dead executor + one respawn
     assert built[1].queue == "loops"
@@ -254,7 +389,12 @@ def test_shutdown_kills_in_flight_tick_process_groups() -> None:
     pgid = os.getpgid(proc.pid)
     deadlined_tick._register_tick_pgid(pgid)
     try:
-        worker, _, _ = _make_worker(enabled=lambda: False, sleep=lambda _s: None)  # shut down at once
+        worker = None
+
+        def sleep(_seconds: float) -> None:
+            worker.request_stop()
+
+        worker, _, _ = _make_worker(enabled=lambda: True, sleep=sleep)
         worker.run()
         with contextlib.suppress(deadlined_tick.TimeoutExpired):
             proc.wait(timeout=5)
@@ -302,16 +442,22 @@ class TestStartupExpiryBeforeSpawn:
 
             # Build WorkerSeams directly so `expire` keeps its REAL default
             # (expire_stale_default_jobs) — `_make_worker` stubs it to a no-op.
+            worker = None
+
+            def sleep(_seconds: float) -> None:
+                worker.request_stop()
+
             seams = WorkerSeams(
-                read_state=lambda: LoopRunnerState.OFF,  # exit right after startup
+                read_state=lambda: LoopRunnerState.ON,
                 reconcile=lambda: None,
                 seed_chains=lambda: None,
                 make_executor=make_executor,
                 spawn=lambda _e: _FakeHandle(),
-                sleep=lambda _s: None,
+                sleep=sleep,
                 poll_seconds=0.0,
             )
-            LoopWorker(seams).run()
+            worker = LoopWorker(seams)
+            worker.run()
 
         assert DBTaskResult.objects.get(id=job_id).status == TaskResultStatus.FAILED
         assert statuses_at_spawn  # executors were built
