@@ -80,7 +80,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from django.db import transaction
 
-from teatree.loops.dream.citation_snap import snap_citation
+from teatree.loops.dream.citation_snap import negated_edge, snap_citation, verbatim_spans
 from teatree.loops.dream.replay import ConsolidationExtract, build_extract, enumerate_members
 
 if TYPE_CHECKING:
@@ -240,10 +240,12 @@ def write_clusters(
 
     A cluster is rejected (counted, LOGGED at WARNING, never written) when its
     ``source_files`` is empty, cites a path not present in *extract*, or its
-    ``verified_citation`` is blank, or does not appear (whitespace-normalized substring)
-    in a cited snippet's text AND cannot be snapped to a window whose token delta is
-    limited to articles (:func:`~teatree.loops.dream.citation_snap.snap_citation`) — one that adds,
-    drops or changes a meaning-bearing word is rejected as a composed quote. These are the
+    ``verified_citation`` is blank, or does not appear (whitespace-normalized, on WHOLE
+    words and with no negator at either edge) in a cited snippet's text AND cannot be
+    snapped to a window whose token delta is limited to articles
+    (:func:`~teatree.loops.dream.citation_snap.snap_citation`) — one that adds,
+    drops or changes a meaning-bearing word is rejected as a composed quote, and one cut
+    out of `doesn't` or lifted from just after `must never` as an inverted one. These are the
     hallucinated-rule shapes the ledger must never persist, including a
     real-path-but-invented-quote citation. :func:`check_grounding` names WHICH failed, and
     the WARNING carries that reason, so an ungrounded distiller batch is surfaced. A valid
@@ -291,8 +293,9 @@ def write_clusters(
 #: folded SYMMETRICALLY (:func:`normalize_ws` runs on the snippet index AND on the
 #: citation). The fold canonicalises both sides of that substring test AND of the
 #: :func:`~teatree.loops.dream.citation_snap.snap_citation` fallback, where a citation the
-#: substring test misses is admitted only when its token delta against the located window is
-#: empty or limited to articles — so an invented or composed citation is still rejected.
+#: word-bounded test misses is admitted only when its token delta against the located window
+#: is empty or limited to articles and neither edge drops a negator — so an invented, composed
+#: or inverted citation is still rejected.
 _PUNCT_FOLD = str.maketrans(
     {
         "\u2018": "'",  # left single quotation mark
@@ -348,12 +351,17 @@ def check_grounding(cluster: DistilledCluster, snippet_texts: Mapping[str, str])
 
 
 def _check_citation(resolved: DistilledCluster, snippets: Sequence[str]) -> GroundingVerdict:
-    """The citation half of :func:`check_grounding`: found, snapped, composed, or absent."""
+    """The citation half of :func:`check_grounding`: found, snapped, composed, cut, or absent."""
     citation = normalize_ws(resolved.verified_citation)
     if not citation:
         return GroundingVerdict(resolved, "its verified_citation is empty")
-    if any(citation in snippet for snippet in snippets):
-        return GroundingVerdict(resolved, None)
+    cut_at = ""
+    for snippet in snippets:
+        for span in verbatim_spans(citation, snippet):
+            cut = negated_edge(snippet, *span)
+            if not cut:
+                return GroundingVerdict(resolved, None)
+            cut_at = cut_at or cut
     snap = snap_citation(citation, snippets)
     if snap.window is not None:
         return GroundingVerdict(replace(resolved, verified_citation=snap.window), None)
@@ -363,6 +371,13 @@ def _check_citation(resolved: DistilledCluster, snippets: Sequence[str]) -> Grou
             f"its verified_citation nearly quotes a cited snippet but differs from it by "
             f"{', '.join(snap.composed)} — a near-miss that changes a word is a composed quote, "
             f"not a paraphrase",
+        )
+    if cut_at or snap.cut_at:
+        return GroundingVerdict(
+            resolved,
+            f"its verified_citation quotes a cited snippet but is cut at {cut_at or snap.cut_at!r} — "
+            f"a quote starting or stopping at a negator asserts the opposite of the sentence it "
+            f"was cut from",
         )
     return GroundingVerdict(resolved, f"its verified_citation {citation[:160]!r} is not present in a cited snippet")
 
