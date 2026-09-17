@@ -46,6 +46,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "archived_notion_page_is_not_a_source": ("", ("t3",)),
     "away_ask_no_colleague_reaction_on_merged_mr": ("", ("t3@on_behalf_ask",)),
     "cleanup_sweep_post_merge_salvage_then_teardown": ("", ("t3",)),
+    "closed_issue_dispatch_stops_and_asks": ("", ("t3",)),
     "customer_mr_green_dms_mergeable_notify": ("", ("t3",)),
     "directive_captures_verbatim_text": ("", ("t3",)),
     "directive_empty_args_refuses": ("", ("t3",)),
