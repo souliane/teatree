@@ -12,8 +12,7 @@ key is :attr:`~teatree.core.backend_protocols.IssueReopenState.UNKNOWN` — the 
 point of the third value is that a missing marker is never read as "not reopened".
 """
 
-from typing import cast
-
+from teatree.backends.issue_payload import payload_or_none
 from teatree.core.backend_protocols import IssueReopenState
 from teatree.types import RawAPIDict
 
@@ -33,7 +32,7 @@ def reopen_state_from_payload(issue_data: object) -> IssueReopenState:
     ``{"error": ...}`` envelope, a missing or non-string ``state``, an open issue
     with no ``state_reason`` key — collapses to UNKNOWN.
     """
-    payload = _as_payload(issue_data)
+    payload = payload_or_none(issue_data)
     if payload is None:
         return IssueReopenState.UNKNOWN
     state = payload.get("state")
@@ -42,14 +41,6 @@ def reopen_state_from_payload(issue_data: object) -> IssueReopenState:
     if state.lower() in _DONE_STATES:
         return IssueReopenState.NOT_REOPENED
     return _from_state_reason(payload)
-
-
-def _as_payload(issue_data: object) -> RawAPIDict | None:
-    """The issue payload itself, or ``None`` for a shape that carries no verdict at all."""
-    if not isinstance(issue_data, dict):
-        return None
-    payload = cast("RawAPIDict", issue_data)
-    return None if "error" in payload else payload
 
 
 def _from_state_reason(payload: RawAPIDict) -> IssueReopenState:

@@ -15,7 +15,7 @@ piece is a driver that asks the FORGE about the ticket's own item — which is w
 rule B below is. (The 205 ``review_posted`` rows are all ``role = reviewer``: that
 state is the reviewer terminal, so they are correctly not merge candidates.)
 
-Five rules, one path, applied in cheapest-first order:
+Six rules, one path, applied in cheapest-first order:
 
 Rule A — a linked ``PullRequest`` row is MERGED (no forge call). The #3540 sweep:
     a ticket entered via a non-ladder phase whose PR merged outside the keystone has
@@ -36,6 +36,12 @@ Rule E — the upstream ISSUE behind a DELIVERED ticket was REOPENED. DELIVERED 
     could never re-admit that issue and no other rule could reach the ticket — the
     issue was stranded silently, forever (#4152). The revived ticket lands on STARTED
     and the hard-bounded ``stuck_ticket_redispatch`` sweep schedules its planning.
+Rule F — a PRE-SHIP ticket whose own ISSUE the forge says CLOSED. The shape no
+    other rule can reach, because B/C read an issue URL as an unknown PR, D polls
+    only the post-ship states, and E only DELIVERED — so a backlog prune left twelve
+    rows ``planned`` behind closed issues, each a permanent dispatch source (#4711).
+    It lives in the sibling ``board_reconcile_issue_close`` module; both call the
+    shared application machinery in ``board_reconcile_apply``.
 
 Every rule is idempotent by construction: each candidate queryset excludes the state
 its rule targets, so a second consecutive run finds nothing. Forge reads are
@@ -65,16 +71,13 @@ from django_fsm import can_proceed
 from teatree.backends.issue_reads import issue_is_done, issue_reopen_state
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import IssueReopenState, PrOpenState
-from teatree.core.models.errors import InvalidTransitionError
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
+from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
 from teatree.url_classify import Forge, forge_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
-
-    from django.db.models import QuerySet
-
     from teatree.core.models import Ticket
 
 logger = logging.getLogger(__name__)
@@ -150,10 +153,6 @@ def reconcile_board(
     return BoardReconcileReport(transitions=tuple(transitions), probes=probes, dry_run=dry_run)
 
 
-def _scoped(queryset: "QuerySet[Ticket]", overlay: str) -> "QuerySet[Ticket]":
-    return queryset.filter(overlay=overlay) if overlay else queryset
-
-
 def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransition]:
     """Rule A — every ticket with a MERGED ``PullRequest`` row not yet at its own terminal.
 
@@ -169,39 +168,47 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
     """
     from teatree.core.models import PullRequest, Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    candidates = _scoped(
+    candidates = scoped(
         Ticket.objects.filter(pull_requests__state=PullRequest.State.MERGED).exclude(
             state__in=(Ticket.State.MERGED, Ticket.State.REVIEW_POSTED)
         ),
         overlay,
     ).distinct()
-    return _collect(candidates, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run))
+    return collect(candidates, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run))
 
 
 def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) -> tuple[list[BoardTransition], int]:
-    """Rules B/C/D/E — the live forge reads, bounded by *probe_budget*.
+    """Rules B/C/D/E/F — the live forge reads, bounded by *probe_budget*.
 
     Newest-ticket-first, because a freshly merged PR is what makes the board
     untrustworthy minute to minute; the budget is what keeps an unbounded backlog
-    from turning the janitor into the thing that saturates the box. Rule E spends
-    whatever budget rules B/C left, so the whole run still costs at most *probe_budget*.
+    from turning the janitor into the thing that saturates the box. Rules E and F each
+    spend what the rules before them left, so the whole run still costs at most
+    *probe_budget*.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    candidates = _scoped(
+    candidates = scoped(
         Ticket.objects.exclude(issue_url="").exclude(state__in=_settled_states()).filter(remote_missing=False),
         overlay,
     ).order_by("-pk")
     pr_tickets = [t for t in candidates if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
     states = {ticket.issue_url: pr_open_state(ticket.issue_url) for ticket in pr_tickets}
 
-    transitions = _collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
+    transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
     reopened, reopen_probes = _reopened_issue_transitions(
         overlay=overlay, dry_run=dry_run, probe_budget=probe_budget - len(states)
     )
     transitions.extend(reopened)
-    return transitions, len(states) + reopen_probes
+    closed, close_probes = closed_issue_transitions(
+        overlay=overlay,
+        dry_run=dry_run,
+        probe_budget=probe_budget - len(states) - reopen_probes,
+        already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
+    )
+    transitions.extend(closed)
+    return transitions, len(states) + reopen_probes + close_probes
 
 
 def _settled_states() -> frozenset[str]:
@@ -277,7 +284,7 @@ def _close_review(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTrans
         return None
     from_state = ticket.state
     if dry_run:
-        return _planned(ticket, Ticket.State.REVIEW_POSTED, BoardAction.REVIEW_CLOSED, reason)
+        return planned(ticket, Ticket.State.REVIEW_POSTED, BoardAction.REVIEW_CLOSED, reason)
     ticket.mark_review_no_action()
     ticket.save()
     logger.info("Board reconcile closed review ticket %s %s → review_posted (%s)", ticket.pk, from_state, reason)
@@ -305,7 +312,7 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     candidates = list(
-        _scoped(
+        scoped(
             Ticket.objects.filter(state__in=Ticket.completable_states())
             .exclude(issue_url="")
             .exclude(role=Ticket.Role.REVIEWER)
@@ -314,7 +321,7 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
         )
     )
     done = _issue_done_urls(candidates)
-    return _collect(
+    return collect(
         [t for t in candidates if t.issue_url in done],
         lambda ticket: _advance_to_delivered(ticket, dry_run=dry_run),
     )
@@ -351,7 +358,7 @@ def _reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: in
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     candidates = list(
-        _scoped(
+        scoped(
             Ticket.objects.filter(state=Ticket.State.DELIVERED)
             .exclude(issue_url="")
             .exclude(role=Ticket.Role.REVIEWER)
@@ -368,7 +375,7 @@ def _reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: in
             len(candidates) - len(probed),
         )
     reopened = _reopened_issue_urls(probed)
-    transitions = _collect(
+    transitions = collect(
         [t for t in probed if t.issue_url in reopened],
         lambda ticket: _revive_reopened(ticket, dry_run=dry_run),
     )
@@ -406,7 +413,7 @@ def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | No
         return None
     reason = "forge says the issue was reopened"
     if dry_run:
-        return _planned(ticket, Ticket.State.STARTED, BoardAction.REVIVED_REOPENED, reason)
+        return planned(ticket, Ticket.State.STARTED, BoardAction.REVIVED_REOPENED, reason)
     from_state = ticket.state
     ticket.reopen()
     extra = ticket.extra or {}
@@ -457,30 +464,6 @@ def _escalate_revival_cap_once(ticket: "Ticket", *, revivals: int) -> None:
     DeferredQuestion.record(question, session_id="", dedupe_marker=marker)
 
 
-def _collect(
-    tickets: "Iterable[Ticket]",
-    reconcile_one: "Callable[[Ticket], BoardTransition | None]",
-) -> list[BoardTransition]:
-    """Apply *reconcile_one* per ticket, isolating each row from the others.
-
-    A gate refusal (the ``merge_evidence`` fail-closed path) and an unexpected
-    per-row error are both logged and skipped — one poison ticket must never abort a
-    whole-table sweep.
-    """
-    transitions: list[BoardTransition] = []
-    for ticket in tickets:
-        try:
-            transition = reconcile_one(ticket)
-        except InvalidTransitionError as exc:
-            logger.debug("Board reconcile skipped ticket %s — gate refused: %s", ticket.pk, exc)
-        except Exception:
-            logger.exception("Board reconcile skipped ticket %s after an unexpected error", ticket.pk)
-        else:
-            if transition is not None:
-                transitions.append(transition)
-    return transitions
-
-
 def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
     """Drive one ticket to MERGED, or report the intent under *dry_run*."""
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
@@ -489,7 +472,7 @@ def _advance_to_merged(ticket: "Ticket", *, reason: str, dry_run: bool) -> Board
         return None
     from_state = ticket.state
     if dry_run:
-        return _planned(ticket, Ticket.State.MERGED, BoardAction.ADVANCED_MERGED, reason)
+        return planned(ticket, Ticket.State.MERGED, BoardAction.ADVANCED_MERGED, reason)
     ticket.reconcile_merged()
     ticket.save()
     logger.info("Board reconcile advanced ticket %s %s → merged (%s)", ticket.pk, from_state, reason)
@@ -512,7 +495,7 @@ def _resolve_ignored(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTr
         return None
     from_state = ticket.state
     if dry_run:
-        return _planned(ticket, Ticket.State.IGNORED, BoardAction.IGNORED_CLOSED, reason)
+        return planned(ticket, Ticket.State.IGNORED, BoardAction.IGNORED_CLOSED, reason)
     ticket.ignore()
     ticket.save()
     logger.info("Board reconcile resolved ticket %s %s → ignored (%s)", ticket.pk, from_state, reason)
@@ -538,7 +521,7 @@ def _advance_to_delivered(ticket: "Ticket", *, dry_run: bool) -> BoardTransition
 
     reason = "upstream issue done"
     if dry_run:
-        return _planned(ticket, Ticket.State.DELIVERED, BoardAction.ADVANCED_DELIVERED, reason)
+        return planned(ticket, Ticket.State.DELIVERED, BoardAction.ADVANCED_DELIVERED, reason)
     outcome = ticket.advance_to_delivered()
     if outcome.refused:
         logger.warning("Board reconcile refused on ticket %s (%s): %s", ticket.pk, ticket.issue_url, outcome.error)
@@ -557,16 +540,4 @@ def _advance_to_delivered(ticket: "Ticket", *, dry_run: bool) -> BoardTransition
         reason=reason,
         applied=outcome.advanced,
         error=outcome.error or "",
-    )
-
-
-def _planned(ticket: "Ticket", to_state: str, action: BoardAction, reason: str) -> BoardTransition:
-    return BoardTransition(
-        ticket_id=int(ticket.pk),
-        issue_url=ticket.issue_url,
-        from_state=ticket.state,
-        to_state=to_state,
-        action=action,
-        reason=reason,
-        applied=False,
     )
