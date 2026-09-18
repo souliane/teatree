@@ -22,6 +22,7 @@ skills/dogfooding/SKILL.md::gh issue create
 skills/e2e-review/SKILL.md::gh pr approve
 skills/e2e-review/SKILL.md::gh pr review
 skills/e2e-review/SKILL.md::glab mr approve
+skills/interactive/SKILL.md::gh issue list
 skills/internals/SKILL.md::t3 config_setting set
 skills/internals/SKILL.md::t3 pr create
 skills/internals/SKILL.md::t3 worktree status

@@ -4,7 +4,7 @@ description: "ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that 
 compatibility: any
 requires:
   - rules
-eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
+eval_exempt: harness-wiring reference plus invariants that each point at the mechanisms enforcing them deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py, the filing-moderation clause by tests/conformance/test_engagement_skill_filing_moderation.py, and each mechanism by its own tests, not by an agent trajectory
 metadata:
   version: 0.0.1
 ---
@@ -28,9 +28,39 @@ All three parts are the order; dropping any one recreates the failure:
    filed-but-unadmitted issue looks identical to a delivered one from the operator's side
    and is not the same thing at all.
 
-File it through the MCP forge tool, and carry the admit label — the label is what
-makes intake reach it, and a filed issue without one is not enqueued (it resolves
-from `issue_implementer_label`, falling back to `t3-auto`):
+**Search the backlog first; a NEW row is the last resort (Non-Negotiable).** This and the
+file-it duty above fail the same way — a dropped request and an inflated backlog are each
+invisible to the operator, and both look like diligence from the inside. Every row pays the
+same fixed overhead (worktree, agent, plan, code, review, PR, CI, merge) whatever its
+content, so ten one-line issues pay it ten times.
+
+```text
+mcp__teatree__github_issue_search(repo="<owner>/<repo>", query="<the symptom>")
+```
+
+The CLI fallback, for when the MCP server is not connected. `--limit 200` is load-bearing
+here — the default page size is 30, so a flagless search reports "nothing open matches"
+while the host issue sits below the fold:
+
+```bash
+gh issue list --repo <owner>/<repo> --state open --limit 200 --search "<the symptom>"
+```
+
+- **Extend the host issue where one fits**: append the evidence and the acceptance criteria
+  to its body or as a comment, so it carries the whole ask. A cross-link from a second issue
+  is not reuse.
+- **One issue per root cause, not per finding.** Findings a single PR would close belong in
+  one issue; a genuinely unrelated defect in another subsystem still gets its own.
+- **File only when no open issue can carry it** — and be able to name the ones you checked.
+
+Canonical doctrine: `AGENTS.md` § "Issue Creation". Measured cost of skipping it
+([#4762](https://github.com/souliane/teatree/issues/4762)): 13 issues filed in one session
+with zero searches — a third were duplicates, enforcement-halves of a sibling, or already
+delivered.
+
+Once no open issue can carry it, file it through the MCP forge tool, and carry the admit
+label — the label is what makes intake reach it, and a filed issue without one is not
+enqueued (it resolves from `issue_implementer_label`, falling back to `t3-auto`):
 
 ```text
 mcp__teatree__github_issue_create(
