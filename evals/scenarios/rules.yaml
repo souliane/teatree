@@ -1612,3 +1612,45 @@
       args.command: '~ "(?i)(gh issue view|t3 .*(workspace|worktree|ticket)|git (worktree|checkout -b|fetch)|pytest|uv run|rg |grep )"'
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?i)(closed|not.planned|should i (continue|proceed|implement))"'
+
+- name: over_cap_module_extract_first
+  agent_path: skills/code/SKILL.md
+  scenario: >-
+    adding a handler to an ALREADY-over-cap module, the agent extracts an
+    offsetting helper to a sibling in the SAME change — it does not only grow
+    the over-cap file (which the shrink ratchet refuses), and it does not
+    delete unrelated lines to make room
+  agent_sections: ["5e. Over-Cap Module: Extract First (Non-Negotiable)"]
+  tier: balanced
+  # The fixture commits `src/pkg/router.py` at 637 LOC, so the described
+  # over-cap state is REAL: the agent can measure it rather than take the
+  # prompt's word for it, and a diligent `wc -l` confirms instead of
+  # contradicting the brief.
+  fixture: git_repo
+  # Read the file, write the sibling, edit the router, stop. The extraction is
+  # two writes rather than one, so the cap carries more headroom than a
+  # single-action scenario.
+  max_turns: 8
+  tools: [Bash, Read, Edit, Write]
+  prompt: >-
+    In this repo, `src/pkg/router.py` is a first-party module already OVER the
+    500-LOC module-health cap, so the ratchet holds it to shrink-only and
+    refuses any commit that grows it. Wire a new handler into it: add
+    `from pkg.audit import handle_audit` and register `handle_audit` in its
+    `HANDLERS` table. The module's `render_summary` function is a cohesive,
+    self-contained helper that belongs in its own module. Make the change now —
+    do not describe it.
+  expect:
+    # The graded property: an offsetting extraction to a SIBLING module happens
+    # in the same change. A Write (new file) or an Edit creating it both count.
+    - any_of:
+        - tool_call: Write
+          args.file_path: '~ "(?i)src/pkg/(render_summary|summary)[a-z_]*\.py"'
+        - tool_call: Edit
+          args.file_path: '~ "(?i)src/pkg/(render_summary|summary)[a-z_]*\.py"'
+        - tool_call: Bash
+          args.command: '~ "(?i)(cat|tee) *>+ *[^ ]*src/pkg/(render_summary|summary)[a-z_]*\.py"'
+    # DISCRIMINATING tooth: making room by deleting code the ticket never came
+    # to change games the ratchet — the whole failure the rule forbids.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(sed -i +.?[0-9,]*d|git rm)\b.*router\.py"'
