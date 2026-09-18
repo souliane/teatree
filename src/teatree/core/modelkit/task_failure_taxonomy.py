@@ -112,6 +112,7 @@ class FailureKind(models.TextChoices):
     EVIDENCE_MISSING = "evidence_missing", "Required evidence missing"
     RECORDING_REFUSED = "recording_refused", "Recording refused by a gate"
     PLAN_MISSING = "plan_missing", "No plan recorded before an implementing dispatch"
+    ISSUE_CLOSED = "issue_closed", "Issue already closed on the forge"
     CANCELLED = "cancelled", "Cancelled by an operator"
     SUPERSEDED = "superseded", "Superseded by rework"
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
@@ -169,6 +170,11 @@ RECOVERY: Mapping[str, Recovery] = {
     # the remedy is a different phase (planning), which `unplanned_ticket_redispatch` schedules off
     # this very name rather than off the reason text (souliane/teatree#4578).
     FailureKind.PLAN_MISSING: Recovery(_HALT, environmental=False),
+    # ISSUE_CLOSED is HALT for the same reason and one more: the remedy is a DECISION
+    # (reopen the issue, or ignore the ticket), and the tick's disposition scan takes
+    # the ticket out of the population on its own — so a retry would burn budget racing
+    # a sweep that is already resolving it (souliane/teatree#2663).
+    FailureKind.ISSUE_CLOSED: Recovery(_HALT, environmental=False),
     FailureKind.OVERLAY_UNKNOWN: Recovery(_HALT, environmental=False),
     FailureKind.UNRECORDED: Recovery(_HALT, environmental=False),
     FailureKind.UNCLASSIFIED: Recovery(_HALT, environmental=False),
@@ -239,6 +245,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
+    (FailureKind.ISSUE_CLOSED, ("issue_closed:",)),
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
     # ``CredentialSpec._missing_message`` — both its branches carry this phrase.
     (FailureKind.CREDENTIAL_MISSING, ("credential available",)),

@@ -12,6 +12,7 @@ import pytest
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from django_fsm import can_proceed
 
 from teatree.core.models import (
     DeferredQuestion,
@@ -719,6 +720,42 @@ class TestTicketStateSets(TestCase):
         # intake can never re-admit an issue a live ticket already holds (#4133).
         assert Ticket.issue_owning_states() == frozenset(Ticket.State.values) - {Ticket.State.IGNORED}
 
+    def test_pre_ship_states_membership(self) -> None:
+        assert Ticket.pre_ship_states() == frozenset(
+            {
+                Ticket.State.NOT_STARTED,
+                Ticket.State.SCOPED,
+                Ticket.State.STARTED,
+                Ticket.State.PLANNED,
+                Ticket.State.CODED,
+                Ticket.State.TESTED,
+                Ticket.State.REVIEWED,
+            },
+        )
+
+    def test_pre_ship_and_post_ship_partition_every_state(self) -> None:
+        # Derived, not enumerated (#4711): a State added later must land in exactly one
+        # of the two sets, so it cannot escape BOTH the completion rule and rule F.
+        post_ship = Ticket.completable_states() | Ticket.merged_states()
+        terminals = {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+        assert Ticket.pre_ship_states() & post_ship == frozenset()
+        assert Ticket.pre_ship_states() & terminals == frozenset()
+        assert Ticket.pre_ship_states() | post_ship | terminals == frozenset(Ticket.State.values)
+
+    def test_pre_ship_states_includes_planned(self) -> None:
+        # The #2663 defect: the disposition scanner's hand-listed set skipped PLANNED,
+        # so twelve tickets whose issue the owner closed NOT_PLANNED were never
+        # auto-ignored.
+        assert Ticket.State.PLANNED in Ticket.pre_ship_states()
+
+    def test_every_pre_ship_state_can_be_ignored(self) -> None:
+        # The disposition scanner's auto-ignore only pays off if it is a legal FSM
+        # edge from every member — a state in the set the FSM refuses would emit a
+        # signal the mechanical handler can never act on.
+        for state in sorted(Ticket.pre_ship_states()):
+            ticket = Ticket.objects.create(overlay="acme", issue_url=f"https://example.com/issues/{state}", state=state)
+            assert can_proceed(ticket.ignore), f"ignore must be reachable from {state}"
+
     def test_every_set_member_is_a_real_state(self) -> None:
         valid = set(Ticket.State.values)
         for name in (
@@ -727,6 +764,7 @@ class TestTicketStateSets(TestCase):
             "completable_states",
             "merged_states",
             "issue_owning_states",
+            "pre_ship_states",
         ):
             states = getattr(Ticket, name)()
             assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"

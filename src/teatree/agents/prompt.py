@@ -95,7 +95,9 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
             "   in your JSON result. The pipeline will create an interactive session for a human to continue.",
             f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
             "   It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the",
-            "   push-stage gates CI re-runs. Report its exit code as the green-proof.",
+            "   push-stage gates CI re-runs. Report the SHA it says it measured TOGETHER WITH its",
+            "   exit code — an exit code alone does not say which tree earned it. To bind the run to",
+            "   a specific head: `t3 tool verify-gates --expect-sha <head>`.",
             final_output_reminder_line(task.phase),
         ),
     )

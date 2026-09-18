@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from teatree.agents.coding_prompt import _coding_phase_directive
 from teatree.agents.dispatch_preflight import (
+    branch_currency_brief_lines,
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
@@ -24,7 +25,7 @@ from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
-from teatree.core.models.review_target import assigned_reviewer_identity_for
+from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -312,6 +313,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "1. Do a thorough code review of all changes on this ticket's branch.",
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
+        *_green_proof_binding_lines(task),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task)),
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
@@ -319,6 +321,31 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
     if fanout := _phase_fanout_directive(task):
         lines.append(fanout)
     return tuple(lines)
+
+
+def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
+    """Bind the reviewer's green-proof to the dispatched head, or ``()`` (#4720).
+
+    ``t3 tool verify-gates`` grades whatever tree the shell is in, and a reviewer
+    never leaves the main clone unless they make a worktree — so it measured
+    ``origin/main`` and exited 0 while the reviewed head carried six failing
+    check-runs, across eight consecutive reviews of one PR.
+    """
+    target = review_target_for_task(task)
+    if target is None or not target.head_sha:
+        return ()
+    head = target.head_sha
+    return (
+        "",
+        f"GREEN-PROOF BINDING: the head under review is {head}.",
+        "`t3 tool verify-gates` grades whatever tree your shell is in — from the main clone it",
+        "measures the default branch and says nothing about this PR. Bind it to the head, or do",
+        "not report it at all:",
+        f"  t3 review checkout {task.ticket.issue_url} --sha {head} --base-dir /var/tmp",
+        f"  cd <that dir> && t3 tool verify-gates --expect-sha {head}",
+        "Report its exit code WITH the SHA it printed. It covers the prek hooks only — the merge",
+        f"authority is the forge's check-runs at {head[:12]}, so read those before grading CI green.",
+    )
 
 
 def _answering_phase_lines(task: Task) -> tuple[str, ...]:
@@ -345,6 +372,17 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
     if owes_work_item(task.ticket):
         lines.extend(_WORK_ITEM_RETURN_LINES)
     return tuple(lines)
+
+
+def _testing_phase_lines(task: Task) -> tuple[str, ...]:
+    """The ``PHASE: testing`` block — the dispatch-time branch-currency verdict (#2663).
+
+    ``t3 tool verify-gates`` judges the worktree against ITSELF, so a branch can
+    pass every local gate and still not merge. The verdict is read at prompt-build
+    time (the same read-git-at-build-time pattern as :func:`head_state_brief_lines`)
+    so the tester starts from a fetched answer rather than a clean-looking tree.
+    """
+    return ("", "PHASE: testing — branch-currency preflight", *branch_currency_brief_lines(task))
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:
@@ -418,6 +456,7 @@ def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
 #: on the canonical phase token; a phase absent here carries no trailing block.
 _PHASE_BLOCK_BUILDERS: dict[str, Callable[[Task], tuple[str, ...]]] = {
     "planning": _planning_phase_lines,
+    "testing": _testing_phase_lines,
     "reviewing": _reviewing_phase_lines,
     "answering": _answering_phase_lines,
     "scanning_news": lambda _task: _scanning_news_phase_lines(),

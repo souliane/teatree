@@ -32,6 +32,28 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: shipping — auto-review gate" in lines
 
 
+class TestTestingPhaseBranchCurrency(TestCase):
+    """#2663: a testing dispatch carries the branch-currency verdict, and only it does."""
+
+    _HEADER = "PHASE: testing — branch-currency preflight"
+
+    def test_testing_carries_the_branch_currency_preflight(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("testing"), [])
+
+    def test_the_test_alias_resolves_to_the_same_block(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("test"), [])
+
+    def test_a_worktreeless_ticket_is_loud_rather_than_silently_empty(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+
+        assert "UNVERIFIED" in brief
+        assert "no ticket worktree materialised at dispatch" in brief
+
+    def test_other_phases_are_unchanged(self) -> None:
+        for phase in ("coding", "reviewing", "shipping", "planning"):
+            assert self._HEADER not in "\n".join(phase_specific_lines(_task(phase), []))
+
+
 class TestFixRecordDirective(TestCase):
     """#4520: the FixRecord directive is KIND-conditional, so a feature brief is unchanged."""
 
@@ -204,3 +226,42 @@ class TestReviewingBriefAssignsTheIdentity(TestCase):
         # Control: nothing to derive an identity from, so the self-naming instruction stays.
         brief = self._reviewing_brief(issue_url="https://github.com/souliane/teatree/issues/2663")
         assert REVIEWER_IDENTITY_INSTRUCTION in brief
+
+
+class TestReviewingGreenProofBinding(TestCase):
+    """#4720: a reviewing brief binds `verify-gates` to the head, so it cannot grade the default branch."""
+
+    _HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+    def _reviewer_task(self, *, issue_url: str, reviewed_sha: str) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.STARTED,
+            issue_url=issue_url,
+            extra={"reviewed_sha": reviewed_sha} if reviewed_sha else {},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def _brief(self, **kwargs: str) -> str:
+        return "\n".join(phase_specific_lines(self._reviewer_task(**kwargs), []))
+
+    def test_brief_names_the_head_and_the_expect_sha_command(self) -> None:
+        brief = self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
+        assert f"GREEN-PROOF BINDING: the head under review is {self._HEAD}." in brief
+        assert f"t3 tool verify-gates --expect-sha {self._HEAD}" in brief
+        assert "https://github.com/o/r/pull/42" in brief
+
+    def test_brief_names_the_forge_check_runs_as_the_merge_authority(self) -> None:
+        assert "check-runs" in self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha=self._HEAD)
+
+    def test_no_recorded_head_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in self._brief(issue_url="https://github.com/o/r/pull/42", reviewed_sha="")
+
+    def test_a_ticket_answerable_for_no_pull_request_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in self._brief(
+            issue_url="https://github.com/o/r/issues/42", reviewed_sha=self._HEAD
+        )
+
+    def test_a_coding_brief_carries_no_binding(self) -> None:
+        assert "GREEN-PROOF BINDING" not in "\n".join(phase_specific_lines(_task("coding"), []))

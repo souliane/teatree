@@ -31,10 +31,11 @@ ALLOWED_TRANSITION_NAMES: tuple[str, ...] = (
     # without a code-level workaround.
     "reconcile_reviewed",
     # Abandon/neutralize a mis-adopted or stray ticket: ``ignore`` drives the
-    # reversible terminal IGNORED state (its body only stamps ``ignored_from``;
-    # it enqueues no teardown/ship task and posts nothing to the forge), and
-    # ``unignore`` restores the pre-abandon state. Both are FSM-model methods
-    # the CLI merely refused to dispatch.
+    # reversible terminal IGNORED state (its body stamps ``ignored_from`` and posts
+    # nothing to the forge; teardown IS enqueued, keyed on the target state by #808,
+    # and the reaper's analyze-before-wipe keeps unsynced work), and ``unignore``
+    # restores the pre-abandon state. Both are FSM-model methods the CLI merely
+    # refused to dispatch.
     "ignore",
     "unignore",
 )

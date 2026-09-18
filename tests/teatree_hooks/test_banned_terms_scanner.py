@@ -40,6 +40,9 @@ from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_me
 # `handle_banned_terms_pretool` is a router handler, so the router is the only hook that scans.
 _SCANNING_HOOK_SCRIPT = "hook_router.py"
 
+# See the fixture's docstring for why the shell hook is not exec'd per scan here.
+pytestmark = pytest.mark.usefixtures("in_process_banned_terms_scanner")
+
 
 def _seed_config_db(tmp_path: Path, *, filename: str = "config.sqlite3", **settings: list[str]) -> Path:
     """Seed a ``teatree_config_setting`` DB with each ``key=value-list`` at global scope."""
@@ -126,10 +129,23 @@ def _public_repo(tmp_path: Path) -> Path:
 
 
 class TestScanText:
+    """The two ``real_banned_terms_scanner`` rows are the module's only real script execs.
+
+    They are the pair that covers the shell contract end to end: between them they
+    walk both exit codes the script promises (0 clean / 1 found), its interpreter
+    resolution, its ``T3_CONFIG_DB`` forwarding, and the ``BANNED TERM in <file>:``
+    report the scanner parses the term back out of. Every other row asserts a policy
+    the in-process matcher decides identically, so it does not buy a second exec.
+    """
+
+    @pytest.mark.integration
+    @pytest.mark.real_banned_terms_scanner
     def test_banned_term_is_matched(self, config: Path) -> None:
         term = banned_terms_scanner.scan_text("we ship to acmecorp next week", config_path=config)
         assert term == "acmecorp"
 
+    @pytest.mark.integration
+    @pytest.mark.real_banned_terms_scanner
     def test_clean_text_returns_none(self, config: Path) -> None:
         assert banned_terms_scanner.scan_text("we ship next week", config_path=config) is None
 

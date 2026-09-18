@@ -4,7 +4,8 @@ The autonomous loops run as durable self-rescheduling loop-timer chains that the
 singleton ``t3 worker`` drains (#1796 / PR-28: one ``loop_timer`` chain per enabled
 DB ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own cadence —
 there is no master tick). This CLI manages that lifecycle: ``start`` spawns a Claude
-Code session (whose owner hook registers the reactive infra ``/loop``s); ``stop``
+Code session (whose owner hook registers the reactive infra ``/loop``s only when no
+worker is alive — the worker drives them otherwise); ``stop``
 prints the slot id to unregister; ``list`` / ``status`` read live loop state; and
 the reactive infra loops (``self-improve``, ``slack-answer``, ``drain-queue``) each
 expose their own ``run`` / ``start`` subcommands here.
@@ -40,6 +41,7 @@ from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
 from teatree.cli.loop.preset import register as register_loop_preset
+from teatree.cli.loop.reactive_start import worker_already_drives
 from teatree.cli.loop.reclaim_markers import reclaim_markers_command
 from teatree.cli.loop.schedule import register as register_loop_schedule
 from teatree.cli.loop.slack_answer import slack_answer_app
@@ -202,8 +204,9 @@ _REGISTER_GUIDANCE = (
     "chains — so the DB loops run with no Claude session open. Check it with "
     "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
     "disable an individual loop with `t3 loop enable|disable <name>` (the reconciler "
-    "adds/prunes its timer at once). This session still registers the reactive infra "
-    "loops (self-improve, slack-answer, drain-queue) automatically at start."
+    "adds/prunes its timer at once). The worker drives the reactive infra loops "
+    "(self-improve, slack-answer, drain-queue) too; a session registers those only "
+    "when no worker is alive."
 )
 
 
@@ -293,8 +296,8 @@ def stop_command() -> None:
     typer.echo(
         "To stop the loops, turn the kill-switch off:\n"
         "    t3 <overlay> config_setting set loop_runner_enabled false\n"
-        "Then stop the worker that drains their timer chains: t3 <overlay> worker (Ctrl+C), "
-        "or check it with `t3 worker status`. Re-enable with `loop_runner_enabled true`."
+        "The worker stays alive and idle so `loop_runner_enabled true` resumes without a restart. "
+        "To end the worker process itself, run `t3 worker stop`; check it with `t3 worker status`."
     )
 
 
@@ -372,6 +375,8 @@ def self_improve_start_command() -> None:
     the second ``/loop`` slot.  The cheap tier runs by default; override
     via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
     """
+    if worker_already_drives("self-improve"):
+        return
     register_command = reactive_slot("loop-self-improve").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the self-improve loop:")
     typer.echo(f"    {register_command}")

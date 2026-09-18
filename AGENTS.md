@@ -324,7 +324,8 @@ bash dev/test-affected.sh           # the diff-scoped lane — the local default
 bash dev/ci-parity-fast.sh          # pre-push inner loop: scoped prek + makemigrations + affected tests + push gate
 bash dev/test-cov.sh                # Coverage lane: parallel + --cov --doctest-modules, 93% floor (CI parity)
 prek run --all-files                # Commit-stage hooks ONLY (ruff, codespell, tach, ty)
-t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages
+t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages; prints the SHA it measured
+t3 tool verify-gates --expect-sha <head>   # ...and refuse any tree that is not that head
 bash dev/test-fast.sh               # Declared exception: whole host suite, Python 3.13, parallel
 bash dev/test-matrix.sh             # Declared exception: Docker matrix, Python 3.13 + 3.14
 ```
@@ -382,7 +383,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
-After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — a bare `prek run --all-files` skips the push-stage gates CI re-runs) then `bash dev/test-affected.sh` then commit.
+After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — a bare `prek run --all-files` skips the push-stage gates CI re-runs) then `bash dev/test-affected.sh` then commit. Report the SHA it says it measured alongside its exit code — the command takes no target, so the exit code alone does not say which tree earned it.
 
 ## Abstraction Boundaries
 

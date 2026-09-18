@@ -146,7 +146,7 @@ To read what the box is currently configured to DO — model and reasoning effor
 
 ### Reactive infra loops (not DB `Loop` rows)
 
-Three tight-cadence reactive slots run as their OWN dedicated native Claude `/loop`s, separate from the DB-configured domain loops above. They are self-contained cycle commands (not scanner ticks). The **t3-master** session AUTO-registers all three at session start — the owner bootstrap (`hooks/scripts/loop_registrations.py`) emits one `/loop <cadence> Run …` directive per slot, reading the same `teatree.loop.loop_cadences` seam that `t3 loop <slot> start` prints, so you can also register or re-print any single slot by hand. Their cadence is env-overridable:
+Three tight-cadence reactive slots run separately from the DB-configured domain loops above — self-contained cycle commands, not scanner ticks. **All three are worker maintenance chains** (`teatree.loops.timer_reconciler`: `run_slack_answer`, `run_self_improve`, `drain_chain`), so a live `t3 worker` drives them with NO Claude session open, and a session registers nothing. The owner bootstrap (`hooks/scripts/loop_registrations.py`) probes the worker singleton: worker alive → it emits one line saying the worker drives them; worker down → it falls back to emitting one `/loop <cadence> Run …` directive per slot, the legitimate degraded path. `t3 loop <slot> start` does the same, printing the paste-me slash command only when no worker is alive. Registering one of these as a cron/`/loop` while a worker is alive is refused by the `block-cron-loop-shell` PreToolUse gate (`/t3:rules` § "Never Cron a `t3 loop` Command From a Session"). Their cadence is env-overridable:
 
 ```bash
 t3 loop slack-answer start    # /loop 20s Run `t3 loop slack-answer run`.       (T3_SLACK_ANSWER_CADENCE, floor 15s)
@@ -154,6 +154,6 @@ t3 loop self-improve start    # /loop 30m Run `t3 loop self-improve run --tier c
 t3 loop drain-queue start     # /loop 30s Run `t3 loop drain-queue run`.         (T3_QUEUE_DRAIN_CADENCE, floor 10s)
 ```
 
-Each acquires its own dedicated `LoopLease` slot (`loop-slack-answer` / `loop-self-improve` / `loop-drain-queue`) so a slow cycle never blocks another, and each is the sub-minute-cadence reason these stay dedicated `/loop`s rather than DB `Loop` rows (the cron-based `Loop` registration is minute-granular). There is no master tick to piggyback them onto — each is driven only by its own `/loop`.
+Each acquires its own dedicated `LoopLease` slot (`loop-slack-answer` / `loop-self-improve` / `loop-drain-queue`), which is what lets the worker chain and an owner session share a slot without ever running two cycles at once — and stops a slow cycle blocking another. They stay off the DB `Loop` table because their sub-minute cadence cannot be expressed as a minute-granular `Loop` row, not because a session has to drive them.
 
 For ownership hand-off, claiming, the lease/owner machinery, and how the cron drives the tick, see `t3:internals`.

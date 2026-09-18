@@ -23,9 +23,10 @@ the seeded ``Loop``-table set equals :func:`teatree.loops.registry.iter_loops`.
 The reactive infra loops (``slack_answer``, ``self_improve``, ``drain_queue``)
 are intentionally NOT default Loop rows: they have no registry ``MiniLoop`` — the
 per-loop ``build_loop_table_jobs`` / ``iter_loops`` fan-out can never run them.
-Each runs as its OWN dedicated native Claude ``/loop`` firing its own
-``t3 loop <slot> run`` command (``teatree.cli.loop*``), behind its own dedicated
-``LoopLease`` (``loop-slack-answer`` / ``loop-self-improve`` / ``loop-drain-queue``).
+Each runs as a WORKER maintenance chain (``teatree.loops.timer_reconciler``), behind
+its own dedicated ``LoopLease`` (``loop-slack-answer`` / ``loop-self-improve`` /
+``loop-drain-queue``); a session registers a dedicated native Claude ``/loop`` firing
+``t3 loop <slot> run`` (``teatree.cli.loop*``) only when no worker is alive.
 Seeding one as a ``Loop`` row would create an orphan a per-loop tick could never
 fan out (the seed/registry parity this module's test pins).
 """

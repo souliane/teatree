@@ -58,7 +58,7 @@ class ReclassifyRecurringMemoryClustersTestCase(TestCase):
     def test_recurring_memory_cluster_is_reclassified_to_core_gap(self) -> None:
         _record_recurrence()
         cluster = _memory_only_cluster()
-        [reclassified] = reclassify_recurring_memory_clusters([cluster])
+        [reclassified] = reclassify_recurring_memory_clusters([cluster], rule_slugs={_SLUG})
         # No longer a memory destination — it points at a teatree-core fix path (core-gap).
         assert not reclassified.durable_destination.startswith("feedback/")
         assert reclassified.durable_destination.startswith(("src/teatree", "skills/"))
@@ -66,7 +66,7 @@ class ReclassifyRecurringMemoryClustersTestCase(TestCase):
     def test_non_recurring_memory_cluster_is_left_as_memory(self) -> None:
         # No recurrence on record → the keep-as-memory destination is legitimate, untouched.
         cluster = _memory_only_cluster()
-        [unchanged] = reclassify_recurring_memory_clusters([cluster])
+        [unchanged] = reclassify_recurring_memory_clusters([cluster], rule_slugs={_SLUG})
         assert unchanged.durable_destination == "feedback/askuserquestion.md"
 
     def test_already_core_destination_is_untouched_even_on_recurrence(self) -> None:
@@ -79,8 +79,30 @@ class ReclassifyRecurringMemoryClustersTestCase(TestCase):
             verified_citation="x",
             durable_destination="src/teatree/loops/gate.py",
         )
-        [unchanged] = reclassify_recurring_memory_clusters([core])
+        [unchanged] = reclassify_recurring_memory_clusters([core], rule_slugs={_SLUG})
         assert unchanged.durable_destination == "src/teatree/loops/gate.py"
+
+
+class ReclassifyRespectsTheRuleUniverseTestCase(TestCase):
+    """A recurrence row on a NON-rule memory must not redirect that memory's cluster.
+
+    The audit ledger holds rows minted before the rule universe was bounded, keyed on
+    per-ticket state logs and the frontmatter-less index files. Left unfiltered they
+    redirect a legitimate keep-as-memory cluster to a core-gap destination forever.
+    """
+
+    def test_recurrence_on_a_non_rule_memory_does_not_reclassify(self) -> None:
+        _record_recurrence("ticket-9001-fold-into-9002-pending-approval")
+        cluster = DistilledCluster(
+            cluster_key="ckey-log",
+            rule="The fold proposal awaits approval.",
+            source_files=["/memory/ticket-9001-fold-into-9002-pending-approval.md"],
+            is_binding=False,
+            verified_citation="x",
+            durable_destination="project/ticket-9001.md",
+        )
+        [unchanged] = reclassify_recurring_memory_clusters([cluster], rule_slugs={_SLUG})
+        assert unchanged.durable_destination == "project/ticket-9001.md"
 
 
 class WriteClustersRecurrenceGuardTestCase(TestCase):

@@ -32,6 +32,8 @@ from hooks.scripts import loop_registrations
 from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from teatree.core.models import LoopLease
 
+_PROBE_FAILURE = RuntimeError("probe unavailable")
+
 
 def _bare_tick_prompt(name: str) -> str:
     """The bare per-loop tick prompt the worker's subprocess tick fires (recogniser input)."""
@@ -45,6 +47,7 @@ class TestEmitLoopRegistrations:
     def test_emits_the_reactive_slot_prose_when_slots_resolve(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
         monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)  # isolate reactive behaviour
+        monkeypatch.setattr(loop_registrations, "_worker_is_alive", lambda: False)
         out = io.StringIO()
         emitted = emit_loop_registrations(out)
         text = out.getvalue()
@@ -62,9 +65,55 @@ class TestEmitLoopRegistrations:
         # reminder) → the owner session stays silent.
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
         monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
+        monkeypatch.setattr(loop_registrations, "_worker_is_alive", lambda: False)
         out = io.StringIO()
         assert emit_loop_registrations(out) is False
         assert out.getvalue() == ""
+
+
+class TestWorkerAliveSuppressesRegistration:
+    """A live worker drives the reactive slots, so the session must register nothing (#2663)."""
+
+    def test_worker_alive_emits_no_loop_directive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
+        monkeypatch.setattr(loop_registrations, "_worker_is_alive", lambda: True)
+        out = io.StringIO()
+
+        emitted = emit_loop_registrations(out)
+        text = out.getvalue()
+
+        assert emitted is True  # the one-liner still emits, under the same emit-once marker
+        assert "/loop " not in text
+        for directive in _THREE_REACTIVE:
+            assert directive not in text
+        assert "t3 worker" in text
+
+    def test_worker_down_still_emits_the_registrations(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
+        monkeypatch.setattr(loop_registrations, "_worker_is_alive", lambda: False)
+        out = io.StringIO()
+
+        emit_loop_registrations(out)
+        text = out.getvalue()
+
+        for directive in _THREE_REACTIVE:
+            assert directive in text
+        assert "t3 worker status" in text  # check-first, so a stale hook cannot mislead
+
+    def test_probe_failure_falls_back_to_the_registrations(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom() -> bool:
+            raise _PROBE_FAILURE
+
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
+        monkeypatch.setattr(loop_registrations, "_worker_flock_held", _boom)
+        out = io.StringIO()
+
+        emit_loop_registrations(out)
+
+        assert _THREE_REACTIVE[0] in out.getvalue()
 
 
 class TestCronDecommissionDirective:

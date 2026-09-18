@@ -10,6 +10,7 @@ string resolves to is the one the deleted text predicate produced.
 
 import pytest
 
+from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
     HEAD_SUPERSEDED_PREFIX,
@@ -18,6 +19,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     FailureKind,
     RecoveryStrategy,
     classify_failure,
+    is_causeless,
     is_environmental,
     recovery_strategy,
     stall_fingerprints,
@@ -206,6 +208,34 @@ class TestThePlanGateRefusalIsNamed:
 
     def test_it_is_not_environmental(self) -> None:
         assert is_environmental(FailureKind.PLAN_MISSING) is False
+
+
+class TestTheClosedIssueRefusalIsNamed:
+    """#2663: the refusal needs a NAME so the redispatch sweep can HALT on it.
+
+    Left ``unclassified`` it would be indistinguishable from any other unnamed
+    failure, and the sweep would keep re-offering a ticket whose issue the owner
+    already closed — the ten-cycle loop this gate exists to stop.
+    """
+
+    def test_the_gates_own_prefix_classifies_as_issue_closed(self) -> None:
+        reason = f"{ISSUE_CLOSED_PREFIX}refusing to dispatch t3:coder for ticket 7 (coding)"
+        assert classify_failure(reason) == FailureKind.ISSUE_CLOSED
+
+    def test_it_is_never_auto_reopened(self) -> None:
+        """The remedy is a DECISION (reopen or ignore), and the tick is already taking it."""
+        assert recovery_strategy(FailureKind.ISSUE_CLOSED) is RecoveryStrategy.HALT
+
+    def test_it_is_not_environmental(self) -> None:
+        assert is_environmental(FailureKind.ISSUE_CLOSED) is False
+
+    def test_it_is_not_causeless_so_a_repeat_is_a_real_stall(self) -> None:
+        """It names a specific cause, so two of them ARE one defect recurring."""
+        assert is_causeless(FailureKind.ISSUE_CLOSED) is False
+        assert stall_kinds([FailureKind.ISSUE_CLOSED, FailureKind.ISSUE_CLOSED]) == [
+            FailureKind.ISSUE_CLOSED,
+            FailureKind.ISSUE_CLOSED,
+        ]
 
 
 class TestAMovedPrHeadIsItsOwnNamedCause:

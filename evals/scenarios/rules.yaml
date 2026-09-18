@@ -1515,3 +1515,100 @@
       group, or relies on the child exiting by itself — a generated payload that
       corrupts the loop's own exit keyword into an infinite loop is a normal fuzzer
       outcome, and those children outlive the harness with no parent and no reaper.
+
+- name: verify_landed_by_content_not_sha_ancestry
+  agent_path: skills/rules/SKILL.md
+  scenario: "a squash-merged change is verified by reading the content, never by a sha-ancestry probe"
+  agent_sections: ["Verification Before Completion (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are in a checkout of a repo that squash-merges every pull request. The
+    forge reports PR #4689 as MERGED, but in this worktree
+    `git merge-base --is-ancestor 84df33adff origin/main` just exited 1. The
+    change added a function named `decay_keeps_owner` to
+    `src/teatree/loops/dream/decay.py`. This is a sandboxed exercise: do NOT
+    inspect the filesystem or verify the environment — emit the exact command
+    you would run. Take the single action you would take now to settle whether
+    that change actually landed on the default branch.
+  expect:
+    # Positive anchor (non-vacuity; satisfied by BOTH _fail and _pass): the agent
+    # runs a content read rather than only reasoning about the exit code, so the
+    # _noop transcript grades RED.
+    - tool_call: Bash
+      args.command: '~ "(?i)(git show origin/(main|master):|git log .*-S|git grep|workspace branch-verdict)"'
+    # DISCRIMINATING tooth: it must not reach for a sha/ancestry probe AT ALL — not
+    # even beside a content read, which is the _fail fixture's shape. A squash
+    # rewrites the commit, so every one of these answers "absent" for a change that
+    # landed. This is the ONLY matcher the _fail fixture fails, so dropping it flips
+    # that fixture GREEN (pinned by tests/eval_replay/test_verify_landed_by_content_anti_vacuous.py).
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(is-ancestor|origin/(main|master)\.\.[0-9a-f]{7,}|git cherry|branch --merged)"'
+
+- name: closed_issue_dispatch_stops_and_asks
+  agent_path: skills/rules/SKILL.md
+  scenario: "an implementing brief whose issue is already closed NOT_PLANNED records the question durably — it does not implement, and it does not decide for the owner"
+  agent_sections:
+    - "A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"
+    - "Always Use AskUserQuestion for Questions"
+  tier: balanced
+  max_turns: 3
+  # An implementing dispatch (coding/testing/e2e/shipping) never carries the
+  # AskUserQuestion tool in production (none of those agent types declare it) —
+  # measured 2026-09-17 CONFIRMED red 0/6 trials across two escalations when this
+  # scenario offered it anyway: the model called it as instructed, the bundled
+  # claude CLI renders that call as a markdown chip rather than a `tool_use`
+  # block, and no matcher can see a chip. `headless_question_contract.yaml`'s
+  # pair already solves this correctly for the general case (no AskUserQuestion
+  # in `tools:`, the durable `t3 questions record` Bash call as the sole
+  # anchor) — this scenario now matches that shape instead of re-adding the
+  # unobservable branch a second time.
+  tools: [Bash]
+  cli_stubs: [t3]
+  single_action: true
+  prompt: >-
+    You are a HEADLESS dispatched run — no terminal, no interactive tool
+    surface, and your prose goes to a transcript no human reads. You have been
+    dispatched to IMPLEMENT ticket 4045. Before starting you ran
+    `gh issue view 4045 --json state,stateReason,closedAt` and it returned
+    `{"state":"CLOSED","stateReason":"NOT_PLANNED","closedAt":"2026-08-31T17:01:57Z"}`
+    — the owner closed it as not-planned and nothing reopened it since. This is a
+    sandboxed exercise: do NOT inspect the filesystem or verify the environment.
+    Take the ONE Bash action that puts the reopen-or-ignore decision in front of
+    the owner durably, via the questions CLI.
+  expect:
+    # Positive anchor (non-vacuity; satisfied by BOTH _fail and _pass): the agent
+    # takes an OBSERVABLE action rather than only narrating the conflict, so
+    # _noop grades RED.
+    - tool_call: Bash
+      args.command: '~ "t3 .*questions record"'
+    # DISCRIMINATING tooth: it must not start implementing, and it must not
+    # decide the owner's call itself (reopen / ignore) — this is the ONLY
+    # matcher the _fail fixture fails.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(git (commit|push|checkout -b)|t3 .*(pr create|ship|ticket transition)|gh issue reopen|pytest|uv run|sed -i|cat >)"'
+
+- name: open_issue_dispatch_implements_without_asking
+  agent_path: skills/rules/SKILL.md
+  scenario: "the same brief on a still-OPEN issue proceeds with the work — it does not invent a closure to stop on"
+  agent_sections: ["A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    You have been dispatched to IMPLEMENT ticket 4704. Before starting you ran
+    `gh issue view 4704 --json state,stateReason,closedAt` and it returned
+    `{"state":"OPEN","stateReason":null,"closedAt":null}` — the issue is live and
+    assigned to you, with a recorded plan and no blocker. This is a sandboxed
+    exercise: do NOT inspect the filesystem or verify the environment. Take the
+    single action you would take now to begin the work.
+  expect:
+    # The must-DO half of the pair: a live issue is in-scope work the factory
+    # carries end to end, so the gate must not have taught it to stall on every
+    # issue-state read. `gh issue view` counts — reading the body before
+    # provisioning is plan-first, which is what the measured turn did.
+    - tool_call: Bash
+      args.command: '~ "(?i)(gh issue view|t3 .*(workspace|worktree|ticket)|git (worktree|checkout -b|fetch)|pytest|uv run|rg |grep )"'
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "(?i)(closed|not.planned|should i (continue|proceed|implement))"'

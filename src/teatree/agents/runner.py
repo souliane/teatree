@@ -74,6 +74,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
+from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.task_claim import describe_lease_loss, drive_claim
@@ -315,15 +316,22 @@ def _preflight(task: Task, *, phase: str) -> _Preflight | TaskAttempt:
 def _pre_harness_refusal(task: Task, *, phase: str) -> str | None:
     """Why this dispatch must not run at all, or ``None`` to proceed.
 
-    Both checks are resolved BEFORE the harness (souliane/teatree#2916): for a
+    Every check is resolved BEFORE the harness (souliane/teatree#2916): for a
     resumed pydantic_ai task, resolving the harness destructively pops the parked
     ancestor's thread, and a refused dispatch must never trigger that pop or the
     conversation is lost even though the run never starts.
+
+    Order is cheapest-first: the plan and budget checks read the local DB, while
+    the closed-issue check costs a forge round trip, so it runs only once the free
+    refusals have passed.
     """
     plan_refusal = unplanned_dispatch_refusal(task.ticket, phase=phase)
     if plan_refusal is not None:
         return plan_refusal
-    return TicketBudget.from_settings().breach_reason(task.ticket)
+    budget_refusal = TicketBudget.from_settings().breach_reason(task.ticket)
+    if budget_refusal is not None:
+        return budget_refusal
+    return closed_issue_dispatch_refusal(task.ticket, phase=phase)
 
 
 def _turn_ceiling(harness: Harness) -> int:

@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from teatree.utils.ram_probe import DockerWorkerSizing
+from teatree.utils.ram_probe import DockerWorkerSizing, host_total_ram_mib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = REPO_ROOT / "deploy"
@@ -59,7 +59,7 @@ class TestDeployShRunDerivesWorkerCaps:
     `docker compose up` must equal the cap ram_probe derives here.
     """
 
-    def _stage(self, tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
+    def _stage(self, tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str], int, int]:
         repo = tmp_path / "repo"
         (repo / "deploy").mkdir(parents=True)
         (repo / "src" / "teatree" / "utils").mkdir(parents=True)
@@ -74,6 +74,8 @@ class TestDeployShRunDerivesWorkerCaps:
 
         record_cpus = tmp_path / "recorded_cpus"
         record_mem = tmp_path / "recorded_mem"
+        physical_ram_mib = host_total_ram_mib()
+        daemon_ram_mib = max(1, physical_ram_mib // 2)
         bindir = tmp_path / "bin"
         bindir.mkdir()
         _write_exec(
@@ -81,12 +83,19 @@ class TestDeployShRunDerivesWorkerCaps:
             "#!/usr/bin/env bash\n"
             'for a in "$@"; do\n'
             '  case "$a" in\n'
+            f'    info) printf %s "{daemon_ram_mib * 1024 * 1024}"; exit 0;;\n'
             f'    up) printf %s "$TEATREE_WORKER_CPUS" > "{record_cpus}"; '
             f'printf %s "$TEATREE_WORKER_MEM_LIMIT" > "{record_mem}"; exit 0;;\n'
             "    exec) echo '{\"running\": true}'; exit 0;;\n"
             # The staged swap polls init's terminal state before it swaps anything.
             "    ps) echo stubcid; exit 0;;\n"
-            "    inspect) echo 'exited 0'; exit 0;;\n"
+            "    inspect)\n"
+            '      case "$*" in\n'
+            "        *State.ExitCode*) echo 'exited 0';;\n"
+            "        *State.Status*RestartCount*) echo 'running/0';;\n"
+            "        *State.Status*) echo running;;\n"
+            "      esac\n"
+            "      exit 0;;\n"
             "  esac\n"
             "done\n"
             "exit 0\n",
@@ -108,10 +117,10 @@ class TestDeployShRunDerivesWorkerCaps:
         env["TEATREE_INIT_WAIT_TIMEOUT"] = "5"
         env["TEATREE_ADMIN_SWAP_BUDGET"] = "5"
         env["TEATREE_RESUME_TIMEOUT"] = "5"
-        return repo, record_cpus, record_mem, env
+        return repo, record_cpus, record_mem, env, physical_ram_mib, daemon_ram_mib
 
     def test_run_exports_host_derived_cpus_into_compose_up(self, tmp_path: Path) -> None:
-        repo, record_cpus, record_mem, env = self._stage(tmp_path)
+        repo, record_cpus, record_mem, env, physical_ram_mib, daemon_ram_mib = self._stage(tmp_path)
         bash = shutil.which("bash")
         assert bash is not None
         proc = subprocess.run(
@@ -127,7 +136,11 @@ class TestDeployShRunDerivesWorkerCaps:
         # deploy.sh runs uncapped here just as on the host; the value it exported is
         # exactly what ram_probe derives in-process — the host-sized worker cap.
         assert record_cpus.read_text() == str(DockerWorkerSizing.worker_cpus())
-        expected_mem = DockerWorkerSizing.worker_mem_limit_mib()
+        assert daemon_ram_mib < physical_ram_mib
+        expected_mem = DockerWorkerSizing.worker_mem_limit_mib(
+            total_ram_mib=physical_ram_mib,
+            daemon_ram_mib=daemon_ram_mib,
+        )
         if expected_mem > 0:
             assert record_mem.read_text() == f"{expected_mem}m"
 

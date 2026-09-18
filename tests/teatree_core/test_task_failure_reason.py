@@ -188,6 +188,7 @@ class TestClassifier(TestCase):
             "missing required evidence for phase 'reviewing'",
             "review verdict recording refused: merge_safe needs a reviewed sha",
             "plan_missing: refusing to dispatch t3:coder for ticket 7 (coding)",
+            "issue_closed: refusing to dispatch t3:coder for ticket 7 (coding) — its issue is CLOSED",
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",
             "head_superseded: the PR head advanced past the reviewed tree",

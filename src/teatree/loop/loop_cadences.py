@@ -72,13 +72,11 @@ class ReactiveSlot:
     """A reactive infra ``/loop`` slot — sub-minute, so it registers via the ``/loop <duration>`` form (#2650).
 
     The three reactive slots (Slack-answer, self-improve, drain-queue) have NO DB
-    ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron, so
-    each is its OWN dedicated ``/loop`` on a *duration* cadence. This bundles a
-    slot's cadence reader (the SoT for its throttle seconds, above) with the
-    ``t3 loop <slot> run`` it fires, so ``t3 loop <slot> start`` AND the
-    owner-session bootstrap (:mod:`hooks.scripts.loop_registrations`) register the
-    SAME ``/loop`` — there is no master tick to piggyback the cycles onto, so the
-    owner registers these three directly.
+    ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron. The
+    worker drives all three as maintenance chains, so this registration is the
+    WORKER-DOWN fallback: ``t3 loop <slot> start`` and the owner-session bootstrap
+    (:mod:`hooks.scripts.loop_registrations`) both probe the worker singleton first
+    and emit the SAME ``/loop`` only when nothing else is driving the slot.
     """
 
     slot_id: str

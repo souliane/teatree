@@ -1102,10 +1102,17 @@ Usage: t3 review checkout [OPTIONS] URL
 
  Materialise a detached review worktree at the exact reviewed head.
 
- Prints ``{"worktree": ..., "ref": ..., "sha": ..., "url": ...}`` on success.
- A HEAD that does not equal ``--sha`` is a hard failure, never a fallback to
- whatever tree happened to be reachable — the review runs on the pushed head
- or not at all. Remove the worktree with ``git worktree remove`` when done.
+ Prints ``{"worktree": ..., "ref": ..., "sha": ..., "url": ..., "run_tests":
+ ...}``
+ on success. A HEAD that does not equal ``--sha`` is a hard failure, never a
+ fallback to whatever tree happened to be reachable — the review runs on the
+ pushed head or not at all. Remove the worktree with ``git worktree remove``
+ when done.
+
+ ``run_tests`` names the sanctioned runner for the fresh checkout, because the
+ step after this one is running the affected tests and a reviewer left to
+ improvise one reaches for a raw invocation nobody can reconstruct later
+ (souliane/teatree#4746).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    url      TEXT  PR/MR URL whose head to materialise. [required]          │
@@ -4020,12 +4027,20 @@ Usage: t3 tool verify-gates [OPTIONS]
  pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
- gate). The full test suite is NOT a push gate -- push -> CI runs it. Report
- this command's exit code as the green-proof
- before declaring a branch review-ready -- not a commit-stage-only run.
+ gate). The full test suite is NOT a push gate -- push -> CI runs it.
+
+ Report the measured SHA it prints TOGETHER WITH its exit code as the
+ green-proof — an exit code alone does not say which tree earned it. Exits 2
+ without grading anything when the tree is not a git checkout, is not the
+ ``--expect-sha`` target, or is a clean main clone on its default branch.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
+│                                 at; any other tree is refused.               │
+│                                 [env var: T3_VERIFY_GATES_EXPECT_SHA]        │
+│ --allow-main-clone              Grade a clean main clone on its default      │
+│                                 branch (refused by default).                 │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7170,6 +7185,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
 │                    (self-rescue).                                            │
+│ cron-loop-shell    Cron-shells-a-t3-loop gate (the worker owns loop cadence) │
+│                    kill-switch (self-rescue).                                │
 │ completion-claim   Completion-claim gate (on-target evidence before done)    │
 │                    kill-switch (self-rescue).                                │
 │ answer-first       Answer-first gate (answer the user's question, do not     │
@@ -7390,6 +7407,60 @@ Usage: t3 teatree gate config-overwrite disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate config-overwrite enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate cron-loop-shell`
+
+```
+Usage: t3 teatree gate cron-loop-shell [OPTIONS] COMMAND [ARGS]...
+
+ Cron-shells-a-t3-loop gate (the worker owns loop cadence) kill-switch
+ (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell status`
+
+```
+Usage: t3 teatree gate cron-loop-shell status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell disable`
+
+```
+Usage: t3 teatree gate cron-loop-shell disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate cron-loop-shell enable`
+
+```
+Usage: t3 teatree gate cron-loop-shell enable [OPTIONS]
 
  Re-enable the gate.
 

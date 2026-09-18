@@ -22,6 +22,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 2a. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
 3. [A Diagnosis Cites What Was Read](#a-diagnosis-cites-what-was-read-non-negotiable)
 4. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
+4c. [A Dispatch on a Closed Issue Halts and Asks](#a-dispatch-on-a-closed-issue-halts-and-asks-non-negotiable)
 5. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
 6. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
 7. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
@@ -59,6 +60,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 38. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
 39. [Symlink Safety](#symlink-safety)
 40. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
+40a. [Never Cron a `t3 loop` Command From a Session](#never-cron-a-t3-loop-command-from-a-session-non-negotiable)
 41. [Shell Alias Safety](#shell-alias-safety)
 42. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
 43. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
@@ -120,6 +122,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Files, agents, and worktrees**
 
 27a. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
+27b. [Never Cron a `t3 loop` Command From a Session](#never-cron-a-t3-loop-command-from-a-session-non-negotiable)
 
 **Workflow discipline**
 
@@ -169,6 +172,20 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Read the state the claim is ABOUT, never a local proxy for it.** Step 3 says read the output; this says read the right thing. A claim about what LANDED is settled by reading the pushed commit, the remote, or the deployed surface — never the working tree, which goes on showing your edit whether or not it travelled. The recurring shape: a correction made after `git add` never reaches the commit, because the pre-commit runner stashes the unstaged change, commits the INDEX, and restores afterwards — so the file on disk still looks right and a local look "confirms" a fix that is absent from the remote history. Reasoning correctly about that mechanism is not the read. Name the read that settles it — `git show origin/<branch>:<path>` — and where you cannot run it yet, say the status is unsettled until you have.
 
+**On a squash-merging repo, a sha-ancestry probe answers the landed question WRONGLY — read the content (do X, never Y).** A squash-merge rewrites the branch's commits into a new commit on the default branch, so the original sha is an ancestor of nothing and every per-commit / ancestor / range test reports successfully-landed work as absent.
+
+```bash
+# do X — the content IS the answer, and `-S` also dates it (was this live when <thing> ran?):
+git show origin/main:<path> | grep -n '<symbol the change added>'
+git log -1 -S'<symbol>' -- <path>
+t3 <overlay> workspace branch-verdict <branch>   # the whole-branch question, one call
+# never Y — these answer by sha or ancestry, which a squash-merge defeats:
+git merge-base --is-ancestor <sha> origin/main   # FORBIDDEN as a landed-ness test
+git log origin/main..<sha>                       # FORBIDDEN — same question, range spelling
+```
+
+The reverse direction is a DIFFERENT question and stays fine: `git merge-base --is-ancestor origin/main HEAD` asks whether main has reached your branch (currency), which no squash defeats.
+
 **Multi-deliverable tickets: measure done from the SPEC, not the artifacts you produced (Non-Negotiable).** On a ticket with more than one deliverable, a completeness assertion — "done", "no blockers anywhere", "everything is here", "ready to merge/review" — is measured from **every deliverable the authoritative spec defines (incl. the spec's comments) verified on the actual merge target**, never from the artifacts you happen to have in hand. The recurring, highest-severity failure: claiming "no blockers anywhere" while the crucial deliverable was registered on the wrong surface and its fix was stranded off the merge target — invisible to a check that only inspects what exists. A false completion claim that propagates downstream is not an internal slip. Before any completion claim on a multi-deliverable ticket:
 
 1. **Read the authoritative spec and its comments first.** A claim emitted before the spec source was read leans on proxies (the work item, repo docs, the baseline). If you have not read the spec, you cannot claim done.
@@ -214,6 +231,17 @@ Enforced by the BLOCKING Stop gate `handle_unbacked_claim_gate` (`hooks/scripts/
 - **Say so when a handed-down criterion is unfalsifiable.** It is a defect in the spec, not a licence to satisfy it cheaply — surface it and add the positive pair before implementing.
 
 The E2E-scoped statements of the same principle are `/t3:e2e` § "Writing Tests" (author side) and `/t3:e2e-review` § "Test the ticket, not the MR diff" (reviewer side): a test built against the diff's current behaviour passes regardless of whether the feature is correct. This section is the general form — apply it to acceptance criteria; they apply it to tests.
+
+## A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)
+
+A brief is written when the task is QUEUED; the issue can close before the agent starts. So the issue's live state — never the brief — decides whether the work is still wanted. Read it before the first edit of an implementing dispatch (coding, testing, e2e, shipping) and act on what it says.
+
+- **A CLOSED issue halts the dispatch.** `state: CLOSED`, most sharply with `stateReason: NOT_PLANNED`, means the owner already decided against this work; implementing it overrules them and the lines can never land. No edit, no commit, no push, no PR.
+- **The halt is a real question, not a prose sign-off.** The two decisions — reopen the issue because the close was wrong, or ignore the ticket because it was right — are the owner's. A turn that only narrates the conflict leaves the ticket to be re-offered next tick, so the same cycle burns again. An implementing dispatch (coding, testing, e2e, shipping) is a HEADLESS run with no `AskUserQuestion` tool on its surface — see § "Always Use AskUserQuestion for Questions" — so the halt is `t3 <overlay> questions record "…"`, the same durable path every other headless blocker uses, not the interactive tool.
+- **An OPEN issue is in-scope work you carry forward.** `state: OPEN` with a recorded plan and no blocker is the ordinary case: read the issue body, provision the worktree, write the failing test. Do not manufacture a closure to stall on, and do not ask whether to proceed — the absence of a blocker IS the signal to proceed (`/t3:internals` § "Lifecycle Phases").
+- **A state you could not read lets the dispatch through.** A forge outage or an unclassifiable payload is not evidence of a closure. Uncertainty resolves toward proceeding, because a wrong halt blocks live work while a genuine closure is caught by the next disposition sweep anyway.
+
+The deterministic backstop is `teatree.core.gates.closed_issue_dispatch_gate.closed_issue_dispatch_refusal` at the pre-harness dispatch seam beside the plan gate: it refuses an implementing dispatch whose issue the forge reports closed before a turn is billed, and records `FailureKind.ISSUE_CLOSED` (HALT) on the attempt. It fires only once a brief has already reached dispatch — the discipline above is what keeps it from having to.
 
 ## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
 
@@ -707,6 +735,30 @@ A user config file or dotfile (a `dotfiles`-repo file, an XDG `.config` file, `.
 **Deterministically enforced.** The PreToolUse gate `handle_block_config_overwrite` (`hooks/scripts/config_overwrite_guard.py` + `teatree.core.gates.config_overwrite_guard`) refuses a blind `Write` over an existing config/dotfile and a blind `git checkout`/`git restore` of one when the path was not read this session (it consumes the existing `<session>.reads` capture). Reading the file first clears it. Never-lockout escapes: a per-call `[config-overwrite-ok: <reason>]` token, the `[teatree] config_overwrite_gate_enabled = false` kill-switch (`t3 <overlay> gate config-overwrite disable`), and the shared `_fail_open_or_deny` chain.
 
 **Failure mode this prevents.** An agent overwrote a tracked dotfile (a symlink into the user's dotfiles repo) with a blind `Write`, and on another occasion nearly restored a config from git without reading the live copy — both would have silently destroyed the user's uncommitted edits.
+
+## Never Cron a `t3 loop` Command From a Session (Non-Negotiable)
+
+The `t3 worker` owns loop cadence. A harness cron / `/loop` / `ScheduleWakeup` that shells a `t3 loop` command the worker already drives is pure waste — every tick stands down against the worker singleton, and `retired=0 drained=0` is the **expected healthy output**, not a signal. The first occurrence cost ~40 turns firing a guard declining to fire.
+
+**Check the worker BEFORE honouring a session-setup ask — do X, never Y.** The session-setup hook that asks you to register `slack-answer` / `self-improve` / `drain-queue` describes a **pre-flip box**. On a box whose worker is alive, honouring it is waste.
+
+```bash
+# do X — check first; a RUNNING worker means register nothing:
+t3 worker status          # `worker: RUNNING (pid 7)` → the worker drives all three; stop here
+t3 worker ensure          # not running? this is the fix — not a cron
+t3 loop enable <name>     # a genuinely needed loop becomes a DB `Loop` row, the normal t3 way
+# never Y — a cron/wakeup that shells a loop command the worker owns:
+#   CronCreate(prompt="Run `t3 loops tick --loop dispatch`")   ← FORBIDDEN: PR-28 retired the cron mirror
+#   /loop 30s Run `t3 loop drain-queue run`.                   ← FORBIDDEN while a worker is alive
+```
+
+All three reactive slots run as **worker maintenance chains** (`teatree.loops.timer_reconciler`), so a live worker drives them with no session open. A session registers them only when no worker is alive — the legitimate degraded path, and the only case the gate lets through.
+
+Standing DIRECTIVES (`standing-pr-board`, `standing-todo-consolidate`) are a different thing and DO belong to the session — prose delivered on a cadence, not loops.
+
+**Deterministically enforced.** The PreToolUse gate `handle_block_cron_loop_shell` (`hooks/scripts/cron_loop_shell_gate.py` + `teatree.core.gates.cron_loop_shell_gate`) refuses a `CronCreate` / `ScheduleWakeup` whose prompt shells `t3 loops tick …` (always — there is no fallback plane) or `t3 loop <slot> run` (while a worker holds the singleton). Never-lockout escapes: a per-call `[cron-loop-ok: <reason>]` token, the `[teatree] cron_loop_shell_gate_enabled = false` kill-switch (`t3 <overlay> gate cron-loop-shell disable`), and the shared `_fail_open_or_deny` chain. The behavioural pin is `evals/scenarios/no_session_crons_for_t3_loops.yaml`.
+
+**Failure mode this prevents.** This rule had a durable memory and was violated three times (2026-08-11, 08-13, 09-06), each time after memory decay archived the file — which is exactly why the remediation is a gate, not another memory.
 
 ## Shell Alias Safety
 

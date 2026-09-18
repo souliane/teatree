@@ -179,7 +179,7 @@ That policy is the SAME one `t3 doctor check`'s split-namespace WARN consults: i
 
 ## Is this branch landed? One canonical answer
 
-Never hand-roll it. `git cherry origin/main HEAD`, `git branch --merged`, `git merge-base --is-ancestor` and `git log … --not origin/main` all answer by SHA or ancestry, and a squash-merge rewrites the branch's commits into a new SHA on the default branch — so every one of them reports already-landed work as unmerged. That misread once escalated three merged branches to the owner as false completions and dispatched a shipper to push them.
+Never hand-roll it. `git cherry origin/main HEAD`, `git branch --merged`, `git merge-base --is-ancestor <sha> origin/main`, `git log origin/main..<sha>` and `git log … --not origin/main` all answer by SHA or ancestry, and a squash-merge rewrites the branch's commits into a new SHA on the default branch — so every one of them reports already-landed work as unmerged. That misread once escalated three merged branches to the owner as false completions and dispatched a shipper to push them.
 
 ```bash
 t3 <overlay> workspace branch-verdict <branch> [<branch> …] [--repo <path>] [--json]
@@ -190,6 +190,16 @@ Read-only, works on any local branch (no `Worktree` row needed), and the sweep a
 A fourth field, `content_present_on_target`, is the present-tense question the other three structurally cannot ask: `git cherry` reads a patch's PRIOR appearance on the target, and a REVERT there does not erase it, so a squash-merged-then-reverted branch reads `redundant` on every patch-id layer. The report carries both, and the human line says so; the boolean `branch_is_landed` (what `ship`'s duplicate-PR refusal consumes) requires BOTH, so a reverted branch ships a fresh PR instead of being refused one. Post-merge drift on unrelated files stays LANDED; drift that re-edits the same region reads NOT LANDED — an unmergeable region is not proof of presence, and a needless PR is the cheap direction to be wrong in.
 
 `workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory (`t3 <overlay> gate merged-detect`) nudges a hand-rolled probe back here.
+
+**For ONE change rather than a whole branch, read the CONTENT.** `branch-verdict` answers about a branch; "did this fix land?" is a different question, and the same squash defeats every sha spelling of it. Read what is on the target instead:
+
+```bash
+git show origin/main:<path> | grep -n '<symbol the change added>'
+git grep -n '<symbol the change added>' origin/main -- <path>   # same read, no pipe
+git log -1 -S'<symbol>' -- <path>                                # also DATES it: was this live when <thing> ran?
+```
+
+The `-S` form is the strongest, because "was the fix present when that loop last fired?" is usually the real question behind "did it land?".
 
 ## Cleanup Patterns
 

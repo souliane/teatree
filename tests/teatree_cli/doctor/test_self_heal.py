@@ -25,8 +25,8 @@ from typer.testing import CliRunner
 from teatree.cli import app as cli_app
 from teatree.cli.doctor import self_heal
 from teatree.cli.doctor.self_heal import check_as_json, run_self_heal_checks
-from teatree.core.models import Ticket
-from tests.factories import TaskFactory, TicketFactory
+from teatree.core.models import Task, TaskAttempt, Ticket
+from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
 _MOD = "teatree.cli.doctor.self_heal"
 
@@ -278,6 +278,98 @@ class StrandedHeadlessCheckTest(TestCase):
         ):
             ok, _out = _echoes(self_heal._check_stranded_task)
         assert ok is True
+
+
+class TaskAttemptActivityCheckTest(TestCase):
+    def _backdate_task(self, task: Task, *, minutes: int) -> None:
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - dt.timedelta(minutes=minutes))
+
+    def _backdate_attempt(self, attempt: TaskAttempt, *, minutes: int) -> None:
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - dt.timedelta(minutes=minutes))
+
+    def _end_attempt(self, attempt: TaskAttempt, *, minutes: int) -> None:
+        TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=timezone.now() - dt.timedelta(minutes=minutes))
+
+    def test_old_active_task_without_attempts_fails(self) -> None:
+        task = TaskFactory(status=Task.Status.PENDING)
+        self._backdate_task(task, minutes=31)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is False
+        assert "no task attempt" in out.lower()
+        assert "31 min" in out
+
+    def test_recent_attempt_for_active_work_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        TaskAttemptFactory(task=task)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
+
+    def test_old_live_attempt_for_active_work_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=31)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
+
+    def test_old_ended_attempt_with_no_successor_fails(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=60)
+        self._end_attempt(attempt, minutes=31)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is False
+        assert "31 min" in out
+
+    def test_recently_ended_old_attempt_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.CLAIMED)
+        self._backdate_task(task, minutes=60)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=60)
+        self._end_attempt(attempt, minutes=5)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
+
+    def test_no_active_work_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.COMPLETED)
+        attempt = TaskAttemptFactory(task=task)
+        self._backdate_attempt(attempt, minutes=60)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
+
+    def test_disabled_runner_passes(self) -> None:
+        task = TaskFactory(status=Task.Status.PENDING)
+        self._backdate_task(task, minutes=60)
+
+        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=False):
+            ok, out = _echoes(self_heal._check_task_attempt_activity)
+
+        assert ok is True
+        assert out == ""
 
 
 class StaleLoopTimerCheckTest(TestCase):
