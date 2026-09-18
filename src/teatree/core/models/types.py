@@ -1,7 +1,11 @@
+import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Final, TypedDict
 
 if TYPE_CHECKING:
     from teatree.core.provision.provision_report import ProvisionReportDict
+
+logger = logging.getLogger(__name__)
 
 type Ports = dict[str, int]
 
@@ -276,6 +280,20 @@ class TicketExtra(TypedDict, total=False):
     # forever. ``Ticket.consume_phase_attempt`` bumps the phase's counter on each
     # enqueue and refuses past the ceiling, making the give-up terminal.
     phase_attempts: dict[str, int]
+    # #2663: stamped at ticket creation by the reactive slack-answer cycle and read by
+    # the answering phase. Undeclared, the first transition stripped it — taking the
+    # question text and the work-placed stamp with it on 50 live rows.
+    slack_answer: SlackAnswerContext
+    # Project-board provenance, re-stamped through ``merge_extra`` on every board sync.
+    board_position: int
+    board_status: str
+    updated_at: str
+    # The directive / outer-loop back-link from a synthetic ticket to the row it
+    # implements. ``Directive.for_ticket`` resolves this marker BEFORE the reverse FK,
+    # so stripping it silently demoted the primary resolver to its fallback.
+    directive_id: int
+    outer_loop_experiment_id: int
+    outer_loop_target: str
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -674,10 +692,35 @@ class TicketSiblingFields(TypedDict, total=False):
 
 _TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)
 
+#: Announced (model, key) pairs. Process-wide: these validators sit on hot read paths, so a
+#: per-call warning would drown the log — but a strip nobody ever hears about is how #4152's
+#: revival cap read zero for months and #2663's Slack context vanished from 50 rows.
+_WARNED_STRIPPED_KEYS: set[tuple[str, str]] = set()
+
+
+def reset_stripped_key_warnings() -> None:
+    """Forget which keys were announced — for tests, so the once-ness never crosses one."""
+    _WARNED_STRIPPED_KEYS.clear()
+
+
+def _warn_stripped(model: str, dropped: Iterable[str]) -> None:
+    """Announce each undeclared key once, naming the TypedDict that would have kept it."""
+    for key in sorted(dropped):
+        if (model, key) in _WARNED_STRIPPED_KEYS:
+            continue
+        _WARNED_STRIPPED_KEYS.add((model, key))
+        logger.warning(
+            "%s.extra: dropping undeclared key %r — declare it on %sExtra or the next transition strips it.",
+            model,
+            key,
+            model,
+        )
+
 
 def validated_ticket_extra(raw: dict | None) -> TicketExtra:
     if not raw:
         return TicketExtra()
+    _warn_stripped("Ticket", raw.keys() - _TICKET_EXTRA_KEYS)
     return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
@@ -721,9 +764,10 @@ _WORKTREE_EXTRA_KEYS = frozenset(WorktreeExtra.__annotations__)
 def validated_worktree_extra(raw: dict | None) -> WorktreeExtra:
     """Coerce a raw dict (from JSONField) into a typed WorktreeExtra.
 
-    Returns only recognized keys, silently dropping unknown ones.
+    Returns only recognized keys, announcing the dropped ones once each.
     Handles ``None`` gracefully (returns empty dict).
     """
     if not raw:
         return WorktreeExtra()
+    _warn_stripped("Worktree", raw.keys() - _WORKTREE_EXTRA_KEYS)
     return WorktreeExtra(**{k: v for k, v in raw.items() if k in _WORKTREE_EXTRA_KEYS})

@@ -84,7 +84,6 @@ tests/teatree_core/sync/test_discover_filter_1321.py
 tests/teatree_core/sync/test_followup_discover_mrs.py
 tests/teatree_core/test_deferred_question_mirror.py
 tests/teatree_core/test_deferred_question_model.py
-tests/teatree_core/test_extra_validators.py
 tests/teatree_core/test_live_post_approval_canonical_scope.py
 tests/teatree_core/test_on_behalf_approval.py
 tests/teatree_core/test_on_behalf_target_canonicalization.py

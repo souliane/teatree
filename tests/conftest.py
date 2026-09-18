@@ -16,6 +16,7 @@ import pytest
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
+from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.utils import ram_scope
@@ -173,6 +174,14 @@ def _silence_host_projection_advisory() -> Iterator[None]:
     with patch.dict(os.environ, {SILENCE_ADVISORY_ENV: "1"}):
         yield
     reset_advisory_memo()
+
+
+@pytest.fixture(autouse=True)
+def _reset_stripped_key_warnings() -> Iterator[None]:
+    """The undeclared-key warning is once-per-process, so a leaked pair silences a later test's."""
+    reset_stripped_key_warnings()
+    yield
+    reset_stripped_key_warnings()
 
 
 @pytest.fixture(autouse=True)
