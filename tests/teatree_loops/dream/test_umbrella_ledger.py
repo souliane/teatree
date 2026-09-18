@@ -391,3 +391,70 @@ class ReconcileMergedGapsTestCase(TestCase):
         # BINDING feedback is load-bearing user doctrine — never silently dropped.
         memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
         assert memory.disposition != ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+
+
+class ReconcileFoldedGapsTestCase(TestCase):
+    """A gap folded into a host ticket is reconciled off the HOST's merge (#2663)."""
+
+    def _scheduled_gap(self, *, key: str) -> Ticket:
+        _memory(key=key)
+        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key=key, title="Fix the gate", cluster_key=key)
+        assert task is not None
+        return task.ticket
+
+    def _folded_member(self, *, into: int) -> Ticket:
+        member = self._scheduled_gap(key="gap-member")
+        member.state = Ticket.State.IGNORED
+        member.save()
+        member.merge_extra(set_keys={"dream_gap_folded_into": into})
+        return member
+
+    def _umbrella_body(self, *keys: str) -> str:
+        lines = [f"- [ ] Fix the gate <!-- dream-gap {key} -->" for key in keys]
+        return "## Open gaps\n" + "\n".join(lines) + "\n"
+
+    def _host_reading(self, body: str) -> CodeHostBackend:
+        host = _fake_host(body=body)
+        host.get_issue.return_value = {"body": body, "state": "merged"}
+        return host
+
+    def test_a_folded_member_is_reconciled_when_its_host_merges(self) -> None:
+        host_ticket = self._scheduled_gap(key="gap-host")
+        host_ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9200", repo=REPO, iid="9200", state="merged"
+        )
+        host_ticket.state = Ticket.State.MERGED
+        host_ticket.save()
+        member = self._folded_member(into=host_ticket.pk)
+        forge = self._host_reading(self._umbrella_body("gap-host", "gap-member"))
+
+        reconciled = ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA)
+
+        assert {ticket.pk for ticket in reconciled} == {host_ticket.pk, member.pk}
+        bodies = [call.kwargs["body"] for call in forge.update_issue.call_args_list]
+        assert any("- [x] Fix the gate <!-- dream-gap gap-member -->" in body for body in bodies)
+        member.refresh_from_db()
+        assert member.extra.get("dream_gap_reconciled_at")
+        memory = ConsolidatedMemory.objects.get(cluster_key="gap-member")
+        assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+
+    def test_a_folded_member_whose_host_has_not_merged_is_left_alone(self) -> None:
+        host_ticket = self._scheduled_gap(key="gap-host")
+        member = self._folded_member(into=host_ticket.pk)
+        forge = self._host_reading(self._umbrella_body("gap-member"))
+
+        assert ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA) == []
+
+        forge.update_issue.assert_not_called()
+        member.refresh_from_db()
+        assert not (member.extra or {}).get("dream_gap_reconciled_at")
+
+    def test_a_folded_member_pointing_at_no_ticket_is_left_alone(self) -> None:
+        member = self._folded_member(into=9_999_999)
+        forge = self._host_reading(self._umbrella_body("gap-member"))
+
+        assert ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA) == []
+
+        forge.update_issue.assert_not_called()
+        member.refresh_from_db()
+        assert not (member.extra or {}).get("dream_gap_reconciled_at")

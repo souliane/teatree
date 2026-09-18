@@ -59,6 +59,10 @@ _UMBRELLA_KEY = "dream_umbrella_url"
 #: checked + memory retired), so :func:`reconcile_merged_gaps` skips it on every later
 #: pass instead of re-reading the forge for the same merged gap forever (F6.9).
 _RECONCILED_KEY = "dream_gap_reconciled_at"
+#: Set on a DUPLICATE gap ticket whose substance was folded into a host ticket: the
+#: host's pk. The member is retired IGNORED and never reaches MERGED itself, so its
+#: merge signal is the host's (#2663).
+_FOLDED_INTO_KEY = "dream_gap_folded_into"
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,6 +381,20 @@ def _merged_pr_url(ticket: Ticket) -> str:
     return pr.url if pr is not None else ""
 
 
+def _merge_bearing_ticket(ticket: Ticket) -> Ticket | None:
+    """The ticket whose MERGED state settles *ticket*'s gap — itself, or its fold host.
+
+    A duplicate gap is retired by folding it into the host that carries the one real fix,
+    which leaves the member IGNORED: it never reaches MERGED, so reading its own state
+    left its umbrella box open forever after the host's PR landed (#2663). ``None`` when
+    the pointer names no ticket, which reconciles nothing rather than raising.
+    """
+    host_pk = (ticket.extra or {}).get(_FOLDED_INTO_KEY)
+    if not host_pk:
+        return ticket
+    return Ticket.objects.filter(pk=host_pk).first()
+
+
 def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[Ticket]:
     """Check the umbrella checkbox + retire the memory for every MERGED gap-fix Ticket.
 
@@ -400,11 +418,12 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
     reconciled: list[Ticket] = []
     merged_memory_urls: set[str] = set()
     for ticket in _in_flight_gap_tickets():
-        if ticket.state != Ticket.State.MERGED:
+        merge_bearer = _merge_bearing_ticket(ticket)
+        if merge_bearer is None or merge_bearer.state != Ticket.State.MERGED:
             continue
         gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
         cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
-        merged_url = _merged_pr_url(ticket)
+        merged_url = _merged_pr_url(merge_bearer)
         if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
             logger.warning("dream reconcile: could not check umbrella box for gap %r — retrying next pass", gap_key)
             continue

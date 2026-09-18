@@ -238,6 +238,10 @@ class TicketExtra(TypedDict, total=False):
     # already-stamped ticket, so a merged gap is not re-read from the forge on
     # every pass. See ``teatree.loops.dream.umbrella_ledger``.
     dream_gap_reconciled_at: str
+    # Pk of the HOST ticket a duplicate gap was folded into. A folded member is retired
+    # IGNORED and never reaches MERGED, so the reconcile reads the host's merge instead —
+    # without it the member's umbrella box stays open forever. See ``umbrella_ledger``.
+    dream_gap_folded_into: int
     # #2886: durable pydantic_ai harness conversation store for cached-resume
     # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
     # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
