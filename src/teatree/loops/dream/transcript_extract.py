@@ -131,6 +131,18 @@ _LEARNING_CUES = (
 _USER_TURN_RE = re.compile(r'"(?:type|role)"\s*:\s*"user"')
 _WHY_QUESTION_RE = re.compile(r"\bwhy\b[^?]*\?")
 
+#: Relayed tool output (shell, JSON, a file read) and harness-authored meta turns both
+#: arrive on the USER channel, so the role alone cannot tell either from a person typing.
+#: Each decodes under its own tag, and :func:`is_human_user_turn` is the one predicate
+#: every user-turn keeper asks.
+_TOOL_RESULT_ROLE = "tool_result"
+_HARNESS_ROLE = "harness"
+
+#: A cheap substring pre-gate for the raw form, so the regex never runs on the bulk.
+_TOOL_RESULT_HINT = '"tool_use_id"'
+_TOOL_RESULT_BLOCK_RE = re.compile(r'"type"\s*:\s*"tool_result"')
+_META_TURN_RE = re.compile(r'"isMeta"\s*:\s*true')
+
 #: A cheap substring pre-gate: only a line that even mentions ``"user"`` can be a
 #: user turn, so the costlier :data:`_USER_TURN_RE` regex (and the per-cue scan)
 #: never run against the assistant-line bulk of a transcript.
@@ -139,6 +151,27 @@ _USER_TURN_HINT = '"user"'
 #: A user turn must recur at least this many times within one transcript to count
 #: as a repeated near-identical correction independent of the cue list.
 _REPEAT_THRESHOLD = 2
+
+
+_ROLE_HEADER_RE = re.compile(r'^\{"role":\s*"(?P<role>\w+)"\}\s*')
+
+
+def is_human_user_turn(line: str) -> bool:
+    """True when a USER-channel line was typed by a person, in either the raw or decoded form.
+
+    A decoded line carries its tag in the header, so that tag alone decides — tool output
+    routinely echoes transcript JSON, and matching the payload would read the quoted role
+    instead of the speaker's. A raw line is judged on the two envelope markers the harness
+    writes: a ``tool_result`` content block, and ``isMeta`` for a hook-feedback turn.
+    """
+    header = _ROLE_HEADER_RE.match(line.lstrip())
+    if header is not None:
+        return header.group("role") == "user"
+    if _TOOL_RESULT_HINT in line and _TOOL_RESULT_BLOCK_RE.search(line):
+        return False
+    if _META_TURN_RE.search(line):
+        return False
+    return _USER_TURN_HINT in line and _USER_TURN_RE.search(line) is not None
 
 
 def looks_like_user_correction(line: str) -> bool:
@@ -150,7 +183,7 @@ def looks_like_user_correction(line: str) -> bool:
     the agent's own text echoing a cue is not a correction OF the agent. A bare
     cue inside an assistant line is ignored.
     """
-    if _USER_TURN_HINT not in line or not _USER_TURN_RE.search(line):
+    if not is_human_user_turn(line):
         return False
     lowered = line.lower()
     if any(cue in lowered for cue in _CORRECTION_CUES):
@@ -175,6 +208,7 @@ _AGENT_AUTHORED_OPENERS = (
     "cold review",
     "independent cold review",
     "read-only",
+    "<task-notification>",
     "<command-message>",
     "<command-name>",
     "<skill-format>",
@@ -183,8 +217,6 @@ _AGENT_AUTHORED_OPENERS = (
 
 #: A dispatch brief states the lifecycle phase it is dispatching and why; a human never does.
 _DISPATCH_FIELDS = ("current phase:", "reason:")
-
-_ROLE_HEADER_RE = re.compile(r'^\{"role":\s*"\w+"\}\s*')
 
 
 def looks_like_agent_authored_turn(line: str) -> bool:
@@ -195,7 +227,7 @@ def looks_like_agent_authored_turn(line: str) -> bool:
     arrive on that same channel, and they quote rule prose ("do not", "never", "stop")
     at length — so they match every correction cue while correcting nobody.
     """
-    if _USER_TURN_HINT not in line or not _USER_TURN_RE.search(line):
+    if not is_human_user_turn(line):
         return False
     body = _ROLE_HEADER_RE.sub("", line.strip()).lstrip()
     lowered = body.lower()
@@ -217,7 +249,7 @@ def looks_like_user_ask(line: str) -> bool:
     echoing "can you"/"please" is not a user ask. A bare cue inside an assistant
     line is ignored.
     """
-    if _USER_TURN_HINT not in line or not _USER_TURN_RE.search(line):
+    if not is_human_user_turn(line):
         return False
     lowered = line.lower()
     return any(cue in lowered for cue in _ASK_CUES)
@@ -239,7 +271,7 @@ def looks_like_learning(line: str) -> bool:
 
 
 def _repeated_user_turns(lines: Sequence[str]) -> set[str]:
-    user_lines = [line for line in lines if _USER_TURN_HINT in line and _USER_TURN_RE.search(line)]
+    user_lines = [line for line in lines if is_human_user_turn(line)]
     counts = Counter(line.strip() for line in user_lines if line.strip())
     # "at least _REPEAT_THRESHOLD times" (the docstring contract): a turn seen exactly
     # _REPEAT_THRESHOLD times IS a repeat. The old ``> threshold`` needed one MORE than
@@ -343,6 +375,23 @@ def _stringify_content(content: object) -> str:
     return ""
 
 
+def _has_tool_result_block(obj: dict[str, Any]) -> bool:
+    message = _as_mapping(obj.get("message"))
+    content = message.get("content") if message is not None else obj.get("content")
+    if not isinstance(content, list):
+        return False
+    return any((_as_mapping(block) or {}).get("type") == _TOOL_RESULT_ROLE for block in content)
+
+
+def _decoded_role(obj: dict[str, Any], role: str) -> str:
+    """The tag a decoded line carries: neither a hook-feedback turn nor a tool result is the user."""
+    if obj.get("isMeta") is True:
+        return _HARNESS_ROLE
+    if role == "user" and _has_tool_result_block(obj):
+        return _TOOL_RESULT_ROLE
+    return role
+
+
 def _flatten_message_text(obj: dict[str, Any]) -> str:
     """The decoded, human-readable text of a transcript message across envelope shapes."""
     message = _as_mapping(obj.get("message"))
@@ -386,7 +435,7 @@ def decode_transcript_line(line: str) -> str:
     text = _flatten_message_text(obj)
     if not text:
         return line
-    return f'{{"role": "{role}"}} {" ".join(text.split())}'
+    return f'{{"role": "{_decoded_role(obj, role)}"}} {" ".join(text.split())}'
 
 
 def user_ask_lines(raw: str) -> str:
@@ -404,6 +453,7 @@ __all__ = [
     "TRANSCRIPT_SIGNALS",
     "decode_transcript_line",
     "high_signal_lines",
+    "is_human_user_turn",
     "looks_like_agent_authored_turn",
     "looks_like_learning",
     "looks_like_user_ask",

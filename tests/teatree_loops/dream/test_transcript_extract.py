@@ -7,6 +7,7 @@ from django.test import TestCase
 from teatree.loops.dream.transcript_extract import (
     decode_transcript_line,
     high_signal_lines,
+    looks_like_agent_authored_turn,
     looks_like_learning,
     looks_like_user_ask,
     looks_like_user_correction,
@@ -286,7 +287,7 @@ class DecodeTranscriptLineTestCase(TestCase):
                 },
             }
         )
-        assert decode_transcript_line(raw) == '{"role": "user"} DENIED by gate'
+        assert decode_transcript_line(raw) == '{"role": "tool_result"} DENIED by gate'
 
     def test_non_json_line_passes_through_unchanged(self) -> None:
         assert decode_transcript_line("BINDING: never push to a red branch") == "BINDING: never push to a red branch"
@@ -298,3 +299,100 @@ class DecodeTranscriptLineTestCase(TestCase):
     def test_top_level_text_shape_is_decoded(self) -> None:
         raw = json.dumps({"type": "user", "text": "please open the PR"})
         assert decode_transcript_line(raw) == '{"role": "user"} please open the PR'
+
+
+def _tool_result_turn(text: str) -> str:
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"tool_use_id": "toolu_017v8pK", "type": "tool_result", "content": text}],
+            },
+        }
+    )
+
+
+def _meta_turn(text: str) -> str:
+    return json.dumps(
+        {"type": "user", "isMeta": True, "userType": "external", "message": {"role": "user", "content": text}}
+    )
+
+
+class ToolResultTurnTestCase(TestCase):
+    """A relayed tool result arrives on the user channel but nobody typed it (#2663)."""
+
+    #: Shell output the harness relayed: imperative-negation cues, zero human intent.
+    _OUTPUT = "fatal: not a git repository — do not retry, never force it"
+
+    def test_decodes_with_its_own_role_tag(self) -> None:
+        assert decode_transcript_line(_tool_result_turn(self._OUTPUT)) == f'{{"role": "tool_result"}} {self._OUTPUT}'
+
+    def test_raw_turn_is_not_a_correction(self) -> None:
+        assert not looks_like_user_correction(_tool_result_turn(self._OUTPUT))
+
+    def test_decoded_turn_is_not_a_correction(self) -> None:
+        assert not looks_like_user_correction(decode_transcript_line(_tool_result_turn(self._OUTPUT)))
+
+    def test_decoded_turn_quoting_a_user_role_payload_is_not_a_correction(self) -> None:
+        # Tool output routinely echoes transcript JSON; the tag decides, never the payload.
+        assert not looks_like_user_correction(decode_transcript_line(_tool_result_turn('{"role": "user"} stop that')))
+
+    def test_raw_turn_is_not_an_ask(self) -> None:
+        assert not looks_like_user_ask(_tool_result_turn("please rerun: hotfix branch is urgent"))
+
+    def test_decoded_turn_is_not_an_ask(self) -> None:
+        raw = _tool_result_turn("please rerun: hotfix branch is urgent")
+        assert not looks_like_user_ask(decode_transcript_line(raw))
+
+    def test_a_gate_denial_inside_a_tool_result_is_still_kept(self) -> None:
+        # The keyword keeper is role-agnostic: a BLOCK reason still reaches the distiller.
+        kept = high_signal_lines(_tool_result_turn("DENIED by the push gate"))
+        assert kept == '{"role": "tool_result"} DENIED by the push gate'
+
+    def test_two_identical_tool_results_are_not_a_repeated_user_turn(self) -> None:
+        line = _tool_result_turn("ok")
+        assert high_signal_lines(f"{line}\n{line}") == ""
+
+
+class HarnessMetaTurnTestCase(TestCase):
+    """``isMeta`` marks the harness speaking on the user channel — hook feedback, not a person."""
+
+    _STOP_HOOK = "Stop hook feedback: EVIDENCE GATE — this turn states a diagnosis; do not stop"
+
+    def test_decodes_with_the_harness_role_tag(self) -> None:
+        assert decode_transcript_line(_meta_turn(self._STOP_HOOK)) == f'{{"role": "harness"}} {self._STOP_HOOK}'
+
+    def test_raw_turn_is_not_a_correction(self) -> None:
+        assert not looks_like_user_correction(_meta_turn(self._STOP_HOOK))
+
+    def test_decoded_turn_is_not_a_correction(self) -> None:
+        assert not looks_like_user_correction(decode_transcript_line(_meta_turn(self._STOP_HOOK)))
+
+    def test_raw_turn_is_not_an_ask(self) -> None:
+        assert not looks_like_user_ask(_meta_turn("A session-scoped Stop hook is now active; please acknowledge"))
+
+    def test_task_notification_turn_is_agent_authored(self) -> None:
+        line = '{"role": "user"} <task-notification> <summary>background work no longer running</summary>'
+        assert looks_like_agent_authored_turn(line)
+
+
+class HumanTurnPositiveControlTestCase(TestCase):
+    """The narrowing must not cost a single genuine typed correction (#2663)."""
+
+    def test_a_typed_correction_is_still_a_correction(self) -> None:
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": "why was it closed????? "}})
+        assert looks_like_user_correction(raw)
+        assert looks_like_user_correction(decode_transcript_line(raw))
+
+    def test_a_typed_correction_is_not_agent_authored(self) -> None:
+        assert not looks_like_agent_authored_turn('{"role": "user"} why was it closed?????')
+
+    def test_a_synthesised_slack_dm_turn_is_still_a_correction(self) -> None:
+        # slack_corpus renders the owner's DMs into this shape; it carries neither marker.
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": "stop the digest, I told you"}})
+        assert looks_like_user_correction(decode_transcript_line(raw))
+
+    def test_a_typed_ask_is_still_an_ask(self) -> None:
+        raw = json.dumps({"type": "user", "message": {"role": "user", "content": "can you open the PR please"}})
+        assert looks_like_user_ask(decode_transcript_line(raw))

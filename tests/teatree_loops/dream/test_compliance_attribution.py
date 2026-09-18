@@ -6,12 +6,14 @@ incidental tokens with a per-ticket state log and minted a "recurrence" against 
 an umbrella checkbox and a scheduled coding task for a memory that states no rule.
 """
 
+import json
 from pathlib import Path
 
 from django.test import SimpleTestCase
 
 from teatree.loops.dream.compliance_attribution import _correction_lines, _memory_rules, is_rule_memory
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.transcript_extract import high_signal_lines
 
 #: A per-ticket state log: `type: project`, no rule in it — the shape that minted the gap.
 _PROJECT_LOG = (
@@ -141,3 +143,57 @@ class CorrectionSourceTestCase(SimpleTestCase):
     def test_genuine_human_correction_is_kept(self) -> None:
         line = '{"role": "user"} why are you spamming me on slack? stop it!!'
         assert _correction_lines(_extract(_turn("s.jsonl", line + "\n"))) == [line]
+
+
+class ToolResultAndHarnessTurnTestCase(SimpleTestCase):
+    """Relayed tool output and hook feedback ride the user channel; neither corrects anyone.
+
+    Each fixture starts from RAW transcript JSONL and passes through ``high_signal_lines``
+    — the same seam ``_read_member_text`` uses — so the test exercises the real decode
+    rather than presuming the tag it is meant to prove.
+    """
+
+    _OUTPUT = "fatal: not a git repository — do not retry, never force it"
+
+    @staticmethod
+    def _snippet(*raw_lines: str, kind: str = "main") -> ConsolidationExtract:
+        return _extract(_turn("s.jsonl", high_signal_lines("\n".join(raw_lines)), kind=kind))
+
+    @staticmethod
+    def _tool_result(text: str) -> str:
+        return json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{"tool_use_id": "toolu_1", "type": "tool_result", "content": text}],
+                },
+            }
+        )
+
+    @staticmethod
+    def _meta(text: str) -> str:
+        return json.dumps({"type": "user", "isMeta": True, "message": {"role": "user", "content": text}})
+
+    @staticmethod
+    def _human(text: str) -> str:
+        return json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+
+    def test_tool_result_turn_is_not_a_correction(self) -> None:
+        assert _correction_lines(self._snippet(self._tool_result(self._OUTPUT))) == []
+
+    def test_harness_hook_feedback_turn_is_not_a_correction(self) -> None:
+        assert _correction_lines(self._snippet(self._meta("Stop hook feedback: do not stop"))) == []
+
+    def test_task_notification_turn_is_not_a_correction(self) -> None:
+        notification = "<task-notification> <summary>background work no longer running</summary> do not stop"
+        assert _correction_lines(self._snippet(self._human(notification))) == []
+
+    def test_a_genuine_correction_beside_them_is_still_kept(self) -> None:
+        complaint = "why was it closed????? stop doing that"
+        lines = _correction_lines(
+            self._snippet(
+                self._tool_result(self._OUTPUT), self._meta("Stop hook feedback: do not stop"), self._human(complaint)
+            )
+        )
+        assert lines == [f'{{"role": "user"}} {complaint}']

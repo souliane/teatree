@@ -7,6 +7,7 @@ another memory. These tests drive both with a fake code host and synthetic
 transcripts so the whole phase runs without an LLM or a live forge.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +28,7 @@ from teatree.loops.dream.compliance import (
 )
 from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.transcript_extract import high_signal_lines
 
 
 def _memory_snippet(name: str, body: str) -> WeightedSnippet:
@@ -490,6 +492,51 @@ class BuildComplianceSnapshotTestCase(TestCase):
             )
         )
         assert not [f for f in result.findings if f.is_recurrence]
+
+    def test_a_tool_result_never_mints_a_recurrence(self) -> None:
+        # Relayed shell output shares the memory's distinctive tokens and carries every
+        # correction cue, so only the role tag separates it from a typed complaint.
+        raw = json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "tool_use_id": "toolu_1",
+                            "type": "tool_result",
+                            "content": "AskUserQuestion: routine obstacles must not fire the gate — do not retry",
+                        }
+                    ],
+                },
+            }
+        )
+        result = build_compliance_snapshot(
+            _extract(
+                _memory_snippet("feedback_askuserquestion_overuse.md", _MEMORY_BODY),
+                _transcript_snippet("session-a.jsonl", high_signal_lines(raw)),
+            )
+        )
+        assert result.findings == ()
+
+    def test_a_harness_hook_feedback_turn_never_mints_a_recurrence(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "user",
+                "isMeta": True,
+                "message": {
+                    "role": "user",
+                    "content": "Stop hook feedback: AskUserQuestion for routine obstacles is not allowed — do not stop",
+                },
+            }
+        )
+        result = build_compliance_snapshot(
+            _extract(
+                _memory_snippet("feedback_askuserquestion_overuse.md", _MEMORY_BODY),
+                _transcript_snippet("session-a.jsonl", high_signal_lines(raw)),
+            )
+        )
+        assert result.findings == ()
 
     def test_observed_count_includes_memory_and_directive_rules(self) -> None:
         extract = _extract(
