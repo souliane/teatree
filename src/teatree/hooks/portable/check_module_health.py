@@ -30,6 +30,7 @@ See: souliane/teatree codebase audit findings
 
 import argparse
 import ast
+import dataclasses
 import pathlib
 import re
 
@@ -118,6 +119,55 @@ def _head_paths() -> dict[str, str]:
 
 def _loc_of(source: str) -> int:
     return sum(1 for line in source.splitlines() if line.strip() and not line.strip().startswith("#"))
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class OverCapGrowth:
+    """A growth the shrink ratchet refuses: an already-over-cap file getting bigger."""
+
+    path: str
+    loc: int
+    baseline_loc: int
+    cap: int
+
+    @property
+    def net_growth(self) -> int:
+        return self.loc - self.baseline_loc
+
+
+def over_cap_growth(filepath: str, *, source: str, baseline_source: str) -> OverCapGrowth | None:
+    """The ratchet's pending refusal for *filepath*, or ``None`` when it would not fire.
+
+    The edit-time advisory's entry point: it holds two file bodies, where the
+    commit-stage ratchet already holds the measured counts.
+    """
+    return growth_from_loc(filepath, loc=_loc_of(source), baseline_loc=_loc_of(baseline_source))
+
+
+def growth_from_loc(filepath: str, *, loc: int, baseline_loc: int) -> OverCapGrowth | None:
+    """The same verdict from counts already taken — the one predicate both callers share.
+
+    A file crossing the cap for the FIRST time is not a ratchet growth: it gets the
+    split-by-concern message instead, because there is no grandfathered baseline to
+    shrink back to.
+    """
+    if not _is_first_party(filepath) or loc <= MAX_LOC or baseline_loc <= MAX_LOC or loc <= baseline_loc:
+        return None
+    return OverCapGrowth(path=filepath, loc=loc, baseline_loc=baseline_loc, cap=MAX_LOC)
+
+
+def over_cap_growth_message(growth: OverCapGrowth) -> str:
+    """The extract-first remedy, quantified by how much code must come out.
+
+    The ``Over-cap files may only shrink`` clause is load-bearing — the unbacked-claim
+    scanner and the rules eval both key on it.
+    """
+    return (
+        f"{growth.loc} LOC, up from {growth.baseline_loc} (over the {growth.cap} cap) — "
+        f"net +{growth.net_growth}. Over-cap files may only shrink — extract first: move at "
+        f"least {growth.net_growth} LOC of an in-concern helper out to a sibling module in "
+        f"this same change (docs/module-health.md)."
+    )
 
 
 def _working_tree_source(filepath: str) -> str:
@@ -220,14 +270,11 @@ def _file_violations(
     violations: list[str] = []
 
     loc = _loc_of(source)
-    if loc > MAX_LOC:
-        if prev_loc <= MAX_LOC:
-            violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
-        elif loc > prev_loc:
-            violations.append(
-                f"  {filepath}: {loc} LOC, up from {prev_loc} (over the {MAX_LOC} cap). "
-                f"Over-cap files may only shrink — split by concern or move code out."
-            )
+    growth = growth_from_loc(filepath, loc=loc, baseline_loc=prev_loc)
+    if loc > MAX_LOC and prev_loc <= MAX_LOC:
+        violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
+    elif growth is not None:
+        violations.append(f"  {filepath}: {over_cap_growth_message(growth)}")
 
     public_functions = _public_module_functions(source)
     if len(public_functions) > MAX_MODULE_FUNCTIONS:

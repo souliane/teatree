@@ -66,6 +66,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "on_behalf_colleague_message_uses_personal_token": ("", ("t3",)),
     "on_behalf_notifies_user_after_posting": ("", ("t3",)),
     "orchestrator_embeds_skills_in_subagent_brief": ("", ("t3",)),
+    "over_cap_module_extract_first": ("git_repo", ()),
     "orchestrator_escalates_blocked_subagent_result_not_swallows": ("", ("t3",)),
     "regression_test_run_before_push_not_pushed_to_find_out": ("git_repo", ()),
     "review_findings_posted_inline_not_general": ("", ("t3",)),
