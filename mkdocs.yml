@@ -81,4 +81,6 @@ nav:
       - PullRequest Lifecycle: generated/diagrams/pull-request-lifecycle.md
       - Ticket Lifecycle: generated/diagrams/ticket-lifecycle.md
       - Admin Dashboard: dashboard.md
-  - Contributing: contributing.md
+  - Contributing:
+      - Contributing: contributing.md
+      - Module Health: module-health.md

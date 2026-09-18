@@ -51,7 +51,10 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # sibling, leaving the router the trigger and the deny.
 # Lowered by #4673, which deleted the AskUserQuestion Slack transport (the config /
 # post / DM-cache wrappers and the mirror leg) — delivery is now the drain's alone.
-_CEILING_LOC = 3768
+# Lowered by #2663, which moved the active-repo tracker (its path extractor, repo-key
+# resolver and handler) into the active_repo_tracking sibling to PAY for registering
+# the over-cap growth advisory — the extract-first rule applied to its own wiring.
+_CEILING_LOC = 3686
 
 
 def _count_loc(text: str) -> int:
