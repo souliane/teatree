@@ -182,9 +182,18 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
 
     Newest-ticket-first, because a freshly merged PR is what makes the board
     untrustworthy minute to minute; the budget is what keeps an unbounded backlog
-    from turning the janitor into the thing that saturates the box. Rules E and F each
-    spend what the rules before them left, so the whole run still costs at most
-    *probe_budget*.
+    from turning the janitor into the thing that saturates the box. Rule E's DELIVERED
+    pool is typically far larger than rule F's pre-ship pool, so letting E spend the
+    whole post-B/C remainder (the original split) starved F to near zero on a live
+    board — measured at 2 probes/run against 46 candidates (#4711 follow-up). Rule E is
+    now CAPPED at half of what B/C left, OR at rule F's own live candidate count,
+    whichever is smaller — a fixed half still stranded probes whenever F's queue was
+    shorter than its reservation (measured: 5 probes spent of 10 available when F had 0
+    candidates against 10 rule-E ones). Only E's unused share rolls forward to F, because
+    E runs first; F's own unused share can never roll back to E, since E has already
+    spent its capped share by the time F runs. The reservation is a floor, not a
+    guarantee at every budget: ``remaining // 2`` is 0 when *remaining* is 0 or 1, so at
+    those smallest budgets rule E can still take the only probe even when F has work.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
@@ -197,18 +206,40 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
     transitions.extend(_issue_done_transitions(overlay=overlay, dry_run=dry_run))
+    remaining = probe_budget - len(states)
+    reserved_for_f = min(max(remaining // 2, 0), _rule_f_candidate_count(overlay))
     reopened, reopen_probes = _reopened_issue_transitions(
-        overlay=overlay, dry_run=dry_run, probe_budget=probe_budget - len(states)
+        overlay=overlay, dry_run=dry_run, probe_budget=remaining - reserved_for_f
     )
     transitions.extend(reopened)
     closed, close_probes = closed_issue_transitions(
         overlay=overlay,
         dry_run=dry_run,
-        probe_budget=probe_budget - len(states) - reopen_probes,
+        probe_budget=remaining - reopen_probes,
         already_moved=frozenset(t.ticket_id for t in transitions if t.applied),
     )
     transitions.extend(closed)
     return transitions, len(states) + reopen_probes + close_probes
+
+
+def _rule_f_candidate_count(overlay: str) -> int:
+    """Rule F's raw pre-ship candidate count — an upper bound for its probe reservation.
+
+    A plain DB ``count()``, never a forge read, so it costs nothing to call before E
+    runs. It is an upper bound rather than an exact figure: the real
+    ``already_moved`` exclusion (rows E revives this same tick) is not known yet, but
+    that can only make the reservation too generous, never starve F below what it
+    will actually spend.
+    """
+    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    return scoped(
+        Ticket.objects.filter(state__in=Ticket.pre_ship_states())
+        .exclude(issue_url="")
+        .exclude(role=Ticket.Role.REVIEWER)
+        .filter(remote_missing=False),
+        overlay,
+    ).count()
 
 
 def _settled_states() -> frozenset[str]:
@@ -374,31 +405,36 @@ def _reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: in
             len(candidates),
             len(candidates) - len(probed),
         )
-    reopened = _reopened_issue_urls(probed)
+    reopened, reads = _reopened_issue_urls(probed)
     transitions = collect(
         [t for t in probed if t.issue_url in reopened],
         lambda ticket: _revive_reopened(ticket, dry_run=dry_run),
     )
-    return transitions, len(probed)
+    return transitions, reads
 
 
-def _reopened_issue_urls(tickets: "list[Ticket]") -> set[str]:
+def _reopened_issue_urls(tickets: "list[Ticket]") -> tuple[set[str], int]:
     """The subset of *tickets*' issue URLs their own overlay's forge reports as REOPENED.
 
     Grouped by the ticket's own overlay for the same reason rule D groups: each URL is
     judged by the overlay that owns it, and a ticket whose overlay is not installed here
     is simply not judged. Only a DEFINITE ``REOPENED`` counts — the ``UNKNOWN`` every
     failure and every forge without a reopen marker collapses to leaves the ticket alone.
+
+    The second element counts the reads actually ISSUED, not the candidates considered
+    (mirrors rule F's ``_closed_issue_verdicts``), so a ticket whose overlay is not
+    installed here is never charged against the probe budget.
     """
     from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: registry read at call time
 
     overlays = get_all_overlays()
-    return {
+    judged = [ticket for ticket in tickets if ticket.overlay in overlays]
+    reopened = {
         ticket.issue_url
-        for ticket in tickets
-        if ticket.overlay in overlays
-        and issue_reopen_state(overlays[ticket.overlay], ticket.issue_url) is IssueReopenState.REOPENED
+        for ticket in judged
+        if issue_reopen_state(overlays[ticket.overlay], ticket.issue_url) is IssueReopenState.REOPENED
     }
+    return reopened, len(judged)
 
 
 def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | None:
