@@ -52,6 +52,7 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
+from hooks.scripts.active_repo_tracking import handle_track_active_repo
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
@@ -154,6 +155,7 @@ from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
+from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     _resolve_worktree_state,
     _ticket_state_for_cwd,
@@ -243,7 +245,6 @@ def _current_hook_context() -> tuple[str, dict]:
 
 
 _FILE_PATH_TOOLS = {"Read", "Edit", "Write"}
-_PATH_TOOLS = {"Grep", "Glob"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
 
 # Patterns that indicate workspace/infrastructure operations where the agent
@@ -2737,78 +2738,6 @@ def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
 # ── PostToolUse: track-active-repo ──────────────────────────────────
 
 
-def _extract_file_path(data: dict) -> str:
-    tool_name = data.get("tool_name", "")
-    tool_input = data.get("tool_input", {})
-
-    if tool_name in _FILE_PATH_TOOLS:
-        return tool_input.get("file_path", "")
-    if tool_name in _PATH_TOOLS:
-        return tool_input.get("path", "")
-    if tool_name == "Bash":
-        match = re.search(r"/(Users|home)/[^ \"]+", tool_input.get("command", ""))
-        return match.group() if match else ""
-    return ""
-
-
-def _resolve_repo_key(file_path: str, workspace: str) -> str | None:
-    if not file_path.startswith(f"{workspace}/"):
-        return None
-
-    relative = file_path[len(workspace) + 1 :]
-    parts = relative.split("/")
-    first = parts[0]
-    main_repo_dir = Path(workspace) / first
-
-    if (main_repo_dir / ".git").is_dir():
-        return first
-
-    if len(parts) < 2:  # noqa: PLR2004 — self-documenting literal in this context
-        return None
-    repo_in_wt = parts[1]
-    wt_dir = main_repo_dir / repo_in_wt
-    if not (wt_dir / ".git").exists():
-        return None
-    try:
-        branch = subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            ["git", "-C", str(wt_dir), "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607 — trusted internal git invocation with a fixed argv
-            text=True,
-            timeout=3,
-        ).strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    return f"{branch}/{repo_in_wt}" if branch else None
-
-
-def handle_track_active_repo(data: dict) -> None:
-    """Track which repos the agent has touched during this session."""
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-
-    file_path = _extract_file_path(data)
-    if not file_path:
-        return
-
-    workspace = os.environ.get("T3_WORKSPACE_DIR", str(Path.home() / "workspace"))
-    repo_key = _resolve_repo_key(file_path, workspace)
-    if repo_key is None:
-        return
-
-    _ensure_state_dir()
-    active = _state_file(session_id, "active")
-    if repo_key not in set(_read_lines(active)):
-        _append_line(active, repo_key)
-
-    # MR cache invalidation
-    if data.get("tool_name") == "Bash":
-        command = data.get("tool_input", {}).get("command", "")
-        if "git push" in command or "glab mr" in command:
-            mr_cache = _state_file(session_id, "mr_refreshed")
-            if mr_cache.is_file():
-                mr_cache.unlink()
-
-
 # ── PostToolUse + InstructionsLoaded: track-skill-usage ─────────────
 
 
@@ -5268,6 +5197,7 @@ _HANDLERS: dict[str, list] = {
     "PostToolUse": [
         handle_track_classifier_denial,
         handle_track_active_repo,
+        handle_over_cap_growth_advisory,
         handle_track_skill_usage,
         handle_track_cron_jobs,
         handle_read_dedup,
