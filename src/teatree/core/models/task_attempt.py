@@ -250,6 +250,11 @@ class TaskAttempt(models.Model):
     # billed figure. ``t3 cost`` annotates estimated spend so a router-lane run's real
     # cost is distinguishable from a price-table guess.
     cost_is_estimated = models.BooleanField(default=True)
+    # #4816: turns RAN but their spend is unreadable. NULL tokens alone cannot say
+    # this — they also mean a pre-turn park that genuinely billed nothing — so a
+    # ledger reading NULL as zero silently understates the metered lane. True marks
+    # the recorded spend as a FLOOR; a zero here would be a measurement nobody made.
+    usage_unknown = models.BooleanField(default=False)
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)

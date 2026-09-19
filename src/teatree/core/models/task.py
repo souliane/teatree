@@ -489,19 +489,25 @@ class Task(models.Model):
         exit_code: int = 0,
         error: str = "",
         result: dict[str, object] | None = None,
+        usage_unknown: bool = False,
     ) -> "TaskAttempt":
+        """Record a terminal attempt for a run this layer cannot read spend off.
+
+        *usage_unknown* is for the crash catches ONLY: an exception that ESCAPED the
+        drive leaves no result message, and core cannot import the agent layer to parse
+        one, so tokens already billed are genuinely unreadable here. Every other caller
+        reaches this having billed nothing, which the default ``False`` says (#4816).
+        """
         task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         attempt = task_attempt_model.objects.create(
-            # no-usage: the caller reaches here from an exception that ESCAPED the drive, so
-            # no result message exists to read spend off — and core cannot import the agent
-            # layer to parse one. A harness crash's spend stays unrecorded (#4164).
             task=self,
             ended_at=timezone.now(),
             exit_code=exit_code,
             artifact_path=artifact_path,
             error=error,
             result=result or {},
+            usage_unknown=usage_unknown,
         )
         if exit_code == 0:
             self.complete(result_artifact_path=artifact_path)

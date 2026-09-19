@@ -73,7 +73,13 @@ def _attempt_usage(
 
     skills = list(skills_loaded or [])
     if message is None:
-        return AttemptUsage(lane=lane, reasoning_effort=reasoning_effort, skills_loaded=skills, tool_calls=tool_calls)
+        return AttemptUsage(
+            lane=lane,
+            usage_unknown=True,
+            reasoning_effort=reasoning_effort,
+            skills_loaded=skills,
+            tool_calls=tool_calls,
+        )
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
     cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
@@ -88,10 +94,25 @@ def _attempt_usage(
         num_turns=message.num_turns,
         lane=lane,
         cost_is_estimated=estimated,
+        usage_unknown=_spend_is_unknown(message, usage=usage),
         reasoning_effort=reasoning_effort,
         skills_loaded=skills,
         tool_calls=tool_calls,
     )
+
+
+#: The ``ResultMessage.usage`` keys a provider reports its token counts under. Absent
+#: from ALL of them is the only shape in which a token count is genuinely unreported.
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def _spend_is_unknown(message: ResultMessage, *, usage: dict[str, Any]) -> bool:
+    """Whether turns RAN and the provider still reported no tokens at all (#4816).
+
+    A reported ``0`` is a measurement and stays one; the unknown is the absence. A run
+    with no turns billed nothing, which is a different — and already representable — state.
+    """
+    return (message.num_turns or 0) > 0 and all(usage.get(key) is None for key in _TOKEN_KEYS)
 
 
 def _billed_model(model_usage: dict[str, Any] | None) -> str:
@@ -118,8 +139,7 @@ def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: s
     reported = _safe_float(message.total_cost_usd)
     if reported is not None:
         return reported, False
-    token_keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-    if all(usage.get(key) is None for key in token_keys):
+    if all(usage.get(key) is None for key in _TOKEN_KEYS):
         return None, True
     from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415 — deferred: call-time import
 
