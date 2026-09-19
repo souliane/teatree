@@ -56,6 +56,7 @@ from teatree.core.admission_pressure import (
     AdmissionPressure,
     MachineBrake,
     MachineSignal,
+    MeteredSignal,
     PressureBand,
     QuotaSignal,
     admission_pressure,
@@ -257,20 +258,24 @@ def _shed_at() -> float:
 
 
 def pressure_for(
-    *, quota: QuotaSignal, machine: MachineSignal, load_brake: MachineBrake = UNBRAKED
+    *,
+    quota: QuotaSignal,
+    machine: MachineSignal,
+    metered: MeteredSignal | None = None,
+    load_brake: MachineBrake = UNBRAKED,
 ) -> AdmissionPressure:
     """The live scalar for these signals, carrying the operator's SHED threshold.
 
     The ONE seam every consumer of the band reads, so the threshold is resolved in one
     place and a lane cannot end up judging its own band against a different one. The
     pure arithmetic stays config-free in :mod:`teatree.core.admission_pressure`; this
-    wrapper is only the config half plus the :class:`MachineBrake` translation.
+    wrapper is only the config half.
     """
     return admission_pressure(
         quota=quota,
         machine=machine,
-        braked=load_brake.braked,
-        machine_applies=load_brake.applies,
+        metered=metered,
+        load_brake=load_brake,
         shed_at=_shed_at(),
     )
 
@@ -516,6 +521,43 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     )
 
 
+def read_metered_signal() -> MeteredSignal:
+    """The metered lane's budget and park state, as one signal (#4816).
+
+    The ORM half of the metered dimension — the ledger sum plus the uncleared metered
+    ``UsageWindowState`` a hard provider refusal parks the lane with. The arithmetic stays
+    in :mod:`teatree.core.admission_pressure`, the split that module's docstring mandates.
+    A read that raises is NOT fresh, so an unreadable budget can never brake a lane.
+    """
+    from teatree.core.metered_spend import read_metered_spend  # noqa: PLC0415 — deferred: ORM read at call time
+    from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — deferred: same
+    from teatree.core.models.usage_window_state import UsageWindowState  # noqa: PLC0415 — deferred: same
+
+    spend = read_metered_spend()
+    if not spend.fresh:
+        return MeteredSignal(fresh=False)
+    try:
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+    except Exception:
+        logger.exception("metered usage-window read failed — reporting the lane unparked")
+        window = None
+    return MeteredSignal(
+        fresh=True,
+        utilization=spend.utilization(),
+        parked=window is not None,
+        spend_detail=spend.detail(),
+        park_detail=_park_detail(window),
+    )
+
+
+def _park_detail(window: "object | None") -> str:
+    if window is None:
+        return ""
+    resets_at = getattr(window, "resets_at", None)
+    until = f" until {resets_at.isoformat()}" if resets_at is not None else " with no recorded reset"
+    return f"the metered lane is parked on a {getattr(window, 'cause', '')} window{until} — re-probing it is pure burn"
+
+
 #: Re-exported from :mod:`teatree.core.admission_pressure`, which owns the signals and the
 #: watermarks they normalise against: this stays the one import site every caller already
 #: uses, so the #4508 split moved no consumer.
@@ -528,6 +570,7 @@ __all__ = [
     "AdmissionPressure",
     "MachineBrake",
     "MachineSignal",
+    "MeteredSignal",
     "PressureBand",
     "QuotaSignal",
     "YieldSignal",
@@ -538,6 +581,7 @@ __all__ = [
     "pressure_for",
     "ram_headroom",
     "read_machine_signal",
+    "read_metered_signal",
     "read_quota_signal",
     "resume_agent_ceiling",
     "resume_shed_directive",

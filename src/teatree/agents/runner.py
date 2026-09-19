@@ -74,6 +74,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
+from teatree.core.dispatch_lane import dispatch_lane
 from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
@@ -460,27 +461,13 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
     return None
 
 
-# souliane/teatree#657: the Layer-2 lane (subscription vs metered) each
-# ``AgentHarnessProvider`` authenticates through — OPENAI_COMPATIBLE is a
-# metered BYOK key, same lane as API_KEY.
-_LANE_BY_PROVIDER: dict[AgentHarnessProvider, str] = {
-    AgentHarnessProvider.SUBSCRIPTION_OAUTH: TaskAttempt.Lane.SUBSCRIPTION,
-    AgentHarnessProvider.API_KEY: TaskAttempt.Lane.METERED,
-    AgentHarnessProvider.OPENAI_COMPATIBLE: TaskAttempt.Lane.METERED,
-}
-
-
 def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | None) -> str:
-    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through."""
-    if harness.capabilities.metered_lane:
-        return TaskAttempt.Lane.METERED
-    if provider is None:
-        return ""
-    # A future AgentHarnessProvider member added without a matching entry
-    # here must not surface as a KeyError: that would be caught by the
-    # broad ``except Exception`` in ``tasks.py``'s SDK executor and record
-    # an otherwise-successful, already-billed run as a FAILED attempt.
-    return _LANE_BY_PROVIDER.get(provider, "")
+    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
+
+    The mapping lives in :mod:`teatree.core.dispatch_lane` so the governor judges a
+    dispatch against the same lane the attempt is stamped with (#4816).
+    """
+    return dispatch_lane(provider=provider, metered_harness=harness.capabilities.metered_lane)
 
 
 def _renew_lease_closing_connection(task: Task) -> None:

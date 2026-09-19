@@ -904,3 +904,179 @@ class TestTheDrainReservesCapacityForTheDrainingClass(TestCase):
         reviewing = self._pending("reviewing")
 
         assert self._drain()["enqueued"] == [reviewing.pk]
+
+
+def _pin_metered_harness() -> None:
+    """The operator's own metered pin — the harness must move before the provider validates."""
+    ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+    ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+
+
+def _exhausted_fleet() -> None:
+    """Every configured Anthropic account drained — the fleet the metered lane never touches."""
+    from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: local
+
+    for index in range(2):
+        AnthropicTokenUsage.objects.create(
+            pass_path=f"anthropic/account-{index}",
+            utilization_5h=1.0,
+            utilization_7d=1.0,
+            status_7d="rejected",
+            reset_7d=timezone.now() + dt.timedelta(days=3),
+            checked_at=timezone.now(),
+            valid_until=timezone.now() + dt.timedelta(days=3),
+        )
+
+
+class TestAdmissionIsLaneAware(TestCase):
+    """A dispatch is judged against the budget it would actually spend (#4816).
+
+    ``BRAKE_PRECEDENCE`` leads with ``accounts-exhausted``, so an exhausted OAuth fleet
+    HALTed every dispatch — including the metered ones that authenticate through a key
+    the fleet says nothing about. That is the 307 refused tasks the ticket names.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("metered_token_ceiling", "1000000")
+
+    def _metered_attempt(self, tokens: int) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred: local
+
+        TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            lane=TaskAttempt.Lane.METERED,
+            input_tokens=tokens,
+            output_tokens=0,
+        )
+
+    def test_control_a_subscription_exhausted_fleet_does_not_block_a_metered_dispatch(self) -> None:
+        _pin_metered_harness()
+        _exhausted_fleet()
+        self._metered_attempt(10_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is None
+
+    def test_control_an_exhausted_metered_key_blocks_a_metered_dispatch(self) -> None:
+        _pin_metered_harness()
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "metered" in verdict.expensive_denied
+        assert "1,000,000" in verdict.expensive_denied
+        assert "24h" in verdict.expensive_denied
+
+    def test_control_a_healthy_anthropic_fleet_does_not_rescue_an_exhausted_metered_key(self) -> None:
+        _pin_metered_harness()
+        from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: local
+
+        AnthropicTokenUsage.objects.create(
+            pass_path="anthropic/healthy",
+            utilization_5h=0.01,
+            utilization_7d=0.01,
+            checked_at=timezone.now(),
+            valid_until=timezone.now() + dt.timedelta(minutes=10),
+        )
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "metered" in verdict.expensive_denied
+
+    def test_control_the_subscription_lane_is_still_judged_on_the_fleet(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        _exhausted_fleet()
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "quota-exhausted" in verdict.expensive_denied, "metered spend must not govern a subscription dispatch"
+
+
+class TestAMeteredCeilingBreachAdmitsZeroTasks(TestCase):
+    """The 307-dispatch shape: a refused lane must enqueue NOTHING, not fail each row."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        ConfigSetting.objects.set_value("metered_token_ceiling", "1000000")
+        _pin_metered_harness()
+
+    def _pending(self, count: int) -> list[Task]:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return [
+            Task.objects.create(
+                ticket=ticket, session=session, status=Task.Status.PENDING, phase="architectural_review"
+            )
+            for _ in range(count)
+        ]
+
+    def _burn_the_metered_ceiling(self) -> None:
+        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred: local
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            lane=TaskAttempt.Lane.METERED,
+            input_tokens=2_000_000,
+            output_tokens=0,
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_breached_ceiling_enqueues_zero_and_leaves_every_row_pending(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 — deferred: local
+
+        pending = self._pending(5)
+        self._burn_the_metered_ceiling()
+
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+
+        assert result["enqueued"] == []
+        assert enqueue_task.enqueue.call_count == 0
+        for task in pending:
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_control_an_unbreached_ceiling_still_drains(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 — deferred: local
+
+        pending = self._pending(2)
+
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+
+        assert set(result["enqueued"]) == {task.pk for task in pending}

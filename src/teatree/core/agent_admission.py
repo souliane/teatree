@@ -53,10 +53,13 @@ from teatree.core.admission_governor import (
     governor_enabled,
     pressure_for,
     read_machine_signal,
+    read_metered_signal,
     read_quota_signal,
 )
-from teatree.core.admission_pressure import AdmissionPressure, PressureBand
+from teatree.core.admission_pressure import AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
+from teatree.core.dispatch_lane import configured_dispatch_lane
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
+from teatree.core.models.task_attempt import TaskAttempt
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -283,6 +286,48 @@ def _reservation_denial(ceiling: int, reserved: int, occupied: int) -> str | Non
     )
 
 
+def _apply_drain_reservation(denial: str | None, *, ceiling: int) -> tuple[str | None, LaneBound]:
+    """Carve the draining class's reserved slots off the top of *ceiling* (#4374).
+
+    Measured against the EXPENSIVE lane's own occupancy, never the live population:
+    against the latter it would invert into the mirror-image starvation, refusing coding
+    work because reviews are running. An already-denied class reserves nothing.
+    """
+    reserved = _drain_reservation(ceiling)
+    if not reserved or denial is not None:
+        return denial, LaneBound()
+    unreserved = ceiling - reserved
+    occupied = _task_model().objects.expensive_lane_occupancy()
+    return (
+        _reservation_denial(ceiling, reserved, occupied),
+        LaneBound(ceiling=unreserved, headroom=max(0, unreserved - occupied)),
+    )
+
+
+#: The subscription fleet says nothing about a dispatch that authenticates through a
+#: metered key, so a lane reads exactly one budget and the other contributes nothing —
+#: ``fresh=False`` already being what "does not apply" means here.
+_UNREAD_QUOTA = QuotaSignal(
+    fresh=False,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.0,
+    short_utilization=0.0,
+    seconds_to_weekly_reset=None,
+)
+
+
+def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
+    """The budget this box's CONFIGURED lane would actually spend, and only that one.
+
+    ``BRAKE_PRECEDENCE`` leads with ``accounts-exhausted``, so before #4816 an exhausted
+    OAuth fleet HALTed metered dispatches that would never have touched it — 307 tasks
+    refused against a budget they did not draw on.
+    """
+    if configured_dispatch_lane() == TaskAttempt.Lane.METERED:
+        return _UNREAD_QUOTA, read_metered_signal()
+    return read_quota_signal(), MeteredSignal(fresh=False)
+
+
 def agent_admission_verdict() -> AgentAdmission:
     """Probe the governor ONCE and resolve the verdict for both phase cost classes.
 
@@ -322,31 +367,26 @@ def agent_admission_verdict() -> AgentAdmission:
         return _admit_all()
     task_model = _task_model()
     try:
-        quota = read_quota_signal()
+        quota, metered = _lane_budget()
         machine = read_machine_signal()
         cheap_ceiling = _cheap_lane_ceiling()
         decision = decide_admission(quota=quota, machine=machine, static_ceiling=None)
         live = task_model.objects.claimed_agent_count()
+        pressure = pressure_for(quota=quota, machine=machine, metered=metered)
         expensive = (
-            decision.reason
-            if not decision.admit
-            else _shed_denial(pressure_for(quota=quota, machine=machine)) or _ceiling_denial(decision.ceiling, live)
+            pressure.reason
+            if pressure.band is PressureBand.HALT
+            else _shed_denial(pressure) or _ceiling_denial(decision.ceiling, live)
         )
         if cheap_ceiling <= 0:
             return AgentAdmission(expensive_denied=expensive, cheap_denied=expensive)
-        expensive_lane = LaneBound()
-        reserved = _drain_reservation(decision.ceiling)
-        if reserved and expensive is None:
-            unreserved = decision.ceiling - reserved
-            occupied = task_model.objects.expensive_lane_occupancy()
-            expensive = _reservation_denial(decision.ceiling, reserved, occupied)
-            expensive_lane = LaneBound(ceiling=unreserved, headroom=max(0, unreserved - occupied))
-        exempt = decide_admission(
-            quota=quota, machine=machine, static_ceiling=None, load_brake=MachineBrake(applies=False)
-        )
+        expensive, expensive_lane = _apply_drain_reservation(expensive, ceiling=decision.ceiling)
+        exempt = pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False))
         cheap_occupancy = task_model.objects.cheap_lane_occupancy()
         cheap = (
-            exempt.reason if not exempt.admit else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
+            exempt.reason
+            if exempt.band is PressureBand.HALT
+            else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
         )
         seats_released = task_model.objects.cheap_lane_seats_released()
     except Exception:
