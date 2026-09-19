@@ -41,7 +41,7 @@ dependencies = [
   # help vanishes from ``t3 --help`` AND from the generated CLI reference — which
   # ``docs-drift`` cannot catch, because it regenerates under the same click.
   # Lift when typer stops setting ``self.help`` before ``super().__init__()``.
-  "click>=8.4,<8.5",
+  "click>=8.4,<8.6",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -49,7 +49,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
-  "django>=6,<6.1",
+  "django>=6,<6.2",
   "django-fsm-2>=4,<5",
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
@@ -60,7 +60,7 @@ dependencies = [
   # pins ``django_tasks.backends.dummy.DummyBackend``, so ours are the dropped class
   # and every enqueue raises SuspiciousOperation from ``DBTaskResult.task``.
   # Lift only with the migration off the third-party ``django_tasks`` app.
-  "django-tasks-db>=0.12,<0.13",
+  "django-tasks-db>=0.12,<0.14",
   "django-typer>=3.3,<4",
   # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn (a production
   # WSGI server, not Django's dev ``runserver``) — a RUNTIME command path, so it
@@ -79,7 +79,7 @@ dependencies = [
   # ``ResourceError`` / schema-validation failures. Our gate bodies raise plain
   # ``RuntimeError`` / ``ValueError``, so the refusal still fires but its reason no
   # longer reaches the caller. Lift by raising ``ToolError`` from those bodies.
-  "mcp>=2,<2.1",
+  "mcp>=2,<2.3",
   # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
   # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
   # module — and ``t3 doctor``'s MCP skew check reaches it on every run. It was
@@ -168,7 +168,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.4.14",
+  "prek==0.5.3",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
@@ -183,7 +183,7 @@ dev = [
   # reporting 5000+ errors the CI-gating ``ruff-pre-commit`` hook (pinned to
   # v0.15.1 in .pre-commit-config.yaml) never enforces. Bump in lockstep with
   # that hook's rev.
-  "ruff==0.15.1",
+  "ruff==0.16.7",
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
@@ -223,7 +223,7 @@ shuffle = [
   # remapping seed -> order. The lane's pinned seeds 1 and 7 then land a polluter
   # next to its victim in ``tests/teatree_loop/scanners/`` and go red. The order
   # dependence is real and pre-existing — lift with its fix in souliane/teatree#4756.
-  "pytest-randomly>=3.15,<5",
+  "pytest-randomly>=3.15,<6",
 ]
 # Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
 # (`--splits N --group K`, duration-balanced via a committed `.test_durations`)
