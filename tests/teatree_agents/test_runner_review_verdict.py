@@ -39,6 +39,7 @@ from teatree.core.models import (
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task, verdict_at
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 
@@ -1207,3 +1208,60 @@ class TestTheTicketPathBindsTheSameHeadTheDispatchPathDoes(TestCase):
         task.ticket.refresh_from_db()
         assert task.ticket.extra["pr_urls"] == ["https://github.com/souliane/teatree/pull/4242"]
         assert task.ticket.extra["reviewed_sha"] == _OTHER_HEAD
+
+
+class TestDispatchAssignsTheRecordedIdentity(TestCase):
+    """#2663: a review the dispatch can name is never discarded over the agent's own string.
+
+    The agent no longer CHOOSES the recorded identity — it is told one and the orchestrator
+    records that one whenever the returned string cannot be recorded. The maker refusal is
+    untouched: a self-declared maker is the agent naming itself the author, not a spelling
+    the dispatch may overrule.
+    """
+
+    def _envelope_without_identity(self) -> dict[str, object]:
+        envelope = _verdict_envelope()
+        verdict = envelope["review_verdict"]
+        assert isinstance(verdict, dict)
+        del verdict["reviewer_identity"]
+        return envelope
+
+    def _recorded(self) -> ReviewVerdict:
+        recorded = ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).first()
+        assert recorded is not None
+        return recorded
+
+    def test_an_unrecognised_identity_records_under_the_assigned_one(self) -> None:
+        # `claude:review` was 17 of the 22 refusals measured in one billing cycle: a completed
+        # review, thrown away because `review` is not an admitting token but `reviewer` is.
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _verdict_envelope(reviewer="claude:review"), phase="reviewing")
+
+        assert self._recorded().reviewer_identity == assigned_reviewer_identity(_PR_ID)
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.RESOLVED
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_an_omitted_identity_records_per_pr_not_in_one_shared_bucket(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, self._envelope_without_identity(), phase="reviewing")
+
+        assert self._recorded().reviewer_identity == assigned_reviewer_identity(_PR_ID)
+
+    def test_an_admitted_identity_is_recorded_verbatim(self) -> None:
+        # Control: two distinct reviewers at one head must stay two rows, or a second
+        # reviewer's merge_safe would silently overwrite the first one's hold.
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _verdict_envelope(reviewer="cold-reviewer-agent"), phase="reviewing")
+
+        assert self._recorded().reviewer_identity == "cold-reviewer-agent"
+
+    def test_a_maker_identity_is_still_refused_and_never_overridden(self) -> None:
+        # Control: the override must not launder an agent that declared itself the author.
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _verdict_envelope(reviewer="teatree-loop-4658"), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED

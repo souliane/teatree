@@ -11,6 +11,7 @@ from teatree.agents.phase_blocks import (
     phase_specific_lines,
 )
 from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
+from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 
 
@@ -199,6 +200,32 @@ class TestAnsweringWorkItemBlock(TestCase):
         lines = phase_specific_lines(self._answering_task(implies_work=False), [])
 
         assert not any("work_item" in line for line in lines)
+
+
+class TestReviewingBriefAssignsTheIdentity(TestCase):
+    """#2663: the brief names the identity, instead of asking the agent to invent one."""
+
+    _PR_ID = 4658
+
+    def _reviewing_brief(self, *, issue_url: str) -> str:
+        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        return "\n".join(phase_specific_lines(task, []))
+
+    def test_a_pr_backed_review_is_handed_the_literal_not_a_template(self) -> None:
+        brief = self._reviewing_brief(issue_url=f"https://github.com/souliane/teatree/pull/{self._PR_ID}")
+        assert f'"reviewer_identity": "{assigned_reviewer_identity(self._PR_ID)}"' in brief
+        assert "<pr-or-task-id>" not in brief
+
+    def test_the_brief_says_the_value_is_assigned_not_chosen(self) -> None:
+        brief = self._reviewing_brief(issue_url=f"https://github.com/souliane/teatree/pull/{self._PR_ID}")
+        assert "ASSIGNED" in brief
+
+    def test_a_review_answerable_for_no_pr_keeps_the_template(self) -> None:
+        # Control: nothing to derive an identity from, so the self-naming instruction stays.
+        brief = self._reviewing_brief(issue_url="https://github.com/souliane/teatree/issues/2663")
+        assert REVIEWER_IDENTITY_INSTRUCTION in brief
 
 
 class TestReviewingGreenProofBinding(TestCase):

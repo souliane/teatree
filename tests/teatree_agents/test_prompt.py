@@ -9,6 +9,7 @@ from django.test import TestCase
 from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 
 # --- build_task_prompt ---
 
@@ -812,3 +813,23 @@ class TestCacheablePrefixStability(TestCase):
 
         assert ctx.index("# Loaded Skills") < ctx.index(f"Task ID: {task.pk}")
         assert ctx.index("# Context Budget") < ctx.index(f"Task ID: {task.pk}")
+
+
+class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
+    """#2663: the envelope EXAMPLE is what a model copies, so it carries the literal too."""
+
+    _PR_ID = 4658
+
+    def _system_context(self, *, issue_url: str) -> str:
+        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        return build_system_context(task, skills=[])
+
+    def test_the_minimal_example_names_the_assigned_identity(self) -> None:
+        context = self._system_context(issue_url=f"https://github.com/souliane/teatree/pull/{self._PR_ID}")
+        assert assigned_reviewer_identity(self._PR_ID) in context
+
+    def test_a_review_answerable_for_no_pr_still_renders(self) -> None:
+        context = self._system_context(issue_url="https://github.com/souliane/teatree/issues/2663")
+        assert "reviewer_identity" in context

@@ -18,6 +18,7 @@ where it is unreachable.
 
 import json
 from collections.abc import Mapping
+from typing import cast
 
 from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
@@ -94,13 +95,26 @@ def allowed_keys() -> tuple[str, ...]:
     return tuple(str(key) for key in properties) if isinstance(properties, Mapping) else ()
 
 
-def envelope_example(phase: str) -> AgentResult:
-    """A minimal envelope for *phase* that satisfies the phase evidence gate."""
+def _with_reviewer_identity(evidence: AgentResult, identity: str) -> AgentResult:
+    """*evidence* carrying the dispatch's assigned identity — a COPY, never the constant."""
+    verdict = evidence.get("review_verdict")
+    if not identity or not isinstance(verdict, Mapping):
+        return evidence
+    return cast("AgentResult", {**evidence, "review_verdict": {**verdict, "reviewer_identity": identity}})
+
+
+def envelope_example(phase: str, *, reviewer_identity: str = "") -> AgentResult:
+    """A minimal envelope for *phase* that satisfies the phase evidence gate.
+
+    *reviewer_identity* replaces the self-naming template with the dispatch's assigned
+    literal: a model copies the example over the prose beside it, so the example is where
+    the identity has to be concrete (#2663).
+    """
     example: AgentResult = {"summary": "<one line: what you did and how you proved it>"}
     for field in required_evidence_for_phase(phase):
         evidence = _EVIDENCE_EXAMPLES.get(field)
         if evidence is not None:
-            example.update(evidence)
+            example.update(_with_reviewer_identity(evidence, reviewer_identity))
             break
     example["needs_user_input"] = False
     return example
@@ -151,7 +165,7 @@ def final_output_reminder_line(phase: str) -> str:
     )
 
 
-def envelope_contract_lines(phase: str) -> tuple[str, ...]:
+def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple[str, ...]:
     """The full envelope contract taught to a headless brief for *phase*.
 
     Every phase gets it, verbatim: assuming the model already knows the format is
@@ -176,5 +190,5 @@ def envelope_contract_lines(phase: str) -> tuple[str, ...]:
         f"  {', '.join(allowed_keys())}",
         "",
         "Minimal valid envelope for this phase — copy this shape exactly:",
-        json.dumps(envelope_example(phase), indent=2),
+        json.dumps(envelope_example(phase, reviewer_identity=reviewer_identity), indent=2),
     )

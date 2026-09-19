@@ -7,10 +7,12 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, phase_specific_lines
+from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
+from teatree.core.models.review_target import assigned_reviewer_identity_for
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -141,6 +143,17 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     return primary, explicit
 
 
+def _assigned_reviewer_identity(task: Task) -> str:
+    """The identity *task*'s envelope example must show, or ``""`` for every other phase.
+
+    Keyed on the evidence schema rather than a fourth hand-written list of reviewing phases
+    (souliane/teatree#4768 is the cost of the three that already disagree).
+    """
+    if "review_verdict" not in required_evidence_for_phase(task.phase):
+        return ""
+    return assigned_reviewer_identity_for(task)
+
+
 def build_system_context(
     task: Task, *, skills: list[str], lifecycle_skill: str = "", stage_skills: list[str] | None = None
 ) -> str:
@@ -221,7 +234,7 @@ def build_system_context(
             "When done, run /t3:next to wrap up (retro + the result envelope + a summary).",
             "/t3:next is a convenience, not the contract: the envelope below is required either way,",
             "so emit it yourself whenever /t3:next is unavailable or does not run.",
-            *envelope_contract_lines(task.phase),
+            *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
             "",
             "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
             "STOP immediately. Do not guess or work around it. Emit the envelope with:",

@@ -20,6 +20,7 @@ from teatree.core.models.auto_review_dispatch import build_review_contract
 from teatree.core.models.reviewer_identity import (
     REVIEWER_IDENTITY_INSTRUCTION,
     REVIEWER_ROLE_COMPONENTS,
+    assigned_reviewer_identity,
     is_independent_reviewer_identity,
 )
 
@@ -36,14 +37,46 @@ _CITING_MARKDOWN = ("skills/ship/SKILL.md", "skills/sweeping-prs/SKILL.md", "ski
 
 
 def _rendered_surfaces() -> dict[str, str]:
+    """The surfaces an agent reads when the dispatch could NOT assign it an identity."""
     return {
-        "phase_blocks": "\n".join(phase_blocks._REVIEW_VERDICT_RETURN_LINES),
+        "phase_blocks": "\n".join(phase_blocks._review_verdict_return_lines("")),
         "envelope_contract": str(envelope_contract.envelope_example("reviewing")),
-        "review_contract": build_review_contract(
-            slug="o/r", pr_id=1, head_sha="a" * 40, pr_url="https://github.com/o/r/pull/1"
-        ),
         **{path: (_REPO_ROOT / path).read_text(encoding="utf-8") for path in _SELF_NAMING_MARKDOWN},
     }
+
+
+def _assigned_surfaces(pr_id: int) -> dict[str, str]:
+    """The surfaces an agent reads when the dispatch DID assign it one (#2663)."""
+    return {
+        "phase_blocks": "\n".join(phase_blocks._review_verdict_return_lines(assigned_reviewer_identity(pr_id))),
+        "envelope_contract": str(
+            envelope_contract.envelope_example("reviewing", reviewer_identity=assigned_reviewer_identity(pr_id))
+        ),
+        "review_contract": build_review_contract(
+            slug="o/r",
+            pr_id=pr_id,
+            head_sha="a" * 40,
+            pr_url=f"https://github.com/o/r/pull/{pr_id}",
+        ),
+    }
+
+
+class TestAssignedSurfacesHandTheLiteralInsteadOfTheTemplate:
+    """A dispatch that knows the PR names the value, so the agent chooses nothing (#2663)."""
+
+    _PR_ID = 4658
+
+    def test_each_surface_renders_the_assigned_literal(self) -> None:
+        for name, surface in _assigned_surfaces(self._PR_ID).items():
+            assert assigned_reviewer_identity(self._PR_ID) in surface, name
+
+    def test_no_assigned_surface_still_offers_the_self_naming_template(self) -> None:
+        # The template is what an agent decorated into `-r2` / `:task-N` spellings.
+        for name, surface in _assigned_surfaces(self._PR_ID).items():
+            assert "<pr-or-task-id>" not in surface, name
+
+    def test_the_assigned_literal_is_itself_admitted_by_the_gate(self) -> None:
+        assert is_independent_reviewer_identity(assigned_reviewer_identity(self._PR_ID))
 
 
 class TestEverySurfaceCarriesTheWholeInstruction:
