@@ -493,6 +493,54 @@ class TestFindOrphansInWorkspace(TestCase):
         assert "feat-2" in branches
         assert len(orphans) == 1
 
+    @patch("teatree.core.gates.orphan_guard.clone_root")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
+    def test_excludes_worktrees_of_tickets_outside_the_in_flight_set(
+        self,
+        mock_classify: MagicMock,
+        mock_clone_root: MagicMock,
+    ) -> None:
+        """A DELIVERED/REVIEW_POSTED/IGNORED ticket's worktree row is never re-classified.
+
+        These rows accumulate forever (a Worktree row is only deleted by a
+        successful teardown, which a ticket closed off-pipeline never runs), so
+        an unscoped scan grows unboundedly and starts timing out (#15). Matches
+        the in-flight predicate ``WorktreeManager.active`` already uses for the
+        worktrees panel.
+        """
+        fake_workspace = MagicMock()
+
+        def _fake_div(_self: object, x: str) -> MagicMock:
+            return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
+
+        fake_workspace.__truediv__ = _fake_div
+        mock_clone_root.return_value = fake_workspace
+
+        self._make_worktree("org/alpha", "feat-1")
+        for state, branch in (
+            (Ticket.State.DELIVERED, "feat-delivered"),
+            (Ticket.State.REVIEW_POSTED, "feat-review-posted"),
+            (Ticket.State.IGNORED, "feat-ignored"),
+        ):
+            ticket = Ticket.objects.create(
+                issue_url=f"https://gitlab.com/org/alpha/-/issues/{branch}",
+                state=state,
+            )
+            Worktree.objects.create(overlay="test", ticket=ticket, repo_path="org/alpha", branch=branch)
+
+        mock_classify.return_value = BranchReport(
+            repo="/ws/org/alpha",
+            branch="feat-1",
+            status=BranchStatus.PUSHED_ORPHAN,
+            ahead_count=1,
+        )
+
+        orphans = find_orphans_in_workspace()
+
+        assert mock_classify.call_count == 1
+        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-1")
+        assert [o.branch for o in orphans] == ["feat-1"]
+
 
 class TestClassifyBranchRespectsRepoDefaultBranch:
     """Real-git integration: ``classify_branch`` must use the repo's actual default branch.
