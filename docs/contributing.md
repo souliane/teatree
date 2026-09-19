@@ -30,6 +30,23 @@ again for the run CI's required sharded lane is about to make. The lane is fail-
 FULL — a migration, a conftest / `factories.py` / test-settings edit, an unclassifiable
 path or a missing merge-base each escalate on their own — so scoping never under-runs.
 
+### Lock-derived artifacts
+
+`dist/sbom.json` is generated from `uv.lock`, committed, and covered by three regenerators:
+
+- the `cyclonedx-sbom` pre-commit hook regenerates and stages it whenever `pyproject.toml` or
+  `uv.lock` is staged, so a lock-moving commit carries a matching SBOM;
+- CI's `sbom` job regenerates it and fails on `git diff` if the committed copy is stale;
+- the weekly `uv-lock-upgrade` workflow regenerates it alongside the lock bump.
+
+Never hand-edit it. A `pyproject.toml` dependency change needs `uv lock` first — the hook
+exports with `--locked`, so an un-relocked edit fails with uv's own "lockfile out of date"
+message instead of quietly rewriting the lock.
+
+```bash
+uv run python scripts/hooks/generate_sbom.py   # regenerate + stage by hand, if you need to
+```
+
 ## Worktree-first
 
 Changes are made in a dedicated worktree per ticket, not on the main clone's default branch.

@@ -5,7 +5,11 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
 mkdir -p dist
-uv export --no-hashes --no-dev --no-emit-project -o "$tmp"
+# ``--locked``: a pyproject dependency edit committed without a re-lock must fail
+# with uv's own "lockfile out of date" message rather than have the hook rewrite
+# uv.lock behind the commit. CI and the weekly lock-upgrade workflow both sync
+# first, so both stay consistent.
+uv export --locked --no-hashes --no-dev --no-emit-project -o "$tmp"
 uv run cyclonedx-py requirements "$tmp" \
   --pyproject pyproject.toml \
   --of JSON \

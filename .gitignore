@@ -18,7 +18,9 @@ mutants/
 e2e/snapshot_tests_failures/
 .coverage
 *.egg-info/
-dist/
+# `dist/*`, not `dist/`: git cannot re-include a file under an excluded DIRECTORY, so a
+# bare `dist/` would kill the negation below and make the tracked SBOM unstageable.
+dist/*
 !dist/sbom.json
 build/
 node_modules/

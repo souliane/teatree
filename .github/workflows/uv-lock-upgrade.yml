@@ -148,8 +148,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          # `-u` because `dist/` is gitignored and a negation cannot re-include a file
-          # under an excluded directory, so a bare path-add refuses and `set -e` kills the job.
+          # `-u` updates the tracked paths in place; both are tracked, so the lock-derived
+          # SBOM lands with the lock. A bare path-add would stop working if `.gitignore`
+          # ever narrowed back to a bare `dist/` — see tests/test_lock_delta.py.
           git add -u uv.lock dist/sbom.json
           git commit -m "chore(deps): weekly uv.lock upgrade"
           git push --force-with-lease origin "$BRANCH"

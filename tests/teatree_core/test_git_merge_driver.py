@@ -39,6 +39,8 @@ _EXPECTED_DRIVER_COMMAND = f"uv run python {_TEATREE_ROOT}/scripts/hooks/git_mer
 
 _DRIVER_SCRIPT = driver.teatree_source_root() / "scripts" / "hooks" / "git_merge_generated.py"
 _DRIVEN_DOC = "docs/generated/cli-reference.md"
+# The lock-derived artifact, aliased separately from the generated *docs* above.
+_SBOM = "dist/sbom.json"
 _GENERATOR_RAN_MARKER = ".generator-ran"
 _BASE_LINES = ["- t3 alpha", "- t3 bravo", "- t3 charlie", "- t3 delta", "- t3 echo"]
 
@@ -265,6 +267,11 @@ class TestDriverMain:
     def test_registered_paths_cover_the_management_commands_doc(self):
         assert "docs/generated/management-commands.md" in driver.registered_paths()
 
+    def test_registered_paths_cover_the_lock_derived_sbom(self):
+        """``dist/sbom.json`` is lock-derived, so a lock-touching merge collides on it too."""
+        assert _SBOM == "dist/sbom.json"
+        assert _SBOM in driver.registered_paths()
+
 
 class TestRegenerationAdvisory:
     def test_a_generator_backed_path_names_its_generator(self):
@@ -278,6 +285,9 @@ class TestRegenerationAdvisory:
 
     def test_an_unknown_path_has_no_advisory(self):
         assert driver.regeneration_advisory("some/other/file.md") == ""
+
+    def test_the_sbom_path_names_the_generator_that_rebuilds_it(self):
+        assert "scripts/hooks/generate_sbom.py" in driver.regeneration_advisory(_SBOM)
 
 
 class TestVendoredLayout:
@@ -421,6 +431,16 @@ class TestGitMergeDriverInstaller:
 class TestRepoGitattributes:
     def test_repo_gitattributes_marks_the_generated_docs(self):
         repo_root = Path(__file__).resolve().parents[2]
-        for path in (_DRIVEN_DOC, "evals/README.md"):
+        for path in (_DRIVEN_DOC, "evals/README.md", _SBOM):
             attr = run_git(repo_root, "check-attr", "merge", "--", path)
             assert attr.endswith("merge: generated"), f"{path} not marked merge=generated: {attr!r}"
+
+
+class TestAdvisedGeneratorsExist:
+    def test_the_script_the_sbom_advisory_names_is_really_there(self):
+        """An advisory naming a script that is not there is worse than no advisory."""
+        named = "scripts/hooks/generate_sbom.py"
+        repo_root = Path(__file__).resolve().parents[2]
+
+        assert named in driver.regeneration_advisory(_SBOM)
+        assert (repo_root / named).is_file(), f"the advisory points at a missing script: {named}"

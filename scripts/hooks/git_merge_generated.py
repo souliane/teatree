@@ -2,9 +2,10 @@
 
 Registered via ``.gitattributes`` (``<path> merge=generated``) plus a per-clone
 ``git config merge.generated.driver`` (wired by ``t3 setup`` and worktree
-provisioning). The generated docs — the CLI reference, the antipattern catalog, the
-management-commands list — collide on nearly every CLI-touching PR, and the right
-resolution is a re-run of the file's generator.
+provisioning). The generated artifacts — the CLI reference, the antipattern catalog,
+the management-commands list, and the lock-derived SBOM — collide on nearly every PR
+that touches their source, and the right resolution is a re-run of the file's
+generator.
 
 A merge driver cannot BE that re-run. Git decides every content merge before it writes
 any of the merge result to the working tree, so the tree a driver would regenerate from
@@ -49,6 +50,7 @@ _GENERATORS: dict[str, list[str] | None] = {
     "docs/generated/antipattern-catalog.md": ["scripts/hooks/generate_antipattern_catalog.py"],
     "docs/generated/management-commands.md": ["scripts/hooks/generate_management_commands_doc.py"],
     "evals/README.md": None,
+    "dist/sbom.json": ["scripts/hooks/generate_sbom.py"],
 }
 
 

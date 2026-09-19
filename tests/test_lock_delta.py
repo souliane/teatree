@@ -364,7 +364,7 @@ class TestWorkflowWiring:
             check=False,
         )
         assert completed.returncode == 0, (
-            "`dist/` is gitignored and a negation cannot re-include a file under an excluded "
-            "directory, so a bare path-add of `dist/sbom.json` refuses — and `set -euo pipefail` "
-            f"turns that refusal into a dead job that never opens the PR:\n{completed.stderr}"
+            "Narrowing `.gitignore` back to a bare `dist/` makes this path-add refuse — git "
+            "cannot re-include a file under an excluded DIRECTORY — and `set -euo pipefail` turns "
+            f"that refusal into a dead job that never opens the PR:\n{completed.stderr}"
         )
