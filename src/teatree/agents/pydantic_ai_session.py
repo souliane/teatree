@@ -201,6 +201,21 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     return {model_name: {}}
 
 
+def _usage_payload(run_usage: RunUsage) -> dict[str, int]:
+    """The run's token counts in the ``ResultMessage.usage`` vocabulary the driver reads.
+
+    ONE mapping for the success and the error envelopes, because they diverged: the error
+    path carried no ``usage`` at all, so every provider/run failure on the metered lane
+    recorded no tokens even though the caller held the ``RunUsage`` all along (#4816).
+    """
+    return {
+        "input_tokens": run_usage.input_tokens,
+        "output_tokens": run_usage.output_tokens,
+        "cache_read_input_tokens": run_usage.cache_read_tokens,
+        "cache_creation_input_tokens": run_usage.cache_write_tokens,
+    }
+
+
 def _turns_made(run_usage: RunUsage) -> int:
     """The model requests the turn actually made — never zero.
 
@@ -387,20 +402,25 @@ class PydanticAiHarnessSession:
             # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
             # FAILED, NOT a park: its message names no rate/usage-limit phrase, so
             # ``classify_limit`` never mistakes it for a recoverable window.
-            yield self._error_result(exc, subtype="error_max_turns", num_turns=_turns_made(run_usage))
+            yield self._error_result(
+                exc, subtype="error_max_turns", num_turns=_turns_made(run_usage), run_usage=run_usage
+            )
             return
         except ModelHTTPError as exc:
             yield self._error_result(
                 exc,
                 subtype="error_during_execution",
                 num_turns=_turns_made(run_usage),
+                run_usage=run_usage,
                 api_error_status=exc.status_code,
             )
             return
         except (ModelAPIError, UnexpectedModelBehavior) as exc:
             # A provider/run error with no HTTP status (``ContentFilterError`` is a
             # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
-            yield self._error_result(exc, subtype="error_during_execution", num_turns=_turns_made(run_usage))
+            yield self._error_result(
+                exc, subtype="error_during_execution", num_turns=_turns_made(run_usage), run_usage=run_usage
+            )
             return
         all_messages = run_result.all_messages()
         self._history = all_messages
@@ -413,6 +433,7 @@ class PydanticAiHarnessSession:
                 ),
                 subtype=MAX_TOKENS_TRUNCATION_SUBTYPE,
                 num_turns=run_usage.requests,
+                run_usage=run_usage,
             )
             return
         # Surface this turn's tool calls/results in the seam's tool-block
@@ -435,18 +456,19 @@ class PydanticAiHarnessSession:
             # one, so the attempt records the real figure (flagged not-estimated) instead of
             # the price-table guess; ``None`` (the common case) falls back to the estimate.
             total_cost_usd=_router_reported_cost(run_usage),
-            usage={
-                "input_tokens": run_usage.input_tokens,
-                "output_tokens": run_usage.output_tokens,
-                "cache_read_input_tokens": run_usage.cache_read_tokens,
-                "cache_creation_input_tokens": run_usage.cache_write_tokens,
-            },
+            usage=_usage_payload(run_usage),
             result=text,
             model_usage=_model_identity_usage(self._model_name),
         )
 
     def _error_result(
-        self, exc: Exception, *, subtype: str, num_turns: int, api_error_status: int | None = None
+        self,
+        exc: Exception,
+        *,
+        subtype: str,
+        num_turns: int,
+        run_usage: RunUsage,
+        api_error_status: int | None = None,
     ) -> ResultMessage:
         """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
 
@@ -456,6 +478,10 @@ class PydanticAiHarnessSession:
         transport. ``api_error_status`` carries the HTTP status for a
         :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by
         ``error_result_reason``), ``None`` otherwise.
+
+        *run_usage* is the caller's own ``RunUsage`` — pydantic_ai adopts and mutates it
+        in place, so the turns a failed run already billed are MEASURED here, never
+        dropped. A run refused before its first request reports the provider's own zeros.
         """
         return ResultMessage(
             subtype=subtype,
@@ -464,6 +490,8 @@ class PydanticAiHarnessSession:
             is_error=True,
             num_turns=num_turns,
             session_id=self._session_id,
+            total_cost_usd=_router_reported_cost(run_usage),
+            usage=_usage_payload(run_usage),
             result=str(exc),
             api_error_status=api_error_status,
             model_usage=_model_identity_usage(self._model_name),

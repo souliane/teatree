@@ -134,6 +134,29 @@ def _preamble_then_tool_model(tool_name: str, final_text: str = _RESULT_JSON) ->
     return FunctionModel(stream_function=stream_fn)
 
 
+def _billed_then_refused_model(*, status_code: int = 403) -> FunctionModel:
+    """A model double that completes one BILLED request, then is refused on the next.
+
+    The refusal therefore lands with tokens already spent, which is the only state in
+    which "does the error path carry the run's usage?" is a question with a wrong answer.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield {0: DeltaToolCall(name="ghost_tool", json_args="{}")}
+            return
+        raise ModelHTTPError(
+            status_code=status_code,
+            model_name=_MODEL,
+            body={"code": "access_denied", "message": "token cycle spend limit reached"},
+        )
+
+    return FunctionModel(stream_function=stream_fn)
+
+
 def _drive(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
     async def turn() -> list[object]:
         await session.query(prompt)
@@ -318,6 +341,72 @@ class TestTerminalResultCarriesTheRealRunIdentity:
         other = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
 
         assert one.session_id != other.session_id
+
+
+class TestAFailedTurnStillReportsWhatItSpent:
+    """The crash path carries the usage its caller already holds (souliane/teatree#4816).
+
+    ``_error_result`` built its envelope with no ``usage`` at all, so every
+    provider/run error on the metered lane recorded no tokens — 1,757 turns whose
+    spend the ledger never saw. The caller owns the ``RunUsage`` pydantic_ai mutates
+    in place, so the figures were always there to carry.
+    """
+
+    def test_a_refusal_after_a_billed_request_reports_that_request_s_tokens(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_billed_then_refused_model()), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.usage is not None, "a failed turn that billed tokens must not report None usage"
+        assert terminal.usage["input_tokens"] > 0
+        assert set(terminal.usage) == {
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        }
+
+    def test_every_error_branch_reports_usage_not_none(self) -> None:
+        # The four raise sites are one contract, not four: a branch that forgets the
+        # run usage is the defect, wherever it sits.
+        for agent_model in (
+            _billed_then_refused_model(),
+            _dropped_mid_stream_model(after_requests=2),
+            _two_request_model(),
+        ):
+            session = PydanticAiHarnessSession(Agent(agent_model), model_name=_MODEL, request_limit=1)
+
+            terminal = _terminal(_drive(session))
+
+            assert terminal.is_error is True
+            assert terminal.usage is not None
+
+    def test_control_a_refusal_before_any_request_completes_reports_zero_not_none(self) -> None:
+        # The pre-turn refusal is the OTHER state the ledger must be able to tell apart:
+        # a reported usage of zero is the provider's own answer, not a missing one.
+        session = PydanticAiHarnessSession(
+            Agent(_api_error_model(status_code=403, error_type="access_denied", message="spend limit reached")),
+            model_name=_MODEL,
+        )
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.usage == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+
+    def test_control_a_healthy_turn_s_usage_is_unchanged(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is False
+        assert terminal.usage is not None
+        assert terminal.usage["input_tokens"] > 0
 
 
 class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
