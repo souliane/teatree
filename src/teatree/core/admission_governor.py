@@ -53,6 +53,7 @@ from teatree.core.admission_pressure import (
     RAM_RESUME_FLOOR_GB,
     SHED_AT_DEFAULT,
     UNBRAKED,
+    UNREAD_QUOTA,
     AdmissionPressure,
     MachineBrake,
     MachineSignal,
@@ -257,6 +258,22 @@ def _shed_at() -> float:
     return resolve_shed_at(configured)
 
 
+def _quota_brake_enabled() -> bool:
+    """Whether the TOKEN brakes apply at all; an unreadable setting keeps them ON.
+
+    Fail-safe in the only direction that matters: a config read that raises must never
+    silently widen admission. ``admission_governor_enabled`` remains the separate
+    whole-governor kill switch — this one stands down the quota family alone (#4816).
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
+
+    try:
+        return bool(get_effective_settings().admission_quota_brake_enabled)
+    except Exception:
+        logger.exception("admission_quota_brake_enabled unreadable — keeping the quota brake on")
+        return True
+
+
 def pressure_for(
     *,
     quota: QuotaSignal,
@@ -264,13 +281,22 @@ def pressure_for(
     metered: MeteredSignal | None = None,
     load_brake: MachineBrake = UNBRAKED,
 ) -> AdmissionPressure:
-    """The live scalar for these signals, carrying the operator's SHED threshold.
+    """The live scalar for these signals, carrying the operator's two configured levers.
 
     The ONE seam every consumer of the band reads, so the threshold is resolved in one
     place and a lane cannot end up judging its own band against a different one. The
     pure arithmetic stays config-free in :mod:`teatree.core.admission_pressure`; this
     wrapper is only the config half.
+
+    Standing the token brakes down is the mirror image of :attr:`MachineBrake.applies`,
+    and needs no counterpart parameter: an unread quota already contributes nothing, so
+    the switch is spent HERE — in the config half that owns it — rather than widening
+    the pure fold with a flag only this caller would ever pass. The ceiling is derived
+    from the REAL quota in :func:`decide_admission` before this is reached, so standing
+    the brake down refuses less without ever buying more concurrency.
     """
+    if not _quota_brake_enabled():
+        quota, metered = UNREAD_QUOTA, None
     return admission_pressure(
         quota=quota,
         machine=machine,

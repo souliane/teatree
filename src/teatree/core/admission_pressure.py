@@ -163,6 +163,20 @@ class MachineBrake:
 #: The default: the brake applies, with no prior brake state to hold it to the low watermark.
 UNBRAKED = MachineBrake()
 
+#: The quota signal that contributes NOTHING — ``fresh=False`` being what "does not apply"
+#: already means here, for an unreadable reading and for a dimension this decision is not
+#: judged against alike. Two callers stand a dimension down: the lane selector, when the
+#: dispatch authenticates through a lane the subscription fleet says nothing about, and
+#: ``pressure_for``, when the operator has turned the token brakes off (#4816). Neither
+#: needs a mechanism of its own — an absent component is an absent component.
+UNREAD_QUOTA = QuotaSignal(
+    fresh=False,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.0,
+    short_utilization=0.0,
+    seconds_to_weekly_reset=None,
+)
+
 
 class PressureBand(StrEnum):
     """What degrades at each threshold — the ordering the six separate ``if``s could not express.
@@ -440,6 +454,7 @@ __all__ = [
     "SHED_AT_DEFAULT",
     "SHORT_WINDOW_BRAKE",
     "UNBRAKED",
+    "UNREAD_QUOTA",
     "WEEKLY_WINDOW_BRAKE",
     "WEEKLY_WINDOW_SECONDS",
     "AdmissionPressure",

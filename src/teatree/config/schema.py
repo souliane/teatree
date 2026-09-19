@@ -129,6 +129,7 @@ class TeatreeSettingsSchema(BaseSettings):
     adaptive_intake_concurrency_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_governor_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_pressure_shed_at: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    admission_quota_brake_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     metered_token_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     metered_spend_window_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

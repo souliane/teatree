@@ -56,7 +56,7 @@ from teatree.core.admission_governor import (
     read_metered_signal,
     read_quota_signal,
 )
-from teatree.core.admission_pressure import AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
+from teatree.core.admission_pressure import UNREAD_QUOTA, AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
 from teatree.core.dispatch_lane import configured_dispatch_lane
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
@@ -304,18 +304,6 @@ def _apply_drain_reservation(denial: str | None, *, ceiling: int) -> tuple[str |
     )
 
 
-#: The subscription fleet says nothing about a dispatch that authenticates through a
-#: metered key, so a lane reads exactly one budget and the other contributes nothing —
-#: ``fresh=False`` already being what "does not apply" means here.
-_UNREAD_QUOTA = QuotaSignal(
-    fresh=False,
-    all_accounts_exhausted=False,
-    weekly_utilization=0.0,
-    short_utilization=0.0,
-    seconds_to_weekly_reset=None,
-)
-
-
 def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     """The budget this box's CONFIGURED lane would actually spend, and only that one.
 
@@ -324,7 +312,7 @@ def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     refused against a budget they did not draw on.
     """
     if configured_dispatch_lane() == TaskAttempt.Lane.METERED:
-        return _UNREAD_QUOTA, read_metered_signal()
+        return UNREAD_QUOTA, read_metered_signal()
     return read_quota_signal(), MeteredSignal(fresh=False)
 
 

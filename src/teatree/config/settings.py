@@ -1112,6 +1112,14 @@ class _ProvisioningSettings:
     # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
     # [DEGRADE_AT, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
     admission_pressure_shed_at: float = 0.9
+    # #4816 Whether the TOKEN brakes (the subscription quota family and the metered
+    # one) apply at all. False drops both and leaves load + memory, so an operator
+    # standing down a quota signal their lane does not answer to keeps the brakes that
+    # protect the box. ONE switch for the family: which lane a dispatch rides is not
+    # something the operator should have to know to turn the token brake off. Distinct
+    # from ``admission_governor_enabled``, which is the whole-governor kill switch.
+    # Per-overlay overridable.
+    admission_quota_brake_enabled: bool = True
     # #4816 The metered lane's own spend ceiling, in TOKENS over
     # ``metered_spend_window_hours``. Tokens because they are MEASURED; the lane's
     # cost_usd is price-table arithmetic whose error is unknown. Ships 0 = UNSET: the

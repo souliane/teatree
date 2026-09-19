@@ -320,6 +320,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #4508 Pressure at which the EXPENSIVE agent class is shed while the cheap drain
     # keeps running; 1.0 collapses SHED into HALT (the rollback lever). Per-overlay overridable.
     "admission_pressure_shed_at": _parse_strict_float,
+    # #4816 Whether the TOKEN brakes apply at all; false leaves load + memory only, so
+    # standing down an irrelevant quota signal never disarms the box. Per-overlay overridable.
+    "admission_quota_brake_enabled": _parse_strict_bool,
     # #4816 The metered lane's spend ceiling in TOKENS over the window below; 0 =
     # UNSET, so the metered brake is inert until an operator sets it. Per-overlay overridable.
     "metered_token_ceiling": _parse_strict_int,
