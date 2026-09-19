@@ -501,6 +501,7 @@ class Task(models.Model):
         task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         attempt = task_attempt_model.objects.create(
+            # no-usage: core cannot import the agent layer to parse a result message, so usage_unknown carries it
             task=self,
             ended_at=timezone.now(),
             exit_code=exit_code,
