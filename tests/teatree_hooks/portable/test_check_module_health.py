@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.hooks.portable.check_module_health import MAX_LOC, main, run_debt_report
+import teatree.hooks.portable.check_module_health as mod
+from teatree.hooks.portable.check_module_health import MAX_LOC, main, over_cap_growth, run_debt_report
 
 
 def _lines(loc: int) -> str:
@@ -112,3 +113,109 @@ class TestStagedModeMeasuresTheVersionBeingCommitted:
         monkeypatch.chdir(repo)
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
         assert main() == 1
+
+
+class TestOverCapGrowthPredicate:
+    """One predicate answers "will the shrink ratchet refuse this?" for both callers.
+
+    The commit-stage ratchet and the edit-time advisory must never disagree about
+    when a growth is refused, so they share :func:`over_cap_growth` rather than
+    each re-deriving the cap comparison.
+    """
+
+    def test_growth_above_the_cap_is_reported_with_its_net_delta(self) -> None:
+        growth = over_cap_growth(
+            "src/teatree/big.py",
+            source=_lines(MAX_LOC + 13),
+            baseline_source=_lines(MAX_LOC + 3),
+        )
+
+        assert growth is not None
+        assert growth.loc == MAX_LOC + 13
+        assert growth.baseline_loc == MAX_LOC + 3
+        assert growth.net_growth == 10
+        assert growth.cap == MAX_LOC
+
+    def test_an_over_cap_file_that_shrinks_is_not_a_growth(self) -> None:
+        assert (
+            over_cap_growth(
+                "src/teatree/big.py",
+                source=_lines(MAX_LOC + 3),
+                baseline_source=_lines(MAX_LOC + 13),
+            )
+            is None
+        )
+
+    def test_an_over_cap_file_held_steady_is_not_a_growth(self) -> None:
+        steady = _lines(MAX_LOC + 5)
+        assert over_cap_growth("src/teatree/big.py", source=steady, baseline_source=steady) is None
+
+    def test_a_file_crossing_the_cap_for_the_first_time_is_not_a_ratchet_growth(self) -> None:
+        """A newly-over-cap file gets the `Split by concern` message, not extract-first."""
+        assert (
+            over_cap_growth(
+                "src/teatree/big.py",
+                source=_lines(MAX_LOC + 2),
+                baseline_source=_lines(MAX_LOC - 40),
+            )
+            is None
+        )
+
+    def test_a_non_first_party_path_is_never_a_growth(self) -> None:
+        assert (
+            over_cap_growth(
+                "tests/teatree_core/test_big.py",
+                source=_lines(MAX_LOC + 13),
+                baseline_source=_lines(MAX_LOC + 3),
+            )
+            is None
+        )
+
+    def test_a_migration_is_exempt_like_the_rest_of_the_ratchet(self) -> None:
+        assert (
+            over_cap_growth(
+                "src/teatree/core/migrations/0001_initial.py",
+                source=_lines(MAX_LOC + 13),
+                baseline_source=_lines(MAX_LOC + 3),
+            )
+            is None
+        )
+
+
+class TestOverCapGrowthMessageNamesTheDeficit:
+    """The refusal quantifies the deficit and prescribes extract-first (#2663)."""
+
+    def _blocked_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        target = tmp_path / "src" / "teatree" / "big.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(_lines(MAX_LOC + 13), encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)  # noqa: S607 — fixture drives the same git the hook resolves
+        monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/teatree/big.py"])
+        monkeypatch.setattr(mod, "_head_paths", lambda: {"src/teatree/big.py": "src/teatree/big.py"})
+        monkeypatch.setattr(mod, "_staged_source", lambda _p: _lines(MAX_LOC + 13))
+        monkeypatch.setattr(mod, "_count_loc_at_head", lambda _p: MAX_LOC + 3)
+        monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _p: [])
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert mod.main() == 1
+        return buf.getvalue()
+
+    def test_refusal_states_the_net_growth_the_extraction_must_offset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out = self._blocked_output(tmp_path, monkeypatch)
+
+        assert "net +10" in out, "the refusal must quantify how much must come out"
+        assert "extract" in out.lower(), "the refusal must prescribe the extract-first remedy"
+        assert "docs/module-health.md" in out, "the refusal must point at the durable rule"
+
+    def test_refusal_keeps_the_pinned_shrink_only_wording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Other gates and evals key on this substring — quantifying must not drop it."""
+        assert "Over-cap files may only shrink" in self._blocked_output(tmp_path, monkeypatch)

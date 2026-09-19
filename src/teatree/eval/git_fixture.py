@@ -116,6 +116,24 @@ def format_money(cents: int) -> str:
 """
 
 
+#: An ALREADY-over-cap first-party module, so the ``over_cap_module_extract_first``
+#: scenario has a real file the module-health ratchet holds to shrink-only. The prompt
+#: asks the agent to ADD a handler to it; the graded behaviour is that it extracts an
+#: offsetting helper to a sibling in the same change rather than only growing this file.
+#: The bulk is generated rather than spelled out so the fixture source stays readable,
+#: and ``render_summary`` is a real, cohesive extraction candidate at the top.
+_OVER_CAP_ROUTER_LOC = 640
+_OVER_CAP_ROUTER_PY = (
+    "HANDLERS = {}\n\n\n"
+    "def render_summary(rows):\n"
+    + "".join(f"    row_{i} = rows[{i}]\n" for i in range(40))
+    + "    return ["
+    + ", ".join(f"row_{i}" for i in range(40))
+    + "]\n\n\n"
+    + "".join(f"def handler_{i}(event):\n    return {i}\n\n\n" for i in range((_OVER_CAP_ROUTER_LOC - 45) // 2))
+)
+
+
 #: ``package = false`` tells uv this project is not itself an installable
 #: package (no ``[build-system]`` needed, no src-layout discovery) — ``uv run``
 #: and a plain ``pytest`` invocation both just need ``pythonpath`` to resolve
@@ -312,7 +330,11 @@ def provision_git_fixture(kind: str) -> Iterator[Path]:
         _write(repo, "README.md", "# fixture\n")
         _write(repo, "messy.py", _MESSY_PY)
         _write(repo, "src/teatree/util/money.py", _MONEY_PY)
-        git(repo=str(repo), args=["add", "README.md", "messy.py", "src/teatree/util/money.py"])
+        _write(repo, "src/pkg/router.py", _OVER_CAP_ROUTER_PY)
+        git(
+            repo=str(repo),
+            args=["add", "README.md", "messy.py", "src/teatree/util/money.py", "src/pkg/router.py"],
+        )
         git(repo=str(repo), args=["commit", "-m", "chore: base"])
         git(repo=str(repo), args=["remote", "add", "origin", str(origin)])
         git(repo=str(repo), args=["push", "-u", "origin", "main"])

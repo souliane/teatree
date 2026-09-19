@@ -268,6 +268,29 @@ When the task is a rename, type-renaming, key-renaming, or any refactor that sho
 
 When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — "the epic-completion statement exists", "issue X is documented as subsumed near a 'board' qualifier"), **assert that *some* occurrence of the anchor token carries the required nearby context — never key the assertion on the first occurrence**. Issue references, workstream citations, and architecture terms legitimately recur across a doc section (the same `#50`/`#789`/`roster` token appears in unrelated per-workstream paragraphs), so `text.index(token)` / first-match-window assertions produce false REDs against an unrelated mention while the real statement is correct. Use a scan-all-windows helper (`while find(token, start): check ±radius; start = i+1`) that returns true if any window satisfies the predicate. The same recurrence hazard the § 5c mass-rename sweep guards against on the *production* side applies to the *test* side: a single naive lookup is insufficient whenever the token is non-unique. Prove the doc-invariant test is anti-vacuous the same way as any regression test — revert the doc change, confirm RED, restore, confirm GREEN (a prose guard that passes against the pre-change doc guards nothing).
 
+### 5e. Over-Cap Module: Extract First (Non-Negotiable)
+
+A module already over the module-health cap is grandfathered and **ratcheted to
+shrink-only**: `check_module_health` refuses the commit on ANY net growth, including the
+two lines a new gate's import + registration needs. So when your change adds code to one,
+the extraction is a **prerequisite, not a follow-up** — do X, never Y:
+
+1. **Do** move a cohesive, in-concern helper OUT to a sibling module in the SAME change,
+   sized to at least the `net +N` the refusal names, so the file nets smaller.
+2. **Never** delete unrelated lines to make room. That games the ratchet and churns code
+   you did not come to change; the right extraction is one whose concern your ticket is
+   already in.
+
+```bash
+# see it coming, before you write the line that gets refused:
+uv run python scripts/hooks/check_module_health.py --report-debt            # every grandfathered module
+uv run python scripts/hooks/check_module_health.py --from-ref origin/main   # this branch's verdict
+```
+
+The mechanics that keep a move safe (call-time back-imports so a test patching the origin
+still steers the moved code, the one-line re-export, lowering an explicit `_CEILING_LOC`)
+are in [`docs/module-health.md`](../../docs/module-health.md).
+
 ### 6. Quality Gates During Development
 
 - **When adding a prek hook, check for CI duplication.** After adding a new hook to `.pre-commit-config.yaml`, grep the repo's `.gitlab-ci.yml` (or equivalent) for any job that runs the same script directly. If found, remove the standalone CI job — having the check run twice wastes CI time and creates maintenance confusion. One source of truth: prek.

@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overcap-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The router is over the module-health cap, so the registration would need an offsetting extraction first."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
