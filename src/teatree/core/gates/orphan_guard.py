@@ -153,19 +153,26 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
 
 
 def find_orphans_in_workspace() -> list[BranchReport]:
-    """Return orphan branches across all tracked worktrees in the workspace.
+    """Return orphan branches across every IN-FLIGHT tracked worktree in the workspace.
 
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
     branch produce a single report. A single worktree whose classification
     fails (a real git error — corrupt checkout, unresolvable target ref) is
     logged and skipped rather than aborting the whole scan (#2937): this
-    sweep spans every tracked worktree in the workspace, and one bad row
-    must not hide every other worktree's orphan status.
+    sweep spans every in-flight tracked worktree in the workspace, and one
+    bad row must not hide every other worktree's orphan status.
+
+    Scoped through ``WorktreeManager.active`` (excludes DELIVERED /
+    REVIEW_POSTED / IGNORED tickets), not ``.all()``: a Worktree row is only
+    deleted by a successful teardown, which a ticket closed off-pipeline
+    never runs, so an unscoped scan grows without bound as history
+    accumulates and starts timing out callers like ``workspace ticket``
+    (#15).
     """
     workspace = clone_root()
     reports: list[BranchReport] = []
     seen: set[tuple[str, str]] = set()
-    for wt in Worktree.objects.all():
+    for wt in Worktree.objects.active():
         repo_main = resolve_clone_path(workspace, wt)
         if repo_main is None or not repo_main.is_dir():
             continue
