@@ -31,9 +31,10 @@ from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import FEATURE_FLAGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
-from teatree.config.schema import Category, setting_meta
+from teatree.config.schema import setting_meta
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.setting_taxonomy import Category
 
 # A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips.
 type SettingValue = bool | int | float | str | list[object] | dict[str, object]

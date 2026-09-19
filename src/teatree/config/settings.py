@@ -1112,6 +1112,18 @@ class _ProvisioningSettings:
     # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
     # [DEGRADE_AT, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
     admission_pressure_shed_at: float = 0.9
+    # #4816 The metered lane's own spend ceiling, in TOKENS over
+    # ``metered_spend_window_hours``. Tokens because they are MEASURED; the lane's
+    # cost_usd is price-table arithmetic whose error is unknown. Ships 0 = UNSET: the
+    # operator's provider-side cycle limit is not readable from here and teatree must
+    # not invent a budget, so the metered brake is inert until this is set.
+    # Per-overlay overridable.
+    metered_token_ceiling: int = 0
+    # #4816 The window ``metered_token_ceiling`` is measured over. Separate from the
+    # amount because how much and over how long are two independent operator facts,
+    # and the provider's cycle boundaries are not discoverable from teatree's data.
+    # Per-overlay overridable.
+    metered_spend_window_hours: int = 24
     # #4098 How many CHEAP headless phase agents (reviews, review requests, ship/merge,
     # short assessors — ``teatree.core.modelkit.phases.CHEAP_PHASES``) may occupy the
     # lane while the governor brakes the EXPENSIVE class. Those phases are what RETIRE

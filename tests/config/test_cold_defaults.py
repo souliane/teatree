@@ -18,7 +18,8 @@ import pytest
 
 from teatree.config import cold_defaults
 from teatree.config.cold_defaults import flatten_settings_table, shipped_defaults_table
-from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
+from teatree.config.schema import TeatreeSettingsSchema, setting_meta
+from teatree.config.setting_taxonomy import Category
 
 _FIELDS = TeatreeSettingsSchema.model_fields
 _DEFAULT_KEYS = sorted(k for k in _FIELDS if setting_meta(k).category is Category.DEFAULT)

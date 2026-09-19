@@ -320,6 +320,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #4508 Pressure at which the EXPENSIVE agent class is shed while the cheap drain
     # keeps running; 1.0 collapses SHED into HALT (the rollback lever). Per-overlay overridable.
     "admission_pressure_shed_at": _parse_strict_float,
+    # #4816 The metered lane's spend ceiling in TOKENS over the window below; 0 =
+    # UNSET, so the metered brake is inert until an operator sets it. Per-overlay overridable.
+    "metered_token_ceiling": _parse_strict_int,
+    # #4816 The window the metered token ceiling is measured over. Per-overlay overridable.
+    "metered_spend_window_hours": _parse_strict_int,
     # #4098 Bound on the CHEAP-phase admission lane — how many read-only/work-retiring
     # phase agents stay admissible while the governor brakes the expensive class. 0
     # disables the exemption (cheap is braked like expensive). Per-overlay overridable.

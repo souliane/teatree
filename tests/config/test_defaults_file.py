@@ -25,7 +25,6 @@ from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.schema import (
     _DEFAULTS_TOML,
-    Category,
     TeatreeSettingsSchema,
     _parse_strict_str,
     _provider_or_none,
@@ -35,6 +34,7 @@ from teatree.config.schema import (
 )
 from teatree.config.secret_settings import is_credential_reference
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.setting_taxonomy import Category
 
 # The schema deliberately re-sources two keys at the STORAGE tier rather than reusing the
 # registry's RESOLVE-tier coercer (documented in schema.py): ``handover_mirror_path`` is

@@ -122,6 +122,8 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "max_concurrent_local_stacks",
         "max_open_prs_per_repo_per_ticket",
         "max_worktree_gc_per_tick",
+        "metered_spend_window_hours",
+        "metered_token_ceiling",
         "missing_issue_ref_policy",
         "mode",
         "mr_conflict_scan_enabled",

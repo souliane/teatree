@@ -25,6 +25,8 @@ SETTING_HELP: dict[str, str] = {
     "adaptive_intake_concurrency_enabled": "let the resource loop set intake concurrency from observed headroom",
     "admission_governor_enabled": "let the governor refuse new work when the box is already saturated",
     "admission_pressure_shed_at": "pressure at which expensive agents are refused while review and ship keep draining",
+    "metered_token_ceiling": "the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset",
+    "metered_spend_window_hours": "the window the metered token ceiling is measured over",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
     "agent_compaction_keep_recent": "per-phase count of recent messages a compacted history keeps",
     "agent_harness": "which agent CLI teatree drives (claude, codex, ...)",
