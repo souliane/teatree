@@ -32,8 +32,6 @@ python_prose:
   - teatree.config.settings._parse_env_bool
   src/teatree/_overlay_api.py:
   - teatree.overlays
-  src/teatree/agents/attempt_recorder.py:
-  - phase_blocks._review_verdict_return_lines
   src/teatree/agents/envelope_refusal.py:
   - agents/prompt.py
   src/teatree/agents/harness_registry.py:
