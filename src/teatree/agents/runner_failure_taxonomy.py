@@ -15,7 +15,7 @@ vocabularies from drifting apart.
 from claude_agent_sdk import ResultMessage
 from claude_agent_sdk.types import RateLimitInfo
 
-from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
+from teatree.llm.anthropic_limits import LimitCause, LimitMatch, classify_limit, classify_rate_limit_type
 
 #: Prefix stamped on a genuine FAILED run's recorded reason. It is ALSO a transient
 #: marker (:mod:`teatree.agents.outage_classifier`), so the bounded auto-requeue
@@ -32,6 +32,13 @@ RESULT_ERROR_PREFIX = "result_error: "
 #: from every other failed result, so a cap is never mistaken for an ordinary error
 #: — nor an ordinary error laundered into a cap.
 TURN_CEILING_SUBTYPE = "error_max_turns"
+
+#: The HTTP statuses on which a provider has REFUSED the credential outright — a router key
+#: at its cycle spend limit, a revoked or wrong key. Unlike a 429 these never clear on their
+#: own within a turn, and no Anthropic phrase names them, so the status is the only signal:
+#: an OpenAI-compatible router's ``403 access_denied: token cycle spend limit reached``
+#: matched nothing in the phrase table and failed 307 tasks one at a time (#4816).
+HARD_REFUSAL_STATUSES = frozenset({401, 403})
 
 
 def error_result_reason(message: ResultMessage | None) -> str | None:
@@ -74,6 +81,11 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
     that must be recorded FAILED. Structured cause first, prose only as a
     fallback — the same order the typed ``rate_limit_type`` branch below uses.
 
+    A hard :data:`HARD_REFUSAL_STATUSES` status is read NEXT, ahead of both the typed
+    window and the prose: the provider has refused the credential, which is a fact about
+    the transport rather than about any Anthropic window, and on a non-Anthropic router
+    the body is not this vocabulary at all.
+
     When the run IS an error and the stream carried a rejected
     :class:`~claude_agent_sdk.types.RateLimitInfo`, classify from its TYPED
     ``rate_limit_type`` window (unambiguous structured data — a ``seven_day_opus``
@@ -87,6 +99,8 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
         return None
     if message.subtype == TURN_CEILING_SUBTYPE:
         return None
+    if message.api_error_status in HARD_REFUSAL_STATUSES:
+        return LimitMatch(phrase=f"http {message.api_error_status}", cause=LimitCause.PROVIDER_ACCESS_DENIED)
     if rate_limit_info is not None and rate_limit_info.status == "rejected":
         typed = classify_rate_limit_type(rate_limit_info.rate_limit_type)
         if typed is not None:
@@ -94,4 +108,10 @@ def limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | 
     return classify_limit(str(message.result or ""))
 
 
-__all__ = ["RESULT_ERROR_PREFIX", "TURN_CEILING_SUBTYPE", "error_result_reason", "limit_match"]
+__all__ = [
+    "HARD_REFUSAL_STATUSES",
+    "RESULT_ERROR_PREFIX",
+    "TURN_CEILING_SUBTYPE",
+    "error_result_reason",
+    "limit_match",
+]

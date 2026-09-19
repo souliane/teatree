@@ -11,18 +11,23 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 
 import asyncio
 import json
+import re
+import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk.types import RateLimitInfo
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
+from teatree.agents.runner_failure_taxonomy import HARD_REFUSAL_STATUSES
 
 if TYPE_CHECKING:
     from pydantic_ai import AgentRunResult
@@ -230,6 +235,47 @@ def _turns_made(run_usage: RunUsage) -> int:
     return max(run_usage.requests, 1)
 
 
+#: An ISO-8601 instant anywhere in a refusal body — the fallback when the router sends no
+#: ``Retry-After``. The observed shape is prose: ``"token cycle spend limit reached, resets
+#: at 2026-09-21T00:00:00Z"``, so the instant is extracted rather than parsed off a field.
+_ISO_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+
+
+def _refusal_resets_at(exc: ModelHTTPError) -> int | None:
+    """When the provider says its refusal lifts, as a Unix timestamp — or ``None``.
+
+    Two rungs, structured first: ``Retry-After`` (which pydantic_ai already parses in both
+    its delta-seconds and HTTP-date forms), then an ISO-8601 instant in the body. ``None``
+    is a SAFE answer, not a failure: ``effective_resets_at`` falls back to the cause's
+    one-hour horizon, so a wrong parse can only ever cost one extra hour of park.
+    """
+    retry_after = exc.retry_after
+    if retry_after is not None:
+        return int(time.time() + retry_after)
+    found = _ISO_INSTANT.search(str(exc.body or ""))
+    if found is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(found.group())
+    except ValueError:
+        return None
+    return int((parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp())
+
+
+def _hard_refusal_event(exc: ModelHTTPError, *, session_id: str) -> RateLimitEvent | None:
+    """The rejected window a 401/403 carries, or ``None`` for every other status.
+
+    A hard refusal parks the LANE — so it rides the channel the driver already drains
+    (``_collect`` → ``outcome.rate_limit_info`` → ``UsageWindowState``) rather than a new
+    one. ``rate_limit_type`` stays unset: the provider named no Anthropic window, and
+    ``limit_match`` classifies this from the status before it ever reads the typed field.
+    """
+    if exc.status_code not in HARD_REFUSAL_STATUSES:
+        return None
+    info = RateLimitInfo(status="rejected", resets_at=_refusal_resets_at(exc), raw={"status": exc.status_code})
+    return RateLimitEvent(rate_limit_info=info, uuid=uuid.uuid4().hex, session_id=session_id)
+
+
 class PydanticAiHarnessSession:
     """The ``pydantic_ai`` in-flight session — the ``HarnessSession`` surface over an ``Agent``.
 
@@ -407,6 +453,9 @@ class PydanticAiHarnessSession:
             )
             return
         except ModelHTTPError as exc:
+            refusal = _hard_refusal_event(exc, session_id=self._session_id)
+            if refusal is not None:
+                yield refusal
             yield self._error_result(
                 exc,
                 subtype="error_during_execution",
