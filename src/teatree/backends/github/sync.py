@@ -5,7 +5,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, override
 
 from django.core.cache import cache
 
@@ -34,7 +34,7 @@ class _BoardItem:
     item: "ProjectItem"
     state: str | None
     repo_short: str
-    extra: RawAPIDict
+    extra: "TicketExtra"
 
     @classmethod
     def resolve(cls, item: "ProjectItem", *, owner: str) -> "_BoardItem":
@@ -159,7 +159,7 @@ class GitHubSyncBackend(SyncBackend):
             also_set["state"] = board.state
         # #800 N3: canonical locked RMW; extra + repos + state stay one atomic
         # write via also_set (no split).
-        ticket.merge_extra(set_keys=cast("TicketExtra", dict(board.extra)), also_set=also_set)
+        ticket.merge_extra(set_keys=board.extra, also_set=also_set)
         result.tickets_updated += 1
         if board.state == Ticket.State.DELIVERED:
             # Audit runs on EVERY Done sync (idempotent — dedups on the existing
