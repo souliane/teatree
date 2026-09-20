@@ -19,7 +19,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -454,18 +454,46 @@ class TestAHardRefusalCarriesItsReset:
         assert int(before) + 3600 <= event.resets_at <= time.time() + 3600
 
     def test_an_instant_in_the_body_is_read_when_no_header_is_sent(self) -> None:
+        resets = datetime.now(tz=UTC) + timedelta(hours=2)
         session = PydanticAiHarnessSession(
-            Agent(
-                _refused_model(
-                    body={"code": "access_denied", "message": "spend limit reached, resets at 2099-01-02T03:04:05Z"}
-                )
-            ),
+            Agent(_refused_model(body={"code": "access_denied", "message": f"resets at {resets.isoformat()}"})),
             model_name=_MODEL,
         )
 
         messages = _drive(session)
 
-        assert _rejected_window(messages).resets_at == int(datetime(2099, 1, 2, 3, 4, 5, tzinfo=UTC).timestamp())
+        assert _rejected_window(messages).resets_at == int(resets.timestamp())
+
+    def test_a_far_future_instant_is_refused_so_the_lane_parks_on_the_horizon(self) -> None:
+        # A refusal body carries more than one instant shape — a key ``expires_at``, an
+        # account ``valid_until`` — and nothing downstream caps a park, so believing this
+        # one parked the metered lane until 2099 with the low-power preset engaged.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"code": "access_denied", "expires_at": "2099-01-02T03:04:05Z"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_stale_instant_is_refused_rather_than_landing_on_the_five_minute_floor(self) -> None:
+        # ``_ISO_INSTANT`` takes the FIRST instant in the body, which is as often the
+        # request's own ``created`` stamp as the reset. Clamped to the elapsed-reset floor
+        # that is 12 re-probes an hour — the burn the one-hour horizon exists to stop.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"created": "2020-05-06T07:08:09Z", "code": "access_denied"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_far_future_retry_after_is_refused_on_the_same_band(self) -> None:
+        # The structured rung is no more verifiable than the scraped one: a router that
+        # answers with its key's remaining lifetime in seconds parks the lane for a year.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(headers={"Retry-After": "31536000"})), model_name=_MODEL
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
 
     def test_an_unparseable_refusal_still_parks_on_the_horizon(self) -> None:
         # No reset is WORSE than a wrong one only if it fails: a None here means

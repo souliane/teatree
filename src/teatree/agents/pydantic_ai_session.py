@@ -28,6 +28,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
 from teatree.agents.runner_failure_taxonomy import HARD_REFUSAL_STATUSES
+from teatree.llm.anthropic_limits import believable_refusal_reset
 
 if TYPE_CHECKING:
     from pydantic_ai import AgentRunResult
@@ -245,13 +246,18 @@ def _refusal_resets_at(exc: ModelHTTPError) -> int | None:
     """When the provider says its refusal lifts, as a Unix timestamp — or ``None``.
 
     Two rungs, structured first: ``Retry-After`` (which pydantic_ai already parses in both
-    its delta-seconds and HTTP-date forms), then an ISO-8601 instant in the body. ``None``
-    is a SAFE answer, not a failure: ``effective_resets_at`` falls back to the cause's
-    one-hour horizon, so a wrong parse can only ever cost one extra hour of park.
+    its delta-seconds and HTTP-date forms), then an ISO-8601 instant in the body. BOTH are
+    bounded by :func:`believable_refusal_reset`, because neither is a window teatree can
+    verify and nothing downstream bounds a park at all: a body's first ISO-8601 instant is
+    as often the request's own ``created`` stamp as the reset, and a key ``expires_at``
+    parks the lane for years. Outside the band the answer is ``None``, which is SAFE
+    rather than a failure — ``effective_resets_at`` falls back to the cause's one-hour
+    horizon, so a rejected parse costs one extra hour of park and an accepted one is
+    capped at :data:`~teatree.llm.anthropic_limits.REFUSAL_RESET_CEILING`.
     """
-    retry_after = exc.retry_after
-    if retry_after is not None:
-        return int(time.time() + retry_after)
+    now = time.time()
+    if exc.retry_after is not None:
+        return believable_refusal_reset(now + exc.retry_after, now=now)
     found = _ISO_INSTANT.search(str(exc.body or ""))
     if found is None:
         return None
@@ -259,7 +265,8 @@ def _refusal_resets_at(exc: ModelHTTPError) -> int | None:
         parsed = datetime.fromisoformat(found.group())
     except ValueError:
         return None
-    return int((parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp())
+    aware = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return believable_refusal_reset(aware.timestamp(), now=now)
 
 
 def _hard_refusal_event(exc: ModelHTTPError, *, session_id: str) -> RateLimitEvent | None:

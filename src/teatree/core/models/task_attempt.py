@@ -317,6 +317,10 @@ class TaskAttempt(models.Model):
                 ],
                 name="taskattempt_cost_cover",
             ),
+            # The metered ledger's window sum (``admission.metered_spend._window_totals``)
+            # filters on exactly this pair, and it runs on EVERY admission verdict. The
+            # cover index above leads on ``started_at``, so nothing seeks this predicate.
+            models.Index(fields=["lane", "ended_at"], name="taskattempt_lane_ended"),
         )
 
     def __str__(self) -> str:

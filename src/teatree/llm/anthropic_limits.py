@@ -130,6 +130,12 @@ _RATE_LIMIT_TYPE_CAUSES: dict[RateLimitType, LimitCause] = {
     "overage": LimitCause.API_CREDIT,
 }
 
+#: A hard refusal carries no window teatree can read, and the API_CREDIT shape (``None``)
+#: would wedge the lane until an operator noticed — so a transient 403 re-probes hourly
+#: instead, against the 224/hour the unclassified shape burned. Named rather than inlined
+#: below because it is also the unit the believable band is measured in.
+PROVIDER_ACCESS_DENIED_HORIZON = timedelta(hours=1)
+
 #: The known length of each subscription window, used as the re-arm horizon when a
 #: limit signal carries no structured ``resets_at`` (Directive #3 idle auto-recovery).
 #: A ``five_hour`` session window recovers ~5h after it was hit, the seven-day windows
@@ -141,11 +147,36 @@ WINDOW_HORIZON: dict[LimitCause, timedelta | None] = {
     LimitCause.SUBSCRIPTION_WEEKLY: timedelta(days=7),
     LimitCause.RATE_LIMIT: timedelta(minutes=5),
     LimitCause.API_CREDIT: None,
-    # A hard refusal carries no window teatree can read, and the API_CREDIT shape
-    # (``None``) would wedge the lane until an operator noticed — so a transient 403
-    # re-probes hourly instead, against the 224/hour the unclassified shape burned.
-    LimitCause.PROVIDER_ACCESS_DENIED: timedelta(hours=1),
+    LimitCause.PROVIDER_ACCESS_DENIED: PROVIDER_ACCESS_DENIED_HORIZON,
 }
+
+#: The soonest a believed refusal reset may land. Nothing downstream raises a park's
+#: lower end past this: ``_future_park_instant`` clamps an ELAPSED instant to five minutes
+#: ahead, which is 12 re-probes an hour — and the body scan takes the FIRST ISO-8601
+#: instant it finds, which on a refusal body is as often the request's own ``created``
+#: stamp as the window's reset.
+REFUSAL_RESET_FLOOR = timedelta(minutes=5)
+
+#: The latest a believed refusal reset may land. Nothing downstream clamps a park's UPPER
+#: end at all — ``effective_resets_at`` returns the reported instant verbatim — so a body
+#: carrying a key's ``expires_at`` or an account's ``valid_until`` parked the metered lane
+#: for YEARS, with the low-power preset engaged for that whole tenure. A provider spend
+#: cycle is quoted in hours or days; past a day the number is a key lifetime, not a window.
+REFUSAL_RESET_CEILING = 24 * PROVIDER_ACCESS_DENIED_HORIZON
+
+
+def believable_refusal_reset(resets_at: float, *, now: float) -> int | None:
+    """*resets_at* as a Unix timestamp if it lands inside the believable band, else ``None``.
+
+    ``None`` is the SAFE answer: :func:`window_horizon` then supplies
+    :data:`PROVIDER_ACCESS_DENIED_HORIZON`, so an unbelievable figure costs one hour of
+    park and an hourly re-probe — the cheap direction to be wrong in, against a park of
+    years or a re-probe every five minutes.
+    """
+    ahead = resets_at - now
+    if REFUSAL_RESET_FLOOR.total_seconds() <= ahead <= REFUSAL_RESET_CEILING.total_seconds():
+        return int(resets_at)
+    return None
 
 
 def window_horizon(cause: LimitCause) -> timedelta | None:

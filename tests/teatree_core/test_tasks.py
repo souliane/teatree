@@ -244,6 +244,33 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         assert "OAuth token expired" in attempt.error
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_crashed_run_declares_its_spend_unknown(self) -> None:
+        # A raise that escaped the drive leaves no result message, so the tokens the turn
+        # already billed are unreadable here. Recording the default ``False`` would publish
+        # "nothing billed" as a measurement, and the metered ledger sums these rows — an
+        # under-read by an amount nobody can bound (#4816).
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING, phase="coding")
+
+        died = RuntimeError("the drive died mid-turn")
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            raise died
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(agent_runner_mod, "get_agent_runner", return_value=_boom),
+            pytest.raises(RuntimeError),
+        ):
+            execute_task.func(task.pk, task.phase)
+
+        assert TaskAttempt.objects.get(task=task).usage_unknown is True
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
         from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
