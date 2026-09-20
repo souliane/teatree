@@ -47,6 +47,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from teatree.core.admission.dispatch_lane import configured_dispatch_lane
 from teatree.core.admission_governor import (
     MachineBrake,
     decide_admission,
@@ -57,7 +58,6 @@ from teatree.core.admission_governor import (
     read_quota_signal,
 )
 from teatree.core.admission_pressure import UNREAD_QUOTA, AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
-from teatree.core.dispatch_lane import configured_dispatch_lane
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
 

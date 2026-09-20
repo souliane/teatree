@@ -12,7 +12,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.metered_spend import read_metered_spend
+from teatree.core.admission.metered_spend import read_metered_spend
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
 _CEILING = 1_000_000
@@ -99,7 +99,7 @@ class TestTheLedgerMeasuresTheMeteredLane(MeteredSpendCase):
     def test_control_a_ledger_read_that_raises_is_not_fresh_and_never_brakes(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415 — local to the one degraded-read case
 
-        with patch("teatree.core.metered_spend._window_totals", side_effect=RuntimeError("db gone")):
+        with patch("teatree.core.admission.metered_spend._window_totals", side_effect=RuntimeError("db gone")):
             spend = read_metered_spend()
 
         assert spend.fresh is False

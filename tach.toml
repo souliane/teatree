@@ -203,6 +203,10 @@ depends_on = [
   # the readiness probe's boot-time GET reuses the shared bounded-retry
   # transport rather than carrying a second, uncapped retry loop.
   "teatree.backends.http_retry",
+  # #2385: the admission leaves are their own node, so the governor reaches the
+  # metered ledger through a DECLARED edge rather than a function-scoped import
+  # tach's acyclic guard cannot see.
+  "teatree.core.admission",
   "teatree.core.modelkit",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
@@ -235,6 +239,11 @@ depends_on = [
   # orchestration and remain unreachable from here.
   "teatree.loops.enable_verdict"
 ]
+
+[[modules]]
+path = "teatree.core.admission"
+layer = "domain"
+depends_on = ["teatree.config", "teatree.core.models"]
 
 [[modules]]
 path = "teatree.core.modelkit"
@@ -389,6 +398,7 @@ depends_on = [
   "teatree.types",
   "teatree.failure_signatures",
   "teatree.core",
+  "teatree.core.admission",
   "teatree.core.modelkit",
   "teatree.core.models",
   "teatree.credential_config",

@@ -29,7 +29,7 @@ def check_metered_lane_ceiling() -> bool:
     unbounded state, so it is said out loud rather than left to be discovered by a 403.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.core.dispatch_lane import configured_dispatch_lane  # noqa: PLC0415 — deferred: same
+    from teatree.core.admission.dispatch_lane import configured_dispatch_lane  # noqa: PLC0415 — deferred: same
     from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
@@ -56,7 +56,7 @@ def check_metered_usage_unknown() -> bool:
     could not be read contributes ZERO to that sum, so the total under-reads by an amount
     nobody can bound — the ceiling is being judged against a floor.
     """
-    from teatree.core.metered_spend import read_metered_spend  # noqa: PLC0415 — deferred: ORM read at call time
+    from teatree.core.admission.metered_spend import read_metered_spend  # noqa: PLC0415 — deferred: ORM read
 
     try:
         spend = read_metered_spend()

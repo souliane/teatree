@@ -74,7 +74,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
-from teatree.core.dispatch_lane import dispatch_lane
+from teatree.core.admission.dispatch_lane import dispatch_lane
 from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
@@ -464,7 +464,7 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
 def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | None) -> str:
     """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
 
-    The mapping lives in :mod:`teatree.core.dispatch_lane` so the governor judges a
+    The mapping lives in :mod:`teatree.core.admission.dispatch_lane` so the governor judges a
     dispatch against the same lane the attempt is stamped with (#4816).
     """
     return dispatch_lane(provider=provider, metered_harness=harness.capabilities.metered_lane)

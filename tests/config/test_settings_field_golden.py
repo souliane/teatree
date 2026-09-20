@@ -26,6 +26,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "admin_autologin_enabled",
         "admission_governor_enabled",
         "admission_pressure_shed_at",
+        "admission_quota_brake_enabled",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",

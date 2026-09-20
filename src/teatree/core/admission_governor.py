@@ -46,7 +46,9 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
+from teatree.core.admission.metered_spend import read_metered_spend
 from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
@@ -67,6 +69,10 @@ from teatree.core.admission_pressure import (
     weekly_pace,
 )
 from teatree.utils import ram_scope
+
+if TYPE_CHECKING:
+    from teatree.core.models.task_attempt import TaskAttempt
+    from teatree.core.models.usage_window_state import UsageWindowState
 
 logger = logging.getLogger(__name__)
 
@@ -555,15 +561,15 @@ def read_metered_signal() -> MeteredSignal:
     in :mod:`teatree.core.admission_pressure`, the split that module's docstring mandates.
     A read that raises is NOT fresh, so an unreadable budget can never brake a lane.
     """
-    from teatree.core.metered_spend import read_metered_spend  # noqa: PLC0415 — deferred: ORM read at call time
-    from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — deferred: same
-    from teatree.core.models.usage_window_state import UsageWindowState  # noqa: PLC0415 — deferred: same
+    from django.apps import apps  # noqa: PLC0415 — deferred: Django app-registry read at call time
 
     spend = read_metered_spend()
     if not spend.fresh:
         return MeteredSignal(fresh=False)
     try:
-        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        attempts = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+        windows = cast("type[UsageWindowState]", apps.get_model("core", "UsageWindowState"))
+        window = windows.objects.active_for_lane(attempts.Lane.METERED)
     except Exception:
         logger.exception("metered usage-window read failed — reporting the lane unparked")
         window = None

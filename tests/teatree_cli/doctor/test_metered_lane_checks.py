@@ -17,7 +17,7 @@ from teatree.cli.doctor.checks_metered_lane import (
     check_metered_usage_unknown,
     check_overlay_harness_agreement,
 )
-from teatree.core.metered_spend import MeteredSpend
+from teatree.core.admission.metered_spend import MeteredSpend
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 
@@ -98,7 +98,7 @@ class MeteredUnknownUsageDoctorCheckTests(TestCase):
         # An unreadable ledger reports no unknown attempts AND no known ones; warning on
         # it would turn a read failure into a claim about spend.
         self._metered_attempt(usage_unknown=True)
-        with patch("teatree.core.metered_spend.read_metered_spend", return_value=_UNREADABLE):
+        with patch("teatree.core.admission.metered_spend.read_metered_spend", return_value=_UNREADABLE):
             assert "WARN" not in _run(check_metered_usage_unknown)
 
 

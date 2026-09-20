@@ -11,7 +11,7 @@ from django.test import TestCase
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.runner import _resolve_dispatch_lane
 from teatree.config import AgentHarnessProvider
-from teatree.core.dispatch_lane import configured_dispatch_lane, dispatch_lane
+from teatree.core.admission.dispatch_lane import configured_dispatch_lane, dispatch_lane
 from teatree.core.models import ConfigSetting, TaskAttempt
 
 
@@ -73,5 +73,6 @@ class TestTheConfiguredLaneReadsTheProviderNotTheHarnessRegistry(TestCase):
     def test_control_an_unreadable_setting_is_unattributed_never_a_guess(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415 — local to the one degraded-read case
 
-        with patch("teatree.core.dispatch_lane._configured_provider", side_effect=RuntimeError("config down")):
+        target = "teatree.core.admission.dispatch_lane._configured_provider"
+        with patch(target, side_effect=RuntimeError("config down")):
             assert configured_dispatch_lane() == ""

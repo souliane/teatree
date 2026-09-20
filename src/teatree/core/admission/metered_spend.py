@@ -15,6 +15,10 @@ not a ceiling. The estimate is QUOTED as context and labelled as one.
 import datetime as dt
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from teatree.core.models.task_attempt import TaskAttempt
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +106,11 @@ def read_metered_spend(*, now: dt.datetime | None = None) -> MeteredSpend:
 
 def _window_totals(window_start: dt.datetime) -> tuple[int, int, float]:
     """``(tokens, unknown_attempts, estimated_cost_usd)`` for metered attempts since *window_start*."""
-    from django.db.models import Count, Q, Sum  # noqa: PLC0415 — deferred: Django app-registry read at call time
+    from django.apps import apps  # noqa: PLC0415 — deferred: Django app-registry read at call time
+    from django.db.models import Count, Q, Sum  # noqa: PLC0415 — deferred: same
 
-    from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — deferred: same
-
-    rows = TaskAttempt.objects.filter(lane=TaskAttempt.Lane.METERED, ended_at__gte=window_start).aggregate(
+    attempts = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+    rows = attempts.objects.filter(lane=attempts.Lane.METERED, ended_at__gte=window_start).aggregate(
         input_tokens=Sum("input_tokens"),
         output_tokens=Sum("output_tokens"),
         cost=Sum("cost_usd"),
