@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==1.5.0",
+      "description": "requirements line 7: anthropic==1.7.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@1.5.0",
+      "purl": "pkg:pypi/anthropic@1.7.0",
       "type": "library",
-      "version": "1.5.0"
+      "version": "1.7.0"
     },
     {
       "bom-ref": "requirements-L9",
@@ -182,7 +182,7 @@
     },
     {
       "bom-ref": "requirements-L48",
-      "description": "requirements line 48: coverage==7.16.0",
+      "description": "requirements line 48: coverage==7.16.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -191,9 +191,9 @@
         }
       ],
       "name": "coverage",
-      "purl": "pkg:pypi/coverage@7.16.0",
+      "purl": "pkg:pypi/coverage@7.16.1",
       "type": "library",
-      "version": "7.16.0"
+      "version": "7.16.1"
     },
     {
       "bom-ref": "requirements-L50",
@@ -287,7 +287,7 @@
     },
     {
       "bom-ref": "requirements-L70",
-      "description": "requirements line 70: django-stubs-ext==6.1.0",
+      "description": "requirements line 70: django-stubs-ext==6.1.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -296,9 +296,9 @@
         }
       ],
       "name": "django-stubs-ext",
-      "purl": "pkg:pypi/django-stubs-ext@6.1.0",
+      "purl": "pkg:pypi/django-stubs-ext@6.1.1",
       "type": "library",
-      "version": "6.1.0"
+      "version": "6.1.1"
     },
     {
       "bom-ref": "requirements-L75",
@@ -362,7 +362,7 @@
     },
     {
       "bom-ref": "requirements-L85",
-      "description": "requirements line 85: genai-prices==0.1.6",
+      "description": "requirements line 85: genai-prices==0.1.7",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -371,9 +371,9 @@
         }
       ],
       "name": "genai-prices",
-      "purl": "pkg:pypi/genai-prices@0.1.6",
+      "purl": "pkg:pypi/genai-prices@0.1.7",
       "type": "library",
-      "version": "0.1.6"
+      "version": "0.1.7"
     },
     {
       "bom-ref": "requirements-L87",
@@ -437,7 +437,7 @@
     },
     {
       "bom-ref": "requirements-L98",
-      "description": "requirements line 98: httpcore2==2.12.0 ; sys_platform != 'emscripten'",
+      "description": "requirements line 98: httpcore2==2.13.0 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -446,9 +446,9 @@
         }
       ],
       "name": "httpcore2",
-      "purl": "pkg:pypi/httpcore2@2.12.0",
+      "purl": "pkg:pypi/httpcore2@2.13.0",
       "type": "library",
-      "version": "2.12.0"
+      "version": "2.13.0"
     },
     {
       "bom-ref": "requirements-L100",
@@ -467,7 +467,7 @@
     },
     {
       "bom-ref": "requirements-L102",
-      "description": "requirements line 102: httpx2==2.12.0",
+      "description": "requirements line 102: httpx2==2.13.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -476,9 +476,9 @@
         }
       ],
       "name": "httpx2",
-      "purl": "pkg:pypi/httpx2@2.12.0",
+      "purl": "pkg:pypi/httpx2@2.13.0",
       "type": "library",
-      "version": "2.12.0"
+      "version": "2.13.0"
     },
     {
       "bom-ref": "requirements-L109",
@@ -497,7 +497,7 @@
     },
     {
       "bom-ref": "requirements-L111",
-      "description": "requirements line 111: idna==3.19",
+      "description": "requirements line 111: idna==3.20",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -506,9 +506,9 @@
         }
       ],
       "name": "idna",
-      "purl": "pkg:pypi/idna@3.19",
+      "purl": "pkg:pypi/idna@3.20",
       "type": "library",
-      "version": "3.19"
+      "version": "3.20"
     },
     {
       "bom-ref": "requirements-L117",
@@ -632,7 +632,7 @@
     },
     {
       "bom-ref": "requirements-L139",
-      "description": "requirements line 139: openai==3.13.0",
+      "description": "requirements line 139: openai==3.16.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -641,9 +641,9 @@
         }
       ],
       "name": "openai",
-      "purl": "pkg:pypi/openai@3.13.0",
+      "purl": "pkg:pypi/openai@3.16.2",
       "type": "library",
-      "version": "3.13.0"
+      "version": "3.16.2"
     },
     {
       "bom-ref": "requirements-L141",
@@ -722,7 +722,7 @@
     },
     {
       "bom-ref": "requirements-L161",
-      "description": "requirements line 161: pydantic-ai-slim==2.43.0",
+      "description": "requirements line 161: pydantic-ai-slim==2.46.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -731,9 +731,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.43.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.46.0",
       "type": "library",
-      "version": "2.43.0"
+      "version": "2.46.0"
     },
     {
       "bom-ref": "requirements-L163",
@@ -752,7 +752,7 @@
     },
     {
       "bom-ref": "requirements-L165",
-      "description": "requirements line 165: pydantic-graph==2.43.0",
+      "description": "requirements line 165: pydantic-graph==2.46.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -761,9 +761,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.43.0",
+      "purl": "pkg:pypi/pydantic-graph@2.46.0",
       "type": "library",
-      "version": "2.43.0"
+      "version": "2.46.0"
     },
     {
       "bom-ref": "requirements-L167",
@@ -1157,7 +1157,7 @@
     },
     {
       "bom-ref": "requirements-L249",
-      "description": "requirements line 249: urllib3==2.7.0",
+      "description": "requirements line 249: urllib3==2.8.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1166,13 +1166,13 @@
         }
       ],
       "name": "urllib3",
-      "purl": "pkg:pypi/urllib3@2.7.0",
+      "purl": "pkg:pypi/urllib3@2.8.0",
       "type": "library",
-      "version": "2.7.0"
+      "version": "2.8.0"
     },
     {
       "bom-ref": "requirements-L251",
-      "description": "requirements line 251: uvicorn==0.52.4 ; sys_platform != 'emscripten'",
+      "description": "requirements line 251: uvicorn==0.53.0 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -1181,9 +1181,9 @@
         }
       ],
       "name": "uvicorn",
-      "purl": "pkg:pypi/uvicorn@0.52.4",
+      "purl": "pkg:pypi/uvicorn@0.53.0",
       "type": "library",
-      "version": "0.52.4"
+      "version": "0.53.0"
     },
     {
       "bom-ref": "requirements-L253",
@@ -1517,7 +1517,7 @@
           ],
           "name": "cyclonedx-py",
           "type": "application",
-          "version": "7.3.1"
+          "version": "7.4.0"
         },
         {
           "description": "Python library for CycloneDX",

@@ -187,7 +187,9 @@ dev = [
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
-  "ty>=0.0.18",
+  # 0.0.82 rejects ``CharField(choices=<TextChoices class>)`` on a field with no default,
+  # a ty regression; drop the exclusion once a fixed release lands.
+  "ty>=0.0.18,!=0.0.82",
   # Upper-bounded because ``django-typer`` gates it: 3.9.0 (the newest release the
   # ``django-typer<4`` bound above admits) requires ``typer<0.26.0``. Without the
   # ceiling the resolver takes typer 0.27, finds 3.9.0 unsatisfiable and backtracks
