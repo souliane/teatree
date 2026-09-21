@@ -493,6 +493,87 @@ class TestFindOrphansInWorkspace(TestCase):
         assert "feat-2" in branches
         assert len(orphans) == 1
 
+    @patch("teatree.core.gates.orphan_guard.clone_root")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
+    def test_rows_parameter_narrows_the_scan_to_the_callers_set(
+        self,
+        mock_classify: MagicMock,
+        mock_clone_root: MagicMock,
+    ) -> None:
+        """``rows`` is the caller's scoping decision (#15 rework of #4814).
+
+        The scan function itself stays unscoped — ``recover``'s data-loss
+        audit needs every row — so a latency-sensitive caller narrows the
+        ROW SET it passes (here: only the one in-flight ticket's rows) and
+        the scan classifies exactly those.
+        """
+        fake_workspace = MagicMock()
+
+        def _fake_div(_self: object, x: str) -> MagicMock:
+            return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
+
+        fake_workspace.__truediv__ = _fake_div
+        mock_clone_root.return_value = fake_workspace
+
+        inflight = self._make_worktree("org/alpha", "feat-inflight")
+        terminal_ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/alpha/-/issues/delivered",
+            state=Ticket.State.DELIVERED,
+        )
+        Worktree.objects.create(overlay="test", ticket=terminal_ticket, repo_path="org/alpha", branch="feat-delivered")
+
+        mock_classify.return_value = BranchReport(
+            repo="/ws/org/alpha",
+            branch="feat-inflight",
+            status=BranchStatus.UNPUSHED_ORPHAN,
+            ahead_count=1,
+        )
+
+        orphans = find_orphans_in_workspace(rows=Worktree.objects.filter(ticket=inflight.ticket))
+
+        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-inflight")
+        assert [o.branch for o in orphans] == ["feat-inflight"]
+
+    @patch("teatree.core.gates.orphan_guard.clone_root")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
+    def test_default_scan_still_covers_terminal_ticket_rows(
+        self,
+        mock_classify: MagicMock,
+        mock_clone_root: MagicMock,
+    ) -> None:
+        """The unscoped default is the #4814 hold-1296 contract, kept.
+
+        ``recover`` reads the default: a DELIVERED ticket's branch with
+        unpushed work must still be classified, or its data-loss report
+        silently loses coverage. Scoping belongs to the caller, never to
+        this function's default.
+        """
+        fake_workspace = MagicMock()
+
+        def _fake_div(_self: object, x: str) -> MagicMock:
+            return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
+
+        fake_workspace.__truediv__ = _fake_div
+        mock_clone_root.return_value = fake_workspace
+
+        terminal_ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/alpha/-/issues/delivered",
+            state=Ticket.State.DELIVERED,
+        )
+        Worktree.objects.create(overlay="test", ticket=terminal_ticket, repo_path="org/alpha", branch="feat-delivered")
+
+        mock_classify.return_value = BranchReport(
+            repo="/ws/org/alpha",
+            branch="feat-delivered",
+            status=BranchStatus.UNPUSHED_ORPHAN,
+            ahead_count=2,
+        )
+
+        orphans = find_orphans_in_workspace()
+
+        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-delivered")
+        assert [o.branch for o in orphans] == ["feat-delivered"]
+
 
 class TestClassifyBranchRespectsRepoDefaultBranch:
     """Real-git integration: ``classify_branch`` must use the repo's actual default branch.
