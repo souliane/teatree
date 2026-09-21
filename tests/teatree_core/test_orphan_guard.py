@@ -495,18 +495,17 @@ class TestFindOrphansInWorkspace(TestCase):
 
     @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")
-    def test_excludes_worktrees_of_tickets_outside_the_in_flight_set(
+    def test_rows_parameter_narrows_the_scan_to_the_callers_set(
         self,
         mock_classify: MagicMock,
         mock_clone_root: MagicMock,
     ) -> None:
-        """A DELIVERED/REVIEW_POSTED/IGNORED ticket's worktree row is never re-classified.
+        """``rows`` is the caller's scoping decision (#15 rework of #4814).
 
-        These rows accumulate forever (a Worktree row is only deleted by a
-        successful teardown, which a ticket closed off-pipeline never runs), so
-        an unscoped scan grows unboundedly and starts timing out (#15). Matches
-        the in-flight predicate ``WorktreeManager.active`` already uses for the
-        worktrees panel.
+        The scan function itself stays unscoped — ``recover``'s data-loss
+        audit needs every row — so a latency-sensitive caller narrows the
+        ROW SET it passes (here: only the one in-flight ticket's rows) and
+        the scan classifies exactly those.
         """
         fake_workspace = MagicMock()
 
@@ -516,30 +515,64 @@ class TestFindOrphansInWorkspace(TestCase):
         fake_workspace.__truediv__ = _fake_div
         mock_clone_root.return_value = fake_workspace
 
-        self._make_worktree("org/alpha", "feat-1")
-        for state, branch in (
-            (Ticket.State.DELIVERED, "feat-delivered"),
-            (Ticket.State.REVIEW_POSTED, "feat-review-posted"),
-            (Ticket.State.IGNORED, "feat-ignored"),
-        ):
-            ticket = Ticket.objects.create(
-                issue_url=f"https://gitlab.com/org/alpha/-/issues/{branch}",
-                state=state,
-            )
-            Worktree.objects.create(overlay="test", ticket=ticket, repo_path="org/alpha", branch=branch)
+        inflight = self._make_worktree("org/alpha", "feat-inflight")
+        terminal_ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/alpha/-/issues/delivered",
+            state=Ticket.State.DELIVERED,
+        )
+        Worktree.objects.create(overlay="test", ticket=terminal_ticket, repo_path="org/alpha", branch="feat-delivered")
 
         mock_classify.return_value = BranchReport(
             repo="/ws/org/alpha",
-            branch="feat-1",
-            status=BranchStatus.PUSHED_ORPHAN,
+            branch="feat-inflight",
+            status=BranchStatus.UNPUSHED_ORPHAN,
             ahead_count=1,
+        )
+
+        orphans = find_orphans_in_workspace(rows=Worktree.objects.filter(ticket=inflight.ticket))
+
+        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-inflight")
+        assert [o.branch for o in orphans] == ["feat-inflight"]
+
+    @patch("teatree.core.gates.orphan_guard.clone_root")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
+    def test_default_scan_still_covers_terminal_ticket_rows(
+        self,
+        mock_classify: MagicMock,
+        mock_clone_root: MagicMock,
+    ) -> None:
+        """The unscoped default is the #4814 hold-1296 contract, kept.
+
+        ``recover`` reads the default: a DELIVERED ticket's branch with
+        unpushed work must still be classified, or its data-loss report
+        silently loses coverage. Scoping belongs to the caller, never to
+        this function's default.
+        """
+        fake_workspace = MagicMock()
+
+        def _fake_div(_self: object, x: str) -> MagicMock:
+            return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
+
+        fake_workspace.__truediv__ = _fake_div
+        mock_clone_root.return_value = fake_workspace
+
+        terminal_ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/alpha/-/issues/delivered",
+            state=Ticket.State.DELIVERED,
+        )
+        Worktree.objects.create(overlay="test", ticket=terminal_ticket, repo_path="org/alpha", branch="feat-delivered")
+
+        mock_classify.return_value = BranchReport(
+            repo="/ws/org/alpha",
+            branch="feat-delivered",
+            status=BranchStatus.UNPUSHED_ORPHAN,
+            ahead_count=2,
         )
 
         orphans = find_orphans_in_workspace()
 
-        assert mock_classify.call_count == 1
-        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-1")
-        assert [o.branch for o in orphans] == ["feat-1"]
+        mock_classify.assert_called_once_with("/ws/org/alpha", "feat-delivered")
+        assert [o.branch for o in orphans] == ["feat-delivered"]
 
 
 class TestClassifyBranchRespectsRepoDefaultBranch:

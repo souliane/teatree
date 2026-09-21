@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
+from django.db.models import QuerySet
+
 from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Worktree
@@ -152,27 +154,29 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
     return BranchReport(repo=repo, branch=branch, status=status, ahead_count=ahead)
 
 
-def find_orphans_in_workspace() -> list[BranchReport]:
-    """Return orphan branches across every IN-FLIGHT tracked worktree in the workspace.
+def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchReport]:
+    """Return orphan branches across all tracked worktrees in the workspace.
 
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
     branch produce a single report. A single worktree whose classification
     fails (a real git error — corrupt checkout, unresolvable target ref) is
     logged and skipped rather than aborting the whole scan (#2937): this
-    sweep spans every in-flight tracked worktree in the workspace, and one
-    bad row must not hide every other worktree's orphan status.
+    sweep spans every tracked worktree in the workspace, and one bad row
+    must not hide every other worktree's orphan status.
 
-    Scoped through ``WorktreeManager.active`` (excludes DELIVERED /
-    REVIEW_POSTED / IGNORED tickets), not ``.all()``: a Worktree row is only
-    deleted by a successful teardown, which a ticket closed off-pipeline
-    never runs, so an unscoped scan grows without bound as history
-    accumulates and starts timing out callers like ``workspace ticket``
-    (#15).
+    ``rows`` narrows which Worktree rows are scanned — it is the CALLER's
+    scoping decision, made per call site. The default stays ``.all()``:
+    ``recover``'s data-loss audit must keep seeing terminal tickets'
+    worktrees (hold verdict 1296 on #4814 — scoping inside this function
+    hid unpushed work from ``data_loss_risk``), while a latency-sensitive
+    caller like ``warn_orphans`` narrows to ``Worktree.objects.active()``
+    (#15). Do not flip the default to satisfy a hot path; narrow at the
+    caller instead.
     """
     workspace = clone_root()
     reports: list[BranchReport] = []
     seen: set[tuple[str, str]] = set()
-    for wt in Worktree.objects.active():
+    for wt in rows if rows is not None else Worktree.objects.all():
         repo_main = resolve_clone_path(workspace, wt)
         if repo_main is None or not repo_main.is_dir():
             continue
