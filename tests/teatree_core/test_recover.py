@@ -327,3 +327,48 @@ class TestRecoverCliForwarding(TestCase):
         assert "No such command" not in result.output
         managepy.assert_called_once()
         assert "--requeue" in managepy.call_args.args
+
+
+class TestRecoverCoversTerminalTicketOrphans(TestCase):
+    """#4814 hold (verdict 1296): the data-loss audit keeps its full-warehouse scan.
+
+    Scoping ``find_orphans_in_workspace`` to in-flight tickets (the original
+    #4814 shape) hid an unpushed branch behind a terminal ticket state and
+    emptied ``recover``'s ``data_loss_risk``. The scoping now lives at the
+    ``warn_orphans`` caller; this pins the two halves of that contract:
+
+    - ``recover`` calls the scan with NO row narrowing (the unscoped default),
+        because a DELIVERED ticket's unpushed branch must still reach the report;
+    - the mapping itself still routes an UNPUSHED_ORPHAN report of a
+        terminal-ticket branch into ``data_loss_risk``.
+    """
+
+    def test_recover_calls_the_orphan_scan_unscoped(self) -> None:
+        """The #4814 hold-1296 contract: recover never narrows the scan's row set.
+
+        ``rows=`` is the caller's scoping decision; recover's data-loss audit
+        must keep seeing terminal tickets' worktrees, so it passes nothing and
+        the scan defaults to ``.all()``.
+        """
+        with (
+            _mocked_probes(),
+            patch("teatree.core.worktree.recover.find_orphans_in_workspace", wraps=None) as mock_scan,
+        ):
+            mock_scan.return_value = []
+            gather_recover_report()
+
+        assert mock_scan.call_args.kwargs.get("rows") is None
+
+    def test_an_unpushed_orphan_report_routes_to_data_loss_risk(self) -> None:
+        orphans = [
+            BranchReport(
+                repo="/ws/org/alpha",
+                branch="feat-stranded",
+                status=BranchStatus.UNPUSHED_ORPHAN,
+                ahead_count=2,
+            ),
+        ]
+        with _mocked_probes(orphans=orphans):
+            report = gather_recover_report()
+
+        assert [o.branch for o in report.data_loss_risk] == ["feat-stranded"]
