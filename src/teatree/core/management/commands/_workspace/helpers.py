@@ -68,8 +68,19 @@ def list_orphan_entries() -> list["OrphanEntry"]:
 
 
 def warn_orphans(write: Callable[[str], None]) -> None:
-    """Warn (up to 5 previewed) about orphan branches before a session-closing action."""
-    orphans = find_orphans_in_workspace()
+    """Warn (up to 5 previewed) about orphan branches before a session-closing action.
+
+    Scopes the scan to in-flight worktrees: this runs synchronously on every
+    ``workspace ticket`` invocation and the classification per row is
+    network-bound (git subprocesses + a forge probe), so scanning rows that
+    accumulate forever — a Worktree row is only deleted by a successful
+    teardown, which a ticket closed off-pipeline never runs — timed the
+    provision path out (#15, ticket 15's own smoke). ``t3 recover``'s audit
+    deliberately stays on the unscoped default: hiding an unpushed branch
+    because its ticket went terminal would defeat its data-loss check (hold
+    verdict 1296 on #4814).
+    """
+    orphans = find_orphans_in_workspace(rows=Worktree.objects.active())
     if not orphans:
         return
     preview = orphans[:5]
