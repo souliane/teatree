@@ -60,6 +60,7 @@ from teatree.core.admission_governor import (
 from teatree.core.admission_pressure import UNREAD_QUOTA, AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.request_cache import request_scope
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -316,6 +317,7 @@ def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     return read_quota_signal(), MeteredSignal(fresh=False)
 
 
+@request_scope()  # every Task creation runs a verdict, so each settings re-read is paid per row
 def agent_admission_verdict() -> AgentAdmission:
     """Probe the governor ONCE and resolve the verdict for both phase cost classes.
 

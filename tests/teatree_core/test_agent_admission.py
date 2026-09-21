@@ -19,12 +19,16 @@ one's in-memory count.
 """
 
 import datetime as dt
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.agent_admission import AgentAdmission, agent_admission_denied_reason, agent_admission_verdict
@@ -1080,3 +1084,27 @@ class TestAMeteredCeilingBreachAdmitsZeroTasks(TestCase):
             result = drain_queue_body()
 
         assert set(result["enqueued"]) == {task.pk for task in pending}
+
+
+class TestOneVerdictResolvesTheSettingsOnce(TestCase):
+    """Every Task creation runs a verdict, so each extra resolution is paid per row."""
+
+    def _config_reads(self, probe: Callable[[], object]) -> int:
+        table = ConfigSetting._meta.db_table
+        with CaptureQueriesContext(connection) as captured:
+            probe()
+        return sum(table in query["sql"] for query in captured.captured_queries)
+
+    def _assert_one_resolution(self) -> None:
+        one = self._config_reads(get_effective_settings)
+        assert one > 0, "control: a resolution must be observable as config-table reads"
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            assert self._config_reads(agent_admission_verdict) == one
+
+    def test_the_subscription_lane_resolves_once(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        self._assert_one_resolution()
+
+    def test_the_metered_lane_resolves_once(self) -> None:
+        _pin_metered_harness()
+        self._assert_one_resolution()
