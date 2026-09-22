@@ -75,6 +75,11 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_merge_gate_enforcement import _check_merge_gates_enforced
+from teatree.cli.doctor.checks_metered_lane import (
+    check_metered_lane_ceiling,
+    check_metered_usage_unknown,
+    check_overlay_harness_agreement,
+)
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
 from teatree.cli.doctor.checks_notion import _check_notion_credentials
 from teatree.cli.doctor.checks_overlay_claims import _check_repos_claimed_by_disagreeing_overlays
@@ -202,6 +207,14 @@ def _run_loop_intent_gates() -> bool:
     is queued and none of it running, the state in which the board stops moving while every
     other surface reads healthy.
 
+    The three metered-lane readings (#4816) join them, each naming an unknown the governor
+    cannot resolve for itself rather than being silently wrong about it:
+    ``check_metered_lane_ceiling`` (the box rides the metered lane with no ceiling, so that
+    dimension is inert and the lane is unbounded), ``check_metered_usage_unknown`` (attempts
+    in the window recorded UNKNOWN usage, so the measured spend is a FLOOR), and
+    ``check_overlay_harness_agreement`` (overlays disagree on their harness, so the ONE
+    whole-box probe describes only the lane the global provider pin names).
+
     SIX verdicts ARE returned, each a queue or authority that rots while every other
     surface reads healthy; all five are evaluated before the ``and`` so none can mask
     another. ``_check_intent_freshness``: a consumable intent queue is non-empty while
@@ -230,6 +243,9 @@ def _run_loop_intent_gates() -> bool:
     _check_orphaned_process_groups()
     _check_starved_intake_candidates()
     _check_drain_lane_starved()
+    check_metered_lane_ceiling()
+    check_metered_usage_unknown()
+    check_overlay_harness_agreement()
     intake_ok = _check_intake_budget_deadlock()
     pass_ok = _check_intake_pass_incomplete()
     scheduled_ok = _check_loop_schedule_liveness()

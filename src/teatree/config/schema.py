@@ -2,7 +2,7 @@
 
 ``TeatreeSettingsSchema`` is the BASE-LAYER schema: it hosts the shipped default
 VALUES (``defaults.toml``) behind teatree's existing per-key coercers and carries
-the taxonomy (:class:`Category` / :class:`Registry`) as ``Annotated`` markers. It
+the taxonomy (:mod:`teatree.config.setting_taxonomy`) as ``Annotated`` markers. It
 does NOT reinvent teatree's #258 strict coercion — each field wraps the SAME
 callable the four config registries already use (``setting_parsers`` /
 ``value_coercion`` / the enum ``.parse`` methods) as a ``BeforeValidator``, so the
@@ -25,8 +25,7 @@ the ``@lru_cache`` singleton entry point.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import StrEnum
 from functools import lru_cache
 from types import NoneType, UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
@@ -60,48 +59,9 @@ from teatree.config.setting_parsers import (
     _parse_strict_str,
     _parse_user_identity_aliases,
 )
+from teatree.config.setting_taxonomy import Category, Registry, SettingMeta
 from teatree.config.speak import parse_speak_setting
 from teatree.types import SlackVoiceClassifierMode
-
-
-class Category(StrEnum):
-    """A key's shareability class — the axis ``defaults.toml`` and the export gate key on.
-
-    ``DEFAULT`` keys carry a shareable shipped default and ARE present in
-    ``defaults.toml`` (required in the model — a DEFAULT key missing from the file
-    fails construction loudly). ``PERSONAL`` (operator identifiers / machine paths /
-    model-routing tables) and ``SECRET`` (customer/brand terms, credential
-    coordinates) keys hold no shareable default: they carry the empty code default
-    and are NEVER written to ``defaults.toml``.
-    """
-
-    DEFAULT = auto()
-    PERSONAL = auto()
-    SECRET = auto()
-
-
-class Registry(StrEnum):
-    """Which of the four existing config-key registries a key belongs to."""
-
-    OVERLAY = auto()
-    COLD = auto()
-    COLD_HOOK = auto()
-    REGISTRY = auto()
-
-
-@dataclass(frozen=True)
-class SettingMeta:
-    """The ``Annotated`` taxonomy marker carried on every field.
-
-    Instances are shared per ``(category, registry)`` combo (the ``_<CAT>_<REG>``
-    module constants below) so each field declaration stays one line under the
-    120-col cap. Per-field prose would have to un-share them, so it belongs on a
-    surface keyed by field name rather than on this marker.
-    """
-
-    category: Category
-    registry: Registry
-
 
 _DEFAULT_OVERLAY = SettingMeta(Category.DEFAULT, Registry.OVERLAY)
 _DEFAULT_COLD = SettingMeta(Category.DEFAULT, Registry.COLD)
@@ -169,6 +129,9 @@ class TeatreeSettingsSchema(BaseSettings):
     adaptive_intake_concurrency_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_governor_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_pressure_shed_at: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    admission_quota_brake_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    metered_token_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    metered_spend_window_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     agent_harness: Annotated[str, BeforeValidator(parse_harness_name), _DEFAULT_OVERLAY]
     agent_harness_provider: Annotated[

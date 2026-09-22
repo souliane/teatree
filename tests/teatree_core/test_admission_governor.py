@@ -25,17 +25,20 @@ from teatree.core.admission_governor import (
     MachineBrake,
     MachineSignal,
     MergeSignal,
+    MeteredSignal,
     QuotaSignal,
     YieldSignal,
     box_load_headroom,
     decide_admission,
     per_agent_test_workers,
+    pressure_for,
     read_machine_signal,
     resume_agent_ceiling,
     resume_shed_directive,
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
+from teatree.core.models.config_setting import ConfigSetting
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB
@@ -809,3 +812,74 @@ class TestSuiteMemoryProbeIsPinned:
         headroom = RamHeadroom(available_mib=1024, cgroup_limit_mib=None, host_available_mib=1024)
         monkeypatch.setattr(ram_scope, "read_ram_headroom", lambda: headroom)
         assert read_machine_signal().ram_available_gb == pytest.approx(1.0)
+
+
+class TestTheQuotaBrakeSwitch(TestCase):
+    """``admission_quota_brake_enabled`` drops the token brakes and nothing else (#4816).
+
+    An operator whose box authenticates through a lane teatree's quota signal says nothing
+    about must be able to stand that signal down — without also standing down the brakes
+    that keep the box from OOMing.
+    """
+
+    def _set(self, *, enabled: bool) -> None:
+        ConfigSetting.objects.set_value("admission_quota_brake_enabled", value=enabled)
+
+    def test_the_load_brake_survives_the_quota_brake_being_off(self) -> None:
+        self._set(enabled=False)
+
+        decision = _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine(load1=60.0))
+
+        assert not decision.admit
+        assert "load" in decision.reason
+
+    def test_the_memory_brake_survives_the_quota_brake_being_off(self) -> None:
+        self._set(enabled=False)
+
+        decision = _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine(ram_available_gb=1.0))
+
+        assert not decision.admit
+        assert "GB available" in decision.reason, "the memory component names the refusal, not the quota one"
+
+    def test_an_exhausted_fleet_on_a_healthy_box_is_admitted(self) -> None:
+        self._set(enabled=False)
+
+        assert _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
+
+    def test_control_the_shipped_default_still_brakes_on_an_exhausted_fleet(self) -> None:
+        assert not _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
+
+    def test_control_an_unreadable_setting_keeps_the_brake_on(self) -> None:
+        # Fail-safe: a config read that raises must never silently widen admission.
+        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("down")):
+            assert not _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
+
+    def test_the_metered_family_stands_down_with_the_subscription_one(self) -> None:
+        # ONE switch for the quota FAMILY: an operator turning off "the token brake"
+        # never has to know which lane this box authenticates through.
+        self._set(enabled=False)
+
+        pressure = pressure_for(
+            quota=_quota(),
+            machine=_machine(),
+            metered=MeteredSignal(fresh=True, utilization=2.0, spend_detail="over the ceiling"),
+        )
+
+        assert {component.name for component in pressure.components} == {"load", "memory"}
+
+    def test_control_both_token_families_contribute_while_the_brake_is_on(self) -> None:
+        pressure = pressure_for(
+            quota=_quota(),
+            machine=_machine(),
+            metered=MeteredSignal(fresh=True, utilization=0.1, spend_detail="plenty left"),
+        )
+
+        assert "weekly-quota" in {component.name for component in pressure.components}
+        assert "metered-spend" in {component.name for component in pressure.components}
+
+    def test_control_the_governor_kill_switch_is_a_different_lever(self) -> None:
+        # ``admission_governor_enabled`` is the whole-governor rollback and is untouched
+        # by this split — it still governs from its own seam, not from the pressure fold.
+        self._set(enabled=False)
+
+        assert admission_governor.governor_enabled() is True

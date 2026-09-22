@@ -323,6 +323,7 @@ worktree_occupancy_lease_seconds = 1800 # int — how long an agent's claim on a
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
+admission_quota_brake_enabled = true # bool — let the token brakes refuse work; false keeps only the load and memory brakes
 cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve
@@ -332,6 +333,8 @@ idle_stack_reaper_cadence_minutes = 5 # int — minutes between idle-stack reape
 idle_stack_reaper_disabled = false # bool — stop reaping idle local stacks
 local_stack_queue_disabled = false # bool — stop queueing work that needs a local stack
 local_stack_queue_max_attempts = 13 # int — attempts a queued local-stack unit gets before it is abandoned
+metered_spend_window_hours = 24 # int — the window the metered token ceiling is measured over
+metered_token_ceiling = 0 # int — the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset
 provision_fast_step_timeout_seconds = 120 # int — seconds a step declared fast may take before it is failed
 provision_max_concurrency = 0 # int — provisioning steps that may run at once
 provision_ram_ceiling_percent = 85 # int — percent of RAM provisioning may consume before it backs off

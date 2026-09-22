@@ -52,6 +52,7 @@ graph TD
     teatree.core --> teatree.quality
     teatree.core --> teatree.backends.types
     teatree.core --> teatree.backends.http_retry
+    teatree.core --> teatree.core.admission
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.forge_url
     teatree.core --> teatree.core.models.errors
@@ -67,6 +68,8 @@ graph TD
     teatree.core --> teatree.loop.preset_resolution
     teatree.core --> teatree.core.mode_resolution
     teatree.core --> teatree.loops.enable_verdict
+    teatree.core.admission --> teatree.config
+    teatree.core.admission --> teatree.core.models
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
@@ -113,6 +116,7 @@ graph TD
     teatree.agents --> teatree.types
     teatree.agents --> teatree.failure_signatures
     teatree.agents --> teatree.core
+    teatree.agents --> teatree.core.admission
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
     teatree.agents --> teatree.credential_config

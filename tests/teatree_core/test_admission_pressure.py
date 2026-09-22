@@ -23,7 +23,9 @@ from teatree.core.admission_pressure import (
     SHORT_WINDOW_BRAKE,
     WEEKLY_WINDOW_BRAKE,
     AdmissionPressure,
+    MachineBrake,
     MachineSignal,
+    MeteredSignal,
     PressureBand,
     QuotaSignal,
     admission_pressure,
@@ -129,7 +131,9 @@ class TestComponentNormalization:
 
     def test_load_watermark_rides_the_hysteresis(self) -> None:
         """A braked governor is held to the LOWER watermark, so the same load reads higher."""
-        braked = admission_pressure(quota=_quota(), machine=_machine(load1=RESUME_LOAD_PER_CORE * 8), braked=True)
+        braked = admission_pressure(
+            quota=_quota(), machine=_machine(load1=RESUME_LOAD_PER_CORE * 8), load_brake=MachineBrake(braked=True)
+        )
         assert _named(braked, "load") == pytest.approx(1.0)
         free = admission_pressure(quota=_quota(), machine=_machine(load1=RESUME_LOAD_PER_CORE * 8))
         assert _named(free, "load") < 1.0
@@ -193,7 +197,7 @@ class TestHaltEquivalence:
         braked: bool,  # noqa: FBT001 — parametrized matrix dimension, not a flag arg.
     ) -> None:
         quota = _quota(weekly_utilization=weekly, short_utilization=short, all_accounts_exhausted=exhausted)
-        pressure = admission_pressure(quota=quota, machine=_machine(), braked=braked)
+        pressure = admission_pressure(quota=quota, machine=_machine(), load_brake=MachineBrake(braked=braked))
         old = _old_reason(quota, _machine(), braked=braked)
         assert (pressure.band is PressureBand.HALT) is bool(old)
         if old:
@@ -211,7 +215,7 @@ class TestHaltEquivalence:
         braked: bool,  # noqa: FBT001 — parametrized matrix dimension, not a flag arg.
     ) -> None:
         machine = _machine(load1=load1, ram_available_gb=ram)
-        pressure = admission_pressure(quota=_quota(), machine=machine, braked=braked)
+        pressure = admission_pressure(quota=_quota(), machine=machine, load_brake=MachineBrake(braked=braked))
         old = _old_reason(_quota(), machine, braked=braked)
         assert (pressure.band is PressureBand.HALT) is bool(old)
         if old:
@@ -252,13 +256,19 @@ class TestUnknownNeverBrakes:
     def test_the_cheap_lane_exemption_drops_both_machine_components(self) -> None:
         """The exemption is from MACHINE pressure only — a token brake still halts it."""
         molten = _machine(load1=99.0, ram_available_gb=0.5)
-        assert admission_pressure(quota=_quota(), machine=molten, machine_applies=False).band is PressureBand.FULL
+        assert (
+            admission_pressure(quota=_quota(), machine=molten, load_brake=MachineBrake(applies=False)).band
+            is PressureBand.FULL
+        )
         spent = _quota(weekly_utilization=1.0)
-        assert admission_pressure(quota=spent, machine=molten, machine_applies=False).band is PressureBand.HALT
+        assert (
+            admission_pressure(quota=spent, machine=molten, load_brake=MachineBrake(applies=False)).band
+            is PressureBand.HALT
+        )
 
     def test_nothing_readable_is_zero_pressure_with_no_dominant(self) -> None:
         blind = admission_pressure(
-            quota=_quota(fresh=False), machine=_machine(ram_available_gb=None), machine_applies=False
+            quota=_quota(fresh=False), machine=_machine(ram_available_gb=None), load_brake=MachineBrake(applies=False)
         )
         assert blind.value == pytest.approx(0.0)
         assert blind.dominant is None
@@ -326,3 +336,44 @@ class TestShedAtResolution:
         """The rollback lever: at 1.0 no value can land in SHED."""
         for value in (0.9, 0.95, 0.999):
             assert PressureBand.for_value(value, shed_at=1.0) is PressureBand.DEGRADED
+
+
+_QUOTA_COMPONENTS = ("accounts-exhausted", "weekly-quota", "5h-quota", "weekly-pace")
+
+
+class TestTheMeteredDimension:
+    """The metered lane's budget is a component like any other (souliane/teatree#4816)."""
+
+    def test_spend_at_the_ceiling_halts(self) -> None:
+        metered = MeteredSignal(fresh=True, utilization=1.0, spend_detail="metered lane spent its ceiling")
+
+        pressure = admission_pressure(quota=_quota(), machine=_machine(), metered=metered)
+
+        assert pressure.band is PressureBand.HALT
+        assert pressure.reason == "metered lane spent its ceiling"
+
+    def test_nine_tenths_of_the_ceiling_lands_in_the_existing_shed_band(self) -> None:
+        # No dedicated warn threshold is added: normalising to 1.0 AT the ceiling is what
+        # makes the existing `admission_pressure_shed_at` govern this dimension too.
+        metered = MeteredSignal(fresh=True, utilization=0.91, spend_detail="nearly spent")
+
+        assert admission_pressure(quota=_quota(), machine=_machine(), metered=metered).band is PressureBand.SHED
+
+    def test_a_parked_lane_halts_whatever_the_spend_fraction_says(self) -> None:
+        metered = MeteredSignal(fresh=True, utilization=0.0, parked=True, park_detail="the metered lane is parked")
+
+        pressure = admission_pressure(quota=_quota(), machine=_machine(), metered=metered)
+
+        assert pressure.band is PressureBand.HALT
+        assert pressure.reason == "the metered lane is parked"
+
+    def test_control_an_unread_metered_signal_contributes_no_component(self) -> None:
+        pressure = admission_pressure(quota=_quota(), machine=_machine(), metered=MeteredSignal(fresh=False))
+
+        assert {component.name for component in pressure.components} == {"load", "memory", *_QUOTA_COMPONENTS}
+
+    def test_control_an_absent_metered_signal_is_byte_identical_to_before(self) -> None:
+        without = admission_pressure(quota=_quota(), machine=_machine())
+        unread = admission_pressure(quota=_quota(), machine=_machine(), metered=MeteredSignal(fresh=False))
+
+        assert without.components == unread.components
