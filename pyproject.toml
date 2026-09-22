@@ -216,11 +216,6 @@ mutation = [
 # `test-shuffle` CI lane installs this group and runs the order-fragile subset
 # shuffled (souliane/teatree#2359 Class B).
 shuffle = [
-  # Held below 5: 5.0.0 makes ``pytest_collection_modifyitems`` a WRAPPER hookimpl
-  # so the shuffle now runs BEFORE pytest-django's stable grouping instead of after,
-  # remapping seed -> order. The lane's pinned seeds 1 and 7 then land a polluter
-  # next to its victim in ``tests/teatree_loop/scanners/`` and go red. The order
-  # dependence is real and pre-existing — lift with its fix in souliane/teatree#4756.
   "pytest-randomly>=3.15,<6",
 ]
 # Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
