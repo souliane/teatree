@@ -40,8 +40,9 @@ dependencies = [
   # AFTER ``TyperArgument`` set it pre-``super()``, so typer-declared positional
   # help vanishes from ``t3 --help`` AND from the generated CLI reference — which
   # ``docs-drift`` cannot catch, because it regenerates under the same click.
-  # Lift when typer stops setting ``self.help`` before ``super().__init__()``.
-  "click>=8.4,<8.6",
+  # No typer release fixes it on real click: typer 0.26+ vendors click, so the
+  # lift is the django-typer 4 migration, not a typer bump.
+  "click>=8.4,<8.5",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -177,8 +178,10 @@ dev = [
   # ships, so `uv run ruff check` (the local/agent lint measure) drifted to
   # reporting 5000+ errors the CI-gating ``ruff-pre-commit`` hook (pinned to
   # v0.15.1 in .pre-commit-config.yaml) never enforces. Bump in lockstep with
-  # that hook's rev.
-  "ruff==0.16.8",
+  # that hook's rev. Held at 0.15.x: 0.16's preview rules raise 6k+ findings,
+  # most of them the ``# noqa`` -> ``# ruff: ignore`` rewrite that the repo's
+  # ``noqa``-parsing tools would need migrating for first.
+  "ruff==0.15.1",
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
