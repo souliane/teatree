@@ -424,7 +424,7 @@ class TestEnvGroupRefusalsExitNonZero(TestCase):
         assert exc.value.code == 1
 
 
-class TestOverlayBackedRefusalsExitNonZero:
+class TestOverlayBackedRefusalsExitNonZero(TestCase):
     def test_e2e_trigger_ci_rejects_a_missing_config(self) -> None:
         overlay = MagicMock()
         overlay.metadata.get_e2e_config.return_value = {}

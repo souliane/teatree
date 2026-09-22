@@ -44,7 +44,7 @@ def _migration_source(dependencies: list[tuple[str, str]]) -> str:
 
 
 def _dlm_error_ids() -> list[str]:
-    return [e.id for e in run_checks(tags=["models"]) if e.id and e.id.startswith("dlm.")]
+    return [e.id for e in run_checks(tags=["models"], databases=[]) if e.id and e.id.startswith("dlm.")]
 
 
 @contextmanager

@@ -7,7 +7,7 @@ returns the PR URL once the worker completes.
 """
 
 import re
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from django_typer.management import command
 
@@ -59,6 +59,7 @@ from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
 from teatree.core.management.commands._test_plan.mr_post import TestPlanMediaError as _TestPlanMediaError
+from teatree.core.management.db_free_checks import without_database_checks
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
@@ -277,6 +278,9 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
     # is the one exemption: it runs inside the pre-push hook, where reporting a
     # refusal and letting the push through is the designed behaviour (#792).
     soft_refusal_commands: ClassVar[frozenset[str]] = frozenset({"ensure-pr"})
+
+    def get_check_kwargs(self, options: dict[str, Any]) -> dict[str, Any]:
+        return without_database_checks(super().get_check_kwargs(options))
 
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
