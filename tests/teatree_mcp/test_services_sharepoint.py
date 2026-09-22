@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
@@ -45,7 +46,7 @@ class TestSharePointClientResolution(TestCase):
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SharePointOverlay()}),
             patch("teatree.mcp.services_sharepoint.sharepoint_client_from_overlay", return_value=None),
-            pytest.raises(RuntimeError, match="SharePoint document library"),
+            pytest.raises(ToolError, match="SharePoint document library"),
         ):
             services_sharepoint._client()
 

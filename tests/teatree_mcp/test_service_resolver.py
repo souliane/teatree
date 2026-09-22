@@ -8,6 +8,7 @@ client, or fail loud naming the service.
 from unittest.mock import patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig
@@ -60,13 +61,13 @@ class TestResolveDeclaringOverlayClient:
     def test_raises_naming_the_description_when_no_declarer_is_configured(self) -> None:
         with (
             _overlays({"a": _Overlay(Service.NOTION)}),
-            pytest.raises(RuntimeError, match="No registered overlay declares a configured Notion client"),
+            pytest.raises(ToolError, match="No registered overlay declares a configured Notion client"),
         ):
             resolve_declaring_overlay_client(Service.NOTION, lambda _name: None, description="Notion client")
 
     def test_raises_when_there_are_no_overlays(self) -> None:
         with (
             _overlays({}),
-            pytest.raises(RuntimeError, match="github code host"),
+            pytest.raises(ToolError, match="github code host"),
         ):
             resolve_declaring_overlay_client(Service.GITHUB, lambda name: name, description="github code host")

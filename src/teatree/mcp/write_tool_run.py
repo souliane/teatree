@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import typer
 from django.core.management import call_command
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 def run_command(command: str, *args: object, **kwargs: object) -> object:
@@ -23,7 +24,7 @@ def run_command(command: str, *args: object, **kwargs: object) -> object:
     — a ``BaseException``. MCPServer only converts ``Exception`` to a structured
     ``ToolError``, so an unguarded exit would crash the whole tool call instead of
     returning the documented refusal. Capture the command's stderr and re-raise as
-    a plain ``RuntimeError`` so the caller gets the message, not a dead session.
+    a ``ToolError``, the only exception whose text reaches the caller.
     """
     err = io.StringIO()
     try:
@@ -33,7 +34,7 @@ def run_command(command: str, *args: object, **kwargs: object) -> object:
         if code is None:
             code = getattr(exc, "exit_code", 1)
         message = err.getvalue().strip() or f"command failed (exit {code})"
-        raise RuntimeError(message) from exc
+        raise ToolError(message) from exc
 
 
 def _last_json_object(text: str) -> dict[str, Any] | None:
@@ -54,7 +55,7 @@ def run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[
     (``action`` ∈ post/draft/suppress/refused) to stdout and terminates via
     ``SystemExit`` (0 for post/draft/suppress, 2 for refused). Capture stdout and
     return the parsed verdict — the ``action`` field carries the outcome, so the
-    exit code is not needed. Surface stderr as a structured ``RuntimeError`` when
+    exit code is not needed. Surface stderr as a ``ToolError`` when
     the command emitted no JSON (so an MCPServer tool call is never crashed by the
     ``SystemExit`` primitive the CLI uses).
     """
@@ -70,4 +71,4 @@ def run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[
     if payload is not None:
         return payload
     message = err.getvalue().strip() or out.getvalue().strip() or f"{command} produced no machine-readable output"
-    raise RuntimeError(message)
+    raise ToolError(message)

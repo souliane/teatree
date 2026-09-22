@@ -16,6 +16,8 @@ rebuild. Each service keeps a thin named ``_client`` / ``_forge_client`` wrapper
 
 from collections.abc import Callable
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from teatree.backends.types import Service
 from teatree.core.overlay_loader import get_all_overlays
 
@@ -28,7 +30,7 @@ def resolve_declaring_overlay_client[Client](
 ) -> Client:
     """Return the first declaring overlay's configured client for *service*.
 
-    Raises ``RuntimeError`` naming *description* when no registered overlay
+    Raises ``ToolError`` naming *description* when no registered overlay
     declares *service* with a configured client.
     """
     for name, overlay in get_all_overlays().items():
@@ -37,4 +39,4 @@ def resolve_declaring_overlay_client[Client](
             if client is not None:
                 return client
     msg = f"No registered overlay declares a configured {description}"
-    raise RuntimeError(msg)
+    raise ToolError(msg)

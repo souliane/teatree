@@ -23,12 +23,13 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.send_proxy import route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -43,11 +44,14 @@ def _scrub_forge_body(service: Service, *, repo: str, text: str, action: str, ta
     core seam that runs the public-repo leak gate + the #117 send-proxy for EVERY
     forge write (MCP, dream loop, ``t3`` CLI). Kept here only to map the MCP
     layer's :class:`~teatree.backends.types.Service` to the seam's forge id; it
-    raises :class:`~teatree.core.send_proxy.OutboundLeakError` /
-    :class:`~teatree.core.send_proxy.SendBlockedError` (both ``RuntimeError``) so a
-    leaking or non-allowlisted write is stopped before the backend call.
+    re-raises the seam's :class:`~teatree.core.send_proxy.OutboundLeakError` /
+    :class:`~teatree.core.send_proxy.SendBlockedError` as a ``ToolError`` so a
+    leaking or non-allowlisted write is stopped before the backend call, with its reason.
     """
-    return route_forge_write(forge=service.value, repo=repo, text=text, action=action, target=target)
+    try:
+        return route_forge_write(forge=service.value, repo=repo, text=text, action=action, target=target)
+    except OutboundBlockedError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
