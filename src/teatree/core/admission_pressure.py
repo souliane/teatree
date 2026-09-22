@@ -78,7 +78,16 @@ HALT_AT = 1.0
 #: machine ones. It survives as the tie-break among HALTing components so a refusal names
 #: the cause it always named: an exhausted fleet reports exhaustion, not the collapsed
 #: pace that exhaustion necessarily produces.
-BRAKE_PRECEDENCE = ("accounts-exhausted", "weekly-quota", "5h-quota", "weekly-pace", "load", "memory")
+BRAKE_PRECEDENCE = (
+    "accounts-exhausted",
+    "weekly-quota",
+    "5h-quota",
+    "weekly-pace",
+    "metered-lane-parked",
+    "metered-spend",
+    "load",
+    "memory",
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,27 @@ class QuotaSignal:
     weekly_utilization: float
     short_utilization: float
     seconds_to_weekly_reset: float | None
+
+
+@dataclass(frozen=True)
+class MeteredSignal:
+    """The METERED lane's own budget — the subscription quota's counterpart (#4816).
+
+    The two families are mutually exclusive by lane selection at the caller, so only one
+    ever contributes components to a given decision. ``fresh`` is False when the ledger
+    could not be read OR when this dispatch does not ride the metered lane; either way it
+    contributes nothing, which is what "does not apply" already means here.
+
+    ``parked`` is an uncleared metered ``UsageWindowState`` — a provider that has already
+    REFUSED the lane, which is a harder signal than any spend fraction and so reads a
+    flat 1.0.
+    """
+
+    fresh: bool
+    utilization: float = 0.0
+    parked: bool = False
+    spend_detail: str = ""
+    park_detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,6 +162,20 @@ class MachineBrake:
 
 #: The default: the brake applies, with no prior brake state to hold it to the low watermark.
 UNBRAKED = MachineBrake()
+
+#: The quota signal that contributes NOTHING — ``fresh=False`` being what "does not apply"
+#: already means here, for an unreadable reading and for a dimension this decision is not
+#: judged against alike. Two callers stand a dimension down: the lane selector, when the
+#: dispatch authenticates through a lane the subscription fleet says nothing about, and
+#: ``pressure_for``, when the operator has turned the token brakes off (#4816). Neither
+#: needs a mechanism of its own — an absent component is an absent component.
+UNREAD_QUOTA = QuotaSignal(
+    fresh=False,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.0,
+    short_utilization=0.0,
+    seconds_to_weekly_reset=None,
+)
 
 
 class PressureBand(StrEnum):
@@ -288,17 +332,21 @@ def admission_pressure(
     *,
     quota: QuotaSignal,
     machine: MachineSignal,
-    braked: bool = False,
-    machine_applies: bool = True,
+    metered: "MeteredSignal | None" = None,
+    load_brake: MachineBrake = UNBRAKED,
     shed_at: float = SHED_AT_DEFAULT,
 ) -> AdmissionPressure:
     """Fold every readable dimension into one scalar, each normalised to its own watermark.
 
-    *braked* is the previous decision's brake state and moves the load and memory
-    watermarks to their hysteresis values, so the scalar inherits the flap protection the
-    separate brakes had. *machine_applies* is the cheap-phase exemption: it drops the two
-    machine components and leaves the token ones, which is exactly what that exemption
-    always meant.
+    *load_brake* carries the caller's two machine-brake inputs as one value (see
+    :class:`MachineBrake`): the previous decision's brake state, which moves the load and
+    memory watermarks to their hysteresis values so the scalar inherits the flap
+    protection the separate brakes had, and the cheap-phase exemption, which drops the two
+    machine components and leaves the token ones.
+
+    *metered* is the metered lane's own budget, the subscription quota's counterpart. The
+    two are mutually exclusive by lane selection at the caller, so a dispatch is judged
+    against the budget it would actually spend rather than against both (#4816).
 
     An unreadable dimension contributes NO component rather than a zero, so it can
     neither raise the pressure nor be mistaken for a healthy reading — a stale quota
@@ -307,8 +355,10 @@ def admission_pressure(
     components: list[PressureComponent] = []
     if quota.fresh:
         components.extend(_quota_components(quota))
-    if machine_applies:
-        components.extend(_machine_components(machine, braked=braked))
+    if metered is not None and metered.fresh:
+        components.extend(_metered_components(metered))
+    if load_brake.applies:
+        components.extend(_machine_components(machine, braked=load_brake.braked))
     return AdmissionPressure(components=tuple(components), shed_at=shed_at)
 
 
@@ -335,6 +385,13 @@ def _quota_components(quota: QuotaSignal) -> list[PressureComponent]:
             value=_clamp((1.0 - pace) / (1.0 - PACE_DENY)),
             detail=f"weekly burn outruns the reset (pace {pace:.2f}) — pacing to the window",
         ),
+    ]
+
+
+def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
+    return [
+        PressureComponent(name="metered-lane-parked", value=1.0 if metered.parked else 0.0, detail=metered.park_detail),
+        PressureComponent(name="metered-spend", value=_clamp(metered.utilization), detail=metered.spend_detail),
     ]
 
 
@@ -397,11 +454,13 @@ __all__ = [
     "SHED_AT_DEFAULT",
     "SHORT_WINDOW_BRAKE",
     "UNBRAKED",
+    "UNREAD_QUOTA",
     "WEEKLY_WINDOW_BRAKE",
     "WEEKLY_WINDOW_SECONDS",
     "AdmissionPressure",
     "MachineBrake",
     "MachineSignal",
+    "MeteredSignal",
     "PressureBand",
     "PressureComponent",
     "QuotaSignal",

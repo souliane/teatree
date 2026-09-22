@@ -23,8 +23,9 @@ broadening it to :func:`is_secret` would hide every credential name (they are al
 credential coordinates) and defeat the band. See ``CredentialEntry.mask_if_private``.
 """
 
-from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
+from teatree.config.schema import TeatreeSettingsSchema, setting_meta
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
+from teatree.config.setting_taxonomy import Category
 
 #: Rendered in place of a secret VALUE — never the real value.
 MASKED = "***"

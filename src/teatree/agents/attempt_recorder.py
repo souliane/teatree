@@ -83,6 +83,9 @@ class AttemptUsage:
     # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
     # not compute a reported cost is flagged conservatively as an estimate.
     cost_is_estimated: bool = True
+    # #4816: turns ran but the provider reported no spend — recorded as a positive
+    # marker so the metered ledger can tell it from a park that billed nothing.
+    usage_unknown: bool = False
     # #3673 Tier 3 dispatch provenance: the per-tier reasoning effort the spawn
     # resolved and the resolved skill-bundle names. Both empty on a recorder path
     # that has no dispatch context (e.g. an in-session record-attempt).
@@ -216,6 +219,7 @@ class SpendColumns(TypedDict, total=False):
     num_turns: int | None
     lane: str
     cost_is_estimated: bool
+    usage_unknown: bool
     reasoning_effort: str
     skills_loaded: list[str]
 
@@ -245,6 +249,7 @@ def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
         num_turns=usage.num_turns,
         lane=usage.lane,
         cost_is_estimated=usage.cost_is_estimated,
+        usage_unknown=usage.usage_unknown,
         reasoning_effort=usage.reasoning_effort,
         skills_loaded=list(usage.skills_loaded),
     )

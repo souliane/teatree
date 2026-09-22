@@ -413,6 +413,24 @@ class TestTaskCommands(TestCase):
         assert attempt.exit_code == 1
         assert "SDK client failed to start" in attempt.error
 
+    @override_settings(**COMMAND_SETTINGS)
+    def test_work_next_declares_the_crash_attempt_s_spend_unknown(self) -> None:
+        # A raise that escaped the drive leaves no result message, so the tokens the
+        # turn already billed are unreadable here. Recording the default ``False`` would
+        # publish "nothing billed" as a measurement, and the metered ledger sums these
+        # rows — an under-read by an amount nobody can bound (#4816).
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(runner_mod, "run_agent", MagicMock(side_effect=RuntimeError("SDK client failed to start"))),
+        ):
+            call_command("tasks", "work-next", claimed_by="worker-1")
+
+        assert TaskAttempt.objects.get(task=task).usage_unknown is True
+
 
 class TestTasksListSession(TestCase):
     """``t3 <overlay> tasks list --session`` scopes to the current Claude session."""

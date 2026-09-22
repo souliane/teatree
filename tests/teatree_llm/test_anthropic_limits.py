@@ -7,8 +7,11 @@ from claude_agent_sdk.types import RateLimitType
 
 from teatree.llm.anthropic_limits import (
     ALL_TOKENS_EXHAUSTED_SIGNATURE,
+    REFUSAL_RESET_CEILING,
+    REFUSAL_RESET_FLOOR,
     LimitCause,
     LimitMatch,
+    believable_refusal_reset,
     classify_limit,
     classify_rate_limit_type,
     recoverable_exhaustion_cause,
@@ -193,3 +196,32 @@ class TestRecoverableExhaustionCause:
         # A FAILED task with every configured account drained must auto-requeue, never escalate.
         error = f"all configured Anthropic oauth {ALL_TOKENS_EXHAUSTED_SIGNATURE} (accounts a, b)"
         assert recoverable_exhaustion_cause(error) is LimitCause.SUBSCRIPTION_WEEKLY
+
+
+class TestBelievableRefusalReset:
+    """The band a provider-REPORTED refusal reset must land inside (#4816).
+
+    A refusal names no window teatree can verify, and nothing downstream bounds a park:
+    ``effective_resets_at`` returns the reported instant verbatim and ``_future_park_instant``
+    clamps only the lower end. So an unbelievable figure is refused here, where the one-hour
+    horizon is still reachable, rather than persisted as a ``UsageWindowState``.
+    """
+
+    _NOW = 1_700_000_000.0
+
+    def test_a_reset_inside_the_band_is_believed(self) -> None:
+        assert believable_refusal_reset(self._NOW + 3600, now=self._NOW) == int(self._NOW + 3600)
+
+    def test_both_edges_are_inclusive(self) -> None:
+        for edge in (REFUSAL_RESET_FLOOR, REFUSAL_RESET_CEILING):
+            at_edge = self._NOW + edge.total_seconds()
+            assert believable_refusal_reset(at_edge, now=self._NOW) == int(at_edge)
+
+    def test_a_key_lifetime_beyond_the_ceiling_is_refused(self) -> None:
+        a_year = self._NOW + 365 * 24 * 3600
+        assert believable_refusal_reset(a_year, now=self._NOW) is None
+
+    def test_an_instant_under_the_floor_is_refused_rather_than_clamped_to_it(self) -> None:
+        # The stale-``created``-stamp case: clamping it to the floor re-probes 12x an hour.
+        assert believable_refusal_reset(self._NOW + 30, now=self._NOW) is None
+        assert believable_refusal_reset(self._NOW - 86_400, now=self._NOW) is None

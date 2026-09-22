@@ -17,11 +17,14 @@ network, no credential, zero tokens.
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, ToolUseBlock
+from claude_agent_sdk.types import RateLimitInfo
 from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
@@ -134,6 +137,44 @@ def _preamble_then_tool_model(tool_name: str, final_text: str = _RESULT_JSON) ->
     return FunctionModel(stream_function=stream_fn)
 
 
+def _billed_then_refused_model(*, status_code: int = 403) -> FunctionModel:
+    """A model double that completes one BILLED request, then is refused on the next.
+
+    The refusal therefore lands with tokens already spent, which is the only state in
+    which "does the error path carry the run's usage?" is a question with a wrong answer.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield {0: DeltaToolCall(name="ghost_tool", json_args="{}")}
+            return
+        raise ModelHTTPError(
+            status_code=status_code,
+            model_name=_MODEL,
+            body={"code": "access_denied", "message": "token cycle spend limit reached"},
+        )
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _refused_model(*, status_code: int = 403, headers: dict[str, str] | None = None, body: object = None):
+    """A model double refused on its FIRST request, carrying real provider headers/body.
+
+    ``headers`` is what the router actually sends back; the session's job is to turn a
+    ``retry-after`` (or an instant in the body) into the reset the lane parks behind.
+    """
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        raise ModelHTTPError(status_code=status_code, model_name=_MODEL, body=body, headers=headers)
+        yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+    return FunctionModel(stream_function=stream_fn)
+
+
 def _drive(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
     async def turn() -> list[object]:
         await session.query(prompt)
@@ -146,6 +187,13 @@ def _terminal(messages: list[object]) -> ResultMessage:
     results = [message for message in messages if isinstance(message, ResultMessage)]
     assert len(results) == 1, "a turn yields exactly one terminal ResultMessage"
     return results[0]
+
+
+def _rejected_window(messages: list[object]) -> RateLimitInfo:
+    events = [m for m in messages if isinstance(m, RateLimitEvent)]
+    assert len(events) == 1, "a hard refusal yields exactly one rate-limit event"
+    assert events[0].rate_limit_info.status == "rejected"
+    return events[0].rate_limit_info
 
 
 class TestTerminalResultReportsProviderFailure:
@@ -320,6 +368,166 @@ class TestTerminalResultCarriesTheRealRunIdentity:
         assert one.session_id != other.session_id
 
 
+class TestAFailedTurnStillReportsWhatItSpent:
+    """The crash path carries the usage its caller already holds (souliane/teatree#4816).
+
+    ``_error_result`` built its envelope with no ``usage`` at all, so every
+    provider/run error on the metered lane recorded no tokens — 1,757 turns whose
+    spend the ledger never saw. The caller owns the ``RunUsage`` pydantic_ai mutates
+    in place, so the figures were always there to carry.
+    """
+
+    def test_a_refusal_after_a_billed_request_reports_that_request_s_tokens(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_billed_then_refused_model()), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.usage is not None, "a failed turn that billed tokens must not report None usage"
+        assert terminal.usage["input_tokens"] > 0
+        assert set(terminal.usage) == {
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        }
+
+    def test_every_error_branch_reports_usage_not_none(self) -> None:
+        # The four raise sites are one contract, not four: a branch that forgets the
+        # run usage is the defect, wherever it sits.
+        for agent_model in (
+            _billed_then_refused_model(),
+            _dropped_mid_stream_model(after_requests=2),
+            _two_request_model(),
+        ):
+            session = PydanticAiHarnessSession(Agent(agent_model), model_name=_MODEL, request_limit=1)
+
+            terminal = _terminal(_drive(session))
+
+            assert terminal.is_error is True
+            assert terminal.usage is not None
+
+    def test_control_a_refusal_before_any_request_completes_reports_zero_not_none(self) -> None:
+        # The pre-turn refusal is the OTHER state the ledger must be able to tell apart:
+        # a reported usage of zero is the provider's own answer, not a missing one.
+        session = PydanticAiHarnessSession(
+            Agent(_api_error_model(status_code=403, error_type="access_denied", message="spend limit reached")),
+            model_name=_MODEL,
+        )
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.usage == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+
+    def test_control_a_healthy_turn_s_usage_is_unchanged(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is False
+        assert terminal.usage is not None
+        assert terminal.usage["input_tokens"] > 0
+
+
+class TestAHardRefusalCarriesItsReset:
+    """A 401/403 yields the rejected window the driver already knows how to park on (#4816).
+
+    ``_collect`` captures a rejected ``RateLimitEvent`` into ``outcome.rate_limit_info``
+    and ``_outcome_failure`` feeds its ``resets_at`` through to ``UsageWindowState`` — a
+    channel that existed and was never fed, so 307 tasks each burned a fresh probe.
+    """
+
+    def test_a_retry_after_header_becomes_the_reset_instant(self) -> None:
+        before = time.time()
+        session = PydanticAiHarnessSession(Agent(_refused_model(headers={"Retry-After": "3600"})), model_name=_MODEL)
+
+        messages = _drive(session)
+
+        event = _rejected_window(messages)
+        assert event.resets_at is not None
+        # ``int()`` truncates the sub-second part, so the floor is the truncated `before`.
+        assert int(before) + 3600 <= event.resets_at <= time.time() + 3600
+
+    def test_an_instant_in_the_body_is_read_when_no_header_is_sent(self) -> None:
+        resets = datetime.now(tz=UTC) + timedelta(hours=2)
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"code": "access_denied", "message": f"resets at {resets.isoformat()}"})),
+            model_name=_MODEL,
+        )
+
+        messages = _drive(session)
+
+        assert _rejected_window(messages).resets_at == int(resets.timestamp())
+
+    def test_a_far_future_instant_is_refused_so_the_lane_parks_on_the_horizon(self) -> None:
+        # A refusal body carries more than one instant shape — a key ``expires_at``, an
+        # account ``valid_until`` — and nothing downstream caps a park, so believing this
+        # one parked the metered lane until 2099 with the low-power preset engaged.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"code": "access_denied", "expires_at": "2099-01-02T03:04:05Z"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_stale_instant_is_refused_rather_than_landing_on_the_five_minute_floor(self) -> None:
+        # ``_ISO_INSTANT`` takes the FIRST instant in the body, which is as often the
+        # request's own ``created`` stamp as the reset. Clamped to the elapsed-reset floor
+        # that is 12 re-probes an hour — the burn the one-hour horizon exists to stop.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"created": "2020-05-06T07:08:09Z", "code": "access_denied"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_far_future_retry_after_is_refused_on_the_same_band(self) -> None:
+        # The structured rung is no more verifiable than the scraped one: a router that
+        # answers with its key's remaining lifetime in seconds parks the lane for a year.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(headers={"Retry-After": "31536000"})), model_name=_MODEL
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_an_unparseable_refusal_still_parks_on_the_horizon(self) -> None:
+        # No reset is WORSE than a wrong one only if it fails: a None here means
+        # ``effective_resets_at`` falls back to the one-hour horizon, never to a failure.
+        session = PydanticAiHarnessSession(Agent(_refused_model(body="upstream said no")), model_name=_MODEL)
+
+        messages = _drive(session)
+
+        assert _rejected_window(messages).resets_at is None
+
+    def test_the_refusal_also_yields_the_error_result_carrying_its_usage(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_refused_model(headers={"retry-after": "60"})), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.api_error_status == 403
+        assert terminal.usage is not None
+
+    def test_control_a_429_yields_no_hard_refusal_window(self) -> None:
+        # The hard-refusal channel is for 401/403 only; a 429 keeps the pre-#4816 path,
+        # where the CLI's own typed window (when any) is the source of truth.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(status_code=429, headers={"retry-after": "30"})), model_name=_MODEL
+        )
+
+        assert not [m for m in _drive(session) if isinstance(m, RateLimitEvent)]
+
+    def test_control_a_healthy_turn_yields_no_window_at_all(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        assert not [m for m in _drive(session) if isinstance(m, RateLimitEvent)]
+
+
 class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
     """End-to-end: the driver's own park/fail taxonomy fires on this lane, untouched.
 
@@ -410,6 +618,48 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         self.task.refresh_from_db()
         assert self.task.status == Task.Status.FAILED, "the run's OWN cap is a real failure, not a limit park"
         assert "error_max_turns" in attempt.error
+        assert "Traceback" not in attempt.error
+
+    def test_a_hard_refusal_parks_the_lane_once_and_the_next_task_never_opens_a_session(self) -> None:
+        """The #4816 shape: 307 tasks each re-probed a key the provider had already refused.
+
+        One refusal must park the LANE, so the second dispatch is turned away by the
+        admission guard with the harness never opened at all.
+        """
+        from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
+
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+        harness = PydanticAiHarness(model=_refused_model(headers={"retry-after": "3600"}))
+
+        first = self._dispatch(harness)
+
+        assert first.error.startswith("limit_parked: provider_access_denied: ")
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == "provider_access_denied"
+        assert UsageWindowState.objects.count() == 1, "one refusal, one window — never one per task"
+        parked_until = window.resets_at
+
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.CLAIMED, not_before=None)
+        self.task.refresh_from_db()
+
+        with patch.object(harness, "open", wraps=harness.open) as open_spy:
+            second = self._dispatch(harness)
+
+        assert open_spy.call_count == 0, "the parked lane must not be re-probed — that is the burn"
+        assert second.error.startswith("limit_parked: ")
+        assert UsageWindowState.objects.count() == 1, "the second task adds no second window"
+        window.refresh_from_db()
+        assert window.resets_at == parked_until, "the park is not extended by a task that never ran"
+
+    def test_control_a_refused_run_with_auto_recovery_off_fails_naming_the_refusal(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
+
+        attempt = self._dispatch(PydanticAiHarness(model=_refused_model()))
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.FAILED
+        assert attempt.error.startswith("provider_access_denied: ")
         assert "Traceback" not in attempt.error
 
     def test_a_successful_run_stamps_the_real_turns_and_session_id_on_the_attempt(self) -> None:

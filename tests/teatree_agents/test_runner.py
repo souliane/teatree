@@ -1008,11 +1008,11 @@ def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> Non
     assert outcome.result_message.session_id == "s1"
 
 
-def test_attempt_usage_for_missing_message_is_empty() -> None:
+def test_attempt_usage_for_missing_message_records_nothing_but_says_the_spend_is_unknown() -> None:
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
     from teatree.agents.runner_usage import _attempt_usage  # noqa: PLC0415 — deferred: private helper
 
-    assert _attempt_usage(None) == AttemptUsage()
+    assert _attempt_usage(None) == AttemptUsage(usage_unknown=True)
 
 
 # --- _safe_int / _safe_float ---

@@ -26,9 +26,10 @@ from teatree.config.defaults_snapshot import (
 )
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
+from teatree.config.schema import _DEFAULTS_TOML, setting_meta
 from teatree.config.setting_groups import grouped_key_order
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.setting_taxonomy import Category
 from teatree.mcp.write_tools import refuse_reason
 
 

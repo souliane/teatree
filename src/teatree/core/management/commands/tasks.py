@@ -502,7 +502,7 @@ class Command(TyperCommand):
         except Exception:  # noqa: BLE001 — ANY SDK failure (startup/query/response) must be recorded durably, not escape.
             error = traceback.format_exc()
             logger.warning("Task %s: SDK headless run raised; recording a failed attempt", task.pk)
-            task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error})
+            task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error}, usage_unknown=True)
             return {"exit_code": "1", "sdk_error": error}
         return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
 

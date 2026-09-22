@@ -160,7 +160,7 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
         if subprocess_stderr:
             logger.exception("Task %s headless subprocess stderr:\n%s", task_obj.pk, subprocess_stderr)
             error = f"{error}\n--- claude subprocess stderr ---\n{subprocess_stderr}"
-        task_obj.complete_with_attempt(exit_code=1, error=error)
+        task_obj.complete_with_attempt(exit_code=1, error=error, usage_unknown=True)
         raise
     else:
         return {"attempt_id": attempt.pk, "exit_code": attempt.exit_code, "result": attempt.result}

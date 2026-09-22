@@ -2,7 +2,7 @@
 
 A terminal run can halt for several distinct exhaustion reasons that demand
 DIFFERENT remediations — conflating them sends the operator to the wrong fix.
-The four causes (see :class:`LimitCause`):
+The five causes (see :class:`LimitCause`):
 
 - API-key CREDIT exhaustion — the billed ``ANTHROPIC_API_KEY`` has a $0 balance;
     a real ``/v1/messages`` call returns HTTP 400 (credit balance too low). Fix:
@@ -12,8 +12,16 @@ The four causes (see :class:`LimitCause`):
     re-dispatching later works.
 - subscription WEEKLY limit — the 7-day window; hard, resets weekly.
 - transient API rate limit — HTTP 429; retry shortly.
+- provider ACCESS DENIED — HTTP 401/403, the metered lane's own refusal (a router key
+    at its cycle spend limit, a revoked key). No Anthropic phrase names it, so it is
+    classified from the HTTP status alone.
 
-Two inputs classify a signal, preferred in this order:
+Three inputs classify a signal, preferred in this order:
+
+- The HTTP STATUS on the terminal message — a hard 401/403 is a refusal whatever the
+    body says, and on a non-Anthropic provider the body is not this module's vocabulary
+    at all. Read by :func:`~teatree.agents.runner_failure_taxonomy.limit_match`, which
+    owns the message; this module supplies the cause it maps to.
 
 - The SDK's TYPED window — ``claude_agent_sdk.types.RateLimitInfo.rate_limit_type``
     (``five_hour`` / ``seven_day`` / ``seven_day_opus`` / ``seven_day_sonnet`` /
@@ -69,6 +77,7 @@ class LimitCause(Enum):
     SUBSCRIPTION_SESSION = "subscription_session"
     SUBSCRIPTION_WEEKLY = "subscription_weekly"
     RATE_LIMIT = "rate_limit"
+    PROVIDER_ACCESS_DENIED = "provider_access_denied"
 
 
 #: Phrase -> cause, ordered MOST-SPECIFIC first. Credit phrases precede every
@@ -121,6 +130,12 @@ _RATE_LIMIT_TYPE_CAUSES: dict[RateLimitType, LimitCause] = {
     "overage": LimitCause.API_CREDIT,
 }
 
+#: A hard refusal carries no window teatree can read, and the API_CREDIT shape (``None``)
+#: would wedge the lane until an operator noticed — so a transient 403 re-probes hourly
+#: instead, against the 224/hour the unclassified shape burned. Named rather than inlined
+#: below because it is also the unit the believable band is measured in.
+PROVIDER_ACCESS_DENIED_HORIZON = timedelta(hours=1)
+
 #: The known length of each subscription window, used as the re-arm horizon when a
 #: limit signal carries no structured ``resets_at`` (Directive #3 idle auto-recovery).
 #: A ``five_hour`` session window recovers ~5h after it was hit, the seven-day windows
@@ -132,7 +147,36 @@ WINDOW_HORIZON: dict[LimitCause, timedelta | None] = {
     LimitCause.SUBSCRIPTION_WEEKLY: timedelta(days=7),
     LimitCause.RATE_LIMIT: timedelta(minutes=5),
     LimitCause.API_CREDIT: None,
+    LimitCause.PROVIDER_ACCESS_DENIED: PROVIDER_ACCESS_DENIED_HORIZON,
 }
+
+#: The soonest a believed refusal reset may land. Nothing downstream raises a park's
+#: lower end past this: ``_future_park_instant`` clamps an ELAPSED instant to five minutes
+#: ahead, which is 12 re-probes an hour — and the body scan takes the FIRST ISO-8601
+#: instant it finds, which on a refusal body is as often the request's own ``created``
+#: stamp as the window's reset.
+REFUSAL_RESET_FLOOR = timedelta(minutes=5)
+
+#: The latest a believed refusal reset may land. Nothing downstream clamps a park's UPPER
+#: end at all — ``effective_resets_at`` returns the reported instant verbatim — so a body
+#: carrying a key's ``expires_at`` or an account's ``valid_until`` parked the metered lane
+#: for YEARS, with the low-power preset engaged for that whole tenure. A provider spend
+#: cycle is quoted in hours or days; past a day the number is a key lifetime, not a window.
+REFUSAL_RESET_CEILING = 24 * PROVIDER_ACCESS_DENIED_HORIZON
+
+
+def believable_refusal_reset(resets_at: float, *, now: float) -> int | None:
+    """*resets_at* as a Unix timestamp if it lands inside the believable band, else ``None``.
+
+    ``None`` is the SAFE answer: :func:`window_horizon` then supplies
+    :data:`PROVIDER_ACCESS_DENIED_HORIZON`, so an unbelievable figure costs one hour of
+    park and an hourly re-probe — the cheap direction to be wrong in, against a park of
+    years or a re-probe every five minutes.
+    """
+    ahead = resets_at - now
+    if REFUSAL_RESET_FLOOR.total_seconds() <= ahead <= REFUSAL_RESET_CEILING.total_seconds():
+        return int(resets_at)
+    return None
 
 
 def window_horizon(cause: LimitCause) -> timedelta | None:
@@ -149,7 +193,12 @@ def window_horizon(cause: LimitCause) -> timedelta | None:
 #: (#3407) may reopen once the horizon elapses. :data:`LimitCause.API_CREDIT` is excluded:
 #: a $0 balance has no timed reset, so a credit-killed task is never auto-requeued.
 RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = frozenset(
-    {LimitCause.SUBSCRIPTION_SESSION, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.RATE_LIMIT},
+    {
+        LimitCause.SUBSCRIPTION_SESSION,
+        LimitCause.SUBSCRIPTION_WEEKLY,
+        LimitCause.RATE_LIMIT,
+        LimitCause.PROVIDER_ACCESS_DENIED,
+    },
 )
 
 #: The stable signature substring an all-accounts-exhausted failure carries, SHARED by the
@@ -167,8 +216,8 @@ def recoverable_exhaustion_cause(error: str) -> LimitCause | None:
     A limit-killed attempt records its reason as ``"<cause>: <phrase> — <remediation>"``
     (:meth:`LimitMatch.as_reason`), so the token before the first ``:`` is the machine
     cause marker. This maps that marker back to its :class:`LimitCause`, but ONLY for a
-    cause with a time-based window reset (session / weekly / transient rate limit) — the
-    signal the idle auto-requeue (#3407) keys on. An all-accounts-exhausted failure
+    cause with a time-based window reset (session / weekly / transient rate limit /
+    provider refusal) — the signal the idle auto-requeue (#3407) keys on. An all-accounts-exhausted failure
     (:data:`ALL_TOKENS_EXHAUSTED_SIGNATURE`) is treated as the WEEKLY cause — the safe upper
     bound on when an account frees up — so a drained-lane task auto-requeues instead of
     escalating. Returns ``None`` for any non-limit error AND for API-credit exhaustion (no
@@ -200,6 +249,10 @@ _REMEDIATION: dict[LimitCause, str] = {
     ),
     LimitCause.SUBSCRIPTION_WEEKLY: ("subscription weekly limit reached — retry after the weekly reset"),
     LimitCause.RATE_LIMIT: ("Anthropic API rate limit hit (transient) — retry shortly"),
+    LimitCause.PROVIDER_ACCESS_DENIED: (
+        "the provider REFUSED the key (HTTP 401/403) — check its spend limit, cycle budget and "
+        "permissions in the provider console; the lane is parked and re-probes in an hour"
+    ),
 }
 
 

@@ -11,18 +11,24 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 
 import asyncio
 import json
+import re
+import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk.types import RateLimitInfo
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
+from teatree.agents.runner_failure_taxonomy import HARD_REFUSAL_STATUSES
+from teatree.llm.anthropic_limits import believable_refusal_reset
 
 if TYPE_CHECKING:
     from pydantic_ai import AgentRunResult
@@ -201,6 +207,21 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     return {model_name: {}}
 
 
+def _usage_payload(run_usage: RunUsage) -> dict[str, int]:
+    """The run's token counts in the ``ResultMessage.usage`` vocabulary the driver reads.
+
+    ONE mapping for the success and the error envelopes, because they diverged: the error
+    path carried no ``usage`` at all, so every provider/run failure on the metered lane
+    recorded no tokens even though the caller held the ``RunUsage`` all along (#4816).
+    """
+    return {
+        "input_tokens": run_usage.input_tokens,
+        "output_tokens": run_usage.output_tokens,
+        "cache_read_input_tokens": run_usage.cache_read_tokens,
+        "cache_creation_input_tokens": run_usage.cache_write_tokens,
+    }
+
+
 def _turns_made(run_usage: RunUsage) -> int:
     """The model requests the turn actually made — never zero.
 
@@ -213,6 +234,53 @@ def _turns_made(run_usage: RunUsage) -> int:
     ``1`` over-counted a multi-request run.
     """
     return max(run_usage.requests, 1)
+
+
+#: An ISO-8601 instant anywhere in a refusal body — the fallback when the router sends no
+#: ``Retry-After``. The observed shape is prose: ``"token cycle spend limit reached, resets
+#: at 2026-09-21T00:00:00Z"``, so the instant is extracted rather than parsed off a field.
+_ISO_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
+
+
+def _refusal_resets_at(exc: ModelHTTPError) -> int | None:
+    """When the provider says its refusal lifts, as a Unix timestamp — or ``None``.
+
+    Two rungs, structured first: ``Retry-After`` (which pydantic_ai already parses in both
+    its delta-seconds and HTTP-date forms), then an ISO-8601 instant in the body. BOTH are
+    bounded by :func:`believable_refusal_reset`, because neither is a window teatree can
+    verify and nothing downstream bounds a park at all: a body's first ISO-8601 instant is
+    as often the request's own ``created`` stamp as the reset, and a key ``expires_at``
+    parks the lane for years. Outside the band the answer is ``None``, which is SAFE
+    rather than a failure — ``effective_resets_at`` falls back to the cause's one-hour
+    horizon, so a rejected parse costs one extra hour of park and an accepted one is
+    capped at :data:`~teatree.llm.anthropic_limits.REFUSAL_RESET_CEILING`.
+    """
+    now = time.time()
+    if exc.retry_after is not None:
+        return believable_refusal_reset(now + exc.retry_after, now=now)
+    found = _ISO_INSTANT.search(str(exc.body or ""))
+    if found is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(found.group())
+    except ValueError:
+        return None
+    aware = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return believable_refusal_reset(aware.timestamp(), now=now)
+
+
+def _hard_refusal_event(exc: ModelHTTPError, *, session_id: str) -> RateLimitEvent | None:
+    """The rejected window a 401/403 carries, or ``None`` for every other status.
+
+    A hard refusal parks the LANE — so it rides the channel the driver already drains
+    (``_collect`` → ``outcome.rate_limit_info`` → ``UsageWindowState``) rather than a new
+    one. ``rate_limit_type`` stays unset: the provider named no Anthropic window, and
+    ``limit_match`` classifies this from the status before it ever reads the typed field.
+    """
+    if exc.status_code not in HARD_REFUSAL_STATUSES:
+        return None
+    info = RateLimitInfo(status="rejected", resets_at=_refusal_resets_at(exc), raw={"status": exc.status_code})
+    return RateLimitEvent(rate_limit_info=info, uuid=uuid.uuid4().hex, session_id=session_id)
 
 
 class PydanticAiHarnessSession:
@@ -387,20 +455,28 @@ class PydanticAiHarnessSession:
             # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
             # FAILED, NOT a park: its message names no rate/usage-limit phrase, so
             # ``classify_limit`` never mistakes it for a recoverable window.
-            yield self._error_result(exc, subtype="error_max_turns", num_turns=_turns_made(run_usage))
+            yield self._error_result(
+                exc, subtype="error_max_turns", num_turns=_turns_made(run_usage), run_usage=run_usage
+            )
             return
         except ModelHTTPError as exc:
+            refusal = _hard_refusal_event(exc, session_id=self._session_id)
+            if refusal is not None:
+                yield refusal
             yield self._error_result(
                 exc,
                 subtype="error_during_execution",
                 num_turns=_turns_made(run_usage),
+                run_usage=run_usage,
                 api_error_status=exc.status_code,
             )
             return
         except (ModelAPIError, UnexpectedModelBehavior) as exc:
             # A provider/run error with no HTTP status (``ContentFilterError`` is a
             # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
-            yield self._error_result(exc, subtype="error_during_execution", num_turns=_turns_made(run_usage))
+            yield self._error_result(
+                exc, subtype="error_during_execution", num_turns=_turns_made(run_usage), run_usage=run_usage
+            )
             return
         all_messages = run_result.all_messages()
         self._history = all_messages
@@ -413,6 +489,7 @@ class PydanticAiHarnessSession:
                 ),
                 subtype=MAX_TOKENS_TRUNCATION_SUBTYPE,
                 num_turns=run_usage.requests,
+                run_usage=run_usage,
             )
             return
         # Surface this turn's tool calls/results in the seam's tool-block
@@ -435,18 +512,19 @@ class PydanticAiHarnessSession:
             # one, so the attempt records the real figure (flagged not-estimated) instead of
             # the price-table guess; ``None`` (the common case) falls back to the estimate.
             total_cost_usd=_router_reported_cost(run_usage),
-            usage={
-                "input_tokens": run_usage.input_tokens,
-                "output_tokens": run_usage.output_tokens,
-                "cache_read_input_tokens": run_usage.cache_read_tokens,
-                "cache_creation_input_tokens": run_usage.cache_write_tokens,
-            },
+            usage=_usage_payload(run_usage),
             result=text,
             model_usage=_model_identity_usage(self._model_name),
         )
 
     def _error_result(
-        self, exc: Exception, *, subtype: str, num_turns: int, api_error_status: int | None = None
+        self,
+        exc: Exception,
+        *,
+        subtype: str,
+        num_turns: int,
+        run_usage: RunUsage,
+        api_error_status: int | None = None,
     ) -> ResultMessage:
         """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
 
@@ -456,6 +534,10 @@ class PydanticAiHarnessSession:
         transport. ``api_error_status`` carries the HTTP status for a
         :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by
         ``error_result_reason``), ``None`` otherwise.
+
+        *run_usage* is the caller's own ``RunUsage`` — pydantic_ai adopts and mutates it
+        in place, so the turns a failed run already billed are MEASURED here, never
+        dropped. A run refused before its first request reports the provider's own zeros.
         """
         return ResultMessage(
             subtype=subtype,
@@ -464,6 +546,8 @@ class PydanticAiHarnessSession:
             is_error=True,
             num_turns=num_turns,
             session_id=self._session_id,
+            total_cost_usd=_router_reported_cost(run_usage),
+            usage=_usage_payload(run_usage),
             result=str(exc),
             api_error_status=api_error_status,
             model_usage=_model_identity_usage(self._model_name),

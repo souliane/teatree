@@ -250,6 +250,11 @@ class TaskAttempt(models.Model):
     # billed figure. ``t3 cost`` annotates estimated spend so a router-lane run's real
     # cost is distinguishable from a price-table guess.
     cost_is_estimated = models.BooleanField(default=True)
+    # #4816: turns RAN but their spend is unreadable. NULL tokens alone cannot say
+    # this — they also mean a pre-turn park that genuinely billed nothing — so a
+    # ledger reading NULL as zero silently understates the metered lane. True marks
+    # the recorded spend as a FLOOR; a zero here would be a measurement nobody made.
+    usage_unknown = models.BooleanField(default=False)
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
@@ -312,6 +317,10 @@ class TaskAttempt(models.Model):
                 ],
                 name="taskattempt_cost_cover",
             ),
+            # The metered ledger's window sum (``admission.metered_spend._window_totals``)
+            # filters on exactly this pair, and it runs on EVERY admission verdict. The
+            # cover index above leads on ``started_at``, so nothing seeks this predicate.
+            models.Index(fields=["lane", "ended_at"], name="taskattempt_lane_ended"),
         )
 
     def __str__(self) -> str:
