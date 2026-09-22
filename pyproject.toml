@@ -50,7 +50,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
-  "django>=6,<6.2",
+  "django>=6.1,<6.2",
   "django-fsm-2>=4,<5",
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
@@ -192,8 +192,8 @@ dev = [
   # to django-typer 3.5.1, which pulls ``typer-slim`` and ``click<8.4`` instead.
   # That combination hands the CLI ``typer._click`` Command objects while the code
   # reads the real ``click`` context stack, so every command dies with "There is no
-  # active click context" (#4570). 3.5.1 also caps ``django<6.1``, which would block
-  # the Django 6.1 move #4404 owns. Raise this ceiling only together with a django-typer
+  # active click context" (#4570). 3.5.1 also caps ``django<6.1``, which the Django
+  # window no longer admits. Raise this ceiling only together with a django-typer
   # release that supports the newer typer.
   "typer>=0.12,<0.26",
 ]

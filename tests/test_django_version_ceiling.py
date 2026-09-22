@@ -8,14 +8,12 @@ weekly ``uv lock --upgrade`` takes 6.0.8 (the in-series patch) under ``<6.1``
 and 6.1 (a new feature series) under ``<6.2``.
 
 So this file is a ratchet, not a style check: the pinned constants below make a
-one-character edit RED and name #4404 — which owns the deliberate Python 3.14 +
-Django 6.1 move, including its branch-protection ordering — as the only place an
-intentional change is decided. Moving the pin here without moving it there is
-the failure mode.
+one-character edit RED and name the issue that owns the Django window as the
+only place an intentional change is decided. Moving the pin here without moving
+it there is the failure mode.
 
 The window invariant is the second half: a pin is only safe if it admits exactly
-ONE feature series, so ``>=6,<6.2`` stays RED even after #4404 bumps the
-constants to the next series.
+ONE feature series, so ``>=6,<6.2`` stays RED however the constants move.
 """
 
 import re
@@ -25,14 +23,13 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 
-PINNED_DJANGO_FLOOR = (6, 0)
-PINNED_DJANGO_CEILING = (6, 1)
-CEILING_OWNER = "https://github.com/souliane/teatree/issues/4404"
+PINNED_DJANGO_FLOOR = (6, 1)
+PINNED_DJANGO_CEILING = (6, 2)
+CEILING_OWNER = "https://github.com/souliane/teatree/issues/4809"
 
 _OWNER_HINT = (
-    f"Any intentional change to the Django window is owned by {CEILING_OWNER} "
-    "(the deliberate Python 3.14 + Django 6.1 move, including branch-protection "
-    "ordering). Update the pin there, with that issue, not in a dependency bump."
+    f"Any intentional change to the Django window is owned by {CEILING_OWNER}. "
+    "Update the pin there, with that issue, not in a dependency bump."
 )
 
 
