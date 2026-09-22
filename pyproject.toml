@@ -762,7 +762,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
 # replaced with the project's own `mcp>=2,<3` for the two to resolve together.
-# 0.2.152 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# 0.2.156 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
 # The wide bound is safe rather than merely resolvable because the SDK reaches
