@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
@@ -296,7 +297,7 @@ class TestCredentiallessSlackOverlayCarriesNoTransport:
     def test_resolver_refuses_loudly_instead_of_handing_back_the_degraded_noop(self) -> None:
         with (
             _patch_overlay(_SlackOverlay),
-            pytest.raises(RuntimeError, match="No registered overlay declares a configured Slack messaging backend"),
+            pytest.raises(ToolError, match="No registered overlay declares a configured Slack messaging backend"),
         ):
             resolve_declaring_overlay_client(
                 Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
