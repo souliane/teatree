@@ -19,7 +19,7 @@ from teatree.core.signals import _auto_enqueue_task
 from teatree.core.tasks import drain_queue_body
 from tests.teatree_core.conftest import CommandOverlay
 
-IMMEDIATE_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}}}
+IMMEDIATE_BACKEND = {"TASKS": {"default": {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}}}
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 

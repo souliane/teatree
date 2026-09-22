@@ -82,7 +82,7 @@ def unscheduled_loops(now: dt.datetime) -> tuple[UnscheduledLoop, ...]:
     Empty while the ``loop_runner_enabled`` kill-switch is OFF — a drained fleet is
     then the operator's own decision, not a stopped chain (see the module docstring).
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 

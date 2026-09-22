@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 from django.db import connection
+from django.tasks import TaskResultStatus
 from django.test import TestCase, override_settings
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.tasks import refresh_followup_snapshot

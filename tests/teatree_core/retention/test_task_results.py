@@ -9,9 +9,9 @@ lying report), and a READY/RUNNING row is never touched.
 
 import datetime as dt
 
+from django.tasks import TaskResultStatus
 from django.test import TestCase, override_settings
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.retention.task_results import (

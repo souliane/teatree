@@ -34,8 +34,8 @@ import uuid
 import django.test
 import pytest
 import typer
+from django.tasks import TaskResultStatus
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, normalize_uuid
 from typer.testing import CliRunner
 

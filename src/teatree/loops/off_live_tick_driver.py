@@ -83,8 +83,8 @@ def off_live_tick_commands() -> list[tuple[str, tuple[str, ...], float]]:
 
 
 def _pending_drive() -> bool:
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     return DBTaskResult.objects.filter(
         task_path=drive_off_live_tick_loops.module_path, status=TaskResultStatus.READY

@@ -99,8 +99,8 @@ def ensure_loop_timers() -> dict[str, int]:
     resume, :func:`teatree.loops.preset_transitions.apply_preset_transition` calls it on a
     mode switch, and the 5-minute reconcile chain is the backstop.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loops.schedule_liveness import (  # noqa: PLC0415 — deferred: breaks the liveness/reconciler import cycle
@@ -148,8 +148,8 @@ def ensure_loop_timers() -> dict[str, int]:
 
 
 def _pending_for_path(path: str) -> bool:
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
@@ -160,7 +160,7 @@ def _finished_within(path: str, seconds: int) -> dt.datetime | None:
     The window is in the filter rather than applied to a newest-first scan so
     the query stays bounded to the few rows the interval can hold.
     """
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     cutoff = timezone.now() - dt.timedelta(seconds=seconds)
     return (
@@ -314,8 +314,8 @@ def reap_stuck_runs() -> dict[str, int]:
     stalled-but-alive run is left entirely alone — nothing failed, nothing enqueued — so
     the concurrent-worktree hazard cannot arise from this reaper.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: task-body import

@@ -69,7 +69,6 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django_linear_migrations",
     "django_rich",
-    "django_tasks",
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",

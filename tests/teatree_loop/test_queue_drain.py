@@ -20,9 +20,9 @@ from unittest.mock import patch
 import pytest
 from django.core.management import call_command
 from django.db.utils import OperationalError
+from django.tasks import TaskResultStatus
 from django.test import override_settings
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.models import LoopLease

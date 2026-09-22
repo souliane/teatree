@@ -25,7 +25,7 @@ import datetime as dt
 from typing import TYPE_CHECKING
 
 from django.core.management import call_command
-from django_tasks import DEFAULT_TASK_BACKEND_ALIAS
+from django.tasks import DEFAULT_TASK_BACKEND_ALIAS
 
 if TYPE_CHECKING:
     from django_tasks_db.models import DBTaskResultQuerySet
@@ -43,8 +43,8 @@ def task_results_are_stored_in_the_db() -> bool:
     inapplicable rather than taking the whole retention pass down with a
     ``CommandError`` — the other lanes' work is unrelated to this one's dependency.
     """
-    from django_tasks import task_backends  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.backend import DatabaseBackend  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import task_backends  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.backend import DatabaseBackend  # noqa: PLC0415 — deferred: Django import at call time
 
     return isinstance(task_backends[DEFAULT_TASK_BACKEND_ALIAS], DatabaseBackend)
 
@@ -55,7 +55,7 @@ def prunable_task_results(cutoff: dt.datetime) -> "DBTaskResultQuerySet":
     A READY or RUNNING row is never in the set: ``finished()`` is the library's own
     successful-or-failed predicate, and it is the same one the delete resolves through.
     """
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     return DBTaskResult.objects.finished().filter(
         backend_name=DEFAULT_TASK_BACKEND_ALIAS,
@@ -70,7 +70,7 @@ def prune_finished_task_results(*, days: int) -> int:
     reports what actually happened even if the library's predicate differs from
     :func:`prunable_task_results`.
     """
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     before = DBTaskResult.objects.count()
     call_command("prune_db_task_results", min_age_days=days, queue_name=_ALL_QUEUES, verbosity=0)

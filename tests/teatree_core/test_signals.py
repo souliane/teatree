@@ -40,7 +40,7 @@ def _patch_approval_publisher(fn: Callable[..., int]) -> AbstractContextManager[
 IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
             # Mirror the QUEUES allowlist from tests/django_settings.py — a task
             # defined with a non-default queue_name (the loop-timer chains' "loops"
             # queue) validates that name against this backend's queues at import.

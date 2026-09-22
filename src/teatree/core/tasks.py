@@ -413,9 +413,9 @@ class TeardownDispatch:
         rather than raises when it leaves a worktree standing (#706/#707), so
         SUCCESSFUL routinely means "ran, and the worktree is still there".
         """
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
         from django.utils import timezone  # noqa: PLC0415 — deferred: keeps the module import Django-light
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
         rows = DBTaskResult.objects.filter(
             task_path=TeardownDispatch.TASK_PATH,

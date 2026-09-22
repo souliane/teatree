@@ -30,4 +30,4 @@ def _shippable_ticket() -> Ticket:
     return ticket
 
 
-_SHIP_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}}}
+_SHIP_BACKEND = {"TASKS": {"default": {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}}}

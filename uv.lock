@@ -682,20 +682,6 @@ wheels = [
 ]
 
 [[package]]
-name = "django-tasks"
-version = "0.12.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "django" },
-    { name = "django-stubs-ext" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/6e/34d4e77bb7951e5a5acbd846f43240f062c68bb04d9c246cb446a55d4cbc/django_tasks-0.12.0.tar.gz", hash = "sha256:58be66c1e487da32a3ce7320bd1949d0d1dc381b9004819f92591eb37fb2c1b8", size = 15445, upload-time = "2026-02-06T16:15:33.593Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/e7/40c45768e84efd77e3ae6ffdcd2b5540011036cbb00c6df6ef2a2ad69551/django_tasks-0.12.0-py3-none-any.whl", hash = "sha256:ffcc1d7bdfad3bc5ef9c2d498596c6546484c9ec6b182fb9709c691eb66a8709", size = 15758, upload-time = "2026-02-06T16:15:32.168Z" },
-]
-
-[[package]]
 name = "django-tasks-db"
 version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3297,7 +3283,6 @@ dependencies = [
     { name = "django-fsm-2" },
     { name = "django-linear-migrations" },
     { name = "django-rich" },
-    { name = "django-tasks" },
     { name = "django-tasks-db" },
     { name = "django-typer" },
     { name = "gunicorn" },
@@ -3376,8 +3361,7 @@ requires-dist = [
     { name = "django-fsm-2", specifier = ">=4,<5" },
     { name = "django-linear-migrations", specifier = ">=2.19" },
     { name = "django-rich", specifier = ">=2.2" },
-    { name = "django-tasks", specifier = ">=0.9,<1" },
-    { name = "django-tasks-db", specifier = ">=0.12,<0.14" },
+    { name = "django-tasks-db", specifier = ">=0.13,<0.14" },
     { name = "django-typer", specifier = ">=3.3,<4" },
     { name = "gunicorn", specifier = ">=23" },
     { name = "httpx", specifier = ">=0.27" },

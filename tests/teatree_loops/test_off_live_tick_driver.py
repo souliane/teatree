@@ -11,8 +11,8 @@ subprocess runner stubbed so no real tick is spawned.
 import unittest.mock
 
 import django.test
+from django.tasks import TaskResultStatus
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.loops import off_live_tick_driver

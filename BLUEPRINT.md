@@ -727,7 +727,7 @@ The same resolver reaches two surfaces the markdown walk cannot read. The charte
 
 **>90% branch coverage, non-negotiable** (`fail_under = 93, branch = true`). Omits only migrations.
 
-- In-memory SQLite (`:memory:`) for isolation and speed; `django_tasks.backends.immediate` for synchronous task execution
+- In-memory SQLite (`:memory:`) for isolation and speed; `django.tasks.backends.immediate` for synchronous task execution
 - `conftest.py` monkeypatches `HOME`/`XDG_*` to `tmp_path`, strips `GIT_*`, isolates overlay env, resets backend + overlay caches between tests
 - Tests mirror `src/` paths under `tests/teatree_core/`, `tests/teatree_agents/`, `tests/teatree_backends/`, `tests/teatree_loop/`, plus top-level cross-cutting suites
 - New tests lean integration / E2E / functional (Django test client, `call_command`, real `git` under `tmp_path`); unit tests are reserved for pure logic, and only unstoppable externals are mocked
@@ -786,8 +786,7 @@ django>=6,<6.1
 django-fsm-2>=4
 django-linear-migrations>=2.19
 django-rich>=2.2
-django-tasks>=0.9
-django-tasks-db>=0.12
+django-tasks-db>=0.13
 django-typer>=3.3
 gunicorn>=23
 httpx>=0.27

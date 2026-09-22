@@ -53,14 +53,9 @@ dependencies = [
   "django-fsm-2>=4,<5",
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
-  "django-tasks>=0.9,<1",
-  # 0.13.0 collapses ``compat.TASK_CLASSES`` to the single ``django.tasks.base.Task``
-  # arm, dropping the third-party ``django_tasks.base.Task`` one. A ``@task``'s class
-  # is fixed at import time by the configured backend, and tests/django_settings.py
-  # pins ``django_tasks.backends.dummy.DummyBackend``, so ours are the dropped class
-  # and every enqueue raises SuspiciousOperation from ``DBTaskResult.task``.
-  # Lift only with the migration off the third-party ``django_tasks`` app.
-  "django-tasks-db>=0.12,<0.14",
+  # 0.13 resolves ``Task``, signals and statuses from Django's built-in
+  # ``django.tasks`` only, so every backend and import here is ``django.tasks``.
+  "django-tasks-db>=0.13,<0.14",
   "django-typer>=3.3,<4",
   # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn (a production
   # WSGI server, not Django's dev ``runserver``) — a RUNTIME command path, so it

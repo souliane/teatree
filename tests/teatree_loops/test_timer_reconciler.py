@@ -13,8 +13,8 @@ from pathlib import Path
 from unittest import mock
 
 import django.test
+from django.tasks import TaskResultStatus
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core import mode_resolution

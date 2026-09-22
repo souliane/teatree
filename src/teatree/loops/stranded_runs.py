@@ -48,6 +48,7 @@ liveness.
 
 import datetime as dt
 import logging
+from uuid import UUID
 
 from django.db import transaction
 from django.db.utils import OperationalError
@@ -126,15 +127,15 @@ def _carrier_is_gone(worker_id: str) -> bool:
     return owner_pid_is_dead(pid)
 
 
-def _fail_if_still_running(row_id: str, reason: StrandedRunError) -> bool:
+def _fail_if_still_running(row_id: UUID, reason: StrandedRunError) -> bool:
     """Mark one row FAILED only while it is STILL RUNNING; return whether it did.
 
     ``set_failed`` is an unconditional save, so retiring the instance the scan read would
     clobber a row that finished in between. Re-reading inside the write transaction turns
     that into a compare-and-swap, mirroring :func:`~teatree.loop.queue_drain._fail_if_still_ready`.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         with transaction.atomic():
@@ -154,8 +155,8 @@ def reap_stranded_runs(now: dt.datetime | None = None) -> dict[str, int]:
     FAILED is reversible and auditable — the row, its args and the reason all survive — so
     a ceiling that proves too tight is recoverable by re-enqueue rather than by archaeology.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: task-body import
 

@@ -31,7 +31,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django_linear_migrations",
     "django_rich",
-    "django_tasks",
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",
@@ -68,7 +67,7 @@ TEMPLATES = [
 
 TASKS = {
     "default": {
-        "BACKEND": "django_tasks.backends.dummy.DummyBackend",
+        "BACKEND": "django.tasks.backends.dummy.DummyBackend",
         # Mirror the production ``teatree.settings`` allowlist: "loops" is the
         # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
         "QUEUES": ["default", "loops"],

@@ -147,7 +147,7 @@ class TestChain(django.test.TestCase):
         DBTaskResult.objects.all().delete()
 
     def _pending(self) -> int:
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — test-local heavy dep
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — test-local heavy dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — test-local heavy dep
 
         return DBTaskResult.objects.filter(

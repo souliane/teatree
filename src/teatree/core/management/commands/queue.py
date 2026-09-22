@@ -16,6 +16,7 @@ from collections import Counter
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
+from django.tasks import DEFAULT_TASK_QUEUE_NAME, TaskResultStatus
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
@@ -41,8 +42,7 @@ class Command(TyperCommand):
         ] = False,
     ) -> QueueStatus:
         """Print the queue breakdown by status, and READY jobs by task name."""
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
         total = DBTaskResult.objects.count()
         by_status = {str(value): DBTaskResult.objects.filter(status=value).count() for value in TaskResultStatus.values}
@@ -84,9 +84,7 @@ class Command(TyperCommand):
         import datetime as dt  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-        from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
         from teatree.loop.queue_drain import (  # noqa: PLC0415 — deferred: keeps command import light
             expire_stale_default_jobs,
