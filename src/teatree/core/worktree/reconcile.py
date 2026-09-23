@@ -402,31 +402,51 @@ def _default_target_ref(repo: Path) -> str:
 
 @dataclass(frozen=True, slots=True)
 class WorkStateScope:
-    """The reads a work-state probe would repeat per ticket, resolved once for a sweep.
+    """The reads a work-state probe would repeat per ticket.
 
     Two distinct workspace roots live here and must not be conflated:
     ``clone_workspace`` (:func:`clone_root`) locates the bare clones the
     done-but-unmerged probe reads, while ``worktree_workspace``
     (:func:`worktree_root`) is the tree the checked-out worktrees live in.
+
+    The two whole-table reads below are what a sweep amortises and a single-ticket
+    caller must not pay: pre-read once by :meth:`whole_board`, left unread by
+    :meth:`per_ticket` so the accessors fall back to a read scoped to the ticket
+    that asked — and, for the merge audit, to the done-claiming tickets that
+    reach it at all.
     """
 
     clone_workspace: Path
     worktree_workspace: Path
-    materialised_paths: tuple[str, ...]
     #: Tickets a ``MergeAudit`` records a real merged SHA for — the spoof-proof
     #: evidence the merge keystone writes atomically with the merge (§17.4.4).
-    merge_evidenced_tickets: frozenset[int]
+    board_merge_evidenced_tickets: frozenset[int] | None = None
+    board_materialised_paths: tuple[str, ...] | None = None
 
     @classmethod
-    def resolve(cls) -> "WorkStateScope":
+    def per_ticket(cls) -> "WorkStateScope":
+        return cls(clone_workspace=clone_root(), worktree_workspace=worktree_root())
+
+    @classmethod
+    def whole_board(cls) -> "WorkStateScope":
         return cls(
             clone_workspace=clone_root(),
             worktree_workspace=worktree_root(),
-            materialised_paths=tuple(materialised_worktree_paths()),
-            merge_evidenced_tickets=frozenset(
+            board_merge_evidenced_tickets=frozenset(
                 MergeAudit.objects.exclude(merged_sha="").values_list("clear__ticket_id", flat=True)
             ),
+            board_materialised_paths=tuple(materialised_worktree_paths()),
         )
+
+    def has_merge_evidence(self, ticket: Ticket) -> bool:
+        if self.board_merge_evidenced_tickets is not None:
+            return ticket.pk in self.board_merge_evidenced_tickets
+        return MergeAudit.objects.filter(clear__ticket=ticket).exclude(merged_sha="").exists()
+
+    def materialised_paths(self) -> tuple[str, ...]:
+        if self.board_materialised_paths is not None:
+            return self.board_materialised_paths
+        return tuple(materialised_worktree_paths())
 
 
 def _done_but_unmerged_for_ticket(
@@ -442,7 +462,7 @@ def _done_but_unmerged_for_ticket(
     """
     if str(ticket.state) not in _DONE_CLAIMING_STATES:
         return None
-    if ticket.pk in scope.merge_evidenced_tickets:
+    if scope.has_merge_evidence(ticket):
         return None
     verdicts: list[tuple[str, RedundancyVerdict]] = []
     for wt in worktrees:
@@ -483,7 +503,7 @@ def _duplicate_scope_for_ticket(
         issue_number,
         own_path=own,
         workspace_dir=scope.worktree_workspace,
-        materialised_paths=scope.materialised_paths,
+        materialised_paths=scope.materialised_paths(),
     )
     if not foreign:
         return None
@@ -511,7 +531,7 @@ def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Work
 def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
-    scope = WorkStateScope.resolve()
+    scope = WorkStateScope.per_ticket()
     worktrees = list(Worktree.objects.for_ticket(ticket))
 
     for wt in worktrees:
@@ -588,7 +608,7 @@ def reconcile_work_state_ticket(ticket: Ticket) -> Drift:
     """
     drift = Drift(ticket_pk=ticket.pk)
     worktrees = list(Worktree.objects.for_ticket(ticket))
-    _collect_work_state_drift(drift, ticket, worktrees, WorkStateScope.resolve())
+    _collect_work_state_drift(drift, ticket, worktrees, WorkStateScope.per_ticket())
     return drift
 
 
@@ -599,7 +619,7 @@ def reconcile_work_state_all() -> dict[int, Drift]:
     rows are read once here rather than per ticket — the per-ticket entry point
     above pays for its own because it answers about one ticket.
     """
-    scope = WorkStateScope.resolve()
+    scope = WorkStateScope.whole_board()
     worktrees_by_ticket: dict[int, list[Worktree]] = defaultdict(list)
     for wt in Worktree.objects.all():
         worktrees_by_ticket[wt.ticket_id].append(wt)
