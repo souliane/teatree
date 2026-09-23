@@ -3362,7 +3362,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "django", specifier = ">=6.1,<6.2" },
     { name = "django-fsm-2", specifier = ">=4,<5" },
-    { name = "django-linear-migrations", specifier = ">=2.19" },
+    { name = "django-linear-migrations", specifier = ">=2.19,<3" },
     { name = "django-rich", specifier = ">=2.2" },
     { name = "django-tasks-db", specifier = ">=0.13,<0.14" },
     { name = "django-typer", specifier = ">=3.3,<4" },

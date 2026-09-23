@@ -25,10 +25,13 @@ from pathlib import Path
 import django.conf
 from django.conf import settings
 from django.core.checks import run_checks
+from django.core.management import get_commands, load_command_class
 from django.db.migrations.loader import MigrationLoader
 from django.db.migrations.migration import Migration
 from django.test import override_settings
+from django_linear_migrations.management.commands.makemigrations import Command as LinearMigrationsMakeMigrations
 
+from teatree.core.management.commands.makemigrations import Command as TeatreeMakeMigrations
 from tests.teatree_core._migration_graph import CORE_MIGRATIONS_DIR
 
 _CORE_MAX_MIGRATION_TXT = CORE_MIGRATIONS_DIR / "max_migration.txt"
@@ -156,6 +159,24 @@ def test_dlm_installed_and_live_core_graph_is_clean() -> None:
         "live core max_migration.txt must be a single line"
     )
     assert _dlm_error_ids() == [], "the live migration graph must be dlm-clean"
+
+
+def test_the_makemigrations_shadow_keeps_the_dlm_bookkeeping() -> None:
+    """``teatree.core`` shadows ``makemigrations`` to keep its checks off the database.
+
+    The shadow must extend django-linear-migrations' own override, not Django's:
+    subclassing Django's directly resolves and runs fine, and silently stops
+    writing ``max_migration.txt`` — the sentinel every dlm error above reads.
+    """
+    resolved = load_command_class(get_commands()["makemigrations"], "makemigrations")
+
+    assert isinstance(resolved, TeatreeMakeMigrations), (
+        f"teatree.core must win the makemigrations lookup; got {type(resolved)}"
+    )
+    assert isinstance(resolved, LinearMigrationsMakeMigrations), (
+        "the shadow must subclass django-linear-migrations' makemigrations, or max_migration.txt stops being written"
+    )
+    assert resolved.get_check_kwargs({})["databases"] == [], "the shadow's system checks must name no database"
 
 
 def test_live_core_graph_is_linear_by_dependency() -> None:

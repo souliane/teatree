@@ -67,6 +67,20 @@ def test_an_ordinary_command_still_opens_the_database_in_its_checks(tmp_path: Pa
     assert "unable to open database file" in result.stderr
 
 
+def test_the_migration_graph_gate_runs_where_no_database_can_be_opened() -> None:
+    """CI's lint venue runs ``makemigrations --check`` with no openable database file.
+
+    Django's own ``handle()`` degrades the consistent-history probe to a warning
+    there, so the only thing that can kill the gate is its system checks naming
+    every configured database.
+    """
+    result = _run("makemigrations", "--check", "--dry-run")
+
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "No changes detected" in result.stdout, result.stdout
+
+
 def test_the_migration_graph_hook_runs_where_no_database_can_be_opened() -> None:
     result = _run(script=_RUN_HOOK_WITH_UNOPENABLE_DB)
 

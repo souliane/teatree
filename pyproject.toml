@@ -52,7 +52,9 @@ dependencies = [
   "croniter>=6.2.2",
   "django>=6.1,<6.2",
   "django-fsm-2>=4,<5",
-  "django-linear-migrations>=2.19",
+  # Bounded below the next major because teatree.core shadows its
+  # ``makemigrations`` by submodule path, and majors relocate module trees.
+  "django-linear-migrations>=2.19,<3",
   "django-rich>=2.2",
   # 0.13 resolves ``Task``, signals and statuses from Django's built-in
   # ``django.tasks`` only, so every backend and import here is ``django.tasks``.

@@ -29,10 +29,11 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
+    # First app listed wins a duplicated command: this one shadows `makemigrations` with db-free checks.
+    "teatree.core",
     "django_linear_migrations",
     "django_rich",
     "django_tasks_db",
-    "teatree.core",
     "teatree.agents",
     "teatree.backends",
     "teatree.dash",
