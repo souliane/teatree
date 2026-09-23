@@ -166,3 +166,79 @@ class TestCompactionPolicy:
         )
         for phase in ("coding", "testing", "shipping"):
             assert CompactionPolicy.for_phase(phase).keep_recent == DEFAULT_KEEP_RECENT
+
+
+def _big_return(call_id: str, size: int = 50_000) -> ModelRequest:
+    return ModelRequest(parts=[ToolReturnPart(tool_name="Bash", content="x" * size, tool_call_id=call_id)])
+
+
+def _tool_trajectory(turns: int, *, size: int = 50_000) -> list[ModelMessage]:
+    """A ``turns``-turn call→return trajectory, short enough that the message trim never engages."""
+    history: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="task")])]
+    for i in range(turns):
+        history.extend((_tool_call(f"c{i}"), _big_return(f"c{i}", size)))
+    return history
+
+
+def _returned(msgs: list[ModelMessage]) -> list[ToolReturnPart]:
+    return [p for m in msgs if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, ToolReturnPart)]
+
+
+def _chars(msgs: list[ModelMessage]) -> int:
+    return sum(len(p.model_response_str()) for p in _returned(msgs))
+
+
+class TestStaleToolResultsAreElided:
+    """A ≤20-turn run is never message-trimmed, yet re-sends every tool result (#4816)."""
+
+    def test_a_short_trajectory_the_trim_never_touches_is_still_shrunk(self) -> None:
+        history = _tool_trajectory(20)
+        assert len(history) <= DEFAULT_KEEP_RECENT + 1  # the message trim provably does not engage
+        assert _chars(compact_history(history, policy=CompactionPolicy())) < _chars(history) * 0.2
+
+    def test_the_most_recent_results_stay_verbatim(self) -> None:
+        history = _tool_trajectory(20)
+        out = compact_history(history, policy=CompactionPolicy(keep_tool_results=6))
+        assert [p.content for p in _returned(out[-6:])] == [p.content for p in _returned(history[-6:])]
+
+    def test_the_pinned_head_is_never_touched(self) -> None:
+        history = _tool_trajectory(20)
+        history[0] = _big_return("head-call")
+        assert compact_history(history, policy=CompactionPolicy())[0] is history[0]
+
+    def test_the_stub_names_the_size_the_tool_and_the_recovery(self) -> None:
+        out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())
+        stub = str(_returned(out)[0].content)
+        assert "50000 chars" in stub
+        assert "`Bash`" in stub
+        assert "Re-run it" in stub
+
+    def test_the_call_return_pairing_survives(self) -> None:
+        out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())
+        assert _orphaned_return_ids(out) == []
+        assert [p.tool_call_id for p in _returned(out)] == [f"c{i}" for i in range(20)]
+
+    def test_a_result_smaller_than_its_stub_is_left_alone(self) -> None:
+        history = _tool_trajectory(20, size=3)
+        assert compact_history(history, policy=CompactionPolicy()) == history
+
+    def test_zero_disables_the_pass(self) -> None:
+        history = _tool_trajectory(20)
+        assert compact_history(history, policy=CompactionPolicy(keep_tool_results=0)) == history
+
+    def test_the_caller_history_is_not_mutated(self) -> None:
+        history = _tool_trajectory(20)
+        before = _chars(history)
+        compact_history(history, policy=CompactionPolicy())
+        assert _chars(history) == before
+
+    def test_elision_also_applies_after_a_long_history_trim(self) -> None:
+        history = _tool_trajectory(60)
+        out = compact_history(history, policy=CompactionPolicy(keep_recent=20))
+        assert len(out) <= 21
+        assert _chars(out) < _chars(history[-20:]) / 2
+
+    def test_the_per_phase_override_is_read(self) -> None:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(compaction_mod.cold_reader, "read_setting", lambda key: {"coding": 2} if "tool" in key else None)
+            assert CompactionPolicy.for_phase("coding").keep_tool_results == 2

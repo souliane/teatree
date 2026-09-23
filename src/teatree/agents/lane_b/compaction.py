@@ -16,7 +16,7 @@ drops the orphaned leading tool-result messages so the kept window always opens
 on a valid call→return pairing.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
@@ -37,6 +37,14 @@ DEFAULT_KEEP_RECENT = 40
 #: :mod:`teatree.config.cold_reader`; an absent/garbled value leaves the default.
 _COMPACTION_KEEP_RECENT_KEY = "agent_compaction_keep_recent"
 
+#: How many trailing messages keep their tool results verbatim. Well under
+#: :data:`DEFAULT_KEEP_RECENT`, because the whole-message trim never engages on a
+#: run of 20 turns while the tool results in it are re-sent on every request.
+DEFAULT_KEEP_TOOL_RESULTS = 6
+
+#: The DB ``ConfigSetting`` key for the per-phase ``keep_tool_results`` override map.
+_COMPACTION_KEEP_TOOL_RESULTS_KEY = "agent_compaction_keep_tool_results"
+
 
 @dataclass(frozen=True, slots=True)
 class CompactionPolicy:
@@ -53,28 +61,31 @@ class CompactionPolicy:
 
     keep_recent: int = DEFAULT_KEEP_RECENT
     pin_head: bool = True
+    keep_tool_results: int = DEFAULT_KEEP_TOOL_RESULTS
 
     @classmethod
     def for_phase(cls, phase: str | None) -> "CompactionPolicy":
-        """The policy for *phase*: the ``agent_compaction_keep_recent`` override, else the default.
+        """The policy for *phase*: the two ``agent_compaction_*`` overrides, else the defaults.
 
         An absent phase, an absent override map, or a non-integer entry all fall back to
-        :data:`DEFAULT_KEEP_RECENT` so the shipped behaviour is unchanged until an operator
-        sets a row.
+        the shipped default so the behaviour is unchanged until an operator sets a row.
         """
-        return cls(keep_recent=_resolve_keep_recent(phase))
+        return cls(
+            keep_recent=_resolve_phase_int(_COMPACTION_KEEP_RECENT_KEY, phase, DEFAULT_KEEP_RECENT),
+            keep_tool_results=_resolve_phase_int(_COMPACTION_KEEP_TOOL_RESULTS_KEY, phase, DEFAULT_KEEP_TOOL_RESULTS),
+        )
 
 
-def _resolve_keep_recent(phase: str | None) -> int:
-    """The per-phase ``keep_recent`` from the DB override map, else :data:`DEFAULT_KEEP_RECENT`."""
+def _resolve_phase_int(key: str, phase: str | None, default: int) -> int:
+    """*phase*'s entry in the DB override map at *key*, else *default*."""
     if not phase:
-        return DEFAULT_KEEP_RECENT
-    raw = cold_reader.read_setting(_COMPACTION_KEEP_RECENT_KEY)
+        return default
+    raw = cold_reader.read_setting(key)
     if not isinstance(raw, dict):
-        return DEFAULT_KEEP_RECENT
-    value = {str(key): val for key, val in raw.items()}.get(phase)
+        return default
+    value = {str(name): val for name, val in raw.items()}.get(phase)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return DEFAULT_KEEP_RECENT
+        return default
     return value
 
 
@@ -95,15 +106,61 @@ def compact_history(
     of the kept window — a ``ToolReturnPart`` whose ``ToolCallPart`` fell in the dropped
     middle — are trimmed too, so the window opens on a valid call→return pairing an
     OpenAI-compatible provider accepts. Deterministic and zero-token — no model call.
+
+    Independently of that threshold, every tool result older than the last
+    *keep_tool_results* messages is stubbed in place (:func:`_elide_stale_tool_results`)
+    — the trim alone never engages on a short run, whose tool results are nonetheless
+    re-sent on every request.
     """
     resolved = policy if policy is not None else CompactionPolicy(keep_recent=keep_recent)
     keep = resolved.keep_recent
     history = list(messages)
     if keep < 1 or len(history) <= keep + 1:
-        return history
+        return _elide_stale_tool_results(history, resolved.keep_tool_results)
     tail = history[len(history) - keep :]
     trimmed_tail = tail[_leading_orphan_count(tail) :]
-    return [history[0], *trimmed_tail] if resolved.pin_head else trimmed_tail
+    window = [history[0], *trimmed_tail] if resolved.pin_head else trimmed_tail
+    return _elide_stale_tool_results(window, resolved.keep_tool_results)
+
+
+def _elide_stale_tool_results(window: "list[ModelMessage]", keep_tool_results: int) -> "list[ModelMessage]":
+    """Replace each tool result older than the last *keep_tool_results* messages with a stub.
+
+    The whole-message trim only engages past ``keep_recent + 1`` messages, so a run of
+    twenty turns is never compacted at all while every tool result in it is re-sent on
+    every request — the dominant per-request cost on a metered lane. This pass shrinks
+    the STALE ones in place: the call→return pairing, the tool names and the
+    ``tool_call_id``s all survive, so the provider still accepts the history and the
+    model still sees what it ran and in what order.
+
+    Never the head (the task framing) and never the most-recent *keep_tool_results*
+    messages, so the turn in flight keeps its results verbatim. ``0`` disables the pass.
+    """
+    cutoff = len(window) - keep_tool_results
+    if keep_tool_results < 1 or cutoff <= 1:
+        return window
+    return [message if index == 0 or index >= cutoff else _stubbed(message) for index, message in enumerate(window)]
+
+
+def _stubbed(message: "ModelMessage") -> "ModelMessage":
+    """*message* with each oversized ``ToolReturnPart`` content replaced by its stub."""
+    if not isinstance(message, ModelRequest):
+        return message
+    parts = [_stubbed_part(part) if isinstance(part, ToolReturnPart) else part for part in message.parts]
+    return (
+        message
+        if all(new is old for new, old in zip(parts, message.parts, strict=True))
+        else replace(message, parts=parts)
+    )
+
+
+def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
+    """*part* with its content replaced by the stub, unless the stub would not be smaller."""
+    rendered = part.model_response_str()
+    stub = (
+        f"[elided: {len(rendered)} chars returned by `{part.tool_name}` on an earlier turn. Re-run it to obtain them.]"
+    )
+    return part if len(stub) >= len(rendered) else replace(part, content=stub)
 
 
 def _leading_orphan_count(window: "list[ModelMessage]") -> int:
