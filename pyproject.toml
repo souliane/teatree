@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.156",
+  "claude-agent-sdk==0.2.157",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -42,7 +42,7 @@ dependencies = [
   # ``docs-drift`` cannot catch, because it regenerates under the same click.
   # No typer release fixes it on real click: typer 0.26+ vendors click, so the
   # lift is the django-typer 4 migration, not a typer bump.
-  "click>=8.4,<8.5",
+  "click>=8.4,<8.6",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -182,7 +182,7 @@ dev = [
   # that hook's rev. Held at 0.15.x: 0.16's preview rules raise 6k+ findings,
   # most of them the ``# noqa`` -> ``# ruff: ignore`` rewrite that the repo's
   # ``noqa``-parsing tools would need migrating for first.
-  "ruff==0.15.1",
+  "ruff==0.16.8",
   "slack-sdk>=3.35",
   "tach>=0.34",
   "trogon[typer]>=0.6",
