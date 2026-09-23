@@ -8,7 +8,7 @@ from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_s
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, phase_specific_lines
 from teatree.agents.result_schema import required_evidence_for_phase
-from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
+from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents_scoped
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
@@ -159,12 +159,17 @@ def build_system_context(
 ) -> str:
     """Build the system context for headless (SDK) execution.
 
-    When *lifecycle_skill* is provided, only the lifecycle skill and rules
-    are embedded in full; companion skills get a one-line summary to save
-    tokens. On the reviewing phase the active overlay's primary review skill
-    and ``code-review`` are additionally embedded in full, and any remaining
-    overlay review companion skills get a verbatim "load before reviewing"
-    instruction, so a reviewer reviews WITH the overlay's conventions.
+    Only the lifecycle skill, the stage skills and ``rules`` are embedded in
+    full; every other skill gets a one-line pointer at its ``SKILL.md`` path to
+    save tokens. A phase with NO lifecycle skill (``architectural_review``,
+    ``dogfood_smoke``, ``backlog_sweep``) is scoped the SAME way rather than
+    falling back to embedding the whole bundle: that fallback put 58 KB
+    (~14.5k tokens) of overlay/internals/framework skill into every request of a
+    phase that declared none of it. On the reviewing phase the active overlay's
+    primary review skill and ``code-review`` are additionally embedded in full,
+    and any remaining overlay review companion skills get a verbatim "load
+    before reviewing" instruction, so a reviewer reviews WITH the overlay's
+    conventions.
     *stage_skills* threads the dispatch's single overlay stage-skill resolution
     (#3206) so this builder reuses it rather than re-resolving.
 
@@ -184,32 +189,29 @@ def build_system_context(
 
     skill_content = ""
     if skills:
-        if lifecycle_skill:
-            # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
-            # by reference, so they are primary alongside the lifecycle skill.
-            primary_skills = {lifecycle_skill, *stage_present}
-            explicit_load_skills: set[str] | None = None
-            suppress_names: set[str] | None = None
-            phase = normalize_phase(task.phase)
-            if phase == "reviewing":
-                review_primary, explicit_load_skills = _review_phase_scoping(skills)
-                primary_skills |= review_primary
-            elif phase == "coding":
-                # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
-                # not the ignorable "load if needed" summary the builder would skip.
-                primary_skills |= _CODING_PHASE_ALWAYS_FULL
-                # The directive force-loads the stack + overlay skills (#1368);
-                # drop them from the ignorable summary so it cannot contradict it.
-                # Stage skills are primary/full-embed, so excluded from the block.
-                suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
-            skill_content = _read_skill_contents_scoped(
-                skills,
-                primary_skills=primary_skills,
-                explicit_load_skills=explicit_load_skills,
-                suppress_names=suppress_names,
-            )
-        else:
-            skill_content = _read_skill_contents(skills)
+        # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
+        # by reference, so they are primary alongside the lifecycle skill.
+        primary_skills = {lifecycle_skill, *stage_present} if lifecycle_skill else set(stage_present)
+        explicit_load_skills: set[str] | None = None
+        suppress_names: set[str] | None = None
+        phase = normalize_phase(task.phase)
+        if phase == "reviewing":
+            review_primary, explicit_load_skills = _review_phase_scoping(skills)
+            primary_skills |= review_primary
+        elif phase == "coding":
+            # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
+            # not the ignorable "load if needed" summary the builder would skip.
+            primary_skills |= _CODING_PHASE_ALWAYS_FULL
+            # The directive force-loads the stack + overlay skills (#1368);
+            # drop them from the ignorable summary so it cannot contradict it.
+            # Stage skills are primary/full-embed, so excluded from the block.
+            suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
+        skill_content = _read_skill_contents_scoped(
+            skills,
+            primary_skills=primary_skills,
+            explicit_load_skills=explicit_load_skills,
+            suppress_names=suppress_names,
+        )
         if skill_content:
             lines.extend(("", "# Loaded Skills", "", skill_content))
             if stage_present:

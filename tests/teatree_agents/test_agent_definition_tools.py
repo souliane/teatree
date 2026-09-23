@@ -4,7 +4,7 @@ A sub-agent spawned through the harness ``Agent`` tool receives exactly the tool
 its definition's ``tools:`` allowlist names. Omitting ``Skill`` closes BOTH skill
 channels at once: the agent cannot load a skill itself, and the ``skills:``
 frontmatter it declares is honoured only by teatree's OWN dispatch path
-(``build_system_context`` / ``_read_skill_contents``), which a raw ``Agent``-tool
+(``build_system_context`` / ``_read_skill_contents_scoped``), which a raw ``Agent``-tool
 spawn bypasses. The observed symptom was sub-agents reporting that the ``Skill``
 tool was not in their toolset and then running without their mandated skills.
 

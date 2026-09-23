@@ -83,17 +83,6 @@ def _skill_section(name: str, content: str) -> str:
     return f"--- SKILL: {name} ---\n{content}"
 
 
-def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
-    """Read and concatenate SKILL.md content for each resolved skill."""
-    dirs = _resolve_dirs(skills_dir)
-    sections: list[str] = []
-    for name in skills:
-        skill_md = _resolve_skill_md(name, dirs)
-        if skill_md is not None:
-            sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
-    return "\n\n".join(sections)
-
-
 def _is_primary(name: str, primary_skills: set[str]) -> bool:
     """Check if a skill name (or path) matches the primary set or always-full list."""
     if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
@@ -121,10 +110,10 @@ def _read_skill_contents_scoped(
     phase — the overlay's primary review skills) get full content. Skills in
     *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
     BEFORE reviewing" instruction instead of the generic, easy-to-ignore
-    "available — load if needed" summary. Skills in *suppress_names* are
-    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
-    directive's stack-load block, #1368), so listing them in the ignorable
-    summary would contradict that. Everything else gets the generic summary.
+    summary. Skills in *suppress_names* are omitted entirely — the caller
+    force-loads them elsewhere (e.g. the coding directive's stack-load block,
+    #1368), so listing them in the ignorable summary would contradict that.
+    Everything else gets a one-line pointer at its own ``SKILL.md`` path.
     """
     dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
@@ -150,10 +139,26 @@ def _read_skill_contents_scoped(
         )
         sections.append(block)
     if companion_names:
-        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
-        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
+        summary = _COMPANION_SUMMARY_HEADER + "\n".join(_companion_pointer(name, dirs) for name in companion_names)
         sections.append(summary)
     return "\n\n".join(sections)
+
+
+_COMPANION_SUMMARY_HEADER = (
+    "--- COMPANION SKILLS (not embedded, to save context — read the named file if you need one) ---\n"
+)
+
+
+def _companion_pointer(name: str, skills_dirs: Sequence[Path]) -> str:
+    """One demoted skill's line, naming the body's path so this lane can still reach it.
+
+    A headless dispatch has no Skill tool, so "available — load if needed" named a
+    recovery it cannot perform. The resolved ``SKILL.md`` path is one it can: ``Read``
+    it. An unresolvable name says so rather than pointing at a file that is not there.
+    """
+    skill_md = _resolve_skill_md(name, skills_dirs)
+    bare = _bare_skill_name(name)
+    return f"- {bare}: not embedded — read {skill_md}" if skill_md else f"- {bare}: not embedded and not on disk here"
 
 
 _SUBAGENT_PREAMBLE_HEADER = (
