@@ -71,3 +71,54 @@ class TestShellTool:
         # On any dev/CI host at least one POSIX shell is installed, so which() resolves
         # an absolute path; the bare-name fallback only fires when neither is present.
         assert Path(resolved).is_absolute()
+
+
+class TestOversizedOutputIsCapped:
+    """The per-request cost of one huge return, bounded head+tail (#4816)."""
+
+    _HUGE = 200_000
+
+    def _huge_output(self, tmp_path: Path, cap: int) -> str:
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=cap)
+        return _shell(cfg)(f"python3 -c \"print('x' * {self._HUGE})\"")
+
+    def test_a_huge_return_is_bounded_by_the_cap(self, tmp_path: Path) -> None:
+        out = self._huge_output(tmp_path, 16 * 1024)
+        assert len(out.encode()) <= 16 * 1024 + len("exit=0\n")
+        assert len(out) < self._HUGE
+
+    def test_the_default_cap_bounds_a_huge_return(self, tmp_path: Path) -> None:
+        out = _shell(LaneBToolConfig(fs_root=tmp_path))(f"python3 -c \"print('x' * {self._HUGE})\"")
+        assert len(out) < self._HUGE
+
+    def test_the_elision_names_the_dropped_bytes_and_the_recovery(self, tmp_path: Path) -> None:
+        out = self._huge_output(tmp_path, 16 * 1024)
+        assert "bytes elided from the middle" in out
+        assert "re-run the command narrowed" in out
+
+    def test_head_and_tail_both_survive(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=2048)
+        out = _shell(cfg)("python3 -c \"print('HEAD' + 'x' * 100000 + 'TAIL')\"")
+        assert "HEAD" in out
+        assert "TAIL" in out
+
+    def test_the_exit_status_survives_the_cap(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=1024)
+        out = _shell(cfg)("python3 -c \"print('x' * 100000)\"; exit 7")
+        assert out.startswith("exit=7")
+
+    def test_a_small_return_is_byte_identical(self, tmp_path: Path) -> None:
+        out = _shell(LaneBToolConfig(fs_root=tmp_path))("echo small")
+        assert out == "exit=0\nsmall\n"
+
+    def test_zero_disables_the_cap(self, tmp_path: Path) -> None:
+        # Never-lockout: an operator can restore the uncapped pre-#4816 return.
+        out = self._huge_output(tmp_path, 0)
+        assert len(out) > self._HUGE
+
+    def test_the_command_still_runs_to_completion(self, tmp_path: Path) -> None:
+        # The cap shrinks what the turn CARRIES; it never fails or truncates the work.
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=512)
+        out = _shell(cfg)(f"python3 -c \"print('x' * {self._HUGE})\" > big.txt")
+        assert out.startswith("exit=0")
+        assert (tmp_path / "big.txt").stat().st_size > self._HUGE
