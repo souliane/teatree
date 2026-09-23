@@ -12,6 +12,7 @@ primary consumer; ``recover`` surfaces the drifted ticket pks via
 
 import re
 import shutil
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.worktree.branch_classification import RedundancyVerdict, branch_redundancy
 from teatree.core.worktree.clone_paths import resolve_clone_path, stored_clone_path
-from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
+from teatree.core.worktree.worktree_collision import foreign_issue_worktrees, materialised_worktree_paths
 from teatree.core.worktree.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.utils import git
@@ -386,15 +387,6 @@ def _unpushed_work_for_worktree(wt: Worktree) -> UnpushedWork | None:
     return UnpushedWork(worktree_pk=wt.pk, branch=wt.branch, shas=absent)
 
 
-def _ticket_has_merge_evidence(ticket: Ticket) -> bool:
-    """Whether a ``MergeAudit`` with a real merged SHA exists for ``ticket``.
-
-    The spoof-proof evidence the merge keystone writes atomically with the merge —
-    the only DB proof that a done-claiming ticket actually merged (§17.4.4).
-    """
-    return MergeAudit.objects.filter(clear__ticket=ticket).exclude(merged_sha="").exists()
-
-
 def _default_target_ref(repo: Path) -> str:
     """Resolve ``repo``'s real default branch as an ``origin/<default>`` ref.
 
@@ -408,8 +400,37 @@ def _default_target_ref(repo: Path) -> str:
         return _FALLBACK_TARGET
 
 
+@dataclass(frozen=True, slots=True)
+class WorkStateScope:
+    """The reads a work-state probe would repeat per ticket, resolved once for a sweep.
+
+    Two distinct workspace roots live here and must not be conflated:
+    ``clone_workspace`` (:func:`clone_root`) locates the bare clones the
+    done-but-unmerged probe reads, while ``worktree_workspace``
+    (:func:`worktree_root`) is the tree the checked-out worktrees live in.
+    """
+
+    clone_workspace: Path
+    worktree_workspace: Path
+    materialised_paths: tuple[str, ...]
+    #: Tickets a ``MergeAudit`` records a real merged SHA for — the spoof-proof
+    #: evidence the merge keystone writes atomically with the merge (§17.4.4).
+    merge_evidenced_tickets: frozenset[int]
+
+    @classmethod
+    def resolve(cls) -> "WorkStateScope":
+        return cls(
+            clone_workspace=clone_root(),
+            worktree_workspace=worktree_root(),
+            materialised_paths=tuple(materialised_worktree_paths()),
+            merge_evidenced_tickets=frozenset(
+                MergeAudit.objects.exclude(merged_sha="").values_list("clear__ticket_id", flat=True)
+            ),
+        )
+
+
 def _done_but_unmerged_for_ticket(
-    ticket: Ticket, worktrees: list[Worktree], clone_workspace: Path
+    ticket: Ticket, worktrees: list[Worktree], scope: WorkStateScope
 ) -> DoneButUnmerged | None:
     """DoneButUnmerged when a done-claiming ticket has no merge evidence and its branch is not upstream.
 
@@ -421,11 +442,11 @@ def _done_but_unmerged_for_ticket(
     """
     if str(ticket.state) not in _DONE_CLAIMING_STATES:
         return None
-    if _ticket_has_merge_evidence(ticket):
+    if ticket.pk in scope.merge_evidenced_tickets:
         return None
     verdicts: list[tuple[str, RedundancyVerdict]] = []
     for wt in worktrees:
-        repo = resolve_clone_path(clone_workspace, wt)
+        repo = resolve_clone_path(scope.clone_workspace, wt)
         if repo is None or not repo.is_dir():
             continue
         verdict = branch_redundancy(str(repo), wt.branch, _default_target_ref(repo))
@@ -443,11 +464,11 @@ def _done_but_unmerged_for_ticket(
 
 
 def _duplicate_scope_for_ticket(
-    ticket: Ticket, worktrees: list[Worktree], worktree_workspace: Path
+    ticket: Ticket, worktrees: list[Worktree], scope: WorkStateScope
 ) -> DuplicateScope | None:
     """DuplicateScope when a second ``<N>-*`` worktree dir exists for the ticket's issue scope.
 
-    ``find_foreign_issue_worktrees`` excludes the ticket's OWN issue dir, so a
+    ``foreign_issue_worktrees`` excludes the ticket's OWN issue dir, so a
     normal single-worktree ticket yields no foreign dir and no finding. A ticket
     with no known branch is skipped (no own-dir to exclude).
     """
@@ -457,20 +478,20 @@ def _duplicate_scope_for_ticket(
     branch = (ticket.extra or {}).get("branch") or (worktrees[0].branch if worktrees else "")
     if not branch:
         return None
-    own = ticket_dir_for(worktree_workspace, branch)
-    foreign = find_foreign_issue_worktrees(issue_number, own_path=own, workspace_dir=worktree_workspace)
+    own = ticket_dir_for(scope.worktree_workspace, branch)
+    foreign = foreign_issue_worktrees(
+        issue_number,
+        own_path=own,
+        workspace_dir=scope.worktree_workspace,
+        materialised_paths=scope.materialised_paths,
+    )
     if not foreign:
         return None
     return DuplicateScope(issue_number=issue_number, paths=[own, *foreign])
 
 
-def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Worktree], clone_workspace: Path) -> None:
+def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Worktree], scope: WorkStateScope) -> None:
     """Append the three work-tracking-truth findings (SELFCATCH-1) for one ticket.
-
-    Two distinct workspace roots are threaded here and must not be conflated:
-    ``clone_workspace`` (:func:`clone_root`) locates the bare clones the
-    done-but-unmerged probe reads, while the duplicate-scope finder walks the
-    :func:`worktree_root` tree where the checked-out worktrees live.
 
     Read-only: every finder SURFACES drift and never mutates — auto-push and
     auto-delete stay gated behind the destructive commands.
@@ -479,10 +500,10 @@ def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Work
         finding = _unpushed_work_for_worktree(wt)
         if finding is not None:
             drift.unpushed_work.append(finding)
-    done = _done_but_unmerged_for_ticket(ticket, worktrees, clone_workspace)
+    done = _done_but_unmerged_for_ticket(ticket, worktrees, scope)
     if done is not None:
         drift.done_but_unmerged.append(done)
-    dup = _duplicate_scope_for_ticket(ticket, worktrees, worktree_root())
+    dup = _duplicate_scope_for_ticket(ticket, worktrees, scope)
     if dup is not None:
         drift.duplicate_scopes.append(dup)
 
@@ -490,13 +511,13 @@ def _collect_work_state_drift(drift: Drift, ticket: Ticket, worktrees: list[Work
 def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
-    clone_workspace = clone_root()
+    scope = WorkStateScope.resolve()
     worktrees = list(Worktree.objects.for_ticket(ticket))
 
     for wt in worktrees:
         _reconcile_worktree_row(drift, wt)
-    _collect_stale_worktree_dirs(drift, worktrees, ticket, clone_workspace)
-    _collect_work_state_drift(drift, ticket, worktrees, clone_workspace)
+    _collect_stale_worktree_dirs(drift, worktrees, ticket, scope.clone_workspace)
+    _collect_work_state_drift(drift, ticket, worktrees, scope)
     return drift
 
 
@@ -567,15 +588,25 @@ def reconcile_work_state_ticket(ticket: Ticket) -> Drift:
     """
     drift = Drift(ticket_pk=ticket.pk)
     worktrees = list(Worktree.objects.for_ticket(ticket))
-    _collect_work_state_drift(drift, ticket, worktrees, clone_root())
+    _collect_work_state_drift(drift, ticket, worktrees, WorkStateScope.resolve())
     return drift
 
 
 def reconcile_work_state_all() -> dict[int, Drift]:
-    """Return a ``{ticket.pk: Drift}`` map for every ticket with a work-state finding."""
+    """Return a ``{ticket.pk: Drift}`` map for every ticket with a work-state finding.
+
+    The sweep runs every tick over the whole board, so the scope and the worktree
+    rows are read once here rather than per ticket — the per-ticket entry point
+    above pays for its own because it answers about one ticket.
+    """
+    scope = WorkStateScope.resolve()
+    worktrees_by_ticket: dict[int, list[Worktree]] = defaultdict(list)
+    for wt in Worktree.objects.all():
+        worktrees_by_ticket[wt.ticket_id].append(wt)
     drifts: dict[int, Drift] = {}
     for ticket in Ticket.objects.all():
-        drift = reconcile_work_state_ticket(ticket)
+        drift = Drift(ticket_pk=ticket.pk)
+        _collect_work_state_drift(drift, ticket, worktrees_by_ticket[ticket.pk], scope)
         if drift.has_drift:
             drifts[ticket.pk] = drift
     return drifts

@@ -321,6 +321,17 @@ class TaskAttempt(models.Model):
             # filters on exactly this pair, and it runs on EVERY admission verdict. The
             # cover index above leads on ``started_at``, so nothing seeks this predicate.
             models.Index(fields=["lane", "ended_at"], name="taskattempt_lane_ended"),
+            # The dash's polled "recent outcomes" read (``dash/live.py::_outcomes``,
+            # ``selectors/activity.py::build_recent_activity``) takes the newest N
+            # finished attempts. Neither index above leads on ``ended_at``, so the
+            # planner scanned the whole table and sorted it into a temp B-tree on
+            # every poll; partial-on-finished keeps the index to the rows the read
+            # can return. Measured at 13,749 rows: SCAN + TEMP B-TREE → SEARCH.
+            models.Index(
+                fields=["-ended_at", "-id"],
+                condition=models.Q(ended_at__isnull=False),
+                name="taskattempt_recent_ended",
+            ),
         )
 
     def __str__(self) -> str:

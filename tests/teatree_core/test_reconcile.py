@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -26,6 +27,7 @@ from teatree.core.worktree.reconcile import (
     MissingWorktreeDir,
     UnpushedWork,
     UnresolvableOverlay,
+    WorkStateScope,
     _collect_stale_worktree_dirs,
     _done_but_unmerged_for_ticket,
     _duplicate_scope_for_ticket,
@@ -505,7 +507,9 @@ class TestDoneButUnmergedFinding(TestCase):
         _branch_with_unpushed_commit(work, "feature", "ahead.txt", "feat: never merged")
         ticket, wt = self._done_ticket("feature", work)
         with _no_forge():
-            finding = _done_but_unmerged_for_ticket(ticket, [wt], self.tmp)
+            finding = _done_but_unmerged_for_ticket(
+                ticket, [wt], replace(WorkStateScope.resolve(), clone_workspace=self.tmp)
+            )
         assert isinstance(finding, DoneButUnmerged)
         assert finding.branch == "feature"
         assert "unmerged commit" in finding.reason
@@ -525,19 +529,27 @@ class TestDoneButUnmergedFinding(TestCase):
         )
         MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, required_checks_status="green")
         with _no_forge():
-            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+            assert (
+                _done_but_unmerged_for_ticket(ticket, [wt], replace(WorkStateScope.resolve(), clone_workspace=self.tmp))
+                is None
+            )
 
     def test_done_ticket_upstream_branch_not_flagged(self) -> None:
         work = _init_repo(self.tmp)  # branch "main" is fully upstream (redundant)
         ticket, wt = self._done_ticket("main", work)
         with _no_forge():
-            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+            assert (
+                _done_but_unmerged_for_ticket(ticket, [wt], replace(WorkStateScope.resolve(), clone_workspace=self.tmp))
+                is None
+            )
 
     def test_inconclusive_branch_probe_is_a_finding(self) -> None:
         work = _init_repo(self.tmp)  # branch does not exist → git cherry fails → inconclusive
         ticket, wt = self._done_ticket("ghost-branch", work)
         with _no_forge():
-            finding = _done_but_unmerged_for_ticket(ticket, [wt], self.tmp)
+            finding = _done_but_unmerged_for_ticket(
+                ticket, [wt], replace(WorkStateScope.resolve(), clone_workspace=self.tmp)
+            )
         assert isinstance(finding, DoneButUnmerged)
         assert "inconclusive" in finding.reason
 
@@ -547,7 +559,10 @@ class TestDoneButUnmergedFinding(TestCase):
         ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/8", state=Ticket.State.STARTED)
         wt = Worktree.objects.create(ticket=ticket, repo_path="repo", branch="feature", extra={"clone_path": str(work)})
         with _no_forge():
-            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+            assert (
+                _done_but_unmerged_for_ticket(ticket, [wt], replace(WorkStateScope.resolve(), clone_workspace=self.tmp))
+                is None
+            )
 
 
 class TestDuplicateScopeFinding(TestCase):
@@ -569,7 +584,9 @@ class TestDuplicateScopeFinding(TestCase):
         (self.wt_root / "42-first").mkdir()
         (self.wt_root / "42-second").mkdir()
         ticket = self._ticket("42-first")
-        finding = _duplicate_scope_for_ticket(ticket, [], self.wt_root)
+        finding = _duplicate_scope_for_ticket(
+            ticket, [], replace(WorkStateScope.resolve(), worktree_workspace=self.wt_root)
+        )
         assert isinstance(finding, DuplicateScope)
         assert finding.issue_number == "42"
         assert any(p.name == "42-second" for p in finding.paths)
@@ -577,7 +594,10 @@ class TestDuplicateScopeFinding(TestCase):
     def test_single_scope_not_flagged(self) -> None:
         (self.wt_root / "42-first").mkdir()
         ticket = self._ticket("42-first")
-        assert _duplicate_scope_for_ticket(ticket, [], self.wt_root) is None
+        assert (
+            _duplicate_scope_for_ticket(ticket, [], replace(WorkStateScope.resolve(), worktree_workspace=self.wt_root))
+            is None
+        )
 
 
 class TestReconcileWorkStateAll(TestCase):

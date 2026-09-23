@@ -18,7 +18,6 @@ The dispatcher routes ``ticket.stale`` into the statusline
 """
 
 import logging
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
@@ -30,6 +29,8 @@ from django.utils import timezone
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,11 @@ class StaleTicketsScanner:
 
     def scan(self) -> list[ScanSignal]:
         now = timezone.now()
+        candidates = self._candidate_tickets()
+        last_activity_by_ticket = self._last_activity_by_ticket(candidates)
         signals: list[ScanSignal] = []
-        for ticket in self._candidate_tickets():
-            last_activity = self._last_activity(ticket)
+        for ticket in candidates.only("id", "state", "issue_url", "overlay"):
+            last_activity = last_activity_by_ticket.get(ticket.pk)
             if last_activity is None:
                 continue
             age_days = (now - last_activity).days
@@ -85,20 +88,28 @@ class StaleTicketsScanner:
             )
         return signals
 
-    def _candidate_tickets(self) -> Iterable["Ticket"]:
+    def _candidate_tickets(self) -> "QuerySet[Ticket]":
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
         qs = ticket_model.objects.filter(state__in=_STALE_CANDIDATE_STATES)
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
-        return qs.only("id", "state", "issue_url", "overlay")
+        return qs
 
     @staticmethod
-    def _last_activity(ticket: "Ticket") -> datetime | None:
-        last_attempt = ticket.tasks.aggregate(
-            ts=Max("attempts__started_at"),
-        )["ts"]
-        if last_attempt is not None:
-            return last_attempt
-        return ticket.transitions.aggregate(  # ty: ignore[unresolved-attribute]
-            ts=Max("created_at"),
-        )["ts"]
+    def _last_activity_by_ticket(candidates: "QuerySet[Ticket]") -> dict[int, datetime]:
+        """Newest activity per candidate ticket, in two grouped reads rather than one per ticket.
+
+        Attempts win where a ticket has any, so the transition fallback is loaded
+        first and overwritten — the same precedence the per-ticket aggregates had.
+        """
+        attempt_model = apps.get_model("core", "TaskAttempt")
+        transition_model = apps.get_model("core", "TicketTransition")
+        latest: dict[int, datetime] = dict(
+            transition_model.objects.filter(ticket__in=candidates).values_list("ticket_id").annotate(Max("created_at"))
+        )
+        latest.update(
+            attempt_model.objects.filter(task__ticket__in=candidates)
+            .values_list("task__ticket_id")
+            .annotate(Max("started_at"))
+        )
+        return latest
