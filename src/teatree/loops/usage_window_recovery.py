@@ -166,7 +166,7 @@ def _autorecovery_enabled() -> bool:
 
 
 def _pending_recovery() -> bool:
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     return DBTaskResult.objects.filter(
@@ -185,7 +185,7 @@ def _next_fire(now: dt.datetime) -> dt.datetime:
 
 def _refine_successor(run_after: dt.datetime) -> None:
     """Push the queued successor out to *run_after* — the post-body cadence refinement."""
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     DBTaskResult.objects.filter(task_path=usage_window_recovery.module_path, status=TaskResultStatus.READY).update(

@@ -24,8 +24,8 @@ from pathlib import Path
 from unittest import mock
 
 import django.test
+from django.tasks import TaskResultStatus
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, execute_task

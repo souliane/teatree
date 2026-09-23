@@ -39,7 +39,7 @@ from teatree.core.models import ConfigSetting, Session, Task, Ticket
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-IMMEDIATE_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}}}
+IMMEDIATE_BACKEND = {"TASKS": {"default": {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}}}
 
 _WEEK = 7 * 24 * 3600
 

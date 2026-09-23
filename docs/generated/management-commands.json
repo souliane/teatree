@@ -623,6 +623,11 @@
       "subcommands": []
     },
     {
+      "help": "Creates new migration(s) for apps.",
+      "name": "makemigrations",
+      "subcommands": []
+    },
+    {
       "help": "``t3 <overlay> memory`` group root.",
       "name": "memory",
       "subcommands": [

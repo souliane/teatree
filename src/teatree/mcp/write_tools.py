@@ -28,6 +28,7 @@ from typing import Any, cast
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.config import SAFETY_POSTURE_KEYS
@@ -187,7 +188,7 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
     """
     if reason := refuse_reason(key):
         msg = f"refused: {key} is not MCP-settable ({reason})"
-        raise ValueError(msg)
+        raise ToolError(msg)
 
     def _set() -> dict[str, Any]:
         run_command("config_setting", "set", key, value, overlay=overlay)
@@ -252,7 +253,7 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
             f"invalid kind {kind!r} — valid kinds: {valid}. "
             "A DM that needs the owner to act is kind='question' (owner-question audience)."
         )
-        raise ValueError(msg) from None
+        raise ToolError(msg) from None
     audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
     outcome = await sync_to_async(
         lambda: notify_user_outcome(text, kind=kind_value, idempotency_key=idempotency_key, audience=audience),

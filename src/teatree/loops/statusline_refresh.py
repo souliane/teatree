@@ -79,8 +79,8 @@ def _autoload_enabled() -> bool:
 
 
 def _pending_render() -> bool:
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     return DBTaskResult.objects.filter(
         task_path=render_statusline.module_path,

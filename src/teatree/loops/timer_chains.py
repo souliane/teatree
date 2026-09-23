@@ -169,7 +169,7 @@ def _timers_for(name: str, *, status: str) -> "list[DBTaskResult]":
     ``args`` list, so the query stays backend-agnostic (no JSONField array-index
     lookup) and still exact.
     """
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     rows = DBTaskResult.objects.filter(task_path=_loop_timer_path(), status=status)
     return [row for row in rows if row.args_kwargs.get("args") == [name]]
@@ -177,14 +177,14 @@ def _timers_for(name: str, *, status: str) -> "list[DBTaskResult]":
 
 def pending_loop_timers(name: str) -> "list[DBTaskResult]":
     """READY (queued, not yet claimed) ``loop_timer`` rows for *name*."""
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
 
     return _timers_for(name, status=TaskResultStatus.READY)
 
 
 def running_loop_timers(name: str) -> "list[DBTaskResult]":
     """RUNNING (claimed, executing) ``loop_timer`` rows for *name*."""
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
 
     return _timers_for(name, status=TaskResultStatus.RUNNING)
 
@@ -196,8 +196,8 @@ def _live_loop_timers(name: str) -> "list[DBTaskResult]":
     duplicate (RUNNING); fetching them together keeps the hot path at a single DB
     round-trip instead of two.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     rows = DBTaskResult.objects.filter(
         task_path=_loop_timer_path(), status__in=[TaskResultStatus.READY, TaskResultStatus.RUNNING]
@@ -218,8 +218,8 @@ def refine_successor(name: str, *, run_after: dt.datetime) -> None:
     successor is pending (the successor-first enqueue guarantees one under normal
     flow).
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     ids = [row.id for row in _timers_for(name, status=TaskResultStatus.READY)]
     if ids:
@@ -314,7 +314,7 @@ def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UU
     normalized to the dashed-hex form so ``<`` is a stable total order regardless of the
     raw id spelling.
     """
-    from django_tasks_db.models import normalize_uuid  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import normalize_uuid  # noqa: PLC0415 — deferred: Django import at call time
 
     me = normalize_uuid(my_id)
     return any(normalize_uuid(row.id) < me for row in running)
@@ -330,7 +330,7 @@ def loop_timer(context: object, name: str) -> TimerResult:
     fire's own id (``context.task_result.id``) so exactly one of two racing timers
     proceeds and the other collapses.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 

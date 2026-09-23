@@ -149,7 +149,7 @@ _UNREADABLE_MESSAGE = "The loop_runner_enabled kill-switch was unreadable for to
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":
     """A programmatic ``db_worker`` executor drained forever on ONE queue."""
-    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415 — deferred: Django import at call time
     from django_tasks_db.management.commands.db_worker import Worker  # noqa: PLC0415 — deferred: heavy/optional dep
 
     return Worker(
@@ -160,6 +160,7 @@ def _build_executor(queue_name: str, worker_id: str) -> "Worker":
         startup_delay=False,
         max_tasks=None,
         worker_id=worker_id,
+        excluded_queue_names=[],
     )
 
 

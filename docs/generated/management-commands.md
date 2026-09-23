@@ -317,6 +317,10 @@ List DB-configured autonomous loops (read-only; #1796).
 
 Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
 
+## `makemigrations`
+
+Creates new migration(s) for apps.
+
 ## `memory`
 
 ``t3 <overlay> memory`` group root.

@@ -181,7 +181,7 @@ class _Probe:
     @staticmethod
     def overdue_ready_timers(now: dt.datetime) -> list[tuple[str, dt.datetime, int]]:
         """``(loop_name, run_after, threshold_seconds)`` for READY timers overdue past 2x cadence."""
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
 
         from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -204,7 +204,7 @@ class _Probe:
     @staticmethod
     def stranded_runner_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
         """``(job_id, started_at)`` for ``execute_task`` RUNNING past the stranded grace."""
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
 
         from teatree.core.tasks import (  # noqa: PLC0415 — deferred: task import needs the registry

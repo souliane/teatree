@@ -108,8 +108,13 @@ class TestCoreMigrationSquash(TransactionTestCase):
         ``check_replacements`` also records the squash, so the individual rows and the
         squash row coexist. ``migrate zero`` (squash graph) drops the schema but leaves
         the individual rows behind; wiping them gives the next phase a clean slate.
+
+        The executor-driven chain apply skips the rename-content-type step, so a later
+        ``migrate`` can leave both a model's old and new content type behind. Clearing
+        the stale one first lets unapplying the rename proceed without a conflict.
         """
         connection.close()
+        call_command("remove_stale_contenttypes", "--no-input", verbosity=0)
         call_command("migrate", "core", "zero", "--no-input", verbosity=0)
         MigrationRecorder(connection).migration_qs.filter(app="core").delete()
 

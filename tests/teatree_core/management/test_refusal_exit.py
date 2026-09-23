@@ -3,11 +3,13 @@
 The two callers of the same command need opposite things from the same refusal:
 a shell needs a failing status so ``ship && clear`` stops, an in-process consumer
 needs the structured dict to route on. Driven through a stub command so the seam
-is exercised without a database.
+is exercised without any ORM work; the argv cases are ``TestCase``s because
+Django 6.1 runs the system checks against the database on that path.
 """
 
 import pytest
 from django.core.management import call_command
+from django.test import TestCase
 from django_typer.management import command
 
 from teatree.core.management.refusal_exit import (
@@ -47,7 +49,7 @@ class _StubCommand(RefusalExitTyperCommand):
         return {"ticket_id": 4210, "state": "shipped"}
 
 
-class TestRefusalExitTyperCommand:
+class TestRefusalExitTyperCommand(TestCase):
     def test_the_argv_path_exits_non_zero_on_a_refusal(self) -> None:
         with pytest.raises(SystemExit) as exc:
             _StubCommand().run_from_argv(["manage.py", "stub", "refuse"])
@@ -78,7 +80,7 @@ class _PartlyExemptCommand(RefusalExitTyperCommand):
         return {"error": "nothing shipped"}
 
 
-class TestSoftRefusalCommandsExemptsOnlyWhatItNames:
+class TestSoftRefusalCommandsExemptsOnlyWhatItNames(TestCase):
     def test_an_exempt_subcommand_exits_zero(self) -> None:
         assert _PartlyExemptCommand().run_from_argv(["manage.py", "stub", "refuse-soft"]) is None
 

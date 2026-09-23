@@ -225,7 +225,7 @@ class TestChainScheduling(django.test.TestCase):
     def test_ensure_chain_seeds_one_pending_and_is_idempotent(self) -> None:
         ensure_usage_window_recovery_chain()
         ensure_usage_window_recovery_chain()
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
         pending = DBTaskResult.objects.filter(
@@ -241,7 +241,7 @@ class TestChainScheduling(django.test.TestCase):
     def test_reschedules_itself_after_a_pass(self) -> None:
         _set_autorecovery(on=True)
         usage_window_recovery.func()
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
         assert DBTaskResult.objects.filter(
@@ -252,7 +252,7 @@ class TestChainScheduling(django.test.TestCase):
         # Successor-FIRST, like every other loop chain: this is the ONLY thing that
         # re-arms a parked window, so a raise inside the body ending the chain leaves
         # every parked task parked with nothing left to release it.
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
         _set_autorecovery(on=True)

@@ -177,8 +177,8 @@ def _fail_if_still_ready(job_pk: uuid.UUID, reason: StaleQueueJobError, *, name:
     that read-then-write into a compare-and-swap: SQLite opens in ``IMMEDIATE`` mode, so
     the first writer holds the reserved lock for the whole block.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         with transaction.atomic():
@@ -209,8 +209,8 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
     timer chains — those are owned by the reconciler's own staleness repair
     (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
     cutoff = timezone.now() - dt.timedelta(hours=hours)
@@ -244,7 +244,7 @@ def expire_stale_default_jobs(*, threshold_hours: int | None = None) -> dict[str
     staleness — a shared cutoff sweep would mark a ``daily_at`` successor timer FAILED
     the instant it crosses the 24 h threshold, retiring a live chain just before it fires.
     """
-    from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
+    from django.tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
 
     return expire_stale_ready_jobs(threshold_hours=threshold_hours, queue_name=DEFAULT_TASK_QUEUE_NAME)
 
@@ -265,16 +265,16 @@ def _run_one_ready_job() -> bool:
     leaves the timer rows for the worker.
     """
     from django.db import close_old_connections  # noqa: PLC0415 — deferred: Django import at call time
-    from django_tasks import (  # noqa: PLC0415 — deferred: django_tasks needs the app registry ready
+    from django.tasks import (  # noqa: PLC0415 — deferred: Django import at call time
         DEFAULT_TASK_BACKEND_ALIAS,
         DEFAULT_TASK_QUEUE_NAME,
+        signals,
     )
-    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415 — deferred: heavy/optional dep
-    from django_tasks.utils import get_random_id  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.utils.crypto import get_random_string  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415 — deferred: Django import at call time
 
-    worker_id = f"tickdrain-{os.getpid()}-{get_random_id()}"
+    worker_id = f"tickdrain-{os.getpid()}-{get_random_string(32)}"
     ready = (
         DBTaskResult.objects.ready()
         .filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
@@ -299,20 +299,20 @@ def _run_one_ready_job() -> bool:
         task = job.task
         task_result = job.task_result
         backend_type = task.get_backend()
-        task_started.send(sender=backend_type, task_result=task_result)
+        signals.task_started.send(sender=backend_type, task_result=task_result)
         if task.takes_context:
-            from django_tasks.base import TaskContext  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+            from django.tasks import TaskContext  # noqa: PLC0415 — deferred: Django import at call time
 
             return_value = task.call(TaskContext(task_result=task_result), *task_result.args, **task_result.kwargs)
         else:
             return_value = task.call(*task_result.args, **task_result.kwargs)
         job.set_successful(return_value)
-        task_finished.send(sender=backend_type, task_result=job.task_result)
+        signals.task_finished.send(sender=backend_type, task_result=job.task_result)
     except BaseException as exc:  # noqa: BLE001 — match db_worker: any task error becomes a FAILED row, never crashes the drainer
         job.set_failed(exc)
         try:
             sender = type(job.task.get_backend())
-            task_finished.send(sender=sender, task_result=job.task_result)
+            signals.task_finished.send(sender=sender, task_result=job.task_result)
         except (ImportError, SuspiciousOperation):
             logger.exception("Drained task id=%s failed unexpectedly", job.id)
     finally:

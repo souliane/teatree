@@ -20,6 +20,7 @@ ROLLS BACK the freshly-created ticket and leaves zero DB trace — no stranded
 ticket for a unit someone else is already provisioning.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from teatree.core.models import Worktree
@@ -29,6 +30,15 @@ from teatree.core.worktree.worktree_paths import paths_match
 def _issue_dir_glob(issue_number: str) -> str:
     """Glob pattern matching every worktree dir for ``issue_number`` (``<N>-*``)."""
     return f"{issue_number}-*"
+
+
+def materialised_worktree_paths() -> list[str]:
+    """Every ``Worktree`` row's on-disk path — the DB half of the collision evidence.
+
+    Read on its own so a sweep asking about many issue numbers pays for it once
+    instead of re-scanning the table per issue.
+    """
+    return [row.worktree_path for row in Worktree.objects.exclude(extra__worktree_path__isnull=True)]
 
 
 def find_foreign_issue_worktrees(
@@ -56,6 +66,22 @@ def find_foreign_issue_worktrees(
     keys purely on the issue number, so a cross-overlay clash on the same issue
     number is a rare false-positive that ``--take-over`` covers.
     """
+    return foreign_issue_worktrees(
+        issue_number,
+        own_path=own_path,
+        workspace_dir=workspace_dir,
+        materialised_paths=materialised_worktree_paths(),
+    )
+
+
+def foreign_issue_worktrees(
+    issue_number: str,
+    *,
+    own_path: Path,
+    workspace_dir: Path,
+    materialised_paths: Sequence[str],
+) -> list[Path]:
+    """:func:`find_foreign_issue_worktrees` over already-read *materialised_paths*."""
     foreign: dict[Path, None] = {}
 
     if workspace_dir.is_dir():
@@ -64,8 +90,7 @@ def find_foreign_issue_worktrees(
                 foreign[candidate.resolve()] = None
 
     prefix = f"{issue_number}-"
-    for row in Worktree.objects.exclude(extra__worktree_path__isnull=True):
-        raw = row.worktree_path
+    for raw in materialised_paths:
         if not raw:
             continue
         issue_dir = _issue_dir_root(Path(raw).resolve(), workspace_dir.resolve())

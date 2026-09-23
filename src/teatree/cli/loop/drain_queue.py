@@ -48,8 +48,8 @@ def drain_queue_status_command() -> None:
     """Show how many READY jobs are waiting in the DB queue."""
     ensure_django()
 
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     count = DBTaskResult.objects.filter(status=TaskResultStatus.READY).count()
     if not count:

@@ -10,7 +10,7 @@ exception killed the chain until a worker restart.
 from unittest.mock import patch
 
 import django.test
-from django_tasks.base import TaskResultStatus
+from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.loops import timer_reconciler

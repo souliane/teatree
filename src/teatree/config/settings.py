@@ -1038,7 +1038,7 @@ class _RetentionSettings:
     # long as the ticket exists (~410 rows on the measured box), so no age bound
     # applies to them. Per-overlay overridable.
     ticket_transition_prune_disabled: bool = False
-    # #3871 window for ``django_tasks``' own ``DBTaskResult`` table. The delete is
+    # #3871 window for ``django_tasks_db``' own ``DBTaskResult`` table. The delete is
     # the library's shipped ``prune_db_task_results`` command; this is only how far
     # back it is told to go. Short because nothing in teatree reads a FINISHED
     # result row — every consumer filters on READY or RUNNING — so a finished row is

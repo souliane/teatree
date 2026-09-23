@@ -22,9 +22,8 @@ import datetime as dt
 import logging
 from typing import Any
 
-from django.tasks import task
+from django.tasks import TaskResultStatus, task
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.mode_resolution import resolve_active_mode

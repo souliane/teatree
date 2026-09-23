@@ -11,6 +11,7 @@ import uuid
 
 import django.test
 import pytest
+from django.tasks import TaskResultStatus
 from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
@@ -257,7 +258,6 @@ class TestLoopTimerBody(django.test.TestCase):
         # Two racing RUNNING timers: the lower-id one survives, the higher-id one dedups —
         # so a slow anchor CAS that let a second executor claim a duplicate never runs two
         # concurrent ticks (the old READY-only self-dedup missed this).
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415
         from django_tasks_db.models import DBTaskResult, normalize_uuid  # noqa: PLC0415
 
         self._enable_inbox()
@@ -275,7 +275,6 @@ class TestLoopTimerBody(django.test.TestCase):
         assert ran == []  # the lower-id concurrent duplicate carries the chain, not this fire
 
     def test_lowest_id_fire_proceeds_past_a_higher_id_running_duplicate(self) -> None:
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415
         from django_tasks_db.models import DBTaskResult, normalize_uuid  # noqa: PLC0415
 
         self._enable_inbox()

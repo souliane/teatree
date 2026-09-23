@@ -16,7 +16,7 @@ from tests.teatree_core.conftest import CommandOverlay
 IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
         },
     },
 }

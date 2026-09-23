@@ -58,7 +58,7 @@ repos:
     rev: 5adcd2667f92470d6637737d60c5d3fc00105e6b  # 1.31.1
     hooks:
       - id: django-upgrade
-        args: [--target-version, "6.0"]
+        args: [--target-version, "6.1"]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
     hooks:

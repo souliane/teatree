@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.mcp.services_notion import _live_page_status
 from teatree.types import RawAPIDict
@@ -32,7 +33,7 @@ def test_a_dead_page_is_refused_and_its_status_never_read() -> None:
 
     with (
         patch("teatree.mcp.services_notion._client", return_value=client),
-        pytest.raises(RuntimeError, match="not a source at all"),
+        pytest.raises(ToolError, match="not a source at all"),
     ):
         _live_page_status("page-1", "Status")
 

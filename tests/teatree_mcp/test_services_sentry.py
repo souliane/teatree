@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
@@ -45,7 +46,7 @@ class TestSentryClientResolution(TestCase):
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SentryOverlay(org="")}),
             patch("teatree.mcp.services_sentry.sentry_client_from_overlay", return_value=None),
-            pytest.raises(RuntimeError, match="Sentry org"),
+            pytest.raises(ToolError, match="Sentry org"),
         ):
             services_sentry._client()
 

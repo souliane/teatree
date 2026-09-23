@@ -169,6 +169,9 @@ def generate_standup(
     transitions = (
         TicketTransition.objects.filter(created_at__gte=since)
         .select_related("ticket")
+        # the commit collector walks each reported ticket's worktrees, which is
+        # one read per ticket unless they arrive with the transitions
+        .prefetch_related("ticket__worktrees")
         .order_by("ticket_id", "-created_at")
     )
     if overlay_name:

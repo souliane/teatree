@@ -29,11 +29,11 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
+    # First app listed wins a duplicated command: this one shadows `makemigrations` with db-free checks.
+    "teatree.core",
     "django_linear_migrations",
     "django_rich",
-    "django_tasks",
     "django_tasks_db",
-    "teatree.core",
     "teatree.agents",
     "teatree.backends",
     "teatree.dash",
@@ -68,7 +68,7 @@ TEMPLATES = [
 
 TASKS = {
     "default": {
-        "BACKEND": "django_tasks.backends.dummy.DummyBackend",
+        "BACKEND": "django.tasks.backends.dummy.DummyBackend",
         # Mirror the production ``teatree.settings`` allowlist: "loops" is the
         # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
         "QUEUES": ["default", "loops"],

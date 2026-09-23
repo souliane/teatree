@@ -13,8 +13,8 @@ the tick contradicted stay green (#4196).
 """
 
 import django.test
+from django.tasks import TaskResultStatus
 from django.utils import timezone
-from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.models import Loop, Mode, ModeOverride

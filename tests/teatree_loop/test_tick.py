@@ -13,7 +13,14 @@ from teatree.config import Mode, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.scanners.base import Scanner, ScanSignal
-from teatree.loop.tick import TickRequest, _repo_freshness, build_default_jobs, build_default_scanners, run_tick
+from teatree.loop.tick import (
+    TickRequest,
+    _repo_freshness,
+    _ScannerJob,
+    build_default_jobs,
+    build_default_scanners,
+    run_tick,
+)
 from tests._git_repo import make_git_repo
 
 
@@ -1302,7 +1309,21 @@ class TestBuildDefaultJobsWiring(django.test.TestCase):
         backends = [OverlayBackends(name="teatree", hosts=(fake_host,), messaging=None, ready_labels=())]
 
         statusline = self.tmp_path / "statusline.txt"
-        run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)
+        # Only the scanner this case reads. A default tick also runs the real
+        # self-update, idle-stack-reaper and intake scanners, which walk THIS machine's
+        # clones and docker stacks (and mint tickets out of the MagicMock host) inside
+        # the scan phase's worker threads — whose writes autocommit outside this test's
+        # transaction and leak rows into whatever runs next (#4756/#4758).
+
+        def _my_prs_jobs(request: TickRequest, _now: dt.datetime) -> list[_ScannerJob]:
+            return [j for j in build_default_jobs(backends=request.backends) if j.scanner.name == "my_prs"]
+
+        run_tick(
+            TickRequest(backends=backends),
+            statusline_path=statusline,
+            colorize=False,
+            jobs_builder=_my_prs_jobs,
+        )
         contents = statusline.read_text(encoding="utf-8")
         assert "[teatree]" in contents
         # GitHub PR URL → ``#545`` chip glyph (#1377). GitLab URLs use ``!``.

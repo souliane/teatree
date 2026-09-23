@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.gates.review_request_guard import GuardTarget
@@ -128,7 +129,7 @@ class TestJsonEmittingCommandHelpers(TestCase):
 
         with (
             patch("teatree.mcp.write_tool_run.call_command", side_effect=_boom),
-            pytest.raises(RuntimeError, match="boom: bad input"),
+            pytest.raises(ToolError, match="boom: bad input"),
         ):
             run_emitting_command("review_request_post", "--mr-url", "x")
 
@@ -137,17 +138,17 @@ class TestJsonEmittingCommandHelpers(TestCase):
             assert run_command("workspace", "teardown", path="/x") == "done"
         call.assert_called_once()
 
-    def test_run_command_converts_a_system_exit_into_a_runtime_error(self) -> None:
+    def test_run_command_converts_a_system_exit_into_a_tool_error(self) -> None:
         def _boom(command: str, *_args: object, stderr: object = None, **_kwargs: object) -> None:
             if stderr is not None:
                 stderr.write("refused: not clear")
             raise SystemExit(2)
 
         # MCPServer only converts Exception (not BaseException) — run_command must
-        # re-raise the SystemExit as a plain RuntimeError carrying the stderr message.
+        # re-raise the SystemExit as a ToolError carrying the stderr message.
         with (
             patch("teatree.mcp.write_tool_run.call_command", side_effect=_boom),
-            pytest.raises(RuntimeError, match="refused: not clear"),
+            pytest.raises(ToolError, match="refused: not clear"),
         ):
             run_command("ticket", "merge", "7")
 
@@ -155,7 +156,7 @@ class TestJsonEmittingCommandHelpers(TestCase):
         # a bare SystemExit carries code=None; run_command falls back to exit_code/1
         with (
             patch("teatree.mcp.write_tool_run.call_command", side_effect=SystemExit()),
-            pytest.raises(RuntimeError, match="exit 1"),
+            pytest.raises(ToolError, match="exit 1"),
         ):
             run_command("ticket", "merge", "7")
 

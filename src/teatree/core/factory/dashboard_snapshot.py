@@ -9,7 +9,7 @@ pure-output logic that the generator hook and the drift gate both call.
 Determinism is the whole contract (a flapping snapshot reds CI), so every volatile
 input is frozen rather than captured live. A dedicated ``AdminSite`` carries only
 ``teatree.core``'s registered model admins, so installed overlays and the ``auth`` /
-``django_tasks`` admin entries cannot make the model list vary by machine. The
+``django_tasks_db`` admin entries cannot make the model list vary by machine. The
 output-affecting settings (``ROOT_URLCONF``, ``STATIC_URL``, ``LANGUAGE_CODE``,
 ``TIME_ZONE``, ``DEBUG``) are pinned, so the script context (default settings) and
 the pytest context (test settings, ``DEBUG`` off, an overlay app installed) render

@@ -11,7 +11,7 @@ from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, TeardownDispatch
 IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
         },
     },
 }
@@ -128,8 +128,8 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         a RUNNING row without one does not occur in production and the age is what
         distinguishes a live worker from a dead one.
         """
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 - deferred: local import
         from django.utils import timezone  # noqa: PLC0415 - deferred: local import
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 - deferred: local import
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 - deferred: local import
 
         DBTaskResult.objects.filter(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk]).update(
@@ -201,7 +201,7 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         # worktree holding unsynced work and reports the refusal, so the job
         # finishes SUCCESSFUL with the worktree still standing. The operator's next
         # drain is a genuine second attempt, not a duplicate.
-        from django_tasks.base import TaskResultStatus  # noqa: PLC0415 - deferred: local import
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 - deferred: local import
 
         for finished in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED):
             ticket = self._terminal_ticket_with_worktree()

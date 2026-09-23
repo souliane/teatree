@@ -9,6 +9,7 @@ surface.
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -47,7 +48,7 @@ def _live_page_status(page_id: str, property_name: str) -> str | None:
             "is not a source at all: ignore it entirely and find the more recent version — "
             "`t3 notion doctor <page>` names it when it can be resolved."
         )
-        raise RuntimeError(msg)
+        raise ToolError(msg)
     return client.get_page_status(page_id, property_name=property_name)
 
 

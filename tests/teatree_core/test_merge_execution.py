@@ -42,7 +42,7 @@ _GIT = shutil.which("git") or "git"
 _IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
-            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
         },
     },
 }

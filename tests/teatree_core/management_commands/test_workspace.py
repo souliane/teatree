@@ -602,7 +602,7 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(
         **SETTINGS,
-        TASKS={"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}},
+        TASKS={"default": {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}},
     )
     def test_external_delivery_skips_auto_planner(self) -> None:
         # #2104 acceptance: ``workspace ticket`` is the hand-dispatched

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 def loop_timers_by_name(status: str) -> "dict[str, list[DBTaskResult]]":
     """``loop_timer`` rows in *status*, grouped by the loop name they carry as their first arg."""
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time
 
@@ -97,8 +97,8 @@ def driven_loop_names() -> set[str]:
     The dash polls the pages that read this, so the two statuses are one ``status__in``
     read rather than two round trips.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time
 
