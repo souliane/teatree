@@ -74,7 +74,8 @@ dependencies = [
   # imports together, never one alone.
   # Since 2.1 only a ``ToolError`` keeps its text on the way to the caller; any
   # other exception becomes a reasonless ``UnexpectedToolError``. Every deliberate
-  # refusal in ``teatree.mcp`` therefore raises ``ToolError``.
+  # refusal in ``teatree.mcp`` therefore raises ``ToolError``, which
+  # ``tests/conformance/test_mcp_refusals_are_tool_errors.py`` holds rather than trusts.
   "mcp>=2,<3",
   # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
   # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that

@@ -17,6 +17,7 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -24,6 +25,7 @@ from teatree.core.backend_factory import configured_messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.types import ChannelReadRefusedError
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -52,8 +54,13 @@ def _client() -> MessagingBackend:
     )
 
 
-class MentionQueueUnreadableError(RuntimeError):
-    """``slack_mentions`` found no queue to read — never "the user was not mentioned"."""
+class MentionQueueUnreadableError(ToolError):
+    """``slack_mentions`` found no queue to read — never "the user was not mentioned".
+
+    A ``ToolError`` because only that class keeps its text on the way out of
+    ``call_tool``; any other exception reaches the agent as a reasonless
+    ``UnexpectedToolError``, which is the silent-empty this refusal replaced.
+    """
 
     def __init__(self) -> None:
         super().__init__(
@@ -88,12 +95,18 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
     is quiet" and "the bot was never invited, so it sees nothing" are opposite facts
     demanding opposite responses, and the silent-empty form reported the first while
     meaning the second. A bot token reads only channels the bot is a MEMBER of, so
-    that refusal is the common case, not an edge case — it raises
-    :class:`~teatree.types.ChannelReadRefusedError`, which MCPServer surfaces to the caller.
+    that refusal is the common case, not an edge case. The backend raises
+    :class:`~teatree.types.ChannelReadRefusedError`, which lives in the dependency-free
+    :mod:`teatree.types` and so cannot itself be a ``ToolError``; it is re-raised as one
+    here — the same boundary conversion ``services_forge`` does for the send-proxy
+    refusals — because only a ``ToolError``'s text survives ``call_tool``.
     """
-    return await sync_to_async(
-        lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
-    )()
+    try:
+        return await sync_to_async(
+            lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
+        )()
+    except ChannelReadRefusedError as refused:
+        raise ToolError(str(refused)) from refused
 
 
 async def _slack_thread_replies(channel: str, thread_ts: str) -> list[dict[str, Any]]:
