@@ -43,6 +43,35 @@ def _denylisted(command: str, denylist: tuple[str, ...]) -> str | None:
     return next((entry for entry in denylist if entry in normalized), None)
 
 
+def _elision_marker(dropped: int) -> str:
+    """The head/tail seam naming the dropped bytes and how to get them back."""
+    return (
+        f"\n[…{dropped} bytes elided from the middle of this output — "
+        f"re-run the command narrowed (grep/head/tail/--stat) to obtain them]\n"
+    )
+
+
+def _capped(output: str, max_bytes: int) -> str:
+    """Return *output* bounded to *max_bytes* as head + marker + tail; ``0`` disables the cap.
+
+    An oversized return is re-sent on every later request of the thread, so it is
+    the per-request cost this bounds — not the command, which always ran to
+    completion and is never failed on its output size. Head and tail are both kept
+    because a long run's first lines (what it was doing) and last lines (how it
+    ended) are the load-bearing ones. The marker is sized against the whole-output
+    worst case, so the result never exceeds ``max(max_bytes, marker length)`` — below
+    the marker length only the marker is returned — and the byte slices are decoded
+    with ``errors="ignore"`` so a cut never splits a codepoint.
+    """
+    encoded = output.encode()
+    if max_bytes <= 0 or len(encoded) <= max_bytes:
+        return output
+    budget = max(0, max_bytes - len(_elision_marker(len(encoded)).encode()))
+    head = encoded[: budget // 2].decode(errors="ignore")
+    tail = encoded[len(encoded) - (budget - budget // 2) :].decode(errors="ignore") if budget else ""
+    return f"{head}{_elision_marker(len(encoded) - len(head.encode()) - len(tail.encode()))}{tail}"
+
+
 def _resolve_shell() -> str:
     """Resolve an ABSOLUTE path to a POSIX ``-c`` shell, preferring ``bash`` (#3157 AH-11).
 
@@ -72,6 +101,11 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     (:func:`_resolve_shell`, absolute path preferring ``bash``) so the list-based
     runner still evaluates a full shell string (pipes, redirects) — the runner is
     the sanctioned chokepoint, not raw ``subprocess``.
+
+    The combined output is bounded by :func:`_capped` to
+    ``config.shell_max_output_bytes`` before it is returned. That bounds what every
+    LATER request of the thread re-sends; the command itself always runs to
+    completion and is never failed on its output size.
     """
     toolset: FunctionToolset[None] = FunctionToolset()
     cwd = str(config.fs_root) if config.fs_root else str(Path.cwd())
@@ -98,7 +132,7 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             # TaskAttempt.error record, not just the model's own turn.
             msg = f"command timed out after {exc.timeout}s: {redact_secrets(command)}"
             raise ShellTimeoutError(msg) from exc
-        return f"exit={result.returncode}\n{result.stdout}{result.stderr}"
+        return f"exit={result.returncode}\n{_capped(f'{result.stdout}{result.stderr}', config.shell_max_output_bytes)}"
 
     # Exposed to the model as ``Bash`` (the skill/SDK vocabulary) so a skill saying
     # ``Bash`` names this tool; the pythonic ``shell`` function name stays local.

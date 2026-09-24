@@ -364,8 +364,12 @@ class TeatreeSettingsSchema(BaseSettings):
     # --- COLD_SETTINGS (cold-read DB tier) ---
     active_loop_schedule: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_COLD]
     agent_compaction_keep_recent: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
+    agent_compaction_keep_tool_results: Annotated[
+        dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD
+    ] = {}
     agent_honesty_model: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     agent_phase_fanout: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
+    agent_shell_max_output_bytes: Annotated[int, BeforeValidator(_parse_strict_int), _PERSONAL_COLD] = 16384
     agent_phase_harness: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_phase_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_pydantic_ai_tier_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}

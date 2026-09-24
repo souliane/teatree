@@ -29,7 +29,7 @@ stash a row no reader would consult. These keys are deliberately NOT in
 from collections.abc import Callable
 from typing import Any, cast
 
-from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool, _parse_strict_str
+from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool, _parse_strict_int, _parse_strict_str
 
 
 def _parse_registry_dict(raw: object) -> dict[str, Any]:
@@ -95,6 +95,10 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_phase_harness": _parse_registry_dict,
     # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
     "agent_compaction_keep_recent": _parse_registry_dict,
+    # Per-phase depth at which that lane stubs a stale tool result (#4816).
+    "agent_compaction_keep_tool_results": _parse_registry_dict,
+    # Per-call Bash output ceiling on the pydantic-ai lane (``lane_b.shell``, #4816).
+    "agent_shell_max_output_bytes": _parse_strict_int,
     # Per-model price overrides for ``t3 cost`` (model-id substring -> in/out rates).
     "cost_model_prices": _parse_registry_dict,
     "agent_session_model": _parse_strict_str,

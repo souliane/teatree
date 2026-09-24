@@ -15,6 +15,7 @@ from typing import Final
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.gating import DEFAULT_MAX_DENIALS
+from teatree.config import cold_reader
 
 #: Shell command prefixes refused outright on Lane B regardless of phase — the
 #: irreversible/destructive set. This is a coarse denylist ON TOP OF the shared
@@ -32,6 +33,17 @@ _DEFAULT_SHELL_DENYLIST: tuple[str, ...] = (
 #: bounded by the run-level watchdog, not this; the per-command timeout only trips
 #: a single hung invocation.
 _DEFAULT_SHELL_TIMEOUT_SECONDS: float = 600.0
+
+#: How much of a command's combined output the tool hands back per call. One
+#: 175 KB return took a persisted thread from 12.6k to 79.2k tokens PER REQUEST and
+#: carried ~1.25M of that run's 1.77M input, because every later turn re-sends it.
+#: The cap shrinks what a turn CARRIES — it never fails the command, and the elided
+#: middle is re-obtainable by re-running the command narrowed.
+_DEFAULT_SHELL_MAX_OUTPUT_BYTES: Final[int] = 16 * 1024
+
+#: The DB ``ConfigSetting`` key overriding :data:`_DEFAULT_SHELL_MAX_OUTPUT_BYTES`.
+#: ``0`` disables the cap (uncapped output), matching the pre-cap behaviour.
+_SHELL_MAX_OUTPUT_BYTES_KEY: Final[str] = "agent_shell_max_output_bytes"
 
 #: Phases whose own contract is "walk the tree / execute-and-verify via shell" —
 #: several corrective shell retries (a scoped re-probe after a too-broad ``find``,
@@ -62,7 +74,8 @@ class LaneBToolConfig:
     toolset filter (:mod:`teatree.core.modelkit.phase_tools`). Empty string = no
     phase-scoping (every assembled tool is exposed), the construction-time
     default so an un-phased ``PydanticAiHarness()`` stays text-only.
-    ``shell_denylist`` / ``shell_timeout_seconds`` are the coarse Shell knobs.
+    ``shell_denylist`` / ``shell_timeout_seconds`` / ``shell_max_output_bytes``
+    are the coarse Shell knobs; ``0`` bytes means uncapped output.
     ``shell_env`` is the RESOLVED child environment (base ``os.environ`` MERGED
     with any pinned overrides), never a bare override set — a subprocess ``env=``
     REPLACES the environment, so passing only the credential overrides would strip
@@ -75,6 +88,7 @@ class LaneBToolConfig:
     shell_denylist: tuple[str, ...] = _DEFAULT_SHELL_DENYLIST
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
     shell_env: dict[str, str] = field(default_factory=dict)
+    shell_max_output_bytes: int = _DEFAULT_SHELL_MAX_OUTPUT_BYTES
 
     @property
     def shell_tool_retries(self) -> int | None:
@@ -115,4 +129,11 @@ class LaneBToolConfig:
         fs_root = Path(cwd) if cwd else None
         overrides = dict(options.env or {})
         shell_env = {**os.environ, **overrides} if overrides else {}
-        return cls(fs_root=fs_root, phase=phase, shell_env=shell_env)
+        return cls(
+            fs_root=fs_root,
+            phase=phase,
+            shell_env=shell_env,
+            shell_max_output_bytes=cold_reader.int_setting(
+                _SHELL_MAX_OUTPUT_BYTES_KEY, default=_DEFAULT_SHELL_MAX_OUTPUT_BYTES, minimum=0
+            ),
+        )
