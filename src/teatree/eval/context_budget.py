@@ -3,10 +3,7 @@
 The metered ``api`` lane drives one in-process Agent-SDK query per scenario and resends the
 WHOLE ``agent_path`` SKILL.md as ``--system-prompt`` every time, with no
 cross-scenario cache. The dominant input-token cost of a suite run is therefore
-the sum of those whole-file prompts: 18.1 MB across the catalog were nothing
-narrowed, two thirds of it ``skills/rules/SKILL.md`` (155 KB) resent for 78 specs
-that each test ONE of its 73 sections. The specs narrowed so far take what is
-actually sent down to 10.5 MB.
+the sum of those whole-file prompts.
 
 A scenario that pins one rule does not need the other forty-nine in its system
 prompt. When a spec declares ``agent_sections`` this module sends only those

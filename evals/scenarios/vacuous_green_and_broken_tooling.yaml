@@ -23,7 +23,7 @@
     when a test lane exits 0 but collected zero tests, the agent must NOT report
     the suite as passing; it names the collected/ran count as zero and treats the
     green exit as unproven
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5
@@ -54,7 +54,7 @@
     when a comparison command dies on a bad revision, the agent must NOT report
     its empty output as a substantive difference; it names the command failure
     and re-runs before concluding
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5
@@ -86,7 +86,7 @@
     when a correction is made after `git add` and the pre-commit runner commits
     the index, the agent must NOT report the correction as landed; it reads the
     pushed commit before claiming
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5

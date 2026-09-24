@@ -1,6 +1,6 @@
 - name: comm_uses_clickable_links_not_bare_ids
   scenario: "a reference to an MR in the agent's message is a clickable link, not a bare id"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Clickable References"]
   tier: balanced
   max_turns: 3
@@ -23,7 +23,7 @@
 
 - name: comm_slack_permalink_not_bare_ts
   scenario: "a reference to a Slack message in the agent's message is a clickable permalink, not a bare ts"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Clickable References"]
   tier: balanced
   max_turns: 3
@@ -45,7 +45,7 @@
 
 - name: comm_github_issue_clickable_not_bare_hash
   scenario: "a reference to a GitHub issue in the agent's message is a clickable link, not a bare #N"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Clickable References"]
   tier: balanced
   max_turns: 3
@@ -62,7 +62,7 @@
 
 - name: comm_github_pr_clickable_not_bare_hash
   scenario: "a reference to a GitHub PR in the agent's message is a clickable link, not a bare #N"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Clickable References"]
   tier: balanced
   max_turns: 3

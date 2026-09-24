@@ -133,7 +133,8 @@
 # inside the delegated `Task.prompt` does not trip it (arg-path isolation).
 - name: review_post_delegated_not_main_agent
   scenario: "the orchestrator delegates posting a review comment to a sub-agent, never posts it itself in the foreground"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/on-behalf-posting.md
+  agent_sections: ["Never Post PR Comments from Parallel Agents (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   tools: [Bash, Task]

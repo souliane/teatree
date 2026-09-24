@@ -1,10 +1,10 @@
 """A command a reference MANDATES must also be named in its sibling SKILL.md.
 
 ``teatree.agents.skill_injection`` resolves ``<dir>/<name>/SKILL.md`` and
-concatenates those bodies. ``grep -rn "references/" src/teatree/agents/`` returns
-nothing — the module has no concept of a reference file at all. So every
-dispatched sub-agent receives the SKILL.md body and nothing else, and a command
-moved out to ``references/`` silently stops binding them. ``rules`` is in
+concatenates those bodies. A reference file is never embedded: a dispatched
+agent can ``Read`` one it is pointed at (``teatree.agents.skill_files``), but
+only the SKILL.md body is in its context unasked, so a command moved out to
+``references/`` silently stops binding it. ``rules`` is in
 ``_ALWAYS_FULL_SKILLS``, so a loss there reaches EVERY sub-agent. Three such
 losses shipped green on one branch: ``t3 slack react``, ``gh issue view``, and
 the whole-file ``--ours`` prohibition.

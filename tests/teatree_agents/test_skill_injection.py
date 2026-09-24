@@ -125,6 +125,30 @@ def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) ->
     assert "# workspace full content" not in result
 
 
+def test_companion_line_names_the_absolute_skill_md_to_read(tmp_path: Path) -> None:
+    for name in ("rules", "workspace"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "SKILL.md").write_text(f"# {name}", encoding="utf-8")
+
+    result = _read_skill_contents_scoped(["rules", "workspace", "ghost"], primary_skills=set(), skills_dir=tmp_path)
+
+    assert f"- workspace: not embedded — Read `{tmp_path / 'workspace' / 'SKILL.md'}` when it applies" in result
+    assert "- ghost: not embedded — no SKILL.md resolves for it on this host" in result
+
+
+def test_reach_line_leads_the_skill_block_before_the_first_embed(tmp_path: Path) -> None:
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "SKILL.md").write_text("# rules", encoding="utf-8")
+
+    for result in (
+        _read_skill_contents(["rules"], skills_dir=tmp_path),
+        _read_skill_contents_scoped(["rules"], primary_skills=set(), skills_dir=tmp_path),
+        build_subagent_skill_preamble(["rules"], skills_dirs=[tmp_path]).text,
+    ):
+        reach = result.index(f"are at `{tmp_path}/<skill>/…`; open one with the Read tool.")
+        assert reach < result.index("--- SKILL: rules ---")
+
+
 def test_read_scoped_all_primary(tmp_path: Path) -> None:
     d = tmp_path / "only-skill"
     d.mkdir()

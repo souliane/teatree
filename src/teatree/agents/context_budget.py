@@ -8,11 +8,11 @@ context/cost decision, not a spawn one. :func:`enforce_budget` truncates the lar
 budgetable blocks first and leaves a pointer marker so the agent knows context was
 elided rather than silently dropped.
 
-Every production skill bundle is 1.7-2.3x the budget, so truncation is the normal
-path, not the exception. It therefore drops whole ``## `` sections off the tail
-and names them, rather than keeping a byte prefix: a byte cut lands mid-sentence
-at an arbitrary offset and leaves the agent unable to tell which rule it lost,
-and this lane has no Skill tool to re-read the missing body by reference.
+Every production phase context fits the budget, so truncation is the degrade
+path, not the normal one. When it does happen it drops whole ``## `` sections off
+the tail and names them, rather than keeping a byte prefix: a byte cut lands
+mid-sentence at an arbitrary offset and leaves the agent unable to tell which rule
+it lost.
 
 The bound is a postcondition, not an accounting result. Truncation is by exact
 substring replace, so a block the assembled context never embedded reclaims zero

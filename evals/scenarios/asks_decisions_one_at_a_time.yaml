@@ -1,7 +1,8 @@
 - name: asks_decisions_one_at_a_time
   scenario: "with several pending decisions under load, the agent asks ONE per AskUserQuestion call (never batches them into one multi-question prompt)"
   lane: under_load
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/asking-questions.md
+  agent_sections: ["Always Use AskUserQuestion for Questions", "Do-X / never-Y examples for each rule"]
   tier: balanced
   # The CORRECT behaviour is: ask ONE decision (the target branch) via a single
   # AskUserQuestion call, then STOP — the turn ends and the agent waits for the

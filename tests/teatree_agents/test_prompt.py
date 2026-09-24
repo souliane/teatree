@@ -654,9 +654,9 @@ class TestCodingPhaseHeadStateInjection(TestCase):
                 skills=["code", "rules", "architecture-design"],
                 lifecycle_skill="code",
             )
-        # Full body, not the demoted "available — load if needed" summary.
+        # Full body, not the demoted "not embedded" companion line.
         assert "# architecture-design SENTINEL BODY" in ctx
-        assert "- architecture-design: available — load if needed" not in ctx
+        assert "- architecture-design: not embedded" not in ctx
 
 
 # --- #1368: explicit stack + overlay skill-load block on code-touching dispatch ---
@@ -749,8 +749,8 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
             )
         # The force-loaded stack/overlay skills are NOT demoted to the ignorable
         # summary that would undercut the directive's "REQUIRED load" block.
-        assert "- ac-django: available — load if needed" not in ctx
-        assert "- t3:demo-overlay: available — load if needed" not in ctx
+        assert "- ac-django: not embedded" not in ctx
+        assert "- t3:demo-overlay: not embedded" not in ctx
         assert "/ac-django" in ctx
 
 

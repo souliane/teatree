@@ -1,20 +1,28 @@
 """Aggregate every declared scenario group into one ordered catalog.
 
 ``_AGENT_SECTIONS`` is the token-cost lever applied centrally: a generated
-scenario that pins ONE rule of a large multi-rule skill (notably the 77 KB
-``skills/rules/SKILL.md``) declares only the ``## `` section it tests, so the
+scenario that pins ONE rule of a large multi-rule skill declares only the ``## `` section it tests, so the
 metered runner sends that section as the system prompt instead of the whole file.
 The map lives here — one auditable place — rather than scattered across the
 catalog declarations. Each section name is verified against the real on-disk
 SKILL.md by ``tests/eval_replay/test_scenarios_anti_vacuous.py`` (a typo'd anchor is a
 hard RED), and the size win is measured by ``tests/teatree_eval/test_context_budget.py``.
 A scenario absent from the map sends the whole file — the safe default.
+
+``skills/rules/SKILL.md`` is a small core whose rule sections live in full in
+``skills/rules/references/*.md``. A rules scenario is therefore repointed at the
+reference file holding every section it grades (:func:`_rules_section_home`,
+derived by scanning the references, never a hand map), so its graded slice is
+the full rule text. A scenario whose sections span reference files stays on the
+core and is graded against the section stubs there.
 """
 
 import dataclasses
+import re
+from pathlib import Path
 
 from scripts.eval.corpus_gen.blocked_subagent import blocked_subagent_scenarios
-from scripts.eval.corpus_gen.catalog import RECURRING
+from scripts.eval.corpus_gen.catalog import RECURRING, RULES
 from scripts.eval.corpus_gen.concise_doctrine import CONCISE_DOCTRINE
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
@@ -30,16 +38,9 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
     "id_namespace_forge_ref_repo_qualified": ("ID Namespace Disambiguation (Non-Negotiable)",),
     "blocked_subagent_surfaces_structured_block_not_workaround": ("Sub-Agent Limitations",),
     "blocked_subagent_missing_token_surfaces_not_partial_ship": ("Sub-Agent Limitations",),
-    # Graded on the ESCALATION ACT, but § "Sub-Agent Limitations" alone names no
-    # concrete act — only "escalates (AskUserQuestion when interactive, or a Slack
-    # DM … when away)", with no issue-the-call-do-not-narrate-it prohibition. On that
-    # section alone the CI image captures ZERO tool calls; with the two sections that
-    # DO carry the act, every trial issues a real escalation command (#4172).
-    "orchestrator_escalates_blocked_subagent_result_not_swallows": (
-        "Sub-Agent Limitations",
-        "Always Use AskUserQuestion for Questions",
-        "Ask Before Posting on the User's Behalf (Non-Negotiable)",
-    ),
+    # The doctrine is § "Sub-Agent Limitations", whose full text lives alone in one
+    # reference file; on that section alone the CI image once captured zero tool calls (#4172).
+    "orchestrator_escalates_blocked_subagent_result_not_swallows": ("Sub-Agent Limitations",),
     "orchestrator_delegates_refactor": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_investigation": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_test_writing": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
@@ -66,15 +67,50 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
     "away_ask_no_colleague_reaction_on_merged_mr": ("Ask Before Posting on the User's Behalf (Non-Negotiable)",),
     "approved_colleague_reaction_fires_and_dms_receipt": ("Ask Before Posting on the User's Behalf (Non-Negotiable)",),
     "self_dm_eyes_ack_still_placed_under_ask": ("Ask Before Posting on the User's Behalf (Non-Negotiable)",),
+    "proactive_gate_offers_enable_or_approve_once": (
+        "Anticipate a Predictable Gate: Offer Enable-Setting or Approve-Once, Never Bypass-or-DIY (Non-Negotiable)",
+    ),
+    "proactive_gate_anticipates_before_hitting_not_bypass_or_diy": (
+        "Anticipate a Predictable Gate: Offer Enable-Setting or Approve-Once, Never Bypass-or-DIY (Non-Negotiable)",
+    ),
+    "safety_secret_read_from_secret_store": ("Read Secrets From the Secret Store (Non-Negotiable)",),
+    "stale_issue_reconcile_before_redispatch": ("Sub-Agent Limitations",),
 }
+
+_ROOT = Path(__file__).resolve().parents[3]
+_RULES_REFERENCES = _ROOT / "skills" / "rules" / "references"
+_FENCE_RE = re.compile(r"^\s*```")
+_HEADING_RE = re.compile(r"^#{2,6}\s+(.*?)\s*$")
+
+
+def _headings(path: Path) -> set[str]:
+    found: set[str] = set()
+    in_fence = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and (match := _HEADING_RE.match(line)):
+            found.add(match[1])
+    return found
+
+
+def _rules_section_home(sections: tuple[str, ...]) -> str | None:
+    """The one rules reference file holding every section in *sections*, else ``None``."""
+    for page in sorted(_RULES_REFERENCES.glob("*.md")):
+        if set(sections) <= _headings(page):
+            return page.relative_to(_ROOT).as_posix()
+    return None
 
 
 def _with_agent_sections(scenario: Scenario) -> Scenario:
-    sections = _AGENT_SECTIONS.get(scenario.name)
-    if sections is None or scenario.agent_sections:
+    sections = scenario.agent_sections or _AGENT_SECTIONS.get(scenario.name)
+    if not sections:
         return scenario
-    _assert_sections_resolve(scenario.name, scenario.agent_path, sections)
-    return dataclasses.replace(scenario, agent_sections=sections)
+    agent_path = scenario.agent_path
+    if agent_path == RULES:
+        agent_path = _rules_section_home(sections) or RULES
+    _assert_sections_resolve(scenario.name, agent_path, sections)
+    return dataclasses.replace(scenario, agent_path=agent_path, agent_sections=sections)
 
 
 def _assert_sections_resolve(name: str, agent_path: str, sections: tuple[str, ...]) -> None:
@@ -84,12 +120,9 @@ def _assert_sections_resolve(name: str, agent_path: str, sections: tuple[str, ..
     not contain that section (the canonical rule lives in a DIFFERENT skill). A
     mismatch here would send an empty rule prompt and make the scenario vacuous.
     """
-    from pathlib import Path
-
     from teatree.eval.context_budget import MissingSectionError, extract_sections
 
-    root = Path(__file__).resolve().parents[3]
-    text = (root / agent_path).read_text(encoding="utf-8")
+    text = (_ROOT / agent_path).read_text(encoding="utf-8")
     try:
         extract_sections(text, sections)
     except MissingSectionError as exc:

@@ -15,11 +15,13 @@ from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
 
 from teatree.agents.lane_b.config import LaneBToolConfig
-from teatree.agents.lane_b.filesystem import build_filesystem_toolset
+from teatree.agents.lane_b.filesystem import build_filesystem_toolset, build_skill_file_toolset
 from teatree.agents.lane_b.gating import DEFAULT_SOFT_GATED, HardDenyToolset, make_soft_gate_predicate
 from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.agents.lane_b.tool_names import lane_b_tool_name
+from teatree.agents.skill_files import SkillFileIndex
+from teatree.agents.skill_injection import harness_skills_dirs
 from teatree.core.modelkit.phase_tools import tools_for_phase
 
 
@@ -43,7 +45,10 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     A phase names an allowed tool set (:func:`tools_for_phase`); the Shell tool is
     only built when ``shell`` is allowed and the File System write tools only when
     ``write_file`` is allowed, so a read-only phase's toolset carries no mutation
-    surface even before the runtime filter. The composed capabilities are wrapped
+    surface even before the runtime filter. ``Read`` reaches the registered skill
+    files on every phase allowed ``read_file`` — through the worktree's own
+    toolset, or a skill-file-only toolset when there is no worktree — so a cited
+    reference is followable either way. The composed capabilities are wrapped
     in :class:`HardDenyToolset` (the shared-registry hard-deny) and, when a soft
     gate is configured, in the native ``approval_required`` deferral. The read-only
     MCP toolsets are appended un-filtered — UNLESS the phase allowance is a
@@ -53,9 +58,14 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     allowed = tools_for_phase(config.phase) if config.phase else None
     capability_toolsets: list[AbstractToolset[None]] = []
 
+    skill_files = SkillFileIndex.build(harness_skills_dirs())
     if config.fs_root is not None:
         allow_write = allowed is None or "write_file" in allowed
-        capability_toolsets.append(build_filesystem_toolset(config.fs_root, allow_write=allow_write))
+        capability_toolsets.append(
+            build_filesystem_toolset(config.fs_root, allow_write=allow_write, skill_files=skill_files)
+        )
+    elif allowed is None or "read_file" in allowed:
+        capability_toolsets.append(build_skill_file_toolset(skill_files))
 
     if allowed is None or "shell" in allowed:
         capability_toolsets.append(build_shell_toolset(config))

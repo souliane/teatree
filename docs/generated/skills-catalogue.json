@@ -94,7 +94,7 @@
     },
     {
       "name": "rules",
-      "summary": "Cross-cutting agent safety rules \u2014 clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills"
+      "summary": "Cross-cutting agent safety rules \u2014 the always-embedded core carrying every non-negotiable's trigger and verdict, each naming the skills/rules/references/ file with its full text. Auto-loaded as a dependency by other skills"
     },
     {
       "name": "running-evals",

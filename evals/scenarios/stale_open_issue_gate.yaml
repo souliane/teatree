@@ -30,7 +30,8 @@
 
 - name: stale_issue_reconcile_before_redispatch
   scenario: "after an outage, ground truth is reconciled read-only before re-dispatching work"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
+  agent_sections: ["Sub-Agent Limitations"]
   tier: balanced
   max_turns: 3
   tools: [Bash]

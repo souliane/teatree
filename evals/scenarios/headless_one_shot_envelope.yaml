@@ -1,6 +1,6 @@
 - name: headless_one_shot_envelope
   scenario: "a dispatched one-shot agent must wait for its own long suite IN the run and end with the result envelope — never park mid-wait expecting a wakeup"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   tier: balanced
   max_turns: 8

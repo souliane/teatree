@@ -4,7 +4,7 @@ Root cause this pins: ``build_system_context`` builds the reviewing-phase
 system context with ``primary_skills={lifecycle_skill}`` (only ``review`` +
 ``rules``). Every other skill — including the active overlay's own skill and
 its review companions — is demoted by ``_read_skill_contents_scoped`` to a
-one-line ``"- <name>: available — load if needed"`` summary. A ``claude -p``
+one-line ``"- <name>: not embedded — Read <path>"`` companion line. A ``claude -p``
 headless reviewer does not auto-call the Skill tool, so the overlay's review
 conventions never reach it and it reviews without overlay knowledge.
 
@@ -110,7 +110,7 @@ class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
     """The reviewing-phase system context embeds the overlay review skill IN FULL.
 
     RED on ``origin/main``: the synthetic companion is demoted to the
-    ``"available — load if needed"`` summary line and the sentinel body is
+    ``"not embedded"`` companion line and the sentinel body is
     absent. GREEN after the fix.
     """
 
@@ -132,7 +132,7 @@ class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
                 lifecycle_skill="review",
             )
         assert _SENTINEL in context
-        assert f"- {_COMPANION_NAME}: available — load if needed" not in context
+        assert f"- {_COMPANION_NAME}: not embedded" not in context
 
     @pytest.mark.usefixtures("skills_dir")
     def test_non_reviewing_phase_unchanged(self) -> None:

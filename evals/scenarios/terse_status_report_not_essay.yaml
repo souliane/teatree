@@ -12,7 +12,7 @@
 # scenario's tooth (no narration tell) but is caught here.
 - name: terse_status_report_not_essay
   scenario: "a finished-task status report is a terse line, not an essay-style multi-paragraph report when a terse line would do"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
   tier: balanced
   # Pure final_state grade on the report text; the loader forbids an empty tools

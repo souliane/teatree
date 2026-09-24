@@ -28,7 +28,7 @@
     prose-only decision (instructed NOT to call any tool) can pass ONLY via the
     gate's bounce forcing an AskUserQuestion, so this reds the moment the Stop gate
     stops firing under the eval wiring (the empirical end-to-end honesty proof)
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/asking-questions.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 4

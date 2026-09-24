@@ -20,7 +20,7 @@
     loops, the agent runs `t3 worker status` FIRST and — seeing a live worker —
     registers nothing, instead of firing the `t3 loop <slot> run` commands the
     worker already drives
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/shell-and-files.md
   agent_sections: ["Never Cron a `t3 loop` Command From a Session (Non-Negotiable)"]
   tier: balanced
   max_turns: 5

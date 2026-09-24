@@ -4,7 +4,7 @@
 # Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: orchestrator_embeds_skills_in_subagent_brief
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
   agent_sections: ["Sub-Agent Limitations"]
   scenario: >-
     dispatching an e2e / coder sub-agent through the raw Agent tool, the

@@ -73,21 +73,21 @@ skills/review/references/giving-review-investigation.md::gh issue view
 skills/review/references/giving-review-investigation.md::glab api
 skills/review/references/giving-review-investigation.md::glab issue view
 skills/review/references/posting-review-comments.md::t3 review post-comment
-skills/rules/SKILL.md::gh api
-skills/rules/SKILL.md::gh issue create
-skills/rules/SKILL.md::gh issue view
-skills/rules/SKILL.md::gh pr create
-skills/rules/SKILL.md::gh pr view
-skills/rules/SKILL.md::gh repo view
 skills/rules/SKILL.md::gh run watch
-skills/rules/SKILL.md::glab api
 skills/rules/SKILL.md::glab ci status
-skills/rules/SKILL.md::glab issue view
-skills/rules/SKILL.md::glab mr view
-skills/rules/SKILL.md::t3 config_setting set
-skills/rules/SKILL.md::t3 review post-comment
-skills/rules/SKILL.md::t3 slack react
+skills/rules/references/classifier-denial-escalation.md::gh api
+skills/rules/references/classifier-denial-escalation.md::gh issue create
+skills/rules/references/leak-remediation.md::gh repo view
 skills/rules/references/on-behalf-posting.md::t3 slack react
+skills/rules/references/reporting.md::gh issue view
+skills/rules/references/reporting.md::gh pr view
+skills/rules/references/reporting.md::glab issue view
+skills/rules/references/shell-and-files.md::gh pr create
+skills/rules/references/shell-and-files.md::glab api
+skills/rules/references/sub-agents.md::gh run watch
+skills/rules/references/sub-agents.md::glab ci status
+skills/rules/references/verification.md::gh pr view
+skills/rules/references/verification.md::glab mr view
 skills/rules/references/worked-dispatch-examples.md::gh pr create
 skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status

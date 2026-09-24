@@ -28,7 +28,7 @@ _MAX_PARENT_SUMMARY_LEN = 2000
 # The skills pointer names the on-disk body and NOT the Skill tool: this lane is
 # denied that tool, so pointing at it would name an impossible recovery.
 _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
-_SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — this lane has no Skill tool to load it by reference"
+_SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — open it with the Read tool; this lane has no Skill tool"
 _PARENT_POINTER = "the parent task's recorded result"
 
 
@@ -127,7 +127,7 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     the token budget: the PRIMARY review skill (first entry) plus ``code-review``
     embed IN FULL; any additional review companion skills get a verbatim
     "Load /<skill> via the Skill tool BEFORE reviewing" instruction rather than
-    being demoted to the generic, ignorable "available — load if needed" summary.
+    being demoted to a companion line.
     Only the review skills actually present in *skills* are scoped, so a
     companion that failed to resolve is not surfaced as required.
     """
@@ -196,7 +196,7 @@ def build_system_context(
                 primary_skills |= review_primary
             elif phase == "coding":
                 # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
-                # not the ignorable "load if needed" summary the builder would skip.
+                # not a companion line the builder would skip.
                 primary_skills |= _CODING_PHASE_ALWAYS_FULL
                 # The directive force-loads the stack + overlay skills (#1368);
                 # drop them from the ignorable summary so it cannot contradict it.
@@ -265,8 +265,8 @@ def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill
     (re-derivable), then skills, then the parent context last (most load-bearing
     for continuity). The survey is re-derived only on the over-budget path, so a
     normal-sized context is one build with no extra query and byte-identical
-    output. The skill bundle always overruns, so it is always section-truncated —
-    see :mod:`teatree.agents.context_budget`.
+    output. An over-budget skill bundle is section-truncated — see
+    :mod:`teatree.agents.context_budget`.
 
     Only the phase that EMBEDS the survey offers it as a block: truncation is by
     substring replace, so a survey the phase does not embed is a phantom the pass

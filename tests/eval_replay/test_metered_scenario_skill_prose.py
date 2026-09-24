@@ -53,12 +53,12 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("code_writes_typed_function", "skills/code/SKILL.md", ("-> str:", ": str")),
     (
         "background_long_operations_ci_watch",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/sub-agents.md",
         ("Monitor", "run_in_background", "Task"),
     ),
     (
         "comm_uses_clickable_links_not_bare_ids",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/reporting.md",
         ("[!7551](https://", "/merge_requests/7551"),
     ),
     # opus-only failures — canonical command must stay named in the loaded skill.
@@ -116,7 +116,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # #3 fix), so the efficacy does not rest solely on the metered re-run.
     (
         "delegates_under_load_not_edits_in_main_agent",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/sub-agents.md",
         (
             "Dispatching is the WHOLE action",
             "A dispatch you immediately undo by hand-doing the work is worse than no dispatch",
@@ -134,7 +134,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # which is the over-exploration drift the rework's path-hunt negative tooth pins.
     (
         "read_canonical_before_structural_action_under_load",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/skills-and-sessions.md",
         (
             "The canonical `Read` IS the single action",
             "do not hunt for the path",
@@ -146,7 +146,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # ask-one-then-stop / never-re-ask rule that the rework's behavioural tooth pins.
     (
         "asks_decisions_one_at_a_time",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/asking-questions.md",
         (
             "your turn ends; never re-ask the same decision",
             "STOP and wait for the answer",
@@ -162,7 +162,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # carry the positive colleague-post shape the matcher demands.
     (
         "on_behalf_colleague_message_uses_personal_token",
-        "skills/rules/SKILL.md",
+        "skills/rules/references/on-behalf-posting.md",
         ("notify post --channel", "--text"),
     ),
 )
