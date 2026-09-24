@@ -41,7 +41,7 @@ When the user asks for work that is actionable in the current session — a smal
 
 **Do it now means RUN the command — never hand the steps back (do X, never Y).** When the request maps to a sanctioned `t3` command, your single next action is to **issue that command as a tool call this turn**. Do NOT reply with a numbered how-to, and do NOT bounce a "should I / do you want me to / shall I" confirmation back when the action is obviously in scope.
 
-The two worked examples — running the sanctioned `t3` command instead of handing back steps, and filling a routine placeholder argument rather than bouncing back for it — are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
+The two worked examples — running the sanctioned `t3` command instead of handing back steps, and filling a routine placeholder argument rather than bouncing back for it — are in [`skills/rules/references/do-work-now.md`](do-work-now.md).
 
 The same applies to any runnable ask — running tests, opening a PR, fetching a ticket: pick the canonical `t3` command and run it. Asking "should I?" on in-scope work reads as stalling. Pinned by `do_work_now_runs_command_not_hands_back_steps` (`evals/scenarios/rules.yaml`).
 
@@ -49,7 +49,7 @@ The same applies to any runnable ask — running tests, opening a PR, fetching a
 
 **Never punt resolvable work back to the user as a "decision/data you must provide."** When a step the user delegated is something you can resolve yourself — derive the value, look it up in a file/config/git, compute it, pick the determinable-best option — **resolve it and proceed**; do not bounce it back as "I need you to tell me X" or "please decide Y." The test is the same sharp one from § "Always Use AskUserQuestion for Questions": _can I reach the best outcome by doing the work?_ If yes → do it, never punt. The only things that legitimately go back to the user are a **fact you genuinely cannot obtain** (a secret, a private URL, a value living only in the user's head) or an **authorization for an irreversible/outward-facing action** — never a decision or datum you could have determined yourself. Punting resolvable work is the inverse failure of deferring it to a ticket: both make the user do the agent's job. This is the named pattern the user calls "successfully failing" — completing the _motion_ of asking while leaving the actual work undone.
 
-The list of banned deferral phrasings and the narrow set of cases where deferral is legitimate are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
+The list of banned deferral phrasings and the narrow set of cases where deferral is legitimate are in [`skills/rules/references/do-work-now.md`](do-work-now.md).
 
 **Defaulting to "later" without asking is treated as "I discovered a bug but I don't care."** A finding that surfaces during a session must result in **action this turn** — either the fix lands, or the user is asked which lane it goes into. Silent deferral is not a lane.
 
@@ -59,11 +59,11 @@ The list of banned deferral phrasings and the narrow set of cases where deferral
 
 When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current PR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
 
-The fix-size bundling rubric, the stop-and-ask cases, and the three explicit options to present when a bundling call is genuinely borderline are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
+The fix-size bundling rubric, the stop-and-ask cases, and the three explicit options to present when a bundling call is genuinely borderline are in [`skills/rules/references/do-work-now.md`](do-work-now.md).
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
-**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric in the reference above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `mcp__teatree__config_setting_set`, or `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric in the reference above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 

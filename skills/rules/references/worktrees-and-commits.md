@@ -43,7 +43,7 @@ When a pre-commit hook runs the full test suite and fails on tests **unrelated t
 
 Assume another agent may be modifying the same repo concurrently. Never `git stash`, `git checkout --`, or `git restore` files you didn't change — this destroys the other agent's in-progress work. Only stage and commit files you explicitly modified.
 
-**When to stage is part of that rule, not a detail.** The commit hook stashes every UNSTAGED change in the tree, the other writer's included, so `git add` right after each edit is what keeps yours out of a stash a killed run may never restore — and `git commit -o -- <your paths>` is what keeps theirs out of your commit. A bare `git commit -a` sweeps in whatever they were mid-edit on. The stash mechanics and the recovery path are in [`../ship/SKILL.md`](../ship/SKILL.md) § "What the commit gate commits is the INDEX, not the working tree".
+**When to stage is part of that rule, not a detail.** The commit hook stashes every UNSTAGED change in the tree, the other writer's included, so `git add` right after each edit is what keeps yours out of a stash a killed run may never restore — and `git commit -o -- <your paths>` is what keeps theirs out of your commit. A bare `git commit -a` sweeps in whatever they were mid-edit on. The stash mechanics and the recovery path are in [`../ship/SKILL.md`](../../ship/SKILL.md) § "What the commit gate commits is the INDEX, not the working tree".
 
 ## Deprecated Code
 

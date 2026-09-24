@@ -24,7 +24,7 @@ The safe shape is idempotency by construction, not orchestrator vigilance. Core 
 
 **Dispatch-prompt hygiene — match the target repo's conventions, don't drift to your own defaults (Non-Negotiable).** A sub-agent prompt that scaffolds a branch or opens a PR must carry the **target repo's** convention, not a habitual default carried over from another repo.
 
-The branch-scheme and no-reflexive-`--draft` rules, with their do-X/never-Y `git`/`gh` examples, are in [`skills/rules/references/worked-dispatch-examples.md`](references/worked-dispatch-examples.md).
+The branch-scheme and no-reflexive-`--draft` rules, with their do-X/never-Y `git`/`gh` examples, are in [`skills/rules/references/worked-dispatch-examples.md`](worked-dispatch-examples.md).
 
 Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_draft_default` (`evals/scenarios/subagent_prompt_drift.yaml`).
 
@@ -32,7 +32,7 @@ Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_dr
 
 > If the review or this brief contradicts the code, TRUST THE CODE and say I was wrong.
 
-Anchoring the claims to a commit you actually read (`verified at <sha>`) does the same job. The deterministic backstop is the `PreToolUse` brief-anchor lint (`handle_brief_anchor_lint`, detector `teatree.hooks.brief_anchor_scanner`): a dispatch asserting specifics with neither anchor gets one warning quoting the clause. It WARNS by default; `t3 <overlay> config_setting set brief_anchor_gate_refuse true` makes it refuse. Escapes: `[brief-anchor-ok: <reason>]` per call, `t3 <overlay> gate brief-anchor disable` for good.
+Anchoring the claims to a commit you actually read (`verified at <sha>`) does the same job. The deterministic backstop is the `PreToolUse` brief-anchor lint (`handle_brief_anchor_lint`, detector `teatree.hooks.brief_anchor_scanner`): a dispatch asserting specifics with neither anchor gets one warning quoting the clause. It WARNS by default; `t3 <overlay> config_setting set brief_anchor_gate_refuse true` makes it refuse. Escapes: `[brief-anchor-ok: <reason>]` per call, `t3 <overlay> gate brief-anchor disable` for good.  <!-- mcp-ratchet: allow — brief_anchor_gate_refuse is a cold-hook gate key the MCP config tool refuses, so the CLI is the only path -->
 
 **A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners, so EVERY dispatched agent sizes its own pool from the box's cores regardless of how many agents already run: N agents on a C-core box is N × C workers competing for one machine's RAM. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork; a narrow node id at `-n auto` still spawns a worker per core. The lane runners' `bound_xdist_workers_to_memory` default is not one either: it reads the container's cgroup cap for **its own** process and cannot see the sibling agents. The only bound is the env var, and it belongs in the brief.
 
@@ -79,7 +79,7 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 # Edit(file_path="src/acme/checkout/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
 ```
 
-**Publishing a colleague-visible artifact is in scope too, regardless of how fast the call itself runs.** Posting an MR/PR/issue comment, a review finding, or evidence is a one-shot CLI call that finishes in under a second — but the boundary is about WHO acts on a colleague-facing surface, not about call duration. Dispatch it the same way as a code edit; see § "Never Post PR Comments from Parallel Agents" above for the worked `t3 review post-comment` example.
+**Publishing a colleague-visible artifact is in scope too, regardless of how fast the call itself runs.** Posting an MR/PR/issue comment, a review finding, or evidence is a one-shot CLI call that finishes in under a second — but the boundary is about WHO acts on a colleague-facing surface, not about call duration. Dispatch it the same way as a code edit; see `skills/rules/references/on-behalf-posting.md` § "Never Post PR Comments from Parallel Agents" for the worked `mcp__teatree__review_post_comment` / `t3 review post-comment` example.
 
 1. **Dispatch the unit to a `Task` (or `Agent`) sub-agent in this same turn.** The prompt fully describes the bounded unit of work in plain language — the file/subsystem, the bug, the expected outcome. Do this even when you don't yet know the exact shell command (the `Task` path needs no shell invocation up front).
 2. **Never run the long unit yourself in the foreground.** Do NOT `grep -r … src`, `rg … src`, `find … -name`, open-and-`Edit` the `.py` file, or `Write` the `test_*.py` yourself when the unit is delegable — the orchestrator stays thin.
@@ -108,4 +108,4 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree … fix t
 
 The test: after a dispatch, if your next tool call names or touches the file/module/ticket you just delegated — to read it OR to write it — you have re-entered executor mode. The dispatch was supposed to be the whole action; honour it by stopping.
 
-The two worked dispatch briefs (a one-line fix, a multi-file investigation) and the `Monitor` recipe that awaits a dispatched sub-agent are in [`skills/rules/references/worked-dispatch-examples.md`](references/worked-dispatch-examples.md).
+The two worked dispatch briefs (a one-line fix, a multi-file investigation) and the `Monitor` recipe that awaits a dispatched sub-agent are in [`skills/rules/references/worked-dispatch-examples.md`](worked-dispatch-examples.md).

@@ -9,8 +9,10 @@ every ``§ "<title>"`` citation of the rules skill still resolves.
 """
 
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULES = _REPO_ROOT / "skills" / "rules"
@@ -21,6 +23,8 @@ _CORE_MAX_BYTES = 18_432
 _FENCE_RE = re.compile(r"^\s*```")
 _HEADING_RE = re.compile(r"^(#{2,3}) +(.+?)\s*$")
 _BOLD_LEAD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _CITATION_RE = re.compile(r"(?:t3:rules|rules/SKILL\.md)[`)\]\s(.a-zA-Z/:-]{0,40}?§\s*[\"“']([^\"”'\n]+)")
 
 #: Every H2/H3 of skills/rules/SKILL.md at 7c2955c4, before the split.
@@ -186,6 +190,40 @@ def test_every_reference_file_is_named_by_path_in_the_core() -> None:
 def test_the_core_fits_its_byte_ceiling() -> None:
     size = len(_CORE.read_text(encoding="utf-8").encode())
     assert size <= _CORE_MAX_BYTES, f"skills/rules/SKILL.md is {size} B, over the {_CORE_MAX_BYTES} B core ceiling"
+
+
+def test_the_core_names_every_original_section() -> None:
+    core = _CORE.read_text(encoding="utf-8")
+    unnamed = [title for title in _ORIGINAL_HEADINGS if title not in core]
+    assert not unnamed, f"sections a core-only reader has no cue to Read: {unnamed}"
+
+
+def _broken_links(pages: list[Path]) -> list[str]:
+    broken: list[str] = []
+    for page in pages:
+        for line in _unfenced_lines(page.read_text(encoding="utf-8")):
+            for target in _LINK_RE.findall(_INLINE_CODE_RE.sub("", line)):
+                path = target.split("#", 1)[0]
+                if not path or "://" in target or target.startswith("mailto:"):
+                    continue
+                if not (page.parent / path).exists():
+                    broken.append(f"{page.relative_to(_REPO_ROOT).as_posix()}: {target}")
+    return broken
+
+
+def test_every_relative_link_under_skills_rules_resolves() -> None:
+    broken = _broken_links(sorted(_RULES.rglob("*.md")))
+    assert not broken, "relative links that resolve to nothing:\n" + "\n".join(f"  {link}" for link in broken)
+
+
+def test_a_planted_broken_link_is_reported(tmp_path: Path) -> None:
+    (tmp_path / "references").mkdir()
+    page = tmp_path / "references" / "page.md"
+    page.write_text(
+        "[ok](page.md) [bad](references/page.md) [web](https://x.y/z) [anchor](#top) `[code](url)`\n", encoding="utf-8"
+    )
+    with patch.object(sys.modules[__name__], "_REPO_ROOT", tmp_path):
+        assert _broken_links([page]) == ["references/page.md: references/page.md"]
 
 
 def test_every_rules_citation_resolves() -> None:

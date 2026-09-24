@@ -14,19 +14,16 @@ Read that file with the Read tool when the entry applies.
 
 ## Index
 
-- `skills/rules/references/verification.md` — evidence, diagnoses, criteria, coverage claims, fail-loud reads, canonical sources, honesty.
-- `skills/rules/references/asking-questions.md` — instructions, ambiguity, tasks, interrupts, asking and answering.
-- `skills/rules/references/classifier-denial-escalation.md` — classifier denials, predictable gates, the minimal blocker.
-- `skills/rules/references/reporting.md` — completion reports, terse output, references, ids.
-- `skills/rules/references/shell-and-files.md` — secrets, temp files, publish commands, remote DBs, MCP tools, dotfiles, crons, probes.
-- `skills/rules/references/skills-and-sessions.md` — skill loading, structural actions, overlay scope, skill writes (`git rev-parse --git-dir`), retro.
-- `skills/rules/references/on-behalf-posting.md` — AI signatures, the on-behalf gate, serialized PR comments.
-- `skills/rules/references/leak-remediation.md` — visibility, `needs-triage`, filed issues, silent scrubs, commit identity.
-- `skills/rules/references/sub-agents.md` — sub-agent limits, blocked results, background operations.
-- `skills/rules/references/worked-dispatch-examples.md` — dispatch briefs, the Monitor recipe.
-- `skills/rules/references/do-work-now.md` — closed issues, doing work now, extension points, contribute mode, tech debt.
-- `skills/rules/references/publishing-mode-doctrine.md` — PR bases, fewest PRs, publishing modes, repo axes.
-- `skills/rules/references/worktrees-and-commits.md` — worktrees, commits, concurrent agents, deprecated code.
+Every stub below names its file. The rules with no stub, by file:
+
+- `skills/rules/references/verification.md`: Read the Canonical Source Before Fixing a Conformance Bug; Re-Verify Cross-Agent State Before Reporting a Dependent Request.
+- `skills/rules/references/asking-questions.md`: Context Transparency; Always Create Tasks.
+- `skills/rules/references/classifier-denial-escalation.md`: Re-Derive the Minimal Blocker.
+- `skills/rules/references/shell-and-files.md`: Token Extraction; Temp File Safety; Complex API Payloads: Use curl or Python; Never Pipe, Redirect, or Chain a gh/glab Publish Command; Prefer Native Tool APIs Over Filesystem Heuristics; Prefer the Teatree MCP Tools Over the `t3` CLI; Symlink Safety; Shell Alias Safety.
+- `skills/rules/references/skills-and-sessions.md`: Skill File Writes Require a Git Repo (`git rev-parse --git-dir`); Run Retro Before Ending Non-Trivial Sessions; Context Longevity; Prefer Standard Over Clever; Session Scope Management; Skill Auto-Loading Must Work.
+- `skills/rules/references/do-work-now.md`: Preserve Existing UX Patterns; Fix TeaTree/Skill Bugs Immediately; Autonomous Directive Adoption; Ask About Auth Before External Service Integrations.
+- `skills/rules/references/worktrees-and-commits.md`: Verify Imports Before Applying External Code; Pre-Commit Hook Failures on Unrelated Tests; Deprecated Code; GitLab Inline Comments.
+- `skills/rules/references/worked-dispatch-examples.md`: worked dispatch briefs and the Monitor recipe.
 
 ## Invoke Skills Before ANY Response
 
@@ -110,15 +107,15 @@ Anything published under the user's identity must never carry an AI signature �
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-`on_behalf_post_mode` gates every colleague-visible post, approval or reaction: when it blocks, get approval first. Drafts, self-DMs and replies on your own MR are exempt. The destination picks the credential, never you: `t3 <overlay> notify post --channel <channel> --text '<message>'`, `t3 slack react --channel <channel> --ts <ts> --emoji <name>`, `t3 <overlay> notify send '<body>' --idempotency-key <key>`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
+`on_behalf_post_mode` gates every colleague-visible post, approval or reaction: when it blocks, get approval first. Drafts, self-DMs and replies on your own MR are exempt. The destination picks the credential, never you: `t3 <overlay> notify post --channel <channel> --text '<message>'`, `mcp__teatree__slack_react` or `t3 slack react --channel <channel> --ts <ts> --emoji <name>`, `mcp__teatree__notify_user` or `t3 <overlay> notify send '<body>' --idempotency-key <key>`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-PR comment posting is serialized — one poster at a time — and the orchestrator dispatches each `t3 review post-comment` to a sub-agent, never posting itself. Full text: `skills/rules/references/on-behalf-posting.md`.
+PR comment posting is serialized — one poster at a time — and the orchestrator dispatches each `mcp__teatree__review_post_comment` / `t3 review post-comment` to a sub-agent, never posting itself. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Evidence Comes From the Deployed Environment (Non-Negotiable)
 
-Posted proof comes only from the deployed environment (load `/t3:e2e`), never local builds; ask for a missing deploy URL. Only a human-approved `t3 <overlay> ticket e2e-bypass` bypasses the E2E gate; record runs with `t3 <overlay> lifecycle record-e2e-run` and the posted URL. Full text: `skills/rules/references/verification.md`.
+Posted proof comes only from the deployed environment (load `/t3:e2e`), never local builds; ask for a missing deploy URL. Only a human-approved `t3 <overlay> ticket e2e-bypass` bypasses the E2E gate; record runs with `mcp__teatree__record_e2e_run` or `t3 <overlay> lifecycle record-e2e-run` and the posted URL. Full text: `skills/rules/references/verification.md`.
 
 ## Never Modify a Remote Database Without Explicit User Approval (Non-Negotiable)
 
@@ -126,7 +123,7 @@ Never write to a remote or shared database without the user's explicit approval 
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 
-Check `gh repo view <owner>/<repo> --json visibility` before filing; a public body must never carry internal names, URLs, ids or paths. Ask when the destination is ambiguous. Full text: `skills/rules/references/leak-remediation.md`.
+Check the target repo's visibility before filing; a public body must never carry internal names, URLs, ids or paths. Ask when the destination is ambiguous. Full text: `skills/rules/references/leak-remediation.md`.
 
 ## Self-Apply `needs-triage` on Agent-Filed Issues (Non-Negotiable)
 
@@ -166,7 +163,7 @@ An `OverlayBase` hook change must update every locally registered overlay in the
 
 ## Do Work Now, Don't Defer to "Later" Tickets (Non-Negotiable)
 
-Do in-scope work now: run the command instead of handing back steps, never punt resolvable work, and fix mid-session bugs in the current PR (`t3 tool repo-mode` — `git shortlog` or `t3 <overlay> config_setting set repo_mode` — sets the latitude). Full text: `skills/rules/references/do-work-now.md`.
+Do in-scope work now: run the command instead of handing back steps, never punt resolvable work, and fix mid-session bugs in the current PR (`t3 tool repo-mode` — `git shortlog`, or `mcp__teatree__config_setting_set` `repo_mode` — sets the latitude). Full text: `skills/rules/references/do-work-now.md`.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
@@ -202,7 +199,7 @@ Fix the cause, never suppress it: no `# noqa`, skipped test, lowered floor, TODO
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
-Resolve the effective `mode` (`T3_MODE`, then `t3 <overlay> config_setting set mode`) before every publishing decision. `interactive` confirms each action; `auto` ships end to end and merges only via `t3 <overlay> ticket clear` then `t3 <overlay> ticket merge`, never raw `gh pr merge`. Full text: `skills/rules/references/publishing-mode-doctrine.md`.
+Resolve the effective `mode` (`T3_MODE`, then `mcp__teatree__config_setting_set` / `t3 <overlay> config_setting set mode`) before every publishing decision. `interactive` confirms each action; `auto` ships end to end and merges only via `t3 <overlay> ticket clear` then `t3 <overlay> ticket merge`, never raw `gh pr merge`. Full text: `skills/rules/references/publishing-mode-doctrine.md`.
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
 

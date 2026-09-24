@@ -6,7 +6,7 @@ The full text of `/t3:rules` § "No AI Signature on Posts Made on the User's Beh
 
 Every artifact you publish under the user's identity — git commits, MR/PR descriptions, MR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
 
-**Canonical setting:** `agent_signature` (DB-home, default `false`) — set with `t3 <overlay> config_setting set agent_signature <true|false>` (add `--overlay <name>` for the per-overlay scope). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
+**Canonical setting:** `agent_signature` (DB-home, default `false`) — set with `mcp__teatree__config_setting_set`, or `t3 <overlay> config_setting set agent_signature <true|false>` (add `--overlay <name>` for the per-overlay scope). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
 
 **Banned trailers and footers in any user-on-behalf artifact:**
 
@@ -24,7 +24,7 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-**Canonical setting:** `on_behalf_post_mode` (DB-home, default `"draft_or_ask"`, per-overlay overridable) — set with `t3 <overlay> config_setting set on_behalf_post_mode <value>` (add `--overlay <name>` for the per-overlay scope). It takes three values.
+**Canonical setting:** `on_behalf_post_mode` (DB-home, default `"draft_or_ask"`, per-overlay overridable) — set with `t3 <overlay> config_setting set on_behalf_post_mode <value>` (add `--overlay <name>` for the per-overlay scope). It takes three values.  <!-- mcp-ratchet: allow — on_behalf_post_mode is a safety-posture key the MCP config tool refuses, so the CLI is the only path -->
 
 The gate covers colleague-**VISIBLE** posts only. A **draft** (`post_draft_note`) is colleague-invisible — only the user can submit it — so it is **exempt under every mode** and never needs approval; that exemption is the whole point of the setting.
 
@@ -32,11 +32,11 @@ An **author-side reply on the owner's OWN MR** — `t3 review reply-to-discussio
 
 `teatree.core.on_behalf_egress.OnBehalfSlackEgress` is the single owner of **every colleague-surface Slack post AND react** under the user's identity — review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post` / `notify react` CLI, and `t3 slack react`. All of them run gate→route→emit→audit in one place, so a colleague reaction can never slip past the gate; a self-DM short-circuits ungated, so a self-ack stays free.
 
-The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the other two chokepoints are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
+The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the other two chokepoints are in [`skills/rules/references/on-behalf-posting.md`](on-behalf-posting.md).
 
 When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first** (via `AskUserQuestion` for ad-hoc agent posts, or by recording an `OnBehalfApproval` for teatree code paths — see below) and publish only after the user confirms.
 
-How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
+How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](on-behalf-posting.md).
 
 **Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete. For the self-DM, prefer the `mcp__teatree__notify_user` MCP tool — same audited egress, and a non-delivery returns a `reason` slug plus a human `detail` instead of a bare failure; the colleague/channel shape has no MCP tool and stays on the CLI.
 
@@ -55,7 +55,7 @@ t3 <overlay> notify send '<body>' --idempotency-key <key>
 
 MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments.
 
-**Serialized means one poster at a time — it does NOT mean the main agent posts directly (do X, never Y).** "Serialize" governs ordering, not who acts. The main/orchestrating agent is never the poster itself: per § "DISPATCH IMMEDIATELY — the orchestrate-only boundary" below, a colleague-visible publish (`t3 review post-comment`, `post-draft-note`, a test-plan or evidence comment) is dispatched to a single sub-agent, exactly like a code edit — the boundary is about WHO touches a colleague-facing surface, not about the call being short enough to "just do it here." Serialize by dispatching one sub-agent, collecting its result, then dispatching the next — never by having the main agent shortcut the dispatch and run the posting command itself in the foreground.
+**Serialized means one poster at a time — it does NOT mean the main agent posts directly (do X, never Y).** "Serialize" governs ordering, not who acts. The main/orchestrating agent is never the poster itself: per `skills/rules/references/sub-agents.md` § "DISPATCH IMMEDIATELY — the orchestrate-only boundary", a colleague-visible publish (`mcp__teatree__review_post_comment` / `t3 review post-comment`, `post-draft-note`, a test-plan or evidence comment) is dispatched to a single sub-agent, exactly like a code edit — the boundary is about WHO touches a colleague-facing surface, not about the call being short enough to "just do it here." Serialize by dispatching one sub-agent, collecting its result, then dispatching the next — never by having the main agent shortcut the dispatch and run the posting command itself in the foreground.
 
 ```python
 # EXAMPLE — `my-org/my-repo` and `acme` are stand-ins, not a teatree target. Nothing here is a work item.

@@ -24,7 +24,7 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 - Editing teatree's plugin `settings.json`, `CLAUDE.md`, or any plugin-distributed permissions file to add an allow rule — the user-scope `settings.json` is the only right knob, and teatree never relaxes permissions on the user's behalf.
 - Continuing the surrounding work and "leaving the denial for later".
 
-The Step 0 worked example, the settings-file edit procedure, the rationale, the standing recommended authorization set (and the read-only `t3 doctor authorizations` check that suggests it), and the full permissions boundary are in [`skills/rules/references/classifier-denial-escalation.md`](references/classifier-denial-escalation.md).
+The Step 0 worked example, the settings-file edit procedure, the rationale, the standing recommended authorization set (and the read-only `t3 doctor authorizations` check that suggests it), and the full permissions boundary are in [`skills/rules/references/classifier-denial-escalation.md`](classifier-denial-escalation.md).
 
 ## Anticipate a Predictable Gate: Offer Enable-Setting or Approve-Once, Never Bypass-or-DIY (Non-Negotiable)
 
@@ -32,7 +32,7 @@ Gates — the on-behalf pre-gate, the E2E gate, the merge/CLEAR keystone, the au
 
 The choice you offer is **solution-oriented** and has exactly two options:
 
-1. **Enable the setting durably** — flip the standing knob so the friction is gone for good (`t3 <overlay> config_setting set on_behalf_post_mode immediate`, add the `permissions.allow` / `autoMode.allow` rule, record the standing authorization).
+1. **Enable the setting durably** — flip the standing knob so the friction is gone for good (`t3 <overlay> config_setting set on_behalf_post_mode immediate`, add the `permissions.allow` / `autoMode.allow` rule, record the standing authorization).  <!-- mcp-ratchet: allow — on_behalf_post_mode is a safety-posture key the MCP config tool refuses, so the CLI is the only path -->
 2. **Approve just this once** — a single-use, scoped authorization for exactly this one action (`t3 review approve-on-behalf <target> <action> --approver <user-id>`, `t3 <overlay> ticket e2e-bypass <id> --approver <user-id> --head-sha <sha>`).
 
 **Never** frame the choice as "**bypass the gate, or do it yourself**". That pair is wrong on both sides: _bypass_ rips out the safety net with nothing durable in its place, and handing the whole action _back to the user_ is the very friction the enable-setting option exists to remove. Offering bypass-or-DIY is the anti-pattern this rule bans — asking it means you waited for the gate instead of anticipating it.

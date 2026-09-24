@@ -55,7 +55,7 @@ When remediating a privacy leak on a public repo (force-push to drop PII, delete
 
 Commits pushed to a PUBLIC repo (`souliane/*`) must have an author **and** committer email that is a GitHub noreply address — `<id>+<login>@users.noreply.github.com` (e.g. `21343492+souliane@users.noreply.github.com`). A real/deliverable address (any customer/personal domain inherited from local `.git/config` or the XDG global) in public history is a permanent PII leak that GitHub's own "block pushes that expose my email" does **not** catch for third-party domains. The accepted shape is the noreply pattern itself — not one hardcoded login — so any GitHub identity passes and any real email blocks. Private overlay repos are exempt. Enforced deterministically by the pre-push gate `scripts/hooks/refuse-public-push-with-leak.sh` (#730): on a violation it blocks and prints the offending identity plus the `git filter-branch --env-filter` rewrite to the repo's GitHub noreply identity; re-push after the metadata-only rewrite. <!-- privacy-scan:allow the GitHub noreply shape the rule prescribes -->
 
-The banned-word list, the required form for each public artifact (commit subject, branch name, PR-close comment, push description), and the pre-done grep that checks them are in [`skills/rules/references/leak-remediation.md`](references/leak-remediation.md).
+The banned-word list, the required form for each public artifact (commit subject, branch name, PR-close comment, push description), and the pre-done grep that checks them are in [`skills/rules/references/leak-remediation.md`](leak-remediation.md).
 
 ## Banned words, required form, and the pre-done grep
 

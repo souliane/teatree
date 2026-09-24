@@ -26,14 +26,14 @@ This generalises the `/t3:contribute` "bundle into a single PR by default" rule 
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
-The DB-home `mode` setting (`t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+The DB-home `mode` setting (`mcp__teatree__config_setting_set`, or `t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
 **Resolve the effective mode before every publishing decision — never assume `interactive`.** The chain is `T3_MODE` → per-overlay `mode` → global `mode` → per-repo memory overrides → `interactive`. The recurring failure is skipping that resolution and saying "not pushed, interactive mode" on a repo the user already opted into `auto`; that reads as ignoring their configured preference. Once it resolves to `auto`, do not ask "should I push?" — push and open the PR.
 
 - **`interactive`:** each publishing action needs its own explicit confirmation. Commit approval ≠ push approval; rebase approval ≠ force-push approval; "recheck" is verify-only and never re-authorizes an approval.
 - **`auto`:** ship end to end without confirm prompts — push, open the PR, watch CI, then merge via the §17.4 keystone (`t3 <overlay> ticket clear …` → `t3 <overlay> ticket merge <clear_id>`, never raw `gh pr merge`). The one place you still stop is the merge, and only while `require_human_approval_to_merge` is `true` for the active overlay. Quality gates still run — `auto` drops the confirmation, not the checks.
 
-The resolution order in full, the per-mode expansion, and the `require_human_approval_to_merge` carve-out are in [`skills/rules/references/publishing-mode-doctrine.md`](references/publishing-mode-doctrine.md).
+The resolution order in full, the per-mode expansion, and the `require_human_approval_to_merge` carve-out are in [`skills/rules/references/publishing-mode-doctrine.md`](publishing-mode-doctrine.md).
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
 

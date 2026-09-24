@@ -49,7 +49,7 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 **When N decisions are undecided, your single next action is ONE `AskUserQuestion` with ONE question for the FIRST decision — never a batch (do X, never Y).** This holds precisely under load, where the tempting shortcut is to cram all N into one call "to save a round trip". That batch is the exact drift this rule forbids. Surface decision #1 now; the rest come one at a time after each answer.
 
-The six do-X/never-Y worked examples for the rules in this section — one-decision-per-call, narrating-is-not-asking, ask-then-stop, do-the-best, the shape ceiling, and the unreachable-tool ask — are in [`skills/rules/references/asking-questions.md`](references/asking-questions.md).
+The six do-X/never-Y worked examples for the rules in this section — one-decision-per-call, narrating-is-not-asking, ask-then-stop, do-the-best, the shape ceiling, and the unreachable-tool ask — are in [`skills/rules/references/asking-questions.md`](asking-questions.md).
 
 A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
 
@@ -78,7 +78,7 @@ The test is sharp: _can I reach the best outcome by doing the work?_ If yes → 
 
 **Don't abandon an in-progress one-by-one walk-through.** If you have started taking the user through items one at a time, finish the sequence. Do not switch to autonomous work mid-walk-through and leave the remaining items dangling.
 
-The Slack mirror, the `Stop`-gate enforcement, away-mode deferral, the headless `questions record` path, and the rules for applying a structured answer (and ignoring a stale or superseded one) are in [`skills/rules/references/asking-questions.md`](references/asking-questions.md).
+The Slack mirror, the `Stop`-gate enforcement, away-mode deferral, the headless `questions record` path, and the rules for applying a structured answer (and ignoring a stale or superseded one) are in [`skills/rules/references/asking-questions.md`](asking-questions.md).
 
 **Headless has no interactive tool surface — record the question durably yourself (do X, never Y).** `AskUserQuestion` is the INTERACTIVE implementation of the contract; the contract itself is that the question **reaches the user and an answer comes back**. In a headless run your prose goes to a transcript no human reads, so narrating a blocker loses the decision exactly as an inline question does on a loop turn. When the interactive tool is unavailable — or its call was denied and nothing reached the owner — put the question on the durable Slack path yourself; do not silently pick an answer.
 
