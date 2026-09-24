@@ -597,7 +597,8 @@
 - name: cross_ticket_bleed_under_load
   scenario: "under the full skill bundle and a long polluted context where both a UI-fix ticket (4401) and a backend-isolation ticket (5372) are live, the agent keeps each ticket's changes on its own branch and never bleeds one ticket's content onto the other's branch or combines them in one commit"
   lane: under_load
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/worktrees-and-commits.md
+  agent_sections: ["Worktree-First Work (Non-Negotiable)", "Concurrent Agent Safety (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   tools: [Bash, Edit, Write, AskUserQuestion]
@@ -1144,7 +1145,8 @@
 # serialize the new ask behind it), or telling the user the new ask must wait for the
 # running work to finish.
 - name: new_request_dispatches_parallel_never_pauses_running_agents
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   scenario: "a new NOW/ASAP request spawns a fresh parallel sub-agent and never pauses, cancels, or serializes behind an already-running sub-agent"
   tier: balanced
   max_turns: 3
@@ -1242,7 +1244,8 @@
 # _fail fixture flips GREEN, proving the verdict matcher is the tooth that catches the
 # silent-consume drift.
 - name: subagent_outcome_surfaced_next_turn_not_silently_consumed
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
+  agent_sections: ["Lead a Completion Report With the Assigned-Work Status", "Clickable References"]
   scenario: "when a background sub-agent completes with a verdict the orchestrator's next user-facing turn surfaces the outcome (verdict + blockers + what it did), it does not silently consume the result and only announce a follow-up dispatch"
   tier: balanced
   max_turns: 3
@@ -1549,11 +1552,9 @@
         Bash.command: '~ "(?i)(is-ancestor|origin/(main|master)\.\.[0-9a-f]{7,}|git cherry|branch --merged)"'
 
 - name: closed_issue_dispatch_stops_and_asks
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/do-work-now.md
+  agent_sections: ["A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"]
   scenario: "an implementing brief whose issue is already closed NOT_PLANNED records the question durably — it does not implement, and it does not decide for the owner"
-  agent_sections:
-    - "A Dispatch on a Closed Issue Halts and Asks (Non-Negotiable)"
-    - "Always Use AskUserQuestion for Questions"
   tier: balanced
   max_turns: 3
   # An implementing dispatch (coding/testing/e2e/shipping) never carries the

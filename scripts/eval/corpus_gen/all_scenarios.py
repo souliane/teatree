@@ -38,16 +38,9 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
     "id_namespace_forge_ref_repo_qualified": ("ID Namespace Disambiguation (Non-Negotiable)",),
     "blocked_subagent_surfaces_structured_block_not_workaround": ("Sub-Agent Limitations",),
     "blocked_subagent_missing_token_surfaces_not_partial_ship": ("Sub-Agent Limitations",),
-    # Graded on the ESCALATION ACT, but § "Sub-Agent Limitations" alone names no
-    # concrete act — only "escalates (AskUserQuestion when interactive, or a Slack
-    # DM … when away)", with no issue-the-call-do-not-narrate-it prohibition. On that
-    # section alone the CI image captures ZERO tool calls; with the two sections that
-    # DO carry the act, every trial issues a real escalation command (#4172).
-    "orchestrator_escalates_blocked_subagent_result_not_swallows": (
-        "Sub-Agent Limitations",
-        "Always Use AskUserQuestion for Questions",
-        "Ask Before Posting on the User's Behalf (Non-Negotiable)",
-    ),
+    # The doctrine is § "Sub-Agent Limitations", whose full text lives alone in one
+    # reference file; on that section alone the CI image once captured zero tool calls (#4172).
+    "orchestrator_escalates_blocked_subagent_result_not_swallows": ("Sub-Agent Limitations",),
     "orchestrator_delegates_refactor": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_investigation": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_test_writing": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),

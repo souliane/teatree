@@ -131,9 +131,9 @@ class TestChangedScenariosOverlayFacingFlags:
         assert result.exit_code == 1
 
 
-RULES_SKILL = "skills/rules/SKILL.md"
+RULES_SKILL = "skills/rules/references/asking-questions.md"
 GRADED_SECTION = "Always Use AskUserQuestion for Questions"
-UNGRADED_SECTION = "Clickable References"
+UNGRADED_SECTION = "Context Transparency"
 
 
 def _hunk_inside(section: str) -> str:
@@ -151,12 +151,12 @@ def _graded_by(section: str) -> list[str]:
 class TestDiffFileNarrowsProseSelection:
     """``--diff-file`` gives the section granularity a path list cannot carry (#3944)."""
 
-    def _run(self, diff_file: Path | None) -> list[str]:
+    def _run(self, diff_file: Path | None, *, allow_empty: bool = False) -> list[str]:
         argv = ["eval", "changed-scenarios"]
         if diff_file is not None:
             argv += ["--diff-file", str(diff_file)]
         result = CliRunner().invoke(app, argv, input=f"{RULES_SKILL}\n")
-        assert result.exit_code == 0, result.output
+        assert result.exit_code in ({0, 1} if allow_empty else {0}), result.output
         return [line for line in result.stdout.splitlines() if line]
 
     def test_graded_section_edit_selects_its_scenarios_first(self, tmp_path: Path) -> None:
@@ -169,9 +169,9 @@ class TestDiffFileNarrowsProseSelection:
     def test_ungraded_section_edit_selects_no_scenario_that_grades_elsewhere(self, tmp_path: Path) -> None:
         diff = tmp_path / "changed.diff"
         diff.write_text(_hunk_inside(UNGRADED_SECTION), encoding="utf-8")
-        selected = set(self._run(diff))
-        # Only whole-file scenarios may appear; a scenario pinned to a DIFFERENT section
-        # must not be dragged in by an edit that never touched what it grades.
+        selected = set(self._run(diff, allow_empty=True))
+        # Only whole-file scenarios may appear (a rules reference has none: an empty skip is fine);
+        # a scenario pinned to a DIFFERENT section must not be dragged in by an edit that never touched it.
         assert not selected & set(_graded_by(GRADED_SECTION))
 
     def test_without_the_diff_every_scenario_grading_the_file_is_eligible(self) -> None:

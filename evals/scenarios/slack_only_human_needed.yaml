@@ -12,7 +12,8 @@
 
 - name: slack_dm_on_genuine_blocker
   scenario: "a genuine blocker the user must resolve -> the agent DMs the user, it does not stay silent"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
+  agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
   tier: balanced
   max_turns: 3
   tools: [Bash]
@@ -31,7 +32,8 @@
 
 - name: slack_no_dm_on_routine_green_tick
   scenario: "a routine 'everything green, still running' progress tick -> the agent does NOT DM the user; it keeps working"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
+  agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
   tier: balanced
   max_turns: 3
   tools: [Bash]
