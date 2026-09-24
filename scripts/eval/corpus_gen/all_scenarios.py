@@ -1,8 +1,7 @@
 """Aggregate every declared scenario group into one ordered catalog.
 
 ``_AGENT_SECTIONS`` is the token-cost lever applied centrally: a generated
-scenario that pins ONE rule of a large multi-rule skill (notably the 77 KB
-``skills/rules/SKILL.md``) declares only the ``## `` section it tests, so the
+scenario that pins ONE rule of a large multi-rule skill declares only the ``## `` section it tests, so the
 metered runner sends that section as the system prompt instead of the whole file.
 The map lives here — one auditable place — rather than scattered across the
 catalog declarations. Each section name is verified against the real on-disk

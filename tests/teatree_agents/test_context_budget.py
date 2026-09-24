@@ -212,9 +212,9 @@ class TestProductionSkillBundleFitsOrElidesLegibly:
     """Every real per-phase skill bundle either fits or truncates legibly.
 
     Measured on this repo's own ``skills/`` tree, so the regression is the same
-    on every host. Each production bundle is 1.7-2.3x the append budget today, so
-    every agent dispatch truncates — the contract is that what survives is
-    whole sections and the marker names the rest.
+    on every host. Production bundles fit the append budget; should one outgrow
+    it, the contract is that what survives is whole sections and the marker names
+    the rest.
     """
 
     def _bundle_block(self, phase: str) -> str:

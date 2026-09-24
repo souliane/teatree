@@ -265,8 +265,8 @@ def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill
     (re-derivable), then skills, then the parent context last (most load-bearing
     for continuity). The survey is re-derived only on the over-budget path, so a
     normal-sized context is one build with no extra query and byte-identical
-    output. The skill bundle always overruns, so it is always section-truncated —
-    see :mod:`teatree.agents.context_budget`.
+    output. An over-budget skill bundle is section-truncated — see
+    :mod:`teatree.agents.context_budget`.
 
     Only the phase that EMBEDS the survey offers it as a block: truncation is by
     substring replace, so a survey the phase does not embed is a phantom the pass
