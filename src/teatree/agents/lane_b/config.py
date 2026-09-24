@@ -69,8 +69,8 @@ class LaneBToolConfig:
     ``fs_root`` is the worktree the File System capability is jailed to; every
     read/write/edit/search path is resolved WITHIN it (path-traversal
     prevention). ``None`` when the task has no on-disk worktree, which disables
-    the write/edit tools (a read against an absolute path outside a root is still
-    refused). ``phase`` is the canonical phase token; it drives the phase-scoped
+    the write/edit/search tools and narrows ``Read`` to the registered skill files
+    (:mod:`teatree.agents.skill_files`). ``phase`` is the canonical phase token; it drives the phase-scoped
     toolset filter (:mod:`teatree.core.modelkit.phase_tools`). Empty string = no
     phase-scoping (every assembled tool is exposed), the construction-time
     default so an un-phased ``PydanticAiHarness()`` stays text-only.

@@ -5,7 +5,10 @@ pydantic_ai's native toolset primitive rather than hand-rolling a toolset
 framework). Every path argument is resolved through :func:`resolve_within` before
 any I/O, so a ``../`` traversal or an absolute path outside the jail root is
 refused with a :class:`PathTraversalError` — the capability can only ever touch
-files under the dispatch's own worktree.
+files under the dispatch's own worktree. The one widening is ``Read``: a path the jail
+refuses or cannot find falls back to an exact registered skill file
+(:class:`~teatree.agents.skill_files.SkillFileIndex`), so a skill's cited reference
+is readable from any worktree — and, via :func:`build_skill_file_toolset`, from none.
 
 That refusal, and every other way these tools can fail on the model's own input,
 is a :class:`~teatree.agents.lane_b.tool_errors.ToolInputError`, so
@@ -19,6 +22,7 @@ from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_EDIT, TOOL_GREP, TOOL_READ, TOOL_WRITE
+from teatree.agents.skill_files import NO_SKILL_FILES, SkillFileIndex
 
 _MAX_READ_BYTES = 1_000_000
 _MAX_SEARCH_HITS = 200
@@ -26,6 +30,10 @@ _MAX_SEARCH_HITS = 200
 
 class PathTraversalError(ToolInputError, ValueError):
     """A tool path resolved outside its jail root — refused before any I/O."""
+
+
+class NotASkillFileError(ToolInputError, ValueError):
+    """A worktree-less ``Read`` named something other than a registered skill file."""
 
 
 class SubstringNotFoundError(ToolInputError, ValueError):
@@ -51,7 +59,9 @@ def resolve_within(root: Path, candidate: str) -> Path:
     return resolved
 
 
-def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> FunctionToolset[None]:
+def build_filesystem_toolset(
+    root: Path, *, allow_write: bool = True, skill_files: SkillFileIndex = NO_SKILL_FILES
+) -> FunctionToolset[None]:
     """Assemble the File System ``FunctionToolset`` jailed to *root*.
 
     *allow_write* is ``False`` for a read-only phase so the write/edit tools are
@@ -61,8 +71,17 @@ def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> Functio
     toolset: FunctionToolset[None] = FunctionToolset()
 
     def read_file(path: str) -> str:
-        """Read a UTF-8 text file under the worktree, returning its content."""
-        return _read_capped(resolve_within(root, path), errors="replace")
+        """Read a UTF-8 text file under the worktree (or a registered skill file), returning its content."""
+        try:
+            target = resolve_within(root, path)
+        except PathTraversalError:
+            if (registered := skill_files.lookup(path)) is None:
+                raise
+            target = registered
+        else:
+            if not target.is_file() and (registered := skill_files.lookup(path)) is not None:
+                target = registered
+        return _read_capped(target, errors="replace")
 
     def search_files(pattern: str, glob: str = "**/*") -> list[str]:
         """Return worktree file paths whose text contains *pattern* (substring)."""
@@ -75,6 +94,21 @@ def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> Functio
     toolset.add_function(search_files, takes_ctx=False, name=TOOL_GREP)
     if allow_write:
         _add_write_tools(toolset, root)
+    return toolset
+
+
+def build_skill_file_toolset(skill_files: SkillFileIndex) -> FunctionToolset[None]:
+    """A ``Read``-only toolset over exactly the registered skill files, for a dispatch with no worktree."""
+    toolset: FunctionToolset[None] = FunctionToolset()
+
+    def read_file(path: str) -> str:
+        """Read a registered skill file (``skills/<skill>/SKILL.md`` or ``skills/<skill>/references/<f>.md``)."""
+        if (registered := skill_files.lookup(path)) is None:
+            msg = f"{path!r} is not a skill file; this dispatch has no worktree, so Read reaches skill files only"
+            raise NotASkillFileError(msg)
+        return _read_capped(registered, errors="replace")
+
+    toolset.add_function(read_file, takes_ctx=False, name=TOOL_READ)
     return toolset
 
 

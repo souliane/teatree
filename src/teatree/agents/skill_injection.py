@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.agents.skill_files import reach_line
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
@@ -83,6 +84,11 @@ def _skill_section(name: str, content: str) -> str:
     return f"--- SKILL: {name} ---\n{content}"
 
 
+def _with_reach_line(sections: list[str], dirs: Sequence[Path]) -> str:
+    """Join *sections* under the reach line, which leads so a budget cut can never drop it."""
+    return "\n\n".join((reach_line(dirs[0]), *sections)) if sections else ""
+
+
 def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
     """Read and concatenate SKILL.md content for each resolved skill."""
     dirs = _resolve_dirs(skills_dir)
@@ -91,7 +97,14 @@ def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -
         skill_md = _resolve_skill_md(name, dirs)
         if skill_md is not None:
             sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
-    return "\n\n".join(sections)
+    return _with_reach_line(sections, dirs)
+
+
+def _companion_line(name: str, dirs: Sequence[Path]) -> str:
+    skill_md = _resolve_skill_md(name, dirs)
+    if skill_md is None:
+        return f"- {name}: not embedded — no SKILL.md resolves for it on this host"
+    return f"- {name}: not embedded — Read `{skill_md}` when it applies"
 
 
 def _is_primary(name: str, primary_skills: set[str]) -> bool:
@@ -120,11 +133,12 @@ def _read_skill_contents_scoped(
     Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
     phase — the overlay's primary review skills) get full content. Skills in
     *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
-    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
-    "available — load if needed" summary. Skills in *suppress_names* are
+    BEFORE reviewing" instruction instead of the companion line. Skills in *suppress_names* are
     omitted entirely — the caller force-loads them elsewhere (e.g. the coding
     directive's stack-load block, #1368), so listing them in the ignorable
-    summary would contradict that. Everything else gets the generic summary.
+    summary would contradict that. Everything else gets a companion line naming
+    the absolute ``SKILL.md`` path to ``Read`` when it applies — or saying no body
+    resolves on this host, rather than advertising one that is not there.
     """
     dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
@@ -150,10 +164,10 @@ def _read_skill_contents_scoped(
         )
         sections.append(block)
     if companion_names:
-        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
-        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
+        summary = "--- COMPANION SKILLS (not embedded, to save context) ---\n"
+        summary += "\n".join(_companion_line(name, dirs) for name in companion_names)
         sections.append(summary)
-    return "\n\n".join(sections)
+    return _with_reach_line(sections, dirs)
 
 
 _SUBAGENT_PREAMBLE_HEADER = (
@@ -199,5 +213,5 @@ def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Pa
         bare = _bare_skill_name(name)
         sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
         resolved.append(bare)
-    text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + "\n\n".join(sections) if sections else ""
+    text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + _with_reach_line(sections, skills_dirs) if sections else ""
     return SkillPreamble(text=text, resolved=resolved, missing=missing)

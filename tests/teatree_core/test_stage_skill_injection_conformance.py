@@ -3,7 +3,7 @@
 A maker agent type (``t3:coder``/``t3:debugger``/``t3:tester``/``t3:e2e``/
 ``t3:shipper``) has no Skill tool, so a stage skill only exists for it if its
 ``SKILL.md`` body is embedded IN FULL in the dispatched system context — a
-one-line "available — load if needed" summary is vacuous. These tests use a
+one-line "not embedded" companion line is vacuous. These tests use a
 SYNTHETIC overlay declaring ``stage_skills={"coding": [<sentinel skill>]}`` and
 assert the sentinel body appears in full in the coding-phase system context.
 
@@ -176,7 +176,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
     """The coding-phase system context embeds the overlay stage skill IN FULL.
 
     RED before the wiring: the stage skill is either absent from the bundle or
-    demoted to the ``"available — load if needed"`` summary and the sentinel
+    demoted to the ``"not embedded"`` companion line and the sentinel
     body never reaches the no-Skill-tool builder.
     """
 
@@ -196,7 +196,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
                 lifecycle_skill="code",
             )
         assert _STAGE_SENTINEL in context
-        assert f"- {_STAGE_SKILL_NAME}: available — load if needed" not in context
+        assert f"- {_STAGE_SKILL_NAME}: not embedded" not in context
 
     @pytest.mark.usefixtures("skills_dir")
     def test_coding_phase_carries_additive_precedence_line(self) -> None:
