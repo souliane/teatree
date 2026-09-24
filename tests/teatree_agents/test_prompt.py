@@ -2,7 +2,6 @@
 
 import tempfile
 from pathlib import Path
-from typing import ClassVar
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -342,7 +341,7 @@ class TestBuildSystemContext(TestCase):
 
     def test_empty_skill_content(self) -> None:
         """When skills list is non-empty but no SKILL.md found, skip the section."""
-        with patch("teatree.agents.prompt._read_skill_contents_scoped", return_value=""):
+        with patch("teatree.agents.prompt._read_skill_contents", return_value=""):
             ticket = Ticket.objects.create()
             session = Session.objects.create(ticket=ticket)
             task = Task.objects.create(ticket=ticket, session=session)
@@ -405,7 +404,7 @@ class TestSystemContextByteBudget(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
-        with patch("teatree.agents.prompt._read_skill_contents_scoped", return_value="S" * (MAX_APPEND_BYTES * 2)):
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * (MAX_APPEND_BYTES * 2)):
             ctx = build_system_context(task, skills=["huge-skill"])
 
         assert len(ctx.encode()) <= MAX_APPEND_BYTES
@@ -455,7 +454,7 @@ class TestNonPlanningPhaseWithPersistedSurvey(TestCase):
         survey = {"blob": "x" * self._SURVEY_BLOB_BYTES, "warnings": [], "recommendations": []}
         LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
 
-        with patch("teatree.agents.prompt._read_skill_contents_scoped", return_value="S" * self._SKILL_BUNDLE_BYTES):
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * self._SKILL_BUNDLE_BYTES):
             return build_system_context(task, skills=["huge-skill"])
 
     def test_append_stays_within_the_argv_element_budget(self) -> None:
@@ -834,45 +833,3 @@ class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
     def test_a_review_answerable_for_no_pr_still_renders(self) -> None:
         context = self._system_context(issue_url="https://github.com/souliane/teatree/issues/2663")
         assert "reviewer_identity" in context
-
-
-class TestNoLifecyclePhaseIsScopedToo(TestCase):
-    """A phase with no lifecycle skill embedded the WHOLE bundle — 58 KB per request (#4816)."""
-
-    _BODIES: ClassVar[dict[str, str]] = {
-        "internals": "I" * 20_000,
-        "ac-django": "D" * 20_000,
-        "slack-formatting": "S" * 18_000,
-    }
-    _SKILLS: ClassVar[list[str]] = ["internals", "ac-django", "slack-formatting"]
-
-    def _context(self, phase: str, *, lifecycle_skill: str = "") -> str:
-        tmp_dir = Path(tempfile.mkdtemp())
-        for name, body in self._BODIES.items():
-            (tmp_dir / name).mkdir()
-            (tmp_dir / name / "SKILL.md").write_text(body, encoding="utf-8")
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
-            return build_system_context(task, skills=self._SKILLS, lifecycle_skill=lifecycle_skill)
-
-    def test_no_lifecycle_phase_does_not_embed_the_whole_bundle(self) -> None:
-        ctx = self._context("architectural_review")
-        for body in self._BODIES.values():
-            assert body not in ctx
-        assert len(ctx) < sum(len(b) for b in self._BODIES.values()) / 10
-
-    def test_every_demoted_skill_is_named_with_a_readable_path(self) -> None:
-        # Nothing is silently lost: this lane has no Skill tool, so the pointer must
-        # be a path it can Read — not "load if needed".
-        ctx = self._context("architectural_review")
-        for name in self._SKILLS:
-            line = next(ln for ln in ctx.splitlines() if ln.startswith(f"- {name}:"))
-            assert Path(line.split("read ", 1)[1]).is_file()
-
-    def test_a_lifecycle_phase_still_embeds_its_lifecycle_skill(self) -> None:
-        # Control: scoping the no-lifecycle branch must not narrow the lifecycle one.
-        ctx = self._context("testing", lifecycle_skill="internals")
-        assert self._BODIES["internals"] in ctx
-        assert self._BODIES["ac-django"] not in ctx

@@ -5,39 +5,38 @@ from pathlib import Path
 from teatree.agents import skill_injection
 from teatree.agents.skill_injection import (
     _is_primary,
+    _read_skill_contents,
     _read_skill_contents_scoped,
     _resolve_skill_md,
     build_subagent_skill_preamble,
     harness_skills_dirs,
 )
 
-# --- _read_skill_contents_scoped: the embed path ---
+# --- _read_skill_contents ---
 
 
-def test_read_scoped_reads_existing_skill(tmp_path: Path) -> None:
+def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("# My Skill\nDo stuff.", encoding="utf-8")
 
-    result = _read_skill_contents_scoped(["my-skill"], primary_skills={"my-skill"}, skills_dir=tmp_path)
+    result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
     assert "--- SKILL: my-skill ---" in result
     assert "# My Skill" in result
 
 
-def test_read_scoped_skips_missing_skill(tmp_path: Path) -> None:
-    result = _read_skill_contents_scoped(["nonexistent"], primary_skills={"nonexistent"}, skills_dir=tmp_path)
+def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
+    result = _read_skill_contents(["nonexistent"], skills_dir=tmp_path)
     assert result == ""
 
 
-def test_read_scoped_multiple_skills(tmp_path: Path) -> None:
+def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
     for name in ("skill-a", "skill-b"):
         d = tmp_path / name
         d.mkdir()
         (d / "SKILL.md").write_text(f"# {name}", encoding="utf-8")
 
-    result = _read_skill_contents_scoped(
-        ["skill-a", "skill-b"], primary_skills={"skill-a", "skill-b"}, skills_dir=tmp_path
-    )
+    result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
     assert "--- SKILL: skill-a ---" in result
     assert "--- SKILL: skill-b ---" in result
 
@@ -49,20 +48,20 @@ def test_read_scoped_multiple_skills(tmp_path: Path) -> None:
 # embed (or vice versa). Every case below asserts warn-resolution and embed agree.
 
 
-def test_read_scoped_embeds_namespaced_name_like_the_resolver(tmp_path: Path) -> None:
+def test_read_skill_contents_embeds_namespaced_name_like_the_resolver(tmp_path: Path) -> None:
     _write_skill(tmp_path, "backend-dev", "# backend-dev body")
 
     assert _resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
-    result = _read_skill_contents_scoped(["t3:backend-dev"], primary_skills={"t3:backend-dev"}, skills_dir=tmp_path)
+    result = _read_skill_contents(["t3:backend-dev"], skills_dir=tmp_path)
     assert "--- SKILL: backend-dev ---" in result
     assert "# backend-dev body" in result
 
 
-def test_read_scoped_embeds_path_form_name_like_the_resolver(tmp_path: Path) -> None:
+def test_read_skill_contents_embeds_path_form_name_like_the_resolver(tmp_path: Path) -> None:
     _write_skill(tmp_path, "rules", "# rules body")
 
     assert _resolve_skill_md("skills/rules/SKILL.md", [tmp_path]) is not None
-    result = _read_skill_contents_scoped(["skills/rules/SKILL.md"], primary_skills=set(), skills_dir=tmp_path)
+    result = _read_skill_contents(["skills/rules/SKILL.md"], skills_dir=tmp_path)
     assert "--- SKILL: rules ---" in result
     assert "# rules body" in result
 
@@ -253,6 +252,16 @@ def test_harness_skills_dirs_includes_default_and_claude_dir() -> None:
     dirs = harness_skills_dirs()
     assert skill_injection.DEFAULT_SKILLS_DIR in dirs
     assert (Path.home() / ".claude" / "skills") in dirs
+
+
+def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
+    # With no explicit skills_dir, the reader searches the harness dirs; a skill
+    # seeded only in the patched DEFAULT dir must still resolve.
+    seeded = tmp_path / "seeded"
+    _write_skill(seeded, "harness-skill", "# harness body")
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
+    result = _read_skill_contents(["harness-skill"])
+    assert "# harness body" in result
 
 
 def test_read_scoped_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
