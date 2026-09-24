@@ -23,6 +23,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
 
+from teatree.agents import skill_injection
 from teatree.agents._runner_options import _disallowed_tools_for_phase
 from teatree.agents.lane_b import toolsets as toolsets_module
 from teatree.agents.lane_b.config import LaneBToolConfig
@@ -35,13 +36,14 @@ from teatree.agents.skill_injection import harness_skills_dirs
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task, Ticket
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
+from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # the zero-token test guard.
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_SKILLS = _REPO_ROOT / "skills"
 
 
 def _run(agent: Agent[None, str], prompt: str) -> AgentRunResult[Any]:
@@ -183,13 +185,11 @@ def _rendered_context(phase: str) -> str:
 
 def _named_skill_files(context: str) -> set[str]:
     """Each existing skill file the context names, as its repo-relative ``skills/<skill>/...`` key."""
-    return {
-        key for key in _SKILL_PATH_RE.findall(context) if (DEFAULT_SKILLS_DIR / key.removeprefix("skills/")).is_file()
-    }
+    return {key for key in _SKILL_PATH_RE.findall(context) if (_REPO_SKILLS / key.removeprefix("skills/")).is_file()}
 
 
 def _both_spellings(key: str) -> tuple[str, str]:
-    return key, str(DEFAULT_SKILLS_DIR / key.removeprefix("skills/"))
+    return key, str(_REPO_SKILLS / key.removeprefix("skills/"))
 
 
 def _read_all(config: LaneBToolConfig, paths: list[str]) -> dict[str, str]:
@@ -236,9 +236,9 @@ _REFUSED_WITHOUT_A_WORKTREE = (
     "skills/rulesX/SKILL.md",
     "skills/rules/SKILL.md.bak",
     "skills/rules/references/notes.txt",
-    str(DEFAULT_SKILLS_DIR),
-    str(DEFAULT_SKILLS_DIR / "rules" / "references"),
-    f"{DEFAULT_SKILLS_DIR}/rules/references/../SKILL.md",
+    str(_REPO_SKILLS),
+    str(_REPO_SKILLS / "rules" / "references"),
+    f"{_REPO_SKILLS}/rules/references/../SKILL.md",
 )
 
 
@@ -253,6 +253,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         for patcher in (
             patch.dict(os.environ, {"HOME": str(home)}),
             patch.object(toolsets_module, "build_mcp_toolsets", list),
+            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _REPO_SKILLS),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -269,7 +270,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         unreadable: list[str] = []
         for phase, keys in phases.items():
             expected = {
-                spelling: (DEFAULT_SKILLS_DIR / key.removeprefix("skills/")).read_text(encoding="utf-8")
+                spelling: (_REPO_SKILLS / key.removeprefix("skills/")).read_text(encoding="utf-8")
                 for key in keys
                 for spelling in _both_spellings(key)
             }
@@ -301,7 +302,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
                 assert retries
 
     def test_a_worktree_dispatch_cannot_escape_through_the_fallback(self) -> None:
-        for path in ("/etc/hostname", "../../../etc/hostname", str(DEFAULT_SKILLS_DIR.parent / "pyproject.toml")):
+        for path in ("/etc/hostname", "../../../etc/hostname", str(_REPO_SKILLS.parent / "pyproject.toml")):
             with self.subTest(path=path):
                 returns, retries = _read_one(LaneBToolConfig(fs_root=self.scratch, phase="coding"), path)
                 assert not returns

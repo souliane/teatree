@@ -1,6 +1,71 @@
-# Publishing mode doctrine — resolution order and per-mode detail
+# Publishing — PR shape, publishing modes, and repo axes
 
-The mechanics behind `/t3:rules` § "Publishing Actions Are Mode-Conditional (Non-Negotiable)". That section carries the decision — resolve the mode before every publishing decision, and the always-gated list that holds in both modes. This file carries the precedence chain and the per-mode expansion.
+The full text of the `/t3:rules` sections on PR base branches, fewest PRs, § "Publishing Actions Are Mode-Conditional (Non-Negotiable)" with its always-gated list, and the three repo axes, followed by the mode precedence chain and the per-mode expansion. The core `skills/rules/SKILL.md` carries each rule's trigger and verdict and the always-gated list itself.
+
+## Never Change PR Base Branch or Dependencies (Non-Negotiable)
+
+When a PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change a PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
+
+- If asked to "merge main" into a branch, merge the specified source — do not change what the branch is based on.
+- If a branch is based on another feature branch (not main/master), keep it that way.
+- If unsure about the dependency chain, **ask first**.
+
+Destroying PR dependency chains wastes hours of carefully organized work.
+
+## Fewest PRs for Related Work — Splitting Requires Approval (Non-Negotiable)
+
+Ship a piece of **related** work as **one** PR. Do not preemptively carve a single coherent change into a chain of stacked or follow-up PRs. The user's standing policy: teatree ships related work in **as few PRs as possible**, and **splitting related work across multiple PRs needs the user's explicit, up-front approval**. Without that approval, the default is one PR.
+
+- The small-focused-PR habit is a human code-**review** convenience; it does not transfer to agent-driven, self-verified work. When the user is not reviewing PRs, splitting buys nothing and costs more — every extra PR multiplies CI runs, base-branch drift, stacked-rebase overhead, BLUEPRINT churn, and partial-merge states, and each seam is a fresh place for error.
+- "Related" is a judgment call: commits that serve **one goal** (one feature, one refactor, one migration — even across several files or several days) belong together. A migration that touches N fields is one PR, not N PRs.
+- Genuinely **unrelated** work still gets its own PR — this rule minimises PRs _within_ a coherent change, it does not bundle disjoint concerns.
+- When you believe a split is genuinely warranted (e.g. an enormous diff, or a risky change that benefits from landing a safe prerequisite first), **ask the user first** and proceed only on an explicit yes. If you proceed without asking, ship it as one PR.
+- Per-commit granularity inside one PR is encouraged — meaningful, self-contained commits on a single branch give you reviewable history without paying the multi-PR cost.
+
+This generalises the `/t3:contribute` "bundle into a single PR by default" rule from retro commits to **all** related work, and gates the stacking option in `/t3:ship` § "One Open PR Per Ticket" behind explicit approval.
+
+## Publishing Actions Are Mode-Conditional (Non-Negotiable)
+
+The DB-home `mode` setting (`t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+
+**Resolve the effective mode before every publishing decision — never assume `interactive`.** The chain is `T3_MODE` → per-overlay `mode` → global `mode` → per-repo memory overrides → `interactive`. The recurring failure is skipping that resolution and saying "not pushed, interactive mode" on a repo the user already opted into `auto`; that reads as ignoring their configured preference. Once it resolves to `auto`, do not ask "should I push?" — push and open the PR.
+
+- **`interactive`:** each publishing action needs its own explicit confirmation. Commit approval ≠ push approval; rebase approval ≠ force-push approval; "recheck" is verify-only and never re-authorizes an approval.
+- **`auto`:** ship end to end without confirm prompts — push, open the PR, watch CI, then merge via the §17.4 keystone (`t3 <overlay> ticket clear …` → `t3 <overlay> ticket merge <clear_id>`, never raw `gh pr merge`). The one place you still stop is the merge, and only while `require_human_approval_to_merge` is `true` for the active overlay. Quality gates still run — `auto` drops the confirmation, not the checks.
+
+The resolution order in full, the per-mode expansion, and the `require_human_approval_to_merge` carve-out are in [`skills/rules/references/publishing-mode-doctrine.md`](references/publishing-mode-doctrine.md).
+
+### Always-Gated Actions (Non-Negotiable, both modes)
+
+Some actions remain confirm-gated regardless of mode because they are irreversible or affect shared history:
+
+- **Force-push to default branches** (`main`, `master`, `development`, `release`, or any branch listed in the overlay's `protected_branches`).
+- **History rewrites on shared defaults** — rebase, amend, or filter-branch on any branch another agent or human is tracking.
+- **Destructive shared-state ops** — `DROP` / `TRUNCATE` on shared databases, deletions in shared directories, `rm -rf` on paths outside the active worktree.
+- **External writes the active overlay has NOT authorised** — posting to channels, repos, or services not listed in the overlay's publishing allow-list.
+- **`--no-verify` on any git command** is forbidden in both modes. If a hook fails, fix the underlying issue.
+
+This list applies to all repos, all branches, both modes.
+
+## Three Orthogonal Repo Axes — Visibility, Ownership, Collaboration (Non-Negotiable)
+
+A repo's treatment is decided on three INDEPENDENT axes. Conflating them is the recurrence this rule prevents — most often treating a private overlay repo as if it were colleague-facing and holding back from merging the user's own work.
+
+| Axis | Question | Where it lives | Polarity |
+|---|---|---|---|
+| **Visibility** | public vs private? | `[teatree] private_repos` + `internal_publish_namespaces` → `teatree.hooks.publish_destination` | leak-prevention; fails **OPEN** (unknown → scan-as-public) |
+| **Ownership / scope** | owned vs unknown? | `[overlays.<name>.owned_repos]` (forge-host-keyed) → `teatree.core.intake.repo_scope` + `teatree.core.gates.owned_repo_guard` | unknown-repo gate; fails **CLOSED** (unknown → ask) |
+| **Collaboration** | self vs colleague? | the MR AUTHOR → `teatree.core.review.review_candidate.author_is_self` | never auto-merge a colleague's MR |
+
+- **Solo-owned repos merge freely.** `souliane/*` and the user's own overlay repos (e.g. `acme-eng/widget-overlay`, `acme-eng/widget-overlay-e2e`) merge exactly like `souliane/teatree`. The only colleague-facing repos are the shared **product** repos of the org (e.g. `acme-product`, `acme-client-workspace`, `acme-shared-config-*`).
+- **Private ≠ colleague-facing.** A repo being private is the _visibility_ axis (leak-prevention still applies). It says nothing about ownership — `widget-overlay` is private AND solo-owned, so the agent merges it without colleague gating.
+- **Owned ≠ auto-merge.** Ownership gates the _unknown-repo_ decision only. A shared product repo is still in scope (owned by its overlay) yet still needs colleague review — that is the collaboration axis, decided by `author_is_self`, never collapsed into ownership.
+- **`owned_repos` is forge-host-keyed** (`{"github.com": ["souliane", …]}`): a `gitlab.com` repo never matches a `github.com` scope.
+- **The unknown-repo gate ships INERT — opt-in, default off.** `require_owned_repo_approval` defaults `false`, so no overlay is gated out of the box. Enabling it requires **first declaring the FULL owned host/namespace list** — including every private/customer forge the operator merges on — because the gate fails **CLOSED** on any repo no listed pattern owns: flipping it on with a partial list would hold the operator's own private-forge keystone merges as "unknown". Opt in from the private DB `ConfigSetting` store (the overlay's `owned_repos` with the full host list + `require_owned_repo_approval = true`), where brand/customer strings are allowed and never reach the public repo.
+- **A path-only TOML overlay cannot carry its own scope.** An overlay registered with a `path` but no Python `class` is skipped by overlay discovery (`get_all_overlays` returns only instantiable overlays), so it can never opt itself into the gate. Its repos must be declared under an INSTANTIABLE overlay's `owned_repos` (e.g. the always-registered `t3-teatree`).
+- **Never-lockout** regardless: a per-call `[scope-push-ok: <reason>]` token, the `unknown_repo_push_gate_enabled` kill-switch, and fail-open on a resolver exception (incl. a failed Django bootstrap in the hook subprocess) all keep the gate from wedging a push.
+
+Pinned by `tests/teatree_core/intake/test_repo_scope.py` (host-symmetric gate), `tests/teatree_core/gates/test_owned_repo_guard.py` (polarity + orthogonality), `tests/teatree_core/review/test_review_candidate.py` § `TestClassificationIsAuthorNotNamespace` (author-not-namespace), and the A/B eval `evals/scenarios/owned_repo_not_colleague.yaml`.
 
 ## Resolve the effective mode before every publishing decision
 

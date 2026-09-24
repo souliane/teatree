@@ -1,7 +1,8 @@
 """``t3 <overlay> honesty escalate`` — record a situational honesty escalation (#2263).
 
 The agent-facing write seam for the honesty-critical escalation rule
-(``skills/rules/SKILL.md`` §43). When the agent judges any of the four triggers
+(``skills/rules/SKILL.md`` § "Escalate Honesty-Critical Verification to the
+Most-Honest Model"). When the agent judges any of the four triggers
 present — the user asked it to be honest, it judges it was dishonest, the user
 accused it of lying, or it shipped a job it cannot verify is complete — it runs::
 

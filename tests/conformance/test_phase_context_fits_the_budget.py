@@ -2,8 +2,9 @@
 
 Truncation is the degrade path, never the normal one: a truncated context loses
 whole rule sections the agent never learns it lost. Measured with the real
-bundle resolver and prompt builder over this repo's skills tree, with ``HOME``
-pointed at an empty dir so a host's installed harness skills cannot move the number.
+bundle resolver and prompt builder over THIS tree's skills (the default skills dir
+resolves to the main clone), with ``HOME`` pointed at an empty dir so a host's
+installed harness skills cannot move the number.
 """
 
 import os
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.agents import skill_injection
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.prompt import build_system_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
@@ -43,7 +45,11 @@ class TestEveryPhaseFitsTheBudget(TestCase):
     def test_no_phase_context_is_truncated_or_over_the_headroom(self) -> None:
         ceiling = MAX_APPEND_BYTES - _HEADROOM_BYTES
         over: list[str] = []
-        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}):
+        with (
+            tempfile.TemporaryDirectory() as home,
+            patch.dict(os.environ, {"HOME": home}),
+            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+        ):
             for phase in sorted(KNOWN_PHASES):
                 context = _rendered_context(phase)
                 size = len(context.encode())
