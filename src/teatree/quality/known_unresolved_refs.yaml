@@ -17,7 +17,6 @@ charter:
   - teatree.harnesses
   - teatree.overlays
   - teatree.teams
-  - teatree.utils.django_db.refresh_reference_snapshot
   CLAUDE.md:
   - teatree.overlays
   docs/blueprint/configuration.md:
