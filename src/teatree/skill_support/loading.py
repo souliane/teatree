@@ -61,6 +61,13 @@ _PHASE_TO_SKILL: dict[str, str] = {
     "debugging": "debug",
     "requesting_review": "review-request",
     "retrospecting": "retro",
+    "answering": "answerer",
+    "bughunt": "debug",
+    "critic_reviewing": "review",
+    "directive_interpreting": "architecture-design",
+    "e2e_reviewing": "e2e-review",
+    "scanning_news": "scanning-news",
+    "triage_assessing": "triaging-issues",
 }
 
 _PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")
