@@ -20,6 +20,7 @@ from teatree.agents.lane_b.gating import DEFAULT_SOFT_GATED, HardDenyToolset, ma
 from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.agents.lane_b.tool_names import lane_b_tool_name
+from teatree.agents.skill_injection import harness_skills_dirs
 from teatree.core.modelkit.phase_tools import tools_for_phase
 
 
@@ -55,7 +56,11 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
 
     if config.fs_root is not None:
         allow_write = allowed is None or "write_file" in allowed
-        capability_toolsets.append(build_filesystem_toolset(config.fs_root, allow_write=allow_write))
+        # The companion-skill pointers in the system context name SKILL.md files here.
+        skill_roots = tuple(directory for directory in harness_skills_dirs() if directory.is_dir())
+        capability_toolsets.append(
+            build_filesystem_toolset(config.fs_root, allow_write=allow_write, read_only_roots=skill_roots)
+        )
 
     if allowed is None or "shell" in allowed:
         capability_toolsets.append(build_shell_toolset(config))

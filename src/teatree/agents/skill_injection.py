@@ -10,11 +10,14 @@ the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can
 emit a preamble without bootstrapping Django.
 """
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
+
+logger = logging.getLogger(__name__)
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 
@@ -83,6 +86,17 @@ def _skill_section(name: str, content: str) -> str:
     return f"--- SKILL: {name} ---\n{content}"
 
 
+def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
+    """Embed every resolvable skill in full — for a phase with no ``Read`` to follow a pointer."""
+    dirs = _resolve_dirs(skills_dir)
+    sections: list[str] = []
+    for name in skills:
+        skill_md = _resolve_skill_md(name, dirs)
+        if skill_md is not None:
+            sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+    return "\n\n".join(sections)
+
+
 def _is_primary(name: str, primary_skills: set[str]) -> bool:
     """Check if a skill name (or path) matches the primary set or always-full list."""
     if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
@@ -113,7 +127,7 @@ def _read_skill_contents_scoped(
     summary. Skills in *suppress_names* are omitted entirely — the caller
     force-loads them elsewhere (e.g. the coding directive's stack-load block,
     #1368), so listing them in the ignorable summary would contradict that.
-    Everything else gets a one-line pointer at its own ``SKILL.md`` path.
+    Everything else is listed in the companion pointer block (:func:`_companion_block`).
     """
     dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
@@ -138,27 +152,37 @@ def _read_skill_contents_scoped(
             f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
         )
         sections.append(block)
-    if companion_names:
-        summary = _COMPANION_SUMMARY_HEADER + "\n".join(_companion_pointer(name, dirs) for name in companion_names)
-        sections.append(summary)
+    if companion_names and (block := _companion_block(companion_names, dirs)):
+        sections.append(block)
     return "\n\n".join(sections)
 
 
-_COMPANION_SUMMARY_HEADER = (
-    "--- COMPANION SKILLS (not embedded, to save context — read the named file if you need one) ---\n"
-)
+_COMPANION_HEADER = "--- COMPANION SKILLS: Read <dir>/<name>/SKILL.md ---"
 
 
-def _companion_pointer(name: str, skills_dirs: Sequence[Path]) -> str:
-    """One demoted skill's line, naming the body's path so this lane can still reach it.
+def _companion_block(names: Sequence[str], skills_dirs: Sequence[Path]) -> str:
+    """The demoted skills, grouped by the skills dir each ``SKILL.md`` resolves in.
 
-    A headless dispatch has no Skill tool, so "available — load if needed" named a
-    recovery it cannot perform. The resolved ``SKILL.md`` path is one it can: ``Read``
-    it. An unresolvable name says so rather than pointing at a file that is not there.
+    A headless dispatch has no Skill tool, so each entry must be a path it can ``Read``.
+    A name that resolves nowhere is dropped with a warning rather than listed as a pointer
+    at a file that is not there.
     """
-    skill_md = _resolve_skill_md(name, skills_dirs)
-    bare = _bare_skill_name(name)
-    return f"- {bare}: not embedded — read {skill_md}" if skill_md else f"- {bare}: not embedded and not on disk here"
+    by_root: dict[Path, list[str]] = {}
+    for name in names:
+        skill_md = _resolve_skill_md(name, skills_dirs)
+        if skill_md is None:
+            logger.warning("companion skill %r resolves to no SKILL.md; omitted from the prompt", name)
+            continue
+        by_root.setdefault(skill_md.parent.parent, []).append(_bare_skill_name(name))
+    return _render_companion_block(by_root) if by_root else ""
+
+
+def _render_companion_block(by_root: dict[Path, list[str]]) -> str:
+    lines = [_COMPANION_HEADER]
+    for root, bare_names in by_root.items():
+        lines.append(f"{root}:")
+        lines.extend(f"- {bare}" for bare in bare_names)
+    return "\n".join(lines)
 
 
 _SUBAGENT_PREAMBLE_HEADER = (

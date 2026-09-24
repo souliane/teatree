@@ -5,7 +5,9 @@ pydantic_ai's native toolset primitive rather than hand-rolling a toolset
 framework). Every path argument is resolved through :func:`resolve_within` before
 any I/O, so a ``../`` traversal or an absolute path outside the jail root is
 refused with a :class:`PathTraversalError` — the capability can only ever touch
-files under the dispatch's own worktree.
+files under the dispatch's own worktree. ``Read`` alone may additionally reach the
+harness skill directories passed as ``read_only_roots`` (:func:`resolve_readable`),
+so a demoted skill's ``SKILL.md`` pointer is followable; writes and search stay jailed.
 
 That refusal, and every other way these tools can fail on the model's own input,
 is a :class:`~teatree.agents.lane_b.tool_errors.ToolInputError`, so
@@ -13,6 +15,8 @@ is a :class:`~teatree.agents.lane_b.tool_errors.ToolInputError`, so
 as a bounded retryable tool error instead of the run dying on it.
 """
 
+import os
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic_ai.toolsets.function import FunctionToolset
@@ -51,18 +55,57 @@ def resolve_within(root: Path, candidate: str) -> Path:
     return resolved
 
 
-def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> FunctionToolset[None]:
+def resolve_readable(root: Path, candidate: str, read_only_roots: Sequence[Path]) -> Path:
+    """Resolve *candidate* for a READ: inside the worktree jail, or inside one skill dir.
+
+    A path the jail refuses is still readable when it lies inside a single skill
+    directory ``<R>/<skill>/`` of a *read_only_roots* entry ``R``. ``..`` is collapsed
+    lexically before that check and the real location must stay inside the skill dir's
+    real location, so a symlinked skill dir works while a ``..`` or a symlink leaving it
+    does not. Anything else re-raises the jail's own :class:`PathTraversalError`.
+    """
+    try:
+        return resolve_within(root, candidate)
+    except PathTraversalError:
+        inside_skill = _inside_a_skill_dir(Path(candidate), read_only_roots)
+        if inside_skill is None:
+            raise
+        return inside_skill
+
+
+def _inside_a_skill_dir(candidate: Path, read_only_roots: Sequence[Path]) -> Path | None:
+    if not candidate.is_absolute():
+        return None
+    lexical = Path(os.path.normpath(candidate))
+    for skills_root in read_only_roots:
+        root_lexical = Path(os.path.normpath(skills_root))
+        if root_lexical not in lexical.parents:
+            continue
+        skill_name, *below_skill = lexical.relative_to(root_lexical).parts
+        if not below_skill:
+            continue
+        skill_dir = (root_lexical / skill_name).resolve()
+        resolved = lexical.resolve()
+        if skill_dir in resolved.parents:
+            return resolved
+    return None
+
+
+def build_filesystem_toolset(
+    root: Path, *, allow_write: bool = True, read_only_roots: Sequence[Path] = ()
+) -> FunctionToolset[None]:
     """Assemble the File System ``FunctionToolset`` jailed to *root*.
 
     *allow_write* is ``False`` for a read-only phase so the write/edit tools are
     never even registered (belt-and-braces with the phase-scoped filter): a
     read-only dispatch's toolset carries no mutation surface at all.
+    *read_only_roots* widens ``Read`` only (:func:`resolve_readable`).
     """
     toolset: FunctionToolset[None] = FunctionToolset()
 
     def read_file(path: str) -> str:
-        """Read a UTF-8 text file under the worktree, returning its content."""
-        return _read_capped(resolve_within(root, path), errors="replace")
+        """Read a UTF-8 text file under the worktree or a harness skill dir, returning its content."""
+        return _read_capped(resolve_readable(root, path, read_only_roots), errors="replace")
 
     def search_files(pattern: str, glob: str = "**/*") -> list[str]:
         """Return worktree file paths whose text contains *pattern* (substring)."""

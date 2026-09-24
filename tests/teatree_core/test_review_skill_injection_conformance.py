@@ -4,14 +4,14 @@ Root cause this pins: ``build_system_context`` builds the reviewing-phase
 system context with ``primary_skills={lifecycle_skill}`` (only ``review`` +
 ``rules``). Every other skill — including the active overlay's own skill and
 its review companions — is demoted by ``_read_skill_contents_scoped`` to a
-one-line ``"- <name>: available — load if needed"`` summary. A ``claude -p``
+``- <name>`` line in the companion pointer block. A ``claude -p``
 headless reviewer does not auto-call the Skill tool, so the overlay's review
 conventions never reach it and it reviews without overlay knowledge.
 
 These tests use a SYNTHETIC overlay that declares a review companion skill
 with a sentinel body and assert the sentinel appears in full in the
 reviewing-phase system context — RED on ``origin/main`` (the body is demoted
-to the summary line), GREEN after the fix embeds the overlay review skills.
+to a pointer line), GREEN after the fix embeds the overlay review skills.
 
 They also assert the backstop the fix threads through:
 
@@ -32,6 +32,7 @@ from teatree.agents import prompt, skill_injection
 from teatree.agents.skill_bundle import active_overlay_review_skills
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.overlay import OverlayConfig
+from tests.teatree_agents._companion_block import companion_names
 
 _SENTINEL = "OVERLAY-REVIEW-SENTINEL: post-funding terminal statuses are tenant-configurable"
 _COMPANION_NAME = "overlay-review-conventions"
@@ -109,9 +110,8 @@ class TestActiveOverlayReviewSkills:
 class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
     """The reviewing-phase system context embeds the overlay review skill IN FULL.
 
-    RED on ``origin/main``: the synthetic companion is demoted to the
-    ``"available — load if needed"`` summary line and the sentinel body is
-    absent. GREEN after the fix.
+    RED before the fix: the synthetic companion is demoted to a pointer line
+    and the sentinel body is absent. GREEN after the fix.
     """
 
     def _review_task(self) -> Task:
@@ -132,7 +132,8 @@ class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
                 lifecycle_skill="review",
             )
         assert _SENTINEL in context
-        assert f"- {_COMPANION_NAME}: available — load if needed" not in context
+        assert f"--- SKILL: {_COMPANION_NAME} ---" in context
+        assert _COMPANION_NAME not in companion_names(context)
 
     @pytest.mark.usefixtures("skills_dir")
     def test_non_reviewing_phase_unchanged(self) -> None:

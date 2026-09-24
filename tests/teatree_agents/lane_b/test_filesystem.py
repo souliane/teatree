@@ -113,3 +113,68 @@ class TestSearchStaysInsideTheJail:
     def test_read_stops_at_the_byte_cap(self, tmp_path: Path) -> None:
         (tmp_path / "big.txt").write_text("x" * (_MAX_READ_BYTES + 500))
         assert len(_tool(build_filesystem_toolset(tmp_path), "Read")("big.txt")) == _MAX_READ_BYTES
+
+
+class TestReadReachesTheHarnessSkillRoots:
+    """A demoted skill's pointer names a ``SKILL.md`` outside the worktree; ``Read`` must reach it."""
+
+    @pytest.fixture
+    def layout(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        worktree, skills, outside = tmp_path / "wt", tmp_path / "skills", tmp_path / "outside"
+        for directory in (worktree, skills / "code" / "references", outside):
+            directory.mkdir(parents=True)
+        (skills / "code" / "SKILL.md").write_text("code body")
+        (skills / "code" / "references" / "tdd.md").write_text("tdd body")
+        (outside / "secret.txt").write_text("secret")
+        return worktree, skills, outside
+
+    def _read(self, worktree: Path, skills: Path, path: str) -> str:
+        return _tool(build_filesystem_toolset(worktree, read_only_roots=(skills,)), "Read")(path)
+
+    def test_skill_body_is_readable(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, _ = layout
+        assert self._read(worktree, skills, str(skills / "code" / "SKILL.md")) == "code body"
+
+    def test_a_skill_reference_file_is_readable(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, _ = layout
+        assert self._read(worktree, skills, str(skills / "code" / "references" / "tdd.md")) == "tdd body"
+
+    def test_a_symlinked_skill_dir_is_readable(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, outside = layout
+        (outside / "linked").mkdir()
+        (outside / "linked" / "SKILL.md").write_text("linked body")
+        (skills / "linked").symlink_to(outside / "linked")
+        assert self._read(worktree, skills, str(skills / "linked" / "SKILL.md")) == "linked body"
+
+    def test_the_skill_roots_are_not_readable_without_the_grant(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, _ = layout
+        with pytest.raises(PathTraversalError):
+            _tool(build_filesystem_toolset(worktree), "Read")(str(skills / "code" / "SKILL.md"))
+
+    @pytest.mark.parametrize(
+        "relative",
+        ["code/../../outside/secret.txt", "code/../../../etc/passwd", "stray.md"],
+    )
+    def test_a_path_leaving_every_skill_dir_is_refused(self, layout: tuple[Path, Path, Path], relative: str) -> None:
+        worktree, skills, _ = layout
+        (skills / "stray.md").write_text("not inside a skill dir")
+        with pytest.raises(PathTraversalError):
+            self._read(worktree, skills, f"{skills}/{relative}")
+
+    def test_a_symlink_escaping_the_skill_dir_is_refused(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, outside = layout
+        (skills / "code" / "leak.md").symlink_to(outside / "secret.txt")
+        with pytest.raises(PathTraversalError):
+            self._read(worktree, skills, str(skills / "code" / "leak.md"))
+
+    @pytest.mark.parametrize(("tool", "args"), [("Write", ("x",)), ("Edit", ("code", "x"))])
+    def test_the_skill_roots_stay_unwritable(self, layout: tuple[Path, Path, Path], tool: str, args: tuple) -> None:
+        worktree, skills, _ = layout
+        ts = build_filesystem_toolset(worktree, read_only_roots=(skills,))
+        with pytest.raises(PathTraversalError):
+            _tool(ts, tool)(str(skills / "code" / "SKILL.md"), *args)
+        assert (skills / "code" / "SKILL.md").read_text() == "code body"
+
+    def test_search_does_not_walk_the_skill_roots(self, layout: tuple[Path, Path, Path]) -> None:
+        worktree, skills, _ = layout
+        assert _tool(build_filesystem_toolset(worktree, read_only_roots=(skills,)), "Grep")("code body") == []

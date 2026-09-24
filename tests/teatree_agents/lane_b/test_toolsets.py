@@ -67,6 +67,34 @@ class TestPhaseScopedToolsExecute:
         assert (tmp_path / "out.txt").read_text() == "hi"
 
 
+class TestReadReachesTheHarnessSkillDirs:
+    """The assembled ``Read`` follows a demoted skill's pointer out of the worktree (#4816)."""
+
+    @pytest.mark.parametrize("phase", ["retro", "architectural_review", "eval_local"])
+    def test_a_skill_body_outside_the_worktree_is_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+    ) -> None:
+        worktree, skills = tmp_path / "wt", tmp_path / "skills"
+        worktree.mkdir()
+        (skills / "ship").mkdir(parents=True)
+        (skills / "ship" / "SKILL.md").write_text("ship body")
+        monkeypatch.setattr(toolsets_module, "harness_skills_dirs", lambda: [skills, tmp_path / "absent"])
+        seen: list[str] = []
+
+        def finish() -> ModelResponse:
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if len(messages) == 1:
+                return _call("Read", {"path": str(skills / "ship" / "SKILL.md")})()
+            seen.append(str(messages[-1].parts[0].content))
+            return finish()
+
+        config = LaneBToolConfig(fs_root=worktree, phase=phase)
+        _run(Agent[None, str](FunctionModel(model_fn), toolsets=build_lane_b_toolsets(config).toolsets), "go")
+        assert seen == ["ship body"]
+
+
 class TestPhaseScopedToolsHidden:
     def test_review_phase_does_not_expose_write_file(self, tmp_path: Path) -> None:
         config = LaneBToolConfig(fs_root=tmp_path, phase="reviewing")

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from teatree.agents import skill_injection
 from teatree.agents.skill_injection import (
     _is_primary,
@@ -120,8 +122,7 @@ def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) ->
     assert "# rules full content" in result
     # Companion skills get summary only
     assert "COMPANION SKILLS" in result
-    assert "- ac-django:" in result
-    assert "- workspace:" in result
+    assert f"{tmp_path}:\n- ac-django\n- workspace" in result
     assert "# ac-django full content" not in result
     assert "# workspace full content" not in result
 
@@ -261,3 +262,79 @@ def test_read_scoped_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
     result = _read_skill_contents_scoped(["scoped-skill"], primary_skills={"scoped-skill"})
     assert "# scoped body" in result
+
+
+# --- the companion pointer block ---
+
+
+def test_companions_are_grouped_under_the_root_they_resolve_in(tmp_path: Path) -> None:
+    framework, harness = tmp_path / "framework", tmp_path / "harness"
+    for root, name in ((framework, "internals"), (harness, "ac-django"), (framework, "workspace")):
+        _write_skill(root, name, f"# {name} body")
+
+    result = skill_injection._companion_block(["internals", "t3:ac-django", "workspace"], [framework, harness])
+
+    assert result == "\n".join(
+        (
+            skill_injection._COMPANION_HEADER,
+            f"{framework}:",
+            "- internals",
+            "- workspace",
+            f"{harness}:",
+            "- ac-django",
+        )
+    )
+
+
+def test_every_pointer_names_an_existing_skill_md(tmp_path: Path) -> None:
+    for name in ("internals", "workspace"):
+        _write_skill(tmp_path, name, f"# {name}")
+    block = skill_injection._companion_block(["internals", "workspace"], [tmp_path])
+    root = next(line.removesuffix(":") for line in block.splitlines() if line.endswith(":"))
+    names = [line.removeprefix("- ") for line in block.splitlines() if line.startswith("- ")]
+    assert names == ["internals", "workspace"]
+    assert all((Path(root) / name / "SKILL.md").is_file() for name in names)
+
+
+def test_an_unresolvable_companion_is_dropped_with_a_warning(tmp_path: Path, caplog) -> None:
+    _write_skill(tmp_path, "internals", "# internals")
+    with caplog.at_level("WARNING", logger=skill_injection.__name__):
+        block = skill_injection._companion_block(["internals", "/some/overlay/skills"], [tmp_path])
+    assert "skills" not in block.replace(str(tmp_path), "")
+    assert "- internals" in block
+    assert "/some/overlay/skills" in caplog.text
+
+
+def test_no_resolvable_companion_renders_no_block(tmp_path: Path) -> None:
+    assert skill_injection._companion_block(["ghost"], [tmp_path]) == ""
+
+
+def _legacy_companion_summary(names: list[str]) -> str:
+    # Frozen copy of the pre-#4816 renderer: the ceiling the pointer block may not exceed.
+    return "--- COMPANION SKILLS (loaded but summarized to save context) ---\n" + "\n".join(
+        f"- {name}: available — load if needed" for name in names
+    )
+
+
+_SIXTY_CHAR_ROOTS = (Path("/" + "f" * 59), Path("/" + "h" * 59))
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        pytest.param(["internals", "ac-django", "platforms", "code"], id="reviewing"),
+        pytest.param(["internals", "ac-django", "slack-formatting", "workspace", "platforms"], id="testing"),
+        pytest.param(["internals", "ac-django", "slack-formatting", "workspace"], id="planning"),
+        pytest.param(
+            ["internals", "ac-django", "slack-formatting", "workspace", "platforms", "review-request"], id="shipping"
+        ),
+        pytest.param(["internals", "ac-django", "slack-formatting", "debug", "code"], id="bughunt"),
+    ],
+)
+def test_pointer_block_is_not_longer_than_the_legacy_summary(names: list[str]) -> None:
+    # The companion lists these phases resolve on t3-teatree; ac-django lives in the harness dir.
+    framework, harness = _SIXTY_CHAR_ROOTS
+    by_root = {framework: [n for n in names if n != "ac-django"], harness: ["ac-django"]}
+    assert len(skill_injection._render_companion_block(by_root).encode()) <= len(
+        _legacy_companion_summary(names).encode()
+    )
