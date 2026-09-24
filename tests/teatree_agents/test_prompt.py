@@ -5,17 +5,12 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
-from teatree.agents.lane_b.filesystem import PathTraversalError, build_filesystem_toolset
-from teatree.agents.lane_b.tool_names import TOOL_READ
 from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
-from teatree.agents.skill_injection import _COMPANION_HEADER
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
-from tests.teatree_agents._companion_block import companion_names
 
 # --- build_task_prompt ---
 
@@ -660,8 +655,9 @@ class TestCodingPhaseHeadStateInjection(TestCase):
                 skills=["code", "rules", "architecture-design"],
                 lifecycle_skill="code",
             )
+        # Full body, not the demoted "available — load if needed" summary.
         assert "# architecture-design SENTINEL BODY" in ctx
-        assert "architecture-design" not in companion_names(ctx)
+        assert "- architecture-design: available — load if needed" not in ctx
 
 
 # --- #1368: explicit stack + overlay skill-load block on code-touching dispatch ---
@@ -754,8 +750,8 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
             )
         # The force-loaded stack/overlay skills are NOT demoted to the ignorable
         # summary that would undercut the directive's "REQUIRED load" block.
-        assert "ac-django" not in companion_names(ctx)
-        assert "demo-overlay" not in companion_names(ctx)
+        assert "- ac-django: available — load if needed" not in ctx
+        assert "- t3:demo-overlay: available — load if needed" not in ctx
         assert "/ac-django" in ctx
 
 
@@ -849,70 +845,31 @@ class TestNoLifecyclePhaseIsScopedToo(TestCase):
         "slack-formatting": "S" * 18_000,
     }
     _SKILLS: ClassVar[list[str]] = ["internals", "ac-django", "slack-formatting"]
-    _POINTER_PHASES: ClassVar[tuple[str, ...]] = (
-        "architectural_review",
-        "dogfood_smoke",
-        "backlog_sweep",
-        "retro",
-        "eval_local",
-    )
-
-    def setUp(self) -> None:
-        self.skills_dir = Path(tempfile.mkdtemp())
-        self.worktree = Path(tempfile.mkdtemp())
-        for name, body in self._BODIES.items():
-            (self.skills_dir / name).mkdir()
-            (self.skills_dir / name / "SKILL.md").write_text(body, encoding="utf-8")
 
     def _context(self, phase: str, *, lifecycle_skill: str = "") -> str:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name, body in self._BODIES.items():
+            (tmp_dir / name).mkdir()
+            (tmp_dir / name / "SKILL.md").write_text(body, encoding="utf-8")
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", self.skills_dir):
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             return build_system_context(task, skills=self._SKILLS, lifecycle_skill=lifecycle_skill)
 
-    def _pointer_paths(self, ctx: str) -> list[str]:
-        block = ctx.split(_COMPANION_HEADER, 1)[1].split("\n\n", 1)[0]
-        paths: list[str] = []
-        root = ""
-        for line in block.strip().splitlines():
-            if line.startswith("- "):
-                paths.append(f"{root}/{line.removeprefix('- ')}/SKILL.md")
-            else:
-                root = line.removesuffix(":")
-        return paths
-
-    def _read_tool(self, *, read_only_roots: tuple[Path, ...]):
-        toolset = build_filesystem_toolset(self.worktree, allow_write=False, read_only_roots=read_only_roots)
-        return toolset.tools[TOOL_READ].function
-
     def test_no_lifecycle_phase_does_not_embed_the_whole_bundle(self) -> None:
-        for phase in self._POINTER_PHASES:
-            with self.subTest(phase=phase):
-                ctx = self._context(phase)
-                for body in self._BODIES.values():
-                    assert body not in ctx
-                assert len(ctx) < sum(len(b) for b in self._BODIES.values()) / 10
-
-    def test_every_demoted_skill_is_readable_through_the_lane_b_read_tool(self) -> None:
-        read = self._read_tool(read_only_roots=(self.skills_dir,))
-        for phase in self._POINTER_PHASES:
-            with self.subTest(phase=phase):
-                paths = self._pointer_paths(self._context(phase))
-                assert sorted(read(path) for path in paths) == sorted(self._BODIES.values())
-
-    def test_pointer_is_unreadable_without_the_skill_roots(self) -> None:
-        # Control: the worktree jail alone refuses every pointer, so the test above can fail.
-        read = self._read_tool(read_only_roots=())
-        for path in self._pointer_paths(self._context("retro")):
-            with self.subTest(path=path), pytest.raises(PathTraversalError):
-                read(path)
-
-    def test_a_phase_without_read_keeps_the_full_embed(self) -> None:
-        ctx = self._context("short_describe")
+        ctx = self._context("architectural_review")
         for body in self._BODIES.values():
-            assert body in ctx
-        assert _COMPANION_HEADER not in ctx
+            assert body not in ctx
+        assert len(ctx) < sum(len(b) for b in self._BODIES.values()) / 10
+
+    def test_every_demoted_skill_is_named_with_a_readable_path(self) -> None:
+        # Nothing is silently lost: this lane has no Skill tool, so the pointer must
+        # be a path it can Read — not "load if needed".
+        ctx = self._context("architectural_review")
+        for name in self._SKILLS:
+            line = next(ln for ln in ctx.splitlines() if ln.startswith(f"- {name}:"))
+            assert Path(line.split("read ", 1)[1]).is_file()
 
     def test_a_lifecycle_phase_still_embeds_its_lifecycle_skill(self) -> None:
         # Control: scoping the no-lifecycle branch must not narrow the lifecycle one.

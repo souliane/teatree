@@ -3,7 +3,7 @@
 A maker agent type (``t3:coder``/``t3:debugger``/``t3:tester``/``t3:e2e``/
 ``t3:shipper``) has no Skill tool, so a stage skill only exists for it if its
 ``SKILL.md`` body is embedded IN FULL in the dispatched system context — a
-pointer at a file it must remember to read is vacuous. These tests use a
+one-line "available — load if needed" summary is vacuous. These tests use a
 SYNTHETIC overlay declaring ``stage_skills={"coding": [<sentinel skill>]}`` and
 assert the sentinel body appears in full in the coding-phase system context.
 
@@ -32,7 +32,6 @@ from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_ski
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.overlay import OverlayConfig
 from teatree.skill_support.loading import SkillLoadingPolicy
-from tests.teatree_agents._companion_block import companion_names
 
 _STAGE_SENTINEL = "STAGE-SKILL-SENTINEL: additive per-stage overlay skill body, phase-scoped"
 _STAGE_SKILL_NAME = "overlay-stage-conventions"
@@ -177,7 +176,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
     """The coding-phase system context embeds the overlay stage skill IN FULL.
 
     RED before the wiring: the stage skill is either absent from the bundle or
-    demoted to the companion pointer block and the sentinel
+    demoted to the ``"available — load if needed"`` summary and the sentinel
     body never reaches the no-Skill-tool builder.
     """
 
@@ -197,7 +196,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
                 lifecycle_skill="code",
             )
         assert _STAGE_SENTINEL in context
-        assert _STAGE_SKILL_NAME not in companion_names(context)
+        assert f"- {_STAGE_SKILL_NAME}: available — load if needed" not in context
 
     @pytest.mark.usefixtures("skills_dir")
     def test_coding_phase_carries_additive_precedence_line(self) -> None:
