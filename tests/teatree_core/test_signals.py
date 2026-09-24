@@ -136,6 +136,45 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
+    def test_frozen_factory_does_not_auto_enqueue(self) -> None:
+        """#4834: worker_quiescing (or a mode/hold masking ``dispatch`` off) withholds it.
+
+        A frozen factory must never run a fresh headless agent as a side effect of an
+        FSM transition (a plan being recorded auto-scheduling a coding task) — the
+        SAME ``headless_admission_block_reason`` composition every headless dispatch
+        site now honours.
+        """
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: local import, mirrors the sibling tests above
+
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        # ``django.tasks.Task`` is a frozen dataclass — patching its ``enqueue``
+        # attribute directly raises ``FrozenInstanceError``, so (as in
+        # ``test_signal_failure_leaves_task_pending`` above) the module-level name
+        # is replaced wholesale with a stub that records whether it was called.
+        class RecordingEnqueue:
+            called = False
+
+            @staticmethod
+            def enqueue(*_args: object, **_kwargs: object) -> None:
+                RecordingEnqueue.called = True
+
+        with (
+            patch.object(tasks_mod, "execute_task", RecordingEnqueue),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            task = Task.objects.create(
+                ticket=ticket,
+                session=session,
+                phase="coding",
+            )
+
+        assert RecordingEnqueue.called is False
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_reopen_triggers_enqueue(self) -> None:
         """Re-opening a failed task re-arms the auto-enqueue."""

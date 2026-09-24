@@ -104,9 +104,20 @@ class TaskRunResult(TypedDict, total=False):
 def execute_task(task_id: int, phase: str) -> TaskRunResult:
     import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
+    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred: call-time
     from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     task_obj = Task.objects.get(pk=task_id)
+
+    # Admission block (#4834): a job already sitting in the django-tasks queue when
+    # ``worker_quiescing``/schema/dispatch-mode freezes admission must not run just
+    # because it was enqueued before the freeze — the SAME composition every headless
+    # dispatch site honours. The task stays PENDING/CLAIMED as found; a later drain or
+    # loop tick re-admits it once the block lifts.
+    blocked = headless_admission_block_reason()
+    if blocked:
+        logger.info("Task %s not admitted (%s); leaving it for a later drain", task_obj.pk, blocked)
+        return {"skipped": f"admission blocked: {blocked}"}
 
     # The atomic claim is the SOLE admission decision (F4). Win the compare-and-swap
     # BEFORE any work runs — including the poison-pill and routing failure paths — so a
@@ -179,10 +190,16 @@ def drain_queue_body() -> dict[str, list[int]]:
     safety net) and the loops-queue maintenance chain
     (:func:`teatree.loops.timer_reconciler.drain_chain`) that schedules it, so the
     two call sites can never drift.
+
+    A ``worker_quiescing``/schema/dispatch-mode admission block (#4834) suppresses the
+    enqueue step the same way a governor DENY does: poison rows still fail (that is
+    cleanup, not new paid work), but no live row is handed to ``execute_task`` while
+    the factory is frozen — it stays PENDING for the next admitted drain.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
+    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred: call-time
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
     # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
@@ -201,6 +218,9 @@ def drain_queue_body() -> dict[str, list[int]]:
     # live rows stay PENDING for the next admitted drain.
     admission = agent_admission_verdict()
     admission.log_denials()
+    blocked = headless_admission_block_reason()
+    if blocked:
+        logger.info("drain_queue_body: withholding new admissions — %s", blocked)
     enqueued: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
@@ -211,7 +231,7 @@ def drain_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
+        if blocked or not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
             continue
         execute_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)

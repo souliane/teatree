@@ -722,3 +722,46 @@ class TestOperatorCancelledTickets(TestCase):
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+
+class TestRedispatchWithheldWhileFactoryFrozen(TestCase):
+    """#4834: a frozen factory must not re-mint the phase task the cancel raced.
+
+    A cancelled task whose newest attempt lands classified something OTHER than
+    ``CANCELLED_PREFIX`` (e.g. its lease lapsed mid-kill and a later sweep recorded
+    ``lease_lost`` instead) reads to ``_stuck_candidates`` exactly like a genuine
+    failure — ``newest_task_was_cancelled()`` cannot catch what was never recorded as
+    a cancel. This sweep is withheld WHOLE while admission is blocked, so that gap
+    never spends a fresh headless run precisely while the operator holds the factory.
+    """
+
+    def test_an_uncancelled_failure_is_redispatched_when_not_frozen(self) -> None:
+        # The control: proves the fixture WOULD redispatch absent a freeze, so the
+        # frozen test below is withheld by the new gate, not by some other guard.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+
+        assert redispatch_stuck_tickets() == 1
+
+    def test_quiescing_withholds_the_whole_sweep(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: local import
+
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_mode_hold_masking_dispatch_off_withholds_the_sweep(self) -> None:
+        """The documented freeze lever (``t3 loop preset use off --hold``) — no quiescing at all."""
+        from teatree.core.mode_resolution import set_mode_override  # noqa: PLC0415 — deferred: local import
+        from teatree.core.models import Mode  # noqa: PLC0415 — deferred: local import
+
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+        Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False})
+        set_mode_override("frozen-redispatch-test")
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0

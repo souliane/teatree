@@ -166,6 +166,36 @@ class TestDrainHeadlessQueue(TestCase):
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
 
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_quiescing_withholds_every_live_row_but_still_fails_poison_rows(self) -> None:
+        """#4834: the freeze suppresses new paid work, but a poison row is still cleaned up."""
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        live = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison_session = Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=poison_session,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
+        live.refresh_from_db()
+        assert live.status == Task.Status.PENDING
+
 
 class TestExecuteHeadlessUnknownOverlay(TestCase):
     """A task on an unknown overlay fails permanently — never an eternal re-crash (#1959)."""
@@ -354,6 +384,31 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
         task.refresh_from_db()
         assert task.claimed_by == "rival-worker"
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_quiescing_leaves_an_already_queued_job_pending_and_unclaimed(self) -> None:
+        """#4834: a job enqueued before the freeze must not run just because it is queued.
+
+        ``worker_quiescing`` already stopped ``claim_next_pending``/``claimable`` from
+        handing out fresh work; this is the companion gate on the OTHER admission
+        path — the django-tasks ``task-worker`` executing an already-queued job.
+        """
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
+
+        task = self._make_task(status=Task.Status.PENDING)
+        runner = MagicMock()
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        with patch.object(agent_runner_mod, "get_agent_runner", return_value=runner):
+            result = execute_task.func(task.pk, task.phase)
+
+        runner.assert_not_called()
+        assert result == {"skipped": "admission blocked: this worker is quiescing for a rolling deploy"}
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.claimed_by == ""
 
 
 class TestExecuteRetrospect(TestCase):
