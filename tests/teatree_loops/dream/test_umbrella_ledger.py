@@ -22,7 +22,6 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import umbrella_ledger as ul
-from teatree.loops.dream.pass_config import PromotionBudget
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 REPO = "souliane/teatree"
@@ -130,83 +129,6 @@ class CheckGapCheckboxTestCase(TestCase):
         host.update_issue.assert_not_called()
 
 
-class ScheduleGapFixTestCase(TestCase):
-    """A new gap schedules a headless coding task; an already-scheduled gap does not."""
-
-    def test_new_gap_creates_an_author_ticket_and_schedules_coding(self) -> None:
-        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
-        assert task is not None
-        assert task.phase == "coding"
-        ticket = task.ticket
-        assert ticket.role == Ticket.Role.AUTHOR
-        assert ticket.extra["dream_gap_key"] == "gap-1"
-        assert ticket.extra["dream_memory_cluster_key"] == "gap-1"
-        assert ticket.extra["dream_umbrella_url"] == UMBRELLA
-
-    def test_already_scheduled_gap_is_not_rescheduled(self) -> None:
-        first = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
-        second = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
-        assert first is not None
-        assert second is None
-        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").count() == 1
-
-
-class PromoteGapTestCase(TestCase):
-    """The orchestration: a grounded gap upserts a checkbox AND schedules its fix."""
-
-    def test_grounded_gap_upserts_checkbox_and_schedules_coding(self) -> None:
-        host = _fake_host(body="## Open gaps\n")
-        outcome = ul.promote_gap(
-            host,
-            umbrella_url=UMBRELLA,
-            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
-        )
-        assert outcome.scheduled is True
-        assert outcome.checkbox_added is True
-        host.update_issue.assert_called_once()
-        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
-
-    def test_dry_run_neither_edits_the_umbrella_nor_schedules(self) -> None:
-        host = _fake_host(body="## Open gaps\n")
-        outcome = ul.promote_gap(
-            host,
-            umbrella_url=UMBRELLA,
-            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
-            dry_run=True,
-        )
-        assert outcome.scheduled is False
-        assert outcome.checkbox_added is False
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
-
-    def test_banned_term_title_is_withheld_not_filed(self) -> None:
-        host = _fake_host(body="## Open gaps\n")
-        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
-            outcome = ul.promote_gap(
-                host,
-                umbrella_url=UMBRELLA,
-                gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
-            )
-        assert outcome.withheld is True
-        assert outcome.scheduled is False
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
-
-    def test_a_re_promoted_gap_neither_double_adds_nor_reschedules(self) -> None:
-        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-        ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
-        outcome = ul.promote_gap(
-            host,
-            umbrella_url=UMBRELLA,
-            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
-        )
-        assert outcome.checkbox_added is False
-        assert outcome.scheduled is False
-        host.update_issue.assert_not_called()
-        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").count() == 1
-
-
 class GapPresentTestCase(TestCase):
     """Read-only discovery (#4176) — does this gap already ride the umbrella?"""
 
@@ -226,61 +148,23 @@ class GapPresentTestCase(TestCase):
         assert ul.gap_present(host, umbrella_url=UMBRELLA, gap_key="gap-1") is None
 
 
-class ShortCircuitReportsWhatAlreadyRidesTestCase(TestCase):
-    """A branch that returns before the upsert first discovers what already rides (#4176)."""
-
-    def _gap(self) -> ul.GapSpec:
-        return ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
-
-    def test_a_spent_cap_turns_away_nothing_for_an_already_riding_gap(self) -> None:
-        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
-        budget = PromotionBudget(remaining=0)
-        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
-        assert outcome.already_present is True
-        assert outcome.deferred is False
-        assert outcome.checkbox_added is False
-        assert outcome.scheduled is False
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
-        assert budget.deferred == 0
-
-    def test_a_spent_cap_still_defers_a_gap_that_rides_nothing(self) -> None:
-        host = _fake_host()
-        budget = PromotionBudget(remaining=0)
-        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
-        assert outcome.deferred is True
-        assert outcome.already_present is False
-        host.update_issue.assert_not_called()
-        assert budget.deferred == 1
-
-    def test_an_unreadable_umbrella_defers_rather_than_claiming_presence(self) -> None:
-        host = MagicMock(spec=CodeHostBackend)
-        host.get_issue.side_effect = RuntimeError("forge down")
-        budget = PromotionBudget(remaining=0)
-        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
-        assert outcome.already_present is False
-        assert outcome.deferred is True
-        assert budget.deferred == 1
-
-    def test_a_newly_withheld_title_still_reports_the_umbrella_it_rides(self) -> None:
-        # The banned-terms ruleset is versioned, so a title promoted last night can be
-        # withheld tonight while its checkbox and coding task stay live.
-        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
-        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
-            outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap())
-        assert outcome.withheld is True
-        assert outcome.already_present is True
-        host.update_issue.assert_not_called()
-
-
 class ReconcileMergedGapsTestCase(TestCase):
-    """A merged gap-fix Ticket checks its checkbox and retires the linked memory."""
+    """A merged gap-fix Ticket checks its checkbox and retires the linked memory.
+
+    These tickets are the LEGACY per-gap scheme (#4776 replaced per-gap scheduling
+    with batching for NEW gaps, but a ticket already in flight when that shipped
+    keeps draining through this unchanged path) — constructed directly here since
+    ``schedule_gap_fix`` (the function that used to mint one) is deleted.
+    """
 
     def _scheduled_gap(self, *, key: str = "gap-1", binding: bool = False) -> Ticket:
         _memory(key=key, binding=binding)
-        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key=key, title="Fix the gate", cluster_key=key)
-        assert task is not None
-        return task.ticket
+        return Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-gap={key}",
+            role=Ticket.Role.AUTHOR,
+            short_description="Fix the gate",
+            extra={"dream_gap_key": key, "dream_memory_cluster_key": key, "dream_umbrella_url": UMBRELLA},
+        )
 
     def test_merged_gap_checks_the_box_and_retires_the_memory(self) -> None:
         ticket = self._scheduled_gap()
@@ -398,9 +282,12 @@ class ReconcileFoldedGapsTestCase(TestCase):
 
     def _scheduled_gap(self, *, key: str) -> Ticket:
         _memory(key=key)
-        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key=key, title="Fix the gate", cluster_key=key)
-        assert task is not None
-        return task.ticket
+        return Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-gap={key}",
+            role=Ticket.Role.AUTHOR,
+            short_description="Fix the gate",
+            extra={"dream_gap_key": key, "dream_memory_cluster_key": key, "dream_umbrella_url": UMBRELLA},
+        )
 
     def _folded_member(self, *, into: int) -> Ticket:
         member = self._scheduled_gap(key="gap-member")

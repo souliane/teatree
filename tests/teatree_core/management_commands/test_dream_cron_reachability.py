@@ -21,6 +21,7 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory, Loop
+from teatree.core.models.ticket import Ticket
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
@@ -168,11 +169,18 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
         derive.assert_called_once()
 
 
-class CappedTickReportsWhatItDeferredTestCase(DreamPhasesAreCronReachableTestCase):
-    """A cap that truncates the backlog silently reads as 'the backlog is drained'."""
+class BatchedTickMintsOneTicketTestCase(DreamPhasesAreCronReachableTestCase):
+    """A pass's promotions collapse into ONE ticket, whatever the gap count (#4776).
 
-    def test_the_tick_summary_line_names_the_deferred_promotions(self) -> None:
-        for i in range(3):
+    ``promotion_cap`` used to bound how much of a pass's backlog got a ticket without
+    bounding the fan-out itself — a measured pass with 297 pending gaps and the
+    cap-of-5 default deferred roughly 60 nights to drain. It is deleted: there is
+    nothing left to ration, because every gap a pass promotes now collapses into ONE
+    ticket, not one per gap.
+    """
+
+    def test_many_pending_core_gaps_schedule_exactly_one_ticket(self) -> None:
+        for i in range(5):
             ConsolidatedMemory.objects.create(
                 cluster_key=f"gap-{i}",
                 rule=f"Run the tree-wide health gate before any push (gap-{i}).",
@@ -182,8 +190,15 @@ class CappedTickReportsWhatItDeferredTestCase(DreamPhasesAreCronReachableTestCas
                 max_member_weight=90,
                 verified_citation="pushed without running the gate, CI went red",
             )
-        output = self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1", T3_DREAM_PROMOTION_CAP="1")
-        assert "deferred 2 promotion(s)" in output
+        self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
+        batch_tickets = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True)
+        assert batch_tickets.count() == 1
+        assert len(batch_tickets.first().extra["dream_gap_batch"]) == 5
+
+    def test_zero_pending_gaps_mints_no_ticket(self) -> None:
+        # The required negative control: a pass that promotes nothing creates nothing.
+        self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
+        assert not Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exists()
 
 
 class ForceAllPhasesIsNeverTheOnlyGateTestCase(TestCase):
