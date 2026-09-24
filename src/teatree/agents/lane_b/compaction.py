@@ -8,6 +8,11 @@ bounded on an unattended, many-turn dispatch. It preserves the FIRST message (th
 task framing) and the most-recent ``keep_recent`` messages, dropping the stale
 middle — the cheap, deterministic trim; a summarizing variant is a follow-up.
 
+:func:`elide_stale_tool_results` is the second, per-model-request pass: the phased
+Agent runs it through a ``ProcessHistory`` capability before EACH request, stubbing
+stale tool results with a boundary that advances in steps so consecutive requests
+share a byte-identical prefix.
+
 The cut never orphans a tool result: an OpenAI-compatible provider rejects a
 ``ModelRequest`` carrying a ``ToolReturnPart`` (or a tool-linked
 ``RetryPromptPart``) whose paired ``ToolCallPart`` was dropped with the trimmed
@@ -38,10 +43,7 @@ DEFAULT_KEEP_RECENT = 40
 #: :mod:`teatree.config.cold_reader`; an absent/garbled value leaves the default.
 _COMPACTION_KEEP_RECENT_KEY = "agent_compaction_keep_recent"
 
-#: How many trailing MESSAGES (not tool calls) keep their tool results verbatim — about
-#: N/2 call→return round-trips, the same unit as :data:`DEFAULT_KEEP_RECENT` so the two
-#: compose. Well under it, because the whole-message trim never engages on a run of 20
-#: turns while the tool results in it are re-sent on every request.
+#: Trailing messages whose tool results stay verbatim, per model request, stepped; ``0`` disables.
 DEFAULT_KEEP_TOOL_RESULTS = 6
 
 #: The DB ``ConfigSetting`` key for the per-phase ``keep_tool_results`` override map.
@@ -74,11 +76,13 @@ class CompactionPolicy:
         """
         return cls(
             keep_recent=_resolve_phase_int(_COMPACTION_KEEP_RECENT_KEY, phase, DEFAULT_KEEP_RECENT),
-            keep_tool_results=_resolve_phase_int(_COMPACTION_KEEP_TOOL_RESULTS_KEY, phase, DEFAULT_KEEP_TOOL_RESULTS),
+            keep_tool_results=_resolve_phase_int(
+                _COMPACTION_KEEP_TOOL_RESULTS_KEY, phase, DEFAULT_KEEP_TOOL_RESULTS, minimum=0
+            ),
         )
 
 
-def _resolve_phase_int(key: str, phase: str | None, default: int) -> int:
+def _resolve_phase_int(key: str, phase: str | None, default: int, *, minimum: int = 1) -> int:
     """*phase*'s entry in the DB override map at *key*, else *default*."""
     if not phase:
         return default
@@ -86,7 +90,7 @@ def _resolve_phase_int(key: str, phase: str | None, default: int) -> int:
     if not isinstance(raw, dict):
         return default
     value = {str(name): val for name, val in raw.items()}.get(phase)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         return default
     return value
 
@@ -108,40 +112,37 @@ def compact_history(
     of the kept window — a ``ToolReturnPart`` whose ``ToolCallPart`` fell in the dropped
     middle — are trimmed too, so the window opens on a valid call→return pairing an
     OpenAI-compatible provider accepts. Deterministic and zero-token — no model call.
-
-    Independently of that threshold, every tool result older than the last
-    *keep_tool_results* messages is stubbed in place (:func:`_elide_stale_tool_results`)
-    — the trim alone never engages on a short run, whose tool results are nonetheless
-    re-sent on every request.
     """
     resolved = policy if policy is not None else CompactionPolicy(keep_recent=keep_recent)
     keep = resolved.keep_recent
     history = list(messages)
     if keep < 1 or len(history) <= keep + 1:
-        return _elide_stale_tool_results(history, resolved.keep_tool_results)
+        return history
     tail = history[len(history) - keep :]
     trimmed_tail = tail[_leading_orphan_count(tail) :]
-    window = [history[0], *trimmed_tail] if resolved.pin_head else trimmed_tail
-    return _elide_stale_tool_results(window, resolved.keep_tool_results)
+    return [history[0], *trimmed_tail] if resolved.pin_head else trimmed_tail
 
 
-def _elide_stale_tool_results(window: "list[ModelMessage]", keep_tool_results: int) -> "list[ModelMessage]":
-    """Replace each tool result older than the last *keep_tool_results* messages with a stub.
+def elide_stale_tool_results(
+    messages: "Sequence[ModelMessage]", keep_tool_results: int = DEFAULT_KEEP_TOOL_RESULTS
+) -> "list[ModelMessage]":
+    """Stub each tool result before a boundary that advances in steps of *keep_tool_results*.
 
-    The whole-message trim only engages past ``keep_recent + 1`` messages, so a run of
-    twenty turns is never compacted at all while every tool result in it is re-sent on
-    every request — the dominant per-request cost on a metered lane. This pass shrinks
-    the STALE ones in place: the call→return pairing, the tool names and the
-    ``tool_call_id``s all survive, so the provider still accepts the history and the
-    model still sees what it ran and in what order.
+    Runs before every model request, so a short run the message trim never engages on
+    stops re-sending every stale tool result. The call→return pairing, the tool names
+    and the ``tool_call_id``s all survive, and the head is never touched.
 
-    Never the head (the task framing) and never the most-recent *keep_tool_results*
-    messages, so the turn in flight keeps its results verbatim. ``0`` disables the pass.
+    The boundary only moves once *keep_tool_results* more messages have arrived, leaving
+    between K and 2K-1 messages verbatim: between steps each request extends the
+    previous one byte-for-byte (earlier stubs are already in the run's state), so the
+    provider's prefix cache keeps hitting. ``0`` disables the pass.
     """
-    cutoff = len(window) - keep_tool_results
-    if keep_tool_results < 1 or cutoff <= 1:
-        return window
-    return [message if index == 0 or index >= cutoff else _stubbed(message) for index, message in enumerate(window)]
+    history = list(messages)
+    stubbable = len(history) - keep_tool_results - 1
+    if keep_tool_results < 1 or stubbable < keep_tool_results:
+        return history
+    cutoff = 1 + (stubbable // keep_tool_results) * keep_tool_results
+    return [message if index == 0 or index >= cutoff else _stubbed(message) for index, message in enumerate(history)]
 
 
 def _stubbed(message: "ModelMessage") -> "ModelMessage":
@@ -164,8 +165,8 @@ _REREADABLE_TOOLS = frozenset({TOOL_READ, TOOL_GREP})
 def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
     """*part* with its content replaced by the stub, unless it is one already or the stub would not be smaller.
 
-    The session feeds each compacted history back in, so an existing stub must survive
-    untouched — re-stubbing it would overwrite the original size with the stub's own.
+    pydantic_ai writes each processed history back into the run, so an existing stub must
+    survive untouched — re-stubbing it would overwrite the original size with the stub's own.
     """
     if isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX):
         return part

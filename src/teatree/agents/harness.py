@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
@@ -48,6 +49,7 @@ from teatree.agents.harness_registry import (
     resolve_harness_spec,
     valid_providers_for,
 )
+from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_harness, resolve_pydantic_ai_model
@@ -334,6 +336,13 @@ class PydanticAiHarness:
         # worktree jail root is ``options.cwd`` (the resolved task cwd).
         config = LaneBToolConfig.from_options(harness_options, phase=self._phase or "")
         toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
+        keep_tool_results = CompactionPolicy.for_phase(self._phase).keep_tool_results
+        # A lambda, because pydantic_ai resolves a processor's annotations at runtime to pick its calling convention.
+        capabilities = (
+            [ProcessHistory(lambda messages: elide_stale_tool_results(messages, keep_tool_results))]
+            if self._phase
+            else []
+        )
         # ``config.shell_tool_retries`` is None outside the shell-exploration phase
         # family — passing ``retries=None`` there is byte-identical to omitting it,
         # so only those phases' Agent gets a widened tool-retry budget.
@@ -344,6 +353,7 @@ class PydanticAiHarness:
             toolsets=toolsets,
             tool_timeout=config.shell_timeout_seconds if self._phase else None,
             retries={"tools": config.shell_tool_retries} if config.shell_tool_retries is not None else None,
+            capabilities=capabilities,
         )
         # ``async with agent:`` enters the model so the provider's HTTP client
         # (the OpenAI-compatible connection pool) closes cleanly on

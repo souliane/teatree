@@ -1,6 +1,9 @@
+import math
+
 import pytest
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
@@ -11,7 +14,12 @@ from pydantic_ai.messages import (
 )
 
 from teatree.agents.lane_b import compaction as compaction_mod
-from teatree.agents.lane_b.compaction import DEFAULT_KEEP_RECENT, CompactionPolicy, compact_history
+from teatree.agents.lane_b.compaction import (
+    DEFAULT_KEEP_RECENT,
+    CompactionPolicy,
+    compact_history,
+    elide_stale_tool_results,
+)
 
 
 def _msgs(n: int) -> list:
@@ -193,72 +201,133 @@ class TestStaleToolResultsAreElided:
 
     def test_a_short_trajectory_the_trim_never_touches_is_still_shrunk(self) -> None:
         history = _tool_trajectory(20)
-        assert len(history) <= DEFAULT_KEEP_RECENT + 1  # the message trim provably does not engage
-        assert _chars(compact_history(history, policy=CompactionPolicy())) < _chars(history) * 0.2
+        assert len(history) <= DEFAULT_KEEP_RECENT + 1
+        assert _chars(elide_stale_tool_results(history)) <= _chars(history) * 0.3
 
     def test_the_most_recent_results_stay_verbatim(self) -> None:
         history = _tool_trajectory(20)
-        out = compact_history(history, policy=CompactionPolicy(keep_tool_results=6))
+        out = elide_stale_tool_results(history, 6)
         assert [p.content for p in _returned(out[-6:])] == [p.content for p in _returned(history[-6:])]
 
     def test_the_pinned_head_is_never_touched(self) -> None:
         history = _tool_trajectory(20)
         history[0] = _big_return("head-call")
-        assert compact_history(history, policy=CompactionPolicy())[0] is history[0]
+        assert elide_stale_tool_results(history)[0] is history[0]
 
     def test_the_stub_names_the_size_and_the_tool(self) -> None:
-        out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())
-        stub = str(_returned(out)[0].content)
+        stub = str(_returned(elide_stale_tool_results(_tool_trajectory(20)))[0].content)
         assert "50000 chars" in stub
         assert "`Bash`" in stub
 
     def test_a_bash_stub_does_not_invite_a_blind_rerun(self) -> None:
-        # Re-running a commit/push/migrate to recover its output repeats the side effect.
-        stub = str(_returned(compact_history(_tool_trajectory(20), policy=CompactionPolicy()))[0].content)
+        stub = str(_returned(elide_stale_tool_results(_tool_trajectory(20)))[0].content)
         assert "re-run only if the command is read-only" in stub
 
     @pytest.mark.parametrize("tool_name", ["Read", "Grep"])
     def test_a_read_stub_invites_a_reread(self, tool_name: str) -> None:
         history = _tool_trajectory(20)
         history[2] = ModelRequest(parts=[ToolReturnPart(tool_name=tool_name, content="x" * 50_000, tool_call_id="c0")])
-        stub = str(_returned(compact_history(history, policy=CompactionPolicy()))[0].content)
+        stub = str(_returned(elide_stale_tool_results(history))[0].content)
         assert "re-read to obtain them" in stub
         assert "re-run" not in stub
 
     def test_restubbing_preserves_the_original_size(self) -> None:
-        # The session feeds each compacted history back in, so a stub is compacted again.
-        history = _tool_trajectory(20, size=175_185)
-        first = compact_history(history, policy=CompactionPolicy())
+        # pydantic_ai writes the processed history back into the run, so a stub is processed again.
+        first = elide_stale_tool_results(_tool_trajectory(20, size=175_185))
         assert "175185 chars" in str(_returned(first)[0].content)
-        second = compact_history(first, policy=CompactionPolicy())
+        second = elide_stale_tool_results(first)
         assert "175185 chars" in str(_returned(second)[0].content)
 
     def test_the_call_return_pairing_survives(self) -> None:
-        out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())
+        out = elide_stale_tool_results(_tool_trajectory(20))
         assert _orphaned_return_ids(out) == []
         assert [p.tool_call_id for p in _returned(out)] == [f"c{i}" for i in range(20)]
 
     def test_a_result_smaller_than_its_stub_is_left_alone(self) -> None:
         history = _tool_trajectory(20, size=3)
-        assert compact_history(history, policy=CompactionPolicy()) == history
+        assert elide_stale_tool_results(history) == history
 
     def test_zero_disables_the_pass(self) -> None:
         history = _tool_trajectory(20)
-        assert compact_history(history, policy=CompactionPolicy(keep_tool_results=0)) == history
+        assert elide_stale_tool_results(history, 0) == history
 
     def test_the_caller_history_is_not_mutated(self) -> None:
         history = _tool_trajectory(20)
         before = _chars(history)
-        compact_history(history, policy=CompactionPolicy())
+        elide_stale_tool_results(history)
         assert _chars(history) == before
 
-    def test_elision_also_applies_after_a_long_history_trim(self) -> None:
-        history = _tool_trajectory(60)
-        out = compact_history(history, policy=CompactionPolicy(keep_recent=20))
-        assert len(out) <= 21
-        assert _chars(out) < _chars(history[-20:]) / 2
+    def test_compact_history_no_longer_stubs(self) -> None:
+        history = _tool_trajectory(20)
+        assert compact_history(history, policy=CompactionPolicy()) == history
 
-    def test_the_per_phase_override_is_read(self) -> None:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(compaction_mod.cold_reader, "read_setting", lambda key: {"coding": 2} if "tool" in key else None)
-            assert CompactionPolicy.for_phase("coding").keep_tool_results == 2
+    def test_the_per_phase_override_is_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            compaction_mod.cold_reader, "read_setting", lambda key: {"coding": 2} if "tool" in key else None
+        )
+        assert CompactionPolicy.for_phase("coding").keep_tool_results == 2
+
+
+class TestZeroKeepToolResultsDisablesTheStubPass:
+    def test_a_stored_zero_resolves_to_zero_and_stubs_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            compaction_mod.cold_reader, "read_setting", lambda key: {"coding": 0} if "tool" in key else None
+        )
+        keep = CompactionPolicy.for_phase("coding").keep_tool_results
+        assert keep == 0
+        history = _tool_trajectory(20)
+        assert elide_stale_tool_results(history, keep) == history
+
+    @pytest.mark.parametrize("value", [-1, True, "6", None])
+    def test_an_invalid_override_gives_the_default(self, value: object, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            compaction_mod.cold_reader, "read_setting", lambda key: {"coding": value} if "tool" in key else None
+        )
+        assert CompactionPolicy.for_phase("coding").keep_tool_results == compaction_mod.DEFAULT_KEEP_TOOL_RESULTS
+
+
+def _stubbed_indices(msgs: list[ModelMessage]) -> set[int]:
+    return {
+        index
+        for index, message in enumerate(msgs)
+        if isinstance(message, ModelRequest)
+        and any(isinstance(p, ToolReturnPart) and str(p.content).startswith("[elided: ") for p in message.parts)
+    }
+
+
+def _first_difference(prev: list[bytes], nxt: list[bytes]) -> int:
+    return next((i for i, (a, b) in enumerate(zip(prev, nxt, strict=False)) if a != b), len(prev))
+
+
+class TestTheStubBoundaryIsCacheStable:
+    """Consecutive requests must share a byte-identical prefix so the provider cache keeps hitting."""
+
+    def test_consecutive_requests_share_a_byte_identical_prefix_between_steps(self) -> None:
+        keep, requests = 6, 30
+        history: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="task")])]
+        sent: list[list[bytes]] = []
+        cutoffs: list[int] = []
+        for i in range(requests):
+            history = elide_stale_tool_results([*history, _tool_call(f"c{i}"), _big_return(f"c{i}")], keep)
+            sent.append([ModelMessagesTypeAdapter.dump_json([m]) for m in history])
+            cutoffs.append(max(_stubbed_indices(history), default=0) + 1)
+        changes = 0
+        for n in range(1, requests):
+            prev, nxt = sent[n - 1], sent[n]
+            if prev == nxt[: len(prev)]:
+                continue
+            changes += 1
+            assert _first_difference(prev, nxt) >= cutoffs[n - 1], f"request {n} rewrote bytes before the old boundary"
+        assert changes <= math.ceil(requests / 3)
+
+    @pytest.mark.parametrize(("start", "stop"), [(13, 19), (19, 25), (25, 31)])
+    def test_the_stub_boundary_only_moves_in_steps_of_keep_tool_results(self, start: int, stop: int) -> None:
+        trajectory = _tool_trajectory(20)
+        stubbed = {frozenset(_stubbed_indices(elide_stale_tool_results(trajectory[:n], 6))) for n in range(start, stop)}
+        assert len(stubbed) == 1
+
+    def test_the_verbatim_tail_never_exceeds_two_steps(self) -> None:
+        trajectory = _tool_trajectory(20)
+        for n in range(1, len(trajectory) + 1):
+            out = elide_stale_tool_results(trajectory[:n], 6)
+            assert n - (max(_stubbed_indices(out), default=0) + 1) <= 11
