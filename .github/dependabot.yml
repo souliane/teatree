@@ -17,15 +17,7 @@ updates:
       python-deps:
         patterns:
           - "*"
-    # Version-range ignores, not whole-dependency ones, so patch releases keep flowing.
-    # Each held bound carries its reason next to the pin in pyproject.toml.
-    ignore:
-      # 8.5 blanks every typer positional-argument help; the lift is django-typer 4.
-      - dependency-name: "click"
-        versions: [">=8.5"]
-      # Moves in lockstep with the ruff-pre-commit rev; 0.16 preview rules raise 6k+ findings.
-      - dependency-name: "ruff"
-        versions: [">=0.16"]
+    # click and ruff are held by their pyproject bounds (click>=8.4,<8.5; ruff==0.15.1), never by `ignore`.
     # `claude-agent-sdk` is watched here like any other dependency. It used to carry an
     # `ignore` entry because a bundled claude CLI at/after 2.1.204 renders an
     # `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, which
