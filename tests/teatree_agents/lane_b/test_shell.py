@@ -5,7 +5,14 @@ import pytest
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.config import LaneBToolConfig
-from teatree.agents.lane_b.shell import ShellDeniedError, ShellTimeoutError, _resolve_shell, build_shell_toolset
+from teatree.agents.lane_b.shell import (
+    ShellDeniedError,
+    ShellTimeoutError,
+    _capped,
+    _elision_marker,
+    _resolve_shell,
+    build_shell_toolset,
+)
 
 
 def _shell(config):
@@ -122,3 +129,6 @@ class TestOversizedOutputIsCapped:
         out = _shell(cfg)(f"python3 -c \"print('x' * {self._HUGE})\" > big.txt")
         assert out.startswith("exit=0")
         assert (tmp_path / "big.txt").stat().st_size > self._HUGE
+
+    def test_a_cap_below_the_marker_length_returns_only_the_marker(self) -> None:
+        assert _capped("x" * self._HUGE, 10) == _elision_marker(self._HUGE)

@@ -30,7 +30,7 @@ SETTING_HELP: dict[str, str] = {
     "metered_spend_window_hours": "the window the metered token ceiling is measured over",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
     "agent_compaction_keep_recent": "per-phase count of recent messages a compacted history keeps",
-    "agent_compaction_keep_tool_results": "per-phase count of recent messages keeping tool output verbatim",
+    "agent_compaction_keep_tool_results": "per-phase count of recent messages (~N/2 tool round-trips) left unstubbed",
     "agent_harness": "which agent CLI teatree drives (claude, codex, ...)",
     "agent_harness_provider": "credential provider the harness authenticates with; empty inherits the ambient one",
     "agent_honesty_model": "model used for honesty-critical verification, where over-claiming costs most",

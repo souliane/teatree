@@ -59,8 +59,9 @@ def _capped(output: str, max_bytes: int) -> str:
     completion and is never failed on its output size. Head and tail are both kept
     because a long run's first lines (what it was doing) and last lines (how it
     ended) are the load-bearing ones. The marker is sized against the whole-output
-    worst case, so the result never exceeds *max_bytes*, and the byte slices are
-    decoded with ``errors="ignore"`` so a cut never splits a codepoint.
+    worst case, so the result never exceeds ``max(max_bytes, marker length)`` — below
+    the marker length only the marker is returned — and the byte slices are decoded
+    with ``errors="ignore"`` so a cut never splits a codepoint.
     """
     encoded = output.encode()
     if max_bytes <= 0 or len(encoded) <= max_bytes:

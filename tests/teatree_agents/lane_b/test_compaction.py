@@ -206,12 +206,32 @@ class TestStaleToolResultsAreElided:
         history[0] = _big_return("head-call")
         assert compact_history(history, policy=CompactionPolicy())[0] is history[0]
 
-    def test_the_stub_names_the_size_the_tool_and_the_recovery(self) -> None:
+    def test_the_stub_names_the_size_and_the_tool(self) -> None:
         out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())
         stub = str(_returned(out)[0].content)
         assert "50000 chars" in stub
         assert "`Bash`" in stub
-        assert "Re-run it" in stub
+
+    def test_a_bash_stub_does_not_invite_a_blind_rerun(self) -> None:
+        # Re-running a commit/push/migrate to recover its output repeats the side effect.
+        stub = str(_returned(compact_history(_tool_trajectory(20), policy=CompactionPolicy()))[0].content)
+        assert "re-run only if the command is read-only" in stub
+
+    @pytest.mark.parametrize("tool_name", ["Read", "Grep"])
+    def test_a_read_stub_invites_a_reread(self, tool_name: str) -> None:
+        history = _tool_trajectory(20)
+        history[2] = ModelRequest(parts=[ToolReturnPart(tool_name=tool_name, content="x" * 50_000, tool_call_id="c0")])
+        stub = str(_returned(compact_history(history, policy=CompactionPolicy()))[0].content)
+        assert "re-read to obtain them" in stub
+        assert "re-run" not in stub
+
+    def test_restubbing_preserves_the_original_size(self) -> None:
+        # The session feeds each compacted history back in, so a stub is compacted again.
+        history = _tool_trajectory(20, size=175_185)
+        first = compact_history(history, policy=CompactionPolicy())
+        assert "175185 chars" in str(_returned(first)[0].content)
+        second = compact_history(first, policy=CompactionPolicy())
+        assert "175185 chars" in str(_returned(second)[0].content)
 
     def test_the_call_return_pairing_survives(self) -> None:
         out = compact_history(_tool_trajectory(20), policy=CompactionPolicy())

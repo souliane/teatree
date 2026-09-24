@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 
+from teatree.agents.lane_b.tool_names import TOOL_GREP, TOOL_READ
 from teatree.config import cold_reader
 
 if TYPE_CHECKING:
@@ -37,9 +38,10 @@ DEFAULT_KEEP_RECENT = 40
 #: :mod:`teatree.config.cold_reader`; an absent/garbled value leaves the default.
 _COMPACTION_KEEP_RECENT_KEY = "agent_compaction_keep_recent"
 
-#: How many trailing messages keep their tool results verbatim. Well under
-#: :data:`DEFAULT_KEEP_RECENT`, because the whole-message trim never engages on a
-#: run of 20 turns while the tool results in it are re-sent on every request.
+#: How many trailing MESSAGES (not tool calls) keep their tool results verbatim — about
+#: N/2 call→return round-trips, the same unit as :data:`DEFAULT_KEEP_RECENT` so the two
+#: compose. Well under it, because the whole-message trim never engages on a run of 20
+#: turns while the tool results in it are re-sent on every request.
 DEFAULT_KEEP_TOOL_RESULTS = 6
 
 #: The DB ``ConfigSetting`` key for the per-phase ``keep_tool_results`` override map.
@@ -154,12 +156,27 @@ def _stubbed(message: "ModelMessage") -> "ModelMessage":
     )
 
 
+_ELIDED_PREFIX = "[elided: "
+
+_REREADABLE_TOOLS = frozenset({TOOL_READ, TOOL_GREP})
+
+
 def _stubbed_part(part: ToolReturnPart) -> ToolReturnPart:
-    """*part* with its content replaced by the stub, unless the stub would not be smaller."""
+    """*part* with its content replaced by the stub, unless it is one already or the stub would not be smaller.
+
+    The session feeds each compacted history back in, so an existing stub must survive
+    untouched — re-stubbing it would overwrite the original size with the stub's own.
+    """
+    if isinstance(part.content, str) and part.content.startswith(_ELIDED_PREFIX):
+        return part
     rendered = part.model_response_str()
-    stub = (
-        f"[elided: {len(rendered)} chars returned by `{part.tool_name}` on an earlier turn. Re-run it to obtain them.]"
+    # A shell command may have side effects (commit, push, migrate): never invite a blind re-run.
+    recovery = (
+        "re-read to obtain them"
+        if part.tool_name in _REREADABLE_TOOLS
+        else "output elided; re-run only if the command is read-only"
     )
+    stub = f"{_ELIDED_PREFIX}{len(rendered)} chars returned by `{part.tool_name}` on an earlier turn; {recovery}.]"
     return part if len(stub) >= len(rendered) else replace(part, content=stub)
 
 
