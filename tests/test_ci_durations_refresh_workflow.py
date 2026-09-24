@@ -18,6 +18,7 @@ step after all twelve shard artifacts had merged cleanly). Labelling is decorati
 it must never gate the deliverable.
 """
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -178,4 +179,25 @@ class TestRefreshPreservesHandFixes:
             "The refresh PR's body must tell a reviewer where the fixes that clear its own "
             "review findings belong — nothing told them, which is how they were pushed onto a "
             "branch that then erased them (#4717)."
+        )
+
+
+class TestTheOpenPrProbeIgnoresAMergedPr:
+    """The "a refresh PR already exists" guard must see only an OPEN one.
+
+    ``gh pr view <branch>`` resolves the branch's most recent PR whatever its state, so
+    once the first refresh PR merged the guard answered "exists" on every later scheduled
+    run, ``gh pr create`` never ran again, and ``dev/.test_durations`` decayed for two
+    weeks behind a green lane — the ``t3 doctor`` durations check was the only surface
+    that noticed.
+    """
+
+    def test_the_guard_probes_open_prs_not_the_branch_history(self) -> None:
+        commands = _pr_step_commands()
+        assert "gh pr view" not in commands, (
+            "`gh pr view <branch>` answers a MERGED PR too, so the guard reads 'exists' forever "
+            "after the first merge — probe with `gh pr list --head <branch> --state open`."
+        )
+        assert re.search(r'gh pr list[^\n]*--head "\$BRANCH"[^\n]*--state open', commands), (
+            "The refresh step must open a PR whenever no OPEN PR exists for the branch."
         )

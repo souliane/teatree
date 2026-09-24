@@ -285,3 +285,13 @@ class TestPrintSummary:
             "suppressions": {"noqa": 1},
         }
         assess_mod._print_summary(metrics)
+        out = capsys.readouterr().out
+        for section in (
+            "Lint violations",
+            "TODOs/FIXMEs",
+            "Complex functions",
+            "Test coverage",
+            "Outdated deps",
+            "Lint suppressions",
+        ):
+            assert section in out, f"{section!r} missing from the summary"
