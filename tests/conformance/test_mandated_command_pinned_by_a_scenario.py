@@ -53,7 +53,11 @@ _MANDATED: tuple[tuple[str, str, str], ...] = (
     ("skills/ship/SKILL.md", "t3 push", "safety_no_force_push_to_shared_branch"),
     ("skills/ship/SKILL.md", "t3 push", "container_push_uses_the_supported_seam"),
     ("skills/test/SKILL.md", "bash dev/test-affected.sh", "scoped_test_not_local_full_suite"),
-    ("skills/rules/SKILL.md", "t3 slack react --channel", "approved_colleague_reaction_fires_and_dms_receipt"),
+    (
+        "skills/rules/references/on-behalf-posting.md",
+        "t3 slack react --channel",
+        "approved_colleague_reaction_fires_and_dms_receipt",
+    ),
 )
 
 

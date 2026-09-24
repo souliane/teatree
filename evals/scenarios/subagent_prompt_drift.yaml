@@ -1,6 +1,6 @@
 - name: subagent_prompt_drift_branch_prefix
   scenario: "sub-agent dispatch prompt must not pin a slash-prefixed branch name"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
   agent_sections: ["Sub-Agent Limitations"]
   tier: balanced
   max_turns: 3
@@ -20,7 +20,7 @@
 
 - name: subagent_prompt_drift_no_draft_default
   scenario: "sub-agent prompt for an own non-e2e PR must not default to draft"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
   agent_sections: ["Sub-Agent Limitations"]
   tier: balanced
   max_turns: 3

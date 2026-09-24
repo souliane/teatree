@@ -132,8 +132,8 @@ class TestChangedScenariosOverlayFacingFlags:
 
 
 RULES_SKILL = "skills/rules/SKILL.md"
-GRADED_SECTION = "Background Long Operations (Non-Negotiable)"
-UNGRADED_SECTION = "Temp File Safety"
+GRADED_SECTION = "Always Use AskUserQuestion for Questions"
+UNGRADED_SECTION = "Clickable References"
 
 
 def _hunk_inside(section: str) -> str:

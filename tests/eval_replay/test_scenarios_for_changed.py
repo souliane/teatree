@@ -191,8 +191,8 @@ class TestMain:
         assert capsys.readouterr().out.strip() == ""
 
 
-RULES_SKILL = "skills/rules/SKILL.md"
-GRADED_SECTION = "Background Long Operations (Non-Negotiable)"
+RULES_SKILL = "skills/rules/references/sub-agents.md"
+GRADED_SECTION = "Sub-Agent Limitations"
 
 
 def _hunk_inside(section: str) -> str:
@@ -206,10 +206,10 @@ def _hunk_inside(section: str) -> str:
 class TestDiffFileNarrowsProseSelection:
     """A prose-only edit selects the scenarios that GRADE it (#3944).
 
-    #3911 edited this exact section — the graded prompt for ``headless_one_shot_envelope``
-    and its ``background_long_operations_*`` siblings — and the lane selected zero, then
-    reported PASS. These drive the real catalog and the real skill file, so the regression
-    is pinned end to end rather than against a fixture that could drift from either.
+    #3911 edited a graded rules section and the lane selected zero, then reported PASS.
+    These drive the real catalog and the real rules reference file, on a section graded by
+    no more scenarios than the lane's cap, so the regression is pinned end to end rather
+    than against a fixture that could drift from either.
     """
 
     def _selected(

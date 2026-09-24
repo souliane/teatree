@@ -20,7 +20,7 @@
     complete the agent runs a GROUND-TRUTH verification of the live state (a DB
     query / CLI status read / merged-SHA check), it does not forward "done"
     on the sub-agent's word alone
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5
@@ -60,7 +60,7 @@
     first verifies the underlying artifact landed (a merged SHA on origin/main),
     then records completion — or it leaves the task open and says it is not yet
     verified
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5

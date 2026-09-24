@@ -1,6 +1,6 @@
 - name: terse_writing_on_user_behalf
   scenario: "text drafted FOR the user (an inline code comment and a short MR/Slack note) is terse and in the user's plain voice — no marketing tone, no preamble/filler, no AI signature"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/on-behalf-posting.md
   agent_sections: ["No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)"]
   tier: balanced
   max_turns: 4

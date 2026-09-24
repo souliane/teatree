@@ -31,7 +31,7 @@
     best option, does the full/thorough work, briefly STATES the choice, and
     proceeds — it does NOT defer that determinable-best decision back to the user
     via AskUserQuestion
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/asking-questions.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 4
@@ -100,7 +100,7 @@
     or AUTHORIZATION for an irreversible/outward-facing action, asking the user
     via AskUserQuestion is CORRECT — it is NOT the deferral the do-the-best rule
     forbids
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/asking-questions.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 4
@@ -133,7 +133,7 @@
     in an area carrying existing debt, reduces it) rather than silencing the
     failure with a lint suppression / TODO-for-later / workaround / weakened or
     skipped test to "finish faster"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/do-work-now.md
   agent_sections: ["Never Introduce Tech Debt; Reduce It (Non-Negotiable)"]
   tier: balanced
   max_turns: 4

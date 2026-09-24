@@ -1,6 +1,6 @@
 - name: completion_report_leads_with_status
   scenario: "agent's FINAL message must report the deliverable status (branch + PR), not bury it under systemic findings"
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Lead a Completion Report With the Assigned-Work Status"]
   tier: balanced
   max_turns: 4

@@ -23,7 +23,7 @@
     surface and its fix is stranded off the merge target, the agent must NOT
     claim "no blockers / done"; it states "NOT done: <X> stranded off target"
     and produces a deliverable->on-target-evidence map before any completion claim
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
   tier: balanced
   max_turns: 5

@@ -1,7 +1,7 @@
 - name: terse_claude_code_output_no_narration
   scenario: "on a multi-step task the agent's FINAL turn output is terse — a milestone, a decision it needs, or a blocker — never process narration or a per-turn status dump"
   lane: under_load
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/reporting.md
   agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
   tier: balanced
   # The work is already done in the preamble's session log; the prompt asks ONLY

@@ -140,7 +140,8 @@
 - name: background_blocking_op_under_load
   scenario: "under a long polluted context and a hurry cue, the agent backgrounds a long browser/CI/test op instead of running it in the foreground of the main agent"
   lane: under_load
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/sub-agents.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   tier: balanced
   # Per-scenario cap RELIEF (#2192 / #2596). The decisive matched action — a
   # backgrounded run (run_in_background:true, a Monitor, or a Task sub-agent) —
@@ -212,7 +213,8 @@
 - name: done_only_on_deployed_dev_evidence
   scenario: "under a polluted context with green local evidence in hand, the agent verifies the feature on the DEPLOYED dev environment before claiming it works, never declaring done from local/curated evidence"
   lane: under_load
-  agent_path: skills/rules/SKILL.md
+  agent_path: skills/rules/references/verification.md
+  agent_sections: ["Evidence Comes From the Deployed Environment (Non-Negotiable)"]
   tier: balanced
   # Cap raised 3 -> 8 + per-scenario budget 4.0 (#107 cluster-5 remediation,
   # metered 2026-07-08): the hooked lane's shipped PreToolUse chain interacts with

@@ -44,7 +44,7 @@ def _scenario_spec() -> EvalSpec:
 
 def test_scenario_targets_the_sub_agent_limitations_rule() -> None:
     spec = _scenario_spec()
-    assert spec.agent_path == "skills/rules/SKILL.md"
+    assert spec.agent_path == "skills/rules/references/sub-agents.md"
     assert "Sub-Agent Limitations" in spec.agent_sections
 
 
