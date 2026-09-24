@@ -5,12 +5,17 @@ the scripted :class:`FunctionModel` supplies every model turn.
 """
 
 import asyncio
+import os
+import re
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pydantic_ai.models
 import pytest
+from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
@@ -18,13 +23,25 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
 
+from teatree.agents._runner_options import _disallowed_tools_for_phase
 from teatree.agents.lane_b import toolsets as toolsets_module
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.gating import HardDenyToolset
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
+from teatree.agents.prompt import build_system_context
+from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.skill_files import SkillFileIndex
+from teatree.agents.skill_injection import harness_skills_dirs
+from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.core.modelkit.phases import KNOWN_PHASES
+from teatree.core.models import Session, Task, Ticket
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
+from teatree.types import SkillMetadata
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # the zero-token test guard.
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _run(agent: Agent[None, str], prompt: str) -> AgentRunResult[Any]:
@@ -151,6 +168,152 @@ class TestMaxDenialsThreadedFromConfig:
         gated = build_lane_b_toolsets(config).toolsets[0]
         assert isinstance(gated, HardDenyToolset)
         assert gated.max_denials == 3
+
+
+_SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|references/[A-Za-z0-9_.-]+\.md)")
+_QUARANTINED_PHASES = ("directive_reading", "short_describe")
+
+
+def _rendered_context(phase: str) -> str:
+    ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{abs(hash(phase)) % 100_000}")
+    task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
+    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata(), worktree_path=_REPO_ROOT)
+    return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase))
+
+
+def _named_skill_files(context: str) -> set[str]:
+    """Each existing skill file the context names, as its repo-relative ``skills/<skill>/...`` key."""
+    return {
+        key for key in _SKILL_PATH_RE.findall(context) if (DEFAULT_SKILLS_DIR / key.removeprefix("skills/")).is_file()
+    }
+
+
+def _both_spellings(key: str) -> tuple[str, str]:
+    return key, str(DEFAULT_SKILLS_DIR / key.removeprefix("skills/"))
+
+
+def _read_all(config: LaneBToolConfig, paths: list[str]) -> dict[str, str]:
+    """Issue one ``Read`` per path in a single model turn; map each path to its tool reply."""
+    calls = [ToolCallPart(tool_name="Read", args={"path": path}, tool_call_id=f"c{i}") for i, path in enumerate(paths)]
+    model = _scripted(lambda: ModelResponse(parts=calls), _text("read"))
+    result = _run(_agent(config, model), "go")
+    by_id = {
+        p.tool_call_id: str(p.content)
+        for m in result.all_messages()
+        for p in getattr(m, "parts", [])
+        if type(p).__name__ == "ToolReturnPart"
+    }
+    return {path: by_id.get(f"c{i}", "<no tool return>") for i, path in enumerate(paths)}
+
+
+def _read_one(config: LaneBToolConfig, path: str) -> tuple[list[str], list[str]]:
+    """``(tool returns, retry prompts)`` for a single scripted ``Read`` of *path*."""
+    model = _scripted(_call("Read", {"path": path}), _text("done"))
+    result = _run(_agent(config, model), "go")
+    parts = [p for m in result.all_messages() for p in getattr(m, "parts", [])]
+    returns = [str(p.content) for p in parts if type(p).__name__ == "ToolReturnPart"]
+    retries = [str(p.content) for p in parts if type(p).__name__ == "RetryPromptPart"]
+    return returns, retries
+
+
+def _tool_names(config: LaneBToolConfig) -> set[str]:
+    seen: set[str] = set()
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    _run(_agent(config, FunctionModel(model_fn)), "go")
+    return seen
+
+
+_REFUSED_WITHOUT_A_WORKTREE = (
+    "/etc/hostname",
+    "skills/rules/references/../SKILL.md",
+    "skills/../pyproject.toml",
+    "skills/rules",
+    "skills",
+    "skills/rulesX/SKILL.md",
+    "skills/rules/SKILL.md.bak",
+    "skills/rules/references/notes.txt",
+    str(DEFAULT_SKILLS_DIR),
+    str(DEFAULT_SKILLS_DIR / "rules" / "references"),
+    f"{DEFAULT_SKILLS_DIR}/rules/references/../SKILL.md",
+)
+
+
+class TestSkillFilesTheContextNamesAreReadable(TestCase):
+    """Every skill file a phase's rendered context names is readable by that phase on Lane B."""
+
+    def setUp(self) -> None:
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.scratch = Path(scratch.name)
+        (home := self.scratch / "empty-home").mkdir()
+        for patcher in (
+            patch.dict(os.environ, {"HOME": str(home)}),
+            patch.object(toolsets_module, "build_mcp_toolsets", list),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _reading_phases(self) -> dict[str, set[str]]:
+        named = {phase: _named_skill_files(_rendered_context(phase)) for phase in sorted(KNOWN_PHASES)}
+        return {phase: keys for phase, keys in named.items() if keys and "read_file" in tools_for_phase(phase)}
+
+    def test_every_named_skill_file_reads_back_with_and_without_a_worktree(self) -> None:
+        phases = self._reading_phases()
+        assert phases, "no phase names a skill file — the path extraction went blind"
+        worktree = self.scratch / "not-a-teatree-checkout"
+        worktree.mkdir()
+        unreadable: list[str] = []
+        for phase, keys in phases.items():
+            expected = {
+                spelling: (DEFAULT_SKILLS_DIR / key.removeprefix("skills/")).read_text(encoding="utf-8")
+                for key in keys
+                for spelling in _both_spellings(key)
+            }
+            for fs_root in (worktree, None):
+                replies = _read_all(LaneBToolConfig(fs_root=fs_root, phase=phase), sorted(expected))
+                unreadable.extend(
+                    f"{phase} fs_root={fs_root}: {path}" for path, reply in replies.items() if reply != expected[path]
+                )
+        assert not unreadable, "named skill files a phase cannot Read:\n" + "\n".join(unreadable[:40])
+
+    def test_quarantined_phases_get_no_read(self) -> None:
+        for phase in _QUARANTINED_PHASES:
+            for fs_root in (self.scratch, None):
+                with self.subTest(phase=phase, fs_root=fs_root):
+                    assert "Read" not in _tool_names(LaneBToolConfig(fs_root=fs_root, phase=phase))
+
+    def test_a_worktree_copy_shadows_the_registered_skill_file(self) -> None:
+        key = "skills/rules/SKILL.md"
+        (self.scratch / key).parent.mkdir(parents=True)
+        (self.scratch / key).write_text("worktree copy", encoding="utf-8")
+        returns, _ = _read_one(LaneBToolConfig(fs_root=self.scratch, phase="coding"), key)
+        assert returns == ["worktree copy"]
+
+    def test_anything_but_a_registered_skill_file_is_refused_without_a_worktree(self) -> None:
+        for path in _REFUSED_WITHOUT_A_WORKTREE:
+            with self.subTest(path=path):
+                returns, retries = _read_one(LaneBToolConfig(fs_root=None, phase="retro"), path)
+                assert not returns
+                assert retries
+
+    def test_a_worktree_dispatch_cannot_escape_through_the_fallback(self) -> None:
+        for path in ("/etc/hostname", "../../../etc/hostname", str(DEFAULT_SKILLS_DIR.parent / "pyproject.toml")):
+            with self.subTest(path=path):
+                returns, retries = _read_one(LaneBToolConfig(fs_root=self.scratch, phase="coding"), path)
+                assert not returns
+                assert retries
+
+    def test_lane_a_keeps_read_for_every_reading_phase_and_every_named_path_is_registered(self) -> None:
+        index = SkillFileIndex.build(harness_skills_dirs())
+        for phase, keys in self._reading_phases().items():
+            assert "Read" not in _disallowed_tools_for_phase(phase), phase
+            for key in keys:
+                absolute = _both_spellings(key)[1]
+                assert index.lookup(absolute) == Path(absolute), f"{phase}: {absolute} is not a registered skill file"
 
 
 def test_no_model_requests_are_allowed() -> None:
