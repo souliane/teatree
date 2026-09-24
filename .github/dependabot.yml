@@ -17,6 +17,7 @@ updates:
       python-deps:
         patterns:
           - "*"
+    # click and ruff are held by their pyproject bounds (click>=8.4,<8.5; ruff==0.15.1), never by `ignore`.
     # `claude-agent-sdk` is watched here like any other dependency. It used to carry an
     # `ignore` entry because a bundled claude CLI at/after 2.1.204 renders an
     # `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, which
@@ -36,7 +37,7 @@ updates:
     # `claude` CLI generation from it, and reds on a bump until the bundled version is
     # re-derived from the new wheel.
     #
-    # An SDK bump PR must keep resolving against the project's own `mcp>=2,<3`. 0.2.156
+    # An SDK bump PR must keep resolving against the project's own `mcp>=2,<3`. 0.2.157
     # declares `mcp>=1.23.0,<3.0.0`, which admits it, so no `[tool.uv]
     # override-dependencies` entry is needed today — but the cap is broader than the SDK's
     # usage, which reaches only the low-level `mcp.server.Server` / `mcp.types` surface.

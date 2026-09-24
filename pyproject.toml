@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.156",
+  "claude-agent-sdk==0.2.157",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -760,7 +760,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
 # replaced with the project's own `mcp>=2,<3` for the two to resolve together.
-# 0.2.156 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# 0.2.157 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
 # The wide bound is safe rather than merely resolvable because the SDK reaches
