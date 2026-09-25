@@ -24,6 +24,7 @@ from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import scan_outbound_text
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
+from tests.teatree_core.gates._two_overlay_registry import register_a_sibling_overlay
 
 SYNTHETIC_TERM = "ZZTESTCODENAME"
 PUBLIC_TARGET = "souliane/teatree"
@@ -69,9 +70,9 @@ class _AmbiguousRegistry(TestCase):
         self.addCleanup(os.chdir, Path.cwd())
         os.chdir(Path(tmp_dir.name))
 
+        register_a_sibling_overlay(self)
         self.overlay_names = sorted(get_all_overlays())
-        if len(self.overlay_names) < 2:
-            self.skipTest(f"needs a multi-overlay install to reproduce the ambiguity, got {self.overlay_names}")
+        assert len(self.overlay_names) >= 2, self.overlay_names
         with pytest.raises(ImproperlyConfigured, match="Multiple overlays found"):
             get_overlay()
 
@@ -126,3 +127,17 @@ class TestTheSiblingOverlaysTermsStillBind(_AmbiguousRegistry):
 
         assert result.refused
         assert any(match.pattern_name == f"redact:{SYNTHETIC_TERM}" for match in result.matches)
+
+
+class TestAnUnreadableSiblingOverlayFailsClosed(_AmbiguousRegistry):
+    def test_the_public_scan_refuses_instead_of_dropping_the_siblings_terms(self) -> None:
+        sibling = next(name for name in self.overlay_names if name != self.owner)
+        overlay = get_all_overlays()[sibling]
+        unreadable = patch.object(overlay, "config", _UnreadablePrivacyConfig(overlay.config))
+        unreadable.start()
+        self.addCleanup(unreadable.stop)
+
+        result = scan_outbound_text(text="An ordinary note.", target_repo=PUBLIC_TARGET, forge=_FORGE)
+
+        assert result.refused
+        assert [match.pattern_name for match in result.matches] == ["overlay-rules-unresolvable"]

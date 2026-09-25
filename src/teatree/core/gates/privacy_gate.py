@@ -168,7 +168,7 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
         return True
 
 
-def _registered_overlay_rules_union() -> tuple[list[str], list[str]]:
+def _registered_overlay_rules_union() -> tuple[list[str], list[str]] | None:
     """Every registered overlay's privacy rules, unioned — the AMBIGUITY fail-safe.
 
     When more than one overlay is installed and nothing disambiguates them,
@@ -178,17 +178,22 @@ def _registered_overlay_rules_union() -> tuple[list[str], list[str]]:
     is also installed. Unioning can only refuse MORE, never leak more, which is
     the only safe direction for a confidentiality boundary.
 
-    An EMPTY registry genuinely has no rules to lose, and a registry that cannot
-    be enumerated has none to offer, so both yield ``([], [])`` — the built-in
-    quote anchors stay the floor and the gate never goes inert.
+    An EMPTY registry genuinely has no rules to lose, so it yields ``([], [])``. A
+    registry or overlay config that cannot be READ may be hiding exactly the term
+    that matters, so it yields ``None`` and the public scan fails CLOSED.
     """
     try:
         configs = [overlay.config for overlay in get_all_overlays().values()]
         redact = [term for config in configs for term in config.privacy_redact_terms]
         block = [pattern for config in configs for pattern in config.privacy_block_patterns]
-    except Exception as exc:  # noqa: BLE001 — an unenumerable registry offers no rules; the built-ins stay the floor.
-        logger.debug("publication privacy gate: overlay registry not enumerable (%s) — built-in detectors only", exc)
-        return [], []
+    except Exception as exc:  # noqa: BLE001 — an unreadable registry fails CLOSED, never scans with the built-ins only.
+        warn_throttled(
+            logger,
+            "privacy_gate:overlay-union-unreadable",
+            "publication privacy gate: overlay registry rules unreadable (%s) — failing CLOSED",
+            exc,
+        )
+        return None
     return list(dict.fromkeys(redact)), list(dict.fromkeys(block))
 
 
@@ -355,8 +360,15 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
             is_public=True,
             matches=(PrivacyMatch(pattern_name="banned-terms-unresolvable", matched_text="", position=0),),
         )
+    union = _registered_overlay_rules_union()
+    if union is None:
+        return PrivacyGateResult(
+            target_repo=target_repo,
+            is_public=True,
+            matches=(PrivacyMatch(pattern_name="overlay-rules-unresolvable", matched_text="", position=0),),
+        )
     redact_terms, block_patterns = rules
-    union_redact, union_block = _registered_overlay_rules_union()
+    union_redact, union_block = union
     return scan_for_publication(
         text=text,
         target_repo=target_repo,
