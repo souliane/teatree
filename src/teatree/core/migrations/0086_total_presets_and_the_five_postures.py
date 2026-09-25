@@ -25,7 +25,11 @@ chokepoint, so masking loops could never have expressed it.
 A posture is only rewritten while it still holds what teatree last shipped. A row the
 operator edited keeps its entries and description: the new posture is a default, and
 landing it over a deliberate edit would change what the box runs overnight with nobody
-having decided that. The kept row is logged so the difference is visible.
+having decided that. The kept row is logged so the difference is visible. On a box that
+has been running loops, even a rewritten posture only ever REMOVES: a loop it names on is
+kept on only where that preset already ran it, so the upgrade starts nothing new — the
+default-off loops ``Loop.enabled`` held back stay off. A fresh install has no behaviour to
+keep and takes the new postures as they are.
 
 ``factory-solo`` was an early ``afk`` and goes; anything naming it is re-pointed at
 ``afk``. To rebuild it: ``t3 loop preset create factory-solo``, then edit it from ``afk``.
@@ -245,24 +249,37 @@ def _edited_by_the_operator(name: str, stored: dict[str, tuple[dict, str]]) -> b
     return edited
 
 
+def _within_what_ran(mode, name: str, landed: dict[str, bool], *, has_run: bool) -> dict[str, bool]:
+    if not has_run:
+        return landed
+    row = mode.filter(name=name).first()
+    ran = row.entries if row is not None and isinstance(row.entries, dict) else {}
+    return {loop: on and ran.get(loop) is True for loop, on in landed.items()}
+
+
 def _land_postures(apps, db: str, mode, loop_names: set[str], stored: dict[str, tuple[dict, str]]) -> None:
+    loop = apps.get_model("core", "Loop").objects.using(db)
+    has_run = loop.exclude(last_run_at=None).exists() or loop.exclude(last_attempt_at=None).exists()
     if not _edited_by_the_operator("present", stored):
         mode.filter(name="present").update(
-            entries=dict.fromkeys(sorted(loop_names), True), description=_DESCRIPTIONS["present"]
+            entries=_within_what_ran(mode, "present", dict.fromkeys(sorted(loop_names), True), has_run=has_run),
+            description=_DESCRIPTIONS["present"],
         )
     _repoint(apps, db, _OLD_AFK, _AFK)
     afk = mode.filter(name__in=(_OLD_AFK, _AFK)).first()
     if afk is not None:
         mode.filter(pk=afk.pk).update(name=_AFK, egress="forbid")
         if not _edited_by_the_operator(_OLD_AFK, stored):
+            landed = {name: name not in _AFK_OFF for name in sorted(loop_names)}
             mode.filter(pk=afk.pk).update(
-                entries={name: name not in _AFK_OFF for name in sorted(loop_names)},
+                entries=_within_what_ran(mode, _AFK, landed, has_run=has_run),
                 description=_DESCRIPTIONS[_AFK],
             )
     mode.filter(name="maintenance").update(egress="forbid")
     if not _edited_by_the_operator("maintenance", stored):
+        landed = {name: name in _MAINTENANCE_ON for name in sorted(loop_names)}
         mode.filter(name="maintenance").update(
-            entries={name: name in _MAINTENANCE_ON for name in sorted(loop_names)},
+            entries=_within_what_ran(mode, "maintenance", landed, has_run=has_run),
             description=_DESCRIPTIONS["maintenance"],
         )
     mode.get_or_create(

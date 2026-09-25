@@ -1,12 +1,13 @@
 """Upgrading a live box across the preset redesign keeps what that box actually runs.
 
 The fixture is the deployed box's own shape: an operator-edited ``maintenance`` and
-``away``, ``off`` and ``low-token`` that disagree on ``tickets``, ten loops switched off,
-a forced-off ``ship``, ``on_behalf_post_mode = immediate`` and dream opt-ins in the nested
-``loops`` table. Each assertion names a value the pre-fix migrations changed: 0086 raised
-on the ``tickets`` split, the posture rewrite replaced both edited presets, 0087 turned
-the ten loops back on, 0109 closed the owner's voice after hours, the cadence fold left
-``eval_local`` daily, and nothing carried the dream opt-ins.
+``away``, an untouched ``present``, ``off`` and ``low-token`` that disagree on
+``tickets``, nine default-off loops, a forced-off ``ship``, ``on_behalf_post_mode =
+immediate`` and dream opt-ins in the nested ``loops`` table. Each assertion names a value
+the pre-fix migrations changed: 0086 raised on the ``tickets`` split, the posture rewrite
+replaced both edited presets and started the default-off loops under ``present``, 0109
+closed the owner's voice after hours, the cadence fold left ``eval_local`` daily, and
+nothing carried the dream opt-ins.
 
 The second class runs the same upgrade with every ``ConfigSetting`` query routed to a
 separate canonical store, the way ``ConfigSettingRouter`` routes it inside a worktree, and
@@ -101,6 +102,29 @@ _AWAY = {
 _AWAY_DESCRIPTION = (
     "The factory keeps taking new work while the owner is unreachable; the colleague-facing loop is off."
 )
+_SHIPPED_PRESENT = dict.fromkeys(
+    (
+        "inbox",
+        "dispatch",
+        "tickets",
+        "ship",
+        "review",
+        "followup",
+        "audit",
+        "news",
+        "arch_review",
+        "dream",
+        "eval_local",
+        "dogfood",
+        "snapshot_warmer",
+        "housekeeping",
+        "idle_stack_reaper",
+        "local_stack_queue",
+        "resource_pressure",
+    ),
+    True,
+)
+_SHIPPED_PRESENT_DESCRIPTION = "Full working-hours mode: deliver, interact, keep improvement loops warm."
 _TOKEN_GUARD = {"inbox": True, "housekeeping": True, "dispatch": False, "db_backup": True}
 _DREAM_TABLE = {
     "compliance_escalate": True,
@@ -124,6 +148,7 @@ def _seed_the_live_box(state_apps: StateApps, db: str) -> None:
     )
     mode = state_apps.get_model("core", "Mode").objects.using(db)
     mode.all().delete()
+    mode.create(name="present", entries=_SHIPPED_PRESENT, description=_SHIPPED_PRESENT_DESCRIPTION, overlay_scope=[])
     mode.create(name="maintenance", entries=_MAINTENANCE, description=_MAINTENANCE_DESCRIPTION, overlay_scope=[])
     mode.create(name="away", entries=_AWAY, description=_AWAY_DESCRIPTION, overlay_scope=[])
     mode.create(name="off", entries={**_TOKEN_GUARD, "tickets": False}, description="off", overlay_scope=[])
@@ -170,10 +195,12 @@ class TestTheUpgradeKeepsTheLiveBoxBehaviour(_UpgradeCase):
         assert mode["token-outage"].entries["tickets"] is False
         assert "low-token" not in mode
 
-        overrides = dict(loop.values_list("name", "enabled"))
-        assert {name for name, enabled in overrides.items() if enabled is False} == {*_DISABLED, "ship"}
-        assert all(overrides[name] is None for name in _ENABLED if name != "ship")
-        assert loop.get(name="eval_local").override_reason.startswith("migrated from Loop.enabled=false")
+        assert dict(loop.exclude(enabled=None).values_list("name", "enabled")) == {"ship": False}
+
+        started = {name for name in _DISABLED if mode["present"].entries[name]}
+        assert started == {"dogfood", "eval_local", "snapshot_warmer"}, "only what present already named on"
+        assert mode["present"].entries["directive_loop"] is True
+        assert mode["present"].description != _SHIPPED_PRESENT_DESCRIPTION
 
         assert {row.name: row.egress for row in mode.values()} == dict.fromkeys(mode, "allow")
         assert "on_behalf_post_mode" not in config

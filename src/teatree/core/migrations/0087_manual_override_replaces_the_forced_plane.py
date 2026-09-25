@@ -10,11 +10,8 @@ already passed is kept as the date the owner MEANT to lift by, and the watcher r
 The base tier is nulled first: a ``True`` there was the shipped opt-in posture, not a
 human's intervention, and the totalize pass in ``0086`` already copied it into every
 preset. Keeping it would turn every shipped default into a permanent override. A ``False``
-on a box that has been running loops is different: it is a loop that box keeps off, and a
-total preset naming it ``True`` would start it on the next tick. It becomes an ``off``
-override carrying a reason, so the loop stays off until someone lifts it on purpose. A box
-that has never run a loop has no behaviour to keep, so a fresh install takes the shipped
-presets as they are.
+needs no override either: ``0086`` never lets a posture it rewrites start a loop the box
+was not already running under it, so nulling the base changes no verdict.
 
 ``loop_runner_enabled = false`` maps onto the new stop mechanism — an ``off`` override
 carrying its own reason — so a box someone stopped stays stopped until it is lifted
@@ -30,13 +27,11 @@ would invent history. Recovery is forward — set the override again by hand.
 """
 
 from django.db import migrations, models
-from django.utils import timezone
 
 _RUNNER_SETTING = "loop_runner_enabled"
 _RETIRED_SETTINGS = ("presence_upgrade_mode",)
 _STOPPED_REASON = "migrated from loop_runner_enabled=false — lift deliberately"
 _FORCED_ON = "on"
-_DISABLED_REASON = "migrated from Loop.enabled=false: this loop was off before the upgrade — lift deliberately"
 
 
 def _fold(apps, schema_editor) -> None:
@@ -48,12 +43,7 @@ def _fold(apps, schema_editor) -> None:
     mode_override = apps.get_model("core", "ModeOverride").objects.using(db)
     mode_override.filter(reason="").update(reason="migrated from an override that recorded no reason")
 
-    has_run = loop.exclude(last_run_at=None).exists() or loop.exclude(last_attempt_at=None).exists()
-    disabled = list(loop.filter(enabled=False).values_list("name", flat=True)) if has_run else []
     loop.update(enabled=None, override_reason="", override_set_at=None, override_expected_lift_at=None)
-    loop.filter(name__in=disabled).update(
-        enabled=False, override_reason=_DISABLED_REASON, override_set_at=timezone.now()
-    )
     for row in loop_state.exclude(forced__in=("", "neutral")):
         loop.filter(name=row.name).update(
             enabled=row.forced == _FORCED_ON,
