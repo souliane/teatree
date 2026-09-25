@@ -154,6 +154,7 @@ class TestReviewRequestResumeScanner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        ConfigSetting.objects.set_value("review_resume_reply_enabled", value=True)
         self.enterContext(posture_permits_cm())
         self.post = _seed()
 
@@ -536,3 +537,17 @@ class TestConcurrentResumeClaim:
         assert outcomes.count(True) == 1, f"expected exactly one winner, got {outcomes!r}"
         assert outcomes.count(False) == 1, f"expected exactly one tick to stand down, got {outcomes!r}"
         assert resumed_at is not None
+
+
+class TestTheResumeReplyShipsOff(TestCase):
+    """A paused request waits silently until ``review_resume_reply_enabled`` opts the box in."""
+
+    def test_an_armed_row_posts_nothing_by_default(self) -> None:
+        self.enterContext(posture_permits_cm())
+        _seed()
+        slack = _Slack()
+
+        signals = ReviewRequestResumeScanner(messaging=slack, host=_Host(), overlay="overlay-a").scan()
+
+        assert signals == []
+        assert slack.posted == []

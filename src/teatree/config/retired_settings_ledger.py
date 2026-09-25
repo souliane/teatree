@@ -55,6 +55,27 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         reason="Mode.egress is the only control over the owner voice; a second dial never resolved against it",
     ),
     RetiredSetting(
+        key="deferred_question_max_escalations",
+        reason="the escalation bound is the constant question_drain.MAX_ESCALATIONS; no box ever stored another value",
+    ),
+    RetiredSetting(
+        key="require_spec_coverage",
+        reason=(
+            "the spec-coverage gate was replaced by the rubric done-gate, which always runs; plan-bypass is its waiver"
+        ),
+    ),
+    RetiredSetting(
+        key="require_plan_adequacy",
+        reason=(
+            "the plan-currency gate always requires an adequate, current plan; "
+            "skip-planning and plan-bypass are its escapes"
+        ),
+    ),
+    RetiredSetting(
+        key="require_rubric_verification",
+        reason="the rubric done-gate always requires an independently verified rubric; plan-bypass is its waiver",
+    ),
+    RetiredSetting(
         key="worktrees_dir",
         reason="the worktree root resolves through workspace_dir (#2731)",
     ),

@@ -10,8 +10,8 @@ fast-forwards the clone to its tracking branch.
 
 The scanner deliberately does **not** reinstall the editable install or
 run ``t3 setup`` inline: those mutate the running interpreter and would
-steal the foreground mid-tick. Instead, when a clone actually advances,
-the scanner upserts a
+steal the foreground mid-tick. Instead, when ``auto_update_reinstall``
+is on and a clone actually advances, the scanner upserts a
 :class:`teatree.core.models.pending_reinstall.PendingReinstall` row; the
 next per-tick subprocess drains it in a clean process before any scanner
 imports (:mod:`teatree.loop.self_update_reinstall`).
@@ -30,7 +30,7 @@ Decision ladder per repo (per tick):
     documented back-compat case for a clone whose default branch has no
     CI.
 7. ``git pull --ff-only`` advances HEAD? → ``updated`` (+ deferred
-    reinstall row on an actual update). The reinstall rides exactly the
+    reinstall row when ``auto_update_reinstall`` is on). The reinstall rides exactly the
     tree step 6 admitted, and the outcome's reason records which
     (``ci_verified`` / ``ci_unverified``).
 
@@ -141,7 +141,9 @@ class SelfUpdateScanner:
     (still fail closed). Set *require_green_main* false for back-compat /
     a clone whose default branch has no CI.
 
-    On an actual ``updated`` outcome the scanner upserts a
+    *auto_update_reinstall* opts into the deferred-reinstall queue (off by default: it
+    re-anchors the running orchestrator). On an actual ``updated`` outcome the scanner
+    upserts a
     :class:`teatree.core.models.pending_reinstall.PendingReinstall` row so
     the next per-tick subprocess re-anchors the running interpreter in a
     clean process. The reinstall rides exactly the tree the pull gate
@@ -156,6 +158,7 @@ class SelfUpdateScanner:
     name: str = "self_update"
     ci_status: MainCiStatus | None = None
     require_green_main: bool = True
+    auto_update_reinstall: bool = False
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
@@ -184,7 +187,7 @@ class SelfUpdateScanner:
                 outcome=_PullOutcome(outcome="failed", reason=f"repo_path_missing:{path}"),
             )
         outcome = _attempt_pull(repo=path, ci_gate=self._ci_gate)
-        if outcome.outcome == "updated":
+        if outcome.outcome == "updated" and self.auto_update_reinstall:
             outcome = _queue_reinstall(label=label, outcome=outcome)
         return _record_marker(label=label, path=path, outcome=outcome)
 

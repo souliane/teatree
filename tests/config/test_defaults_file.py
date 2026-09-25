@@ -15,7 +15,6 @@ divergence are asserted — see :class:`TestClosedValueSetsNarrowTheSchemaOnly`.
 """
 
 import tomllib
-from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import pytest
@@ -24,7 +23,7 @@ from pydantic import TypeAdapter
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.registries import COLD_HOOK_SETTINGS, ColdHookSetting
+from teatree.config.registries import COLD_HOOK_SETTINGS
 from teatree.config.schema import (
     _DEFAULTS_TOML,
     Category,
@@ -244,14 +243,9 @@ class TestSafetyAndDarkFlagsPinned:
         assert all(self._OWNER_RAISED[key].strip() for key in raised)
 
 
-@pytest.mark.parametrize(
-    ("registry", "key"),
-    [
-        (COLD_HOOK_SETTINGS, "dispatch_quote_gate_on_task_create_enabled"),
-    ],
-)
-def test_complete_cold_features_ship_enabled(registry: Mapping[str, ColdHookSetting], key: str) -> None:
-    assert registry[key].default is True
+def test_the_task_list_quote_gate_ships_off() -> None:
+    """Held off until its hook wiring has had its own review; an explicit true arms it."""
+    assert COLD_HOOK_SETTINGS["dispatch_quote_gate_on_task_create_enabled"].default is False
 
 
 # ---- The parity matrix (the load-bearing test) -----------------------------------------

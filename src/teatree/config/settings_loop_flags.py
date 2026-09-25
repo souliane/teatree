@@ -101,6 +101,15 @@ class _LoopFlagAndCredentialSettings:
     # is queued, and ``build_server()`` does not register the MCP ``factory_score`` tool
     # — the outer loop physically has no metric surface. DB-home, per-overlay overridable.
     factory_score_enabled: bool = False
+    # Opt-in work that acts on a forge or on colleagues. Each ships off so a box runs it
+    # only once its owner has decided to; ``T3_LOOP_AUTO_UPDATE`` env wins for the reinstall.
+    auto_disposition_enabled: bool = False
+    auto_update_reinstall: bool = False
+    gitlab_approval_scanner_enabled: bool = False
+    mr_conflict_scan_enabled: bool = False
+    mr_triage_enabled: bool = False
+    review_nag_enabled: bool = False
+    review_resume_reply_enabled: bool = False
     # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).
     # A scored read stamps ``recipe_approved`` by comparing the committed recipe's sha
     # to this; unset (the default) means no recipe is approved, so every payload is

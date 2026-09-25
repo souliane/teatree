@@ -50,6 +50,7 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
         "autoload",
         "contribute",
         "issue_implementer_label",
+        "mr_triage_enabled",
         "active_loop_schedule",
     }
 )

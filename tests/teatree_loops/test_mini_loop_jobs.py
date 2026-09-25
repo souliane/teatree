@@ -8,10 +8,11 @@ by the existing ``tests/teatree_loop/`` suite.
 """
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.config import UserSettings
 from teatree.loops.arch_review.loop import MINI_LOOP as ARCH_REVIEW_LOOP
 from teatree.loops.audit.loop import MINI_LOOP as AUDIT_LOOP
 from teatree.loops.dispatch.loop import MINI_LOOP as DISPATCH_LOOP
@@ -271,11 +272,25 @@ class TestShipLoopBuildJobs:
         assert len(jobs) == 1
         assert jobs[0].scanner.name == "my_prs"
 
-    def test_backends_path_wires_every_shipped_scanner(self, stub_backend: Any) -> None:
+    def test_backends_path_wires_only_the_own_pr_scanner_by_default(self, stub_backend: Any) -> None:
         host = MagicMock()
         stub_backend.host = host
         stub_backend.hosts = (host,)
         jobs = SHIP_LOOP.build_jobs(backends=[stub_backend])
+        assert [job.scanner.name for job in jobs] == ["my_prs"]
+
+    def test_backends_path_wires_every_opted_in_scanner(self, stub_backend: Any) -> None:
+        host = MagicMock()
+        stub_backend.host = host
+        stub_backend.hosts = (host,)
+        opted_in = UserSettings(
+            gitlab_approval_scanner_enabled=True, mr_conflict_scan_enabled=True, mr_triage_enabled=True
+        )
+        with (
+            patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=opted_in),
+            patch("teatree.loop.scanner_factory_config.get_effective_settings", return_value=opted_in),
+        ):
+            jobs = SHIP_LOOP.build_jobs(backends=[stub_backend])
         assert sorted(job.scanner.name for job in jobs) == [
             "gitlab_approvals",
             "mr_conflict",

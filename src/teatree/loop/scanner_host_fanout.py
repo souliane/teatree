@@ -13,7 +13,11 @@ import logging
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.scanner_factory_config import _user_identity_aliases_for_overlay, stranger_pr_admission
+from teatree.loop.scanner_factory_config import (
+    _user_identity_aliases_for_overlay,
+    gitlab_approvals_enabled,
+    stranger_pr_admission,
+)
 from teatree.loop.scanners import (
     GitLabApprovalsScanner,
     MyPrsScanner,
@@ -119,16 +123,17 @@ def _jobs_for_backend_hosts(
         # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path (#936);
         # a tick whose head SHA matches the last emission is a no-op, so a deployment
         # that also wires the GitLab webhook does not double-emit.
-        jobs.append(
-            _ScannerJob(
-                scanner=GitLabApprovalsScanner(
-                    host=code_host,
-                    identities=backend.identities,
-                    allowed_url_prefixes=url_prefixes,
+        if gitlab_approvals_enabled(tag):
+            jobs.append(
+                _ScannerJob(
+                    scanner=GitLabApprovalsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        allowed_url_prefixes=url_prefixes,
+                    ),
+                    overlay=tag,
                 ),
-                overlay=tag,
-            ),
-        )
+            )
     return jobs
 
 

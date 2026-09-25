@@ -20,6 +20,7 @@ from django.test import TestCase
 from teatree.config import PrReviewBackend, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
+from teatree.core.models import ConfigSetting
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
 
@@ -217,6 +218,7 @@ class TriageSharesTheShipEnricherTestCase(TestCase):
         return next(j.scanner.ci_enricher for j in jobs if type(j.scanner).__name__ == scanner_type)
 
     def test_the_triage_scanner_shares_the_my_prs_enricher_instance(self) -> None:
+        ConfigSetting.objects.set_value("mr_triage_enabled", value=True)
         backend = self._backend()
         jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
 

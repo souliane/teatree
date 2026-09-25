@@ -313,6 +313,7 @@ class SelfUpdateCiGateTests(TestCase):
             repos=(("teatree", self.clone),),
             ci_status=ci_status,
             require_green_main=require_green_main,
+            auto_update_reinstall=True,
         )
         return scanner.scan()
 
@@ -410,7 +411,7 @@ class SelfUpdateCiGateTests(TestCase):
 
 
 class SelfUpdateDeferredReinstallQueueTests(TestCase):
-    """#1760: an actual update queues a deferred reinstall; nothing else does."""
+    """#1760: with ``auto_update_reinstall`` on, an actual update queues a deferred reinstall."""
 
     def setUp(self) -> None:
         import tempfile  # noqa: PLC0415 — test-local
@@ -426,7 +427,14 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         return SelfUpdateScanner(
             repos=(("teatree", self.clone),),
             ci_status=_StubCiStatus(CiVerdict.GREEN),
+            auto_update_reinstall=True,
         )
+
+    def test_an_update_queues_nothing_until_the_reinstall_is_opted_into(self) -> None:
+        SelfUpdateScanner(repos=(("teatree", self.clone),), ci_status=_StubCiStatus(CiVerdict.GREEN)).scan()
+
+        assert _head_sha(self.clone) != self.old_sha
+        assert not PendingReinstall.objects.filter(repo_label="teatree").exists()
 
     def test_an_actual_update_queues_the_pending_reinstall(self) -> None:
         self._scanner().scan()

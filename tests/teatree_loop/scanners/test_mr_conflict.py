@@ -63,6 +63,14 @@ def _scanner(host: FakeCodeHost) -> MrConflictScanner:
     return MrConflictScanner(host=host, allowed_url_prefixes=_SCOPE)
 
 
+class _OptedIn(TestCase):
+    """This file exercises the scanner itself, so each case opts the box in first."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        ConfigSetting.objects.set_value("mr_conflict_scan_enabled", value=True)
+
+
 class _UnreadableReposOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return [_SLUG]
@@ -75,7 +83,7 @@ class _UnreadableReposOverlay(OverlayBase):
         return []
 
 
-class TestItCoversEveryOpenMergeRequest(TestCase):
+class TestItCoversEveryOpenMergeRequest(_OptedIn):
     """No review-policy filter narrows the walk — the rule applies to all of them."""
 
     def test_a_conflicted_draft_is_reported(self) -> None:
@@ -111,7 +119,7 @@ class TestItCoversEveryOpenMergeRequest(TestCase):
         assert _scanner(host).scan() == []
 
 
-class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
+class TestAnUnreadMergeStateIsNeitherConflictedNorClean(_OptedIn):
     """The third value is emitted as itself — never as a conflict, never as silence."""
 
     def test_an_unknown_merge_state_does_not_report_a_conflict(self) -> None:
@@ -142,7 +150,7 @@ class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
         assert [action.kind for action in actions] == ["statusline"]
 
 
-class TestOneFixPerHead(TestCase):
+class TestOneFixPerHead(_OptedIn):
     """Re-ticking a still-conflicted merge request must not re-dispatch its fix."""
 
     @staticmethod
@@ -191,8 +199,8 @@ class TestOneFixPerHead(TestCase):
         assert len(self._dispatch_and_persist(host)) == 1
 
 
-class TestTheScannerIsAlwaysBuilt(TestCase):
-    """Every open merge request owes a resolved conflict, so the sweep is unconditional."""
+class TestTheScannerIsBuiltOnceOptedIn(TestCase):
+    """The sweep costs a forge read per open merge request, so the box opts in first."""
 
     @staticmethod
     def _backend() -> object:
@@ -200,17 +208,24 @@ class TestTheScannerIsAlwaysBuilt(TestCase):
 
         return OverlayBackends(name="t3-teatree", hosts=(FakeCodeHost(user="alice"),), identities=("alice",))
 
+    def test_no_scanner_until_the_box_opts_in(self) -> None:
+        backend = self._backend()
+
+        assert _mr_conflict_scanner_for(backend, backend.hosts[0]) is None
+
     def test_the_scanner_carries_the_backends_host_and_identities(self) -> None:
+        ConfigSetting.objects.set_value("mr_conflict_scan_enabled", value=True)
         backend = self._backend()
 
         scanner = _mr_conflict_scanner_for(backend, backend.hosts[0])
 
+        assert scanner is not None
         assert scanner.host is backend.hosts[0]
         assert scanner.identities == ("alice",)
         assert scanner.overlay_name == "t3-teatree"
 
 
-class TestAnUnresolvedScopeReadsNothing(TestCase):
+class TestAnUnresolvedScopeReadsNothing(_OptedIn):
     """An empty scope is an unresolved one — never every merge request the credential can list."""
 
     def test_an_empty_scope_neither_lists_nor_probes(self) -> None:
@@ -237,6 +252,8 @@ class TestAnUnresolvedScopeReadsNothing(TestCase):
             name="t3-teatree", hosts=(host,), identities=("alice",), overlay=_UnreadableReposOverlay()
         )
 
-        persist_agent_actions(dispatch(_mr_conflict_scanner_for(backend, host).scan()))
+        scanner = _mr_conflict_scanner_for(backend, host)
+        assert scanner is not None
+        persist_agent_actions(dispatch(scanner.scan()))
 
         assert not Task.objects.exists()

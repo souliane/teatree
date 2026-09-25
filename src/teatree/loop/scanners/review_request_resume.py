@@ -28,8 +28,9 @@ rollup that errors each hold the request, because the reply tells colleagues the
 merge request is reviewable and an unverified one is exactly the claim this rule
 exists to keep off the channel.
 
-Unconditional. What keeps the reply off a colleague thread is the repo-exemption
-guard and the fail-closed readiness ladder above, never a flag.
+Opt-in: runs only once ``review_resume_reply_enabled`` is set for the overlay, because
+the reply lands in a colleague thread. Once on, the repo-exemption guard and the
+fail-closed readiness ladder above still decide each row.
 """
 
 import datetime as dt
@@ -38,6 +39,7 @@ from dataclasses import dataclass, field
 
 from django.utils import timezone
 
+from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import CodeHostBackend, DraftState, MessagingBackend, PrOpenState
 from teatree.core.gates.review_request_draft_gate import draft_state
 from teatree.core.merge.ci_rollup import CodeHostQuery
@@ -176,7 +178,7 @@ class ReviewRequestResumeScanner:
     def scan(self) -> list[ScanSignal]:
         messaging = self.messaging
         host = self.host
-        if messaging is None:
+        if messaging is None or not get_effective_settings(self.overlay or None).review_resume_reply_enabled:
             return []
         open_rows = ReviewRequestPost.objects.filter(
             done_at__isnull=True,

@@ -2,7 +2,7 @@
 
 The pure DB config / env readers that the ``_*_scanner_for`` builders
 in :mod:`teatree.loop.scanner_factories` need — resolving per-overlay Slack id,
-identity aliases. Kept apart from the
+identity aliases, and the GitLab-approval opt-in. Kept apart from the
 scanner-construction concern so ``scanner_factories`` stays under the
 module-health LOC cap; re-exported there so existing import sites are unchanged.
 """
@@ -28,6 +28,19 @@ def stranger_pr_admission(overlay_name: str) -> tuple[tuple[str, ...], str]:
         tuple(sorted(effective_trusted_issue_authors(settings))),
         settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
     )
+
+
+def gitlab_approvals_enabled(overlay_name: str) -> bool:
+    """Whether the poll-driven GitLab-approval scanner is opted into for *overlay_name*.
+
+    Off by default: it overlaps the webhook path, and a box that wires ``/hooks/gitlab/``
+    does not need it. An unreadable setting answers off rather than breaking the tick.
+    """
+    try:
+        return get_effective_settings(overlay_name or None).gitlab_approval_scanner_enabled
+    except Exception:  # noqa: BLE001 — never break a tick on a config read.
+        logger.warning("Failed to resolve gitlab_approval_scanner_enabled; defaulting to off")
+        return False
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:

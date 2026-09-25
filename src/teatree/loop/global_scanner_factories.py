@@ -159,8 +159,9 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     ff-pull unless the default branch's CI is explicitly green — the
     verdict comes from :class:`ForgeMainCiStatus`, which routes each clone
     to the arm its own ``origin`` speaks — ``gh`` check-runs on GitHub, the
-    commit's gating pipeline on GitLab. An actual update always queues the
-    deferred reinstall behind it.
+    commit's gating pipeline on GitLab. ``auto_update_reinstall`` (default off,
+    ``T3_LOOP_AUTO_UPDATE`` env wins) opts into queuing a deferred reinstall behind an
+    actual update.
     """
     settings = get_effective_settings()
     if settings.self_update_disabled:
@@ -172,6 +173,7 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
         repos=tuple(repos),
         ci_status=ForgeMainCiStatus(),
         require_green_main=settings.auto_update_require_green_main,
+        auto_update_reinstall=settings.auto_update_reinstall,
     )
 
 

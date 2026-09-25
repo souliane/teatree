@@ -52,10 +52,11 @@ def _recent_ts(hours: float) -> str:
 
 
 class _PermittingPostureMixin:
-    """Stage a posture that lets the re-ask out, per test — the nag itself is unconditional."""
+    """Opt the box into the nag and stage a posture that lets the re-ask out, per test."""
 
     def setUp(self) -> None:
         super().setUp()
+        ConfigSetting.objects.set_value("review_nag_enabled", value=True)
         enabled = TeaTreeConfig(user=UserSettings(on_behalf_auto_actions=["review_nag_post"]))
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()
@@ -1065,6 +1066,7 @@ class TestTheNagReadsSettingsAtTheScannersOwnOverlay(TestCase):
         identity_patcher.start()
         self.addCleanup(identity_patcher.stop)
         ConfigSetting.objects.set_value("review_nag_max_interval_days", 3, scope="t3-acme")
+        ConfigSetting.objects.set_value("review_nag_enabled", value=True)
 
     def test_the_guard_reads_the_scanners_overlay_and_the_posts_own_channel(self) -> None:
         post = _attribute(_seed(days_old=3.0), "t3-acme")
@@ -1092,3 +1094,15 @@ class TestTheNagReadsSettingsAtTheScannersOwnOverlay(TestCase):
 
         assert len(slack.posts) == 1
         assert [s.kind for s in signals] == ["review_nag.ping"]
+
+
+class TestTheNagShipsOff(TestCase):
+    """A stale review request is never re-pinged until ``review_nag_enabled`` opts the box in."""
+
+    def test_an_idle_request_is_not_pinged_by_default(self) -> None:
+        seed_permitting_posture()
+        slack = FakeSlack()
+        _seed(days_old=5)
+
+        assert ReviewNagScanner(messaging=slack, host=FakeHost()).scan() == []
+        assert slack.posts == []

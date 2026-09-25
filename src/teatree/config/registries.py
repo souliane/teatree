@@ -196,7 +196,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "mcp_privacy_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "self_dm_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "mcp_slack_write_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "dispatch_quote_gate_on_task_create_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "dispatch_quote_gate_on_task_create_enabled": ColdHookSetting(_parse_strict_bool, default=False),
     "dispatch_quote_scan_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Not a gate kill-switch: the banned-terms scanner's UNSET-list posture. False (the

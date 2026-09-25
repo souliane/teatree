@@ -23,7 +23,7 @@ from django.utils import timezone
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
 from teatree.core.backend_protocols import DraftState, PrOpenState
 from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
-from teatree.core.models import ReviewRequestPost
+from teatree.core.models import ConfigSetting, ReviewRequestPost
 from teatree.core.review.review_candidate import is_self_authored
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -173,6 +173,7 @@ class TestReviewNagCoversBothPaths(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        ConfigSetting.objects.set_value("review_nag_enabled", value=True)
         enabled = TeaTreeConfig(user=UserSettings())
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()

@@ -1,10 +1,11 @@
-"""The issue-disposition tick-job builder is scoped to the canonical core overlay.
+"""The issue-disposition tick-job builder is scoped to the canonical core overlay, and ships off.
 
 ``_issue_disposition_scanner_for`` returns a scanner ONLY for
 :data:`~teatree.loop.job_identity.CANONICAL_CORE_OVERLAY`; otherwise ``None`` (no job
 emitted). That scope condition is the whole of the refusal — closing an issue is a
 judgement about a backlog and this loop may make it only about repos we own — so the
-core backend still emitting one is the control proving it is not a blanket refusal.
+core backend still emitting one is the control proving it is not a blanket refusal. The
+whole builder also waits for ``auto_disposition_enabled``, so these cases opt in first.
 """
 
 import shutil
@@ -16,7 +17,7 @@ from django.test import TestCase
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import NEEDS_TRIAGE_LABEL, Ticket
+from teatree.core.models import NEEDS_TRIAGE_LABEL, ConfigSetting, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import CANONICAL_CORE_OVERLAY, Domain
@@ -66,7 +67,15 @@ def _owned_backend_with_host(host: CodeHostBackend) -> OverlayBackends:
     )
 
 
-class IssueDispositionScannerWiring(TestCase):
+class _OptedIn(TestCase):
+    """This file exercises the scanner itself, so each case opts the box in first."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        ConfigSetting.objects.set_value("auto_disposition_enabled", value=True)
+
+
+class IssueDispositionScannerWiring(_OptedIn):
     def test_the_core_backend_builds_the_scanner(self) -> None:
         scanner = _issue_disposition_scanner_for(_backend())
         assert isinstance(scanner, IssueDispositionScanner)
@@ -84,7 +93,7 @@ class IssueDispositionScannerWiring(TestCase):
         assert jobs[0].overlay == CANONICAL_CORE_OVERLAY
 
 
-class IssueDispositionIsScopedToOwnRepos(TestCase):
+class IssueDispositionIsScopedToOwnRepos(_OptedIn):
     """Closing an issue is a judgement about a backlog, and this loop may only judge our own.
 
     The rule is posture-independent — "never on shared repos" is as true in ``present`` as
@@ -134,10 +143,11 @@ class IssueDispositionIsScopedToOwnRepos(TestCase):
         )
 
 
-class IssueDispositionClosesGenuinelyDeadIssues(TestCase):
+class IssueDispositionClosesGenuinelyDeadIssues(_OptedIn):
     """The core backend emits a close candidate for a genuinely dead issue, and it routes."""
 
     def setUp(self) -> None:
+        super().setUp()
         Ticket.objects.create(issue_url=_DEAD_URL, state=Ticket.State.DELIVERED)
 
     def test_a_dead_issue_emits_a_close_candidate_that_routes_to_mechanical(self) -> None:
@@ -150,7 +160,7 @@ class IssueDispositionClosesGenuinelyDeadIssues(TestCase):
         assert [(a.kind, a.zone) for a in actions] == [("mechanical", "close_dead_issue")]
 
 
-class ObsoleteEvidenceIsReadFromTheCandidatesOwnClone(TestCase):
+class ObsoleteEvidenceIsReadFromTheCandidatesOwnClone(_OptedIn):
     """A referenced path is only evidence about the repo the issue lives in.
 
     The owned listing spans several repos, so a file missing from ANOTHER repo's clone says
@@ -222,3 +232,10 @@ class ObsoleteEvidenceIsReadFromTheCandidatesOwnClone(TestCase):
         self._clone(self.B_SLUG, "src/parser/helpers.py")
 
         assert self._signals("src/parser/helpers.py") == []
+
+
+class IssueDispositionShipsOff(TestCase):
+    """Closing issues is the owner's call, so the core backend builds nothing until opted in."""
+
+    def test_the_core_backend_builds_no_scanner_by_default(self) -> None:
+        assert _issue_disposition_scanner_for(_backend()) is None

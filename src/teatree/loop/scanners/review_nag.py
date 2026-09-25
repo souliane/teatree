@@ -34,9 +34,9 @@ a failed open-state lookup, an unparsable URL, an ``UNKNOWN`` draft state, an
 the row, so a later merge-react still fires and the next tick retries once the
 read works again.
 
-Unconditional: chasing an unanswered review request is not disableable. What keeps
-a re-ping off a colleague's channel is the repo-exemption guard and the fail-closed
-ladder above, never a flag nobody flipped.
+Opt-in: runs only once ``review_nag_enabled`` is set for the overlay, because a
+re-ping lands in a colleague's channel. Once on, the repo-exemption guard and the
+fail-closed ladder above still decide each row.
 
 Concurrency: two ticks both observe the same ``last_nag_at`` and would each
 post. The nag is claimed with an atomic conditional ``UPDATE`` (``last_nag_at``
@@ -123,6 +123,8 @@ class ReviewNagScanner:
 
     def scan(self) -> list[ScanSignal]:
         settings = get_effective_settings(self.overlay_name or None)
+        if not settings.review_nag_enabled:
+            return []
         messaging = self.messaging
         if messaging is None:
             return []

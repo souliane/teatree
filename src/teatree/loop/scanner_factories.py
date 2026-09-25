@@ -410,7 +410,9 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
 def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDispositionScanner | None:
     """Build the issue-disposition scanner for the canonical core overlay (#2122).
 
-    Returns a scanner ONLY for the canonical core overlay. Closing an issue is a judgement
+    Returns a scanner ONLY for the canonical core overlay, and only once
+    ``auto_disposition_enabled`` opts it in: closing issues is an owner decision, so it
+    ships off. Closing an issue is a judgement
     about someone's backlog, and this loop may make it only about repos teatree itself
     owns — the owner's rule is "only for t3-teatree owned repos", and it is
     POSTURE-INDEPENDENT: it holds in ``present`` exactly as it holds under an egress
@@ -432,6 +434,9 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
     own repo, and a repo with no local clone is unjudgeable and keeps its issue open.
     """
     if backend.name != CANONICAL_CORE_OVERLAY:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.auto_disposition_enabled:
         return None
     code_host = backend.host
     if code_host is None:
@@ -464,9 +469,9 @@ def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScan
 
 
 def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher) -> MrTriageScanner | None:
-    """Build the MR-triage surveyor for an overlay with a code host.
+    """Build the MR-triage surveyor for an overlay that opted in with ``mr_triage_enabled``.
 
-    ``None`` when the overlay has no code host (no MRs to read). The nag-patience
+    ``None`` when the overlay has not opted in, or has no code host (no MRs to read). The nag-patience
     inputs are resolved from the same overlay hook the review nag uses, so the two can
     never disagree about how long a repo waits.
 
@@ -475,6 +480,9 @@ def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher)
     forge. The caller passes the enricher it already holds so the per-tick read budget
     stays one shared bound rather than one per scanner.
     """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.mr_triage_enabled:
+        return None
     code_host = backend.host
     if code_host is None:
         return None
@@ -489,13 +497,17 @@ def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher)
     )
 
 
-def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner:
-    """Build the per-host merge-conflict sweep.
+def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner | None:
+    """Build the per-host merge-conflict sweep once ``mr_conflict_scan_enabled`` opts in.
 
-    Per HOST rather than per overlay because the conflict probe is a forge call:
-    it must go to the host that lists the merge request, and an overlay with both
-    a GitHub and a GitLab credential lists on both.
+    It costs one forge merge-state read per open merge request, so it ships off. Per
+    HOST rather than per overlay because the conflict probe is a forge call: it must go
+    to the host that lists the merge request, and an overlay with both a GitHub and a
+    GitLab credential lists on both.
     """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.mr_conflict_scan_enabled:
+        return None
     return MrConflictScanner(
         host=code_host,
         identities=backend.identities,

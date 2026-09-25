@@ -217,3 +217,19 @@ class TestArchReviewSettingRetirementsAreRecorded(TestCase):
         stderr = self._captured.readouterr().err
         assert self.KEYS[0] in stderr
         assert "config_setting clear" in stderr
+
+
+class TestTheForkRetirementsAreRecorded:
+    """A stored row under a key the redesign removed warns loudly rather than vanishing."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "deferred_question_max_escalations",
+            "require_spec_coverage",
+            "require_plan_adequacy",
+            "require_rubric_verification",
+        ],
+    )
+    def test_the_key_is_recorded_as_a_removal(self, key: str) -> None:
+        assert removed_setting(key) is not None
