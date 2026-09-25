@@ -21,8 +21,9 @@
 #   1-day window instead of 7.
 #
 # THE SMOKE SLICE
-#   `--lane clean_room --shard 1/16` runs the FIRST deterministic name-sorted
-#   shard of the cheap clean_room lane (~14 scenarios — the weekly per-shard
+#   `--lane clean_room --shard rotate/16` runs ONE deterministic name-sorted
+#   shard of the cheap clean_room lane per night, advancing a shard per UTC day so
+#   the catalog is covered over a 16-day cycle (~14 scenarios — the weekly per-shard
 #   ceiling, teatree.eval.lane_shard.MAX_SCENARIOS_PER_SHARD), at a SINGLE trial.
 #   clean_room scenarios are seconds-to-a-minute each (one skill into an empty
 #   context), so the slice finishes fast and cheap. The expensive under_load lane
@@ -110,7 +111,7 @@ jobs:
             fi
           fi
 
-  # EVAL: the smoke slice (clean_room shard 1/16, single trial), in the CI
+  # EVAL: the smoke slice (clean_room, today's rotating shard of 16, single trial), in the CI
   # container. Skipped entirely when prepare gated it out (no merge that day).
   eval:
     needs: prepare
@@ -195,7 +196,7 @@ jobs:
           command: |
             set -euo pipefail
             uv run t3 eval run --backend api \
-              --lane clean_room --shard 1/16 \
+              --lane clean_room --shard rotate/16 \
               --escalate-on-fail --escalate-trials 3 \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
