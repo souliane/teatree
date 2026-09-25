@@ -118,6 +118,10 @@ LEAK_GATE_IDS: frozenset[str] = frozenset(
     }
 )
 
+# Destructive refusals the agent must never self-grant: a force or delete on a
+# colleague's branch rewrites history nobody here owns.
+NON_GRANTABLE_GATE_IDS: frozenset[str] = frozenset({"foreign_branch_push"})
+
 # Tool-input fields a call may carry the ``[fp-confirmed:]`` token in, mirroring
 # the skill-loading gate's per-call token surface (command for Bash;
 # new_string / content / file_path for Edit / Write). Each is capped so a huge
@@ -386,7 +390,7 @@ def _confirmed_fp_decision(
     the breaker keeps denying it. ``None`` means "no grant applies" and the caller
     proceeds to normal streak accounting.
     """
-    if _deny_is_leak_gate(reason, gate_id):
+    if gate_id in NON_GRANTABLE_GATE_IDS or _deny_is_leak_gate(reason, gate_id):
         return None
     if _fp_grant_exists(session_id, fingerprint):
         return _BreakerDecision(allow=True, reason=reason)

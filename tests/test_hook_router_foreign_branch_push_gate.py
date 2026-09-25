@@ -220,7 +220,8 @@ def _deny_route(command: str, cwd: Path) -> str:
     """Which path the handler took: the no-escape deny, the shared fail-open chain, or neither."""
     taken: list[str] = []
 
-    def no_escape(_reason: str) -> bool:
+    def no_escape(_reason: str, *, gate_id: str | None = None) -> bool:
+        assert gate_id == gate.GATE_ID
         taken.append("emit_pretooluse_deny")
         return True
 
@@ -417,6 +418,21 @@ class TestAForcePushHasNoEscape:
         assert blocked is True
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
+
+    def test_an_fp_confirmed_token_cannot_grant_it_through_the_live_breaker(
+        self, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
+        _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
+        command = "git push --force origin HEAD:theirs  # [fp-confirmed: seen it]"
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path / "hook-state")
+        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
+        monkeypatch.setattr(router, "_CURRENT_DATA", _event(command, work))
+        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
+            blocked, payload = _run(command, work)
+        assert blocked is True
+        assert payload is not None
+        assert payload["hookSpecificOutput"]["gate_id"] == "foreign_branch_push"
 
     def test_a_non_force_push_still_routes_through_the_shared_fail_open_chain(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")

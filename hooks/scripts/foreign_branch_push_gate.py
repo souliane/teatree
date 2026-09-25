@@ -97,6 +97,7 @@ sys.modules.setdefault("foreign_branch_push_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.foreign_branch_push_gate", sys.modules[__name__])
 
 GATE_SETTING: Final[str] = "foreign_branch_push_gate_enabled"
+GATE_ID: Final[str] = "foreign_branch_push"
 
 _SUBSTITUTION_RE: Final[re.Pattern[str]] = re.compile(r"[$`]")
 _HEADS_PREFIX: Final[str] = "refs/heads/"
@@ -144,7 +145,7 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
     reason, destructive = verdict
     # A force rewrites a colleague's history and a delete removes it outright: both
     # are refused past the shared allowlist + master fail-open switch.
-    return emit_pretooluse_deny(reason) if destructive else _fail_open_or_deny(data, reason)
+    return emit_pretooluse_deny(reason, gate_id=GATE_ID) if destructive else _fail_open_or_deny(data, reason)
 
 
 def _refusal_verdict(parsed: ParsedPushes) -> tuple[str, bool] | None:

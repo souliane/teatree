@@ -91,6 +91,14 @@ class TestLeakGateNeverGranted:
         decision = dcb.apply_deny_circuit_breaker(banned_terms_scanner.format_block_message("acme"))
         assert decision.allow is False, "a leak deny is never grantable, token or not"
 
+    def test_a_non_grantable_gate_id_with_fp_confirmed_token_still_denies(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ctx(monkeypatch, tmp_path, "git push --force origin HEAD:main [fp-confirmed: mine]")
+        for gate_id in dcb.NON_GRANTABLE_GATE_IDS:
+            decision = dcb.apply_deny_circuit_breaker("BLOCKED: force push to a colleague's branch.", gate_id=gate_id)
+            assert decision.allow is False, gate_id
+
     def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
