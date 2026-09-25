@@ -16,9 +16,13 @@ The no-op-over-a-completed-row decision itself (#4100) is unchanged and pinned n
 
 import json
 
+from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
+from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
@@ -97,3 +101,23 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         assert attempt.exit_code == 0
         assert attempt.error == ""
         assert task.status == Task.Status.COMPLETED
+
+
+class TestALeaseLossAfterAnOperatorCancel(TestCase):
+    def test_lease_loss_after_operator_cancel_keeps_the_cancel(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/o/r/issues/4834")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        stale = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
+        call_command("tasks", "cancel", stale.pk, confirm=True)
+        lease_lost = HarnessOutcome(
+            agent_text="", result_message=None, stuck_reason="lease lost for task", lease_lost=True
+        )
+
+        attempt = _record_stuck_outcome(
+            stale, lease_lost, stuck_reason="lease lost for task", usage=AttemptUsage(input_tokens=42)
+        )
+
+        row = Task.objects.get(pk=stale.pk)
+        assert row.failure_kind == FailureKind.CANCELLED
+        assert attempt.error.startswith("cancelled: ")
+        assert attempt.input_tokens == 42

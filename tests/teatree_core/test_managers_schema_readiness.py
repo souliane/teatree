@@ -14,7 +14,8 @@ end to end. Every case asserts the row survives untouched — a refused claim is
 deferral, never a loss.
 """
 
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from typing import cast
 from unittest.mock import patch
 
@@ -35,8 +36,16 @@ class _SchemaGateBase(django.test.TestCase):
         invalidate_schema_readiness()
         self.addCleanup(invalidate_schema_readiness)
 
-    def _behind(self) -> AbstractContextManager[object]:
-        return patch(_PROBE, return_value=_BEHIND)
+    @contextmanager
+    def _probed(self, probe: AbstractContextManager[object]) -> Iterator[None]:
+        # Creating a PENDING task fires the auto-enqueue signal, which reads (and memoises)
+        # the verdict before the skew exists — as ``self_update_schema`` does, invalidate on skew.
+        invalidate_schema_readiness()
+        with probe:
+            yield
+
+    def _behind(self) -> AbstractContextManager[None]:
+        return self._probed(patch(_PROBE, return_value=_BEHIND))
 
 
 class TestSchemaBehindBlocksNewClaims(_SchemaGateBase):
@@ -80,7 +89,7 @@ class TestUnverifiableSchemaFailsClosed(_SchemaGateBase):
         """UNKNOWN is not CURRENT — a gate that cannot tell must not admit."""
         TaskFactory(status=Task.Status.PENDING)
 
-        with patch(_PROBE, side_effect=RuntimeError("migration graph unreadable")):
+        with self._probed(patch(_PROBE, side_effect=RuntimeError("migration graph unreadable"))):
             claimed = Task.objects.claim_next_pending(claimed_by="loop")
 
         assert claimed is None

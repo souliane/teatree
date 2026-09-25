@@ -6,6 +6,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
+from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings
@@ -108,6 +109,11 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
 
     task_obj = Task.objects.get(pk=task_id)
 
+    # A job enqueued before the factory froze must not run; the row stays as found.
+    if blocked := headless_admission_block_reason():
+        logger.info("Task %s not admitted (%s); leaving it for a later drain", task_obj.pk, blocked)
+        return {"skipped": f"admission blocked: {blocked}"}
+
     # The atomic claim is the SOLE admission decision (F4). Win the compare-and-swap
     # BEFORE any work runs — including the poison-pill and routing failure paths — so a
     # re-delivered COMPLETED/FAILED task, or one a live rival already holds, is a
@@ -179,6 +185,9 @@ def drain_queue_body() -> dict[str, list[int]]:
     safety net) and the loops-queue maintenance chain
     (:func:`teatree.loops.timer_reconciler.drain_chain`) that schedules it, so the
     two call sites can never drift.
+
+    A frozen factory (``headless_admission_block_reason``) withholds live rows like a
+    governor DENY; poison rows still fail, since that is cleanup, not paid work.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -201,6 +210,9 @@ def drain_queue_body() -> dict[str, list[int]]:
     # live rows stay PENDING for the next admitted drain.
     admission = agent_admission_verdict()
     admission.log_denials()
+    blocked = headless_admission_block_reason()
+    if blocked:
+        logger.info("drain_queue_body: withholding new admissions — %s", blocked)
     enqueued: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
@@ -211,7 +223,7 @@ def drain_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
+        if blocked or not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
             continue
         execute_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)

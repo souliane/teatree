@@ -54,7 +54,8 @@ _QUIESCED_NOTICE = (
     "NOTE worker_quiescing is ON — the claim path admits ZERO new work, and on a bare host "
     "nothing clears it (only a container deploy's fresh init does). Clear it with "
     "`t3 <overlay> config_setting set worker_quiescing false`, or run `t3 worker restart` "
-    "(it clears the gate as it starts the fresh worker)."
+    "(it clears the gate as it starts the fresh worker). To freeze the factory, use "
+    "`t3 loop preset use off --hold` instead."
 )
 
 
