@@ -1,6 +1,6 @@
 import io
 import json
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 import pytest
@@ -82,3 +82,12 @@ def test_main_writes_the_adapted_streams() -> None:
 
     assert stdout.getvalue() == '{"ok":true}'
     assert stderr.getvalue() == "note"
+
+
+def test_a_hung_router_times_out_as_a_failing_hook_not_a_hung_codex_turn() -> None:
+    with patch.object(codex_hook_adapter.subprocess, "run", side_effect=TimeoutExpired(["router"], 1)) as run:
+        returncode, stdout, stderr = run_codex_hook("PreToolUse", "{}")
+
+    assert run.call_args.kwargs["timeout"] > 0
+    assert (returncode, stdout) == (1, "")
+    assert "timed out" in stderr

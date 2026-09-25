@@ -7,6 +7,9 @@ from pathlib import Path
 _ROUTER = Path(__file__).with_name("hook_router.py")
 _SPAWN_ERROR = "TeaTree Codex hook adapter could not start the shared hook router.\n"
 _CLAUDE_BLOCK_EXIT = 2
+# Inside the 30 s hook budget hooks.json grants, so a hung router fails the hook instead of the turn.
+_ROUTER_TIMEOUT_SECONDS = 25.0
+_TIMEOUT_ERROR = "TeaTree Codex hook adapter timed out waiting for the shared hook router.\n"
 
 
 def _codex_accepts_stdout_deny(event: str, returncode: int, stdout: str) -> bool:
@@ -28,7 +31,10 @@ def run_codex_hook(event: str, payload: str) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_ROUTER_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        return 1, "", _TIMEOUT_ERROR
     except OSError:
         return 1, "", _SPAWN_ERROR
     if _codex_accepts_stdout_deny(event, result.returncode, result.stdout):
