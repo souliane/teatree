@@ -61,6 +61,7 @@ the tree cannot be misread as a work item in the first place.
 
 import importlib
 import re
+import sys
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
@@ -121,6 +122,7 @@ class RepoIndex:
 @lru_cache(maxsize=8)
 def build_repo_index(repo_root: Path) -> RepoIndex:
     """Index the importable modules and top-level directories a skill can name."""
+    _ensure_repo_root_importable(repo_root)
     modules: dict[str, list[str]] = {}
     for package in INDEXED_PACKAGES:
         for source in sorted((repo_root / package).rglob("*.py")):
@@ -134,6 +136,19 @@ def build_repo_index(repo_root: Path) -> RepoIndex:
         modules={basename: tuple(dotted) for basename, dotted in modules.items()},
         path_pattern=re.compile(rf"(?<![\w/.-])(?:{'|'.join(tops)})/[A-Za-z0-9_.][A-Za-z0-9_./*-]*"),
     )
+
+
+def _ensure_repo_root_importable(repo_root: Path) -> None:
+    """Append *repo_root* to ``sys.path`` so a top-level package outside ``src/`` (``hooks``) imports.
+
+    The editable install only exposes ``src/teatree`` on ``sys.path`` — a console-script entry
+    point's own ``sys.path`` never carries the repo root, unlike a pytest run (whose rootdir
+    insertion does), so every ``hooks/``-rooted citation reported a false "unresolved" outside
+    a test run. Appended, never inserted, so it is a fallback and never shadows a real package.
+    """
+    root_str = str(repo_root)
+    if root_str not in sys.path:
+        sys.path.append(root_str)
 
 
 def resolve_repo_path(ref: str, repo_root: Path) -> str | None:
@@ -203,6 +218,15 @@ def resolve_dotted(dotted: str) -> str | None:
         prefix = ".".join(parts[:depth])
         try:
             module = importlib.import_module(prefix)
+        except ModuleNotFoundError as exc:
+            missing = exc.name or ""
+            if prefix != missing and not prefix.startswith(f"{missing}."):
+                # PREFIX itself was found; the failure is a package missing further down ITS OWN
+                # import chain (e.g. a pytest-plugin module needing ``pytest``, absent from the
+                # lean globally-installed `t3` tool's venv) — that says nothing about whether the
+                # citation is stale, so it is not reported as one.
+                return None
+            continue
         except ImportError:
             continue
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:

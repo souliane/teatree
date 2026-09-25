@@ -36,6 +36,8 @@ widening must never sweep in).
 """
 
 import importlib
+import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import replace
@@ -359,6 +361,49 @@ class TestResolver:
         monkeypatch.syspath_prepend(str(tmp_path))
         importlib.invalidate_caches()
         assert resolve_dotted("skill_ref_probe_live.MARKER") is None
+
+    def test_hooks_rooted_citations_resolve_off_a_console_scripts_sys_path(self, tmp_path: Path) -> None:
+        """`hooks/` sits beside `src/`, so it is never on the installed `t3` console script's path.
+
+        Only the editable-installed `src/teatree` is on ``sys.path`` there — unlike a
+        pytest run, whose own rootdir insertion puts the repo root on ``sys.path`` and masks the
+        gap. A child interpreter run from a directory with no ``hooks/`` under it reproduces the
+        console script's shape without mutating this process's ``sys.path``/``sys.modules``,
+        which the real ``hooks`` package already occupies via pytest's own collection.
+        """
+        probe = (
+            "import django; django.setup()\n"
+            "from pathlib import Path\n"
+            "from teatree.quality.skill_symbol_refs import build_repo_index, resolve_module_local\n"
+            f"index = build_repo_index(Path({str(_REPO_ROOT)!r}))\n"
+            "print(resolve_module_local('hook_router._teatree_engaged', index))\n"
+        )
+        env = os.environ.copy()
+        env["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
+        result = subprocess.run(
+            [sys.executable, "-c", probe], check=False, capture_output=True, text=True, cwd=tmp_path, env=env
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert result.stdout.strip() == "None", f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+    def test_a_target_modules_own_missing_third_party_dependency_is_not_reported(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A target's own missing third-party dependency is not the citation's fault.
+
+        A pytest-plugin-shaped module (``force_keep_plugin.py``) imports ``pytest`` at module
+        level; the globally-installed `t3` tool's own venv ships no dev dependencies, so that
+        import fails there even though the citation is correct. The failing name
+        (``skill_ref_probe_absent_dependency_xyz``) is not part of the dotted reference being
+        resolved, so it is the target's OWN missing dependency, not evidence the citation is stale.
+        """
+        (tmp_path / "skill_ref_probe_needs_absent_dep.py").write_text(
+            "import skill_ref_probe_absent_dependency_xyz\n", encoding="utf-8"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert resolve_dotted("skill_ref_probe_needs_absent_dep") is None
 
 
 class TestGoldenCorpus:
