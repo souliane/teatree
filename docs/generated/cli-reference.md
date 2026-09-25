@@ -7017,6 +7017,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │ recipe          Read seam over the recipe-weighted factory score.            │
 │ config_setting  DB-home settings store — the sole tier for a DB-home setting │
 │                 below env (#1775).                                           │
+│ github_app      GitHub App manifest/registration/installation admin —        │
+│                 webhook transport with polling fallback (#4795).             │
 │ approval_dial   Per-action-class approval dial — graduate a class from ask   │
 │                 to auto (#119).                                              │
 │ questions       Manage the away-mode deferred-question backlog (#58).        │
@@ -13076,6 +13078,108 @@ Usage: t3 teatree config_setting inert [OPTIONS]
  nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
  staged is listed quietly, so the report stays worth reading.
 
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree github_app`
+
+```
+Usage: t3 teatree github_app [OPTIONS] COMMAND [ARGS]...
+
+ GitHub App manifest/registration/installation admin — webhook transport with
+ polling fallback (#4795).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ manifest       Print a deterministic App-creation manifest as JSON — no      │
+│                secrets.                                                      │
+│ register       Exchange a manifest-flow code for App credentials; persist    │
+│                secrets to `pass`.                                            │
+│ confirm-repos  Move an installation's pending repos to active — the          │
+│                anti-broadening confirm.                                      │
+│ status         Delivery health, backlog, and the active transport preset.    │
+│ set-preset     Switch polling/webhook — `webhook` fails closed with no       │
+│                recent verified delivery.                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github_app manifest`
+
+```
+Usage: t3 teatree github_app manifest [OPTIONS]
+
+ Print a deterministic App-creation manifest as JSON — no secrets, reviewable.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --name               TEXT  The App's display name. [required]             │
+│ *  --url                TEXT  The App's homepage URL. [required]             │
+│ *  --webhook-url        TEXT  Where GitHub delivers webhooks. [required]     │
+│    --help                     Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github_app register`
+
+```
+Usage: t3 teatree github_app register [OPTIONS] CODE
+
+ Exchange *code* for App credentials; persist secrets to ``pass``, print
+ identity only.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    code      TEXT  The manifest-flow code GitHub redirected with.          │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github_app confirm-repos`
+
+```
+Usage: t3 teatree github_app confirm-repos [OPTIONS] INSTALLATION_ID
+
+ Move pending repositories to active for one installation — the anti-broadening
+ confirm.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    installation_id      INTEGER  The GitHub installation id. [required]    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  A repo to confirm; omit to confirm every pending repo.   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github_app status`
+
+```
+Usage: t3 teatree github_app status [OPTIONS]
+
+ Delivery health, backlog, and the active transport preset — the metrics AC
+ surface.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree github_app set-preset`
+
+```
+Usage: t3 teatree github_app set-preset [OPTIONS] PRESET
+
+ Switch the transport preset — ``webhook`` fails closed with no recent verified
+ delivery.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    preset      TEXT  polling | webhook [required]                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯

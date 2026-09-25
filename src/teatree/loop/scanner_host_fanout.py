@@ -14,11 +14,13 @@ from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factory_config import (
+    _github_polling_enabled,
     _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     stranger_pr_admission,
 )
 from teatree.loop.scanners import (
+    GitHubPollingScanner,
     GitLabApprovalsScanner,
     MyPrsScanner,
     ReviewerPrsScanner,
@@ -54,6 +56,7 @@ def _jobs_for_backend_hosts(
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
+    github_polling_enabled = _github_polling_enabled()
     identity_groups = _identity_alias_groups_for_overlay(tag, backend)
     # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
     # #976) is an implicit self-group when no explicit ``identity_aliases``
@@ -129,6 +132,11 @@ def _jobs_for_backend_hosts(
                     overlay=tag,
                 ),
             )
+    if github_polling_enabled:
+        # Not host-scoped like GitLabApprovalsScanner above — it authenticates
+        # per installation (GitHubAppInstallation + InstallationTokenCache),
+        # so it is emitted once per overlay rather than once per host (#4795).
+        jobs.append(_ScannerJob(scanner=GitHubPollingScanner(), overlay=tag))
     return jobs
 
 

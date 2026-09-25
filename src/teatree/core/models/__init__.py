@@ -50,6 +50,7 @@ from teatree.core.models.eval_run import (
 )
 from teatree.core.models.external_outcome_snapshot import ExternalOutcomeSnapshot, ExternalOutcomeSnapshotManager
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
+from teatree.core.models.github_app import GitHubAppInstallation, GitHubPollCursor, WebhookRejection
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import (
     NEEDS_TRIAGE_LABEL,
@@ -215,6 +216,8 @@ __all__ = [
     "FactoryScoreSnapshot",
     "FactoryScoreSnapshotManager",
     "Finding",
+    "GitHubAppInstallation",
+    "GitHubPollCursor",
     "HarnessRun",
     "HonestyEscalation",
     "ImplementedIssueMarker",
@@ -347,6 +350,7 @@ __all__ = [
     "WaitingItem",
     "WaitingItemError",
     "WaitingItemManager",
+    "WebhookRejection",
     "Worktree",
     "WorktreeArtifact",
     "WorktreeEnvOverride",

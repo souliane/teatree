@@ -40,6 +40,7 @@ from teatree.config.cold_hook_settings import ColdHookSetting
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
+    GitHubTransportPreset,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
@@ -206,6 +207,9 @@ class TeatreeSettingsSchema(BaseSettings):
     factory_score_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     fleet_claim_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gate_relaxation_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    github_transport_preset: Annotated[
+        GitHubTransportPreset, BeforeValidator(GitHubTransportPreset.parse), _DEFAULT_OVERLAY
+    ]
     gitlab_approval_scanner_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     handover_mirror_path: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
     agent_max_turns: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

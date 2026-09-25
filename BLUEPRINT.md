@@ -654,6 +654,51 @@ Egress-leak gate family — one doctrine, several entry points, each named here 
 - **Programmatic on-behalf egress privacy-scan** (#1295 capability J): the autonomous-events reply transport (`core.reply_transport`) wires the publication privacy gate (`core.gates.privacy_gate.scan_outbound_text`, the egress wrapper of the pure `scan_for_publication`) into its single on-behalf chokepoint — `_BaseReplier._send` and `redeliver`, via `_enforce_privacy`, **scoped to code-host events** (`_FORGE_BY_SOURCE`: GitHub/GitLab only — a Slack channel ref is not a repo target and is out of scope here). A GitHub PR comment / GitLab MR note posted under the user's identity is body-scanned for the overlay's `privacy_redact_terms`/`privacy_block_patterns` plus the built-in quote anchors BEFORE the wire call — closing the gap the Bash-hook banned-terms/quote gates structurally miss (those scan raw `gh`/`glab` command text, not a programmatic API post). **Public-ness is derived from the SAME visibility axis the Bash gates use** (`hooks.publish_destination.is_public_destination` → `_target_is_public`), NOT a per-overlay `public_repos` list (which is empty by default and would make the gate inert): a repo is scanned unless provably private (`private_repos` / `internal_publish_namespaces` allowlists or a cached `gh`/`glab` probe), so it actually protects a real public repo like `souliane/teatree`. It fails CLOSED on a finding (`PublicationPrivacyBlockedError` → FAILED `ReplyDispatch`, never delivered; on `redeliver` it propagates to the retry sweep) and on a classification error (treats the target as public → scanned); a provably-private repo is a clean pass and a bot→user `post_dm` is never scanned. Overlay redact-rule resolution is a best-effort ADD on top of the always-on built-in quote anchors — when no overlay resolves, the built-in detectors are the floor, so the gate never goes inert.
 - **Outbound send-proxy — one chokepoint + audit** ([#117](https://github.com/souliane/teatree/issues/117)): `teatree.core.send_proxy` is the single seam EVERY outbound artifact routes through — Slack (`notify_user`, `OnBehalfSlackEgress.post/react`, `reply_transport`) and forge PR/MR/issue comments (`cli/review.ReviewService`). It owns three concerns. **(i) The only posting-credential reader:** `read_posting_credential` is the single point-of-use reader for a Slack bot/app/user token or a GitHub/GitLab forge token, so the two send-path backend constructors (`core.backend_factory`, `backends.loader`) read tokens through it instead of scattered `read_pass` calls (pinned by the single-credential-reader grep-gate; the `t3 slack …` credential-setup/rotation CLI is a documented separate surface). **(ii) A per-overlay destination allowlist** (`send_proxy_allowlist`, DB-home, `fnmatch` over the raw destination and the `<channel>:<destination>` form; the user's own DM is always allowed — never-lockout). **(iii) Redaction/banned-terms on every payload** (whole-token, reusing the overlay's `privacy_redact_terms`). Enforcement posture is the DARK feature flag `send_proxy_mode` (`SendProxyMode`, default `warn`): **`warn` is audit-only** — every send writes a `SendAudit` row (channel, destination, allowlist verdict, redaction matches, and the delegation provenance #119 consumes) but is NEVER blocked and the live payload is NEVER mutated, so the ship-safe rollout accumulates the destination soak an operator seeds the allowlist from before flipping to **`enforce`** (a non-allowlisted destination is refused — `SendBlockedError` before the wire call — and the payload is redacted). The audit row is the `SendAudit` M-C model (its schema folded into the squashed `0001_initial`). The proxy is fail-open in `warn` and never-raise in the audit path, so it can sit on the hot outbound path without ever breaking a send. NOT in scope: credential-broker MITM, network default-deny.
 
+### 9.1 GitHub App Webhook Transport, with Polling Fallback ([#4795](https://github.com/souliane/teatree/issues/4795))
+
+GitHub events reach the shared `IncomingEvent` receiver (#654) through TWO
+transports that invoke the identical normalize/persist path and never execute a
+merge/review/dispatch action themselves: the signed webhook
+(`GitHubWebhookView` → `teatree.core.github_app.webhook_normalize.normalize` →
+`persist_incoming_event`), always reachable regardless of preset; and the
+`github_polling` scanner (mirrors `GitLabApprovalsScanner`'s poll-driven-
+complement role), which submits discovered `pull_request`/`issues` updates
+through the SAME normalizer. A shared transport-independent identity
+(`teatree.core.github_app.event_identity.identity_for` — repo + entity +
+number + a change marker, never a transport envelope) collapses a webhook
+delivery and a poll discovery of the same logical update onto one row, so the
+two transports can validate against each other during cutover without
+double-ingesting.
+
+Transport selection is a plain DB-home `ConfigSetting`
+(`github_transport_preset`, `GitHubTransportPreset.POLLING` default,
+per-overlay overridable) read by `_github_polling_enabled()` — deliberately
+NOT layered into the `Mode`/`ModeSchedule` masking chain (§ below on loop
+presets): that chain resolves ONE mode governing the whole loop fleet at a
+time, and a second independent masking axis on top of it was the shape of a
+past real bug (divergent mask resolution silently stopping loops). Selecting
+`webhook` (`t3 <overlay> github_app set-preset webhook`) fails closed unless an
+active installation has a verified delivery within the last 24 hours;
+`polling` is always selectable and is a permanent fallback transport, not a
+migration shim.
+
+`GitHubAppInstallation` tracks which repos the poller/CLI may act on, split
+into `active_repositories` (operator-confirmed, via `t3 <overlay> github_app
+confirm-repos`) and `pending_repositories` (GitHub-reported additions) — a
+repository GitHub adds to the installation never silently broadens access.
+`GitHubPollCursor` is the poller's per-`(installation, repo, event_family)`
+watermark. `WebhookRejection` records a request refused BEFORE it became an
+`IncomingEvent` (bad signature, oversized body, no secret configured, a stale
+replay, a rate limit) — a pre-ingestion rejection log, deliberately distinct
+from a second GitHub-only event ledger. App registration
+(`teatree.backends.github.app_manifest` / `app_registration` /
+`app_auth`) generates a deterministic, secret-free manifest, exchanges the
+manifest-flow code for credentials written straight to the `pass` store, and
+hand-rolls RS256 JWT signing via `cryptography` (already a locked dependency,
+so no new `PyJWT` dependency) for installation-token minting. See
+[`docs/github-app-runbook.md`](docs/github-app-runbook.md) for the operator
+walkthrough.
+
 ---
 
 ## 10. Configuration

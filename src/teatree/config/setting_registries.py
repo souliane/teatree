@@ -16,6 +16,7 @@ from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
+    GitHubTransportPreset,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
@@ -267,6 +268,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "sdk_monthly_credit_usd": _parse_strict_float,
     # #2697 — bypass readers migrated from bespoke ``os.environ`` reads to DB-home.
     "gitlab_approval_scanner_enabled": _parse_strict_bool,
+    "github_transport_preset": GitHubTransportPreset.parse,
     "contribute_plugin_dir": _parse_strict_bool,
     "dream_propose_evals": _parse_strict_bool,
     "hook_fetch_titles": _parse_strict_bool,

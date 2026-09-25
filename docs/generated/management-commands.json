@@ -305,6 +305,32 @@
       "subcommands": []
     },
     {
+      "help": "",
+      "name": "github_app",
+      "subcommands": [
+        {
+          "help": "Print a deterministic App-creation manifest as JSON \u2014 no secrets, reviewable",
+          "name": "manifest"
+        },
+        {
+          "help": "Exchange *code* for App credentials; persist secrets to ``pass``, print identity only",
+          "name": "register"
+        },
+        {
+          "help": "Delivery health, backlog, and the active transport preset \u2014 the metrics AC surface",
+          "name": "status"
+        },
+        {
+          "help": "Move pending repositories to active for one installation \u2014 the anti-broadening confirm",
+          "name": "confirm-repos"
+        },
+        {
+          "help": "Switch the transport preset \u2014 ``webhook`` fails closed with no recent verified delivery",
+          "name": "set-preset"
+        }
+      ]
+    },
+    {
       "help": "Hand all current work from this session to another session.",
       "name": "handover",
       "subcommands": [

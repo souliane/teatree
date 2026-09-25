@@ -27,6 +27,7 @@ from teatree.config.e2e_repo import E2ERepo
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
+    GitHubTransportPreset,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
@@ -108,6 +109,7 @@ __all__ = [
     "E2ERepo",
     "FeatureFlag",
     "FlagStage",
+    "GitHubTransportPreset",
     "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",

@@ -35,6 +35,7 @@ from teatree.loop.scanner_factories import (
     _task_sweep_scanner_for,
 )
 from teatree.loop.scanner_factory_config import (
+    _github_polling_enabled,
     _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
@@ -44,6 +45,7 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
     DeferredQuestionPosterScanner,
+    GitHubPollingScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
     MyPrsScanner,
@@ -174,6 +176,7 @@ def _ship_jobs_for_overlay(
     """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host."""
     tag = backend.name
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
+    github_polling_enabled = _github_polling_enabled()
     jobs: list[_ScannerJob] = []
     # One enricher for the whole overlay: its per-tick budget is shared across the
     # hosts below rather than multiplied by them, and this builder runs once a tick.
@@ -217,6 +220,11 @@ def _ship_jobs_for_overlay(
     triage_scanner = _mr_triage_scanner_for(backend)
     if triage_scanner is not None:
         jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
+    # Not host-scoped like GitLabApprovalsScanner above — it authenticates per
+    # App installation, independent of the host list, so it is built once per
+    # overlay rather than once per host.
+    if github_polling_enabled:
+        jobs.append(_ScannerJob(scanner=GitHubPollingScanner(), overlay=tag))
     return jobs
 
 

@@ -134,6 +134,7 @@ SETTING_HELP: dict[str, str] = {
     "gate_relaxation_gate_enabled": "refuse a change that weakens a safety gate without approval",
     "general_purpose_agent_gate_enabled": "refuse a blank general-purpose sub-agent for managed-repo work",
     "git_add_all_gate_enabled": "refuse a whole-tree `git add -A` / `git add .` stage",
+    "github_transport_preset": "which transport delivers GitHub events: polling (default) or webhook",
     "gitlab_approval_scanner_enabled": "scan GitLab for approvals that should advance a ticket",
     "glab_stale_base_remote_gate_enabled": "refuse a merge-request create on a stale glab-base remote (glab no-ops)",
     "handover_mirror_path": "path a hand-off document is mirrored to, beside the durable record",

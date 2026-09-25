@@ -20,6 +20,7 @@ from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
 from teatree.loop.scanners.db_backup import DbBackupScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.eval_local import EvalLocalScanner
+from teatree.loop.scanners.github_polling import GitHubPollingScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
@@ -92,6 +93,7 @@ __all__ = [
     "ForgePrApiClient",
     "GhCodexPrApi",
     "GhPrApiClient",
+    "GitHubPollingScanner",
     "GitLabApprovalsScanner",
     "GlabGhMrStateClassifier",
     "GlabPrApiClient",

@@ -9,7 +9,7 @@ module-health LOC cap; re-exported there so existing import sites are unchanged.
 
 import logging
 
-from teatree.config import get_effective_settings
+from teatree.config import GitHubTransportPreset, get_effective_settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,23 @@ def _gitlab_approvals_enabled() -> bool:
     except Exception:  # noqa: BLE001 — never break a tick on a config read.
         logger.warning("Failed to resolve gitlab_approval_scanner_enabled; defaulting to off")
         return False
+
+
+def _github_polling_enabled() -> bool:
+    """Resolve the GitHub polling-scanner admission from ``github_transport_preset`` (#4795).
+
+    On (the ``polling`` fail-closed default) while the preset is ``polling``;
+    off once the operator has cut over to ``webhook`` (verified-delivery
+    fail-closed via ``set-preset webhook`` — see
+    :mod:`teatree.cli.github_app`). A config read failure defaults to ON,
+    mirroring the preset's own fail-closed-to-polling default rather than
+    silently going dark on a transient DB error.
+    """
+    try:
+        return get_effective_settings().github_transport_preset is GitHubTransportPreset.POLLING
+    except Exception:  # noqa: BLE001 — never break a tick on a config read.
+        logger.warning("Failed to resolve github_transport_preset; defaulting to polling (scanner ON)")
+        return True
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:

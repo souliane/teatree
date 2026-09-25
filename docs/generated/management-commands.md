@@ -148,6 +148,16 @@ Generate the skills catalogue from skills/*/SKILL.md frontmatter.
 
 Generate deterministic TeaTree skill delegation documentation.
 
+## `github_app`
+
+| Subcommand | Description |
+| --- | --- |
+| `manifest` | Print a deterministic App-creation manifest as JSON — no secrets, reviewable |
+| `register` | Exchange *code* for App credentials; persist secrets to ``pass``, print identity only |
+| `status` | Delivery health, backlog, and the active transport preset — the metrics AC surface |
+| `confirm-repos` | Move pending repositories to active for one installation — the anti-broadening confirm |
+| `set-preset` | Switch the transport preset — ``webhook`` fails closed with no recent verified delivery |
+
 ## `handover`
 
 Hand all current work from this session to another session.

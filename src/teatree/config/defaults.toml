@@ -130,6 +130,7 @@ directive_verify_days = 7 # int — days a ratified directive is watched before 
 dream_propose_evals = false # bool — let the dream loop propose new eval scenarios
 factory_score_enabled = false # bool — compute and record the factory health score each tick
 fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
+github_transport_preset = "polling" # str, one of: polling | webhook — which transport delivers GitHub events: polling (default) or webhook
 gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
 hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
 issue_implementer_enabled = true # bool — let the loop claim and implement labelled issues

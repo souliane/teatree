@@ -406,3 +406,42 @@ class MissingIssuePolicy(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid missing_issue_ref_policy {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+class GitHubTransportPreset(StrEnum):
+    """Which transport delivers GitHub events into the shared receiver (#4795).
+
+    *   :attr:`POLLING` (default) — the ``github_polling`` scanner is enabled
+        and submits discovered events to the shared receiver every tick. Safe
+        for local development or an installation with no webhook reachability.
+        A validly-signed webhook delivery is still accepted and persisted under
+        this preset, so an operator can validate delivery before cutover.
+    *   :attr:`WEBHOOK` — native App delivery is primary and the equivalent
+        ``github_polling`` scanner is disabled. Selecting this preset is
+        fail-closed: :func:`teatree.backends.github.app_auth.webhook_ready` must
+        confirm a recently-verified delivery before the switch is written.
+
+    Inbound receipt (the webhook view) stays reachable under EVERY preset — this
+    setting governs only which loop pulls (or does not pull) GitHub state, never
+    whether a signed delivery is accepted.
+    """
+
+    POLLING = "polling"
+    WEBHOOK = "webhook"
+
+    @classmethod
+    def parse(cls, value: str) -> "GitHubTransportPreset":
+        """Parse a github-transport-preset string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default (:attr:`POLLING`) is
+        applied by the caller when the setting is absent, so this validates only
+        explicit values — a typo raises loud rather than silently selecting a
+        transport, matching every other closed-enum DB-home setting.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid github_transport_preset {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc

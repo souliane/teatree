@@ -436,6 +436,17 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "github_app": DjangoGroup(
+        "GitHub App manifest/registration/installation admin — webhook transport with polling fallback (#4795).",
+        [
+            ("manifest", "Print a deterministic App-creation manifest as JSON — no secrets."),
+            ("register", "Exchange a manifest-flow code for App credentials; persist secrets to `pass`."),
+            ("confirm-repos", "Move an installation's pending repos to active — the anti-broadening confirm."),
+            ("status", "Delivery health, backlog, and the active transport preset."),
+            ("set-preset", "Switch polling/webhook — `webhook` fails closed with no recent verified delivery."),
+        ],
+        core_dispatch=True,
+    ),
     "approval_dial": DjangoGroup(
         "Per-action-class approval dial — graduate a class from ask to auto (#119).",
         [

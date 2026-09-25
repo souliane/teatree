@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
+from teatree.config.enums import GitHubTransportPreset
 from teatree.config.setting_parsers import _default_handover_mirror_path
 
 
@@ -243,6 +244,11 @@ class _LoopFlagAndCredentialSettings:
     # GitLab-approval poll scanner (formerly ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED``).
     # Default off — poll-driven and overlapping with the webhook path.
     gitlab_approval_scanner_enabled: bool = False
+    # Which transport delivers GitHub events (#4795): ``polling`` (default,
+    # fail-closed) enables the ``github_polling`` scanner; ``webhook`` disables
+    # it in favour of native App delivery. Inbound webhook receipt stays
+    # reachable under either value — see ``GitHubTransportPreset``.
+    github_transport_preset: GitHubTransportPreset = GitHubTransportPreset.POLLING
     # Pass ``--plugin-dir`` to the launched Claude Code agent so retro may edit
     # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
     contribute_plugin_dir: bool = False
