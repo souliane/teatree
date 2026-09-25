@@ -147,6 +147,7 @@ DATA_MOUNT_SOURCES=(
     # names its clone by the HOST's absolute path) and clean-all verdicts are
     # verifiable instead of clone-unresolvable.
     "$TEATREE_HOST_HOME/workspace"
+    "$TEATREE_HOST_HOME/.claude/projects"
     "$TEATREE_HOST_HOME/.local/bin"
 )
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
@@ -1140,6 +1141,8 @@ refuse_host_bound_agent_home_on_setup() {
     fi
     while read -r type target source; do
         [ "$type" = bind ] || continue
+        # The session corpus is the one host bind the Claude home carries; setup never writes there.
+        [ "$target" = /home/teatree/.claude/projects ] && continue  # privacy-scan:allow — the box's public, documented deploy home
         case "$target" in
         /home/teatree/.claude | /home/teatree/.claude/* | /home/teatree/.codex | /home/teatree/.codex/* | /home/teatree/.agents | /home/teatree/.agents/*)
             echo "deploy/t3: refusing setup — the running container bind-mounts $source at $target." >&2

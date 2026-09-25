@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
+_HOST_CLAUDE = "/host_mnt/home/person/.claude"  # privacy-scan:allow — fixture mount path
+_CONTAINER_CLAUDE = "/home/teatree/.claude"  # privacy-scan:allow — fixture mount path
 
 
 @pytest.mark.parametrize(
@@ -16,7 +18,8 @@ WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
     [
         ("bind", "/host_mnt/home/person/.codex", "/home/teatree/.codex", "setup", True),
         ("bind", "/host_mnt/Users/Agent Home/.codex", "/home/teatree/.codex", "setup", True),
-        ("bind", "/host_mnt/home/person/.claude/projects", "/home/teatree/.claude/projects", "setup", True),
+        ("bind", f"{_HOST_CLAUDE}/projects", f"{_CONTAINER_CLAUDE}/projects", "setup", False),
+        ("bind", f"{_HOST_CLAUDE}/plugins", f"{_CONTAINER_CLAUDE}/plugins", "setup", True),
         ("bind", "/host_mnt/home/person/.agents", "/home/teatree/.agents/skills", "setup", True),
         ("unreadable", "", "/home/teatree/.codex", "setup", True),
         ("volume", "teatree_codex_home", "/home/teatree/.codex", "setup", False),

@@ -249,11 +249,18 @@ x-teatree-common: &teatree-common
       target: /home/teatree/.gnupg
     # Factory-owned agent homes. They are shared between init and runtime roles so
     # `t3 setup` is the sole skill/plugin reconciler, but never bind the operator's
-    # Claude/Codex settings, skills, sessions, memories, or credentials into the
-    # factory. Fresh volumes inherit the image's non-root ownership.
+    # Claude/Codex settings, skills, or credentials into the factory. Fresh volumes
+    # inherit the image's non-root ownership.
     - teatree_claude_home:/home/teatree/.claude
     - teatree_codex_home:/home/teatree/.codex
     - teatree_agents_home:/home/teatree/.agents
+    # The one host path inside the Claude home: session transcripts and the per-project
+    # memory corpus, the dream pass's input and product. Without it the dream pass globs
+    # an empty projects dir and every nightly consolidation is a no-op. Scoped to
+    # projects/ so settings, plugins and credentials stay in the factory-owned volume.
+    - type: bind
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
+      target: /home/teatree/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
     # Backing store for the CONTAINER-LOCAL GPG home — the ONE `GNUPGHOME` this file and
     # deploy/Dockerfile pin, seeded by deploy/entrypoint.sh's seed_container_gnupg_home.
     # The reason is the DOTLOCK, which is socket-independent: a keybox shared across two

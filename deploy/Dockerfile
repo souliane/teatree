@@ -187,6 +187,9 @@ RUN mkdir -p \
     ln -s /home/teatree/teatree /home/teatree/workspace/souliane/teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree /var/lib/teatree
 
+# The projects bind target, pre-created so Docker never creates it root-owned in a fresh volume.
+RUN install -d -o teatree -g teatree /home/teatree/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
+
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Align the runtime user to the HOST deploy user's UID (the TEATREE_UID build

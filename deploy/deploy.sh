@@ -360,6 +360,7 @@ install -d \
     "$HOME/.local/share/teatree-worktrees" \
     "$HOME/workspace/t3-workspaces" \
     "$HOME/.local/share/uv/python" \
+    "$HOME/.claude/projects" \
     "$HOME/.local/bin"
 
 # Derive the container's runtime UID from the HOST at deploy time (#3438). Every

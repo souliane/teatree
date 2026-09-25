@@ -205,9 +205,9 @@ def _check_dream_transcript_visibility() -> bool:
     Keys on STRUCTURAL absence (projects dir missing, or zero ``*/*.jsonl`` /
     subagent transcripts regardless of mtime) — not the 48h recency window — so a
     genuinely quiet couple of days never false-alarms. In the Docker factory a
-    structurally empty projects dir means no factory session has reached the
-    private ``teatree_claude_home`` volume: every dream pass then finds 0 members
-    and is a permanent no-op (the marker is never stamped succeeded).
+    structurally empty projects dir means the ``~/.claude/projects`` bind mount is
+    missing from ``deploy/docker-compose.yml``: every dream pass then finds 0
+    members and is a permanent no-op (the marker is never stamped succeeded).
     Complements :func:`_check_dream_staleness` (cadence) — this one names the
     mount as the remedy. Crash-proof: any error degrades to OK.
     """
@@ -222,10 +222,9 @@ def _check_dream_transcript_visibility() -> bool:
         return True  # degrades to OK: a crashed advisory read never reddens the run
     typer.echo(
         f"WARN  Dream sees 0 session transcripts under {root} (any age). In the "
-        "Docker factory this means the private `teatree_claude_home` volume has no "
-        "`~/.claude/projects` history — verify the agent has run and the volume is "
-        "mounted. Every dream pass otherwise finds 0 members and is a permanent "
-        "no-op (marker never stamped succeeded).",
+        "Docker factory this means the `~/.claude/projects` bind mount is missing "
+        "from deploy/docker-compose.yml — every dream pass finds 0 members and is "
+        "a permanent no-op (marker never stamped succeeded).",
     )
     return False
 

@@ -76,16 +76,22 @@ CREDENTIAL_PLANE = {
     f"{CONTAINER_HOME}/.password-store",
     f"{CONTAINER_HOME}/.gnupg",
 }
+# The Claude session plane: the dream pass's transcript input + memory-corpus
+# product, bound over the factory-owned Claude home. Without it the containerized
+# dream pass globs an empty projects dir and every nightly consolidation is a no-op.
+SESSION_PLANE = {
+    f"{CONTAINER_HOME}/.claude/projects",
+}
 # Agent homes are container-owned.  They persist and are shared between init and
-# runtime roles, but can never import settings, skills, sessions, or memories from
-# the operator's host installations.
+# runtime roles, but can never import settings, skills, or credentials from the
+# operator's host installations; only the session plane above is bound in.
 AGENT_HOME_VOLUMES = {
     "teatree_claude_home": f"{CONTAINER_HOME}/.claude",
     "teatree_codex_home": f"{CONTAINER_HOME}/.codex",
     "teatree_agents_home": f"{CONTAINER_HOME}/.agents",
 }
 # The mounts whose SOURCE is their TARGET rebased on the host home.
-PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE
+PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
 # The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
 # A PAIR by construction: the open-file guard is read from a process table, so the
 # temp root and the table describing its holders must name the same namespace.

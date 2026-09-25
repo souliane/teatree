@@ -58,7 +58,8 @@ source == target (path identity).
 | pass store | `/home/teatree/.password-store` | `$TEATREE_HOST_HOME/.password-store` | **host bind mount** | the gpg-encrypted secret store (Anthropic OAuth token, …) |
 | GPG home | `/home/teatree/.gnupg` | `$TEATREE_HOST_HOME/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
 | GPG runtime home | `/home/teatree/.gnupg-run` | — | `tmpfs` | the container-local GPG home, when the bind mount above cannot host a socket (see below) |
-| Claude home | `/home/teatree/.claude` | — | named volume `teatree_claude_home` | factory-only settings, plugins, sessions, and memory |
+| Claude home | `/home/teatree/.claude` | — | named volume `teatree_claude_home` | factory-only settings and plugins <!-- privacy-scan:allow — the box's public, documented deploy home --> |
+| Claude session plane | `/home/teatree/.claude/projects` | `$TEATREE_HOST_HOME/.claude/projects` | **host bind mount** | session transcripts and the per-project memory corpus the dream pass reads and maintains <!-- privacy-scan:allow — the box's public, documented deploy home --> |
 | Codex home | `/home/teatree/.codex` | — | named volume `teatree_codex_home` | factory-only Codex settings, TeaTree-installed skills/plugins, sessions, and guarded auth cache |
 | universal skills | `/home/teatree/.agents` | — | named volume `teatree_agents_home` | skills.sh front doors installed by `t3 setup` |
 | interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
