@@ -23,7 +23,9 @@ The sweep runs in two stages, and the split is the whole design:
     BOUNDED (#4706): at ``deferred_question_max_escalations`` the row is drained STALE
     with the count and age that decided it, because the escalation window rate-limits
     re-asking without ever ending it — a row nobody answered escalated again every window,
-    forever, which is the flood this sweep now terminates.
+    forever, which is the flood this sweep now terminates. The bound counts rungs climbed
+    under ITS OWN semantics (#4748): a count carried over from the unbounded ladder, or
+    from before a reopen, is history rather than a step toward dismissal.
 
 Both stages read one :class:`SweepContext`, built once per sweep.
 
@@ -144,6 +146,11 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
     re-notified every window forever. The bound is what terminates it — and it is
     reached only from the TOP of the ladder, so age alone never dismisses anything: a
     41-day-old row that has never been escalated is escalated first, like any other.
+
+    It counts the rungs of the CURRENT ladder, not the row's lifetime generation (#4748):
+    counts accrued before the bound existed were stamped under the rule that an escalation
+    resolves nothing, and reading them as rungs dismissed a legacy row on the first sweep
+    after deploy without ever asking under the new semantics.
     """
     if context.ceiling_days <= 0:
         return None
@@ -152,11 +159,13 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
         return None
     if question.escalated_at is not None and question.escalated_at > cutoff:
         return None
-    if 0 < context.max_escalations <= question.escalation_count:
+    if 0 < context.max_escalations <= question.bounded_escalations:
         waited = (context.now - question.created_at).days
+        lifetime = f" ({question.escalation_count} lifetime)" if question.escalation_base else ""
         return Decision(
             Verdict.DRAIN,
-            f"unanswered through {question.escalation_count} escalations over {waited}d — decided by default",
+            f"unanswered through {question.bounded_escalations} escalations{lifetime} "
+            f"over {waited}d — decided by default",
         )
     return Decision(Verdict.ESCALATE, f"pending past the {context.ceiling_days}d ceiling with no resolution")
 

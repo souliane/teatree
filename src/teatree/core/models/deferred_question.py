@@ -116,6 +116,11 @@ class DeferredQuestion(models.Model):
     # dropped unaudited, and never before the owner was asked N times".
     escalated_at = models.DateTimeField(null=True, blank=True)
     escalation_count = models.PositiveIntegerField(default=0)
+    # Where the CURRENT bounded ladder started. `escalation_count` is the row's lifetime
+    # generation and never rewinds — the re-ask idempotency key is keyed on it, so a
+    # rewind revisits a generation the ping ledger already delivered and the fresh ask is
+    # silently deduped. Resetting the ladder moves this instead (#4748).
+    escalation_base = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = "teatree_deferred_question"
@@ -123,6 +128,11 @@ class DeferredQuestion(models.Model):
 
     def __str__(self) -> str:
         return f"deferred-question<{self.pk}:{self.status} '{self.question[:40]}'>"
+
+    @property
+    def bounded_escalations(self) -> int:
+        """Rungs climbed on the CURRENT ladder — what ``deferred_question_max_escalations`` bounds."""
+        return self.escalation_count - self.escalation_base
 
     @property
     def status(self) -> str:
@@ -415,7 +425,10 @@ class DeferredQuestion(models.Model):
         Scoped to a dismissal — an ANSWERED row is never reopened, because its answer may
         already have been applied and resuming the parked task a second time would replay
         it. The age ladder is RESET rather than carried: the reopened row is a fresh ask,
-        and leaving the count would re-drain it STALE on the very next sweep.
+        and leaving the rungs would re-drain it STALE on the very next sweep. The reset
+        moves ``escalation_base`` up to the lifetime count rather than rewinding that
+        count, so the row's next re-ask carries a generation the ping ledger has never
+        delivered — a rewound one is deduped and the reopened row could never nag again.
 
         ``slack_ts`` is kept so a reply still in flight on the original DM binds back to
         this row; ``questions resurface`` re-delivers it when a new thread is wanted.
@@ -433,9 +446,9 @@ class DeferredQuestion(models.Model):
             row.dismissed_reason = ""
             row.resolved_via = self.ResolvedVia.UNRESOLVED
             row.escalated_at = None
-            row.escalation_count = 0
+            row.escalation_base = row.escalation_count
             row.save(
-                update_fields=["dismissed_at", "dismissed_reason", "resolved_via", "escalated_at", "escalation_count"]
+                update_fields=["dismissed_at", "dismissed_reason", "resolved_via", "escalated_at", "escalation_base"]
             )
             DeferredQuestionAudit.objects.create(question=row, action="reopened", note=note, resolver_id=resolver_id)
             self.refresh_from_db()

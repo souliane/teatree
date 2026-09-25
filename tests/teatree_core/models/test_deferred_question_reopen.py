@@ -53,8 +53,10 @@ class TestReopen(TestCase):
         question.reopen(note="still halted")
 
         question.refresh_from_db()
-        assert question.escalation_count == 0
+        assert question.bounded_escalations == 0
         assert question.escalated_at is None
+        # The generation the re-ask idempotency key rides never rewinds; the base moves.
+        assert (question.escalation_count, question.escalation_base) == (3, 3)
 
     def test_the_delivered_slack_thread_is_kept_so_a_reply_still_binds(self) -> None:
         question = DeferredQuestion.record("How should this halt proceed?")

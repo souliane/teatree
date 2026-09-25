@@ -49,10 +49,14 @@ def _age(question: DeferredQuestion, *, days: int) -> None:
     DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(days=days))
 
 
-def _part_way_up_the_ladder(question: DeferredQuestion, *, count: int, days_ago: int) -> None:
-    """Stamp *count* escalations on *question*, the last of them *days_ago* old."""
+def _part_way_up_the_ladder(question: DeferredQuestion, *, count: int, days_ago: int, base: int = 0) -> None:
+    """Stamp *count* escalations on *question*, the last of them *days_ago* old.
+
+    *base* is where the CURRENT bounded ladder started — the count carried over from
+    before the bound existed, or from before a reopen.
+    """
     DeferredQuestion.objects.filter(pk=question.pk).update(
-        escalation_count=count, escalated_at=timezone.now() - timedelta(days=days_ago)
+        escalation_count=count, escalation_base=base, escalated_at=timezone.now() - timedelta(days=days_ago)
     )
     question.refresh_from_db()
 
@@ -523,6 +527,54 @@ class TestTheAgeLadderTerminates(TestCase):
         assert drain_pending_questions() == DrainReport(drained=0, escalated=0, expired=0)
         question.refresh_from_db()
         assert question.is_pending
+
+
+class TestLegacyEscalationCountsAreNotRungs(TestCase):
+    """Counts accrued before the bound existed are history, not rungs on it (#4748).
+
+    #4706 made an escalation a step toward dismissal. Every count already on a row was
+    stamped under the opposite rule — escalation explicitly never resolved anything — so
+    reading them as rungs dismisses a legacy row on the FIRST sweep after deploy, with no
+    ask under the new semantics. Measured on the real backlog: a row at ``count=9``
+    produced ``expired=1`` immediately, against ~105 rows in that shape.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
+        ConfigSetting.objects.set_value("deferred_question_max_escalations", 3)
+
+    def test_a_legacy_count_at_the_bound_escalates_instead_of_draining(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=9, days_ago=4, base=9)
+
+        report = drain_pending_questions()
+
+        assert (report.escalated, report.expired) == (1, 0)
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_the_fresh_ladder_still_terminates(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=12, days_ago=4, base=9)
+
+        report = drain_pending_questions()
+
+        assert (report.escalated, report.expired) == (0, 1)
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_the_reason_counts_the_rungs_the_owner_was_actually_asked(self) -> None:
+        question = DeferredQuestion.record("A real owner decision")
+        _age(question, days=41)
+        _part_way_up_the_ladder(question, count=12, days_ago=4, base=9)
+
+        drain_pending_questions()
+
+        audit = DeferredQuestionAudit.objects.get(question=question, action="dismissed")
+        assert "3 escalations" in audit.dismissed_reason
+        assert "12 lifetime" in audit.dismissed_reason
 
 
 #: The pre-#4748 marker, which named the ticket but not the halted lane.

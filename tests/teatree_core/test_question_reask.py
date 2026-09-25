@@ -203,3 +203,30 @@ class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
         text = backend.post_message.call_args.kwargs["text"]
         assert "12d" in text
         assert "escalated 1x" in text
+
+
+class TestAReopenedRowCanStillBeBumped(TestCase):
+    """The bump's key carries the escalation generation, so the ladder reset must not rewind it (#4748).
+
+    ``reopen`` resets the ladder so the recovered row is a fresh ask. Rewinding
+    ``escalation_count`` to do that walks the key back onto a generation the ``BotPing``
+    ledger already delivered, and the fresh ask is dropped as a duplicate — the row comes
+    back to the queue and can never nag again.
+    """
+
+    def test_the_bump_after_a_reopen_is_delivered(self) -> None:
+        row = _mirrored("Which DB host?", slack_ts="100.0", escalated=True)
+        backend = _backend()
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            assert reask_escalated_questions(user_id="U_ME", backend=backend)[0] == 1
+        assert BotPing.objects.count() == 1
+
+        row.mark_stale("drained by an over-broad resolver")
+        assert row.reopen(note="the halted lane is still halted") is True
+        row.refresh_from_db()
+        row.mark_escalated("pending past the ceiling")
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            bumped, candidates = reask_escalated_questions(user_id="U_ME", backend=backend)
+
+        assert (bumped, candidates) == (1, 1), "the reopened row's fresh ask was deduped against its own history"
