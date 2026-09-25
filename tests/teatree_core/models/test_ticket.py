@@ -775,8 +775,8 @@ class TestTicketStateSets(TestCase):
 class TestSettledStateEnumIndependence(TestCase):
     """``Ticket.State`` shares a member name+value with ``PullRequest.State`` twice.
 
-    ``MERGED`` always has (pre-existing); the #4779 rename's ``in_review`` ->
-    ``review_requested`` mapping newly collides with ``PullRequest.State.REVIEW_REQUESTED``.
+    ``MERGED`` always has (pre-existing); since #4779 ``review_requested`` also collides
+    with ``PullRequest.State.REVIEW_REQUESTED``.
     Both enums must stay independent — writing one never reads back as the other.
     """
 

@@ -572,7 +572,7 @@ class TestReconcileReviewedExposedViaCli(TestCase):
     """#1118 symptom B: ``reconcile_reviewed`` FSM-listed but CLI-rejected."""
 
     def test_reconcile_reviewed_is_an_allowed_cli_transition(self) -> None:
-        # Use an in_review ticket so the transition would actually fire.
+        # Use a review_requested ticket so the transition would actually fire.
         ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",

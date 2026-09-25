@@ -1,7 +1,7 @@
 """Board reconcile rule F — a pre-ship ticket whose own ISSUE the forge closed (#4711).
 
 The measured wedge: the 2026-08-31 prune retired 226 issues NOT_PLANNED and the board
-never learned. Twelve ``Ticket`` rows stayed ``planned`` behind closed issues and the
+never learned. Twelve ``Ticket`` rows stayed ``plan_recorded`` behind closed issues and the
 coding dispatcher re-offered each forever — one was dispatched eleven times, every cycle
 spending a full agent run to re-derive "the owner closed this" and stop. Rules A-E cannot
 reach that shape: B/C resolve the URL as a PR (an ``/issues/`` URL is UNKNOWN), D polls

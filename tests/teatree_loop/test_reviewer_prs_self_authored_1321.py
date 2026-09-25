@@ -270,7 +270,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
 
     This is the branch that actually stalled the factory. ``pr_sweep`` arms its
     cold review on the reviewer-role ticket for the PR — and that ticket is
-    routinely ALREADY terminal (``review_posted``) from an earlier review of the
+    routinely ALREADY terminal (``review_delivered``) from an earlier review of the
     same PR. ``_orphaned_task_signals`` reaps a non-terminal reviewing task on a
     terminal ticket *regardless of forge state*, so the freshly-armed review died
     on the next tick while the PR was still open and still needed a verdict.

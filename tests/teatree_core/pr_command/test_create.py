@@ -333,7 +333,7 @@ class TestPrCreateRecordsInvokingBranch(TestCase):
 class TestPrCreateNoCommitsAheadGuard(TestCase):
     """#788: pr create must fail loudly on a 0-commits-ahead branch.
 
-    No hollow ``shipped`` — instead of advancing the FSM and deferring
+    No hollow ``pr_opened`` — instead of advancing the FSM and deferring
     an empty-diff failure into the async ship worker, the branch must
     have ≥1 commit ahead of its base.
     """

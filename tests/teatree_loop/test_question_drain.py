@@ -386,7 +386,7 @@ class TestParkedLaneSupersession(TestCase):
 class TestSettledPullRequestsDrain(TestCase):
     """A subject whose pull requests have all settled, on a ticket still reading live.
 
-    A ticket sits at ``reviewed`` for weeks with its PR already merged, so the FSM
+    A ticket sits at ``self_reviewed`` for weeks with its PR already merged, so the FSM
     state cannot prove what the PR can. This reads the narrower fact — and only ever
     adds a drain: an open PR, or no PR at all, decides nothing.
     """

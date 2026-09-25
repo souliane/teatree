@@ -6,7 +6,7 @@ pre-merge state it sat in. The original guard only fired ``mark_merged()``
 when the ticket was already at ``REVIEW_REQUESTED``/``MERGED``, so a ticket whose
 PR landed while the FSM still read ``WORK_STARTED`` (a common shape when the
 coding agent's session ended before the FSM advanced past coding) stayed
-visibly stuck at ``started`` on the statusline forever.
+visibly stuck at ``work_started`` on the statusline forever.
 
 This transition is the FSM-level expression of "PR merged ⇒ ticket merged":
 any non-past-merged state -> MERGED. Mirrors ``reconcile_reviewed`` (#808).

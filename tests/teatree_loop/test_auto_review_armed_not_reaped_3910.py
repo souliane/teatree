@@ -223,10 +223,10 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
         task = schedule_external_review(ticket)
 
         with self.assertLogs("teatree.loop.mechanical", level="INFO") as captured:
-            reviewer_task_orphaned({"ticket_id": ticket.pk, "url": url, "reason": "ticket terminal: review_posted"})
+            reviewer_task_orphaned({"ticket_id": ticket.pk, "url": url, "reason": "ticket terminal: review_delivered"})
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         logged = "\n".join(captured.output)
-        assert "ticket terminal: review_posted" in logged
+        assert "ticket terminal: review_delivered" in logged
         assert "merged/closed" not in logged

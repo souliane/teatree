@@ -13,7 +13,7 @@ from contextlib import redirect_stdout
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_ticket_state_values import check_unknown_ticket_states
-from teatree.core.models import Ticket
+from teatree.core.models import Ticket, TicketTransition
 
 
 def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
@@ -48,11 +48,36 @@ class TestUnknownTicketStatesAreFailed(TestCase):
         assert f"{ignored.pk} ignored_from='reviewed'" in out
         assert f"{reopened.pk} reopened_from='shipped'" in out
 
+    def test_an_unhashable_snapshot_is_flagged_as_a_bad_row_not_an_unreadable_table(self) -> None:
+        listed = _ticket(4, state=Ticket.State.IGNORED, extra={"ignored_from": ["reviewed"]})
+        mapped = _ticket(5, extra={"reopened_from": {"state": "shipped"}})
+
+        ok, out = _echoes(check_unknown_ticket_states)
+
+        assert not ok
+        assert "UNVERIFIED" not in out
+        assert f"{listed.pk} ignored_from=['reviewed']" in out
+        assert f"{mapped.pk} reopened_from={{'state': 'shipped'}}" in out
+
+    def test_a_retired_transition_endpoint_fails_the_run(self) -> None:
+        ticket = _ticket(6)
+        edge = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
+        back = TicketTransition.objects.create(ticket=ticket, from_state="in_review", to_state="merged")
+
+        ok, out = _echoes(check_unknown_ticket_states)
+
+        assert not ok
+        assert f"transition {edge.pk} to_state='started'" in out
+        assert f"transition {back.pk} from_state='in_review'" in out
+
     def test_only_known_values_is_silent(self) -> None:
         """The control: every live value, including a known snapshot, raises nothing."""
         for n, state in enumerate(Ticket.State.values):
             _ticket(10 + n, state=state)
         _ticket(99, state=Ticket.State.IGNORED, extra={"ignored_from": Ticket.State.SELF_REVIEWED})
+        TicketTransition.objects.create(
+            ticket=_ticket(100), from_state=Ticket.State.SCOPED, to_state=Ticket.State.WORK_STARTED
+        )
 
         ok, out = _echoes(check_unknown_ticket_states)
 

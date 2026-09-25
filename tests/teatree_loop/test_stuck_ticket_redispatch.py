@@ -750,7 +750,7 @@ class TestAFrozenFactoryAndTheCancelRace(TestCase):
         assert Task.objects.count() == tasks_before
 
     def test_escalation_still_fires_while_frozen(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
         for i in range(max_phase_iterations()):
             task = _finished_task(
                 ticket, phase="planning", status=Task.Status.FAILED, error=f"planning failed run {'x' * (i + 1)}"

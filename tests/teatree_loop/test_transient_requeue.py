@@ -811,7 +811,7 @@ class TestLandedReviewRetired(TestCase):
     """A reviewer ticket whose verdict is recorded at the dispatch head is retired (#4100/#4126).
 
     The author ladder can say nothing about a REVIEWER-role ticket — it is minted at
-    ``not_started`` and held there until ``review_posted`` — so the recorded verdict is the
+    ``not_started`` and held there until ``review_delivered`` — so the recorded verdict is the
     only evidence the review landed. This sweep is the sibling of ``stuck_ticket_redispatch``
     and reads it through the same widened predicate; without a pin at this level, only one
     of the two consumers was covered.

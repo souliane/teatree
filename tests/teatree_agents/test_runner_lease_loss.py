@@ -1,7 +1,7 @@
 """A lost lease does not overrule the phase's own completion evidence (#3982).
 
 Observed on a single shipping task: it pushed its branch, opened the pull request and its
-ticket advanced to ``in_review`` with the PR attached — then the row was recorded
+ticket advanced to ``review_requested`` with the PR attached — then the row was recorded
 ``failed`` / ``lease_lost`` because the heartbeat's renewal lost the claim generation. The
 work landed; only the bookkeeping said otherwise, and that false failure is exactly what
 the auto-repair sweep reads as "re-do this".

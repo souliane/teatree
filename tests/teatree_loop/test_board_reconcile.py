@@ -1,6 +1,6 @@
 """Board reconcile — forge truth drives the ticket FSM, on a cadence (#3841, #3840).
 
-The measured wedge: 205 tickets in ``review_posted``, 55 in ``not_started`` and
+The measured wedge: 205 tickets in ``review_delivered``, 55 in ``not_started`` and
 exactly ONE in ``merged`` across 328 rows, with merged PRs rendering in the board's
 NOT STARTED column. Nothing reconciled the FSM against the forge — the only merge
 driver was the keystone (which never sees an out-of-band merge) and the linked-
@@ -489,7 +489,7 @@ class TestIssueDoneRule(TestCase):
     def test_a_reviewer_ticket_is_never_walked_through_merged(self) -> None:
         """The third path to the ghost: ``advance_to_delivered`` is the AUTHOR ladder.
 
-        Its walk goes ``shipped → in_review → merged → retrospected``, so a reviewer
+        Its walk goes ``pr_opened → review_requested → merged → retro_recorded``, so a reviewer
         ticket admitted here transits MERGED exactly like rules A/B/C would have —
         equally irreversible. Reachability is currently zero only because GitHub's
         issue parser rejects a ``/pull/`` URL, which is a URL-shape coincidence in a

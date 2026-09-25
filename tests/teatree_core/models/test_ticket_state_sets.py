@@ -1,6 +1,6 @@
 """``Ticket.advance_to_delivered`` — the single transactional post-ship walk.
 
-Owns the ``shipped → in_review → merged → retrospected`` FSM walk that both the
+Owns the ``pr_opened → review_requested → merged → retro_recorded`` FSM walk that both the
 ``sync-completions`` sweep and the loop's mechanical ``complete_ticket`` share.
 Each step commits in its own ``atomic()``; a mid-chain gate/FSM refusal stops
 the walk and is reported in the returned ``AdvanceResult`` — never raised.

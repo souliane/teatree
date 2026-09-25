@@ -99,11 +99,11 @@ class TestCompleteTicketMidChainRefusal(TestCase):
 
     Pre-fix, ``complete_ticket`` cascaded ``request_review`` → ``mark_merged`` →
     ``retrospect`` with no ``atomic()`` per step and no refusal handling. A
-    ``shipped`` ticket whose issue is done but which lacks merged-SHA evidence
+    ``pr_opened`` ticket whose issue is done but which lacks merged-SHA evidence
     committed the ``request_review`` advance, then the merge-evidence gate on
     ``mark_merged`` raised ``NoMergeEvidenceError``. That escape landed in
     ``report.errors`` + an ERROR log on EVERY tick, on top of the already-persisted
-    ``in_review`` partial state. Routed through ``Ticket.advance_to_delivered`` the
+    ``review_requested`` partial state. Routed through ``Ticket.advance_to_delivered`` the
     refusal is now caught: the partial progress persists (as the CLI sweep does),
     but no exception escapes the tick.
     """
@@ -138,7 +138,7 @@ class TestReopenTicket(TestCase):
     def test_idempotent_when_already_started(self) -> None:
         """#1087: a re-emitted reopen signal on an already-WORK_STARTED ticket no-ops.
 
-        ``reopen`` targets ``started`` but ``started`` is not one of its
+        ``reopen`` targets ``work_started`` but ``work_started`` is not one of its
         source states, so re-driving it on an already-reopened ticket raised
         the same ``TransitionNotAllowed`` every-tick noise as the ignore path.
         """

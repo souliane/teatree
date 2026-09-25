@@ -1,7 +1,7 @@
 """Did a phase's work LAND? — the evidence a lost lease may not overrule (#3982).
 
 The observed defect: a shipping task pushed its branch, opened its PR and advanced its
-ticket to ``in_review``, yet was recorded ``failed`` / ``lease_lost``. ``in_review`` sits
+ticket to ``review_requested``, yet was recorded ``failed`` / ``lease_lost``. ``review_requested`` sits
 OFF ``Ticket._WORK_STATE_ORDER``, so ``has_completed_phase`` answers False for a ticket
 that has demonstrably shipped — these pin the fuller author-ladder answer plus the
 shipping artifact (an attached pull request) the issue names as evidence.

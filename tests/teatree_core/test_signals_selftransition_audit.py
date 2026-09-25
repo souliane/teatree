@@ -8,7 +8,7 @@ every re-run still fired the audit receiver.
 
 A caller re-running one per pass therefore wrote one row per ticket per pass forever.
 Measured on the live box: 3,240,987 of 3,241,397 rows (99.99%) were
-``review_posted → review_posted``, all from ``mark_reviewed_externally``, still growing
+``review_delivered → review_delivered``, all from ``mark_reviewed_externally``, still growing
 at ~410/min — ~85% of the control DB, and the control DB is the seed copied into every
 per-worktree env dir.
 

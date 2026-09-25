@@ -1389,7 +1389,7 @@ class TestShipPrUrlRepoMismatch(TestCase):
 
     ``host.create_pr`` returning a syntactically-valid URL for the *wrong*
     repo (e.g. a cross-project CI mirror) must surface as ``ok=False`` and
-    must NOT advance the FSM to ``in_review`` or record a ``pr_urls`` entry.
+    must NOT advance the FSM to ``review_requested`` or record a ``pr_urls`` entry.
     """
 
     _EXPECTED_SLUG = "expected-org/expected-repo"

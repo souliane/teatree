@@ -538,7 +538,7 @@ class TestMergeExecutionEdgeCases(TestCase):
         The original guard only fired ``mark_merged()`` when the ticket was
         already at ``REVIEW_REQUESTED``/``MERGED``, so tickets whose PR landed
         while the FSM still read ``WORK_STARTED`` stayed visibly stuck at
-        ``started`` on the statusline. The post hook must reconcile any
+        ``work_started`` on the statusline. The post hook must reconcile any
         pre-MERGED non-terminal state to ``MERGED``.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
