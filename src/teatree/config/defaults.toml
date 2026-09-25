@@ -88,7 +88,7 @@ loop_cadence_seconds = 720 # int — default seconds between ticks of a loop tha
 loop_runner_enabled = true # bool — run the worker that drives the loop ticks
 merge_wip = 1 # int — how many merges may be in flight at once
 wip = "full" # str, one of: slow | medium | full | boost — how much work may be in progress at once
-worker_quiescing = false # bool — stop claiming new work and let the running units finish
+worker_quiescing = false # bool — deploy drain gate — cleared on a fresh init; freeze the factory with `t3 loop preset use off --hold`
 write_wip = 3 # int — how many writing units may be in flight at once
 
 [teatree.Loops.Scanners]

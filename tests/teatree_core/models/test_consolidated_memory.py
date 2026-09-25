@@ -244,6 +244,24 @@ class TestDispositionLadder(TestCase):
         assert row.archive_path == "https://github.com/souliane/teatree/issues/42"
         assert row.expired_at is not None
 
+    def test_reopen_core_gap_returns_a_ticketed_row_to_the_queue(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/2663#dream-batch=abc")
+        row.reopen_core_gap()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
+        assert ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
+
+    def test_reopen_core_gap_refuses_a_row_that_is_not_ticketed(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        with pytest.raises(ValueError, match="TICKETED"):
+            row.reopen_core_gap()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+
     def test_retire_refuses_binding_row(self) -> None:
         row = _record(is_binding=True)
         row.classify_core_gap()

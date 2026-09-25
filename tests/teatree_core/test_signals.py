@@ -10,6 +10,7 @@ import teatree.core.signals as signals_mod
 from teatree.backends.slack import reactions as slack_reactions
 from teatree.core.models import ConfigSetting, PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.schema_readiness import invalidate_schema_readiness
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
 from tests.teatree_core.conftest import CommandOverlay
@@ -135,6 +136,52 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+    @staticmethod
+    def _create_coding_task_recording_enqueue() -> tuple[Task, bool]:
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: local import, mirrors the sibling tests above
+
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+
+        # ``django.tasks.Task`` is a frozen dataclass, so the module-level name is replaced wholesale.
+        class RecordingEnqueue:
+            called = False
+
+            @staticmethod
+            def enqueue(*_args: object, **_kwargs: object) -> None:
+                RecordingEnqueue.called = True
+
+        with (
+            patch.object(tasks_mod, "execute_task", RecordingEnqueue),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.refresh_from_db()
+        return task, RecordingEnqueue.called
+
+    def test_frozen_factory_does_not_auto_enqueue(self) -> None:
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        task, enqueued = self._create_coding_task_recording_enqueue()
+
+        assert enqueued is False
+        assert task.status == Task.Status.PENDING
+
+    def test_schema_behind_withholds_auto_enqueue(self) -> None:
+        invalidate_schema_readiness()
+        self.addCleanup(invalidate_schema_readiness)
+
+        with patch("teatree.core.schema_readiness.pending_migrations", return_value=["core.9999_future"]):
+            task, enqueued = self._create_coding_task_recording_enqueue()
+
+        assert enqueued is False
+        assert task.status == Task.Status.PENDING
+
+    def test_an_admitted_factory_auto_enqueues(self) -> None:
+        _, enqueued = self._create_coding_task_recording_enqueue()
+
+        assert enqueued is True
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_reopen_triggers_enqueue(self) -> None:

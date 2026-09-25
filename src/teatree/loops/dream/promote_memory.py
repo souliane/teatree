@@ -139,7 +139,9 @@ def file_core_gap_tickets(
     + coding task are minted once, for the whole pass, after every promoting phase has
     run). The gap no longer files a fresh ``needs-triage`` issue that the scanner
     skips. A rendered title that would leak a banned term / bare reference is withheld
-    — never queued.
+    — never queued. A queued row is stamped TICKETED once the pass mints its batch
+    ticket, a row already covered by a ticket is stamped here, and a withheld,
+    ungrounded or dry-run row is never stamped.
 
     Under *dry_run* NOTHING is written — no disposition advance, no queueing — so a
     preview never STRANDS a detected gap: the disposition write used to land BEFORE the
@@ -189,7 +191,11 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     the classifier — so this is the one chokepoint every promoted gap passes through.
     ``groundable`` (core tree OR a memory file) is the test, not ``in_core_tree``
     alone — a memory-destined gap promotes rather than being withheld (#4776).
+
+    A gap already riding an unreconciled ticket is stamped with it here, so it leaves
+    the queue; a newly queued gap is stamped when :func:`promote_batch` mints its ticket.
     """
+    from teatree.loops.dream.batch_promote import covering_ticket, is_reconciled  # noqa: PLC0415 — tick-time import
     from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     verdict = classify_destination(row.durable_destination)
@@ -210,6 +216,9 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     outcome = batch.consider(
         gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
     )
+    ticket = covering_ticket(row.cluster_key) if outcome.already_covered and not outcome.withheld else None
+    if ticket is not None and not is_reconciled(ticket):
+        row.mark_ticketed(ticket.issue_url)
     return TicketOutcome(
         cluster_key=row.cluster_key,
         filed=outcome.queued or outcome.already_covered,
@@ -310,13 +319,13 @@ def _ticket_title(row: ConsolidatedMemory) -> str:
 
 
 def retire_resolved_memories(
-    host: CodeHostBackend, *, is_resolved: "Callable[[str], bool] | None" = None
+    host: CodeHostBackend, *, is_resolved: "Callable[[ConsolidatedMemory], bool] | None" = None
 ) -> list[ConsolidatedMemory]:
     """Retire each TICKETED memory whose linked teatree ticket is now resolved.
 
     For every row awaiting ticket-close, the linked ticket's resolved state is read
-    via *is_resolved* (default: the linked issue's closed/merged state read from
-    *host*); a resolved ticket first has its source memory FILE(s) deleted
+    via *is_resolved*, a predicate over the row (default: the linked issue's
+    closed/merged state read from *host*); a resolved ticket first has its source memory FILE(s) deleted
     (:func:`delete_source_memory_files` — "memory tends to zero": a promoted gap whose
     fix merged has nothing left to remember once its source is gone) and only THEN
     retires the DB row (the prose is archived, the gap it confessed is fixed in code).
@@ -334,12 +343,12 @@ def retire_resolved_memories(
     (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows retired
     this pass.
     """
-    resolved = is_resolved or (lambda url: _issue_is_closed(host, url))
+    resolved = is_resolved or (lambda row: _issue_is_closed(host, row.ticket_url))
     retired: list[ConsolidatedMemory] = []
     for row in ConsolidatedMemory.objects.awaiting_ticket_close():
         if row.is_binding:
             continue
-        if not resolved(row.ticket_url):
+        if not resolved(row):
             continue
         if not delete_source_memory_files(row):
             logger.warning(

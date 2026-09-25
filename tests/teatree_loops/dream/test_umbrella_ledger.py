@@ -345,3 +345,71 @@ class ReconcileFoldedGapsTestCase(TestCase):
         forge.update_issue.assert_not_called()
         member.refresh_from_db()
         assert not (member.extra or {}).get("dream_gap_reconciled_at")
+
+
+class PromotionAnchorTestCase(TestCase):
+    """A TICKETED url is a promotion-time placeholder only when it carries a dream fragment."""
+
+    def test_only_dream_fragments_are_promotion_anchors(self) -> None:
+        cases = {
+            f"{UMBRELLA}#dream-gap=gap-1": True,
+            f"{UMBRELLA}#dream-batch=abc123": True,
+            UMBRELLA: False,
+            "https://github.com/souliane/teatree/pull/9100": False,
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                assert ul.is_promotion_anchor(url) is expected
+
+
+class StampMemoryMergedTestCase(TestCase):
+    """The merge stamp replaces a promotion anchor, never a real PR url."""
+
+    PR_URL = "https://github.com/souliane/teatree/pull/9100"
+
+    def test_a_promotion_anchor_is_restamped_with_the_merged_pr(self) -> None:
+        for index, fragment in enumerate(("dream-gap", "dream-batch")):
+            with self.subTest(fragment=fragment):
+                key = f"gap-{index}"
+                row = _memory(key=key)
+                row.classify_core_gap()
+                row.mark_ticketed(f"{UMBRELLA}#{fragment}={key}")
+
+                assert ul._stamp_memory_merged(key, merged_url=self.PR_URL) is True
+                row.refresh_from_db()
+                assert row.ticket_url == self.PR_URL
+
+    def test_a_row_already_on_a_real_pr_is_left_alone(self) -> None:
+        row = _memory()
+        row.classify_core_gap()
+        earlier = "https://github.com/souliane/teatree/pull/8000"
+        row.mark_ticketed(earlier)
+
+        assert ul._stamp_memory_merged("gap-1", merged_url=self.PR_URL) is False
+        row.refresh_from_db()
+        assert row.ticket_url == earlier
+
+
+class ReconcileMergedGapWithoutPrTestCase(TestCase):
+    """A merged legacy gap ticket with no merged PR row still retires its back-filled memory."""
+
+    def test_the_anchor_stamped_row_retires_against_the_ticket(self) -> None:
+        row = _memory()
+        row.classify_core_gap()
+        ticket = Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-gap=gap-1",
+            role=Ticket.Role.AUTHOR,
+            short_description="Fix the gate",
+            extra={"dream_gap_key": "gap-1", "dream_memory_cluster_key": "gap-1", "dream_umbrella_url": UMBRELLA},
+        )
+        row.mark_ticketed(ticket.issue_url)
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
+        host = _fake_host(body=existing)
+
+        ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
+
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert row.archive_path == ticket.issue_url

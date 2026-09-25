@@ -85,6 +85,8 @@ class _ProcessSkewBase(django.test.TestCase):
 
     def record_applied(self, app_label: str, name: str) -> None:
         MigrationRecorder(connection).migration_qs.create(app=app_label, name=name)
+        # Models the memo's TTL lapsing: the auto-enqueue signal already memoised CURRENT.
+        invalidate_process_freshness()
 
     def refreeze_real_snapshot(self) -> None:
         reset_loaded_snapshot()

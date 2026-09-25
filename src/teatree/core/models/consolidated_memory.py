@@ -260,6 +260,15 @@ class ConsolidatedMemory(models.Model):
         self.ticket_url = url
         self.save(update_fields=["disposition", "ticket_url", "updated_at"])
 
+    def reopen_core_gap(self) -> None:
+        """TICKETED → CORE_GAP_NEEDS_TICKET, so the next pass re-offers a gap its fix dropped."""
+        if self.disposition != self.Disposition.TICKETED:
+            msg = f"reopen_core_gap requires a TICKETED row, not {self.disposition!r}"
+            raise ValueError(msg)
+        self.disposition = self.Disposition.CORE_GAP_NEEDS_TICKET
+        self.ticket_url = ""
+        self.save(update_fields=["disposition", "ticket_url", "updated_at"])
+
     def retire(self, archive_path: str) -> None:
         """TICKETED → RESOLVED_RETIRED, archiving the prose now its fix has landed.
 
