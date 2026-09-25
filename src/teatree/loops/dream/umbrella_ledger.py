@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 #: The stable marker embedded (invisibly) in each umbrella checkbox line, keyed on
 #: the gap key, so a re-run upserts in place rather than appending a duplicate.
 _GAP_MARKER_PREFIX = "dream-gap"
+_BATCH_MARKER_PREFIX = "dream-batch"
 
 #: The ticket-``extra`` keys that link an in-flight gap-fix Ticket back to its gap
 #: identity, the memory to retire on merge, and the umbrella to check.
@@ -73,6 +74,11 @@ class GapSpec:
     gap_key: str
     title: str
     cluster_key: str
+
+
+def is_promotion_anchor(url: str) -> bool:
+    """Whether a TICKETED row's url is a promotion-time placeholder rather than a merged PR."""
+    return any(f"#{prefix}=" in url for prefix in (_GAP_MARKER_PREFIX, _BATCH_MARKER_PREFIX))
 
 
 def _marker(gap_key: str) -> str:
@@ -247,12 +253,12 @@ def _in_flight_gap_tickets() -> list[Ticket]:
     )
 
 
-def _merged_pr_url(ticket: Ticket) -> str:
-    """The merged PR URL backing this gap-fix ticket, or ``""`` when none merged."""
+def _merge_evidence_url(ticket: Ticket) -> str:
+    """The merged PR backing this MERGED gap-fix ticket, else the ticket's own url."""
     from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — deferred: ORM/app-registry
 
     pr = PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).first()
-    return pr.url if pr is not None else ""
+    return pr.url if pr is not None else ticket.issue_url
 
 
 def _merge_bearing_ticket(ticket: Ticket) -> Ticket | None:
@@ -297,7 +303,7 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
             continue
         gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
         cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
-        merged_url = _merged_pr_url(merge_bearer)
+        merged_url = _merge_evidence_url(merge_bearer)
         if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
             logger.warning("dream reconcile: could not check umbrella box for gap %r — retrying next pass", gap_key)
             continue
@@ -305,7 +311,7 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
             merged_memory_urls.add(merged_url)
         _stamp_ticket_reconciled(ticket)
         reconciled.append(ticket)
-    retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
+    retire_resolved_memories(host, is_resolved=lambda row: row.ticket_url in merged_memory_urls)
     return reconciled
 
 
@@ -328,20 +334,31 @@ def _stamp_ticket_reconciled(ticket: Ticket) -> None:
     ticket.merge_extra(set_keys={_RECONCILED_KEY: timezone.now().isoformat()})
 
 
+def _stamp_memory_promoted(cluster_key: str, *, anchor_url: str) -> bool:
+    """Stamp a still-queued gap's memory TICKETED with the ticket that now carries its fix."""
+    row = ConsolidatedMemory.objects.needs_ticket().filter(cluster_key=cluster_key).first()
+    if row is None:
+        return False
+    row.mark_ticketed(anchor_url)
+    return True
+
+
 def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
     """Point the gap's memory at its merged fix so the existing retire path fires.
 
     The memory is advanced to TICKETED with the merged PR as its ``ticket_url`` (the
     reconcile then drives ``retire_resolved_memories`` off the authoritative MERGED
-    signal). A row already TICKETED/retired or with no merged URL is left untouched.
-    Returns True iff this stamped a row TICKETED with *merged_url*.
+    signal). A row stamped TICKETED at promotion (:func:`is_promotion_anchor`) is
+    re-stamped here; one already TICKETED on a real PR, retired, or with no merged URL
+    is left untouched. Returns True iff this stamped a row TICKETED with *merged_url*.
     """
     if not cluster_key or not merged_url:
         return False
     row = ConsolidatedMemory.objects.filter(cluster_key=cluster_key).first()
     if row is None:
         return False
-    if row.disposition not in {
+    promoted = row.disposition == ConsolidatedMemory.Disposition.TICKETED and is_promotion_anchor(row.ticket_url)
+    if not promoted and row.disposition not in {
         ConsolidatedMemory.Disposition.UNTRIAGED,
         ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
     }:
@@ -356,6 +373,7 @@ __all__ = [
     "GapSpec",
     "check_gap_checkbox",
     "gap_present",
+    "is_promotion_anchor",
     "reconcile_merged_gaps",
     "render_checkbox_line",
     "upsert_gap_checkbox",

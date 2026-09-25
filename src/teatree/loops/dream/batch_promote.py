@@ -33,19 +33,24 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 
+from django.db import transaction
+
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.review.review_findings import neutralize_bare_references
 from teatree.loops.dream.umbrella_ledger import (
+    _BATCH_MARKER_PREFIX,
     _UMBRELLA_KEY,
     GapSpec,
     _ensure_gap_checked,
     _line_index,
-    _merged_pr_url,
+    _merge_evidence_url,
     _read_body,
     _scrubbed_update,
     _stamp_memory_merged,
+    _stamp_memory_promoted,
     _stamp_ticket_reconciled,
     _withholding_reason,
     render_checkbox_line,
@@ -164,7 +169,11 @@ def _batch_tickets() -> "list[Ticket]":
 
 
 def gap_covered(gap_key: str) -> bool:
-    """Whether *gap_key* already rides an in-flight or delivered ticket — batch or legacy.
+    return covering_ticket(gap_key) is not None
+
+
+def covering_ticket(gap_key: str) -> Ticket | None:
+    """The in-flight or delivered ticket *gap_key* already rides — batch or legacy.
 
     A gap is covered while its batch ticket has not yet been reconciled (still in
     flight, or merged but not yet reconciled) — and, once reconciled, only if it was
@@ -185,27 +194,32 @@ def gap_covered(gap_key: str) -> bool:
         keys = {entry.get("gap_key") for entry in extra.get(_BATCH_KEY) or [] if isinstance(entry, dict)}
         if gap_key not in keys:
             continue
-        if not extra.get(_RECONCILED_KEY):
-            return True
+        if not is_reconciled(ticket):
+            return ticket
         if gap_key in set(extra.get(_CLAIMED_DELIVERED_KEY) or []):
-            return True
+            return ticket
         # else: this ticket DROPPED the gap — keep scanning; a later ticket may cover it.
-    return Ticket.objects.filter(extra__dream_gap_key=gap_key, extra__dream_gap_reconciled_at__isnull=True).exists()
+    return Ticket.objects.filter(extra__dream_gap_key=gap_key, extra__dream_gap_reconciled_at__isnull=True).first()
 
 
-def _batch_key(gap_keys: "list[str]") -> str:
-    return hashlib.sha256("\n".join(sorted(gap_keys)).encode()).hexdigest()[:16]
+def is_reconciled(ticket: Ticket) -> bool:
+    return bool((ticket.extra or {}).get(_RECONCILED_KEY))
 
 
-def _batch_issue_url(umbrella_url: str, gap_keys: "list[str]") -> str:
+def _batch_key(gap_keys: "list[str]", generation: int) -> str:
+    material = "\n".join(sorted(gap_keys)) + (f"\n#{generation}" if generation else "")
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def _batch_issue_url(umbrella_url: str, gap_keys: "list[str]", *, generation: int = 0) -> str:
     """A unique synthetic issue URL anchoring this PASS's batch Ticket.
 
     Keyed on the sorted set of pending gap keys (not a timestamp), so re-running the
     SAME pending set — a retried tick, a pass that raised after minting — reuses the
     same ticket via ``get_or_create`` rather than minting a second one for identical
-    work.
+    work. *generation* moves a re-offered set past a finished ticket that hashed alike.
     """
-    return f"{umbrella_url}#dream-batch={_batch_key(gap_keys)}"
+    return f"{umbrella_url}#{_BATCH_MARKER_PREFIX}={_batch_key(gap_keys, generation)}"
 
 
 def _batch_short_description(gaps: "list[GapSpec]") -> str:
@@ -264,19 +278,31 @@ def _upsert_gap_checkboxes(host: CodeHostBackend, *, umbrella_url: str, gaps: "l
     return added if _scrubbed_update(host, umbrella_url=umbrella_url, body="\n".join(lines) + "\n") else 0
 
 
-def _schedule_batch_fix(*, umbrella_url: str, gaps: "list[GapSpec]") -> Task | None:
-    """Mint (or reuse) the ONE Ticket carrying every gap in *gaps*, then schedule coding."""
+def _live_batch_ticket(*, umbrella_url: str, gaps: "list[GapSpec]") -> Ticket:
+    """Mint or reuse the batch Ticket for *gaps*, skipping a finished one that hashed alike.
+
+    A reconciled or terminal ticket can never carry the gaps again, so reusing it would
+    stamp them onto a dead anchor that no reconcile ever revisits.
+    """
     gap_keys = [gap.gap_key for gap in gaps]
-    issue_url = _batch_issue_url(umbrella_url, gap_keys)
+    generation = 0
+    while True:
+        ticket, _ = Ticket.objects.get_or_create(
+            issue_url=_batch_issue_url(umbrella_url, gap_keys, generation=generation),
+            defaults={
+                "role": Ticket.Role.AUTHOR,
+                "short_description": _batch_short_description(gaps),
+                "context": _batch_context(umbrella_url, gaps),
+            },
+        )
+        if not is_reconciled(ticket) and not ticket.is_terminal:
+            return ticket
+        generation += 1
+
+
+def _schedule_batch_fix(ticket: Ticket, *, umbrella_url: str, gaps: "list[GapSpec]") -> Task | None:
+    """Record the manifest on the live batch *ticket*, then schedule coding unless already under way."""
     manifest = [{"gap_key": gap.gap_key, "cluster_key": gap.cluster_key} for gap in gaps]
-    ticket, _ = Ticket.objects.get_or_create(
-        issue_url=issue_url,
-        defaults={
-            "role": Ticket.Role.AUTHOR,
-            "short_description": _batch_short_description(gaps),
-            "context": _batch_context(umbrella_url, gaps),
-        },
-    )
     ticket.merge_extra(set_keys={_BATCH_KEY: manifest, _UMBRELLA_KEY: umbrella_url})
     if Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists():
         return None
@@ -293,7 +319,10 @@ def promote_batch(
     An empty batch mints nothing — the required negative control: zero pending gaps
     means zero tickets. Otherwise every pending gap gets its umbrella checkbox
     upserted (one rewrite of the umbrella body covers the whole batch, not one write
-    per gap) and ONE coding task is scheduled carrying the full manifest.
+    per gap) and ONE coding task is scheduled carrying the full manifest. Every
+    pending gap's memory is stamped TICKETED with that live ticket in the same
+    transaction, so it leaves ``needs_ticket()`` exactly when a ticket that can still
+    deliver it exists.
     """
     if not batch.pending:
         return BatchOutcome(scheduled=False, ticket_url="", gap_count=0, reason="nothing pending")
@@ -301,7 +330,11 @@ def promote_batch(
         return BatchOutcome(scheduled=False, ticket_url="", gap_count=len(batch.pending), reason="DRY (no writes)")
 
     added = _upsert_gap_checkboxes(host, umbrella_url=umbrella_url, gaps=batch.pending)
-    task = _schedule_batch_fix(umbrella_url=umbrella_url, gaps=batch.pending)
+    with transaction.atomic():
+        ticket = _live_batch_ticket(umbrella_url=umbrella_url, gaps=batch.pending)
+        task = _schedule_batch_fix(ticket, umbrella_url=umbrella_url, gaps=batch.pending)
+        for gap in batch.pending:
+            _stamp_memory_promoted(gap.cluster_key, anchor_url=ticket.issue_url)
     return BatchOutcome(
         scheduled=task is not None,
         ticket_url=umbrella_url,
@@ -317,6 +350,14 @@ def _pending_reconcile_batch_tickets() -> "list[Ticket]":
     )
 
 
+def _reopen_dropped_gap(cluster_key: str, *, ticket: Ticket) -> None:
+    row = ConsolidatedMemory.objects.filter(
+        cluster_key=cluster_key, disposition=ConsolidatedMemory.Disposition.TICKETED, ticket_url=ticket.issue_url
+    ).first()
+    if row is not None:
+        row.reopen_core_gap()
+
+
 def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Ticket]":
     """Check + retire only the DELIVERED gaps of every MERGED batch ticket (#4776).
 
@@ -327,14 +368,19 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
     once EVERY delivered gap's checkbox was confirmed checked — mirroring
     ``reconcile_merged_gaps``'s all-or-nothing-per-attempt semantics — so a partial
     forge failure retries the whole ticket next pass rather than leaving a gap's box
-    permanently unconfirmed. A gap the coder dropped is left untouched: its checkbox
-    stays unchecked and :func:`gap_covered` reports it uncovered, so the next pass's
-    ``consider()`` re-offers it.
+    permanently unconfirmed. A gap the coder dropped keeps its unchecked checkbox, and
+    its memory returns to ``needs_ticket()`` while it still points at THIS ticket, so
+    the next pass re-offers it; a row a newer batch re-stamped is left alone.
+
+    Retirement is keyed on each confirmed gap's cluster key, never on a url alone: with
+    no merged PR row the evidence url is the ticket's own anchor, which every row
+    stamped on the batch shares, dropped gaps included. On that anchor a partially
+    confirmed ticket retires nothing until the whole ticket reconciles.
     """
     from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415 — tick-time import
 
     reconciled: list[Ticket] = []
-    merged_memory_urls: set[str] = set()
+    retirable: set[tuple[str, str]] = set()
     for ticket in _pending_reconcile_batch_tickets():
         if ticket.state != Ticket.State.MERGED:
             continue
@@ -345,8 +391,9 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
             if isinstance(entry, dict) and entry.get("gap_key")
         }
         delivered_keys = set(extra.get(_CLAIMED_DELIVERED_KEY) or []) & manifest.keys()
-        merged_url = _merged_pr_url(ticket)
+        merged_url = _merge_evidence_url(ticket)
         all_confirmed = True
+        confirmed: set[tuple[str, str]] = set()
         for gap_key in delivered_keys:
             if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
                 all_confirmed = False
@@ -355,14 +402,18 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
                 )
                 continue
             cluster_key = str(manifest[gap_key].get("cluster_key") or gap_key)
-            if _stamp_memory_merged(cluster_key, merged_url=merged_url):
-                merged_memory_urls.add(merged_url)
+            _stamp_memory_merged(cluster_key, merged_url=merged_url)
+            confirmed.add((cluster_key, merged_url))
+        if all_confirmed or merged_url != ticket.issue_url:
+            retirable |= confirmed
         if not all_confirmed:
             continue
+        for gap_key in manifest.keys() - delivered_keys:
+            _reopen_dropped_gap(str(manifest[gap_key].get("cluster_key") or gap_key), ticket=ticket)
         _stamp_ticket_reconciled(ticket)
         reconciled.append(ticket)
-    if merged_memory_urls:
-        retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
+    if retirable:
+        retire_resolved_memories(host, is_resolved=lambda row: (row.cluster_key, row.ticket_url) in retirable)
     return reconciled
 
 
@@ -370,7 +421,9 @@ __all__ = [
     "BatchOutcome",
     "ConsiderOutcome",
     "PromotionBatch",
+    "covering_ticket",
     "gap_covered",
+    "is_reconciled",
     "promote_batch",
     "reconcile_batches",
 ]
