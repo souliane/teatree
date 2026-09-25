@@ -6,6 +6,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
+from teatree.core.admission.headless import headless_admission_block_reason
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings
@@ -104,18 +105,12 @@ class TaskRunResult(TypedDict, total=False):
 def execute_task(task_id: int, phase: str) -> TaskRunResult:
     import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred: call-time
     from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     task_obj = Task.objects.get(pk=task_id)
 
-    # Admission block (#4834): a job already sitting in the django-tasks queue when
-    # ``worker_quiescing``/schema/dispatch-mode freezes admission must not run just
-    # because it was enqueued before the freeze — the SAME composition every headless
-    # dispatch site honours. The task stays PENDING/CLAIMED as found; a later drain or
-    # loop tick re-admits it once the block lifts.
-    blocked = headless_admission_block_reason()
-    if blocked:
+    # A job enqueued before the factory froze must not run; the row stays as found.
+    if blocked := headless_admission_block_reason():
         logger.info("Task %s not admitted (%s); leaving it for a later drain", task_obj.pk, blocked)
         return {"skipped": f"admission blocked: {blocked}"}
 
@@ -191,15 +186,12 @@ def drain_queue_body() -> dict[str, list[int]]:
     (:func:`teatree.loops.timer_reconciler.drain_chain`) that schedules it, so the
     two call sites can never drift.
 
-    A ``worker_quiescing``/schema/dispatch-mode admission block (#4834) suppresses the
-    enqueue step the same way a governor DENY does: poison rows still fail (that is
-    cleanup, not new paid work), but no live row is handed to ``execute_task`` while
-    the factory is frozen — it stays PENDING for the next admitted drain.
+    A frozen factory (``headless_admission_block_reason``) withholds live rows like a
+    governor DENY; poison rows still fail, since that is cleanup, not paid work.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
-    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred: call-time
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
     # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future

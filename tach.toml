@@ -237,17 +237,18 @@ depends_on = [
   # LoopState, the mask — so the health chip gates on the same answer the tick does
   # (#4726) rather than growing a second variant. Its siblings in teatree.loops stay
   # orchestration and remain unreachable from here.
-  "teatree.loops.enable_verdict",
-  # #4834: signals.py's post_save auto-enqueue and tasks.py's execute_task/drain
-  # now share the ONE admission composition the interactive claim paths already
-  # used, rather than restating the worker_quiescing/dispatch-mask boolean.
-  "teatree.core.managers_task_claim"
+  "teatree.loops.enable_verdict"
 ]
 
 [[modules]]
 path = "teatree.core.admission"
 layer = "domain"
-depends_on = ["teatree.config", "teatree.core.models"]
+depends_on = [
+  "teatree.config",
+  "teatree.core.managers_task_claim",
+  "teatree.core.models",
+  "teatree.loops.enable_verdict"
+]
 
 [[modules]]
 path = "teatree.core.modelkit"

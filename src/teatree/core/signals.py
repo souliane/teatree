@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.core.admission.headless import headless_admission_block_reason
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest
@@ -272,12 +273,8 @@ def _auto_enqueue_task(
     hours. The drain and the claim CAS honour the same gate; the lane now stays quiesced
     until ``usage_window_recovery`` releases the task at the window's re-arm instant.
 
-    A worker-quiescing/schema/dispatch-mode admission block (#4834) is honoured too —
-    the SAME ``headless_admission_block_reason`` composition every other headless
-    dispatch site consults — so a frozen factory (``worker_quiescing``, or a mode/hold
-    that masks the ``dispatch`` loop off) never runs a fresh headless agent as a side
-    effect of an FSM transition. The task stays PENDING; ``drain_queue_body`` re-admits
-    it once the block lifts.
+    A frozen factory (``headless_admission_block_reason``) leaves the task PENDING too;
+    ``drain_queue_body`` re-admits it once the block lifts.
     """
     if instance.status != Task.Status.PENDING:
         return
@@ -287,10 +284,7 @@ def _auto_enqueue_task(
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
-    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred: call-time
-
-    blocked = headless_admission_block_reason()
-    if blocked:
+    if blocked := headless_admission_block_reason():
         logger.info("Deferring auto-enqueue of task %s: %s", instance.pk, blocked)
         return
     from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time

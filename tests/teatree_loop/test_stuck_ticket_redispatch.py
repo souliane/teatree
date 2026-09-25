@@ -13,12 +13,16 @@ when the budget is exhausted — so a stuck ticket is drained or surfaced, never
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.agents.runner import HarnessOutcome
+from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.core.mode_resolution import set_mode_override
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, FailureKind
-from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import Mode, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -724,44 +728,36 @@ class TestOperatorCancelledTickets(TestCase):
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
 
-class TestRedispatchWithheldWhileFactoryFrozen(TestCase):
-    """#4834: a frozen factory must not re-mint the phase task the cancel raced.
-
-    A cancelled task whose newest attempt lands classified something OTHER than
-    ``CANCELLED_PREFIX`` (e.g. its lease lapsed mid-kill and a later sweep recorded
-    ``lease_lost`` instead) reads to ``_stuck_candidates`` exactly like a genuine
-    failure — ``newest_task_was_cancelled()`` cannot catch what was never recorded as
-    a cancel. This sweep is withheld WHOLE while admission is blocked, so that gap
-    never spends a fresh headless run precisely while the operator holds the factory.
-    """
+class TestAFrozenFactoryAndTheCancelRace(TestCase):
+    """#4834: a cancel stays a cancel through a lease loss, and escalation survives a freeze."""
 
     def test_an_uncancelled_failure_is_redispatched_when_not_frozen(self) -> None:
-        # The control: proves the fixture WOULD redispatch absent a freeze, so the
-        # frozen test below is withheld by the new gate, not by some other guard.
         ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
         _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
 
         assert redispatch_stuck_tickets() == 1
 
-    def test_quiescing_withholds_the_whole_sweep(self) -> None:
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: local import
-
+    def test_cancel_then_lease_loss_is_not_redispatched(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
-        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
-        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+        session = Session.objects.create(ticket=ticket, agent_id="testing")
+        stale = Task.objects.create(ticket=ticket, session=session, phase="testing", status=Task.Status.CLAIMED)
+        call_command("tasks", "cancel", stale.pk, confirm=True)
+        lease_lost = HarnessOutcome(agent_text="", result_message=None, stuck_reason="lease lost", lease_lost=True)
+        _record_stuck_outcome(stale, lease_lost, stuck_reason="lease lost")
+        tasks_before = Task.objects.count()
 
         assert redispatch_stuck_tickets() == 0
-        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert Task.objects.count() == tasks_before
 
-    def test_a_mode_hold_masking_dispatch_off_withholds_the_sweep(self) -> None:
-        """The documented freeze lever (``t3 loop preset use off --hold``) — no quiescing at all."""
-        from teatree.core.mode_resolution import set_mode_override  # noqa: PLC0415 — deferred: local import
-        from teatree.core.models import Mode  # noqa: PLC0415 — deferred: local import
-
-        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
-        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+    def test_escalation_still_fires_while_frozen(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        for i in range(max_phase_iterations()):
+            task = _finished_task(
+                ticket, phase="planning", status=Task.Status.FAILED, error=f"planning failed run {'x' * (i + 1)}"
+            )
+            TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=48))
         Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False})
         set_mode_override("frozen-redispatch-test")
 
         assert redispatch_stuck_tickets() == 0
-        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

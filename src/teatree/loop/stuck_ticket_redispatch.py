@@ -98,21 +98,7 @@ def redispatch_stuck_tickets() -> int:
     """Schedule the implied phase task for each stuck ticket within budget; escalate the rest.
 
     Returns the number of tickets re-dispatched (a fresh phase task scheduled).
-
-    Withheld whole while ``headless_admission_block_reason`` names a block (#4834):
-    ``worker_quiescing``, a schema skew, or a mode/hold that masks the ``dispatch``
-    loop off. Without this, a cancelled task's newest attempt reads exactly like a
-    genuine failure whenever the cancel raced a lease expiry and landed classified
-    ``lease_lost`` rather than ``cancelled`` — ``newest_task_was_cancelled()`` then
-    misses it and this sweep re-mints the phase task on the very next tick, spending a
-    fresh headless agent run precisely while the factory is frozen for that reason.
     """
-    from teatree.core.headless_admission import headless_admission_block_reason  # noqa: PLC0415 — deferred
-
-    blocked = headless_admission_block_reason()
-    if blocked:
-        logger.info("redispatch_stuck_tickets: skipping this tick — %s", blocked)
-        return 0
     now = timezone.now()
     threshold = _idle_threshold_hours()
     already_escalated = _already_escalated_ticket_pks()

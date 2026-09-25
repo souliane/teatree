@@ -2,12 +2,12 @@
 
 The first half of drain-then-deploy (rolling / zero-downtime deploy): a deploy
 must never kill an in-flight sub-agent. ``drain_worker`` flips the
-``worker_quiescing`` config gate ON — after which the claim/admission chokepoint
-(``TaskQuerySet.claim_next_pending`` / ``_claimable_for_target``) admits ZERO new
-work — then polls the SSOT in-flight set (``Task.objects.active_claims``, the live
-CLAIMED leases) until it reads empty or the grace ``timeout`` lapses. It NEVER stops
-the supervisor and never touches a CLAIMED lease; an in-flight task keeps renewing
-via ``renew_lease`` and finishes.
+``worker_quiescing`` config gate ON — after which ``claim_admission_block_reason``
+(the claim path) and ``headless_admission_block_reason`` (the auto-enqueue signal, the
+queue drain and ``execute_task``) admit ZERO new work — then polls the SSOT in-flight
+set (``Task.objects.active_claims``, the live CLAIMED leases) until it reads empty or
+the grace ``timeout`` lapses. It NEVER stops the supervisor and never touches a
+CLAIMED lease; an in-flight task keeps renewing via ``renew_lease`` and finishes.
 
 ``deploy/deploy.sh`` runs ``t3 worker drain`` before swapping the worker image; the
 FRESH worker's init clears ``worker_quiescing`` so admission resumes. On a grace

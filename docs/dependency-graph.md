@@ -68,9 +68,10 @@ graph TD
     teatree.core --> teatree.loop.preset_resolution
     teatree.core --> teatree.core.mode_resolution
     teatree.core --> teatree.loops.enable_verdict
-    teatree.core --> teatree.core.managers_task_claim
     teatree.core.admission --> teatree.config
+    teatree.core.admission --> teatree.core.managers_task_claim
     teatree.core.admission --> teatree.core.models
+    teatree.core.admission --> teatree.loops.enable_verdict
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
