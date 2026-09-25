@@ -22,10 +22,9 @@ from teatree.hooks.forge_subcommand import ApiCall, forge_api_calls, forge_subco
 # The forge programs and the create subcommand words that follow.
 _CREATE_SUBWORDS: dict[str, tuple[str, ...]] = {"gh": ("pr", "create"), "glab": ("mr", "create")}
 
-# The REST create-COLLECTION endpoint: ``merge_requests`` / ``pulls`` NOT immediately followed
-# by ``/<iid>`` — a numbered endpoint is an existing MR's own resource (an update, not a
-# create), and a nested one (``/merge_requests/42/notes``) is a sub-resource write.
-_CREATE_ENDPOINT_RE = re.compile(r"\b(?:merge_requests|pulls)\b(?!/\d)")
+# The REST create-COLLECTION endpoint: ``merge_requests`` / ``pulls`` ending the path. Anything
+# nested under it (``/42``, ``/42/notes``, ``/comments/7/replies``) is an existing resource.
+_CREATE_ENDPOINT_RE = re.compile(r"\b(?:merge_requests|pulls)/?(?=$|[?#])")
 
 # The repo an API endpoint names: ``repos/<owner>/<repo>/pulls`` or ``projects/<ns>/merge_requests``.
 _API_TARGET_RE = re.compile(r"(?:^|/)repos/(?P<gh>[^/]+/[^/?]+)/pulls|(?:^|/)projects/(?P<gl>[^/?]+)/merge_requests")

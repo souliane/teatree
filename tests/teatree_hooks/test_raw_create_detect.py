@@ -131,6 +131,7 @@ class TestCreateApiWrite:
             "glab api projects/9/merge_requests/42 -X PUT -f title=x",
             "gh api repos/o/r/pulls/42 -f title=x",
             "glab api projects/9/merge_requests/42/notes -f body=x",
+            "gh api repos/o/r/pulls/comments/123/replies -f body=x",
         ],
     )
     def test_post_to_merge_requests_iid_is_not_a_create(self, command: str) -> None:
