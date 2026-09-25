@@ -107,8 +107,6 @@ schema_readiness_gate_enabled = true # bool — refuse work when the database sc
 
 [teatree.Loops."Kill switches & credentials"]
 approved_recipe_sha = "" # str — commit of the provisioning recipe the operator reviewed and approved
-auto_disposition_enabled = false # bool — let the loop close or re-label issues it has decided about
-auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
 billing_cycle_anchor_day = 0 # int — day of the month the subscription's usage window resets
 boost_concurrency = 0 # int — extra concurrent units allowed while the box is in boost
 ci_eval_heal_autofix_enabled = false # bool — let CI propose a fix for a red eval scenario on its own
@@ -117,16 +115,12 @@ db_backup_retention_days = 7 # int — days a database backup is kept before it 
 directive_loop_enabled = true # bool — run the directive loop that turns owner directives into config
 factory_score_enabled = false # bool — compute and record the factory health score each tick
 fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
-gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
 hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
 issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
 issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading
-mr_conflict_scan_enabled = false # bool — scan open merge requests for conflicts, at the cost of a forge read each
-mr_triage_enabled = false # bool — run the merge-request triage ladder, which surfaces verdicts and never acts
 orchestrate_claim_enabled = false # bool — let the orchestrator claim work rather than only routing it
 outer_loop_enabled = false # bool — run the outer loop that measures and improves the factory itself
 review_nag_enabled = false # bool — chase a review request that has gone unanswered
-review_resume_reply_enabled = false # bool — reply in-thread that a paused review request is ready again
 sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
 trusted_issue_authors = [] # list — issue authors whose issues may be claimed without extra triage
 umbrella_issue_labels = ["epic", "umbrella", "tracking"] # list — labels marking an issue as an umbrella/epic parent intake never claims
@@ -158,11 +152,18 @@ dream_propose_evals = true # bool — let the dream pass propose new eval scenar
 dream_reindex = true # bool — let the dream pass regenerate MEMORY.md
 dream_validate_live = false # bool — let eval promotion run the metered live validator
 
+[teatree.Loops.followup]
+review_resume_reply_enabled = false # bool — reply in-thread that a paused review request is ready again
+
 [teatree.Loops.housekeeping]
+auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
 auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
 pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
 pull_main_clone_disabled = false # bool — stop pulling the main clones on a cadence
 self_update_disabled = false # bool — stop self-updating
+
+[teatree.Loops.issue_disposition]
+auto_disposition_enabled = false # bool — let the loop close or re-label issues it has decided about
 
 [teatree.Loops.issue_implementer]
 issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
@@ -184,6 +185,11 @@ ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
 
 [teatree.Loops.review]
 admit_colleague_prs_to_board = true # bool — put pull requests opened by colleagues onto the review board
+
+[teatree.Loops.ship]
+gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
+mr_conflict_scan_enabled = false # bool — scan open merge requests for conflicts, at the cost of a forge read each
+mr_triage_enabled = false # bool — run the merge-request triage ladder, which surfaces verdicts and never acts
 
 [teatree.Loops.snapshot_warmer]
 snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable

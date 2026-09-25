@@ -107,6 +107,16 @@ class _DreamLoopSettings:
 
 
 @dataclass
+class _FollowupLoopSettings:
+    """Whether the follow-up pass replies on a colleague's thread when a review resumes."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
+
+    # Acts on colleagues, so it ships off until the owner decides.
+    review_resume_reply_enabled: bool = False
+
+
+@dataclass
 class _HousekeepingLoopSettings:
     """The self-update pass — how often it fast-forwards, and what it does after."""
 
@@ -123,6 +133,18 @@ class _HousekeepingLoopSettings:
     # investigation. Hourly keeps the clones current without spamming each remote.
     pull_main_clone_disabled: bool = False
     pull_main_clone_cadence_hours: int = 1
+    # Ships off: reinstalling mid-run is the owner's call. ``T3_LOOP_AUTO_UPDATE`` env wins.
+    auto_update_reinstall: bool = False
+
+
+@dataclass
+class _IssueDispositionLoopSettings:
+    """Whether the disposition pass acts on the issues it classifies."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_disposition")
+
+    # Writes to the forge, so it ships off until the owner decides.
+    auto_disposition_enabled: bool = False
 
 
 @dataclass
@@ -197,6 +219,18 @@ class _ReviewLoopSettings:
 
 
 @dataclass
+class _ShipLoopSettings:
+    """The forge-facing scans the ship loop runs over open merge requests."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "ship")
+
+    # Each acts on a forge, so each ships off until the owner decides.
+    gitlab_approval_scanner_enabled: bool = False
+    mr_conflict_scan_enabled: bool = False
+    mr_triage_enabled: bool = False
+
+
+@dataclass
 class _SnapshotWarmerLoopSettings:
     """When a reference-DB snapshot counts as stale enough to re-warm."""
 
@@ -228,12 +262,15 @@ LOOP_OWNED_SETTING_BASES: tuple[type, ...] = (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
+    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
+    _IssueDispositionLoopSettings,
     _IssueImplementerLoopSettings,
     _NewsLoopSettings,
     _OuterLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
+    _ShipLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )

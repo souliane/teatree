@@ -98,8 +98,8 @@ def _unmeasured_pin_lines(audit: PinAudit, manifest: Path | None) -> list[str]:
     so a declared pin the measurement never reached produced no line at all — and a
     doctor that prints nothing is read as "every pin is current". Two ways a pin goes
     unmeasured, and neither said anything: a whole-repo bundle spec
-    (``obra/superpowers#<sha>`` — this manifest's only third-party pin), which the skill
-    enumeration drops because it names no single installable skill, and any pin added to
+    (``obra/superpowers#<sha>``), which the skill enumeration drops because it names no
+    single installable skill, and any pin added to
     ``apm.yml`` since the last ``t3 setup`` recorded a measurement.
 
     Reads the manifest, which is a local file, so the check stays offline. Only the

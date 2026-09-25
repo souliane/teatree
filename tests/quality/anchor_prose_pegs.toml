@@ -23,8 +23,8 @@ radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
 "BLUEPRINT.md" = ["b7bf92da3aa32c32"]
 # 1: the skill-loading kill-switch has no TaskCreated counterpart.
-# 2: the quote gate ships on, and its setting name predates the correction.
-"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "7c6a80a7554e95b1"]
+# 2: the task-list quote gate is opt-in (default off), and its setting name predates the correction.
+"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "31e9d6dd45e43556"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
 "docs/blueprint/factory-architecture.md" = ["273cc5934f99908a"]
 # 1: the harness's 27-event constant list.
@@ -53,7 +53,7 @@ radius = 400
 # There is exactly ONE dispatch interception point, and TaskCreated is not it.
 "hooks/scripts/dispatch_admission_gate.py" = ["a4846901d1d0b751"]
 # 1: the advisory emitter -- systemMessage carries the reason, decision:block never appears.
-# 2: the task-list quote gate's shipped-on resolver, the surviving handler's docstring and its
+# 2: the task-list quote gate's opt-in resolver, the surviving handler's docstring and its
 # never-lockout paragraph. Its window OPENS inside the sibling dispatch deny's arguments, so
 # `gate_id=` landing there re-digests prose that never moved.
 # 3: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
@@ -63,7 +63,7 @@ radius = 400
 # 7: main()'s exit-code contract, where _NEVER_BLOCKING_EVENTS outranks both arms.
 "hooks/scripts/hook_router.py" = [
   "e6e88a1a7ce4b21c",
-  "3a2492d7c4c701b4",
+  "779ae66921c0dd0f",
   "ea376e6c61b7ad2a",
   "df0584b2e1507beb",
   "3b12a624d2d272f3",
@@ -94,7 +94,7 @@ radius = 400
 "hooks/CLAUDE.md" = 4055
 "hooks/hooks.json" = 1028
 "hooks/scripts/dispatch_admission_gate.py" = 811
-"hooks/scripts/hook_router.py" = 8943
+"hooks/scripts/hook_router.py" = 8857
 "hooks/scripts/run-hook.sh" = 811
 "hooks/scripts/task_created_deny.py" = 4156
 "skills/checking/SKILL.md" = 811
