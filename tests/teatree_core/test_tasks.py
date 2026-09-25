@@ -8,8 +8,11 @@ import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.tasks as tasks_mod
+from teatree.core import agent_runner as agent_runner_mod
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
-from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, Ticket
+from teatree.core.mode_resolution import clear_mode_override, set_mode_override
+from teatree.core.models import AttachmentManifest, ConfigSetting, Mode, Session, Task, TaskAttempt, Ticket
 from teatree.core.runners import RetroPhaseMarker
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
@@ -18,6 +21,7 @@ from teatree.core.tasks import (
     execute_provision,
     execute_retrospect,
     execute_ship,
+    execute_task,
     execute_teardown,
     refresh_followup_snapshot,
     sync_followup,
@@ -165,6 +169,51 @@ class TestDrainHeadlessQueue(TestCase):
         assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_quiescing_withholds_every_live_row_but_still_fails_poison_rows(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        live = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+        poison_ticket = Ticket.objects.create(overlay="ghost-overlay")
+        poison_session = Session.objects.create(ticket=poison_ticket, overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=poison_ticket,
+            session=poison_session,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
+        live.refresh_from_db()
+        assert live.status == Task.Status.PENDING
+
+    def test_unfreeze_then_drain_readmits(self) -> None:
+        Mode.objects.create(name="frozen-drain-test", entries={"dispatch": False})
+        set_mode_override("frozen-drain-test")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        recorder = MagicMock()
+        with (
+            patch.object(tasks_mod, "execute_task", recorder),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            live = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING, phase="coding")
+            frozen = drain_queue_body()["enqueued"]
+            clear_mode_override()
+            readmitted = drain_queue_body()["enqueued"]
+
+        assert frozen == []
+        assert readmitted == [live.pk]
 
 
 class TestExecuteHeadlessUnknownOverlay(TestCase):
@@ -354,6 +403,33 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
         task.refresh_from_db()
         assert task.claimed_by == "rival-worker"
+
+    def _run_frozen(self) -> tuple[Task, object, MagicMock]:
+        task = self._make_task(status=Task.Status.PENDING)
+        runner = MagicMock()
+        with patch.object(agent_runner_mod, "get_agent_runner", return_value=runner):
+            result = execute_task.func(task.pk, task.phase)
+        task.refresh_from_db()
+        return task, result, runner
+
+    def test_quiescing_leaves_an_already_queued_job_pending_and_unclaimed(self) -> None:
+        ConfigSetting.objects.set_value("worker_quiescing", value=True)
+
+        task, result, runner = self._run_frozen()
+
+        runner.assert_not_called()
+        assert result == {"skipped": "admission blocked: this worker is quiescing for a rolling deploy"}
+        assert (task.status, task.claimed_by) == (Task.Status.PENDING, "")
+
+    def test_frozen_dispatch_mask_skips_execute_task(self) -> None:
+        Mode.objects.create(name="frozen-execute-test", entries={"dispatch": False})
+        set_mode_override("frozen-execute-test")
+
+        task, result, runner = self._run_frozen()
+
+        runner.assert_not_called()
+        assert result == {"skipped": "admission blocked: the dispatch loop is masked off by the active mode/hold"}
+        assert (task.status, task.claimed_by) == (Task.Status.PENDING, "")
 
 
 class TestExecuteRetrospect(TestCase):

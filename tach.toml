@@ -243,7 +243,12 @@ depends_on = [
 [[modules]]
 path = "teatree.core.admission"
 layer = "domain"
-depends_on = ["teatree.config", "teatree.core.models"]
+depends_on = [
+  "teatree.config",
+  "teatree.core.managers_task_claim",
+  "teatree.core.models",
+  "teatree.loops.enable_verdict"
+]
 
 [[modules]]
 path = "teatree.core.modelkit"
