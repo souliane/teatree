@@ -14,7 +14,7 @@ import typer
 
 _LISTED = 10
 
-#: A ticket just retrospected has not failed to deliver yet — it is still running.
+#: A ticket that just recorded its retro has not failed to deliver yet — it is still running.
 #: Only one that has had time to reach `mark_delivered()` and did not is evidence
 #: of the stall this check reports.
 _GRACE = timedelta(days=2)

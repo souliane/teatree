@@ -483,7 +483,7 @@ def _noop_reverse(apps, schema_editor):
 
 # --- ported verbatim from 0026_rehome_reviewer_delivered_tickets — _rehome_reviewer_delivered / _restore_reviewer_delivered ---
 def _rehome_reviewer_delivered(apps, schema_editor):
-    """Move reviewer-role DELIVERED tickets with no merge audit to REVIEW_DELIVERED.
+    """Move reviewer-role DELIVERED tickets with no merge audit to REVIEW_POSTED.
 
     Reviewer tickets used to short-circuit to DELIVERED, so the board showed
     them as author-merged "Landed" work. DELIVERED now means only author work

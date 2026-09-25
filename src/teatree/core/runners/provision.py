@@ -166,7 +166,7 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     ``git worktree add`` leaves the worktree and/or the branch behind; ``git worktree
     add`` then refuses the path (it exists) AND the branch (it is "already checked
     out"), so provision failed with "failed to create worktrees for: <repo>" and the
-    ticket stayed at ``started`` forever — every retry hitting the identical wall.
+    ticket stayed at ``work_started`` forever — every retry hitting the identical wall.
 
     Three outcomes: the path to ADOPT (provisioning is then a no-op over an existing
     checkout), ``""`` when the slot is now clear for ``git worktree add``, or ``None``
@@ -455,7 +455,7 @@ class WorktreeProvisioner(RunnerBase):
 
         # #3234: reconcile whatever a prior failed attempt left behind BEFORE adding.
         # A leftover worktree/branch makes ``git worktree add`` refuse both the path
-        # and the branch, which stranded the ticket at ``started`` forever.
+        # and the branch, which stranded the ticket at ``work_started`` forever.
         slot = _reconcile_leftover_worktree(repo_path, wt_path, branch, ticket_id=self.ticket.pk)
         if slot is None:
             return None

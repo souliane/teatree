@@ -245,7 +245,7 @@ def _orphaned_task_signals(
         # absence/UNKNOWN doubt — the fail-open default below is untouched.
         #
         # #3910: EXCEPT when ``pr_sweep`` armed a cold review on this ticket. A
-        # reviewer ticket goes terminal (``review_posted``) after ANY review of
+        # reviewer ticket goes terminal (``review_delivered``) after ANY review of
         # the PR, so the ship loop routinely arms its own-PR review on a ticket
         # that is ALREADY terminal — and reaping on local state alone killed
         # that review while the PR was still open and still unmergeable without

@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 
 #: States that count as "merged" for the after-merge trigger. ``delivered``
 #: covers the post-merge "ticket fully closed" state; ``merged`` covers the
-#: PR-just-landed state. ``shipped`` is the pre-merge "PR is up" state, not
+#: PR-just-landed state. ``pr_opened`` is the pre-merge "PR is up" state, not
 #: a merge.
 _MERGED_STATES: frozenset[str] = frozenset({"merged", "delivered"})
 

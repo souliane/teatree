@@ -160,7 +160,7 @@ def replay_orphaned_transitions(qs: "models.QuerySet") -> int:
     shared path: every transition is guarded by both the phase *and*
     the required ``ticket.state``, so an already-advanced ticket
     no-ops and a ticket can never be teleported past a lifecycle gate
-    it did not earn (a COMPLETED ``shipping`` task on a ``started``
+    it did not earn (a COMPLETED ``shipping`` task on a ``work_started``
     ticket finds no matching guard). The shared path also enforces
     the needs-user-input hold (#927): a task the agent could not
     finish (its last attempt returned ``needs_user_input``) was held

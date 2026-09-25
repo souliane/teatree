@@ -66,7 +66,7 @@ def _log_ticket_transition(
         # idempotent in STATE but not in side effects — every re-run still fired this
         # receiver. A caller re-running one per pass therefore wrote one row per ticket
         # per pass forever: 3,240,987 of 3,241,397 rows on the live box were
-        # ``review_posted → review_posted``, 99.99% of the table, still growing at
+        # ``review_delivered → review_delivered``, 99.99% of the table, still growing at
         # ~410/min. What such a re-run actually changed lives in ``extra`` and is
         # recorded there; the state edge is the only thing this table holds, and it
         # has none.

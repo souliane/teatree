@@ -8,8 +8,8 @@ agent run); when a ticket has no recorded attempts the fallback is
 
 Staleness is measured on *activity*, not phase duration: a ticket worked
 on every day stays fresh even after a week in ``coding``. Tickets in
-``not_started`` (no work expected yet) or a terminal state (``shipped``,
-``merged``, ``retrospected``, ``delivered``, ``ignored`` — nothing left
+``not_started`` (no work expected yet) or a terminal state (``pr_opened``,
+``merged``, ``retro_recorded``, ``delivered``, ``ignored`` — nothing left
 to do) are excluded.
 
 This scanner only **reports**. It never transitions the :class:`Ticket`.

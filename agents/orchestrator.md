@@ -45,11 +45,12 @@ Priority order:
  | Status | Phase | Agent |
    |--------|-------|-------|
  | not_started, scoped | intake | (handle directly — create worktree) |
- | started | coding | @coder |
+ | work_started | planning | @planner |
+ | plan_recorded | coding | @coder |
  | coded | testing | @tester |
  | tested | reviewing | @reviewer |
- | reviewed | shipping | @shipper |
- | shipped, in_review, merged | debugging | @debugger |
+ | self_reviewed | shipping | @shipper |
+ | pr_opened, review_requested, merged | debugging | @debugger |
 
 3. Intent keywords in the user's message:
 

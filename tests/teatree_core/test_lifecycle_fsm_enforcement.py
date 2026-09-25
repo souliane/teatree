@@ -81,7 +81,7 @@ class TestVisitPhaseVocabulary(TestCase):
         session = ticket.sessions.first()
         assert "brainstorm" in session.visited_phases
         assert ticket.state == Ticket.State.WORK_STARTED
-        assert "started" in result
+        assert result.endswith("(ticket state: work_started)")
 
 
 class TestVisitPhaseLoudFailure(TestCase):
@@ -132,7 +132,7 @@ class TestVisitPhaseDodRefusalIsGraceful(TestCase):
         # The refusal reason is surfaced in the warning, not a raw traceback.
         joined = "\n".join(cm.output)
         assert str(exc) in joined
-        assert "reviewed" in result
+        assert result.endswith("(ticket state: self_reviewed)")
 
     def test_dirty_worktree_refusal_is_logged_no_op(self) -> None:
         from teatree.core.models.errors import DirtyWorktreeError  # noqa: PLC0415

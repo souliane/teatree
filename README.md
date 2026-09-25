@@ -215,9 +215,10 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 
 **Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
 (ticket → code → test → review → ship) drive corresponding ticket states. The
-full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
-reviewed → shipped → in_review → merged → retrospected → delivered`, plus
-`ignored` for work that is consciously skipped. This diagram is generated from
+full `Ticket.State` set is `not_started → scoped → work_started → plan_recorded → coded →
+tested → self_reviewed → pr_opened → review_requested → merged → retro_recorded →
+delivered`, plus `review_delivered` (the reviewer-role terminal) and `ignored` for work
+that is consciously skipped. This diagram is generated from
 the `Ticket` model's `@transition` decorators; edit the model, not the diagram
 (`scripts/hooks/generate_fsm_diagrams.py`).
 
@@ -379,7 +380,7 @@ reference:
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
 that declare the legal source and target states; `Ticket.code()` requires
-`state == STARTED`, `Ticket.ship()` requires `state == REVIEWED`, and so on.
+`state == PLAN_RECORDED`, `Ticket.ship()` requires `state == SELF_REVIEWED`, and so on.
 `Task` status moves through guarded methods (`claim`, `complete`, `fail`,
 `reopen`) that take a row lock and a lease, raising `InvalidTransitionError`
 on an illegal move. Agents do not write to these fields directly; they call

@@ -121,6 +121,7 @@ from teatree.cli.doctor.checks_test_durations import (
     check_test_durations_freshness,
     check_test_timeout_headroom,
 )
+from teatree.cli.doctor.checks_ticket_state_values import check_unknown_ticket_states
 from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.plugin_repair import _ensure_plugin_registered
@@ -492,8 +493,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # after it was written with nothing surfacing it in between. A twelfth watches the one
     # non-terminal state `_SETTLED_STATES` excludes on purpose: RETRO_RECORDED is in flight,
     # not settled, but a failed/never-dispatched retro worker leaves it there with nothing
-    # else flagging the stall (#4779). The tuple calls all twelve before ``all`` short-circuits,
-    # so no finding masks another.
+    # else flagging the stall (#4779). A thirteenth fails on a ticket value no live state
+    # accepts — the rename has no dual-read shim (#4779). The tuple calls all thirteen before
+    # ``all`` short-circuits, so no finding masks another.
     ok = (
         all(
             (
@@ -504,6 +506,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_unshipped_work(),
                 check_dead_ticket_rows(),
                 check_stale_retro_recorded(),
+                check_unknown_ticket_states(),
                 check_stranded_prek_patches(),
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),

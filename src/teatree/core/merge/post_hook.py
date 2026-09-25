@@ -179,7 +179,7 @@ def record_merge_and_advance(
             # is the authority — every pre-merged state (NOT_STARTED through
             # REVIEW_REQUESTED, plus PR_OPENED) must advance to MERGED. RETRO_RECORDED/
             # DELIVERED are past MERGED and stay where they are; IGNORED is
-            # abandoned. The original ``state in {in_review, merged}`` guard
+            # abandoned. The original ``state in {review_requested, merged}`` guard
             # left WORK_STARTED tickets visibly stuck on the statusline after their
             # PR merged (#1324 follow-up). The FSM source-set on
             # ``reconcile_merged`` is the single source of truth — catching

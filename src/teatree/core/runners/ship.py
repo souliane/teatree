@@ -514,7 +514,7 @@ class ShipExecutor(RunnerBase):
             )
         # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
         # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
-        # the overlay) must not silently advance the FSM to ``in_review``. The
+        # the overlay) must not silently advance the FSM to ``review_requested``. The
         # slug is matched on ``/``-delimited boundaries — a bare substring test
         # accepted a ``<slug>-mirror`` repo's URL — and both forges put a route
         # segment after the repo (``/pull/N``, ``/-/merge_requests/N``), so the

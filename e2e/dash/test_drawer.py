@@ -87,7 +87,7 @@ def test_transition_history_rows_render(live_server: LiveServer, page: Page, see
     board = BoardPage(page, live_server.url)
     board.open()
     drawer = board.open_drawer_for(seeded_board.reviewing.pk)
-    # The seeded STARTED -> CODED transition shows as a history row with hued chips.
+    # The seeded WORK_STARTED -> CODED transition shows as a history row with hued chips.
     expect(drawer.root.get_by_role("heading", name="Transition history")).to_be_visible()
     expect(drawer.history_rows.filter(has=page.locator(".chip.state"))).not_to_have_count(0)
 

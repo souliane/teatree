@@ -200,7 +200,7 @@ def _pr_terminal(question: DeferredQuestion, context: SweepContext) -> Decision 
     """Every pull request the subject produced is settled — DRAIN; anything else, no decision.
 
     A narrower fact than :func:`_subject_terminal` and a strictly later one: a ticket
-    can sit at ``reviewed`` for weeks with its PR already merged, so the FSM state says
+    can sit at ``self_reviewed`` for weeks with its PR already merged, so the FSM state says
     "live" about work that has landed. Where the PRs are all merged or closed, the
     question that guarded them can no longer change anything.
 

@@ -2,7 +2,7 @@
 
 The FSM is teatree's model of the world; the forge is the world. Nothing drove the
 model back toward the world, so the board degraded monotonically — measured live at
-205 tickets in ``review_posted``, 55 in ``not_started`` and exactly ONE in ``merged``
+205 tickets in ``review_delivered``, 55 in ``not_started`` and exactly ONE in ``merged``
 across 328 rows, with six PRs merged in one minute and not a single card moving.
 
 The FSM was NOT the blocker. ``Ticket.reconcile_merged`` already accepts every
@@ -12,7 +12,7 @@ both structurally starved: the merge keystone advances ``clear.ticket``, and 469
 does not is the single ``merged`` ticket); the per-tick sweep keys on a linked
 ``PullRequest`` row in MERGED, and the box has ten PR rows, all OPEN. So the missing
 piece is a driver that asks the FORGE about the ticket's own item — which is what
-rule B below is. (The 205 ``review_posted`` rows are all ``role = reviewer``: that
+rule B below is. (The 205 ``review_delivered`` rows are all ``role = reviewer``: that
 state is the reviewer terminal, so they are correctly not merge candidates.)
 
 Six rules, one path, applied in cheapest-first order:
@@ -39,7 +39,7 @@ Rule E — the upstream ISSUE behind a DELIVERED ticket was REOPENED. DELIVERED 
 Rule F — a PRE-SHIP ticket whose own ISSUE the forge says CLOSED. The shape no
     other rule can reach, because B/C read an issue URL as an unknown PR, D polls
     only the post-ship states, and E only DELIVERED — so a backlog prune left twelve
-    rows ``planned`` behind closed issues, each a permanent dispatch source (#4711).
+    rows ``plan_recorded`` behind closed issues, each a permanent dispatch source (#4711).
     It lives in the sibling ``board_reconcile_issue_close`` module; both call the
     shared application machinery in ``board_reconcile_apply``.
 
@@ -318,7 +318,7 @@ def _close_review(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTrans
         return planned(ticket, Ticket.State.REVIEW_DELIVERED, BoardAction.REVIEW_CLOSED, reason)
     ticket.mark_review_no_action()
     ticket.save()
-    logger.info("Board reconcile closed review ticket %s %s → review_posted (%s)", ticket.pk, from_state, reason)
+    logger.info("Board reconcile closed review ticket %s %s → review_delivered (%s)", ticket.pk, from_state, reason)
     return BoardTransition(
         ticket_id=int(ticket.pk),
         issue_url=ticket.issue_url,

@@ -3,14 +3,14 @@
 Two populations freeze the factory, and one sweep drains both.
 
 A **frozen** ticket sits in a non-terminal state with ZERO open tasks, no open PR,
-and no recent activity: its FSM reads ``started``/``planned``/… but nothing is
+and no recent activity: its FSM reads ``work_started``/``plan_recorded``/… but nothing is
 scheduled to advance it, and the report-only stale scanner never re-dispatches.
 
 A **failing** ticket is not idle at all: its latest attempt for the implied phase
 FAILED and nothing is in flight, so it churns rather than stops and an idle
 threshold can never reach it. Both roles are covered — the failing population is
 dominated by the ``reviewing`` phase, which lives on REVIEWER tickets, and those sit
-at ``not_started`` until ``review_posted``, so their implied phase comes from their
+at ``not_started`` until ``review_delivered``, so their implied phase comes from their
 own most recent task rather than from a state map. A failure whose phase output
 DEMONSTRABLY LANDED is excluded: it is a dead artifact, and re-running it is the
 already-done redispatch flood the ``transient_requeue`` sweep retires it to avoid.
@@ -226,7 +226,7 @@ _OPEN_PR_STATES = frozenset(
 
 #: States a REVIEWER ticket has nothing left to do in. ``marker_release_states()``
 #: carries the reviewer terminal (REVIEW_DELIVERED); RETRO_RECORDED is added for the same
-#: reason the failed-task doctor probe adds it — a retrospected ticket is finished.
+#: reason the failed-task doctor probe adds it — a ticket with its retro recorded is finished.
 _REVIEWER_DONE_STATES = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
 
 
