@@ -36,6 +36,7 @@ import logging
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.db import transaction
 
@@ -49,9 +50,11 @@ from teatree.loops.dream.compliance_attribution import (
 )
 from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.engine import DistilledCluster
-from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
 from teatree.loops.dream.replay import ConsolidationExtract
+
+if TYPE_CHECKING:
+    from teatree.loops.dream.batch_promote import PromotionBatch
 
 logger = logging.getLogger(__name__)
 
@@ -95,23 +98,19 @@ class ComplianceSnapshotResult:
 
 @dataclass(frozen=True, slots=True)
 class EscalationOutcome:
-    """The result of driving one recurring rule onto the standing umbrella issue.
+    """The result of considering one recurring rule for this pass's promotion batch.
 
-    ``filed`` is True when THIS pass did new work — a new umbrella checkbox was added
-    OR a coding task was scheduled (the ``promote_gap`` outcome), so a recurrence
-    already riding the umbrella reports False on every later pass; ``ticket_url`` is
-    the umbrella issue URL, set whenever the recurrence RIDES the umbrella — this pass
-    promoted it, or a withheld / cap-spent pass discovered it already there — and empty
-    only when nothing rides it; ``withheld`` is True when the rendered body would leak a
-    banned term / bare reference; ``deferred`` is True when the pass's promotion cap was
-    already spent and this recurrence is what it turned away (#4176).
+    ``filed`` is True when this recurrence RIDES the umbrella — queued into this
+    pass's batch, already covered by an in-flight/delivered one, or a non-withheld
+    dry-run preview; ``ticket_url`` is the umbrella issue URL whenever ``filed`` is
+    True; ``withheld`` is True when the rendered title would leak a banned term / bare
+    reference (#2663, #4776).
     """
 
     rule_identity: str
     filed: bool
     ticket_url: str = ""
     withheld: bool = False
-    deferred: bool = False
     reason: str = ""
 
 
@@ -283,29 +282,29 @@ def persist_compliance_pass(
 
 def escalate_recurrences(
     findings: Sequence[ComplianceFinding],
-    host: CodeHostBackend,
     *,
+    batch: "PromotionBatch",
     umbrella_url: str = UMBRELLA_ISSUE_URL,
     dry_run: bool = False,
-    budget: PromotionBudget | None = None,
 ) -> list[EscalationOutcome]:
-    """Drive ONE umbrella checkbox + scheduled gate/eval fix per recurring rule (#2663).
+    """Queue ONE gap per recurring rule into this pass's promotion batch (#2663, #4776).
 
     Only recurrences (a rule that already had a durable memory, violated again)
     escalate; a first-occurrence finding does nothing. Two recurrences of the same
-    rule collapse to one gap (deduped by ``rule_identity``). Each recurrence rides the
-    standing umbrella (*umbrella_url*) as a checkbox + a scheduled coding task whose
-    title PRESCRIBES the structural fix — a gate, a config self-check, or an
-    anti-vacuous eval — and NEVER proposes writing another memory; it no longer files a
-    fresh ``needs-triage`` issue that the scanner skips. *budget* bounds how many gaps
-    THIS pass promotes (``None`` ⇒ unbounded, #4176).
+    rule collapse to one gap (deduped by ``rule_identity``). Each recurrence is
+    considered against the standing umbrella (*umbrella_url*) with a title that
+    PRESCRIBES the structural fix — a gate, a config self-check, or an anti-vacuous
+    eval — and NEVER proposes writing another memory. The checkbox + scheduled coding
+    task are minted once, for the WHOLE pass's batch, by
+    :func:`~teatree.loops.dream.batch_promote.promote_batch` after every promoting
+    phase has run — not here (#4776).
 
     Promotion only — stamping the audit rows is :func:`stamp_escalations`, which the
     phase entry point runs over the returned outcomes.
     """
     recurring = {f.rule_identity: f for f in findings if f.is_recurrence}
     return [
-        _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url, dry_run=dry_run, budget=budget)
+        _escalate_one_recurrence(finding, umbrella_url=umbrella_url, dry_run=dry_run, batch=batch)
         for finding in recurring.values()
     ]
 
@@ -372,24 +371,22 @@ def run_compliance_escalation(
     findings: Sequence[ComplianceFinding],
     host: CodeHostBackend | None,
     dry_run: bool,
-    budget: PromotionBudget | None = None,
+    batch: "PromotionBatch",
 ) -> str:
-    """ESCALATE each recurrence to a fix-and-merge under the standing umbrella (#2663).
+    """ESCALATE each recurrence into this pass's promotion batch (#2663, #4776).
 
     The default-OFF other half of phase 3c: only recurrences (a memory-backed rule
-    violated AGAIN) escalate, each riding one deduped umbrella checkbox + scheduled
-    gate/eval coding task via *host* — never another memory. A ``None`` *host* (no
-    resolved backlog code host) reports a skip rather than raising. Under *dry_run*
-    nothing is filed; *budget* bounds how many gaps this pass promotes. When *snapshot*
-    is supplied, the matching audit row is stamped escalated. Returns the dream-command
-    summary clause.
+    violated AGAIN) escalate, each queued into *batch* — never another memory. A
+    ``None`` *host* (no resolved backlog code host) reports a skip rather than
+    raising. Under *dry_run* nothing is queued. When *snapshot* is supplied, the
+    matching audit row is stamped escalated. Returns the dream-command summary clause.
     """
     recurrences = sum(1 for f in findings if f.is_recurrence)
     if not recurrences:
         return ""
     if host is None:
         return "; WARN compliance escalation skipped — no teatree code host resolved"
-    outcomes = escalate_recurrences(findings, host, dry_run=dry_run, budget=budget)
+    outcomes = escalate_recurrences(findings, batch=batch, dry_run=dry_run)
     stamp_escalations(snapshot, outcomes, dry_run=dry_run)
     filed = sum(1 for o in outcomes if o.filed)
     return f"; escalated {filed}/{recurrences} compliance recurrence(s)"
@@ -434,52 +431,43 @@ def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str
 
 
 def _escalate_one_recurrence(
-    host: CodeHostBackend,
     finding: ComplianceFinding,
     *,
     umbrella_url: str,
+    batch: "PromotionBatch",
     dry_run: bool = False,
-    budget: PromotionBudget | None = None,
 ) -> EscalationOutcome:
-    """Drive one recurring rule to a fix-and-merge via the umbrella ledger (#2663).
+    """Queue one recurring rule into this pass's promotion batch (#2663, #4776).
 
-    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
-    upserted under the umbrella (deduped by this recurrence's gap key) and a coding
-    task is scheduled (deduped by the same key). The checkbox title PRESCRIBES the
-    structural fix — a gate or an eval — never another memory. The banned-term /
-    bare-reference withholding is enforced inside ``promote_gap`` (and still runs
-    under *dry_run*, so a withheld gap is withheld in the preview too). Under
-    *dry_run* nothing is written, but a non-withheld gap is reported as filed so the
-    preview counts what a real run WOULD escalate rather than reporting zero.
+    Reuses :meth:`~teatree.loops.dream.batch_promote.PromotionBatch.consider`: the
+    gap is deduped against every in-flight/delivered batch (keyed on this
+    recurrence's gap key) and queued for the SINGLE ticket the pass mints once every
+    phase has run. The title PRESCRIBES the structural fix — a gate or an eval —
+    never another memory. The banned-term/bare-reference withholding is enforced
+    inside ``consider`` (and still runs under *dry_run*, so a withheld gap is
+    withheld in the preview too). Under *dry_run* nothing is queued, but a
+    non-withheld gap is reported as filed so the preview counts what a real run WOULD
+    escalate rather than reporting zero.
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     gap_key = f"{_RECURRENCE_MARKER}-{finding.rule_identity}"
-    outcome = umbrella_ledger.promote_gap(
-        host,
-        umbrella_url=umbrella_url,
-        gap=umbrella_ledger.GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key),
-        dry_run=dry_run,
-        budget=budget,
+    outcome = batch.consider(
+        gap=GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key), dry_run=dry_run
     )
-    if outcome.already_present:
-        # The recurrence rides the umbrella already, so a withheld title or a spent cap
-        # turned away no work — the audit row must name the umbrella either way (#4176).
+    if outcome.withheld:
         return EscalationOutcome(
             rule_identity=finding.rule_identity,
             filed=False,
-            ticket_url=umbrella_url,
-            withheld=outcome.withheld,
+            ticket_url=umbrella_url if outcome.already_covered else "",
+            withheld=True,
             reason=outcome.reason,
         )
-    if outcome.withheld:
-        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
-    if outcome.deferred:
-        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, deferred=True, reason=outcome.reason)
+    filed = outcome.queued or outcome.already_covered or dry_run
     return EscalationOutcome(
         rule_identity=finding.rule_identity,
-        filed=outcome.scheduled or outcome.checkbox_added or dry_run,
-        ticket_url=umbrella_url,
+        filed=filed,
+        ticket_url=umbrella_url if filed else "",
         reason=outcome.reason,
     )
 

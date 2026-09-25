@@ -39,10 +39,11 @@ from django_typer.management import TyperCommand, command
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.management.commands._dream_report import TailTimings, _ResultFragments
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.loops.dream.pass_config import PassBudget, PromotionBudget
+from teatree.loops.dream.pass_config import PassBudget
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.loops.dream.batch_promote import PromotionBatch
     from teatree.loops.dream.engine import DreamRunResult
     from teatree.loops.dream.gap_phases import GapPromotionPhases
     from teatree.loops.dream.phase_runner import MemoryPhaseRunner
@@ -345,10 +346,14 @@ class Command(TyperCommand):
             )
             return PassOutcome.FAILED
 
-        # ONE budget for the whole pass, shared by every promoting phase — three phases
-        # each granted the full cap would triple it (#4176). Named apart from the pass's
-        # WALL-CLOCK budget above: two different bounds on the same pass.
-        promotion = PromotionBudget.from_config()
+        # ONE batch for the whole pass, shared by every promoting phase (#4776): each
+        # phase COLLECTS its gaps into it and the batch mints AT MOST ONE ticket after
+        # every phase has run — see ``_promote_batch`` below.
+        from teatree.loops.dream.batch_promote import (  # noqa: PLC0415 — deferred: keeps command import light
+            PromotionBatch,
+        )
+
+        promotion = PromotionBatch()
         phases = self._gap_phases()
         # The phases after the consolidation call are timed, because WHICH one consumes the
         # tail was unanswerable from the logs of a pass the deadline SIGKILLed short of its
@@ -367,12 +372,12 @@ class Command(TyperCommand):
         # Measurement is the root KPI — it runs on EVERY pass (default ON) and reuses the
         # extract the engine already built; escalation is the default-OFF other half.
         with timings.phase("compliance"):
-            compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, budget=promotion)
+            compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, batch=promotion)
         # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
         # automatable user asks to a fix-and-merge under the same standing umbrella.
         with timings.phase("automation-asks"):
             automation_asks = phases.run_automation_asks(
-                extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
+                extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, batch=promotion
             )
         with timings.phase("memory-phases+gates"):
             memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
@@ -380,9 +385,12 @@ class Command(TyperCommand):
             )
         with timings.phase("memory-promote"):
             memory_promote = phases.run_memory_promotion(
-                dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
+                dry_run=dry_run, force_all_phases=mode.force_all_phases, batch=promotion
             )
-        deferred = promotion.summary + timings.summary
+        # Every promoting phase above has now COLLECTED its gaps — mint the pass's
+        # single batch ticket (#4776) and reconcile whichever batch tickets merged.
+        with timings.phase("promotion-batch"):
+            deferred = self._promote_batch(batch=promotion, dry_run=dry_run) + timings.summary
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
@@ -508,6 +516,33 @@ class Command(TyperCommand):
             if host is not None:
                 return host, repo
         return None, repo
+
+    def _promote_batch(self, *, batch: "PromotionBatch", dry_run: bool) -> str:
+        """Mint the pass's single batch ticket, then reconcile delivered batch gaps (#4776).
+
+        Runs unconditionally after every promoting phase has collected its gaps into
+        *batch* — the batch may hold compliance/automation-ask gaps even when
+        ``memory_promote`` itself is off, so this is not gated on any one phase's
+        toggle. A failure degrades to a WARN clause, never crashing the pass that
+        already stamped its other work.
+        """
+        from teatree.loops.dream import batch_promote, promote_memory  # noqa: PLC0415 — deferred: lazy command import
+
+        try:
+            host, _repo = self._teatree_backlog_host()
+            if host is None:
+                return batch.summary + "; WARN batch promotion skipped — no teatree code host resolved"
+            umbrella = promote_memory.UMBRELLA_ISSUE_URL
+            outcome = batch_promote.promote_batch(host, umbrella_url=umbrella, batch=batch, dry_run=dry_run)
+            reconciled = [] if dry_run else batch_promote.reconcile_batches(host, umbrella_url=umbrella)
+        except Exception as exc:  # noqa: BLE001 — a batch-promotion failure degrades to a WARN clause
+            return batch.summary + f"; WARN batch promotion raised: {type(exc).__name__}: {exc}"
+        summary = batch.summary
+        if outcome.scheduled:
+            summary += f"; batch ticket scheduled ({outcome.gap_count} gap(s))"
+        if reconciled:
+            summary += f", reconciled {len(reconciled)} batch ticket(s)"
+        return summary
 
     def _gap_phases(self) -> "GapPromotionPhases":
         """The gap-promoting phases (3c/3d/Pass-2), wired to the backlog host resolver."""

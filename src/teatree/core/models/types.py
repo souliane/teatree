@@ -246,6 +246,15 @@ class TicketExtra(TypedDict, total=False):
     # IGNORED and never reaches MERGED, so the reconcile reads the host's merge instead —
     # without it the member's umbrella box stays open forever. See ``umbrella_ledger``.
     dream_gap_folded_into: int
+    # #4776 dream promotion batching: a ticket scheduled to fix an ENTIRE pass's
+    # collected gaps (replaces the per-gap ``dream_gap_key`` scheme above for NEW
+    # tickets; legacy in-flight tickets keep the old keys). ``dream_gap_batch`` is
+    # the full manifest (``[{"gap_key": ..., "cluster_key": ...}, ...]``);
+    # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
+    # keys actually delivered, verified independently at review before the
+    # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
+    dream_gap_batch: "list[dict[str, str]]"
+    dream_gap_claimed_delivered: list[str]
     # #2886: durable pydantic_ai harness conversation store for cached-resume
     # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
     # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
