@@ -41,6 +41,7 @@ _SETTLED_PR_STATES = frozenset({"merged", "closed"})
 class ReviewDeclined(StrEnum):
     PR_STATE_UNKNOWN = "pr_state_unknown"
     NOTHING_OWED = "nothing_owed"
+    RETIRED = "retired"
 
 
 def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None) -> Task | ReviewDeclined:
@@ -89,8 +90,7 @@ def reviewer_dispatch_decline(ticket: Ticket) -> ReviewDeclined | None:
         return ReviewDeclined.NOTHING_OWED
     pr_state = str(get_resolver("pr_open_state")(ticket))
     if pr_state in _SETTLED_PR_STATES:
-        _retire(ticket, pr_state)
-        return ReviewDeclined.NOTHING_OWED
+        return ReviewDeclined.RETIRED if _retire(ticket, pr_state) else ReviewDeclined.NOTHING_OWED
     if pr_state != _PR_OPEN:
         return ReviewDeclined.PR_STATE_UNKNOWN
     return None
@@ -100,9 +100,18 @@ def _in_flight_review(ticket: Ticket) -> Task | None:
     return Task.objects.in_flight_for_phase(ticket.overlay, REVIEW_PHASE).filter(ticket=ticket).order_by("pk").first()
 
 
-def _retire(ticket: Ticket, pr_state: str) -> None:
+def _retire(ticket: Ticket, pr_state: str) -> bool:
     with transaction.atomic():
-        if can_proceed(ticket.ignore):
-            ticket.ignore()
-            ticket.save()
+        if not can_proceed(ticket.ignore):
+            logger.info(
+                "Not retiring reviewer ticket %s: PR %s is %s but state %r has no ignore transition",
+                ticket.pk,
+                ticket.issue_url,
+                pr_state,
+                ticket.state,
+            )
+            return False
+        ticket.ignore()
+        ticket.save()
     logger.info("Retired reviewer ticket %s: PR %s is %s", ticket.pk, ticket.issue_url, pr_state)
+    return True

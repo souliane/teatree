@@ -40,6 +40,8 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._pr_open_state_stub import pr_open_state
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
+_REAL_DEFECT = "the review found a real defect in the diff"
+_ALREADY_LANDED = "the push gate refused the branch: its content already landed"
 
 
 def _stuck_ticket(*, state: str = Ticket.State.STARTED, idle_hours: int = 48) -> Ticket:
@@ -442,10 +444,66 @@ class TestFinishedPrsMintNothing(TestCase):
     def test_an_open_pr_still_gets_its_review(self) -> None:
         ticket = self._failed_reviewer()
 
-        with pr_open_state(PrOpenState.OPEN):
+        with pr_open_state(PrOpenState.OPEN) as host:
             assert redispatch_stuck_tickets() == 1
 
         assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
+        assert len(host.calls) == 1
+
+    def _halted_reviewer(self, *, issue_url: str = "https://ex.com/org/app/pull/7") -> Ticket:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=issue_url,
+            extra={"reviewed_sha": _REVIEWED_HEAD},
+        )
+        for _ in range(3):
+            _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=_REAL_DEFECT, hours_ago=48)
+        return ticket
+
+    def test_an_unknown_state_reviewer_ticket_is_never_admitted_even_with_its_budget_spent(self) -> None:
+        ticket = self._halted_reviewer()
+        Ticket.objects.filter(pk=ticket.pk).update(state="retired_state_zz")
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        assert DeferredQuestion.objects.count() == 0
+        assert host.calls == []
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_halted_reviewer_ticket_whose_pr_merged_is_retired_not_escalated(self) -> None:
+        for iid, state in enumerate((PrOpenState.MERGED, PrOpenState.CLOSED)):
+            with self.subTest(state=state):
+                ticket = self._halted_reviewer(issue_url=f"https://ex.com/org/app/pull/{iid}")
+
+                with pr_open_state(state) as host:
+                    assert redispatch_stuck_tickets() == 0
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.IGNORED
+                assert DeferredQuestion.objects.count() == 0
+                assert host.calls == [ticket.issue_url]
+
+    def test_a_halted_reviewer_ticket_whose_pr_is_open_is_still_escalated(self) -> None:
+        ticket = self._halted_reviewer()
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.count() == 1
+        assert len(host.calls) == 1
+
+    def test_a_halted_reviewer_ticket_whose_pr_state_is_unreadable_is_still_escalated(self) -> None:
+        ticket = self._halted_reviewer()
+
+        with pr_open_state(PrOpenState.UNKNOWN):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.count() == 1
 
     def test_a_ticket_in_an_unknown_state_mints_no_task_and_warns(self) -> None:
         ticket = self._failed_reviewer()
@@ -525,20 +583,16 @@ class TestFinishedPrsMintNothing(TestCase):
 
         assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
 
-    def test_an_author_ticket_whose_pr_merged_is_escalated_not_redispatched(self) -> None:
+    def test_an_author_ticket_with_a_merged_pr_and_no_open_one_is_still_redispatched(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED)
         ticket.pull_requests.create(
             url="https://ex.com/org/app/pull/8", repo="org/app", iid="8", state=PullRequest.State.MERGED
         )
 
-        assert redispatch_stuck_tickets() == 0
+        assert redispatch_stuck_tickets() == 1
 
-        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        questions = DeferredQuestion.objects.filter(answered_at__isnull=True)
-        assert questions.count() == 1
-        assert "https://ex.com/org/app/pull/8" in questions.get().question
-        assert redispatch_stuck_tickets() == 0
-        assert DeferredQuestion.objects.count() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
     def test_an_author_ticket_with_only_a_closed_pr_is_still_redispatched(self) -> None:
         ticket = _stuck_ticket(state=Ticket.State.CODED)
@@ -756,11 +810,10 @@ class TestFailingCandidates(TestCase):
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
 
-    def test_a_deterministic_shipping_failure_with_a_stray_pr_is_still_surfaced(self) -> None:
+    def test_a_deterministic_shipping_failure_with_a_stray_pr_is_still_failing(self) -> None:
         # #3982's opposite direction: a landed PR proves SOME push succeeded, not that
         # THIS attempt's push gate refusal did. Only a LEASE_LOST failure may trust the
         # artifact half of the landing evidence; any other failure kind must still surface.
-        # A merged PR on a mid-lifecycle author ticket surfaces as an escalation (#4847).
         ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
         _finished_task(
             ticket, phase="shipping", status=Task.Status.FAILED, error="result_error: the push gate refused the branch"
@@ -769,9 +822,19 @@ class TestFailingCandidates(TestCase):
             url="https://ex.com/o/a/pull/9", repo="o/a", iid="9", state=PullRequest.State.MERGED
         )
 
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
+
+    def test_a_repeating_shipping_failure_after_a_merged_pr_is_halted_by_the_budget(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
+        ticket.pull_requests.create(
+            url="https://ex.com/o/a/pull/9", repo="o/a", iid="9", state=PullRequest.State.MERGED
+        )
+        for _ in range(2):
+            _finished_task(ticket, phase="shipping", status=Task.Status.FAILED, error=_ALREADY_LANDED)
+
         assert redispatch_stuck_tickets() == 0
-        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
-        assert "https://ex.com/o/a/pull/9" in DeferredQuestion.objects.get(answered_at__isnull=True).question
+        assert DeferredQuestion.objects.count() == 1
 
 
 class TestEveryClassPassesTheBudget(TestCase):

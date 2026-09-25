@@ -34,7 +34,7 @@ A ticket with an open task is already being worked and is left alone.
 
 A reviewer re-dispatch mints nothing unless
 :func:`~teatree.core.models.ticket_external_review.reviewer_dispatch_decline` says a
-review is still owed, and an author ticket whose PR merged is escalated, not re-run.
+review is still owed.
 
 Lives in ``teatree.loop`` (orchestration): it composes the ``core`` ticket-
 scheduling methods with the ``core`` repair-loop budget over a housekeeping sweep.
@@ -134,12 +134,19 @@ def _redispatch_one(candidate: _Candidate) -> int:
     Isolated per candidate so :func:`redispatch_stuck_tickets` can wrap it in a single
     ``try`` and keep sweeping when one row raises. The single path both classes take,
     so no re-dispatch can reach the scheduler without passing the budget.
+    A halted reviewer ticket whose PR settled is retired instead of escalated.
     """
     halt = _budget_halt_reason(candidate.ticket, phase=candidate.phase)
     if halt is not None:
+        if _settled_instead_of_stuck(candidate.ticket):
+            return 0
         _escalate_once(candidate.ticket, reason=halt)
         return 0
     return _redispatch(candidate)
+
+
+def _settled_instead_of_stuck(ticket: Ticket) -> bool:
+    return ticket.role == Ticket.Role.REVIEWER and reviewer_dispatch_decline(ticket) is ReviewDeclined.RETIRED
 
 
 def _already_escalated_ticket_pks() -> set[int]:
@@ -304,7 +311,7 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task | None:
     """
     ticket, phase = candidate.ticket, candidate.phase
     if ticket.role != Ticket.Role.REVIEWER:
-        return _schedule_for_author(ticket)
+        return _schedule_for_state(ticket)
     if normalize_phase(phase) == "reviewing":
         result = schedule_external_review(ticket)
         return None if isinstance(result, ReviewDeclined) else result
@@ -316,16 +323,6 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task | None:
         agent_id=phase,
         reason=f"Auto-repair re-dispatch — {phase} on {ticket.issue_url or ticket.pk}",
     )
-
-
-def _schedule_for_author(ticket: Ticket) -> Task | None:
-    """An author ticket whose PR merged while it stayed mid-lifecycle is escalated, never re-run."""
-    prs = PullRequest.objects.filter(ticket=ticket)
-    merged = prs.filter(state=PullRequest.State.MERGED).order_by("-pk").first()
-    if merged is not None and not prs.filter(state__in=_OPEN_PR_STATES).exists():
-        _escalate_once(ticket, reason=f"its PR {merged.url} is merged but the ticket is still {ticket.state!r}.")
-        return None
-    return _schedule_for_state(ticket)
 
 
 def _schedule_for_state(ticket: Ticket) -> Task:
