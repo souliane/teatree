@@ -271,6 +271,14 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 ### Giving Code Review
 
+#### Dream Gap-Batch PRs — Verify Every Claimed Gap Independently (Non-Negotiable)
+
+A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): the PR claims to fix a SUBSET of the manifest, recorded in `extra['dream_gap_claimed_delivered']`. A batched PR that claims 9 of 10 gaps fixed but only delivers fewer is WORSE than one that delivers 1 honestly, because the unfixed gap's checkbox would get ticked and silently vanish from the ledger — so before clearing such a PR:
+
+- **Verify each claimed gap independently** — reproduce the gap's failure mode on the pre-change code (or confirm it from the ticket's cited evidence) and confirm the diff actually addresses it (absent at the head). Do not accept the coder's manifest claim on faith.
+- **A claimed gap the diff does not actually address is a HOLD, not a nitpick.** File it as a blocking finding naming the specific unaddressed `gap_key`.
+- **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it was correctly dropped and stays open for the next pass; do not fault a PR for gaps it never claimed.
+
 #### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
 
 This chapter's deliverable is one of two things, and the reporting rules are **opposite** between them. Decide which before drafting anything.

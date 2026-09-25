@@ -17,6 +17,9 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RemediationKind, RuleSource
+from teatree.core.models.ticket import Ticket
+from teatree.loops.dream import batch_promote as bp_module
+from teatree.loops.dream.batch_promote import PromotionBatch
 from teatree.loops.dream.compliance import (
     ComplianceFinding,
     build_compliance_snapshot,
@@ -26,7 +29,6 @@ from teatree.loops.dream.compliance import (
     run_compliance_escalation,
     run_compliance_measurement,
 )
-from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.transcript_extract import high_signal_lines
 
@@ -184,37 +186,49 @@ class EscalateRecurrencesTestCase(TestCase):
         )
 
     def test_one_recurrence_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
-        from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM/app-registry, test-local import
 
         host = _fake_host()
-        outcomes = escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = escalate_recurrences([self._recurrence()], batch=batch, umbrella_url=UMBRELLA)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        # No fresh needs-triage issue — the recurrence rides the umbrella + a coding task.
+        # Nothing is written/scheduled until the pass mints its single batch ticket.
+        host.create_issue.assert_not_called()
+        host.update_issue.assert_not_called()
+
+        batch_outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
+        assert batch_outcome.scheduled is True
         host.create_issue.assert_not_called()
         host.update_issue.assert_called_once()
         _, kwargs = host.update_issue.call_args
         # The checkbox title prescribes a STRUCTURAL fix (a gate or an eval).
         title = kwargs["body"].lower()
         assert "gate" in title or "eval" in title
-        assert Ticket.objects.filter(extra__dream_gap_key__startswith="compliance-recurrence").exists()
+        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
         assert Task.objects.filter(phase="coding").exists()
 
     def test_two_recurrences_of_the_same_rule_promote_one_gap(self) -> None:
-        host = _fake_host()
-        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], batch=batch, umbrella_url=UMBRELLA)
         filed = [o for o in outcomes if o.filed]
         assert len(filed) == 1
+        assert len(batch.pending) == 1
 
-    def test_existing_checkbox_is_not_double_added(self) -> None:
-        existing = (
-            "## Open gaps\n- [ ] Compliance recurrence ... "
-            "<!-- dream-gap compliance-recurrence-feedback_askuserquestion_overuse -->\n"
-        )
+    def test_a_pre_existing_checkbox_with_no_backing_ticket_is_not_duplicated(self) -> None:
+        # A bare checkbox line with no backing Ticket names nothing in flight, so the
+        # gap is queued and its ticket minted fresh — but the umbrella write dedups by
+        # marker, so no NEW line is appended (nothing to write — the box is already
+        # there), while the fix still gets a real ticket.
+        marker = "<!-- dream-gap compliance-recurrence-feedback_askuserquestion_overuse -->"
+        existing = f"## Open gaps\n- [ ] Compliance recurrence ... {marker}\n"
         host = _fake_host(body=existing)
-        escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        escalate_recurrences([self._recurrence()], batch=batch, umbrella_url=UMBRELLA)
+        outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
+        assert outcome.checkboxes_added == 0
         host.update_issue.assert_not_called()
+        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
 
     def test_non_recurrence_findings_are_never_escalated(self) -> None:
         first_occurrence = ComplianceFinding(
@@ -223,10 +237,10 @@ class EscalateRecurrencesTestCase(TestCase):
             evidence="renamed the API again",
             is_recurrence=False,
         )
-        host = _fake_host()
-        outcomes = escalate_recurrences([first_occurrence], host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = escalate_recurrences([first_occurrence], batch=batch, umbrella_url=UMBRELLA)
         assert outcomes == []
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
 
 
 class PersistCompliancePassTestCase(TestCase):
@@ -286,65 +300,39 @@ class PersistCompliancePassTestCase(TestCase):
             is_recurrence=True,
         )
         snapshot = persist_compliance_pass([finding], instructions_observed=4)
-        # Stamping is the phase entry point's step now, not escalate_recurrences'.
-        run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False)
+        # Stamping fires as soon as the gap is QUEUED (rides the umbrella once the
+        # pass's batch is minted) — not gated on promote_batch having run yet.
+        run_compliance_escalation(
+            snapshot=snapshot, findings=[finding], host=host, dry_run=False, batch=PromotionBatch()
+        )
         row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
         assert row.remediation == RemediationKind.ESCALATION
         # The escalation is now the standing umbrella (the recurrence rides it + a coding task).
         assert row.escalation_url == UMBRELLA
 
-    def test_a_deferred_recurrence_is_not_stamped_escalated(self) -> None:
-        # #4176 review finding: an exhausted budget must defer the gap AND leave the
-        # audit row alone — nothing was written to the umbrella, so the row must not
-        # read as escalated.
-        host = _fake_host()
-        finding = ComplianceFinding(
-            rule_source=RuleSource.MEMORY,
-            rule_identity="feedback_a",
-            evidence="violated a",
-            is_recurrence=True,
-        )
-        snapshot = persist_compliance_pass([finding], instructions_observed=4)
-        budget = PromotionBudget(remaining=0)
-        run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False, budget=budget)
-        row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
-        assert row.remediation == RemediationKind.NONE
-        assert row.escalation_url == ""
-        assert not host.update_issue.called
-
-    def test_each_pass_reports_the_umbrella_each_recurrence_actually_rides(self) -> None:
-        # Idempotency is invisible to a single pass, so this drives THREE against a
-        # stateful umbrella with a REAL budget each time (never None — an unbounded
-        # budget never reaches the branch this is about). Rule A is promoted on pass 1
-        # and must keep reading ESCALATION afterwards, including on the pass whose cap
-        # is already spent when A is reached; rule B, genuinely turned away, must keep
-        # reading NONE until the cap actually reaches it (#4176).
+    def test_a_recurrence_stays_stamped_escalated_across_passes_once_promoted(self) -> None:
+        # Idempotency is invisible to a single pass: pass 1 promotes the gap for real
+        # (mints the batch ticket); pass 2 detects the SAME recurrence, finds it
+        # already covered by that in-flight ticket, and must keep reading ESCALATION
+        # without double-adding a checkbox or minting a second ticket (#4776).
         host = _stateful_fake_host()
-        findings = [_recurrence("feedback_a"), _recurrence("feedback_b")]
-        rows: list[dict[str, InstructionComplianceRecord]] = []
-        deferrals: list[int] = []
-        for remaining in (1, 0, 1):
-            budget = PromotionBudget(remaining=remaining)
-            snapshot = persist_compliance_pass(findings, instructions_observed=4)
-            run_compliance_escalation(snapshot=snapshot, findings=findings, host=host, dry_run=False, budget=budget)
-            rows.append(
-                {
-                    rule: InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity=rule)
-                    for rule in ("feedback_a", "feedback_b")
-                }
-            )
-            deferrals.append(budget.deferred)
-        assert [[row["feedback_a"].remediation, row["feedback_b"].remediation] for row in rows] == [
-            [RemediationKind.ESCALATION, RemediationKind.NONE],
-            [RemediationKind.ESCALATION, RemediationKind.NONE],
-            [RemediationKind.ESCALATION, RemediationKind.ESCALATION],
-        ]
-        assert [row["feedback_a"].escalation_url for row in rows] == [UMBRELLA] * 3
-        assert rows[0]["feedback_b"].escalation_url == ""
-        # Pass 2's spent cap turned away only B — the already-riding A is not a deferral.
-        assert deferrals == [1, 1, 0]
-        # One checkbox each and no re-adds: A on pass 1, B on pass 3.
-        assert host.update_issue.call_count == 2
+        finding = _recurrence("feedback_a")
+
+        batch1 = PromotionBatch()
+        snapshot1 = persist_compliance_pass([finding], instructions_observed=4)
+        run_compliance_escalation(snapshot=snapshot1, findings=[finding], host=host, dry_run=False, batch=batch1)
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch1)
+        row1 = InstructionComplianceRecord.objects.get(snapshot=snapshot1, rule_identity="feedback_a")
+        assert row1.remediation == RemediationKind.ESCALATION
+
+        batch2 = PromotionBatch()
+        snapshot2 = persist_compliance_pass([finding], instructions_observed=4)
+        run_compliance_escalation(snapshot=snapshot2, findings=[finding], host=host, dry_run=False, batch=batch2)
+        row2 = InstructionComplianceRecord.objects.get(snapshot=snapshot2, rule_identity="feedback_a")
+        assert row2.remediation == RemediationKind.ESCALATION
+        assert row2.escalation_url == UMBRELLA
+        assert batch2.pending == []  # already covered — not re-queued
+        assert host.update_issue.call_count == 1  # one checkbox write total, from pass 1
 
     def test_every_row_of_one_rule_is_stamped_not_just_the_first(self) -> None:
         # One row per FINDING is persisted, but escalation dedups to one outcome per
@@ -353,7 +341,9 @@ class PersistCompliancePassTestCase(TestCase):
         host = _fake_host()
         findings = [_recurrence("feedback_a", evidence="violated 0"), _recurrence("feedback_a", evidence="violated 1")]
         snapshot = persist_compliance_pass(findings, instructions_observed=4)
-        run_compliance_escalation(snapshot=snapshot, findings=findings, host=host, dry_run=False)
+        run_compliance_escalation(
+            snapshot=snapshot, findings=findings, host=host, dry_run=False, batch=PromotionBatch()
+        )
         rows = list(InstructionComplianceRecord.objects.filter(snapshot=snapshot, rule_identity="feedback_a"))
         assert len(rows) == 2
         assert {row.remediation for row in rows} == {RemediationKind.ESCALATION}
@@ -364,11 +354,15 @@ class PersistCompliancePassTestCase(TestCase):
         # promoted last night, while that checkbox and its coding task stay live (#4176).
         host = _stateful_fake_host()
         finding = _recurrence("feedback_a")
+        batch1 = PromotionBatch()
         first = persist_compliance_pass([finding], instructions_observed=4)
-        run_compliance_escalation(snapshot=first, findings=[finding], host=host, dry_run=False)
+        run_compliance_escalation(snapshot=first, findings=[finding], host=host, dry_run=False, batch=batch1)
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch1)
+
+        batch2 = PromotionBatch()
         second = persist_compliance_pass([finding], instructions_observed=4)
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
-            run_compliance_escalation(snapshot=second, findings=[finding], host=host, dry_run=False)
+            run_compliance_escalation(snapshot=second, findings=[finding], host=host, dry_run=False, batch=batch2)
         row = InstructionComplianceRecord.objects.get(snapshot=second, rule_identity="feedback_a")
         assert row.remediation == RemediationKind.ESCALATION
         assert row.escalation_url == UMBRELLA
@@ -422,22 +416,34 @@ class RunComplianceEscalationTestCase(TestCase):
             is_recurrence=True,
         )
 
-    def test_recurrence_is_escalated_via_the_host(self) -> None:
+    def test_recurrence_is_queued_and_the_summary_reports_it(self) -> None:
+        # #4776: nothing is written here — a recurrence is QUEUED into the pass's
+        # batch; the single forge write happens once, later, in promote_batch.
         host = _fake_host()
-        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=host, dry_run=False)
+        batch = PromotionBatch()
+        summary = run_compliance_escalation(
+            snapshot=None, findings=[self._recurrence()], host=host, dry_run=False, batch=batch
+        )
         assert summary == "; escalated 1/1 compliance recurrence(s)"
-        host.update_issue.assert_called_once()
+        assert len(batch.pending) == 1
+        host.update_issue.assert_not_called()
 
     def test_no_host_is_a_skip_warning_not_a_raise(self) -> None:
-        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=None, dry_run=False)
+        summary = run_compliance_escalation(
+            snapshot=None, findings=[self._recurrence()], host=None, dry_run=False, batch=PromotionBatch()
+        )
         assert "no teatree code host resolved" in summary
 
-    def test_dry_run_previews_the_count_but_files_nothing(self) -> None:
+    def test_dry_run_previews_the_count_but_queues_nothing(self) -> None:
         host = _fake_host()
-        summary = run_compliance_escalation(snapshot=None, findings=[self._recurrence()], host=host, dry_run=True)
+        batch = PromotionBatch()
+        summary = run_compliance_escalation(
+            snapshot=None, findings=[self._recurrence()], host=host, dry_run=True, batch=batch
+        )
         # The preview reports what a real run WOULD escalate (1/1), not a bare zero…
         assert summary == "; escalated 1/1 compliance recurrence(s)"
-        # …while nothing is actually written.
+        # …while nothing is actually queued or written.
+        assert batch.pending == []
         host.update_issue.assert_not_called()
 
     def test_no_recurrence_returns_empty_clause(self) -> None:
@@ -448,7 +454,9 @@ class RunComplianceEscalationTestCase(TestCase):
             is_recurrence=False,
         )
         host = _fake_host()
-        summary = run_compliance_escalation(snapshot=None, findings=[first_occurrence], host=host, dry_run=False)
+        summary = run_compliance_escalation(
+            snapshot=None, findings=[first_occurrence], host=host, dry_run=False, batch=PromotionBatch()
+        )
         assert summary == ""
         host.update_issue.assert_not_called()
 
