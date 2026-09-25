@@ -3,6 +3,7 @@
 import asyncio
 import atexit
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -20,6 +21,8 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
+
+logger = logging.getLogger(__name__)
 
 _MAX_BODY_BYTES = 16_384
 _MAX_WAIT_SECONDS = 20
@@ -357,8 +360,13 @@ def bound_task_mailbox(
         yield None
         return
     teatree_stdio = cast("McpStdioServerConfig", teatree)
-    active = broker or shared_broker()
-    identity = active.register(room=room, harness=harness, label=label)
+    try:
+        active = broker or shared_broker()
+        identity = active.register(room=room, harness=harness, label=label)
+    except Exception:
+        logger.warning("live mailbox unavailable for %s; dispatching without one", label, exc_info=True)
+        yield None
+        return
     env = teatree_stdio.get("env")
     options.mcp_servers = cast(
         "dict[str, McpServerConfig]",

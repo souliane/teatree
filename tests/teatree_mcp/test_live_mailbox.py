@@ -4,7 +4,7 @@ import asyncio
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from unittest.mock import patch
 
 import pytest
@@ -142,6 +142,24 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
     assert "env" not in teatree
     with pytest.raises(ToolError, match="Invalid mailbox identity"):
         invoke(MailboxClient(identity.socket_path, identity.token), "peers")
+
+
+def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytest.LogCaptureFixture) -> None:
+    """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
+
+    class _BrokenBroker(LiveMailboxBroker):
+        def register(self, *, room: str, harness: str, label: str) -> NoReturn:
+            msg = "socket dir unwritable"
+            raise OSError(msg)
+
+    servers = {"teatree": {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}}
+    options = ClaudeAgentOptions(mcp_servers=servers)
+    with bound_task_mailbox(
+        options, room="ticket-1", harness="codex", label="coder", broker=_BrokenBroker()
+    ) as identity:
+        assert identity is None
+        assert options.mcp_servers == servers
+    assert "mailbox" in caplog.text
 
 
 def test_interleaved_room_mail_does_not_report_false_truncation(broker: LiveMailboxBroker) -> None:
