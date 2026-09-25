@@ -807,8 +807,7 @@ t3 <overlay> config_setting set agent_signature false                  # append 
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
 | `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
-| `require_human_approval_to_answer` | `true`, collapsed to `false` by the shipped `autonomy = full` | `t3:answerer` drafts a reply and DMs for approval. The answer's own post is separately gated by `on_behalf_post_mode`, which no tier collapses |
-| `on_behalf_post_mode` | `draft_or_ask` | Pre-gate on any post made under your identity to a colleague surface. Read unchanged by every `autonomy` tier — opening it is its own explicit `immediate` |
+| `require_human_approval_to_answer` | `true`, collapsed to `false` by the shipped `autonomy = full` | `t3:answerer` drafts a reply and DMs for approval. The answer's own post is separately gated by the active mode's egress posture, which no tier reaches |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable

@@ -70,7 +70,8 @@ removing it frees nothing because the bytes are in the clone.
 never had a lockfile — and ``npm ci`` refuses outright without one while ``uv sync``
 needs a manifest. There the documented recovery cannot restore what was removed, which
 is a different kind of loss from the one this pass claims to be free of, so
-:func:`_unrebuildable_reason` keeps the artifact. ``.nx``/``.angular`` are exempt: a
+:func:`~teatree.core.cleanup.artifact_rebuild.unrebuildable_reason` keeps the artifact.
+``.nx``/``.angular`` are exempt: a
 build regenerates them unconditionally, with no manifest to consult.
 
 **Nor is what a symlink POINTS AT.** Skipping the link protects the link; the
@@ -110,12 +111,8 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.core.cleanup.artifact_lock import (
-    ARTIFACT_NAMES,
-    artifact_lock_refusal_reason,
-    artifact_name_pattern,
-    artifact_source_lock,
-)
+from teatree.core.cleanup.artifact_lock import ARTIFACT_NAMES, artifact_lock_refusal_reason, artifact_source_lock
+from teatree.core.cleanup.artifact_rebuild import rebuild_inputs_for, unrebuildable_reason
 from teatree.core.cleanup.artifact_removal import remove_anchored_artifact
 from teatree.core.cleanup.checkout_registry import live_checkout_paths, one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
@@ -155,40 +152,6 @@ _SYMLINK_REASON = (
     "a symlink into another checkout — the bytes live in the clone, and the link is a provisioned artifact"
 )
 
-#: What each name's documented rebuild command needs to FIND in the checkout before
-#: the artifact can honestly be called rebuildable. "Rebuildable" is a claim about the
-#: checkout, not a property of the name: ``npm ci`` REFUSES outright without a lockfile
-#: and ``uv sync`` needs a manifest, so in a scratch repo carrying neither, removing the
-#: artifact is not the free reclaim this pass advertises — it is a loss the documented
-#: recovery cannot undo. ``.nx`` and ``.angular`` are absent DELIBERATELY: they are build
-#: caches the next build regenerates unconditionally, with no manifest to consult, so
-#: withholding them on this ground would cost reclaim for no safety.
-#: A name may carry a ``*``, matched with :meth:`Path.glob` — ``requirements-dev.txt`` and
-#: ``requirements/base.txt`` rebuild a venv exactly as ``requirements.txt`` does, and a
-#: literal-only set called a project carrying one unrebuildable.
-_REBUILD_INPUTS: dict[str, tuple[str, ...]] = {
-    ".venv": (
-        "uv.lock",
-        "pyproject.toml",
-        "requirements*.txt",
-        "requirements/*.txt",
-        "setup.py",
-        "setup.cfg",
-        "Pipfile",
-    ),
-    # A hook environment is a uv PROJECT environment (`UV_PROJECT_ENVIRONMENT` in
-    # scripts/hooks/lib/resolve-uv.sh), so only a uv manifest rebuilds it. Keyed by the
-    # ARTIFACT_NAMES pattern, since the name on disk carries the platform.
-    ".venv-hook*": ("uv.lock", "pyproject.toml"),
-    "node_modules": (
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lock",
-        "bun.lockb",
-    ),
-}
 
 _SHARED_TARGET_REASON = (
     "another checkout's artifact symlink resolves here — deleting it would dangle every link at once"
@@ -496,7 +459,7 @@ def _largest_first(eligible: list[tuple[Path, Path]]) -> tuple[tuple[ArtifactCan
 
 def _keep_reason(artifact: Path, *, checkout: Path, guards: _Guards, cutoff: float | None) -> str:
     """Why *artifact* survives this pass, or ``""`` when nothing keeps it."""
-    blocking = _authorisation_reason(artifact, checkout=checkout, guards=guards) or _unrebuildable_reason(
+    blocking = _authorisation_reason(artifact, checkout=checkout, guards=guards) or unrebuildable_reason(
         artifact, checkout=checkout
     )
     if blocking or cutoff is None:
@@ -517,7 +480,7 @@ def _delete_time_reason(candidate: ArtifactCandidate, *, guards: _Guards) -> str
         return "it became a symlink"
     return (
         _identity_change_reason(candidate)
-        or _unrebuildable_reason(candidate.artifact, checkout=candidate.checkout)
+        or unrebuildable_reason(candidate.artifact, checkout=candidate.checkout)
         or _authorisation_reason(candidate.artifact, checkout=candidate.checkout, guards=guards)
     )
 
@@ -536,7 +499,7 @@ def _remove_anchored_candidate(candidate: ArtifactCandidate) -> str:
         checkout=candidate.checkout,
         artifact_identity=candidate.artifact_identity,
         checkout_identity=candidate.checkout_identity,
-        rebuild_inputs=_rebuild_inputs_for(candidate.artifact),
+        rebuild_inputs=rebuild_inputs_for(candidate.artifact),
     )
 
 
@@ -575,39 +538,6 @@ def _shared_target_reason(artifact: Path, *, shared: _SharedTargets) -> str:
     if any(target == resolved or resolved in target.parents for target in shared.paths):
         return _SHARED_TARGET_REASON
     return ""
-
-
-def _unrebuildable_reason(artifact: Path, *, checkout: Path) -> str:
-    """Nothing in this checkout can rebuild it, so removing it is not a free reclaim.
-
-    The whole module rests on "rebuildable", and until now that was ASSERTED by the name
-    set rather than checked: ``_ARTIFACT_NAMES`` applies to every ``.git``-carrying
-    directory under the scan roots, including scratch repos that never had a lockfile.
-    Checked here against :data:`_REBUILD_INPUTS`; a name with no entry is a build cache
-    the next build regenerates unconditionally and is never withheld on this ground.
-    """
-    inputs = _rebuild_inputs_for(artifact)
-    if not inputs or any(_rebuild_input_present(checkout, name) for name in inputs):
-        return ""
-    return f"nothing in the checkout rebuilds it — no {' / '.join(inputs)}, so the documented rebuild would refuse"
-
-
-def _rebuild_inputs_for(artifact: Path) -> tuple[str, ...] | None:
-    """What the documented rebuild of *artifact* looks for, keyed by the PATTERN it matched.
-
-    Keyed by the raw name, a platform-scoped hook environment matches no entry and reads
-    as a build cache no manifest gates — evicting it from a checkout uv cannot rebuild in.
-    """
-    pattern = artifact_name_pattern(artifact.name)
-    return _REBUILD_INPUTS.get(pattern) if pattern is not None else None
-
-
-def _rebuild_input_present(checkout: Path, name: str) -> bool:
-    """Whether *name* — a literal or a glob — names something in *checkout*; unreadable is absent."""
-    try:
-        return any(checkout.glob(name)) if "*" in name else (checkout / name).exists()
-    except OSError:
-        return False
 
 
 def _in_use_reason(artifact: Path, *, checkout: Path, table: ProcessTable) -> str:

@@ -325,6 +325,10 @@ lint.per-file-ignores."src/teatree/core/overlay.py" = [
   "ARG002",
   "PLR6301", # overlay hook defaults are instance methods by contract
 ]
+lint.per-file-ignores."src/teatree/core/overlays/connectors.py" = [
+  "ARG002",
+  "PLR6301", # overlay hook defaults are instance methods by contract
+]
 lint.per-file-ignores."src/teatree/core/views/*.py" = [
   "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
 ]

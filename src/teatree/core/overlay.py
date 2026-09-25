@@ -19,6 +19,7 @@ from teatree.core.identity_wiring import AuthoringIdentity, classify_authoring_i
 from teatree.core.mcp_tool_group import McpTool, McpToolGroup
 from teatree.core.modelkit.phases import canonicalize_phase_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.overlays.connectors import OverlayConnectors
 from teatree.core.provision.variant import Variant
 from teatree.core.review.mr_triage import RepoOwner
 from teatree.core.statusline_segment import StatuslineSegment
@@ -42,7 +43,6 @@ from teatree.types import (
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
-    from teatree.core.connector_manifest import ConnectorRequirement
     from teatree.core.factory.health_signal import HealthSignal
     from teatree.core.models import Worktree
     from teatree.core.worktree.readiness import Probe
@@ -613,33 +613,6 @@ class OverlayReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         """True iff *changed_files* could impact what is displayed to the customer (#1967)."""
         return True
-
-
-class OverlayConnectors:
-    """External-connector concern (claude.ai, MCP, Slack/Notion) — ``overlay.connectors``."""
-
-    def preflight(self) -> list[Callable[[], None]]:
-        """Zero-arg probes run before any connector-dependent loop work."""
-        from teatree.core.connector_probes import standard_probes  # noqa: PLC0415 — deferred: avoids import cycle
-
-        return standard_probes(self.manifest(), self.mcp_provider_expectations())
-
-    def mcp_provider_expectations(self) -> dict[str, str]:
-        """``{mcp_server_name: provider}`` for the #2282 connectivity check; default empty."""
-        return {}
-
-    def mcp_tool_group(self) -> McpToolGroup | None:
-        """The overlay's own tools for the teatree MCP server; none by default.
-
-        The group is registered only on the terms it declares: every service in
-        ``requires`` declared by some overlay, and every write tool naming its
-        gated seam.
-        """
-        return None
-
-    def manifest(self) -> list["ConnectorRequirement"]:
-        """Overlay's required-vs-optional claude.ai connectors by NAME; default none (PR-19)."""
-        return []
 
 
 # ── Overlay base class ───────────────────────────────────────────────

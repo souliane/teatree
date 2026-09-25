@@ -207,10 +207,11 @@
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 7
 "src/teatree/core/on_behalf_post_receipt.py" = 1
+"src/teatree/core/overlay.py" = 3
+"src/teatree/core/overlay_loader.py" = 1
 # preflight() defers `from teatree.core.connector_probes import standard_probes` to
 # build its default probes without an import cycle (connector_probes → overlay) (#3333).
-"src/teatree/core/overlay.py" = 4
-"src/teatree/core/overlay_loader.py" = 1
+"src/teatree/core/overlays/connectors.py" = 1
 # overlay_name_of / resolve_overlay_name defer `from teatree.core.overlay_loader import
 # get_all_overlays / OverlayConfigResolver` — these name resolvers were carved out of
 # overlay_loader.py (module-health cap) and call back into it, so the edge is call-time to

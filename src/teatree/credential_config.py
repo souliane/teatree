@@ -55,13 +55,9 @@ from django.utils import timezone
 
 from teatree.account_headroom import AccountHeadroom, headroom_at, rank
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
-from teatree.core.models.anthropic_token_usage import (
-    REJECTED_STATUS,
-    AnthropicTokenUsage,
-    TokenHealthReading,
-    UnifiedVerdict,
-)
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
+from teatree.credential_readings import reading_from, reading_from_metered, unverified_exhaustion
 from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
 from teatree.llm.credentials import (
     AnthropicApiKeyCredential,
@@ -71,10 +67,8 @@ from teatree.llm.credentials import (
 )
 from teatree.llm.rate_limits import (
     MeteredKeyReader,
-    MeteredKeySnapshot,
     RateLimitProbeError,
     RateLimitReader,
-    RateLimitSnapshot,
     read_api_key_status,
     read_rate_limits,
     used_fraction,
@@ -295,38 +289,6 @@ class PassPathSelector:
         return AllTokensExhaustedError(message, earliest_reset=earliest)
 
 
-def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
-    """Translate a foundation ``RateLimitSnapshot`` into the domain cache's value object."""
-    return TokenHealthReading(
-        organization_id=snapshot.organization_id,
-        utilization_5h=snapshot.unified_5h_utilization,
-        utilization_7d=snapshot.unified_7d_utilization,
-        status_5h=snapshot.unified_5h_status,
-        status_7d=snapshot.unified_7d_status,
-        reset_5h=snapshot.unified_5h_reset,
-        reset_7d=snapshot.unified_7d_reset,
-        verdict=UnifiedVerdict(status=snapshot.unified_status, representative_claim=snapshot.representative_claim),
-    )
-
-
-def reading_from_metered(snapshot: MeteredKeySnapshot) -> TokenHealthReading:
-    """Translate a metered API-key status into the domain cache's value object.
-
-    A standard key exposes no dollar balance and no unified windows, so the routing
-    verdict rides the credit flag: an out-of-credits key is recorded with a rejected 7d
-    status — exactly the exhaustion signal the selector already refuses to route to.
-    """
-    return TokenHealthReading(
-        organization_id=snapshot.organization_id,
-        utilization_5h=None,
-        utilization_7d=None,
-        status_5h="",
-        status_7d=REJECTED_STATUS if snapshot.out_of_credits else "",
-        reset_5h=None,
-        reset_7d=None,
-    )
-
-
 def _as_path_list(stored: object) -> list[str]:
     """Coerce a stored config value (a JSON list) to a deduped, order-preserving ``list[str]``."""
     if not isinstance(stored, list):
@@ -373,24 +335,6 @@ class AccountProber:
             return None
 
 
-def _unverified_exhaustion(*, resets_at: dt.datetime, weekly: bool) -> TokenHealthReading:
-    """The fallback verdict for an unprobeable account — a weekly hit blocks 7d, else 5h.
-
-    Nothing here is measured, so ``verified=False`` caps its trust at ``HEALTH_TTL``: a
-    wrong window or a wrong account self-corrects in minutes instead of days.
-    """
-    return TokenHealthReading(
-        organization_id="",
-        utilization_5h=None if weekly else 1.0,
-        utilization_7d=1.0 if weekly else None,
-        status_5h="",
-        status_7d=REJECTED_STATUS if weekly else "",
-        reset_5h=None if weekly else resets_at,
-        reset_7d=resets_at if weekly else None,
-        verified=False,
-    )
-
-
 @dataclass(frozen=True)
 class ReactiveLimit:
     """One account's mid-run limit as the SDK reported it — the account, and its own claim.
@@ -417,7 +361,7 @@ def _record_account_exhausted(
     account; only an unreadable one falls back to the unverified synthesis. The token is
     read to sign the probe and never stored.
     """
-    reading = prober.read(pass_path) or _unverified_exhaustion(resets_at=resets_at, weekly=weekly)
+    reading = prober.read(pass_path) or unverified_exhaustion(resets_at=resets_at, weekly=weekly)
     AnthropicTokenUsage.objects.record(pass_path, reading, now=now)
 
 
