@@ -62,7 +62,7 @@ _BASH = shutil.which("bash") or "bash"
 
 CONTAINER_HOME = "/home/teatree"
 HOST_GNUPG_TARGET = f"{CONTAINER_HOME}/.gnupg"
-HISTORICAL_ENTRYPOINT_COMMIT = "4f7312cada759338356e2eddcce175b06a0b5378"
+HISTORICAL_GNUPG_HOME = Path(__file__).parent / "fixtures" / "deploy" / "historical_gnupg_home.sh"
 
 #: Per-venue GPG-home repairs this branch retired. Naming one anywhere under `deploy/` —
 #: code OR runbook — points the next operator at a mechanism that no longer exists.
@@ -134,20 +134,7 @@ def _shell_function(source: str, name: str) -> str:
 
 
 def _historical_entrypoint() -> str:
-    repo_root = DEPLOY.parent
-    git = shutil.which("git")
-    assert git is not None
-    return subprocess.run(
-        [
-            git,
-            "show",
-            f"{HISTORICAL_ENTRYPOINT_COMMIT}:deploy/entrypoint.sh",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    return HISTORICAL_GNUPG_HOME.read_text(encoding="utf-8")
 
 
 def _compose_mounts() -> list[dict[str, object]]:

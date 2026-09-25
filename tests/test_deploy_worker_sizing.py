@@ -78,7 +78,8 @@ class TestDeployShRunDerivesWorkerCaps:
         record_cpus = tmp_path / "recorded_cpus"
         record_mem = tmp_path / "recorded_mem"
         physical_ram_mib = host_total_ram_mib()
-        daemon_ram_mib = max(1, physical_ram_mib // 2)
+        # Big enough to host a floor-clearing cap, so this exercises the export and not the refusal.
+        daemon_ram_mib = min(physical_ram_mib - 1, 12 * 1024)
         daemon_cpus = max(1, available_cpu_count() // 2)
         bindir = tmp_path / "bin"
         bindir.mkdir()
