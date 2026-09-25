@@ -17,7 +17,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.enums import Mode, OnBehalfPostMode
+from teatree.config.enums import Mode
 from teatree.core.models import ConfigSetting
 from teatree.types import LocalPlayback
 
@@ -32,15 +32,15 @@ class TestDbHomeResolution(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.delenv("T3_HOOK_FETCH_TITLES", raising=False)
 
     def test_db_home_field_falls_to_default_with_empty_table(self) -> None:
         assert ConfigSetting.objects.count() == 0
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().hook_fetch_titles is True
 
     def test_db_home_field_resolves_from_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        assert get_effective_settings().issue_implementer_enabled is False
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=False)
+        assert get_effective_settings().hook_fetch_titles is False
 
     def test_db_is_the_sole_authority_for_a_db_home_field(self) -> None:
         # A DB row is the sole source; clearing it restores the dataclass default
@@ -79,14 +79,14 @@ class TestOverlayScopeLayering(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.delenv("T3_HOOK_FETCH_TITLES", raising=False)
         self.monkeypatch = monkeypatch
 
     def test_overlay_scoped_db_row_beats_global_db_row_for_db_home(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=False)
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=True, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().issue_implementer_enabled is True
+        assert get_effective_settings().hook_fetch_titles is True
 
     def test_overlay_db_row_for_speak_merges_onto_global(self) -> None:
         # The per-overlay ``speak`` row MERGES onto the global base — only the keys
@@ -143,14 +143,14 @@ class TestEnvWinsOverDbHome(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.delenv("T3_HOOK_FETCH_TITLES", raising=False)
         monkeypatch.delenv("T3_MODE", raising=False)
         self.monkeypatch = monkeypatch
 
     def test_env_wins_over_db_home_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
-        assert get_effective_settings().issue_implementer_enabled is True
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=False)
+        self.monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "true")
+        assert get_effective_settings().hook_fetch_titles is True
 
     def test_env_wins_over_db_home_default(self) -> None:
         self.monkeypatch.setenv("T3_MODE", "auto")
@@ -173,7 +173,6 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
         # #3630 / #3895: the merge review gate and colleague egress are not tier-governed
         # and keep their defaults.
         assert settings.require_human_approval_to_merge is True
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
     def test_autonomy_collapse_respects_db_global_pin(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")

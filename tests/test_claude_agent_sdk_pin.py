@@ -1,4 +1,4 @@
-"""Guards the ``claude-agent-sdk`` pin, the uv override it needs, and its ex-quarantine.
+"""Guards the ``claude-agent-sdk`` pin, shared MCP compatibility, and its ex-quarantine.
 
 The constraint stays an EXACT pin, for a reason unrelated to the quarantine:
 ``tests/test_claude_cli_pin.py`` derives the eval/test image's ``claude`` CLI generation from
@@ -253,8 +253,8 @@ class TestTheSdkResolvesUnderTheLockedMcp:
         missing = sorted(module for module in _sdk_mcp_imports() if importlib.util.find_spec(module) is None)
         assert not missing, (
             f"{_PACKAGE}=={_PINNED_VERSION} imports {_MCP} modules the installed "
-            f"{_MCP}=={_locked_version_of(_MCP)} does not provide: {missing}. The override is "
-            f"masking a real incompatibility — the SDK's declared {_MCP} bound is now telling "
+            f"{_MCP}=={_locked_version_of(_MCP)} does not provide: {missing}. The shared bounds "
+            f"admit an incompatible MCP surface — the SDK's declared {_MCP} bound is now telling "
             "the truth about its usage."
         )
 
@@ -267,8 +267,8 @@ class TestTheSdkResolvesUnderTheLockedMcp:
             unresolved.extend(f"{module_path}.{name}" for name in sorted(names) if not hasattr(module, name))
         assert not unresolved, (
             f"{_PACKAGE}=={_PINNED_VERSION} imports names the installed "
-            f"{_MCP}=={_locked_version_of(_MCP)} does not define: {unresolved}. The override is "
-            "masking a real incompatibility, not a bound that is merely broader than its usage."
+            f"{_MCP}=={_locked_version_of(_MCP)} does not define: {unresolved}. The shared bounds "
+            "admit an incompatible MCP surface, not merely broader bounds than the SDK's usage."
         )
 
     def test_the_walk_sees_the_surface_it_is_meant_to_check(self) -> None:
@@ -294,18 +294,11 @@ class TestTheSdkResolvesUnderTheLockedMcp:
 
 
 class TestTheOverrideReachesEveryInstallSurface:
-    """``[tool.uv] override-dependencies`` alone does not reach the installed ``t3``.
+    """Every unattended install keeps the shared ``--overrides`` plumbing.
 
-    ``uv tool install`` resolves the package it installs WITHOUT reading that package's
-    ``[tool.uv]`` overrides — the working directory makes no difference — so the deployed
-    and global installs fail outright with an unsatisfiable-requirements resolver error
-    while ``uv lock``/``uv sync``/CI all stay green. That is the same shape of blind spot
-    ``tests/conformance/test_import_pinned_dependency_bounds.py`` exists for: the lockfile
-    pins CI, and the container re-resolves.
-
-    So the override is ALSO committed as :data:`UV_OVERRIDES_FILENAME` and passed by every
-    install site. Two copies of one decision drift, hence the equality assertion; a site
-    that forgets the flag is invisible until a build fails, hence the site sweep.
+    The SDK's ``mcp<3.0.0`` already admits teatree's ``mcp>=2,<3``, so both override
+    sets are empty. ``uv tool install`` does not read the package's ``[tool.uv]`` table,
+    so every install still passes the committed file for any future override.
     """
 
     def test_the_overrides_file_matches_the_pyproject_overrides(self) -> None:
@@ -316,7 +309,7 @@ class TestTheOverrideReachesEveryInstallSurface:
             f"decision and must be identical. pyproject: {declared}; {UV_OVERRIDES_FILENAME}: {committed}."
         )
 
-    def test_every_unattended_install_resolves_with_the_override(self) -> None:
+    def test_every_unattended_install_keeps_the_overrides_plumbing(self) -> None:
         unflagged = sorted(
             f"{path}: {command}" for path, command in _automated_uv_tool_installs() if command != "flagged"
         )
@@ -339,8 +332,8 @@ class TestTheOverrideReachesEveryInstallSurface:
         # is the one setting that reaches all of them, so it is set once in the image ENV.
         dockerfile = (_REPO_ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
         assert f'UV_OVERRIDE="${{TEATREE_CLONE_DIR}}/{UV_OVERRIDES_FILENAME}"' in dockerfile, (
-            "deploy/Dockerfile must export UV_OVERRIDE — without it the image's bake and the "
-            "entrypoint's reinstall both fail to resolve, and the box never boots."
+            "deploy/Dockerfile must export UV_OVERRIDE so the image's bake, entrypoint reinstall, "
+            "updates, and repairs share one override set."
         )
         entrypoint = (_REPO_ROOT / "deploy" / "entrypoint.sh").read_text(encoding="utf-8")
         assert "uv tool install --editable" in entrypoint, (

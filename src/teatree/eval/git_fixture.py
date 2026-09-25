@@ -14,6 +14,7 @@ commits ahead of it (a squash target), and one staged, uncommitted change (the
 described state, and runs the command.
 """
 
+import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -23,8 +24,20 @@ from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageDraw
 
-from teatree.utils.git_run import run_strict as git
+from teatree.utils.git_run import git_env_without_overrides
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_checked
+
+
+def git(*, repo: str = ".", args: list[str]) -> str:
+    """Run one fixture git command under no host gitconfig and no inherited ``GIT_*``.
+
+    The shared runners take no env, so the provisioned repo would otherwise be
+    shaped by whoever runs the suite — a global ``core.hooksPath`` fails the
+    fixture's commits, and an outer hook's ``GIT_DIR`` aims them at its own repo.
+    """
+    env = git_env_without_overrides() | {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    return run_checked(["git", "-C", repo, *args], env=env).stdout.strip()
+
 
 GIT_REPO = "git_repo"
 #: A scenario whose prompt presupposes on-disk E2E artifacts ("the screen
@@ -52,7 +65,33 @@ E2E_SIBLING_REPOS = "e2e_sibling_repos"
 #: no install step) so the mandated test run genuinely succeeds and the agent
 #: stops naturally.
 UV_PROJECT = "uv_project"
-KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS, E2E_SIBLING_REPOS, UV_PROJECT})
+#: A single-tenant implementation scenario names ``src/widget/parser.py`` and a red
+#: regression test.  An empty clean room gives the agent neither the source text
+#: required by ``Edit.old_string`` nor the bug contract, so asking for that data
+#: is the only safe action.  This fixture makes the prompt's dedicated Python
+#: worktree real and keeps its regression genuinely red until the minimal edit.
+PYTHON_PARSER_PROJECT = "python_parser_project"
+GOLDEN_MASTER_PROJECT = "golden_master_project"
+#: A scenario whose prompt says "read reference X of your own skill FIRST" describes a
+#: tree the clean room does not have: the skill is the system prompt, and its
+#: ``references/`` are nowhere on disk. The agent's ``cat`` then fails, so it hunts the
+#: filesystem for a file that does not exist and never issues the graded read.
+#: Declaring ``fixture: agent_skill_dir`` materialises the scenario's OWN
+#: ``agent_path`` directory — SKILL.md and everything beside it — under ``skills/<name>/``.
+AGENT_SKILL_DIR = "agent_skill_dir"
+FAILURE_LOG = "failure_log"
+KNOWN_FIXTURES = frozenset(
+    {
+        GIT_REPO,
+        E2E_ARTIFACTS,
+        E2E_SIBLING_REPOS,
+        UV_PROJECT,
+        PYTHON_PARSER_PROJECT,
+        GOLDEN_MASTER_PROJECT,
+        AGENT_SKILL_DIR,
+        FAILURE_LOG,
+    }
+)
 
 #: The ticket id + per-env artifact layout the ``e2e_test_plan_uses_canonical_command``
 #: scenario's prompt names on disk. Kept next to the provisioner so the fixture and
@@ -160,6 +199,19 @@ def add(a: int, b: int) -> int:
     return a + b
 """
 
+_PYTHON_PARSER_PY = """\
+def first_token(text: str) -> str:
+    return text.split(" ")[0]
+"""
+
+_PYTHON_PARSER_TEST = """\
+from widget.parser import first_token
+
+
+def test_first_token_ignores_leading_whitespace() -> None:
+    assert first_token("  alpha beta") == "alpha"
+"""
+
 
 def _write(repo: Path, name: str, body: str) -> None:
     path = repo / name
@@ -168,31 +220,123 @@ def _write(repo: Path, name: str, body: str) -> None:
 
 
 @contextmanager
-def provision_fixture(kind: str) -> Iterator[Path]:
+def provision_fixture(kind: str, *, skill_path: Path | None = None) -> Iterator[Path]:
     """Dispatch to the right throwaway-sandbox provider for *kind*.
 
     The single entry point the runner calls; each known fixture routes to its own
     provisioner (a git repo, or the on-disk E2E artifacts). An unknown kind raises
     so a typo'd ``fixture:`` fails loud rather than silently yielding an empty dir.
+
+    *skill_path* is the scenario's resolved ``agent_path``, which only
+    :data:`AGENT_SKILL_DIR` needs; a caller that omits it there gets a loud refusal
+    rather than a sandbox missing the very files the scenario is about.
     """
-    if kind == GIT_REPO:
-        with provision_git_fixture(kind) as path:
-            yield path
-        return
-    if kind == E2E_ARTIFACTS:
-        with provision_e2e_artifacts_fixture() as path:
-            yield path
-        return
-    if kind == E2E_SIBLING_REPOS:
-        with provision_e2e_sibling_repos_fixture() as path:
-            yield path
-        return
-    if kind == UV_PROJECT:
-        with provision_uv_project_fixture() as path:
-            yield path
-        return
-    msg = f"unknown eval fixture: {kind!r} (known: {sorted(KNOWN_FIXTURES)})"
-    raise ValueError(msg)
+    if kind == AGENT_SKILL_DIR:
+        if skill_path is None:
+            msg = f"fixture {kind!r} needs the scenario's resolved agent_path — none was passed"
+            raise ValueError(msg)
+        fixture = provision_agent_skill_dir_fixture(skill_path)
+    else:
+        fixture_providers = {
+            GIT_REPO: lambda: provision_git_fixture(kind),
+            E2E_ARTIFACTS: provision_e2e_artifacts_fixture,
+            E2E_SIBLING_REPOS: provision_e2e_sibling_repos_fixture,
+            UV_PROJECT: provision_uv_project_fixture,
+            PYTHON_PARSER_PROJECT: provision_python_parser_project_fixture,
+            GOLDEN_MASTER_PROJECT: provision_golden_master_project_fixture,
+            FAILURE_LOG: provision_failure_log_fixture,
+        }
+        try:
+            fixture = fixture_providers[kind]()
+        except KeyError:
+            msg = f"unknown eval fixture: {kind!r} (known: {sorted(KNOWN_FIXTURES)})"
+            raise ValueError(msg) from None
+
+    with fixture as path:
+        yield path
+
+
+@contextmanager
+def provision_agent_skill_dir_fixture(skill_path: Path) -> Iterator[Path]:
+    """Yield a temp dir holding the scenario's own skill at ``skills/<name>/``.
+
+    The whole directory is copied, so a ``references/`` doc the prompt tells the agent
+    to read FIRST is genuinely readable. The layout mirrors the repo's, so the path the
+    agent would type in a real session is the path that resolves here.
+    """
+    if not skill_path.is_file():
+        msg = f"agent_skill_dir fixture: agent_path does not resolve to a file: {skill_path}"
+        raise ValueError(msg)
+    source = skill_path.parent
+    with TemporaryDirectory(prefix="t3-eval-skilldir-") as tmp:
+        root = Path(tmp)
+        shutil.copytree(source, root / "skills" / source.name)
+        yield root
+
+
+@contextmanager
+def provision_failure_log_fixture() -> Iterator[Path]:
+    """Yield the concrete exception log named by root-cause scenarios."""
+    with TemporaryDirectory(prefix="t3-eval-failure-log-") as tmp:
+        root = Path(tmp)
+        _write(
+            root,
+            "failure.log",
+            "Traceback (most recent call last):\n"
+            '  File "src/worker.py", line 42, in process\n'
+            "    return payload.customer.id\n"
+            "AttributeError: 'NoneType' object has no attribute 'customer'\n",
+        )
+        yield root
+
+
+@contextmanager
+def provision_golden_master_project_fixture() -> Iterator[Path]:
+    """Yield a runnable golden test and the complete reference it checks."""
+    with TemporaryDirectory(prefix="t3-eval-golden-") as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        git(repo=str(repo), args=["init", "-b", "main"])
+        git(repo=str(repo), args=["config", "user.email", "agent@example.com"])
+        git(repo=str(repo), args=["config", "user.name", "Eval Agent"])
+        git(repo=str(repo), args=["config", "commit.gpgsign", "false"])
+        _write(repo, "Widgetplan2.txt", "month,payment,balance\n1,992.00,9008.00\n2,992.00,8016.00\n3,992.00,7024.00\n")
+        _write(
+            repo,
+            "src/serializer.py",
+            "def schedule():\n"
+            "    return [(1, '992.00', '9008.00'), (2, '992.00', '8016.00'), (3, '992.00', '7024.00')]\n",
+        )
+        _write(
+            repo,
+            "run_tests",
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "import unittest\n"
+            "from pathlib import Path\n"
+            "if len(sys.argv) != 1:\n"
+            "    sys.exit('run_tests takes no arguments')\n"
+            "sys.path.insert(0, str(Path(__file__).parent / 'src'))\n"
+            "result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests'))\n"
+            "sys.exit(not result.wasSuccessful())\n",
+        )
+        (repo / "run_tests").chmod(0o755)
+        git(repo=str(repo), args=["add", "Widgetplan2.txt", "src/serializer.py", "run_tests"])
+        git(repo=str(repo), args=["commit", "-m", "chore: reference and serializer"])
+        _write(
+            repo,
+            "tests/test_schedule.py",
+            "import unittest\n"
+            "from pathlib import Path\n"
+            "from serializer import schedule\n\n"
+            "class GoldenMasterTest(unittest.TestCase):\n"
+            "    def test_schedule_matches_every_reference_row(self):\n"
+            "        rows = Path('Widgetplan2.txt').read_text().splitlines()[1:]\n"
+            "        expected = [tuple([int(month), payment, balance]) for month, payment, balance "
+            "in (row.split(',') for row in rows)]\n"
+            "        self.assertEqual(schedule(), expected)\n",
+        )
+        yield repo
 
 
 @contextmanager
@@ -381,4 +525,22 @@ def provision_uv_project_fixture() -> Iterator[Path]:
         git(repo=str(repo), args=["commit", "-m", "chore: base"])
         git(repo=str(repo), args=["remote", "add", "origin", str(origin)])
         git(repo=str(repo), args=["push", "-u", "origin", "main"])
+        yield repo
+
+
+@contextmanager
+def provision_python_parser_project_fixture() -> Iterator[Path]:
+    """Yield the real red parser project its scenario describes."""
+    with TemporaryDirectory(prefix="t3-eval-parserfx-") as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        git(repo=str(repo), args=["init", "-b", "main"])
+        git(repo=str(repo), args=["config", "user.email", "agent@example.com"])
+        git(repo=str(repo), args=["config", "user.name", "Eval Agent"])
+        git(repo=str(repo), args=["config", "commit.gpgsign", "false"])
+        _write(repo, "pyproject.toml", _UV_PYPROJECT_TOML)
+        _write(repo, "src/widget/parser.py", _PYTHON_PARSER_PY)
+        _write(repo, "tests/widget/test_parser.py", _PYTHON_PARSER_TEST)
+        git(repo=str(repo), args=["add", "pyproject.toml", "src/widget/parser.py", "tests/widget/test_parser.py"])
+        git(repo=str(repo), args=["commit", "-m", "test: reproduce leading-whitespace parser bug"])
         yield repo

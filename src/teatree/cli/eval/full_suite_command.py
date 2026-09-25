@@ -50,6 +50,15 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
             "--docker",
             help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
         ),
+        local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+            False,
+            "--local",
+            help=(
+                "Run a METERED backend in this process instead of re-routing to the CI container. "
+                "Required wherever that nested container route is unavailable (a socket-less CI "
+                "runner, or a `t3` that is itself containerized); otherwise Docker stays the default."
+            ),
+        ),
         parallel: int = typer.Option(
             DEFAULT_PARALLEL,
             "--parallel",
@@ -73,6 +82,7 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
             transcript_dir=transcript_dir,
             model_free=model_free,
             docker=docker,
+            local=local,
             strict=strict,
             parallel=parallel,
         )

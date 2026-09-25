@@ -39,7 +39,9 @@ on the quota/machine/ceiling verdict.
 
 Fail-OPEN by construction: the kill-switch (``admission_governor_enabled`` false)
 or any signal-read failure admits BOTH classes — a governor that cannot read its
-own signals must never wedge the factory. A refusal is never silent: this is the
+own signals must never wedge the factory. A claim-admission refusal (the ``off`` posture,
+a quiescing worker, schema skew) is not a governor signal, so it denies both classes before
+the governor is read. A refusal is never silent: this is the
 only seam that returns a DENY reason, and every caller logs it at WARNING.
 """
 
@@ -50,6 +52,7 @@ from typing import TYPE_CHECKING
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
 from teatree.core.admission_governor import (
     MachineBrake,
+    SupplementalAdmissionSignals,
     decide_admission,
     governor_enabled,
     pressure_for,
@@ -58,8 +61,10 @@ from teatree.core.admission_governor import (
     read_quota_signal,
 )
 from teatree.core.admission_pressure import UNREAD_QUOTA, AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
+from teatree.core.managers_task_claim import claim_admission_block_reason
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.telemetry.admission import record_admission_decision
 from teatree.request_cache import request_scope
 
 if TYPE_CHECKING:
@@ -97,6 +102,21 @@ class LaneBound:
         return self.headroom is not None and self.admitted >= self.headroom
 
 
+@dataclass(frozen=True)
+class _LaneOccupancy:
+    expensive: int
+    cheap: int
+
+
+def _cheap_capacity(ceiling: int, reserved: int, occupied: _LaneOccupancy, configured: int) -> tuple[int, int]:
+    """Return cheap and shared caps, allowing one review past inherited coding overfill."""
+    overflow_review = int(reserved > 0 and occupied.expensive >= ceiling and occupied.cheap == 0)
+    return (
+        min(configured, max(overflow_review, ceiling - occupied.expensive)),
+        max(ceiling, occupied.expensive + overflow_review),
+    )
+
+
 @dataclass
 class AgentAdmission:
     """One governor probe, resolved per phase cost class (#4098).
@@ -115,6 +135,7 @@ class AgentAdmission:
     cheap_denied: str | None
     cheap_lane: LaneBound = field(default_factory=LaneBound)
     expensive_lane: LaneBound = field(default_factory=LaneBound)
+    shared_lane: LaneBound = field(default_factory=LaneBound)
     seats_released: int = 0
     _announced: set[str] = field(default_factory=set)
 
@@ -127,6 +148,8 @@ class AgentAdmission:
         denied = self.cheap_denied if cost is PhaseCost.CHEAP else self.expensive_denied
         if denied is not None:
             return denied
+        if self.shared_lane.spent():
+            return f"shared headless ceiling {self.shared_lane.ceiling} reached"
         lane = self.lane_for(cost)
         if lane.spent():
             return f"{cost} headroom spent this pass ({lane.admitted} admitted, lane ceiling reached)"
@@ -167,17 +190,20 @@ class AgentAdmission:
         """Take *task_pk*'s durable seat — ``None`` when granted, else why it was refused.
 
         Each class hands its own width to the write, which re-checks that lane's occupancy
-        there rather than trusting this verdict's probe (#4125). A width of ``None`` leaves
-        only the one-seat-per-row rule, which is what the unbounded paths reduce to.
+        there rather than trusting this verdict's probe (#4125). A class width of ``None``
+        can still carry the shared governor cap; only kill-switch/fail-open is unbounded.
         """
         cost = phase_cost(phase)
         lane = self.lane_for(cost)
         cheap = cost is PhaseCost.CHEAP
-        if not _task_model().objects.record_admission(task_pk, cheap=cheap, lane_ceiling=lane.ceiling):
+        if not _task_model().objects.record_admission(
+            task_pk, cheap=cheap, lane_ceiling=lane.ceiling, total_ceiling=self.shared_lane.ceiling
+        ):
             if lane.ceiling is None:
                 return "already dispatched this window"
-            return f"no {cost}-phase lane seat: already dispatched this window, or a racer took the last one"
+            return f"no {cost}-phase or shared seat: already dispatched this window, or a racer took the last one"
         lane.admitted += 1
+        self.shared_lane.admitted += 1
         return None
 
     def log_denials(self) -> None:
@@ -237,22 +263,15 @@ def _cheap_lane_ceiling() -> int:
 def _drain_reservation(ceiling: int) -> int:
     """How many of *ceiling*'s slots only the DRAINING class may occupy (#4374).
 
-    Clamped to at most ``ceiling - 2``, so however large the operator writes it the
-    expensive class always keeps TWO slots — a reservation that could reach the whole
-    ceiling would trade one starvation for its mirror image and stop the factory writing
-    code at all. ``0`` is the rollback lever: first-come allocation, exactly as before.
-
-    Two rather than one because the governor ceiling is ``floor(cores * 0.5)``: a 4-core
-    box (the CI runner) has ceiling 2, and a ``ceiling - 1`` clamp there leaves the
-    expensive lane a SINGLE slot. §"the admission governor" records that outcome as the
-    factory-starves-itself outage that is its own incident (#4407), so the reservation
-    must not be the thing that produces it. The clamp binds only at ceiling 2 — at 3+
-    (6 cores and up) it is identical to ``ceiling - 1``, so the 4-slots-to-3 behaviour
-    this change is actually for is untouched.
+    On a ceiling-2 host, reserve one cheap slot and retain one expensive slot;
+    otherwise the draining class has no floor at all. At ceiling 3+ the prior
+    ``ceiling - 2`` cap remains, preserving at least two expensive seats.
+    ``0`` is still the rollback lever for the reservation.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
 
-    return min(max(0, int(get_effective_settings().drain_slot_reservation)), max(0, ceiling - 2))
+    max_reserved = max(1, ceiling - 2) if ceiling > 1 else 0
+    return min(max(0, int(get_effective_settings().drain_slot_reservation)), max_reserved)
 
 
 def _shed_denial(pressure: AdmissionPressure) -> str | None:
@@ -284,24 +303,6 @@ def _reservation_denial(ceiling: int, reserved: int, occupied: int) -> str | Non
     return (
         f"expensive lane occupancy {occupied} at/over its {unreserved} unreserved slot(s) — "
         f"{reserved} of the {ceiling} reserved for the draining class"
-    )
-
-
-def _apply_drain_reservation(denial: str | None, *, ceiling: int) -> tuple[str | None, LaneBound]:
-    """Carve the draining class's reserved slots off the top of *ceiling* (#4374).
-
-    Measured against the EXPENSIVE lane's own occupancy, never the live population:
-    against the latter it would invert into the mirror-image starvation, refusing coding
-    work because reviews are running. An already-denied class reserves nothing.
-    """
-    reserved = _drain_reservation(ceiling)
-    if not reserved or denial is not None:
-        return denial, LaneBound()
-    unreserved = ceiling - reserved
-    occupied = _task_model().objects.expensive_lane_occupancy()
-    return (
-        _reservation_denial(ceiling, reserved, occupied),
-        LaneBound(ceiling=unreserved, headroom=max(0, unreserved - occupied)),
     )
 
 
@@ -353,6 +354,8 @@ def agent_admission_verdict() -> AgentAdmission:
     rows expire in minutes and are written only reactively — bounds the lane at the
     machine-derived ceiling rather than leaving it unbounded (#4097).
     """
+    if blocked := claim_admission_block_reason():
+        return AgentAdmission(expensive_denied=blocked, cheap_denied=blocked)
     if not governor_enabled():
         return _admit_all()
     task_model = _task_model()
@@ -360,34 +363,67 @@ def agent_admission_verdict() -> AgentAdmission:
         quota, metered = _lane_budget()
         machine = read_machine_signal()
         cheap_ceiling = _cheap_lane_ceiling()
-        decision = decide_admission(quota=quota, machine=machine, static_ceiling=None)
-        live = task_model.objects.claimed_agent_count()
+        decision = decide_admission(
+            quota=quota,
+            machine=machine,
+            signals=SupplementalAdmissionSignals(metered=metered),
+            static_ceiling=None,
+        )
         pressure = pressure_for(quota=quota, machine=machine, metered=metered)
+        try:
+            record_admission_decision(decision=decision, pressure=pressure, lane="headless")
+        except Exception:
+            logger.exception("headless admission telemetry failed; retaining the computed verdict")
+        live = task_model.objects.claimed_agent_count()
         expensive = (
             pressure.reason
             if pressure.band is PressureBand.HALT
             else _shed_denial(pressure) or _ceiling_denial(decision.ceiling, live)
         )
+        occupied = _LaneOccupancy(
+            expensive=task_model.objects.expensive_lane_occupancy(),
+            cheap=task_model.objects.cheap_lane_occupancy(),
+        )
         if cheap_ceiling <= 0:
-            return AgentAdmission(expensive_denied=expensive, cheap_denied=expensive)
-        expensive, expensive_lane = _apply_drain_reservation(expensive, ceiling=decision.ceiling)
+            return AgentAdmission(
+                expensive_denied=expensive,
+                cheap_denied=expensive,
+                shared_lane=LaneBound(
+                    ceiling=decision.ceiling,
+                    headroom=max(0, decision.ceiling - occupied.expensive - occupied.cheap),
+                ),
+            )
+        expensive_lane = LaneBound()
+        reserved = _drain_reservation(decision.ceiling)
+        if reserved and expensive is None:
+            expensive = _reservation_denial(decision.ceiling, reserved, occupied.expensive)
+            expensive_lane = LaneBound(
+                ceiling=decision.ceiling - reserved,
+                headroom=max(0, decision.ceiling - reserved - occupied.expensive),
+            )
         exempt = pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False))
-        cheap_occupancy = task_model.objects.cheap_lane_occupancy()
+        # An inherited all-coding fleet can already occupy the reserved seat at
+        # rollout or after a pace reduction. Permit ONE review to drain it, never
+        # a second; ordinary admissions obey the combined ceiling.
+        cheap_ceiling, shared_ceiling = _cheap_capacity(decision.ceiling, reserved, occupied, cheap_ceiling)
         cheap = (
             exempt.reason
             if exempt.band is PressureBand.HALT
-            else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
+            else _ceiling_denial(cheap_ceiling, occupied.cheap, lane="cheap-phase")
         )
-        seats_released = task_model.objects.cheap_lane_seats_released()
     except Exception:
         logger.exception("headless admission governor probe failed — admitting (fail-open)")
         return _admit_all()
     return AgentAdmission(
         expensive_denied=expensive,
         cheap_denied=cheap,
-        cheap_lane=LaneBound(ceiling=cheap_ceiling, headroom=max(0, cheap_ceiling - cheap_occupancy)),
+        cheap_lane=LaneBound(ceiling=cheap_ceiling, headroom=max(0, cheap_ceiling - occupied.cheap)),
         expensive_lane=expensive_lane,
-        seats_released=seats_released,
+        shared_lane=LaneBound(
+            ceiling=shared_ceiling,
+            headroom=max(0, shared_ceiling - occupied.expensive - occupied.cheap),
+        ),
+        seats_released=task_model.objects.cheap_lane_seats_released(),
     )
 
 

@@ -4,75 +4,92 @@
 resolves through: the single-lookup ``teatree.loops.enable_verdict.loop_admits`` (the off-live-tick
 loop gates) and the live loop-table tick both apply it, so the verdict can never
 drift into a tier-subset. ``loop_held_in_db`` is the durable per-loop
-PAUSE/DISABLE read; it fails SAFE to no-hold on a read error but must WARN (not
-whisper at debug) so a silently-unheld loop is observable (#2584 / holistic 3c#5).
+PAUSE/DISABLE read; under E3 it fails CLOSED on a read error — the hold stands and the
+refusal logs at ERROR, because an unreadable brake is not evidence of no brake.
 """
 
 from unittest.mock import patch
 
 import django.test
+import pytest
 
-from teatree.core.models import LoopState
-from teatree.loop.loop_state_db import loop_held_in_db, loop_state_admits
+from teatree.core.models import Loop, LoopState
+from teatree.loop.loop_state_db import (
+    ControlPlanesUnreadableError,
+    held_loop_names,
+    loop_held_in_db,
+    loop_state_admits,
+    manual_override_map,
+)
 
 
 class TestLoopStateAdmits(django.test.SimpleTestCase):
-    """The pure combined verdict: configured-enabled AND not runtime-held."""
+    """The pure combined verdict: hold > manual override > preset."""
 
-    def test_configured_and_unheld_admits(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=False, preset_state=None, forced=None) is True
+    def test_the_preset_decides_when_nobody_overrode(self) -> None:
+        assert loop_state_admits(held=False, manual=None, preset_state=True) is True
+        assert loop_state_admits(held=False, manual=None, preset_state=False) is False
 
-    def test_held_is_not_admitted_even_when_configured(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=True, preset_state=None, forced=None) is False
+    def test_a_manual_override_outranks_the_preset_in_both_directions(self) -> None:
+        assert loop_state_admits(held=False, manual=True, preset_state=False) is True
+        assert loop_state_admits(held=False, manual=False, preset_state=True) is False
 
-    def test_not_configured_is_not_admitted_even_when_unheld(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=False, preset_state=None, forced=None) is False
-
-    def test_not_configured_and_held_is_not_admitted(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=True, preset_state=None, forced=None) is False
-
-    def test_none_preset_is_byte_for_byte_the_two_plane_verdict(self) -> None:
-        # The #3159 empty-table no-op: an explicit `preset_state=None` (what the
-        # resolver returns with no preset) resolves exactly as the pre-#3159
-        # `configured_enabled and not held`. There is no neutral default —
-        # preset_state is required at every call site (the LP-3 structural guard).
-        for configured in (True, False):
-            for held in (True, False):
-                assert loop_state_admits(configured_enabled=configured, held=held, preset_state=None, forced=None) == (
-                    configured and not held
-                )
-
-    def test_preset_force_on_overrides_disabled_base(self) -> None:
-        assert loop_state_admits(configured_enabled=False, held=False, preset_state=True, forced=None) is True
-
-    def test_preset_force_off_overrides_enabled_base(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=False, preset_state=False, forced=None) is False
-
-    def test_hold_still_wins_over_a_force_on_preset(self) -> None:
-        assert loop_state_admits(configured_enabled=True, held=True, preset_state=True, forced=None) is False
+    def test_a_hold_wins_over_everything_below_it(self) -> None:
+        for manual in (True, False, None):
+            for preset_state in (True, False):
+                assert loop_state_admits(held=True, manual=manual, preset_state=preset_state) is False
 
 
-class TestLoopHeldFailsSafeButWarns(django.test.TestCase):
-    """A per-loop PAUSE/DISABLE read error fails OPEN (no hold) — but WARNS, never whispers.
+class TestLoopHeldFailsClosedAndLoud(django.test.TestCase):
+    """A per-loop PAUSE/DISABLE read error fails CLOSED (the hold stands) and logs at ERROR.
 
-    The global kill-switch fails CLOSED on a read error; the symmetric per-loop
-    hold fails OPEN so an unreadable DB can never silently disable a loop. That
-    fail-open was swallowed at ``debug`` (#2584 / holistic 3c#5): a loop silently
-    kept running with NO observable signal. It must log at WARNING so the operator
-    can see the degraded read.
+    These assertions are the INVERSE of the ones this class carried before E3, and the
+    inversion is the evidence the doctrine changed rather than the code drifting: an
+    unreadable row was read as "no hold", which is what a box with no hold also answers,
+    so one database hiccup silently dropped the emergency brake and ran a held destructive
+    loop. A brake this box cannot read is an incident, not a degraded read, so it is ERROR
+    rather than WARNING.
     """
 
-    def test_read_error_returns_no_hold(self) -> None:
+    def test_read_error_holds_the_loop(self) -> None:
         with patch.object(LoopState.objects, "is_runnable", side_effect=RuntimeError("db down")):
-            assert loop_held_in_db("review") is False
+            assert loop_held_in_db("review") is True
 
-    def test_read_error_logs_at_warning(self) -> None:
+    def test_read_error_logs_at_error(self) -> None:
         with (
             patch.object(LoopState.objects, "is_runnable", side_effect=RuntimeError("db down")),
-            self.assertLogs("teatree.loop.loop_state_db", level="WARNING") as logs,
+            self.assertLogs("teatree.loop.loop_state_db", level="ERROR") as logs,
         ):
             loop_held_in_db("review")
         assert any("review" in line for line in logs.output)
+
+
+class TestBulkControlReadsRaiseRatherThanAnswerEmpty(django.test.TestCase):
+    """An unreadable control plane RAISES — an empty answer is what an unheld fleet gives.
+
+    The three bulk reads used to return ``set()`` / ``{}`` / ``(set(), {})`` on a read
+    error, which is byte-identical to a healthy box holding nothing. The caller therefore
+    could not tell "nothing is held" from "the brake is unreadable" and ran everything on
+    both readings.
+    """
+
+    def test_bulk_hold_read_raises(self) -> None:
+        with (
+            patch.object(LoopState.objects, "held_names", side_effect=RuntimeError("db down")),
+            pytest.raises(ControlPlanesUnreadableError, match="hold"),
+        ):
+            held_loop_names()
+
+    def test_bulk_manual_read_raises(self) -> None:
+        with (
+            patch.object(Loop.objects, "values_list", side_effect=RuntimeError("db down")),
+            pytest.raises(ControlPlanesUnreadableError, match="manual override"),
+        ):
+            manual_override_map()
+
+    def test_a_healthy_fleet_with_no_overrides_still_answers_empty(self) -> None:
+        assert held_loop_names() == set()
+        assert manual_override_map() == {}
 
 
 class TestLoopHeldInDbResolvesDbTier(django.test.TestCase):

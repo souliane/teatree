@@ -13,10 +13,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
+      unless: 'persistent ~ "(?i)true"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)((while|until) .*sleep|watch -n|for i in.*sleep|sleep \d+; *(gh|glab))"'
       unless: 'run_in_background ~ "(?i)true"'
@@ -32,10 +37,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(deploy|rollout|kubectl)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(deploy|rollout|kubectl)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(deploy|rollout|kubectl)"'
+      unless: 'persistent ~ "(?i)true"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)((while|until) .*sleep|watch -n|for i in.*sleep|sleep \d+; *(gh|glab))"'
       unless: 'run_in_background ~ "(?i)true"'
@@ -51,10 +61,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(tail -[fF]|gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks|\[ -[fe] |check_job|batch_job))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(job|batch|await|wait)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(job|batch|await|wait)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(job|batch|await|wait)"'
+      unless: 'persistent ~ "(?i)true"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)((while|until) .*sleep|watch -n|for i in.*sleep|sleep \d+; *(gh|glab))"'
       unless: 'run_in_background ~ "(?i)true"'

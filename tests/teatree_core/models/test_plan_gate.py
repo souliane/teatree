@@ -24,6 +24,16 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.plan_artifact import NoPlanArtifactError, PlanArtifact
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.runners.base import RunnerResult
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, record_test_plan
+
+
+def _planning_envelope(plan_text: str) -> dict[str, object]:
+    return {
+        "summary": "Plan done",
+        "plan_text": plan_text,
+        "base_sha": _FORTY_HEX,
+        "adequacy": dict(TEST_ADEQUACY),
+    }
 
 
 def _started_ticket() -> Ticket:
@@ -35,7 +45,7 @@ def _started_ticket() -> Ticket:
 
 def _planned_ticket() -> Ticket:
     t = _started_ticket()
-    PlanArtifact.record(ticket=t, plan_text="Implement X by doing Y", recorded_by="t3:planner")
+    record_test_plan(t, plan_text="Implement X by doing Y", recorded_by="t3:planner")
     t.plan()
     t.save()
     return t
@@ -67,7 +77,7 @@ class TestPlanTransitionRequiresPlanArtifact(TestCase):
 
     def test_plan_with_artifact_advances_to_planned(self) -> None:
         ticket = _started_ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="Implement X by doing Y", recorded_by="t3:planner")
+        record_test_plan(ticket, plan_text="Implement X by doing Y", recorded_by="t3:planner")
         ticket.plan()
         ticket.save()
         assert ticket.state == Ticket.State.PLANNED
@@ -100,7 +110,9 @@ class TestPlanArtifactModel(TestCase):
 
     def test_record_creates_artifact(self) -> None:
         ticket = _started_ticket()
-        artifact = PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="t3:planner")
+        artifact = PlanArtifact.record(
+            ticket=ticket, plan_text="Do X", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
         assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
         assert artifact.plan_text == "Do X"
 
@@ -126,14 +138,24 @@ class TestPlanArtifactModel(TestCase):
 
     def test_multiple_artifacts_allowed_newest_governs(self) -> None:
         ticket = _started_ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="Plan v1", recorded_by="t3:planner")
-        PlanArtifact.record(ticket=ticket, plan_text="Plan v2", recorded_by="t3:planner")
+        PlanArtifact.record(
+            ticket=ticket, plan_text="Plan v1", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
+        PlanArtifact.record(
+            ticket=ticket, plan_text="Plan v2", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
         assert PlanArtifact.objects.filter(ticket=ticket).count() == 2
 
     def test_artifact_for_wrong_ticket_does_not_unlock_plan(self) -> None:
         ticket_a = _started_ticket()
         ticket_b = _started_ticket()
-        PlanArtifact.record(ticket=ticket_a, plan_text="Plan for A", recorded_by="t3:planner")
+        PlanArtifact.record(
+            ticket=ticket_a,
+            plan_text="Plan for A",
+            recorded_by="t3:planner",
+            base_sha=_FORTY_HEX,
+            adequacy=TEST_ADEQUACY,
+        )
         with pytest.raises(NoPlanArtifactError):
             ticket_b.plan()
 
@@ -190,7 +212,7 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
 
     def test_planning_success_auto_records_plan_artifact(self) -> None:
         task = self._make_planning_task()
-        result = {"summary": "Plan done", "plan_text": "Step 1: do X. Step 2: do Y."}
+        result = _planning_envelope("Step 1: do X. Step 2: do Y.")
         record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
         artifact = PlanArtifact.objects.filter(ticket=task.ticket).first()
         assert artifact is not None
@@ -205,7 +227,7 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
             phase="planning",
             execution_reason="test",
         )
-        result = {"summary": "Plan done", "plan_text": "Step 1: do X."}
+        result = _planning_envelope("Step 1: do X.")
         record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
         artifact = PlanArtifact.objects.filter(ticket=ticket).first()
         assert artifact is not None
@@ -213,7 +235,7 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
 
     def test_planning_without_plan_text_does_not_record_artifact(self) -> None:
         task = self._make_planning_task()
-        PlanArtifact.record(ticket=task.ticket, plan_text="pre-existing", recorded_by="t3:planner")
+        record_test_plan(task.ticket, plan_text="pre-existing", recorded_by="t3:planner")
         old_count = PlanArtifact.objects.filter(ticket=task.ticket).count()
         result_no_text = {"summary": "Plan done", "plan_text": ""}
         assert check_evidence(result_no_text, "planning")  # fails evidence check (returns error msg)

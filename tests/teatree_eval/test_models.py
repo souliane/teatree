@@ -4,7 +4,7 @@ from typing import get_args
 
 import pytest
 
-from teatree.eval.models import EvalRun, Matcher
+from teatree.eval.models import COST_SOURCE_NOT_METERED, EvalRun, Matcher
 
 
 def test_skipped_matches_the_old_skip_run_shape() -> None:
@@ -23,6 +23,7 @@ def test_skipped_matches_the_old_skip_run_shape() -> None:
         is_error=False,
         raw_stdout="",
         raw_stderr="",
+        cost_source=COST_SOURCE_NOT_METERED,
     )
 
 

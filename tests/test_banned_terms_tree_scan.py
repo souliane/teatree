@@ -149,10 +149,15 @@ class TestScanTextSharedMatcher:
         assert len(hits) == 1
 
 
-class TestScanTextEmailCarveOut:
-    def test_brand_only_inside_email_is_allowed(self) -> None:
+class TestScanTextScansEmailAddresses:
+    """An address is published text, so a brand inside one is a hit (not carved out)."""
+
+    def test_brand_only_inside_email_is_flagged(self) -> None:
         hits = banned_terms_tree_scan.scan_text(f"ping dev@{SYNTH_BRAND}.com please", (SYNTH_BRAND,))
-        assert hits == []
+        assert len(hits) == 1
+
+    def test_address_with_no_brand_is_clean(self) -> None:
+        assert banned_terms_tree_scan.scan_text("ping dev@example.org please", (SYNTH_BRAND,)) == []
 
     def test_brand_outside_email_on_same_line_is_flagged(self) -> None:
         hits = banned_terms_tree_scan.scan_text(f"{SYNTH_BRAND} ships; mail dev@{SYNTH_BRAND}.com", (SYNTH_BRAND,))
@@ -267,6 +272,33 @@ class TestScanTreeReadsCommittedBlob:
         (repo / "src/new.py").write_text("x = 1\n", encoding="utf-8")
         _git(repo, "add", "src/new.py")
         assert banned_terms_tree_scan.committed_blob_text(repo, "src/new.py") is None
+
+
+class TestScanTreeOfAVendoredSubtree:
+    """A root that is a subdirectory of its repo reads ITS OWN committed blobs.
+
+    ``git show HEAD:<path>`` resolves the path from the repository top, whatever ``-C``
+    names. Scanning a vendored ``vendor/<core>`` therefore read the enclosing repo's
+    same-named files (``pyproject.toml``, ``.gitignore``, ...) and reported their text
+    under the vendored path, while the vendored file itself went unread.
+    """
+
+    def _fork(self, tmp_path: Path, *, root_text: str, vendored_text: str) -> Path:
+        fork = _repo_with(tmp_path, "pyproject.toml", root_text)
+        vendored = fork / "vendor" / "core"
+        vendored.mkdir(parents=True)
+        (vendored / "pyproject.toml").write_text(vendored_text, encoding="utf-8")
+        _git(fork, "add", "-A")
+        _git(fork, "commit", "-m", "vendor core")
+        return vendored
+
+    def test_the_enclosing_repos_same_named_file_is_not_reported(self, tmp_path: Path) -> None:
+        vendored = self._fork(tmp_path, root_text=f"name = '{SYNTH_BRAND}'\n", vendored_text="name = 'core'\n")
+        assert banned_terms_tree_scan.scan_tree(vendored, (SYNTH_BRAND,)) == []
+
+    def test_the_vendored_files_own_committed_brand_is_found(self, tmp_path: Path) -> None:
+        vendored = self._fork(tmp_path, root_text="name = 'fork'\n", vendored_text=f"name = '{SYNTH_BRAND}'\n")
+        assert [f.path for f in banned_terms_tree_scan.scan_tree(vendored, (SYNTH_BRAND,))] == ["pyproject.toml"]
 
 
 class TestLoadBrandTerms:

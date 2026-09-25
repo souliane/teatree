@@ -109,6 +109,7 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
                 # ``draft_state_unknown`` and the scan being pinned is never reached.
                 # That floor has its own suite (gates/test_review_request_draft_gate.py).
                 patch(f"{_CMD_MOD}.draft_refusal_reason", return_value=""),
+                patch(f"{_CMD_MOD}._owner_authorship", return_value=True),
             ):
                 code, payload = _run_post()
 

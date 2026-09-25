@@ -1,8 +1,9 @@
 """``_check_dream_transcript_visibility`` — the `t3 doctor` dream-blindness alarm.
 
-In the Dockerized factory the dream pass globs ``~/.claude/projects`` for session
-transcripts. When that dir is unmounted/empty the pass finds 0 members and is a
-permanent no-op — invisible until this check. Keys on STRUCTURAL absence (no
+In the Dockerized factory the dream pass globs the private
+``teatree_claude_home`` volume's ``~/.claude/projects`` for session transcripts.
+When that dir is unmounted/empty the pass finds 0 members and is a permanent
+no-op — invisible until this check. Keys on STRUCTURAL absence (no
 ``*/*.jsonl`` and no subagent transcript at any age), NOT the 48h recency window,
 so a quiet box never false-alarms.
 """
@@ -42,13 +43,13 @@ class TestDreamTranscriptVisibility:
         with _patch_root(tmp_path):
             assert _check_dream_transcript_visibility() is True
 
-    def test_warn_message_names_the_mount(self, tmp_path: Path) -> None:
+    def test_warn_message_names_the_factory_home(self, tmp_path: Path) -> None:
         buf = io.StringIO()
         with _patch_root(tmp_path / "absent"), redirect_stdout(buf):
             _check_dream_transcript_visibility()
         out = buf.getvalue()
         assert "WARN" in out
-        assert "bind mount" in out
+        assert "teatree_claude_home" in out
         assert ".claude/projects" in out
 
     def test_crash_degrades_to_ok_with_warn(self) -> None:

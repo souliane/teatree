@@ -14,7 +14,8 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
-from teatree.core.models import E2eMandatoryRun, LandscapeArtifact, PlanArtifact, Session, Task, Ticket, Worktree
+from teatree.core.models import E2eMandatoryRun, LandscapeArtifact, Session, Task, Ticket, Worktree
+from tests.factories import record_test_plan
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -49,7 +50,7 @@ def _populated_ticket() -> Ticket:
         },
         recorded_by="t3:intake",
     )
-    PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by="planner")
+    record_test_plan(ticket, plan_text="the plan", recorded_by="planner")
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
     E2eMandatoryRun.record(

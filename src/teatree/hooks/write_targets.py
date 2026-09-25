@@ -55,6 +55,7 @@ _REDIRECT_RE: Final[re.Pattern[str]] = re.compile(r"^\d*(?:>>|>\|?)")
 _SUBSTITUTION_CHARS: Final[frozenset[str]] = frozenset({"$", "`", "*", "?", "(", ")"})
 
 _SED_NAMES: Final[frozenset[str]] = frozenset({"sed", "gsed"})
+_PERL_NAMES: Final[frozenset[str]] = frozenset({"perl"})
 _COPY_NAMES: Final[frozenset[str]] = frozenset({"cp", "mv", "install"})
 _SHELL_NAMES: Final[frozenset[str]] = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 # Prefixes that run the NEXT word rather than being the command themselves.
@@ -70,6 +71,42 @@ _COPY_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
 # the subcommand scanner skips two tokens for them (``git -C <path> mv``).
 _GIT_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+_IN_PLACE_CHARS: Final[frozenset[str]] = frozenset("i")
+
+
+@dataclass(frozen=True, slots=True)
+class _InPlaceEditor:
+    """One in-place editor's flag alphabet, for the shared bundled-cluster walk.
+
+    ``arg_chars`` take an argument, so the cluster's remainder is that value and
+    the walk ends there — ``sed -ei 's/a/b/'`` runs the script ``i`` rather than
+    editing in place. ``next_arg_chars`` REQUIRE that argument, so a cluster
+    ending on one takes the FOLLOWING word; ``-i``'s suffix is optional, which is
+    why it belongs to the first set and not the second.
+    """
+
+    arg_chars: frozenset[str]
+    next_arg_chars: frozenset[str]
+    script_chars: frozenset[str]
+    long_in_place: tuple[str, ...] = ()
+    long_script_flags: frozenset[str] = frozenset()
+    long_script_prefixes: tuple[str, ...] = ()
+
+
+_SED: Final[_InPlaceEditor] = _InPlaceEditor(
+    arg_chars=frozenset("efil"),
+    next_arg_chars=frozenset("efl"),
+    script_chars=frozenset("ef"),
+    long_in_place=("--in-place",),
+    long_script_flags=_SED_SCRIPT_FLAGS,
+    long_script_prefixes=("--expression=", "--file="),
+)
+# perl spells every one of these short-only — it has no long form for -i or -e.
+_PERL: Final[_InPlaceEditor] = _InPlaceEditor(
+    arg_chars=frozenset("0CDFIVdeilmMxE"),
+    next_arg_chars=frozenset("eEFI"),
+    script_chars=frozenset("eE"),
 )
 
 # A literal path opened in a WRITE mode inside an interpreter body.
@@ -151,7 +188,9 @@ def _segment_write_targets(words: list[Token], heredocs: dict[str, str], *, dept
         return [], False
     raw = _redirect_raw_targets(operands)
     if leader in _SED_NAMES:
-        raw.extend(_sed_raw_targets(operands))
+        raw.extend(_in_place_raw_targets(operands, _SED))
+    elif leader in _PERL_NAMES:
+        raw.extend(_in_place_raw_targets(operands, _PERL))
     elif leader == "tee":
         raw.extend(_plain_positionals(operands[1:]))
     elif leader in _COPY_NAMES:
@@ -214,19 +253,58 @@ def _redirect_raw_targets(words: list[Token]) -> list[str]:
     return raw
 
 
-def _sed_raw_targets(words: list[Token]) -> list[str]:
-    """The files a ``sed -i`` rewrites in place; empty for a read-only sed."""
+def _in_place_raw_targets(words: list[Token], editor: _InPlaceEditor) -> list[str]:
+    """The files an in-place editor rewrites; empty when it is not editing in place.
+
+    With no script flag the FIRST positional is the script itself (``sed 's/a/b/'
+    f``) or the program file (``perl rewrite.pl f``), never a file being written.
+    """
     flags = [word.value for word in words[1:]]
-    if not any(_is_sed_in_place(flag) for flag in flags):
+    if not any(_names_in_place(flag, editor) for flag in flags):
         return []
-    positionals = _plain_positionals(words[1:], value_flags=_SED_SCRIPT_FLAGS)
-    if any(flag in _SED_SCRIPT_FLAGS or flag.startswith(("--expression=", "--file=")) for flag in flags):
+    positionals = _plain_positionals(words[1:], value_flags=editor.long_script_flags, editor=editor)
+    if any(_names_script(flag, editor) for flag in flags):
         return positionals
     return positionals[1:]
 
 
-def _is_sed_in_place(flag: str) -> bool:
-    return flag.startswith("--in-place") or (flag.startswith("-i") and not flag.startswith("--"))
+def _names_in_place(flag: str, editor: _InPlaceEditor) -> bool:
+    return _cluster_names(flag, _IN_PLACE_CHARS, editor) or flag.startswith(editor.long_in_place)
+
+
+def _names_script(flag: str, editor: _InPlaceEditor) -> bool:
+    return (
+        _cluster_names(flag, editor.script_chars, editor)
+        or flag in editor.long_script_flags
+        or flag.startswith(editor.long_script_prefixes)
+    )
+
+
+def _cluster_names(flag: str, wanted: frozenset[str], editor: _InPlaceEditor) -> bool:
+    """True iff a bundled short-option cluster names an option in ``wanted``.
+
+    getopt reads a cluster left to right, so ``-ni`` / ``-Ei`` name ``-i`` exactly
+    as ``-i`` does; keying on ``startswith("-i")`` missed every bundled spelling
+    and reported the command as writing nothing at all.
+    """
+    if not flag.startswith("-") or flag.startswith("--"):
+        return False
+    for char in flag[1:]:
+        if char in wanted:
+            return True
+        if char in editor.arg_chars:
+            return False
+    return False
+
+
+def _cluster_takes_next_word(flag: str, editor: _InPlaceEditor) -> bool:
+    """True iff the cluster ends on an option whose REQUIRED argument is the next word."""
+    if not flag.startswith("-") or flag.startswith("--"):
+        return False
+    for index, char in enumerate(flag[1:], start=2):
+        if char in editor.arg_chars:
+            return index == len(flag) and char in editor.next_arg_chars
+    return False
 
 
 def _copy_raw_destination(words: list[Token]) -> list[str]:
@@ -255,7 +333,9 @@ def _git_mv_raw_destination(words: list[Token]) -> list[str]:
     return positionals[-1:] if len(positionals) > 1 else []
 
 
-def _plain_positionals(words: list[Token], value_flags: frozenset[str] = _NO_VALUE_FLAGS) -> list[str]:
+def _plain_positionals(
+    words: list[Token], value_flags: frozenset[str] = _NO_VALUE_FLAGS, editor: _InPlaceEditor | None = None
+) -> list[str]:
     """Positional operands only — flags, their values, and redirects dropped.
 
     Redirects and input redirections are recognised on the verbatim span (shell
@@ -280,7 +360,9 @@ def _plain_positionals(words: list[Token], value_flags: frozenset[str] = _NO_VAL
         if word.value == "--":
             continue
         if word.value.startswith("-") and word.value != "-":
-            skip_next = word.value in value_flags
+            skip_next = word.value in value_flags or (
+                editor is not None and _cluster_takes_next_word(word.value, editor)
+            )
             continue
         if word.value:
             positionals.append(word.value)

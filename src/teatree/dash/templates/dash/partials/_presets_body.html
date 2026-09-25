@@ -43,10 +43,9 @@
 
   <section class="band">
     <h2>Preset entries</h2>
-    <p class="muted">A preset holds one of three opinions per loop. <strong class="eff-yes">on</strong> forces the loop to run,
-      <strong class="eff-no">off</strong> masks it, and <strong class="eff-inherit">no opinion</strong> hands the decision to the loop's
-      own base setting — now <em>and</em> in future, so flipping that base later silently changes what this preset does.
-      Presets do not inherit from one another; resolution is hold → forced override → preset → base.</p>
+    <p class="muted">A preset answers for every loop: <strong class="eff-yes">on</strong> runs it, <strong class="eff-no">off</strong> does not.
+      Presets do not inherit from one another and hold no partial opinions, so a tab reads as the whole posture;
+      resolution is hold → manual override → preset.</p>
 
     <div class="tabs">
       {% for preset in editor.presets %}
@@ -59,12 +58,7 @@
       {% if preset %}
         <h3>{{ preset.name }}{% if preset.active %} — active{% endif %}</h3>
         <p class="muted">{{ preset.description }}</p>
-        <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }} · no opinion {{ preset.inherit_count }}</p>
-        {% if preset.inherit_loops %}
-          <p class="banner-amber">No opinion on {{ preset.inherit_count }} loop{{ preset.inherit_count|pluralize }} —
-            <span class="mono">{{ preset.inherit_loops|join:", " }}</span>. Their base setting decides, so this preset's
-            behaviour changes silently if a base is flipped later.</p>
-        {% endif %}
+        <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }}</p>
 
         <form class="toolbar" method="post" action="{% url 'dash:preset_meta' %}" hx-post="{% url 'dash:preset_meta' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
           {% csrf_token %}
@@ -98,7 +92,7 @@
         </form>
 
         <table class="dash">
-          <thead><tr><th>loop</th><th>base</th><th>this preset says</th></tr></thead>
+          <thead><tr><th>loop</th><th>this preset says</th></tr></thead>
           <tbody>
             {% for entry in preset.entries %}
               <tr>
@@ -106,7 +100,6 @@
                   <div class="mono">{{ entry.loop_name }}</div>
                   <div class="muted">{{ entry.description }}</div>
                 </td>
-                <td class="{% if entry.base_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ entry.base_enabled|yesno:"enabled,disabled" }}</td>
                 <td>
                   <div class="row-actions">
                     {% for state in editor.entry_states %}
@@ -115,14 +108,14 @@
                         <input type="hidden" name="preset" value="{{ preset.name }}">
                         <input type="hidden" name="loop" value="{{ entry.loop_name }}">
                         <input type="hidden" name="state" value="{{ state }}">
-                        <button class="dash-btn seg-{{ state }} {% if entry.state == state %}primary{% endif %}" type="submit">{% if state == "inherit" %}no opinion{% else %}{{ state }}{% endif %}</button>
+                        <button class="dash-btn seg-{{ state }} {% if entry.state == state %}primary{% endif %}" type="submit">{{ state }}</button>
                       </form>
                     {% endfor %}
                   </div>
                 </td>
               </tr>
             {% empty %}
-              <tr class="empty-row"><td colspan="3">No loops configured.</td></tr>
+              <tr class="empty-row"><td colspan="2">No loops configured.</td></tr>
             {% endfor %}
           </tbody>
         </table>

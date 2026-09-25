@@ -1,19 +1,24 @@
 """``teatree.agents.usage_window`` — park-not-fail + admission guard (Directive #3).
 
-The DARK ``limit_autorecovery_enabled`` flag decides everything: OFF is byte-identical to
-today (a limit is a terminal FAILED, no window row), ON parks the task and records the
-window so the recovery chain can re-arm it at reset.
+A limit parks the task and records the window, so the recovery chain can re-arm it at
+reset — permanently, with no flag to turn it off.
 """
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from unittest import mock
+from unittest.mock import patch
 
 import django.test
 import pytest
 from django.utils import timezone
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-import teatree.agents.usage_window as usage_window_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.attempt_recorder import AttemptUsage
+from teatree.agents.harness import PydanticAiHarness
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.agents.usage_window import (
     ELAPSED_RESET_GRACE,
     LimitSignal,
@@ -23,10 +28,12 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
     park_task_on_limit,
 )
+from teatree.core.modelkit.task_failure_taxonomy import RecoveryStrategy, classify_failure, recovery_strategy
 from teatree.core.models import (
     LIMIT_PARKED_PREFIX,
     AnthropicActivePick,
     AnthropicTokenUsage,
+    BotPing,
     Session,
     Task,
     TaskAttempt,
@@ -36,18 +43,8 @@ from teatree.core.models import (
 from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
-
-
-def _set_autorecovery(*, on: bool) -> None:
-    ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=on)
-
-
-class _DownError(RuntimeError):
-    """A stand-in config-read failure the fail-safe flag reader must swallow."""
-
-
-def _raise_down() -> object:
-    raise _DownError
+from tests.factories import planned_ticket
+from tests.teatree_agents._sdk_fake import fake_sdk, result_message
 
 
 def _claimed_task() -> Task:
@@ -67,6 +64,8 @@ _SESSION_MATCH = LimitMatch(phrase="five_hour", cause=LimitCause.SUBSCRIPTION_SE
 _WEEKLY_MATCH = LimitMatch(phrase="seven_day", cause=LimitCause.SUBSCRIPTION_WEEKLY)
 _CREDIT_MATCH = LimitMatch(phrase="out_of_credits", cause=LimitCause.API_CREDIT)
 _RATE_LIMIT_MATCH = LimitMatch(phrase="rate limit", cause=LimitCause.RATE_LIMIT)
+_BUDGET_MATCH = LimitMatch(phrase="insufficient_user_quota", cause=LimitCause.PROVIDER_BUDGET)
+_OWNER_ALERT = "teatree.agents.usage_window.notify_user"
 
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
 _USAGE = AttemptUsage(input_tokens=4200, output_tokens=310, cost_usd=0.42)
@@ -127,21 +126,7 @@ class TestEffectiveResetsAt(django.test.SimpleTestCase):
         assert effective_resets_at(LimitCause.API_CREDIT, now + timedelta(hours=1), now) is None
 
 
-class TestParkTaskOnLimitFlagOff(django.test.TestCase):
-    def test_inert_when_flag_off(self) -> None:
-        _set_autorecovery(on=False)
-        task = _claimed_task()
-        parked = park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION)
-        assert parked is None
-        assert not UsageWindowState.objects.exists()
-        task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED  # untouched — caller records the terminal FAILED
-
-
-class TestParkTaskOnLimitFlagOn(django.test.TestCase):
-    def setUp(self) -> None:
-        _set_autorecovery(on=True)
-
+class TestParkTaskOnLimit(django.test.TestCase):
     def test_session_limit_parks_task_and_records_window(self) -> None:
         now = timezone.now()
         task = _claimed_task()
@@ -232,32 +217,228 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         assert parked.input_tokens is None
 
 
-class TestFlagReadFailsSafeOff(django.test.TestCase):
-    def test_config_read_exception_disables_autorecovery(self) -> None:
-        # An unreadable flag must never silently change dispatch behaviour — fail-safe OFF.
+def _cycle_stop_model(reset: datetime, provider_calls: list[str]) -> FunctionModel:
+    """A metered router refusing every request on its key's monthly spend cap, as OrcaRouter words it."""
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        provider_calls.append("chat/completions")
+        raise ModelHTTPError(
+            status_code=403,
+            model_name="deepseek/deepseek-v4.1-flash",
+            body={
+                "error": {
+                    "message": f"token cycle spend limit reached, resets at {reset:%Y-%m-%dT%H:%M:%SZ}",
+                    "type": "access_denied",
+                }
+            },
+        )
+        yield ""  # unreachable — makes this an async generator
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+class TestProviderBudgetParksTheMeteredLane(django.test.TestCase):
+    """A metered router's spend stop parks the whole lane once instead of every queued task hitting it."""
+
+    def test_the_first_stop_parks_the_lane_and_the_next_task_never_reaches_the_provider(self) -> None:
+        reset = (timezone.now() + timedelta(days=3)).replace(microsecond=0)
+        provider_calls: list[str] = []
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ticket = planned_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        first, second = (Task.objects.create(ticket=ticket, session=session, phase="coding") for _ in range(2))
+
+        with (
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(
+                    harness=PydanticAiHarness(model=_cycle_stop_model(reset, provider_calls)),
+                    name="fake_harness",
+                    provider=None,
+                ),
+            ),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch(_OWNER_ALERT, return_value=True) as owner_alert,
+        ):
+            stopped = run_agent(first, phase="coding", overlay_skill_metadata={})
+            admitted = run_agent(second, phase="coding", overlay_skill_metadata={})
+
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == LimitCause.PROVIDER_BUDGET.value
+        assert window.resets_at == reset, "parked until the reset the router stated, not a guessed horizon"
+        assert stopped.error.startswith(f"{LIMIT_PARKED_PREFIX}provider_budget: token cycle spend limit reached")
+        assert admitted.error.startswith(f"{LIMIT_PARKED_PREFIX}admission: provider_budget window")
+        for task in (first, second):
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING, "parked, never FAILED into a retry"
+            assert task.not_before == reset
+        assert provider_calls == ["chat/completions"], "the second task was parked without a provider call"
+        owner_alert.assert_called_once()
+        assert str(window.pk) in owner_alert.call_args.kwargs["idempotency_key"]
+
+    def test_a_stop_stating_no_reset_is_re_probed_after_six_hours(self) -> None:
+        now = timezone.now()
         task = _claimed_task()
-        with mock.patch.object(usage_window_mod, "get_effective_settings", _raise_down):
-            assert park_task_on_limit(task, _SESSION_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
+        with patch(_OWNER_ALERT, return_value=True):
+            park_task_on_limit(task, _BUDGET_MATCH, lane=TaskAttempt.Lane.METERED, now=now)
+        task.refresh_from_db()
+        assert task.not_before == now + timedelta(hours=6)
+
+    def test_every_park_behind_one_window_shares_one_owner_alert_key(self) -> None:
+        first = _claimed_task()
+        second = Task.objects.create(ticket=first.ticket, session=first.session, phase="coding")
+        with patch(_OWNER_ALERT, return_value=True) as owner_alert:
+            for task in (first, second):
+                park_task_on_limit(task, _BUDGET_MATCH, lane=TaskAttempt.Lane.METERED)
+        keys = {call.kwargs["idempotency_key"] for call in owner_alert.call_args_list}
+        assert len(keys) == 1, "the notify ledger dedupes on this key, so the owner hears once per window"
+
+    def test_a_rate_limit_park_does_not_alert_the_owner(self) -> None:
+        with patch(_OWNER_ALERT, return_value=True) as owner_alert:
+            park_task_on_limit(_claimed_task(), _RATE_LIMIT_MATCH, lane=TaskAttempt.Lane.METERED)
+        owner_alert.assert_not_called()
+
+    def test_a_failed_owner_alert_never_breaks_the_park(self) -> None:
+        task = _claimed_task()
+        with patch(_OWNER_ALERT, side_effect=RuntimeError("slack down")):
+            parked = park_task_on_limit(task, _BUDGET_MATCH, lane=TaskAttempt.Lane.METERED)
+        assert parked is not None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+
+def _refusing_model(body: dict[str, object], provider_calls: list[str]) -> FunctionModel:
+    """A metered router refusing the request outright with HTTP 400 and *body*."""
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        provider_calls.append("chat/completions")
+        raise ModelHTTPError(status_code=400, model_name="deepseek/deepseek-v4.1-flash", body=body)
+        yield ""  # unreachable — makes this an async generator
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+_GUARDRAIL_BLOCK = {
+    "error": {
+        "code": "guardrail_blocked",
+        "message": "blocked by guardrail teatree-egress (rule secrets)",
+        "type": "invalid_request_error",
+    }
+}
+
+
+class TestALeakBlockIsTerminal(django.test.TestCase):
+    """A guardrail block fails the task once, alerts the owner once, and is never re-sent."""
+
+    def _dispatch_refused_with(self, body: dict[str, object]) -> tuple[Task, TaskAttempt, list[str]]:
+        provider_calls: list[str] = []
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ticket = planned_ticket()
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="agent-1"), phase="coding"
+        )
+        with (
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(
+                    harness=PydanticAiHarness(model=_refusing_model(body, provider_calls)),
+                    name="fake_harness",
+                    provider=None,
+                ),
+            ),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        return task, attempt, provider_calls
+
+    def test_a_guardrail_block_fails_terminally_with_exactly_one_owner_alert(self) -> None:
+        task, attempt, provider_calls = self._dispatch_refused_with(_GUARDRAIL_BLOCK)
+
+        assert task.status == Task.Status.FAILED, "a leak block is never parked for a retry"
+        assert attempt.error.startswith("leak_blocked: guardrail_blocked")
+        assert recovery_strategy(classify_failure(attempt.error)) is RecoveryStrategy.HALT
+        assert provider_calls == ["chat/completions"], "the blocked context is sent once and never again"
+        assert not UsageWindowState.objects.exists(), "a content block is not a lane-wide window"
+        assert BotPing.objects.filter(idempotency_key__startswith="leak_blocked:").count() == 1
+
+    def test_the_same_400_without_the_block_code_stays_an_ordinary_failure(self) -> None:
+        body = {"error": {"code": "invalid_request", "message": "bad request", "type": "invalid_request_error"}}
+
+        _task, attempt, _calls = self._dispatch_refused_with(body)
+
+        assert attempt.error.startswith("result_error: ")
+        assert not BotPing.objects.filter(idempotency_key__startswith="leak_blocked:").exists()
+
+
+class TestHttpStatusParksOnlyTheMeteredTransport(django.test.TestCase):
+    """A bare 402/429 parks a lane only when the metered router said it, never on a claude_sdk result."""
+
+    def _task(self) -> Task:
+        ticket = planned_ticket()
+        return Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="agent-1"), phase="coding"
+        )
+
+    def _claude_sdk_refused_with(self, status: int) -> TaskAttempt:
+        refusal = result_message(
+            is_error=True,
+            subtype="error_during_execution",
+            result=f"status {status}: the request could not be completed",
+            api_error_status=status,
+        )
+        task = self._task()
+        with fake_sdk([refusal]):
+            return run_agent(task, phase="coding", overlay_skill_metadata={})
+
+    def test_a_claude_sdk_402_parks_no_lane(self) -> None:
+        attempt = self._claude_sdk_refused_with(402)
+
+        assert attempt.error.startswith("result_error: ")
+        assert not UsageWindowState.objects.exists(), "a subscription run is never parked as a router budget"
+
+    def test_a_claude_sdk_429_without_wording_parks_no_lane(self) -> None:
+        attempt = self._claude_sdk_refused_with(429)
+
+        assert attempt.error.startswith("result_error: ")
         assert not UsageWindowState.objects.exists()
+
+    def test_a_metered_402_still_parks_the_metered_lane_as_a_budget(self) -> None:
+        provider_calls: list[str] = []
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        task = self._task()
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            provider_calls.append("chat/completions")
+            raise ModelHTTPError(status_code=402, model_name="m", body={"error": {"message": "payment required"}})
+            yield ""  # unreachable — makes this an async generator
+
+        harness = PydanticAiHarness(model=FunctionModel(stream_function=stream_fn))
+        with (
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=harness, name="fake_harness", provider=None),
+            ),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch(_OWNER_ALERT, return_value=True),
+        ):
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+
+        assert attempt.error.startswith(f"{LIMIT_PARKED_PREFIX}provider_budget: http 402")
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == LimitCause.PROVIDER_BUDGET.value
 
 
 class TestAdmissionGuard(django.test.TestCase):
-    def test_inert_when_flag_off(self) -> None:
-        _set_autorecovery(on=False)
-        now = timezone.now()
-        UsageWindowState.record_limit(
-            lane=TaskAttempt.Lane.SUBSCRIPTION,
-            cause=LimitCause.SUBSCRIPTION_SESSION.value,
-            resets_at=now + timedelta(hours=5),
-            now=now,
-        )
-        task = _claimed_task()
-        assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
-        task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED
-
     def test_parks_dispatch_while_window_active(self) -> None:
-        _set_autorecovery(on=True)
         now = timezone.now()
         reset = now + timedelta(hours=5)
         UsageWindowState.record_limit(
@@ -274,13 +455,11 @@ class TestAdmissionGuard(django.test.TestCase):
         assert task.not_before == reset
 
     def test_no_window_lets_dispatch_through(self) -> None:
-        _set_autorecovery(on=True)
         task = _claimed_task()
         assert maybe_park_for_active_window(task, lane=TaskAttempt.Lane.SUBSCRIPTION) is None
 
     def test_due_window_lets_dispatch_through(self) -> None:
         # The window's reset already passed (recovery will clear it) — let the dispatch try.
-        _set_autorecovery(on=True)
         now = timezone.now()
         UsageWindowState.record_limit(
             lane=TaskAttempt.Lane.SUBSCRIPTION,
@@ -300,9 +479,6 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
     records the current account exhausted and re-consults the selector: another healthy account
     → REQUEUE (rotate, no lane park); every account spent → park the lane for auto-resume.
     """
-
-    def setUp(self) -> None:
-        _set_autorecovery(on=True)
 
     def test_rotates_to_a_healthy_account_without_parking_the_lane(self) -> None:
         # account-1 hit its 5h limit mid-run; account-2 is healthy → the next dispatch must
@@ -408,31 +584,11 @@ class TestParkOrRotateOnLimit(django.test.TestCase):
         # no account rotation for a lane-wide 429
         assert not AnthropicTokenUsage.objects.filter(pass_path="acct/1/oauth").exists()
 
-    def test_inert_when_flag_off(self) -> None:
-        _set_autorecovery(on=False)
-        now = timezone.now()
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["acct/1/oauth", "acct/2/oauth"])
-        AnthropicActivePick.objects.set_pick("oauth", "", "acct/1/oauth")
-        task = _claimed_task()
-        assert (
-            park_or_rotate_on_limit(
-                task,
-                _SESSION_MATCH,
-                lane=TaskAttempt.Lane.SUBSCRIPTION,
-                now=now,
-                signal=LimitSignal(sdk_resets_at=int((now + timedelta(hours=3)).timestamp())),
-            )
-            is None
-        ), "flag off → caller records the terminal FAILED, byte-identical to today"
-        assert not UsageWindowState.objects.exists()
-        assert not AnthropicTokenUsage.objects.exists()
-
 
 class TestParkTaskOnAllExhausted(django.test.TestCase):
     """Multi-account #C2: every account drained → PARK the lane for auto-resume, never a human ping."""
 
     def test_parks_the_lane_keyed_on_the_earliest_reset(self) -> None:
-        _set_autorecovery(on=True)
         now = timezone.now()
         reset = now + timedelta(hours=2)
         task = _claimed_task()
@@ -446,17 +602,8 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         assert window is not None
         assert window.resets_at == reset
 
-    def test_inert_when_flag_off(self) -> None:
-        _set_autorecovery(on=False)
-        task = _claimed_task()
-        assert (
-            park_task_on_all_exhausted(task, resets_at=timezone.now() + timedelta(hours=1), lane="subscription") is None
-        )
-        assert not UsageWindowState.objects.exists()
-
     def test_usage_defaults_to_null_for_the_pre_dispatch_caller(self) -> None:
         """runner.py's own call site is a CredentialError before any turn ran — no usage passed."""
-        _set_autorecovery(on=True)
         task = _claimed_task()
         parked = park_task_on_all_exhausted(
             task, resets_at=timezone.now() + timedelta(hours=1), lane=TaskAttempt.Lane.SUBSCRIPTION
@@ -466,7 +613,6 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
 
     def test_usage_is_recorded_when_the_caller_supplies_it(self) -> None:
         """Reached POST-turn via the rotation path's all-exhausted fallback — carries real spend."""
-        _set_autorecovery(on=True)
         task = _claimed_task()
         parked = park_task_on_all_exhausted(
             task, resets_at=timezone.now() + timedelta(hours=1), lane=TaskAttempt.Lane.SUBSCRIPTION, usage=_USAGE
@@ -475,7 +621,6 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         assert parked.input_tokens == 4200
 
     def test_no_reset_is_not_parked(self) -> None:
-        _set_autorecovery(on=True)
         task = _claimed_task()
         assert park_task_on_all_exhausted(task, resets_at=None, lane="subscription") is None
         assert not UsageWindowState.objects.exists()
@@ -489,7 +634,6 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         ``SUBSCRIPTION_WEEKLY``, so the transient-requeue horizon becomes 7 days for what is
         normally a minutes-long outage artefact.
         """
-        _set_autorecovery(on=True)
         now = timezone.now()
         task = _claimed_task()
 
@@ -506,7 +650,6 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         assert task.status == Task.Status.PENDING, "quiesced, not failed"
 
     def test_a_future_reset_is_left_untouched(self) -> None:
-        _set_autorecovery(on=True)
         now = timezone.now()
         reset = now + timedelta(hours=3)
         task = _claimed_task()
@@ -516,3 +659,85 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
         assert window is not None
         assert window.resets_at == reset, "a real future reset is never clamped"
+
+
+class TestImmediateRequeueOnFailover(django.test.TestCase):
+    """Plans-first turns an exhaustion park into a rotation: requeue NOW, on the meter.
+
+    Rotating across credential KINDS is the same event as rotating across accounts, so the
+    task is returned to the queue at the park moment and the next tick re-dispatches it —
+    on the API, because the window written a moment earlier is what makes the policy answer
+    ``api_key``. The window row still carries the REAL reset, which is what later returns
+    the lane to plans.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-test")
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        self._monkeypatch = monkeypatch
+
+    @staticmethod
+    def _pin(provider: str) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", provider)
+
+    def test_a_plan_exhaustion_park_requeues_at_the_park_moment(self) -> None:
+        self._pin("subscription_then_api_key")
+        now = timezone.now()
+        task = _claimed_task()
+
+        park_task_on_limit(task, _WEEKLY_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        task.refresh_from_db()
+        assert task.not_before == now, "claimable on the next tick, so the meter picks it up"
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == now + timedelta(days=7), "the window keeps the REAL reset"
+
+    def test_an_all_exhausted_park_requeues_at_the_park_moment(self) -> None:
+        self._pin("subscription_then_api_key")
+        now = timezone.now()
+        reset = now + timedelta(days=7)
+        task = _claimed_task()
+
+        park_task_on_all_exhausted(task, resets_at=reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        task.refresh_from_db()
+        assert task.not_before == now
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
+        assert window is not None
+        assert window.resets_at == reset
+
+    def test_a_transient_rate_limit_park_still_waits_out_its_window(self) -> None:
+        self._pin("subscription_then_api_key")
+        now = timezone.now()
+        task = _claimed_task()
+
+        park_task_on_limit(task, _RATE_LIMIT_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        task.refresh_from_db()
+        assert task.not_before == now + timedelta(minutes=5), "a throttle is waited out, never hammered"
+
+    def test_plans_only_still_parks_until_the_window_re_arms(self) -> None:
+        self._pin("subscription_oauth")
+        now = timezone.now()
+        task = _claimed_task()
+
+        park_task_on_limit(task, _WEEKLY_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        task.refresh_from_db()
+        assert task.not_before == now + timedelta(days=7)
+
+    def test_plans_first_with_no_usable_meter_parks_until_the_window_re_arms(self) -> None:
+        self._pin("subscription_then_api_key")
+        self._monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        now = timezone.now()
+        task = _claimed_task()
+
+        park_task_on_limit(task, _WEEKLY_MATCH, lane=TaskAttempt.Lane.SUBSCRIPTION, now=now)
+
+        task.refresh_from_db()
+        assert task.not_before == now + timedelta(days=7), "no meter to fail over to — quiesce, exactly as today"

@@ -87,9 +87,9 @@ class TestShipTargetsTheConfiguredBranch(TestCase):
         )
         return ticket
 
-    def _ship(self, ticket: Ticket) -> tuple[object, MagicMock]:
+    def _ship(self, ticket: Ticket, *, repo_slug: str = "souliane/teatree") -> tuple[object, MagicMock]:
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/1"}
+        host.create_pr.return_value = {"web_url": f"https://github.com/{repo_slug}/pull/1"}
         host.current_user.return_value = "souliane"
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -97,14 +97,14 @@ class TestShipTargetsTheConfiguredBranch(TestCase):
             patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
-            patch("teatree.core.runners.ship.git.remote_slug", return_value="souliane/teatree"),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=repo_slug),
             patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
         ):
             return ShipExecutor(ticket).run(), host
 
-    def _plain_repo(self) -> Path:
-        _git(self.tmp_path, "init", "-b", "main", "plain")
-        return self.tmp_path / "plain"
+    def _plain_repo(self, name: str = "plain") -> Path:
+        _git(self.tmp_path, "init", "-b", "main", name)
+        return self.tmp_path / name
 
     def test_the_pr_spec_carries_the_configured_target(self) -> None:
         ConfigSetting.objects.set_value("target_branch", _INTEGRATION)
@@ -146,7 +146,7 @@ class TestShipTargetsTheConfiguredBranch(TestCase):
         # fails — and the gate then fails OPEN with no conflict probe at all.
         clone = _clone_with_conflicting_feature(self.tmp_path)
         ticket = self._ticket_on(clone)
-        ticket.extra = {"target_branch": _INTEGRATION}
+        ticket.extra = {"target_branch": {"souliane/teatree": _INTEGRATION}}
         ticket.save(update_fields=["extra"])
 
         result, host = self._ship(ticket)
@@ -154,3 +154,49 @@ class TestShipTargetsTheConfiguredBranch(TestCase):
         assert result.ok is False
         assert "a.txt" in result.detail
         host.create_pr.assert_not_called()
+
+    def test_multi_repo_ticket_opens_each_pr_against_only_that_repos_parent(self) -> None:
+        repo_a = self._plain_repo("repo-a")
+        repo_b = self._plain_repo("repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/940",
+            repos=["repo-a", "repo-b"],
+            extra={
+                "target_branch": {
+                    "acme/repo-a": "stack-a",
+                    "acme/repo-b": "stack-b",
+                }
+            },
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(repo_a),
+            branch="feat-a",
+            extra={"worktree_path": str(repo_a)},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(repo_b),
+            branch="feat-b",
+            extra={"worktree_path": str(repo_b)},
+        )
+
+        targets: list[str] = []
+        for repo, slug in ((repo_a, "acme/repo-a"), (repo_b, "acme/repo-b")):
+            branch = "feat-a" if slug.endswith("repo-a") else "feat-b"
+            ticket.merge_extra(
+                set_keys={
+                    "ship_invoking_path": str(repo),
+                    "ship_invoking_branch": branch,
+                }
+            )
+            with patch.object(ShipExecutor, "_check_branch_currency", return_value=None):
+                result, host = self._ship(ticket, repo_slug=slug)
+            assert result.ok is True
+            (spec,) = host.create_pr.call_args.args
+            targets.append(spec.target_branch)
+
+        assert targets == ["stack-a", "stack-b"]

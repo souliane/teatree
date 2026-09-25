@@ -13,7 +13,14 @@ The fix routes the shell hook through ``teatree.hooks.banned_terms_cli``
 (consumed by ``scripts/hooks/check_no_overlay_leak.py``).
 
 This test PINS them to identical verdicts on a shared golden corpus so they
-cannot diverge again. The ``MUST_NOT_FLAG`` set is the regression guard: it
+cannot diverge again. The corpus carries an email address on both sides
+because the entry points silently disagreed about one for as long as it held
+none: four blanked every address before matching and three did not. It carries
+allow-listed identifiers for the same reason — the tree scan took no allowlist
+at all, so the documented escape hatch did not exist there, and a corpus with no
+allow-listed row could not tell.
+
+The ``MUST_NOT_FLAG`` set is the regression guard: it
 goes RED the moment any entry point reverts to substring matching, because
 innocent words that merely *contain* a banned substring (``cooperative``,
 ``operation``, ``operator``, ``desperate``) would then be flagged.
@@ -34,8 +41,9 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core import banned_terms_tree
 from teatree.core.push.fast_push import LeakGateScan
-from teatree.hooks import banned_terms_scanner, banned_terms_tree_scan
+from teatree.hooks import banned_terms_scanner
 from teatree.hooks.term_match import matched_term
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -66,25 +74,41 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #   - ``widget-margin`` glued multiword term.
 _TERMS: tuple[str, ...] = ("acme", "widget-margin")
 
+# Synthetic company-identifier carve-out. Each entry embeds the bare ``acme``
+# term, so a corpus row carrying one flags under the terms alone and is exempt
+# only when the entry point actually honours the allowlist.
+_ALLOWLIST: tuple[str, ...] = ("acme-engineering", "acme-product")
+
 
 @pytest.fixture(autouse=True)
 def _no_ambient_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop any ambient ``T3_BANNED_TERMS`` so the seeded DB is the only source."""
+    """Drop any ambient term/brand env so the seeded DB is the only source."""
     monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+    monkeypatch.delenv("TEATREE_BANNED_BRANDS", raising=False)
 
 
 def _seed_db(tmp_path: Path) -> Path:
-    """Build a ``teatree_config_setting`` DB carrying the shared ``banned_terms`` list."""
+    """Build a ``teatree_config_setting`` DB carrying the shared terms and allowlist.
+
+    ``banned_brands`` carries the same list as ``banned_terms`` because the tree
+    backstop reads the brand key while the other entry points read the term key;
+    seeding both is what lets one corpus row reach all seven.
+    """
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     conn.execute(
         "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
-    conn.execute(
-        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-        (json.dumps(list(_TERMS)),),
-    )
+    for key, value in (
+        ("banned_terms", list(_TERMS)),
+        ("banned_brands", list(_TERMS)),
+        ("banned_terms_allowlist", list(_ALLOWLIST)),
+    ):
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
     conn.commit()
     conn.close()
     return db
@@ -100,6 +124,8 @@ _MUST_FLAG: tuple[str, ...] = (
     "widget_margin",  # glued multiword, snake_case
     "widgetmargin",  # glued multiword, no separator
     'title="widget margin",',  # multiword inside a Python kwarg
+    "contact@acme.example",  # term in an address domain
+    "Author: someone <acme@mail.example>",  # term in an address local part
 )
 
 # Strings that MUST NOT flag — the substring-matching regression guard. Each
@@ -113,7 +139,16 @@ _MUST_NOT_FLAG: tuple[str, ...] = (
     "acmeology",
     "a clean unrelated sentence about widgets and margins separately",
     "margin widget",  # reversed order -> not the contiguous run
+    "contact@example.org",  # an address carrying no configured term
     "",  # empty line
+    # The allowlist carve-out: each row embeds the bare ``acme`` term inside an
+    # allow-listed company identifier, so it flags under the terms alone and is
+    # exempt only where the entry point honours ``banned_terms_allowlist``. The
+    # ``acme``/``contact@acme.example`` rows in _MUST_FLAG are the paired guard
+    # that the carve-out exempts the compound identifier, not the bare token.
+    "acme-engineering",  # allow-listed identifier, bare
+    "contact@acme-engineering.example",  # allow-listed identifier inside an address
+    "https://git.example.com/acme-product/repo",  # allow-listed identifier in a URL path
 )
 
 
@@ -158,7 +193,7 @@ def _scanner_verdict(tmp_path: Path, text: str) -> bool:
 
 def _term_match_verdict(_tmp_path: Path, text: str) -> bool:
     """Whether the shared matcher (consumed by the overlay-leak gate) flags *text*."""
-    return matched_term(text, _TERMS) is not None
+    return matched_term(text, _TERMS, _ALLOWLIST) is not None
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -180,12 +215,19 @@ def _git(repo: Path, *args: str) -> None:
 
 
 def _tree_verdict(tmp_path: Path, text: str) -> bool:
-    """Whether the full-tree brand backstop ``scan_tree`` flags *text*.
+    """Whether the full-tree brand backstop flags *text*.
 
     The tree scan's brand pass MUST share ``term_match`` with the other
     entry points (fix #1) — this verdict pins it to the same golden corpus
     so the fourth entry point cannot drift to a private regex matcher.
+
+    Routed through the ``scan_committed_tree`` COORDINATOR rather than
+    ``scan_tree`` directly, because the coordinator is what production calls and
+    is the layer that resolves terms and the allowlist from the store: a verdict
+    handed its config by the test would pin the matcher while leaving that
+    resolution — the layer that shipped without an allowlist — unexercised.
     """
+    db = _seed_db(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir(exist_ok=True)
     if not (repo / ".git").exists():
@@ -194,7 +236,7 @@ def _tree_verdict(tmp_path: Path, text: str) -> bool:
     sample.write_text(text + "\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "corpus")
-    findings = banned_terms_tree_scan.scan_tree(repo, _TERMS)
+    findings = banned_terms_tree.scan_committed_tree(repo, config_path=db).findings
     # Only the brand pass is under parity test; the always-on terminology gate
     # never fires on the synthetic corpus, so any finding here is a brand hit.
     return any(f.path == "sample.txt" for f in findings)

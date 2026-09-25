@@ -27,44 +27,37 @@ from collections.abc import Callable
 
 import pytest
 
-from teatree.config import OnBehalfPostMode
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
-Resolver = Callable[[OnBehalfPostMode, str], OnBehalfVerdict]
+Resolver = Callable[..., OnBehalfVerdict]
 
-#: The fail-closed contract, in full. A colleague-VISIBLE action is refused under
-#: both blocking modes; a draft is colleague-invisible so it auto-drafts instead;
-#: IMMEDIATE is the user's explicit opt-out.
-_EXPECTED: dict[tuple[OnBehalfPostMode, str], OnBehalfVerdict] = {
-    (OnBehalfPostMode.ASK, "post_comment"): OnBehalfVerdict.BLOCK,
-    (OnBehalfPostMode.DRAFT_OR_ASK, "post_comment"): OnBehalfVerdict.BLOCK,
-    (OnBehalfPostMode.ASK, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
-    (OnBehalfPostMode.DRAFT_OR_ASK, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
-    (OnBehalfPostMode.IMMEDIATE, "post_comment"): OnBehalfVerdict.PROCEED,
+#: The fail-closed contract, in full. A colleague-VISIBLE action is refused under a
+#: forbidding posture; a draft is colleague-invisible so it auto-drafts under both.
+_EXPECTED: dict[tuple[bool, str], OnBehalfVerdict] = {
+    (True, "post_comment"): OnBehalfVerdict.BLOCK,
+    (True, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
+    (False, "post_comment"): OnBehalfVerdict.PROCEED,
+    (False, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
 }
 
 
-def _mutant_resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
-    """The BLOCK→PROCEED mutant of the ASK branch (the regression we fear)."""
-    if mode is OnBehalfPostMode.IMMEDIATE:
-        return OnBehalfVerdict.PROCEED
-    if mode is OnBehalfPostMode.ASK:
-        return OnBehalfVerdict.PROCEED  # mutated: real code returns BLOCK
+def _mutant_resolve(action: str, *, egress_forbidden: bool) -> OnBehalfVerdict:
+    """The BLOCK→PROCEED mutant of the forbidding branch (the regression we fear)."""
     if action == "post_draft_note":
         return OnBehalfVerdict.AUTO_DRAFT
-    return OnBehalfVerdict.BLOCK
+    return OnBehalfVerdict.PROCEED  # mutated: real code BLOCKs under a forbidding posture
 
 
 def _assert_fail_closed_table(resolve: Resolver) -> None:
     """The one assertion both directions of the proof are made against."""
-    for (mode, action), expected in _EXPECTED.items():
-        assert resolve(mode, action) is expected, f"{mode} + {action} must resolve {expected}"
+    for (egress_forbidden, action), expected in _EXPECTED.items():
+        verdict = resolve(action, egress_forbidden=egress_forbidden)
+        assert verdict is expected, f"forbidden={egress_forbidden} + {action} must resolve {expected}"
 
 
-def _real_resolver(monkeypatch: pytest.MonkeyPatch) -> Resolver:
-    def resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
-        return resolve_on_behalf_verdict(action)
+def _real_resolver() -> Resolver:
+    def resolve(action: str, *, egress_forbidden: bool) -> OnBehalfVerdict:
+        return resolve_on_behalf_verdict(action, egress_forbidden=egress_forbidden)
 
     return resolve
 
@@ -72,10 +65,10 @@ def _real_resolver(monkeypatch: pytest.MonkeyPatch) -> Resolver:
 class TestManualMutantKilled:
     """One assertion, applied to the real resolver and to the mutant."""
 
-    def test_real_code_satisfies_the_fail_closed_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Reds on any mutation of the shipped resolver — the ASK branch flipped to
-        # PROCEED, the draft carve-out widened, the enum renamed.
-        _assert_fail_closed_table(_real_resolver(monkeypatch))
+    def test_real_code_satisfies_the_fail_closed_table(self) -> None:
+        # Reds on any mutation of the shipped resolver — the forbidding branch flipped
+        # to PROCEED, or the draft carve-out widened.
+        _assert_fail_closed_table(_real_resolver())
 
     def test_the_same_table_rejects_the_mutant(self) -> None:
         # The assertion that just passed against production code fails against the
@@ -105,7 +98,10 @@ class TestMutmutKillsTheMutant:
 
         result = _run_mutmut(
             ("src/teatree/on_behalf_gate.py",),
-            tests_dir=("tests/test_on_behalf_gate.py", "tests/test_on_behalf_post_mode.py"),
+            tests_dir=(
+                "tests/test_on_behalf_gate.py",
+                "tests/teatree_core/test_egress_is_the_only_colleague_control.py",
+            ),
             repo=".",
             timeout=420,
         )

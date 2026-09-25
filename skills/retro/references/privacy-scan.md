@@ -22,7 +22,7 @@ The procedure behind `/t3:retro` § "Privacy Scan". That section carries the sco
 
 3. **PR, issue, and comment bodies the agent has written this session.** Before declaring retro complete, grep every published artifact — PR descriptions you authored, PR/issue comments you posted, release notes, changelogs, and the branch name itself. Internal IPs, `/Users/…` paths, customer names, ticket IDs, or class-of-data words can slip in here even when the code diff is clean.
 
-4. **Memory and config files written this session.** Fresh memory writes to `MEMORY.md` or per-memory files can repeat a leaked string verbatim ("the leaked value was `…`"). Reference the incident without reproducing the string.
+4. **Memory and config files written this session — by anything; retro itself writes none.** A fresh memory entry can repeat a leaked string verbatim ("the leaked value was `…`"). Reference the incident without reproducing the string.
 
 ## What to scan for
 

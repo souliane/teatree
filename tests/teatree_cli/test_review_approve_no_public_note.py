@@ -27,8 +27,8 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import ConfigSetting, OnBehalfApproval
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from teatree.core.models import OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -75,7 +75,7 @@ class _SilentApproveStubAPI:
 
 def _immediate_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Lift the on-behalf gate (mode=immediate) to isolate the review-first precondition."""
-    ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+    seed_permitting_posture()
 
 
 def _service_with_stub() -> tuple[ReviewService, _SilentApproveStubAPI]:

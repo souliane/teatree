@@ -15,6 +15,7 @@ divergence are asserted — see :class:`TestClosedValueSetsNarrowTheSchemaOnly`.
 """
 
 import tomllib
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import pytest
@@ -23,8 +24,10 @@ from pydantic import TypeAdapter
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.registries import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.schema import (
     _DEFAULTS_TOML,
+    Category,
     TeatreeSettingsSchema,
     _parse_strict_str,
     _provider_or_none,
@@ -34,7 +37,7 @@ from teatree.config.schema import (
 )
 from teatree.config.secret_settings import is_credential_reference
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.config.setting_taxonomy import Category
+from teatree.config.settings import UserSettings
 
 # The schema deliberately re-sources two keys at the STORAGE tier rather than reusing the
 # registry's RESOLVE-tier coercer (documented in schema.py): ``handover_mirror_path`` is
@@ -135,6 +138,18 @@ class TestDefaultsAreCanonical:
         assert _STORAGE_COERCER[key](default) == default
 
 
+class TestTheReclaimFloorShipsUsable:
+    """D5b: a zero floor makes the manual and pre-start reaper paths useless without a loop.
+
+    Both tiers move together, and both are pinned: a dataclass-default edit alone is inert
+    because the shipped file wins, so a test on one tier passes while the box reads the other.
+    """
+
+    def test_a_stack_must_be_four_hours_old_before_staleness_is_judged(self) -> None:
+        assert _toml_teatree()["stale_stack_min_age_minutes"] == 240
+        assert UserSettings().stale_stack_min_age_minutes == 240
+
+
 class TestTaxonomy:
     @pytest.mark.parametrize("key", _KEYS)
     def test_credential_reference_keys_are_secret(self, key: str) -> None:
@@ -167,7 +182,6 @@ class TestSafetyAndDarkFlagsPinned:
         "regulated_path_model_allowlist": [],
         "substrate_self_signoff": False,
         "substrate_auto_merge_authorized_by": "",
-        "on_behalf_post_mode": "draft_or_ask",
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
@@ -189,7 +203,6 @@ class TestSafetyAndDarkFlagsPinned:
         "regulated_path_model_allowlist": [],
         "substrate_self_signoff": False,
         "substrate_auto_merge_authorized_by": "",
-        "on_behalf_post_mode": "draft_or_ask",
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
@@ -198,13 +211,11 @@ class TestSafetyAndDarkFlagsPinned:
         # DARK feature-flags — each pinned to its off value.
         "outer_loop_enabled": False,
         "factory_score_enabled": False,
-        "require_plan_adequacy": False,
         "critic_gate_mode": "off",
         "send_proxy_mode": "warn",
         "require_debt_delta": False,
         "require_executed_repro": False,
         "require_merge_quality_verdict": False,
-        "require_spec_coverage": False,
         "ci_eval_heal_autofix_enabled": False,
     }
 
@@ -233,6 +244,16 @@ class TestSafetyAndDarkFlagsPinned:
         assert all(self._OWNER_RAISED[key].strip() for key in raised)
 
 
+@pytest.mark.parametrize(
+    ("registry", "key"),
+    [
+        (COLD_HOOK_SETTINGS, "dispatch_quote_gate_on_task_create_enabled"),
+    ],
+)
+def test_complete_cold_features_ship_enabled(registry: Mapping[str, ColdHookSetting], key: str) -> None:
+    assert registry[key].default is True
+
+
 # ---- The parity matrix (the load-bearing test) -----------------------------------------
 # Fixtures keyed by coercer KIND: for every key, the model-derived validator must produce
 # the SAME accept/raise decision and the SAME coerced value as the storage coercer.
@@ -247,11 +268,19 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
     "str_list": ([[], ["a"], ["a", "b"]], ["a", True, 5, {}]),
     "aliases": ([[], ["a"], ["a", "a"]], ["a", 5]),
     "registry_dict": ([{}, {"a": 1}], ["x", [], True, 5]),
+    "header_map": (
+        [{}, {"X-OrcaRouter-Include-Cost": "true"}, {"x-orcarouter-session-id": "{session}"}, {"Authorization": "x"}],
+        ["x", [], True, 5, {"a": 1}, {"a": True}],
+    ),
     "pos_int": ([3, "3", 0, -1], []),  # fail-SAFE: never raises, degrades to its default
     "harness": (["claude_sdk", "pydantic_ai", "custom_name"], [5]),
     "speak": ([{}, {"local": "off"}, {"local": "dm", "slack": True}], ["x", [], 5]),
     "mr_reminder": ([{}, {"channels": {}}, {"default_channel": "c"}], ["x", [], 5]),
     "provider": ([None, "api_key", "subscription_oauth"], ["__bogus__"]),
+    "harness_skill_exclusions": (
+        [[], ["codex:review"], [" CODEX:Review ", "claude-code:test", "codex:review"]],
+        ["codex:review", ["cursor:review"], ["codex:*"], [1]],
+    ),
 }
 
 _KIND_BY_QUALNAME = {
@@ -262,9 +291,11 @@ _KIND_BY_QUALNAME = {
     "_parse_str_list": "str_list",
     "_parse_user_identity_aliases": "aliases",
     "_parse_registry_dict": "registry_dict",
+    "_parse_header_map": "header_map",
     "parse_harness_name": "harness",
     "parse_speak_setting": "speak",
     "parse_mr_reminder_setting": "mr_reminder",
+    "_parse_harness_skill_exclusions": "harness_skill_exclusions",
 }
 
 

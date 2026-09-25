@@ -124,50 +124,70 @@ class SlackDmInboundScanner:
         return identity
 
     def scan(self) -> list[ScanSignal]:
-        raw = self.backend.fetch_dms()
-        dms = filter_self_messages(raw, self._identity())
+        return self.record_events(self.backend.fetch_dms(since=self._catch_up_since()))
+
+    def _catch_up_since(self) -> str:
+        """Resume the sweep at the newest ts already recorded for this overlay.
+
+        An unbounded poll reads Slack's newest page only, so a listener outage
+        longer than one page lost the oldest DMs permanently; a ``since``-bounded
+        window is walked whole. Duplicates from the overlap are refused by the
+        ``(overlay, slack_ts)`` unique constraint.
+        """
+        return PendingChatInjection.latest_slack_ts(overlay=self.overlay)
+
+    def record_events(self, events: list[RawAPIDict]) -> list[ScanSignal]:
+        """Persist each DM in *events* that survives the write-side filters.
+
+        Shared with the Socket Mode listener's per-event hot path, so an
+        arriving DM is recorded under exactly the filters the sweep applies
+        rather than a second implementation kept in sync by hand.
+        """
+        dms = filter_self_messages(events, self._identity())
         if dms is None:
             # Identity unknown — fail closed for this tick rather than
             # enqueue rows that may include the bot's own outbound DMs.
             return []
-        dms = drop_on_behalf_messages(dms)
         signals: list[ScanSignal] = []
-        for event in dms:
-            ts = _event_ts(event)
-            try:
-                text = _event_text(event)
-                if not ts or not text.strip():
-                    continue
-                channel = _event_channel(event)
-                user_id = _event_user(event)
-                thread_ts = _event_thread_ts(event)
-                row = PendingChatInjection.record(
-                    channel=channel,
-                    slack_ts=ts,
-                    text=text,
-                    overlay=self.overlay,
-                    context=DmContext(user_id=user_id, thread_ts=thread_ts),
-                )
-                if row is None:
-                    # Duplicate ``ts`` — the scanner over-polled. Skip the
-                    # signal so the dispatcher doesn't re-route a row that
-                    # the previous tick already queued.
-                    continue
-                signals.append(
-                    ScanSignal(
-                        kind="slack.user_reply",
-                        summary=f"Slack user reply {ts}: {text[:80]}",
-                        payload={
-                            "ts": ts,
-                            "channel": channel,
-                            "user_id": user_id,
-                            "text": text,
-                            "overlay": self.overlay,
-                            "thread_ts": thread_ts,
-                        },
-                    )
-                )
-            except Exception:
-                logger.exception("SlackDmInboundScanner failed on DM event %s", ts)
-                continue
+        for event in drop_on_behalf_messages(dms):
+            signal = self._record_one(event)
+            if signal is not None:
+                signals.append(signal)
         return signals
+
+    def _record_one(self, event: RawAPIDict) -> ScanSignal | None:
+        ts = _event_ts(event)
+        try:
+            text = _event_text(event)
+            if not ts or not text.strip():
+                return None
+            channel = _event_channel(event)
+            user_id = _event_user(event)
+            thread_ts = _event_thread_ts(event)
+            row = PendingChatInjection.record(
+                channel=channel,
+                slack_ts=ts,
+                text=text,
+                overlay=self.overlay,
+                context=DmContext(user_id=user_id, thread_ts=thread_ts),
+            )
+            if row is None:
+                # Duplicate ``ts`` — the listener already recorded it, or the
+                # scanner over-polled. Skip the signal so the dispatcher does
+                # not re-route a row that is already queued.
+                return None
+        except Exception:
+            logger.exception("SlackDmInboundScanner failed on DM event %s", ts)
+            return None
+        return ScanSignal(
+            kind="slack.user_reply",
+            summary=f"Slack user reply {ts}: {text[:80]}",
+            payload={
+                "ts": ts,
+                "channel": channel,
+                "user_id": user_id,
+                "text": text,
+                "overlay": self.overlay,
+                "thread_ts": thread_ts,
+            },
+        )

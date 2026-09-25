@@ -7,15 +7,31 @@ so ``from teatree.agents.runner import _provider_child_env`` stays valid.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 
+from teatree.agents.credential_policy import resolve_credential_provider
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
-from teatree.utils.git_run import git_env_without_overrides
+from teatree.utils.env import patched_environ
+from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
 
 logger = logging.getLogger(__name__)
+
+#: ``uv pip`` installs into ``VIRTUAL_ENV`` ahead of the project venv, so an inherited one
+#: lands a child agent's editable install of its own checkout in the dispatcher's shared venv.
+_SPAWN_SCRUBBED_VARS = ("VIRTUAL_ENV",)
+
+
+@contextmanager
+def agent_spawn_env() -> Iterator[None]:
+    """The dispatch's spawn window: no ``GIT_*`` override and no dispatcher ``VIRTUAL_ENV``."""
+    with git_env_hermetic(), patched_environ({}, remove=_SPAWN_SCRUBBED_VARS):
+        yield
+
 
 #: The injectable seam a SYSTEM ``claude`` spawn resolves its child env through (#3512).
 #: :func:`system_child_env` is the production resolver; it reads the ``ConfigSetting``
@@ -33,11 +49,25 @@ def _overlay_scope(task: Task) -> str:
     return task.ticket.overlay or ""
 
 
-def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "") -> dict[str, str] | None:
+@dataclass(frozen=True)
+class DispatchCredential:
+    """The child env a dispatch runs under, plus the ``pass`` account it authenticates as.
+
+    The two are resolved together and only together: *account* is what makes a later
+    outcome — a rate limit reported minutes after the turn started — attributable to the
+    account that actually signed it, rather than to whichever account the shared sticky
+    pointer names by then. ``""`` when the dispatch routed no per-account credential.
+    """
+
+    env: dict[str, str] | None = None
+    account: str = ""
+
+
+def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "") -> DispatchCredential:
     """The child-process env that pins the Layer-2 credential for a ``claude_sdk`` dispatch (#2887).
 
-    ``provider is None`` (the default — no explicit Layer-2 pin) returns
-    ``None``: the ambient environment is used UNCHANGED, so an operator who
+    ``provider is None`` (the default — no explicit Layer-2 pin) returns a
+    credential with no env and no account: the ambient environment is used UNCHANGED, so an operator who
     never configured ``agent_harness_provider`` is never forced through an
     eager credential lookup — the ``claude`` CLI's own ambient auth state
     (however it was set up) applies, exactly as before #2887. The ONE ambient
@@ -58,7 +88,7 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     That premise is GUARANTEED by the caller, not assumed from the harness alone: the sole
     caller (``_resolve_child_env_or_failure``) is scoped to a
     :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, and the *provider* it passes
-    comes from :func:`~teatree.agents.harness.resolve_dispatch_provider`, which drops a
+    comes from :func:`~teatree.agents.harness_dispatch.resolve_dispatch_harness`, which drops a
     Layer-2 pin that a verification-phase Layer-1 flip
     (:func:`~teatree.agents.model_tiering.resolve_phase_harness`) invalidated. Without that
     drop a VALID ``pydantic_ai`` deployment reaches here on every verification phase and is
@@ -70,7 +100,7 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     """
     if provider is None:
         reject_ambient_base_url_redirect()
-        return None
+        return DispatchCredential()
     valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
     if provider not in valid:
         msg = (
@@ -81,11 +111,15 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     # Pin the credential onto a GIT_*-stripped base so ``options.env`` cannot
     # re-introduce an outer git hook's GIT_DIR/GIT_INDEX_FILE (the SDK merges
     # ``options.env`` over the inherited env, so a GIT_* here would reach the child).
-    base = git_env_without_overrides()
+    base = {key: value for key, value in git_env_without_overrides().items() if key not in _SPAWN_SCRUBBED_VARS}
     if provider is AgentHarnessProvider.API_KEY:
-        return resolve_api_key_credential(scope=scope).child_env(base)
-    return resolve_subscription_credential(scope=scope).child_env(base)
+        metered = resolve_api_key_credential(scope=scope)
+        return DispatchCredential(env=metered.child_env(base), account=metered.routed_pass_path)
+    subscription = resolve_subscription_credential(scope=scope)
+    return DispatchCredential(env=subscription.child_env(base), account=subscription.routed_pass_path)
 
+
+_MIB_PER_GB = 1024.0
 
 #: pytest-xdist resolves ``-n auto`` through this env var, so bounding it bounds every
 #: agent's suite run without touching the addopts (a human running the suite alone still
@@ -104,25 +138,34 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
 
     The bound reads memory as well as cores (#4163): 16 workers is 19.8 GB at the measured
     p90 worker RSS against 19.7 GB usable, so a cores-only bound is safe at the median and
-    over the line at the tail. The live reading comes from
-    :func:`~teatree.core.admission_governor.read_machine_signal`, which also supplies the
-    core count it always did — so the CPU term is byte-identical to the ``os.cpu_count()``
-    it replaces. ``test_worker_ram_gb`` is resolved HERE and passed in: the pure bound
-    reads no config.
+    over the line at the tail. ``test_worker_ram_gb`` is resolved HERE and passed in: the
+    pure bound reads no config.
+
+    The memory reading is ``RamHeadroom.available_mib`` — what THIS process may allocate —
+    NOT ``box_watermark_mib``, which the governor's own signal carries. The two answer
+    different questions and only one of them is this one's (#151): the watermark answers
+    "how much room does the BOX have for another agent" and therefore DISCARDS a cgroup too
+    small to be box-scoped, falling back to the host component (#4217/#4252). These workers
+    run INSIDE this container, so that fallback sized a pool against memory the cgroup
+    cannot hand out — measured, a 4095 MiB cap with 8.17 GiB host MemAvailable admitted 3
+    workers at a 1.24 GB p90 RSS, and the freer the host the more it admitted. Cores still
+    come from the governor's signal, so the CPU term is unchanged.
     """
     from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: avoids a core import at module load
         governor_enabled,
         per_agent_test_workers,
         read_machine_signal,
     )
+    from teatree.utils import ram_scope  # noqa: PLC0415 — deferred: paired with the core import above
 
     if not governor_enabled():
         return env
-    machine = read_machine_signal()
+    headroom = ram_scope.read_ram_headroom()
+    allocatable_gb = None if headroom.available_mib is None else headroom.available_mib / _MIB_PER_GB
     workers = per_agent_test_workers(
-        cores=machine.cores,
+        cores=read_machine_signal().cores,
         active_agents=active_agents,
-        ram_available_gb=machine.ram_available_gb,
+        ram_available_gb=allocatable_gb,
         per_worker_gb=get_effective_settings().test_worker_ram_gb,
     )
     return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
@@ -133,7 +176,9 @@ def system_child_env() -> dict[str, str] | None:
 
     A system pass (the dream distiller / eval synthesizer) spawns ``claude`` outside
     any ticket, so it has no overlay to route an account for and resolves the Layer-2
-    ``agent_harness_provider`` credential at the GLOBAL scope. Behaviour mirrors
+    ``agent_harness_provider`` credential — through the same failover policy a dispatch
+    uses (:func:`~teatree.agents.credential_policy.resolve_credential_provider`) — at the
+    GLOBAL scope, so a system pass is not stranded while the plans are spent. Behaviour mirrors
     :func:`_provider_child_env`: ``None`` (no Layer-2 pin) returns ``None`` — the
     ambient ``claude`` auth state applies unchanged. An explicit ``subscription_oauth``
     / ``api_key`` provider pins that credential (on the GIT_*-stripped base) so the
@@ -150,7 +195,7 @@ def system_child_env() -> dict[str, str] | None:
     not raise: the system ``claude`` turn stays on whatever auth the ambient env
     carries, exactly as before this pinning existed.
     """
-    provider = get_effective_settings().agent_harness_provider
+    provider = resolve_credential_provider(get_effective_settings().agent_harness_provider, scope="")
     if provider is None:
         reject_ambient_base_url_redirect()
         return None
@@ -162,4 +207,6 @@ def system_child_env() -> dict[str, str] | None:
         )
         reject_ambient_base_url_redirect()
         return None
-    return _provider_child_env(provider, scope="")
+    # A system pass routes no ticket, so the account this credential resolved to has no
+    # later outcome to attribute — only the env crosses into the child.
+    return _provider_child_env(provider, scope="").env

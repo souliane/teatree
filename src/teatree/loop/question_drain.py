@@ -20,7 +20,7 @@ The sweep runs in two stages, and the split is the whole design:
     records an escalation, which is a state transition and not a resolution; the stamp is
     rendered by :func:`~teatree.core.notify_question_drains.format_backlog_digest` and
     ``t3 <overlay> questions list``, so the escalation reaches the owner. That ladder is
-    BOUNDED (#4706): at ``deferred_question_max_escalations`` the row is drained STALE
+    BOUNDED (#4706): at :data:`MAX_ESCALATIONS` the row is drained STALE
     with the count and age that decided it, because the escalation window rate-limits
     re-asking without ever ending it — a row nobody answered escalated again every window,
     forever, which is the flood this sweep now terminates.
@@ -43,7 +43,6 @@ from enum import StrEnum
 from django.db.models import Max
 from django.utils import timezone
 
-from teatree.config.resolution import get_effective_settings
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_subjects import SubjectIndex
@@ -52,6 +51,15 @@ from teatree.loop.question_subjects import SubjectIndex
 #: ``PullRequestQuerySet.live()`` excludes. A merge succeeded and a close was given
 #: up on; both mean nothing further will be asked of the question that guarded it.
 _SETTLED_PR_STATES: frozenset[str] = frozenset({PullRequest.State.MERGED, PullRequest.State.CLOSED})
+
+#: How long a pending question may sit before the backstop ESCALATES it — stamped and
+#: audited, never dismissed (directive #45). 3 days is where the measured backlog turned
+#: from a queue into a graveyard (46 of 70 rows).
+AGE_CEILING_DAYS = 3
+
+#: Escalations a row gets before the ladder ends it and drains it STALE (#4706) — three
+#: asks over nine days, after which the question was decided by default.
+MAX_ESCALATIONS = 3
 
 
 class Verdict(StrEnum):
@@ -95,16 +103,12 @@ class DrainReport:
 class SweepContext:
     """Everything one sweep resolves ONCE, shared by every resolver over every row.
 
-    Both hoists are correctness, not just cost: the settings read is 2 queries a row
-    (``cached_per_request`` is inert off the HTTP path), and a per-row clock read moves
-    the age cutoff WITHIN one sweep, so two equally-old rows could decide differently.
+    The clock hoist is correctness, not just cost: a per-row clock read moves the age
+    cutoff WITHIN one sweep, so two equally-old rows could decide differently.
     """
 
     index: SubjectIndex
     now: datetime
-    ceiling_days: int
-    #: Escalations a row gets before the ladder ends it; ``0`` leaves it unbounded.
-    max_escalations: int
     #: pks of the parked rows whose lane has since re-run to completion without them.
     superseded_parked: frozenset[int]
     #: pks of the halt rows whose ticket has since run a phase to success.
@@ -112,13 +116,10 @@ class SweepContext:
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
-        settings = get_effective_settings()
         index = SubjectIndex.build(questions)
         return cls(
             index=index,
             now=timezone.now(),
-            ceiling_days=int(settings.deferred_question_age_ceiling_days),
-            max_escalations=int(settings.deferred_question_max_escalations),
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
         )
@@ -145,20 +146,18 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
     reached only from the TOP of the ladder, so age alone never dismisses anything: a
     41-day-old row that has never been escalated is escalated first, like any other.
     """
-    if context.ceiling_days <= 0:
-        return None
-    cutoff = context.now - timedelta(days=context.ceiling_days)
+    cutoff = context.now - timedelta(days=AGE_CEILING_DAYS)
     if question.created_at > cutoff:
         return None
     if question.escalated_at is not None and question.escalated_at > cutoff:
         return None
-    if 0 < context.max_escalations <= question.escalation_count:
+    if question.escalation_count >= MAX_ESCALATIONS:
         waited = (context.now - question.created_at).days
         return Decision(
             Verdict.DRAIN,
             f"unanswered through {question.escalation_count} escalations over {waited}d — decided by default",
         )
-    return Decision(Verdict.ESCALATE, f"pending past the {context.ceiling_days}d ceiling with no resolution")
+    return Decision(Verdict.ESCALATE, f"pending past the {AGE_CEILING_DAYS}d ceiling with no resolution")
 
 
 def _halt_trigger_cleared(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -268,7 +267,7 @@ def _cleared_halt_questions(questions: Sequence[DeferredQuestion], index: Subjec
     recovery would drain a live halt on its first tick.
     """
     halted = {
-        q.pk: (q.created_at, ticket) for q in questions if (ticket := index.halt_text_tickets.get(q.pk)) is not None
+        q.pk: (q.created_at, ticket) for q in questions if (ticket := index.halt_marker_tickets.get(q.pk)) is not None
     }
     if not halted:
         return frozenset()

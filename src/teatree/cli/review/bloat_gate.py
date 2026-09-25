@@ -15,7 +15,9 @@ this gate refuses:
 
 * **Stakeholder ``@handle``** — naming a person to coordinate with
     (``@bob said in standup``). No legitimate use in a diff-anchored
-    review note.
+    review note. An ``@tag`` inside a code span (backticks / a fenced
+    block) or from the Gherkin tag vocabulary (``@ready``, ``@blocked``,
+    ``@awaiting-merge``, …) is code the finding quotes, not a person.
 * **Slack timestamp** — quoting a Slack thread by ``ts`` (a 10.6-digit
     Unix timestamp). Pure project-chatter.
 * **Tracker reference + coordination directive** — a ticket/PR id
@@ -53,6 +55,33 @@ import re
 # decorator/path token do not register — the ``@`` must not be preceded
 # by a word character (which would make it an email or ``a@b`` infix).
 _HANDLE_RE = re.compile(r"(?<![\w.])@[A-Za-z][\w.-]{1,}\b")
+
+# Inline code spans and fenced blocks: an ``@`` there quotes code, never a person.
+_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
+
+# Gherkin / Playwright scenario tags a review of a feature file legitimately names.
+_GHERKIN_TAGS: frozenset[str] = frozenset(
+    {
+        "@automated",
+        "@awaiting-merge",
+        "@blocked",
+        "@critical",
+        "@e2e",
+        "@fixme",
+        "@flaky",
+        "@ignore",
+        "@manual",
+        "@only",
+        "@ready",
+        "@regression",
+        "@sanity",
+        "@serial",
+        "@skip",
+        "@slow",
+        "@smoke",
+        "@wip",
+    }
+)
 
 # A Slack message timestamp: ``<10 digits>.<6 digits>`` (Unix seconds with
 # microsecond suffix), the canonical Slack ``ts``. A plain decimal (a
@@ -97,9 +126,15 @@ def references_project_chatter(body: str) -> bool:
     """
     if not body:
         return False
-    if _HANDLE_RE.search(body) or _SLACK_TS_RE.search(body):
+    if _names_a_stakeholder(body) or _SLACK_TS_RE.search(body):
         return True
     return bool(_TICKET_REF_RE.search(body) and _COORDINATION_RE.search(body))
+
+
+def _names_a_stakeholder(body: str) -> bool:
+    """Whether ``body`` carries an ``@handle`` outside code spans that is not a Gherkin tag."""
+    prose = _CODE_SPAN_RE.sub(lambda match: " " * len(match.group(0)), body)
+    return any(match.group(0).lower() not in _GHERKIN_TAGS for match in _HANDLE_RE.finditer(prose))
 
 
 def check_review_bloat(*, body: str, allow_bloat: bool = False) -> str:

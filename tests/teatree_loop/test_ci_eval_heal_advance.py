@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import CiEvalHealSession, ConfigSetting, DeferredQuestion, Loop
+from teatree.core.models import CiEvalHealSession, ConfigSetting, DeferredQuestion, Loop, Mode, ModeOverride
 from teatree.loop.ci_eval_heal_advance import (
     AdvanceOutcome,
     _escalate_via_deferred_question,
@@ -22,7 +22,7 @@ from teatree.loop.ci_eval_heal_advance import (
     advance_session,
     red_scenario_names,
 )
-from teatree.loop.ci_eval_heal_fixer import FixProposal
+from teatree.loop.ci_eval_heal_fixer import SALVAGE_REF_PREFIX, FixProposal
 
 
 class _FakeClient:
@@ -266,13 +266,25 @@ class _FakeFixer:
         self.discarded.append(proposal)
 
 
-def _arm_autofix() -> None:
-    """Turn on BOTH switches — the DARK flag AND the ci_eval_heal loop row."""
-    ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)
+def _quiet_posture() -> None:
+    """Govern with a real preset that masks the loop OFF.
+
+    Without one, resolution fails open and admits every loop — so every disarmed case
+    below would pass whatever the fixer gate did.
+    """
     Loop.objects.update_or_create(
         name="ci_eval_heal",
-        defaults={"enabled": True, "delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"},
+        defaults={"delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"},
     )
+    Mode.objects.update_or_create(name="quiet", defaults={"entries": {"ci_eval_heal": False}})
+    ModeOverride.objects.set_override("quiet", reason="test posture")
+
+
+def _arm_autofix() -> None:
+    """Turn on BOTH switches — the DARK flag AND the loop's own run verdict."""
+    _quiet_posture()
+    ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)
+    Mode.objects.filter(name="quiet").update(entries={"ci_eval_heal": True})
 
 
 def _red_run() -> "_FakeClient":
@@ -281,6 +293,7 @@ def _red_run() -> "_FakeClient":
 
 class TestFixerDisarmedIsObserveOnly(TestCase):
     def test_red_halts_and_never_dispatches_when_disarmed(self) -> None:
+        _quiet_posture()
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer()
         advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
@@ -290,7 +303,8 @@ class TestFixerDisarmedIsObserveOnly(TestCase):
         assert fixer.proposed == 0
         assert "observe-only" in session.halt_reason
 
-    def test_flag_on_but_loop_off_stays_observe_only(self) -> None:
+    def test_flag_on_but_loop_masked_off_stays_observe_only(self) -> None:
+        _quiet_posture()
         ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)  # only ONE switch
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer()
@@ -335,6 +349,24 @@ class TestArmedFixerDispatch(TestCase):
         assert fixer.published == []
         assert len(fixer.discarded) == 1
         assert "no change" in session.halt_reason
+        assert escalated == [session.pk]
+
+    def test_a_stopped_turns_recovery_pointer_reaches_the_escalation(self) -> None:
+        # A turn stopped mid-flight can leave a valid fix behind. The session still halts
+        # without retrying, but a human must be told where that work survives.
+        _arm_autofix()
+        session = _awaiting(head_sha="a" * 40)
+        ref = f"{SALVAGE_REF_PREFIX}c0ffee"
+        fixer = _FakeFixer(raise_on_propose=RuntimeError(f"stopped turn; work preserved at {ref}"))
+        escalated: list[int] = []
+
+        advance_session(session, client=_red_run(), escalate=lambda s: escalated.append(s.pk), fixer=fixer)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert fixer.proposed == 1
+        assert fixer.published == []
+        assert ref in session.halt_reason
         assert escalated == [session.pk]
 
     def test_dispatch_failure_halts_never_stuck_in_fixing(self) -> None:

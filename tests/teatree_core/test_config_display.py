@@ -17,7 +17,7 @@ class TestIsSecret:
 
     def test_an_ordinary_dial_is_not_secret(self) -> None:
         assert is_secret("mode") is False
-        assert is_secret("issue_implementer_enabled") is False
+        assert is_secret("adaptive_intake_concurrency_enabled") is False
 
     def test_an_unknown_non_schema_key_is_not_secret(self) -> None:
         # A key that is neither a secret/personal/credential coordinate NOR a model field

@@ -17,12 +17,21 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import SendAudit
+from teatree.core.models import NEEDS_TRIAGE_LABEL, SendAudit
 from teatree.core.overlay import OverlayBase
 from teatree.loop.mechanical import close_dead_issue
+from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
 from teatree.types import RawAPIDict
 
+
+def _slug_of(issue_url: str) -> str:
+    """``owner/name`` from a forge issue URL, the way a real code host answers it."""
+    parts = issue_url.split("/")
+    return "/".join(parts[3:5]) if len(parts) > 5 else ""
+
+
 _URL = "https://github.com/souliane/teatree/issues/900"
+_SURVIVOR = "https://github.com/souliane/teatree/issues/899"
 _REPO = "souliane/teatree"
 
 
@@ -31,6 +40,13 @@ class _Host:
     closed: list[tuple[str, str]] = field(default_factory=list)
     result: RawAPIDict = field(default_factory=dict)
     raise_on_close: bool = False
+    issue_states: dict[str, str] = field(default_factory=dict)
+    raise_on_get_issue: bool = False
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        if self.raise_on_get_issue:
+            raise ConnectionError
+        return {"web_url": issue_url, "state": self.issue_states.get(issue_url, "open")}
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         if self.raise_on_close:
@@ -40,8 +56,7 @@ class _Host:
         return self.result
 
     def repo_for_issue_url(self, issue_url: str) -> str:
-        _ = issue_url
-        return _REPO
+        return _slug_of(issue_url)
 
 
 class _Overlay(OverlayBase):
@@ -85,8 +100,26 @@ class CloseDeadIssueTests(TestCase):
         ):
             host = _Host()
             with _patched(host):
-                close_dead_issue({"url": _URL, "reason": reason})
+                close_dead_issue({"url": _URL, "reason": reason, "duplicate_of": _SURVIVOR})
             assert fragment in host.closed[0][1]
+
+    def test_a_duplicate_whose_survivor_has_closed_stays_open(self) -> None:
+        host = _Host(issue_states={_SURVIVOR: "closed"})
+        with _patched(host):
+            close_dead_issue({"url": _URL, "reason": "exact_duplicate", "duplicate_of": _SURVIVOR})
+        assert host.closed == []
+
+    def test_a_duplicate_naming_no_survivor_stays_open(self) -> None:
+        host = _Host()
+        with _patched(host):
+            close_dead_issue({"url": _URL, "reason": "exact_duplicate"})
+        assert host.closed == []
+
+    def test_a_duplicate_whose_survivor_cannot_be_read_stays_open(self) -> None:
+        host = _Host(raise_on_get_issue=True)
+        with _patched(host):
+            close_dead_issue({"url": _URL, "reason": "exact_duplicate", "duplicate_of": _SURVIVOR})
+        assert host.closed == []
 
     def test_missing_url_no_ops(self) -> None:
         host = _Host()
@@ -144,4 +177,99 @@ class CloseDeadIssueRoutesThroughSeamTests(TestCase):
         ):
             close_dead_issue({"url": _URL, "reason": "exact_duplicate"})  # must not raise
         # The leaking comment is never posted and the close is skipped.
+        assert host.closed == []
+
+
+@dataclass
+class _Tracker:
+    """One issue tracker answering the scanner's reads and the handler's closes from the same open set."""
+
+    title: str
+    open_urls: list[str]
+
+    def _issue(self, url: str) -> RawAPIDict:
+        state = "open" if url in self.open_urls else "closed"
+        return {"web_url": url, "title": self.title, "body": "", "state": state, "labels": [NEEDS_TRIAGE_LABEL]}
+
+    def current_user(self) -> str:
+        return "alice"
+
+    def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        _ = (assignee, repo_slugs)
+        return [self._issue(url) for url in self.open_urls]
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
+        _ = query
+        return [self._issue(url) for url in self.open_urls if _slug_of(url) == repo]
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        return self._issue(issue_url)
+
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+        _ = comment
+        if issue_url in self.open_urls:
+            self.open_urls.remove(issue_url)
+        return {}
+
+    def repo_for_issue_url(self, issue_url: str) -> str:
+        return _slug_of(issue_url)
+
+
+class DuplicateGroupsKeepTheirOldestIssueTests(TestCase):
+    """A whole tick — scan, then close every candidate — must leave one open issue per duplicate group."""
+
+    BASE = "https://github.com/souliane/teatree/issues"
+
+    def _tick(self, tracker: _Tracker) -> None:
+        scanner = IssueDispositionScanner(host=tracker, overlay_name="acme")
+        with _patched(tracker):
+            for signal in scanner.scan():
+                close_dead_issue(signal.payload)
+
+    def test_two_duplicates_close_the_newer_and_a_later_tick_closes_nothing(self) -> None:
+        tracker = _Tracker(title="Fix the broken login flow", open_urls=[f"{self.BASE}/10", f"{self.BASE}/11"])
+
+        self._tick(tracker)
+        assert tracker.open_urls == [f"{self.BASE}/10"]
+
+        self._tick(tracker)
+        assert tracker.open_urls == [f"{self.BASE}/10"]
+
+    def test_three_duplicates_leave_the_oldest_open(self) -> None:
+        tracker = _Tracker(
+            title="Fix the broken login flow",
+            open_urls=[f"{self.BASE}/12", f"{self.BASE}/10", f"{self.BASE}/11"],
+        )
+
+        self._tick(tracker)
+
+        assert tracker.open_urls == [f"{self.BASE}/10"]
+
+
+class DuplicatesNeverCrossARepoBoundaryTests(TestCase):
+    """A whole tick over a TWO-repo listing must close nothing on a title match alone.
+
+    The listing spans every owned repo, so two repos can carry the same title with no
+    relationship at all — and a bare issue number is not comparable across them.
+    """
+
+    A_URL = "https://github.com/souliane/repo-a/issues/10"
+    B_URL = "https://github.com/souliane/repo-b/issues/20"
+
+    def test_a_shared_title_across_two_owned_repos_closes_nothing(self) -> None:
+        tracker = _Tracker(title="Fix the broken login flow", open_urls=[self.A_URL, self.B_URL])
+        scanner = IssueDispositionScanner(host=tracker, overlay_name="acme")
+
+        with _patched(tracker):
+            for signal in scanner.scan():
+                close_dead_issue(signal.payload)
+
+        assert tracker.open_urls == [self.A_URL, self.B_URL]
+
+    def test_a_cross_repo_duplicate_payload_closes_nothing(self) -> None:
+        # The handler is the last guard: even handed a cross-repo pairing directly, it holds.
+        host = _Host()
+        with _patched(host):
+            close_dead_issue({"url": self.B_URL, "reason": "exact_duplicate", "duplicate_of": self.A_URL})
+
         assert host.closed == []

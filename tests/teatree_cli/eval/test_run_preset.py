@@ -163,3 +163,47 @@ class TestPresetMutualExclusivity:
         out = _invoke(["--preset", "does-not-exist", "--no-persist"], specs)
         assert out.exit_code == 2
         assert "unknown preset" in out.output
+
+
+class TestAnExplicitFreshRunBackendSurvivesThePreset:
+    """`--preset` implies a fresh RUN, not the `api` lane specifically.
+
+    The weekly baseline runs `--backend anthropic_api ... --preset baseline`; rewriting
+    that onto `api` moves it to the `claude` CLI child the CLI-free lane exists to
+    avoid, and where no CLI is provisioned every scenario dies on ClaudeCliMissingError.
+    """
+
+    @staticmethod
+    def _backend_reaching_the_runner(args: list[str]) -> str:
+        seen: list[str] = []
+
+        def _capture(backend: str, *_: object, **__: object) -> _StubRunner:
+            seen.append(backend)
+            return _StubRunner()
+
+        with patch("teatree.cli.eval.single_trial.make_runner", _capture):
+            out = _invoke(args, [_spec("alpha")])
+        assert out.exit_code == 0, out.output
+        return seen[0]
+
+    def test_an_explicit_anthropic_api_backend_is_not_rewritten_onto_the_cli_lane(self) -> None:
+        resolved = self._backend_reaching_the_runner(
+            ["--backend", "anthropic_api", "--preset", "cheap", "--no-persist"]
+        )
+
+        assert resolved == "anthropic_api"
+
+    def test_the_weekly_baseline_lane_keeps_its_cli_free_backend(self, tmp_path: Path) -> None:
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("scenarios:\n  alpha: cheap\n", encoding="utf-8")
+        with patch("teatree.eval.presets.BASELINE_PRESET_PATH", baseline):
+            resolved = self._backend_reaching_the_runner(
+                ["--backend", "anthropic_api", "--preset", "baseline", "--no-persist"]
+            )
+        assert resolved == "anthropic_api"
+
+    def test_a_replay_backend_still_forces_the_metered_lane(self) -> None:
+        # `transcript` (the default) only REPLAYS, so a preset — which grades a freshly
+        # forced tier — must still re-pick a fresh-run lane. This is the behaviour the
+        # narrower fix has to preserve.
+        assert self._backend_reaching_the_runner(["--preset", "cheap", "--no-persist"]) == "api"

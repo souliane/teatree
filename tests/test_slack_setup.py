@@ -148,26 +148,59 @@ class TestDmOnlyManifest:
         manifest = build_manifest(overlay_name="t3-teatree", scope_profile="dm_only")
         assert "user" not in manifest["oauth_config"]["scopes"]
 
-    def test_bot_scopes_are_dm_minimal(self) -> None:
-        scopes = manifest_bot_scopes("dm_only")
-        # Present: everything needed to post/read/react in the owner DM.
-        for required in ("chat:write", "im:write", "im:history", "im:read", "reactions:write", "users:read"):
-            assert required in scopes
-        # Absent: no channel/group/mpim reach, no channel mentions.
-        for forbidden in ("channels:history", "channels:read", "groups:read", "mpim:read", "app_mentions:read"):
-            assert forbidden not in scopes
+    def test_bot_scopes_are_exactly_dm_plus_public_leave(self) -> None:
+        assert set(manifest_bot_scopes("dm_only")) == {
+            "channels:manage",
+            "chat:write",
+            "files:write",
+            "im:history",
+            "im:read",
+            "im:write",
+            "reactions:read",
+            "reactions:write",
+            "users:read",
+        }
 
-    def test_events_drop_app_mention(self) -> None:
+    def test_events_are_exactly_dm_and_reactions(self) -> None:
         events = build_manifest(overlay_name="t3-teatree", scope_profile="dm_only")
-        bot_events = events["settings"]["event_subscriptions"]["bot_events"]
-        assert "app_mention" not in bot_events
-        assert "message.im" in bot_events
+        assert events["settings"]["event_subscriptions"]["bot_events"] == ["message.im", "reaction_added"]
 
     def test_full_profile_still_has_channel_scopes(self) -> None:
         # Regression guard: narrowing dm_only must not narrow the default.
         scopes = manifest_bot_scopes("full")
         assert "channels:history" in scopes
         assert "user" in build_manifest(overlay_name="acme")["oauth_config"]["scopes"]
+
+    def test_full_profile_bot_can_join_manage_and_write_private_channels(self) -> None:
+        assert {"channels:join", "channels:manage", "groups:write"} <= set(manifest_bot_scopes("full"))
+
+    def test_full_profile_user_scopes_are_exact(self) -> None:
+        assert set(build_manifest(overlay_name="acme")["oauth_config"]["scopes"]["user"]) == {
+            "canvases:read",
+            "canvases:write",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "files:read",
+            "groups:history",
+            "groups:read",
+            "groups:write.invites",
+            "im:history",
+            "im:read",
+            "mpim:history",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "search:read",
+            "search:read.files",
+            "search:read.im",
+            "search:read.mpim",
+            "search:read.private",
+            "search:read.public",
+            "search:read.users",
+            "users:read",
+            "users:read.email",
+        }
 
     def test_unknown_profile_fails_loud(self) -> None:
         with pytest.raises(ValueError, match="scope_profile"):
@@ -593,7 +626,7 @@ class TestManifestsEquivalent:
     def test_added_user_scope_is_not_equivalent(self) -> None:
         a = build_manifest(overlay_name="acme")
         b = build_manifest(overlay_name="acme")
-        b["oauth_config"]["scopes"]["user"] = [*b["oauth_config"]["scopes"]["user"], "channels:read"]
+        b["oauth_config"]["scopes"]["user"] = [*b["oauth_config"]["scopes"]["user"], "dnd:read"]
         assert manifests_equivalent(a, b) is False
 
     def test_changed_display_name_is_not_equivalent(self) -> None:

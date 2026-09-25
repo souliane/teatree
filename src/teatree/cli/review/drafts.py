@@ -100,7 +100,7 @@ def _delete_discussion(
     Use to clean up a published general comment that should have
     been inline, or any other published note that needs removal.
     Distinct from `delete-draft-note`, which removes a user's own
-    pre-publication draft. Respects the `on_behalf_post_mode`
+    pre-publication draft. Respects the posture
     pre-gate (souliane/teatree#960).
     """
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
@@ -125,7 +125,7 @@ def _delete_issue_note(
     `glab api --method DELETE projects/.../issues/<iid>/notes/<id>` is
     denied by the `block-raw-review-post` hook (souliane/teatree#1164),
     which has no bypass — only this command routes through the on-behalf
-    pre-gate the raw write skips. Respects the `on_behalf_post_mode`
+    pre-gate the raw write skips. Respects the posture
     pre-gate (#960), scoped to `<repo>#<issue>` (record an approval via
     `t3 review approve-on-behalf <repo>#<issue> delete_issue_note
     --approver <user-id>`).

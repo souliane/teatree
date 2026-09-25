@@ -27,6 +27,7 @@ from teatree.cli.eval.escalate import (
     render_escalation_markdown,
 )
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
 from teatree.eval.backends import (
     API_BACKEND,
     FRESH_RUN_BACKENDS,
@@ -40,6 +41,8 @@ from teatree.eval.backends import (
 from teatree.eval.models import EvalSpec
 from teatree.eval.parallel import run_specs
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_html, render_json, render_text
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
+from teatree.eval.summary_json import write_summary_json
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
 __all__ = ["EscalationConfig", "SingleTrialGates", "make_escalation_runner", "run_single_trial"]
@@ -112,9 +115,8 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
 
     ``escalation`` (the ``--escalate-on-fail`` PR-lane path) turns a single-trial
     FAILURE into a re-run rather than an immediate red: each failed scenario runs
-    ``escalate_trials`` more times, and the lane reds only on a ``confirmed``
-    failure (every escalation trial also failed); a scenario that recovers on any
-    escalation trial is reported flaky-but-passing, not red.
+    ``escalate_trials`` more times. A recovered scenario clears the lane gate but
+    is recorded as FLAKY, separate from clean PASS.
     """
     try:
         runner = make_runner(
@@ -143,6 +145,7 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     )
     if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
+    _exit_when_the_usage_limit_ran_nothing(results)
     executed = sum(1 for r in results if not r.skipped)
     RunGuards.hooks_registered(results)
     RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
@@ -156,9 +159,18 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         def _escalation_trial(spec: EvalSpec) -> ScenarioResult:
             return evaluate(spec, escalation_runner.run(spec), judge=grader)
 
-        _escalate_and_gate(results, escalation=escalation, trial=_escalation_trial, summary_md=summary_md)
-        return
-    if finalize_single_run(
+        escalation_report = _escalate_and_gate(
+            results, escalation=escalation, trial=_escalation_trial, summary_md=summary_md
+        )
+        if summary_json is not None:
+            write_summary_json(
+                results,
+                summary_json,
+                escalations={outcome.spec_name: outcome.classification for outcome in escalation_report.outcomes},
+            )
+        if escalation_report.hard_red:
+            sys.exit(1)
+    elif finalize_single_run(
         results,
         specs=specs,
         max_turns=max_turns,
@@ -170,6 +182,40 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         gate_cost_bounds=gates.gate_cost_bounds,
     ):
         sys.exit(1)
+    # LAST, so the ledger keeps the record of the run that measured nothing. This is
+    # the only lane where the all-skipped guard above can be disarmed (`--trials` and
+    # `--models` arm it unconditionally), so it is the only place a suite could grade
+    # nothing and still exit 0.
+    _exit_when_the_usage_limit_refused_any(results)
+    RunGuards.declined_is_not_a_pass(executed=executed, collected=len(specs))
+
+
+def _refused_by_the_usage_limit(results: list[ScenarioResult]) -> list[ScenarioResult]:
+    return [r for r in results if r.run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")]
+
+
+def _exit_when_the_usage_limit_ran_nothing(results: list[ScenarioResult]) -> None:
+    """Exit 75 when nothing executed and the usage limit is why — ahead of the all-skipped guard's hard red."""
+    refused = _refused_by_the_usage_limit(results)
+    if refused and all(r.skipped for r in results):
+        _exit_did_not_run(refused, collected=len(results))
+
+
+def _exit_when_the_usage_limit_refused_any(results: list[ScenarioResult]) -> None:
+    """Exit 75 when nothing failed but the usage limit kept some scenarios from running: never green."""
+    refused = _refused_by_the_usage_limit(results)
+    if refused:
+        _exit_did_not_run(refused, collected=len(results))
+
+
+def _exit_did_not_run(refused: list[ScenarioResult], *, collected: int) -> None:
+    typer.echo(
+        f"eval run DID NOT RUN {len(refused)} of {collected} scenario(s): the Anthropic API refused them on the "
+        f"organisation's usage limit before the model saw them ({refused[0].run.terminal_reason}). Nothing that ran "
+        f"failed. Exiting {MEASURED_NOTHING_EXIT_CODE} (tolerated, never green).",
+        err=True,
+    )
+    raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE)
 
 
 def _escalate_and_gate(
@@ -178,12 +224,13 @@ def _escalate_and_gate(
     escalation: EscalationConfig,
     trial: TrialRunner,
     summary_md: Path | None,
-) -> None:
+) -> EscalationReport:
     """Re-run the single-trial failures, append the escalation section, gate on confirmed.
 
     Each scenario that failed trial 1 is re-run ``escalate_trials`` times through
     *trial* (a fresh metered runner closure); a scenario that recovers on any trial
-    is flaky (green), one that fails every escalation trial is confirmed (red), and
+    is FLAKY (gate cleared, never clean PASS), one that fails every escalation
+    trial is confirmed (red), and
     one whose trials all skipped is unresolved (also red — nothing re-proved it). The
     escalation section is appended to the sanitized ``--summary-md`` dashboard so
     the PR's ``$GITHUB_STEP_SUMMARY`` shows the flaky/confirmed split.
@@ -195,8 +242,7 @@ def _escalate_and_gate(
         if section:
             with summary_md.open("a", encoding="utf-8") as fh:
                 fh.write("\n" + section)
-    if report.hard_red:
-        sys.exit(1)
+    return report
 
 
 def _render_escalation_text(report: EscalationReport) -> str:

@@ -129,7 +129,8 @@ class TestRetirementIsScopedToSetup:
     def test_only_the_setup_subcommand_triggers_it(self) -> None:
         # Every `t3` call would otherwise rewrite the operator's rc files.
         wrapper = WRAPPER.read_text(encoding="utf-8")
-        assert 'if [ "${1:-}" = setup ]; then\n    retire_managed_alias_block\nfi' in wrapper
+        assert 'if [ "${1:-}" = setup ]; then\n    retire_managed_alias_block\n' in wrapper
+        assert len(re.findall(r"^    retire_managed_alias_block$", wrapper, re.MULTILINE)) == 1
 
 
 class TestAnUnterminatedBlockIsRefusedNotTruncated:

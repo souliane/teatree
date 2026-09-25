@@ -21,7 +21,7 @@ from django.utils import timezone
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.mode_shape import BACKUP_LOOP, INTAKE_LOOPS, LOAD_BEARING_LOOPS
+from teatree.loops.mode_shape import BACKUP_LOOP, DISK_RECLAIM_LOOPS
 from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.seed_inertness import (
@@ -33,9 +33,8 @@ from teatree.loops.seed_inertness import (
     KIND_EMPTY_MASK,
     KIND_ENTRIES_OVERRIDDEN,
     KIND_INACTIVE,
-    KIND_INTAKE_WITHOUT_DELIVERY,
     KIND_MISSING,
-    KIND_QUIETED_LOAD_BEARING,
+    KIND_NOT_TOTAL,
     KIND_SLOTS_OVERRIDDEN,
     KIND_STALE,
     KIND_SUPPRESSED,
@@ -157,10 +156,10 @@ class TestStaleLoopsSplitOnWhetherAnythingExplainsThem(django.test.TestCase):
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
         self.now = timezone.now()
-        Loop.objects.filter(name="inbox").update(enabled=True, last_run_at=self.now - dt.timedelta(days=2))
+        Loop.objects.filter(name="inbox").update(last_run_at=self.now - dt.timedelta(days=2))
 
     def test_an_unexplained_stale_loop_is_a_fault(self) -> None:
-        set_mode_override("present")
+        set_mode_override("present", reason="test override")
 
         found = _named(shipped_inertness(now=self.now), "loop", "inbox")
 
@@ -169,7 +168,7 @@ class TestStaleLoopsSplitOnWhetherAnythingExplainsThem(django.test.TestCase):
 
     def test_a_masked_stale_loop_is_only_a_note(self) -> None:
         Mode.objects.create(name="inbox-off", entries={"inbox": False}, description="test mask")
-        set_mode_override("inbox-off")
+        set_mode_override("inbox-off", reason="test override")
 
         found = _named(shipped_inertness(now=self.now), "loop", "inbox")
 
@@ -217,7 +216,7 @@ class TestScheduleInertness(django.test.TestCase):
         assert "deleted-preset" in found[0].detail
 
     def test_a_schedule_that_is_not_the_active_one_is_only_a_note(self) -> None:
-        found = _named(shipped_inertness(), "schedule", "always-away")
+        found = _named(shipped_inertness(), "schedule", "always-afk")
 
         assert [f.kind for f in found] == [KIND_INACTIVE]
         assert not found[0].is_fault
@@ -233,23 +232,17 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
     def test_an_edited_mask_is_reported_with_both_values(self) -> None:
         assert _named(shipped_inertness(), "preset", "present") == [], "control: a seeded mask has not diverged"
 
-        Mode.objects.filter(name="present").update(entries={**Mode.objects.get(name="present").entries, "dream": False})
+        Mode.objects.filter(name="present").update(
+            entries={**Mode.objects.get(name="present").entries, "tickets": False}
+        )
 
         found = _named(shipped_inertness(), "preset", "present")
         assert [f.kind for f in found] == [KIND_ENTRIES_OVERRIDDEN]
-        assert "dream shipped=true live=false" in found[0].detail
-
-    def test_a_dropped_entry_is_reported_as_inheriting_rather_than_as_absent_config(self) -> None:
-        entries = {loop: value for loop, value in Mode.objects.get(name="off").entries.items() if loop != "dream"}
-        Mode.objects.filter(name="off").update(entries=entries)
-
-        detail = _named(shipped_inertness(), "preset", "off")[0].detail
-
-        assert "dream shipped=false live=absent (inherits Loop.enabled)" in detail
+        assert "tickets shipped=true live=false" in found[0].detail
 
     def test_an_operator_override_is_a_note_not_a_fault(self) -> None:
         """Reporting is the deliverable — the audit must never rewrite an operator's mask."""
-        Mode.objects.filter(name="present").update(entries={**Mode.objects.get(name="present").entries, "news": False})
+        Mode.objects.filter(name="present").update(entries={**Mode.objects.get(name="present").entries, "inbox": False})
 
         found = _named(shipped_inertness(), "preset", "present")
 
@@ -289,67 +282,44 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
 
     def test_a_diverged_calendar_that_is_not_active_reports_both_facts_on_one_line(self) -> None:
         """One line per name, so the divergence must not cost the inactive note it replaces."""
-        ModeSchedule.objects.filter(name="always-away").update(timezone="UTC")
+        ModeSchedule.objects.filter(name="always-afk").update(timezone="UTC")
 
-        found = _named(shipped_inertness(), "schedule", "always-away")
+        found = _named(shipped_inertness(), "schedule", "always-afk")
 
         assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
         assert "timezone shipped=unset live=UTC" in found[0].detail
         assert "not the active calendar (standard governs)" in found[0].detail
 
 
-class TestAMaskThatStopsDeliveryMustNotKeepIntakeOn(django.test.TestCase):
-    """The incident shape, reported against the LIVE row rather than the shipped one (#4096)."""
+class TestAMaskThatNamesOnlySomeLoopsIsAFault(django.test.TestCase):
+    """A partial table decides by omission — the unnamed loops read off, unchosen (B1)."""
 
     def setUp(self) -> None:
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
-        # The box the stall happened on: the operator had switched intake ON, which is what
-        # an absent mask entry inherits. It ships OFF, so this is stated, never assumed.
-        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=True)
 
-    def _drop_intake_entry_from_maintenance(self) -> None:
+    def test_the_shipped_masks_are_total(self) -> None:
+        assert _named(shipped_inertness(), "preset", "maintenance") == []
+
+    def test_dropping_one_entry_from_a_shipped_mask_is_a_fault(self) -> None:
         shipped = next(spec.entries for spec in default_preset_specs() if spec.name == "maintenance")
         Mode.objects.filter(name="maintenance").update(
             entries={loop: value for loop, value in shipped.items() if loop != "issue_implementer"}
         )
 
-    def test_the_overnight_maintenance_mask_without_the_intake_entry_is_a_fault(self) -> None:
-        assert _named(shipped_inertness(), "preset", "maintenance") == [], "control: the shipped mask is clean"
-
-        self._drop_intake_entry_from_maintenance()
-
         found = _named(shipped_inertness(), "preset", "maintenance")
-        assert [f.kind for f in found] == [KIND_INTAKE_WITHOUT_DELIVERY]
+
+        assert [f.kind for f in found] == [KIND_NOT_TOTAL]
         assert found[0].is_fault
         assert "issue_implementer" in found[0].detail
-
-    def test_the_same_mask_is_no_fault_while_the_inherited_intake_loop_is_off(self) -> None:
-        """Absent means INHERIT — with intake parked the mode fills nothing, so it is clean."""
-        self._drop_intake_entry_from_maintenance()
-        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=False)
-
-        assert _kinds(shipped_inertness(), "preset", "maintenance") != [KIND_INTAKE_WITHOUT_DELIVERY]
 
     def test_an_operator_written_mode_is_judged_by_the_same_rule(self) -> None:
         Mode.objects.create(name="nights", description="hand-written", entries={"ship": False})
 
         found = _named(shipped_inertness(), "preset", "nights")
 
-        assert [f.kind for f in found] == [KIND_INTAKE_WITHOUT_DELIVERY]
+        assert [f.kind for f in found] == [KIND_NOT_TOTAL]
         assert found[0].is_fault
-
-    def test_intake_forced_on_is_a_fault_whatever_its_loop_row_says(self) -> None:
-        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=False)
-        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "issue_implementer": True})
-
-        assert _kinds(shipped_inertness(), "preset", "maintenance") == [KIND_INTAKE_WITHOUT_DELIVERY]
-
-    def test_the_asymmetry_outranks_the_drift_note_it_arrives_with(self) -> None:
-        """One line per name — the actionable fault, not the override that produced it."""
-        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "issue_implementer": True})
-
-        assert _kinds(shipped_inertness(), "preset", "maintenance") == [KIND_INTAKE_WITHOUT_DELIVERY]
 
 
 class TestAFreshlySeededBoxIsClean(django.test.TestCase):
@@ -358,7 +328,7 @@ class TestAFreshlySeededBoxIsClean(django.test.TestCase):
     def test_no_faults_after_the_shipped_seed_runs(self) -> None:
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
-        set_mode_override("present")
+        set_mode_override("present", reason="test override")
         # `stale_loops` measures a never-run loop from `created_at`, so the migration-seeded
         # rows age past 3x their cadence as the suite runs; stamp the anchor rather than
         # inherit "the DB is young" from how long the suite has been going.
@@ -370,22 +340,22 @@ class TestAFreshlySeededBoxIsClean(django.test.TestCase):
 
 
 class TestAMaskThatKeepsWritingMustNotStopReclaiming(django.test.TestCase):
-    """The live ``off`` row's shape, reported where an operator can see it (#4188)."""
+    """The one structural rule left, reported where an operator can see it (B4)."""
 
     def setUp(self) -> None:
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
 
-    def _quiet_the_tier(self, name: str, *, backup: bool) -> None:
+    def _consume_without_relief(self, name: str) -> None:
         shipped = next(spec.entries for spec in default_preset_specs() if spec.name == name)
         Mode.objects.filter(name=name).update(
-            entries={**shipped, **dict.fromkeys(LOAD_BEARING_LOOPS, False), BACKUP_LOOP: backup}
+            entries={**shipped, **dict.fromkeys(DISK_RECLAIM_LOOPS, False), BACKUP_LOOP: True}
         )
 
-    def test_the_live_off_row_that_backs_up_with_nothing_reclaiming_is_a_fault(self) -> None:
+    def test_a_live_row_that_backs_up_with_nothing_reclaiming_is_a_fault(self) -> None:
         assert _named(shipped_inertness(), "preset", "off") == [], "control: the shipped mask is clean"
 
-        self._quiet_the_tier("off", backup=True)
+        self._consume_without_relief("off")
 
         found = _named(shipped_inertness(), "preset", "off")
         assert [f.kind for f in found] == [KIND_BACKUP_WITHOUT_RECLAIM]
@@ -393,24 +363,14 @@ class TestAMaskThatKeepsWritingMustNotStopReclaiming(django.test.TestCase):
         assert BACKUP_LOOP in found[0].detail
         assert "resource_pressure" in found[0].detail
 
-    def test_quieting_the_tier_without_the_backup_is_still_a_fault(self) -> None:
-        """No mask may stop the survival tier at all — the backup only sharpens it."""
-        self._quiet_the_tier("off", backup=False)
+    def test_quieting_the_reclaim_pair_with_the_backup_off_is_no_fault(self) -> None:
+        """Nothing is being consumed, so nothing needs relieving — B4 deleted the wider rule."""
+        shipped = next(spec.entries for spec in default_preset_specs() if spec.name == "off")
+        Mode.objects.filter(name="off").update(entries={**shipped, **dict.fromkeys(DISK_RECLAIM_LOOPS, False)})
 
-        found = _named(shipped_inertness(), "preset", "off")
-        assert [f.kind for f in found] == [KIND_QUIETED_LOAD_BEARING]
-        assert found[0].is_fault
-        assert "resource_pressure" in found[0].detail
+        assert _kinds(shipped_inertness(), "preset", "off") != [KIND_BACKUP_WITHOUT_RECLAIM]
 
-    def test_the_low_token_mode_may_quiet_the_tier(self) -> None:
-        self._quiet_the_tier("low-token", backup=False)
+    def test_the_token_outage_mode_is_not_exempt(self) -> None:
+        self._consume_without_relief("token-outage")
 
-        assert _kinds(shipped_inertness(), "preset", "low-token") != [KIND_QUIETED_LOAD_BEARING]
-
-    def test_an_operator_written_mode_is_judged_by_the_same_rule(self) -> None:
-        Mode.objects.create(name="nights", description="hand-written", entries={"resource_pressure": False})
-
-        found = _named(shipped_inertness(), "preset", "nights")
-
-        assert [f.kind for f in found] == [KIND_QUIETED_LOAD_BEARING]
-        assert found[0].is_fault
+        assert _kinds(shipped_inertness(), "preset", "token-outage") == [KIND_BACKUP_WITHOUT_RECLAIM]

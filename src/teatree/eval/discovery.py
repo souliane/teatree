@@ -81,6 +81,9 @@ class ScenarioCatalogError(RuntimeError):
 
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
+#: Replay fixtures for the CORE catalog. An overlay keeps its own beside its
+#: scenarios — resolve any spec's dir with :func:`fixture_dir_for`, never this.
+FIXTURES_DIR = Path(__file__).resolve().parents[3] / "evals" / "fixtures"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so the eval package stays a leaf (the same backwards-edge
 # convention ``coverage`` follows — it must not reach up into
@@ -93,7 +96,7 @@ DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 #: than a loose collapse-detector because #4373's denominator shrank by two, which
 #: any slack at all hides. It floors the core surface alone: an overlay only ever
 #: ADDS, so flooring the total would red an install contributing none.
-CORE_CATALOG_FLOOR = 241
+CORE_CATALOG_FLOOR = 262
 
 
 def discover_core_specs() -> list[EvalSpec]:
@@ -112,6 +115,20 @@ def discover_core_specs() -> list[EvalSpec]:
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         specs.extend(load_eval_yaml(path))
     return specs
+
+
+def fixture_dir_for(spec: EvalSpec) -> Path:
+    """Where *spec*'s replay fixtures live — core's own dir, or the overlay's.
+
+    A guard that reads :data:`FIXTURES_DIR` for every DISCOVERED spec reports every
+    overlay scenario as fixtureless, because an overlay ships its fixtures beside its
+    own scenarios. That red says "backfill 17 fixtures" about 17 that already exist,
+    so the honest reading of it is to delete the overlay from the guard — which is how
+    a directory mistake becomes a coverage loss.
+    """
+    if spec.source_path.parent == SCENARIOS_DIR:
+        return FIXTURES_DIR
+    return spec.source_path.parent / "fixtures"
 
 
 def discover_catalog() -> ScenarioCatalog:

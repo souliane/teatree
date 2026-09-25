@@ -26,6 +26,15 @@
 # both may depend on. teatree.agents.outage_classifier keeps only the part that
 # needs AgentResultBlob.
 #
+# teatree.loops.enable_verdict -- the ONE enable verdict, and the fleet's stop
+# condition, so teatree.loop's queue drain and driver detection must reach it while
+# teatree.loops already depends on teatree.loop. A domain leaf beside
+# teatree.loop.loop_state_db is the only home both orchestration packages can read
+# without a second, drift-prone opinion. It reaches ONE core leaf --
+# teatree.core.mode_resolution, declared as its own domain module for exactly this --
+# rather than the whole teatree.core package, which would put a package-wide edge on
+# the core fan-in ratchet to buy one function.
+#
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only
 # SAME-layer edges bind here. teatree.mcp (integration), for example, also
@@ -69,6 +78,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.forge_credentials"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.project"
 layer = "foundation"
 depends_on = ["teatree.paths"]
@@ -80,6 +94,11 @@ depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.types"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+path = "teatree.harness_skills"
 layer = "foundation"
 depends_on = []
 
@@ -99,6 +118,11 @@ layer = "foundation"
 depends_on = ["teatree.utils"]
 
 [[modules]]
+path = "teatree.account_headroom"
+layer = "foundation"
+depends_on = ["teatree.llm"]
+
+[[modules]]
 path = "teatree.credential_config"
 layer = "domain"
 depends_on = ["teatree.config", "teatree.core.models", "teatree.llm", "teatree.utils"]
@@ -106,7 +130,18 @@ depends_on = ["teatree.config", "teatree.core.models", "teatree.llm", "teatree.u
 [[modules]]
 path = "teatree.token_report"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm", "teatree.utils"]
+depends_on = [
+  "teatree.core.models",
+  "teatree.credential_config",
+  "teatree.llm",
+  "teatree.token_rows",
+  "teatree.utils"
+]
+
+[[modules]]
+path = "teatree.token_rows"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm"]
 
 [[modules]]
 path = "teatree.ci_oauth_switch"
@@ -148,6 +183,11 @@ depends_on = []
 path = "teatree.utils"
 layer = "foundation"
 depends_on = ["teatree.paths"]
+
+[[modules]]
+path = "teatree.utils.disk_consumers"
+layer = "domain"
+depends_on = ["teatree.core", "teatree.config"]
 
 [[modules]]
 path = "teatree.self_update"
@@ -207,10 +247,17 @@ depends_on = [
   # metered ledger through a DECLARED edge rather than a function-scoped import
   # tach's acyclic guard cannot see.
   "teatree.core.admission",
+  "teatree.core.admission_pressure",
   "teatree.core.modelkit",
   "teatree.core.forge_url",
   "teatree.core.models.errors",
   "teatree.core.models",
+  # the active-mode resolver, its own module so the loop layer can reach that ONE
+  # leaf without declaring a package-wide edge onto teatree.core.
+  "teatree.core.mode_resolution",
+  # the claim composition's fleet verdict, handed to managers_task_claim at app-ready so that leaf never imports it.
+  "teatree.core.managers_task_claim",
+  "teatree.loops.enable_verdict",
   "teatree.core.schema_readiness",
   # the mirror gate (#4387): CoreConfig.ready() freezes its snapshot and
   # gates/schema_guard renders the records it publishes.
@@ -230,14 +277,7 @@ depends_on = [
   # the preset override/schedule resolver — a domain leaf depending only on
   # core.models, mirroring the loop_cadences edge above.
   "teatree.loop.preset_resolution",
-  # Split out of teatree.core so the enable verdict below can read the mode mask
-  # without core and the verdict forming a cycle.
-  "teatree.core.mode_resolution",
-  # The ONE enable verdict (#4196) is domain policy over domain rows — Loop.enabled,
-  # LoopState, the mask — so the health chip gates on the same answer the tick does
-  # (#4726) rather than growing a second variant. Its siblings in teatree.loops stay
-  # orchestration and remain unreachable from here.
-  "teatree.loops.enable_verdict"
+  "teatree.core.telemetry"
 ]
 
 [[modules]]
@@ -245,15 +285,26 @@ path = "teatree.core.admission"
 layer = "domain"
 depends_on = [
   "teatree.config",
+  "teatree.core.admission_pressure",
   "teatree.core.managers_task_claim",
   "teatree.core.models",
   "teatree.loops.enable_verdict"
 ]
 
 [[modules]]
+path = "teatree.core.admission_pressure"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.modelkit"
 layer = "domain"
 depends_on = []
+
+[[modules]]
+path = "teatree.core.telemetry"
+layer = "domain"
+depends_on = ["teatree.core.modelkit"]
 
 [[modules]]
 path = "teatree.core.forge_url"
@@ -324,6 +375,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.intake.ticket_findability"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers_phase_cadence"
 layer = "domain"
 depends_on = []
@@ -360,6 +416,7 @@ depends_on = [
   "teatree.core.managers_inbound",
   "teatree.core.managers_issue_match",
   "teatree.core.managers_overlay",
+  "teatree.core.intake.ticket_findability",
   "teatree.core.managers_phase_cadence",
   "teatree.core.managers_session",
   "teatree.core.managers_task_claim",
@@ -376,6 +433,8 @@ depends_on = [
   "teatree.core.forge_url",
   "teatree.core.modelkit",
   "teatree.core.managers",
+  # a worker_quiescing write advances the claim fence from the one ConfigSetting write seam.
+  "teatree.core.managers_task_claim",
   "teatree.core.models.errors",
   "teatree.core.repair_loop",
   # the substrate classifier reads the vendoring prefix from the paths leaf rather
@@ -386,7 +445,8 @@ depends_on = [
   "teatree.core.session_identity",
   "teatree.instance_id",
   "teatree.url_classify",
-  "teatree.verification"
+  "teatree.verification",
+  "teatree.core.telemetry"
 ]
 
 [[modules]]
@@ -406,6 +466,9 @@ depends_on = [
   "teatree.core.admission",
   "teatree.core.modelkit",
   "teatree.core.models",
+  # The headless attempt recorder emits a bounded receipt after persistence;
+  # this telemetry leaf has no edge back into agents.
+  "teatree.core.telemetry",
   "teatree.credential_config",
   "teatree.skill_support",
   "teatree.utils",
@@ -786,19 +849,25 @@ layer = "domain"
 depends_on = ["teatree.core.models", "teatree.loop.preset_resolution"]
 
 [[modules]]
-path = "teatree.loop.preset_resolution"
+path = "teatree.loops.enable_verdict"
 layer = "domain"
-depends_on = ["teatree.core.models"]
+depends_on = ["teatree.core.mode_resolution", "teatree.core.models", "teatree.loop.loop_state_db"]
 
 [[modules]]
 path = "teatree.core.mode_resolution"
 layer = "domain"
-depends_on = ["teatree.core.models", "teatree.live_presence", "teatree.loop.preset_resolution"]
+depends_on = [
+  "teatree.core.models",
+  "teatree.loop.preset_resolution",
+  # Selecting the posture IS an authorization, so it refuses an unattended write on the
+  # same identity leaf the governed-config seam reads — one predicate, not two answers.
+  "teatree.core.session_identity"
+]
 
 [[modules]]
-path = "teatree.loops.enable_verdict"
+path = "teatree.loop.preset_resolution"
 layer = "domain"
-depends_on = ["teatree.core.mode_resolution", "teatree.core.models", "teatree.loop.loop_state_db"]
+depends_on = ["teatree.core.models"]
 
 [[modules]]
 path = "teatree.loop.scanners"
@@ -826,8 +895,15 @@ depends_on = [
   "teatree.loop.review_done_reactions",
   "teatree.loop.review_request_tracker",
   "teatree.loop.pr_ticket_index",
-  "teatree.loop.inbound_reading"
+  "teatree.loop.inbound_reading",
+  "teatree.ci_oauth_switch",
+  "teatree.token_report"
 ]
+
+[[modules]]
+path = "teatree.loop.persistence_phase_task"
+layer = "domain"
+depends_on = ["teatree.core.models"]
 
 [[modules]]
 path = "teatree.loop.dispatch_reducer"
@@ -870,7 +946,10 @@ depends_on = [
   "teatree.core.models",
   "teatree.utils",
   "teatree.loop.scanners",
-  "teatree.loop.statusline_render"
+  "teatree.loop.statusline_render",
+  "teatree.core.telemetry",
+  "teatree.core.modelkit",
+  "teatree.loop.persistence_phase_task"
 ]
 
 [[modules]]

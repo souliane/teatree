@@ -51,6 +51,10 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
             # Non-empty on a PASS: the example a reviewer copies outranks the prose
             # beside it (``modelkit.review_contract.ENVELOPE_FINDINGS_RULE``).
             "findings": [{"severity": "low", "summary": "<what you observed>", "file": "src/x.py", "line": 42}],
+            # EVERY criterion, or the verdict is refused and records nothing — same
+            # reasoning as ``findings`` above: the example a reviewer copies outranks
+            # the prose beside it.
+            "rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}],
         }
     },
     "critic_verdict": {
@@ -184,6 +188,9 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "- `summary` (string) is required on every phase.",
         "- `needs_user_input` is a boolean; when true, also set `user_input_reason` (string)",
         "  and stop rather than guessing.",
+        "- If skills were required for this dispatch, include `skill_application`: one",
+        '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',
+        "  Only describe skill use that actually happened; omission is recorded as unverified.",
         *_evidence_lines(phase),
         *_verdict_consistency_lines(phase),
         "- Use ONLY these keys — any other key is rejected outright:",

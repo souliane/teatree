@@ -99,6 +99,10 @@ class _FakeCodeHost:
         _ = pr_url
         return ""
 
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:
+        _ = (repo, branch)
+        return ""
+
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> dict[str, object]:
         _ = (repo, pr_iid, body)
         return {}
@@ -151,8 +155,13 @@ class _FakeCodeHost:
         _ = (issue_url, comment_id)
         return {}
 
-    def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
-        _ = assignee
+    def list_assigned_issues(
+        self,
+        *,
+        assignee: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[dict[str, object]]:
+        _ = assignee, repo_slugs
         return []
 
     def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:

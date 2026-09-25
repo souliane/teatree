@@ -20,6 +20,7 @@ from typing import TypedDict
 
 from teatree.config import clone_root
 from teatree.core.gates.orphan_guard import BranchStatus, find_orphans_in_workspace
+from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.models import Task, Worktree
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.reconcile import reconcile_all
@@ -257,18 +258,33 @@ def gather_recover_report(*, run_sweeps: bool = True) -> RecoverReport:
     return report
 
 
-def requeue_failed_tasks(report: RecoverReport) -> list[int]:
-    """Reopen the genuinely-incomplete FAILED tasks in *report*. Returns reopened pks.
+@dataclass(frozen=True, slots=True)
+class RequeueOutcome:
+    reopened: list[int] = field(default_factory=list)
+    held: list[int] = field(default_factory=list)
+    held_reason: str = ""
+
+
+def requeue_failed_tasks(report: RecoverReport) -> RequeueOutcome:
+    """Reopen the genuinely-incomplete FAILED tasks in *report*, holding each one while no claim is admitted.
 
     Only reopens tasks whose ticket is still non-terminal (the candidates the
     report already filtered to) and whose status is still FAILED at write time —
     a task completed by a concurrent actor between gather and requeue is skipped.
+    A held task stays FAILED, so a requeue after the stop lifts reopens it once.
     """
     reopened: list[int] = []
+    held: list[int] = []
+    held_reason = ""
     for candidate in report.requeue_candidates:
-        task = Task.objects.filter(pk=candidate.task_pk, status=Task.Status.FAILED).first()
-        if task is None:
-            continue
-        task.reopen()
-        reopened.append(task.pk)
-    return reopened
+        with redispatch_window() as refusal:
+            task = Task.objects.filter(pk=candidate.task_pk, status=Task.Status.FAILED).first()
+            if task is None:
+                continue
+            if refusal:
+                held.append(task.pk)
+                held_reason = refusal
+                continue
+            task.reopen()
+            reopened.append(task.pk)
+    return RequeueOutcome(reopened=reopened, held=held, held_reason=held_reason)

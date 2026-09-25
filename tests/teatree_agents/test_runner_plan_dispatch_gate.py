@@ -14,8 +14,8 @@ from teatree.agents import runner as runner_mod
 from teatree.agents.runner import run_agent
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
+from tests.factories import record_test_plan
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 
@@ -70,7 +70,7 @@ class TestUnplannedImplementingDispatchIsRefused(_DispatchProbe):
 
 class TestARecordedDecisionLetsTheDispatchThrough(_DispatchProbe):
     def test_a_plan_artifact_lets_the_coder_spawn(self) -> None:
-        PlanArtifact.record(ticket=self.ticket, plan_text="Do X by Y", recorded_by="t3:planner")
+        record_test_plan(self.ticket, plan_text="Do X by Y", recorded_by="t3:planner")
 
         self._dispatch("coding")
 

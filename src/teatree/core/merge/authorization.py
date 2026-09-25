@@ -392,8 +392,8 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
 def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
     """Refuse a merge whose CLEAR ticket's rubric is not fully PASS at ``head_sha`` (#2241).
 
-    NO-OP when ``require_rubric_verification`` is off (opt-in default) or the CLEAR
-    carries no ticket (the rubric is FK'd to the ticket) — a ticketless CLEAR is
+    NO-OP only when the CLEAR carries no ticket (the rubric is FK'd to the ticket) —
+    a ticketless CLEAR is
     graded instead by PR identity in :func:`assert_ticket_scoped_gates` at the shared
     merge chokepoint, which REFUSES when the ticket resolves nowhere. The
     :class:`RubricNotSatisfiedError` raised on a block is re-wrapped as a

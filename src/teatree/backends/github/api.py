@@ -13,7 +13,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -32,27 +32,21 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
     ``unknown flag --header``. *timeout* (seconds) bounds the subprocess; the
     default ``None`` leaves every existing caller unbounded as before.
     """
-    env = {**os.environ, "GH_TOKEN": token} if token else None
+    if not token:
+        raise CommandFailedError(
+            list(args),
+            4,
+            "",
+            "github_token_pass_key resolved no token; refusing ambient gh authentication",
+        )
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = token
     return run_checked(list(args), env=env, timeout=timeout)
 
 
-def gh_ambient_auth_available() -> bool:
-    """Whether ``gh``'s own logged-in account (no explicit token) is usable.
-
-    ``gh auth status`` exits 0 when the CLI has a valid active account.
-    :func:`teatree.backends.loader.get_code_host_for_repo` uses this to fail
-    fast with a clear message instead of letting a raw ``gh`` auth error
-    surface deep inside a PR-creation call.
-    """
-    try:
-        result = run_allowed_to_fail(["gh", "auth", "status"], expected_codes=None, timeout=_FORGE_READ_TIMEOUT_SECONDS)
-    except FileNotFoundError:
-        return False
-    return result.returncode == 0
-
-
 def gh_can_push(repo_slug: str, *, token: str = "") -> bool | None:
-    """Whether the identity behind *token* (ambient ``gh`` when empty) has push access to *repo_slug*.
+    """Whether the identity behind routed *token* has push access to *repo_slug*.
 
     Reads ``repos/{slug}`` ``.permissions.push`` for the authenticated identity:
     ``True`` / ``False`` on a definite answer, ``None`` when it cannot be
@@ -61,8 +55,8 @@ def gh_can_push(repo_slug: str, *, token: str = "") -> bool | None:
     reads ``None`` as "keep the configured token": a collaborator override must
     be CERTAIN, so a transient probe failure never switches the PR-authoring
     identity. This is the seam that keeps ``gh pr create``'s ``createPullRequest``
-    from running under a non-collaborator token when the logged-in ``gh`` account
-    is the collaborator (the "must be a collaborator" abort).
+    from running under a non-collaborator token. An empty token is unreadable,
+    never a request to inherit a logged-in ``gh`` account.
     """
     if not repo_slug:
         return None
@@ -178,7 +172,16 @@ def _gh_api_write(endpoint: str, payload: RawAPIDict, *, method: str, token: str
     ``TimeoutExpired`` → the caller's fail-open) instead of wedging the
     single-threaded loop.
     """
-    env = {**os.environ, "GH_TOKEN": token} if token else None
+    if not token:
+        raise CommandFailedError(
+            ["gh", "api", endpoint],
+            4,
+            "",
+            "github_token_pass_key resolved no token; refusing ambient gh authentication",
+        )
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = token
     result = run_checked(
         [
             "gh",

@@ -64,7 +64,7 @@ def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
 
 
 def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
-    toothless = dataclasses.replace(_scenario_spec(), matchers=())
+    toothless = dataclasses.replace(_scenario_spec(), matchers=(), judge=None)
     assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
         "with matchers removed the cross-ticket bleed fixture must go GREEN — "
         "if it stays RED, the fixture fails for a reason unrelated to the matchers"

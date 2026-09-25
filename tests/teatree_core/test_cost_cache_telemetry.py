@@ -9,7 +9,7 @@ from datetime import date
 
 import pytest
 
-from teatree.agents.runner_usage import _attempt_usage
+from teatree.agents.runner_usage import UsageObservation, _attempt_usage
 from teatree.core.cost import AttemptUsage, CostBreakdown, CostReport
 from tests.teatree_agents._sdk_fake import result_message
 
@@ -91,7 +91,7 @@ class TestReportedCostPassthroughFlagging:
             usage={"input_tokens": 100, "output_tokens": 10},
             model_usage={"claude-opus-4-8": {}},
         )
-        usage = _attempt_usage(message, lane="metered")
+        usage = _attempt_usage(message, UsageObservation(lane="metered"))
         assert usage.cost_usd == pytest.approx(0.42)
         assert usage.cost_is_estimated is False
 
@@ -102,6 +102,6 @@ class TestReportedCostPassthroughFlagging:
             usage={"input_tokens": 1000, "output_tokens": 100},
             model_usage={"claude-opus-4-8": {}},
         )
-        usage = _attempt_usage(message, lane="metered")
+        usage = _attempt_usage(message, UsageObservation(lane="metered"))
         assert usage.cost_usd is not None
         assert usage.cost_is_estimated is True

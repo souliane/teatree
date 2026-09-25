@@ -14,12 +14,13 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core import agent_admission as gate_mod
+from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
 from teatree.core.tasks import drain_queue_body
-from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SIGNAL, IMMEDIATE_BACKEND, CommandOverlay
 
-IMMEDIATE_BACKEND = {"TASKS": {"default": {"BACKEND": "django.tasks.backends.immediate.ImmediateBackend"}}}
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
@@ -43,7 +44,11 @@ class TestDrainHonoursNotBefore(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
     def test_window_parked_task_is_not_enqueued(self) -> None:
         parked = self._pending(not_before=timezone.now() + dt.timedelta(hours=4))
-        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+            patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+        ):
             result = drain_queue_body()
         assert parked.pk not in result["enqueued"]
         parked.refresh_from_db()
@@ -56,7 +61,9 @@ class TestDrainHonoursNotBefore(TestCase):
         ready = self._pending(not_before=timezone.now() - dt.timedelta(minutes=1))
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.tasks.execute_task") as mock_task,
+            patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+            patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            patch.object(task_dispatch_mod, "execute_task") as mock_task,
         ):
             result = drain_queue_body()
         assert result["enqueued"] == [ready.pk]

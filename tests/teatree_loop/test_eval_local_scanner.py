@@ -2,7 +2,7 @@
 
 The scanner periodically queues an ``eval_local`` ``Task`` row for the
 active core overlay on a single trigger: cadence
-(``eval_local_cadence_hours``, default 168h = weekly). It mirrors the
+(its ``Loop`` row's own weekly interval). It mirrors the
 shape of :mod:`teatree.loop.scanners.scanning_news`: the queued task
 directs running the SCOPED eval suite locally via the same runner
 ``t3 eval run`` uses (the transcript backend, $0 extra), without
@@ -31,9 +31,8 @@ def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "eval",
-    cadence_hours: int = 168,
 ) -> EvalLocalScanner:
-    return EvalLocalScanner(overlay_name=overlay_name, skill=skill, cadence_hours=cadence_hours)
+    return EvalLocalScanner(overlay_name=overlay_name, skill=skill)
 
 
 def _last_eval_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
@@ -63,14 +62,14 @@ class EvalLocalScannerTests(TestCase):
         assert task.ticket.overlay == TEST_OVERLAY_NAME
 
     def test_cadence_elapsed_queues_new_task(self) -> None:
-        first = _scanner(cadence_hours=168).scan()
+        first = _scanner().scan()
         assert len(first) == 1
         prior = _last_eval_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
         _backdate_task(prior, hours=169)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert len(second) == 1
         assert second[0].payload["trigger"] == "cadence"
@@ -78,29 +77,14 @@ class EvalLocalScannerTests(TestCase):
         assert task is not None
         assert task.pk != prior.pk
 
-    def test_cadence_not_elapsed_no_task(self) -> None:
-        first = _scanner(cadence_hours=168).scan()
-        assert len(first) == 1
-        prior = _last_eval_task()
-        assert prior is not None
-        Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=24)
-
-        second = _scanner(cadence_hours=168).scan()
-
-        assert second == []
-        latest = _last_eval_task()
-        assert latest is not None
-        assert latest.pk == prior.pk
-
     def test_pending_task_blocks_new_queueing(self) -> None:
-        first = _scanner(cadence_hours=168).scan()
+        first = _scanner().scan()
         assert len(first) == 1
         prior = _last_eval_task()
         assert prior is not None
         _backdate_task(prior, hours=336)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert second == []
         latest = _last_eval_task()
@@ -109,13 +93,13 @@ class EvalLocalScannerTests(TestCase):
         assert latest.status == Task.Status.PENDING
 
     def test_claimed_task_blocks_new_queueing(self) -> None:
-        _scanner(cadence_hours=168).scan()
+        _scanner().scan()
         prior = _last_eval_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.CLAIMED)
         _backdate_task(prior, hours=336)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert second == []
 
@@ -161,39 +145,23 @@ class EvalLocalWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._settings()})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._settings(),
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
         assert scanner.skill == "eval"
-        assert scanner.cadence_hours == 168
-
-    def test_disabled_in_core_config_skips_wiring(self) -> None:
-        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._settings(eval_local_disabled=True)})(),
-        ):
-            scanner = _eval_local_scanner()
-        assert scanner is None
 
     def test_tuned_core_config_propagates_to_scanner_kwargs(self) -> None:
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._settings(eval_local_skill="custom-eval", eval_local_cadence_hours=72)},
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._settings(eval_local_skill="custom-eval"),
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
         assert scanner.skill == "custom-eval"
-        assert scanner.cadence_hours == 72
 
     def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
         from teatree.config import OverlayEntry  # noqa: PLC0415
@@ -202,8 +170,8 @@ class EvalLocalWiringTests(TestCase):
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": self._settings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._settings(),
             ),
             patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=discovered),
         ):
@@ -216,8 +184,8 @@ class EvalLocalWiringTests(TestCase):
 
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": self._settings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._settings(),
             ),
             patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=None),
         ):

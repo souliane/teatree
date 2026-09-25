@@ -61,7 +61,7 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 
 ### Secret getters
 
-Override these in a subclass, or use `*_PASS_KEY` settings to auto-register readers from the `pass` password store:
+Override these in a subclass, or use `*_PASS_KEY` settings to auto-register readers from the `pass` password store. A `<CREDENTIAL>_PASS_KEY` constant is only the entry's declared default: on each venue the entry resolves from the `<credential>_pass_key` `ConfigSetting` row in the overlay's scope, then the global row, then that constant, and core declares no default of its own (`teatree.config.credential_pass_key`). On first setup, a declared Notion route is persisted in its overlay's DB scope only when neither an overlay nor global DB route exists; repeat setup preserves every explicit pin. Repoint one with `t3 <overlay> config_setting set <credential>_pass_key '"<entry>"' --overlay <name>`; `config_setting get` names where it resolved from.
 
 | Method | Default | Purpose |
 |--------|---------|---------|

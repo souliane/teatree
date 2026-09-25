@@ -13,18 +13,24 @@ import pytest
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
+    COMPACTION_BLOCKED_MARKER,
+    CONTEXT_EXHAUSTED_MARKER,
     HEAD_SUPERSEDED_PREFIX,
     RECOVERY,
+    RESULT_ERROR_MARKER,
+    REVIEW_UNRECORDABLE_PREFIX,
     SUPERSEDED_PREFIX,
     FailureKind,
     RecoveryStrategy,
     classify_failure,
+    exhausted_the_conversation,
     is_causeless,
     is_environmental,
     recovery_strategy,
     stall_fingerprints,
     stall_kinds,
 )
+from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than
 #: derived, so the refactor cannot silently move the operator's diagnostic axis — which is also
@@ -137,7 +143,6 @@ class TestStrategyOfARealErrorString:
         "error",
         [
             "Traceback (most recent call last):\n  File ...\nException: boom",
-            "Traceback (most recent call last):\nException: Control request timeout: initialize",
             "ProcessError: the agent process exited with code 1",
         ],
     )
@@ -152,6 +157,20 @@ class TestStrategyOfARealErrorString:
         """
         assert classify_failure(error) == FailureKind.HARNESS_CRASH
         assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.RETRY
+
+    def test_a_control_request_timeout_is_not_retried(self) -> None:
+        """The SDK's control timeout arrives AS a traceback but is not the crash it dresses as.
+
+        It sat in the corpus above, asserted ``HARNESS_CRASH`` and therefore RETRY, because that
+        corpus predates the kind having a name. Retrying walks straight back into the same
+        session-start deadline — 53 of 60 tasks on the deployed box died that way and read as
+        weather — so the named kind HALTs, and the raw-traceback and ``processerror`` halves of
+        the crash corpus above keep their retry.
+        """
+        error = "Traceback (most recent call last):\nException: Control request timeout: initialize"
+
+        assert classify_failure(error) == FailureKind.HARNESS_CONTROL_TIMEOUT
+        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.HALT
 
     def test_an_api_error_with_a_connection_phrase_is_an_outage(self) -> None:
         """Classification reads the co-occurrence rule, so the router does not lose this outage class."""
@@ -193,6 +212,31 @@ class TestCorrectableFailures:
         )
 
 
+class TestAProviderBudgetStopIsNamed:
+    """A metered router refusing on its spend limit: parked, it is a window; recorded FAILED, a drained credential."""
+
+    def test_a_terminal_budget_stop_is_an_exhausted_credential_that_halts(self) -> None:
+        error = "provider_budget: insufficient_user_quota — metered provider spend limit reached"
+        assert classify_failure(error) == FailureKind.CREDENTIAL_EXHAUSTED
+        assert recovery_strategy(classify_failure(error)) is RecoveryStrategy.HALT
+
+    def test_a_parked_budget_stop_is_a_usage_limit_park(self) -> None:
+        error = "limit_parked: provider_budget: token cycle spend limit reached — metered provider spend limit reached"
+        assert classify_failure(error) == FailureKind.USAGE_LIMIT_PARKED
+
+
+class TestALeakBlockIsNeverRetried:
+    """A leak block's context must never be re-sent, whatever kind the reason resolves to."""
+
+    def test_a_leak_block_halts(self) -> None:
+        reason = LimitMatch(phrase="guardrail_blocked", cause=LimitCause.LEAK_BLOCKED).as_reason()
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.HALT
+
+    def test_an_egress_block_halts(self) -> None:
+        reason = LimitMatch(phrase="egress_blocked", cause=LimitCause.LEAK_BLOCKED).as_reason()
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.HALT
+
+
 class TestThePlanGateRefusalIsNamed:
     """#4578: the refusal was ``unclassified``, so no recovery mechanism could see it."""
 
@@ -208,6 +252,77 @@ class TestThePlanGateRefusalIsNamed:
 
     def test_it_is_not_environmental(self) -> None:
         assert is_environmental(FailureKind.PLAN_MISSING) is False
+
+
+class TestTheUnrecordableReviewRefusalIsNamed:
+    """The refusal was ``unclassified``, so nothing could recover from it.
+
+    ``stall_kinds`` drops an UNNAMED kind, so the re-dispatch budget never saw two in a row.
+    """
+
+    _REFUSAL = (
+        f"{REVIEW_UNRECORDABLE_PREFIX}refusing to dispatch the reviewer for souliane/teatree#4225 — "
+        "no pull request head is recorded for it"
+    )
+
+    def test_the_gates_own_prefix_classifies_as_review_unrecordable(self) -> None:
+        assert classify_failure(self._REFUSAL) == FailureKind.REVIEW_UNRECORDABLE
+
+    def test_the_recorders_post_hoc_refusal_classifies_identically(self) -> None:
+        """One defect, one name: the mid-run stamp race still records through the recorder."""
+        post_hoc = (
+            f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be persisted: this review is answerable "
+            "for souliane/teatree#4225 but no pull request head is recorded for it"
+        )
+        assert classify_failure(post_hoc) == FailureKind.REVIEW_UNRECORDABLE
+
+    def test_it_is_never_auto_reopened(self) -> None:
+        """Nothing a reviewer does supplies a head it was never given, so a retry hits the same wall."""
+        assert recovery_strategy(FailureKind.REVIEW_UNRECORDABLE) is RecoveryStrategy.HALT
+
+    def test_it_is_not_environmental(self) -> None:
+        assert is_environmental(FailureKind.REVIEW_UNRECORDABLE) is False
+
+    def test_two_consecutive_refusals_reach_the_stall_check(self) -> None:
+        """The whole point of naming it: an UNNAMED kind is dropped, so the budget never halted."""
+        kinds = [FailureKind.REVIEW_UNRECORDABLE, FailureKind.REVIEW_UNRECORDABLE]
+        assert stall_kinds(kinds) == kinds
+
+
+class TestOnlyAStampedExhaustionSendsTheRetryFresh:
+    """The exhaustion markers are read where the runner stamps them, never anywhere in the text.
+
+    ``exhausted_the_conversation`` decides whether a retry drops its resume. Matching a marker
+    loose in the detail hands that verdict to any transient failure whose CLI output happens to
+    quote one — a test name, a grep line — and the retry loses a conversation it should keep.
+    """
+
+    _COMPACTION = (
+        f"{RESULT_ERROR_MARKER} {COMPACTION_BLOCKED_MARKER}Claude Code tried to auto-compact the run's "
+        "history; the compaction was blocked and the run ended so it re-dispatches as a fresh session"
+    )
+    _CONTEXT_FULL = f"{RESULT_ERROR_MARKER} {CONTEXT_EXHAUSTED_MARKER} — subtype=error — prompt is too long"
+
+    @pytest.mark.parametrize("reason", [_COMPACTION, _CONTEXT_FULL])
+    def test_a_stamped_exhaustion_sends_the_retry_fresh(self, reason: str) -> None:
+        assert exhausted_the_conversation(reason) is True
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            f"pytest failed — tests/teatree_agents/test_compaction_guard.py::test_{CONTEXT_EXHAUSTED_MARKER}",
+            f"grep -rn '{COMPACTION_BLOCKED_MARKER}' src/ exited 1",
+        ],
+    )
+    def test_a_transient_failure_that_merely_quotes_a_marker_keeps_its_conversation(self, detail: str) -> None:
+        assert exhausted_the_conversation(f"{RESULT_ERROR_MARKER} subtype=error — {detail}") is False
+
+    def test_a_reason_the_runner_never_stamped_keeps_its_conversation(self) -> None:
+        """No ``result_error:`` prefix means no run-ending result — whatever the text quotes."""
+        assert exhausted_the_conversation(f"harness_crash: {CONTEXT_EXHAUSTED_MARKER} in the traceback") is False
+
+    def test_a_blank_reason_keeps_its_conversation(self) -> None:
+        assert exhausted_the_conversation("") is False
 
 
 class TestTheClosedIssueRefusalIsNamed:

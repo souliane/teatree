@@ -10,9 +10,10 @@ the typed `ConfigSetting` value readers on top of this module.
 Imports only the standard library; in particular it does NOT import
 `teatree.paths`, whose module-level `resolve_data_dir` would auto-isolate a
 worktree onto a sibling DB. The deliberate inverse of that resolver:
-`canonical_config_db` always targets the PRIMARY
-`~/.local/share/teatree/db.sqlite3`, even from inside a git worktree (a `.git`
-*file*) — config lives in one place, the installed `t3`'s DB. The ~5-line path
+`canonical_config_db` always targets the PRIMARY control DB — the named
+volume `control_db_dir(env)/db.sqlite3` for the machine's canonical data dir, and
+the data dir's own file for every private copy — even from inside a git worktree
+(a `.git` *file*): config lives in one place, the installed `t3`'s DB. The ~5-line path
 computation is duplicated here rather than imported;
 `tests/config/test_cold_reader.py` pins it equal to
 `teatree.paths.TRUE_CANONICAL_DB` so the two can never drift.
@@ -231,8 +232,8 @@ def loop_status(
     every path — missing DB file, absent table (fresh install), locked DB, a
     non-str status — so the caller never suppresses on an unreadable control
     plane. Reuses `canonical_config_db` + the WAL-aware `fetch_one` so it targets
-    the same PRIMARY `~/.local/share/teatree/db.sqlite3` the installed `t3` writes,
-    even from inside a worktree.
+    the same PRIMARY control DB the installed `t3` writes, even from inside a
+    worktree.
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():

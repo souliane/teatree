@@ -21,7 +21,7 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
 from teatree.core.mode_resolution import set_mode_override
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, REVIEW_UNRECORDABLE_PREFIX, FailureKind
 from teatree.core.models import Mode, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -728,6 +728,98 @@ class TestOperatorCancelledTickets(TestCase):
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
 
+class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):
+    """A halt escalation is the box reporting its OWN health — the class is already INTERNAL.
+
+    `repair-stall`, `repair-cap` and `reoffer-budget` all record `INTERNAL` with an indexed
+    `dedupe_marker`; the stuck-redispatch halt was the sibling that did neither. It DM'd the
+    owner a question about a re-dispatch budget they cannot answer, and deduped by scanning
+    the question TEXT — so the marker had to live in the human-facing sentence and every
+    sweep paid an unindexed `contains` over every question ever recorded.
+    """
+
+    def _escalated_ticket(self) -> Ticket:
+        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        for i in range(max_phase_iterations()):
+            session = Session.objects.create(ticket=ticket, agent_id="planning")
+            task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
+            attempt = TaskAttempt.objects.create(
+                task=task, ended_at=timezone.now(), exit_code=1, error=f"planning failed run {'x' * (i + 1)}"
+            )
+            TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
+        redispatch_stuck_tickets()
+        return ticket
+
+    def test_the_escalation_is_internal_so_it_never_reaches_the_owner_feed(self) -> None:
+        self._escalated_ticket()
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_it_dedupes_on_the_indexed_marker_rather_than_the_question_text(self) -> None:
+        ticket = self._escalated_ticket()
+        row = DeferredQuestion.objects.get()
+        assert row.dedupe_marker == f"stuck-redispatch-halt:{ticket.pk}"
+
+    def test_a_second_sweep_after_the_question_is_answered_files_nothing(self) -> None:
+        # The escalate-ONCE property the text scan bought, kept on the indexed marker.
+        self._escalated_ticket()
+        DeferredQuestion.objects.update(answered_at=timezone.now())
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 1
+
+
+class TestRepeatedUnrecordableReviewsHaltTheRedispatch(TestCase):
+    """While the refusal was ``unclassified``, ``stall_kinds`` DROPPED it.
+
+    The two seams that refuse an unrecordable review word it differently — the gate refuses
+    a dispatch, the recorder refuses a returned verdict on the mid-run stamp race — so two
+    of them fingerprint differently and the TEXT stall cannot see them. Only the shared
+    KIND makes them comparable, which is what naming it buys; the pair below is therefore
+    deliberately NOT text-identical, or the fingerprint stall would halt regardless and the
+    test would prove nothing.
+    """
+
+    def _reviewer_ticket_with_no_head(self) -> Ticket:
+        return Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/4225")
+
+    def _gate_refusal(self) -> str:
+        return f"{REVIEW_UNRECORDABLE_PREFIX}refusing to dispatch the reviewer for org/app#4225 — no head recorded"
+
+    def _recorder_refusal(self) -> str:
+        return (
+            f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be persisted: this review is answerable for "
+            "org/app#4225 but no pull request head is recorded for it"
+        )
+
+    def _fail(self, ticket: Ticket, error: str) -> None:
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=error)
+
+    def test_two_differently_worded_refusals_still_halt_because_the_kind_is_shared(self) -> None:
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._recorder_refusal())
+        self._fail(ticket, self._gate_refusal())
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_the_pair_is_genuinely_not_text_identical(self) -> None:
+        """Guards the guard: if the two texts ever converge, the test above goes vacuous."""
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._recorder_refusal())
+        self._fail(ticket, self._gate_refusal())
+
+        fingerprints = {attempt.error_fingerprint for attempt in TaskAttempt.objects.all()}
+        assert len(fingerprints) == 2
+
+    def test_one_refusal_alone_does_not_halt(self) -> None:
+        """The halt is two CONSECUTIVE ones — a single refusal must not freeze the ticket."""
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._gate_refusal())
+
+        assert redispatch_stuck_tickets() == 1
+
+
 class TestAFrozenFactoryAndTheCancelRace(TestCase):
     """#4834: a cancel stays a cancel through a lease loss, and escalation survives a freeze."""
 
@@ -756,8 +848,8 @@ class TestAFrozenFactoryAndTheCancelRace(TestCase):
                 ticket, phase="planning", status=Task.Status.FAILED, error=f"planning failed run {'x' * (i + 1)}"
             )
             TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=48))
-        Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False})
-        set_mode_override("frozen-redispatch-test")
+        Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-redispatch-test", reason="test")
 
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

@@ -188,6 +188,7 @@ class TestDoctorWiring(UnconsumedClearCheckBase):
             patch.object(doctor_runner, "_check_intent_freshness", return_value=True),
             patch.object(doctor_runner, "_check_intake_budget_deadlock", return_value=True),
             patch.object(doctor_runner, "_check_loop_schedule_liveness", return_value=True),
+            patch.object(doctor_runner, "_check_shipped_seed_inertness", return_value=True),
             patch.object(doctor_runner, "_check_t3_master_unheld_while_loops_tick", return_value=True),
         ):
             assert _run_loop_intent_gates() is True

@@ -119,6 +119,10 @@ class NotifyOptions:
     blocks: list[RawAPIDict] | None = None
     as_thread_root: bool = False
     thread_ts: str = ""
+    #: The caller asked for a DM, so the push/pull registry does not withhold it. For
+    #: the surfaces a person or agent invokes directly (`t3 <overlay> notify dm`, the
+    #: MCP tool), whose one-off key nobody could have registered; never for an alarm.
+    requested_push: bool = False
 
     @property
     def dm_thread(self) -> str | None:

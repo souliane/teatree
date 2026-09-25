@@ -19,7 +19,7 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 |---------|-------------|
 | `t3 startoverlay` | Scaffold a new overlay package |
 | `t3 docs` | Serve project documentation with mkdocs |
-| `t3 agent` | Launch Claude Code with auto-detected project context |
+| `t3 agent` | Launch the configured agent with auto-detected project context |
 | `t3 sessions` | List recent Claude conversation sessions with resume commands |
 | `t3 info` | Show binary, source paths, editable status, and installed overlays |
 | `t3 doctor check` | Verify imports, required tools, and editable-install sanity |
@@ -55,7 +55,7 @@ Run `t3 <overlay> --help` for the full list. Subcommand groups: `worktree`, `wor
 | `t3 <overlay> ship [TICKET_ID]` | Code to PR — create pull request for the ticket |
 | `t3 <overlay> daily` | Daily followup — sync PRs, check gates, remind reviewers |
 | `t3 <overlay> full-status` | Show ticket, worktree, and session state summary |
-| `t3 <overlay> agent` | Launch Claude Code with overlay context and auto-detected skills |
+| `t3 <overlay> agent` | Launch the configured agent with overlay context and auto-detected skills |
 | `t3 <overlay> resetdb` | Drop the SQLite database and re-run all migrations |
 | `t3 <overlay> worker` | Start background task workers |
 | `t3 <overlay> worktree provision [VARIANT]` | Provision worktree: ports, env, symlinks, DB |

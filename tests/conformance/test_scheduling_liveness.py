@@ -11,20 +11,23 @@ never re-chain. Every cadence surface still read healthy throughout.
 anti-vacuity lane below drives the REAL :func:`~teatree.loops.timer_chains.loop_timer`
 body against the real defect rather than hand-building the end state: a stranded
 RUNNING row plus a higher-uuid live fire, which is the exact 05:25/05:55 sequence from
-the incident. The tick returns ``deduped``, no successor is queued, and the invariant
-must name the loop. Its control is the same fire with the uuid ordering flipped — the
-coin-flip the incident report describes — where the chain survives and nothing is named.
+the incident. It is replayed BOTH ways round, because the fix is precisely that the
+uuid coin-flip the incident report describes no longer decides whether the loop lives:
+the corpse is disqualified, the surviving fire ticks, a successor is queued, and the
+invariant names nothing — on either side of the flip. The assertions here were the
+opposite before the fix, and the inversion is the evidence the defect closed rather
+than moved.
 
 ``off_live_tick`` loops (``directive_loop``, ``dream``, ``outer_loop``) are excluded
 deliberately: :mod:`teatree.loops.off_live_tick_driver` fires their own tick command,
 so carrying no timer row is their correct steady state, and exposing them would be a
 permanent false alarm.
 
-The ``loop_runner_enabled`` kill-switch is the invariant's PRECONDITION, not a breach
-of it: step 0 of ``loop_timer`` halts without a successor precisely to terminate every
-chain at its source, so a drained fleet under an OFF switch is the documented outcome
-of an operator decision. The lane below pins that the alarm stays silent there, with
-the same drained state under an ON switch as its control.
+A preset admitting zero loops is the invariant's PRECONDITION, not a breach of it:
+step 0 of ``loop_timer`` halts without a successor precisely to terminate every chain
+at its source, so a drained fleet under a stopping posture is the documented outcome of
+an operator decision. The lane below pins that the alarm stays silent there, with the
+same drained state under an admitting posture as its control.
 """
 
 import datetime as dt
@@ -40,7 +43,7 @@ from django_tasks_db.models import DBTaskResult, normalize_uuid
 from typer.testing import CliRunner
 
 from teatree.cli.doctor.checks_loop import _check_loop_schedule_liveness
-from teatree.core.models import ConfigSetting, Loop
+from teatree.core.models import Loop, Mode, ModeOverride
 from teatree.loops import timer_chains
 from teatree.loops.chain_membership import timer_chain_loop_names
 from teatree.loops.registry import iter_loops
@@ -48,7 +51,7 @@ from teatree.loops.schedule_liveness import unscheduled_loops
 from teatree.loops.timer_reconciler import ensure_loop_timers
 
 #: The production DB backend, so an ``enqueue`` lands a real queryable timer row.
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 #: ``inbox`` is a real registered live-tick loop at a 60s cadence, so its tick
 #: deadline is the 300s floor and a row started 10 minutes ago is a corpse.
@@ -67,7 +70,6 @@ class TestScheduleLiveness(django.test.TestCase):
     def setUp(self) -> None:
         Loop.objects.all().delete()
         DBTaskResult.objects.all().delete()
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
 
     def _enable(self, name: str = _LOOP, **kwargs: object) -> Loop:
         defaults: dict[str, object] = {"delay_seconds": 60, "enabled": True, "last_run_at": None}
@@ -87,21 +89,8 @@ class TestScheduleLiveness(django.test.TestCase):
     def _names(self) -> list[str]:
         return [loop.name for loop in unscheduled_loops(timezone.now())]
 
-    def test_the_incident_sequence_drops_the_chain_and_the_invariant_names_it(self) -> None:
-        """RED against #4140: the losing fire forfeits the successor, not just its tick."""
-        self._enable()
-        zombie_id = self._zombie()
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(timer_chains, "run_deadlined_tick", lambda name, *, deadline: {})
-            result = _fire(_LOOP, task_id=uuid.UUID(int=zombie_id.int + 1))
-
-        assert result["action"] == "deduped"
-        assert timer_chains.pending_loop_timers(_LOOP) == []  # the chain is gone
-        assert self._names() == [_LOOP]
-
-    def test_the_other_side_of_the_uuid_coin_flip_keeps_the_chain(self) -> None:
-        """The control: the same corpse, a LOWER-uuid fire — the chain survives."""
+    def _replay_the_incident(self, *, uuid_offset: int) -> None:
+        """The 05:25/05:55 sequence: a corpse RUNNING row, then one live fire beside it."""
         self._enable()
         zombie_id = self._zombie()
 
@@ -111,11 +100,19 @@ class TestScheduleLiveness(django.test.TestCase):
                 "run_deadlined_tick",
                 lambda name, *, deadline: {"timed_out": False, "returncode": 0},
             )
-            result = _fire(_LOOP, task_id=uuid.UUID(int=zombie_id.int - 1))
+            result = _fire(_LOOP, task_id=uuid.UUID(int=zombie_id.int + uuid_offset))
 
         assert result["action"] == "ticked"
         assert timer_chains.pending_loop_timers(_LOOP)
         assert self._names() == []
+
+    def test_the_incident_sequence_keeps_the_chain(self) -> None:
+        """The exact losing side of the flip. It used to forfeit the successor, not just its tick."""
+        self._replay_the_incident(uuid_offset=+1)
+
+    def test_the_other_side_of_the_uuid_coin_flip_keeps_the_chain_too(self) -> None:
+        """The same sequence, flipped — the outcome must not depend on which uuid is smaller."""
+        self._replay_the_incident(uuid_offset=-1)
 
     def test_a_reconciled_fleet_is_fully_scheduled(self) -> None:
         self._enable()
@@ -162,43 +159,49 @@ def _doctor_verdict() -> tuple[bool, str]:
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
-class TestTheKillSwitchIsThePreconditionNotABreach(django.test.TestCase):
-    """An operator who turns the loop runner OFF has not broken the invariant.
+class TestAStoppingPostureIsThePreconditionNotABreach(django.test.TestCase):
+    """An operator who picks a posture admitting nothing has not broken the invariant.
 
     Step 0 of ``loop_timer`` halts WITHOUT a successor so the chain terminates at its
-    source, while ``Loop.enabled`` stays True — so every enabled loop drains into the
-    exact state the alarm reads as a stopped chain. Red-lining a deliberate kill-switch,
-    with remediation advice that is wrong for the operator who flipped it, is how a
-    doctor teaches people to ignore it.
+    source — so every loop drains into the exact state the alarm reads as a stopped
+    chain. Red-lining a deliberate posture, with remediation advice that is wrong for the
+    operator who picked it, is how a doctor teaches people to ignore it.
     """
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
         DBTaskResult.objects.all().delete()
+        Mode.objects.all().delete()
+        ModeOverride.objects.all().delete()
         Loop.objects.create(name=_LOOP, script=f"src/teatree/loops/{_LOOP}/loop.py", delay_seconds=60)
+        Mode.objects.create(name="stopped", entries={_LOOP: False})
+        Mode.objects.create(name="running", entries={_LOOP: True})
+
+    def _use(self, preset: str) -> None:
+        ModeOverride.objects.set_override(preset, reason="pinned by the test")
 
     def _drain(self) -> None:
-        """Fire the real timer body under the current switch and assert it halted the chain."""
+        """Fire the real timer body under the current posture and assert it halted the chain."""
         assert _fire(_LOOP, task_id=uuid.uuid4())["action"] == "halted"
         assert timer_chains.pending_loop_timers(_LOOP) == []
 
-    def test_a_fleet_drained_by_the_kill_switch_is_not_named(self) -> None:
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+    def test_a_fleet_drained_by_a_stopping_posture_is_not_named(self) -> None:
+        self._use("stopped")
         self._drain()
         assert unscheduled_loops(timezone.now()) == ()
 
-    def test_the_doctor_does_not_fail_on_a_deliberate_kill_switch(self) -> None:
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+    def test_the_doctor_does_not_fail_on_a_deliberate_stopping_posture(self) -> None:
+        self._use("stopped")
         self._drain()
         passes, output = _doctor_verdict()
         assert passes is True
         assert "t3 worker ensure" not in output
 
-    def test_the_same_drained_state_is_named_once_the_switch_is_back_on(self) -> None:
-        """The control: only the switch differs, and the alarm fires."""
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+    def test_the_same_drained_state_is_named_once_the_posture_admits_again(self) -> None:
+        """The control: only the posture differs, and the alarm fires."""
+        self._use("stopped")
         self._drain()
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
+        self._use("running")
         assert [loop.name for loop in unscheduled_loops(timezone.now())] == [_LOOP]
         assert _doctor_verdict()[0] is False
 

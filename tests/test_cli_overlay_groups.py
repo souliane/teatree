@@ -7,6 +7,7 @@ that table is unreachable via the overlay CLI even though the core
 """
 
 from collections import Counter
+from unittest.mock import patch
 
 import typer
 
@@ -17,7 +18,9 @@ from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
 from teatree.core.management.commands.loop_preset import Command as LoopPresetCommand
+from teatree.core.management.commands.notify import Command as NotifyCommand
 from teatree.core.management.commands.questions import Command as QuestionsCommand
+from teatree.core.management.commands.run import Command as RunCommand
 
 
 def _ticket_subcommands() -> set[str]:
@@ -36,12 +39,20 @@ def _e2e_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["e2e"].subcommands}
 
 
+def _run_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["run"].subcommands}
+
+
 def _pr_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["pr"].subcommands}
 
 
 def _learnings_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["learnings"].subcommands}
+
+
+def _notify_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["notify"].subcommands}
 
 
 def _questions_subcommands() -> set[str]:
@@ -86,6 +97,30 @@ def test_e2e_group_exposes_tracked_manifest() -> None:
 def test_e2e_subcommands_map_to_real_command_methods() -> None:
     for name in _e2e_subcommands():
         assert hasattr(E2eCommand, name.replace("-", "_")), name
+
+
+def test_run_group_exposes_canonical_targeted_e2e_alias() -> None:
+    assert "e2e" in _run_subcommands()
+    assert hasattr(RunCommand, "e2e")
+
+
+def test_run_e2e_alias_forwards_the_target_to_the_e2e_runner() -> None:
+    with patch("teatree.core.management.commands.e2e.Command.run", return_value="E2E completed") as run:
+        result = RunCommand().e2e("e2e/offer-summary.spec.ts")
+
+    assert result == "E2E completed"
+    run.assert_called_once_with(
+        work_item="",
+        test_path="e2e/offer-summary.spec.ts",
+        at="",
+        target="",
+        update_snapshots=False,
+        docker=True,
+        linked_to=0,
+        branch="",
+    )
+    forwarded_arguments = (*run.call_args.args, *run.call_args.kwargs.values())
+    assert not any(isinstance(argument, typer.models.OptionInfo) for argument in forwarded_arguments)
 
 
 def test_pr_group_exposes_deprecated_post_evidence_alias() -> None:
@@ -142,6 +177,15 @@ def test_learnings_group_dispatches_to_core() -> None:
 def test_learnings_subcommands_map_to_real_command_methods() -> None:
     for name in _learnings_subcommands():
         assert hasattr(LearningsCommand, name.replace("-", "_")), name
+
+
+def test_notify_group_exposes_requested_dm_surface() -> None:
+    assert "dm" in _notify_subcommands()
+
+
+def test_notify_subcommands_map_to_real_command_methods() -> None:
+    for name in _notify_subcommands():
+        assert hasattr(NotifyCommand, name.replace("-", "_")), name
 
 
 def test_questions_group_exposes_every_management_subcommand() -> None:

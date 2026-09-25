@@ -44,11 +44,10 @@ the kill-switch and the rollback lever (see :func:`governor_enabled`).
 import datetime as dt
 import logging
 import math
-import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
 
-from teatree.core.admission.metered_spend import read_metered_spend
+from teatree.core.admission import machine_load
+from teatree.core.admission.metered_spend import read_metered_signal
 from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
@@ -66,13 +65,10 @@ from teatree.core.admission_pressure import (
     box_load_headroom,
     ram_headroom,
     resolve_shed_at,
+    resume_ceiling_conflict,
     weekly_pace,
 )
-from teatree.utils import ram_scope
-
-if TYPE_CHECKING:
-    from teatree.core.models.task_attempt import TaskAttempt
-    from teatree.core.models.usage_window_state import UsageWindowState
+from teatree.utils import host_pressure, ram_probe, ram_scope
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +138,17 @@ class YieldSignal:
 
 
 @dataclass(frozen=True)
+class SupplementalAdmissionSignals:
+    """Optional budget and outcome signals supplied by the admitting lane."""
+
+    metered: MeteredSignal | None = None
+    yield_signal: YieldSignal | None = None
+
+
+_NO_SUPPLEMENTAL_SIGNALS = SupplementalAdmissionSignals()
+
+
+@dataclass(frozen=True)
 class MergeSignal:
     """Merge throughput — whether produced work is actually LANDING.
 
@@ -163,6 +170,7 @@ class MergeSignal:
     fresh: bool
     open_prs: int
     stuck_prs: int
+    stuck_refs: tuple[str, ...] = ()
 
     @property
     def stalled(self) -> bool:
@@ -187,6 +195,7 @@ class AdmissionDecision:
     reason: str
     ceiling: int
     braked: bool
+    cause: str = ""
 
 
 def governor_enabled() -> bool:
@@ -316,7 +325,7 @@ def decide_admission(
     *,
     quota: QuotaSignal,
     machine: MachineSignal,
-    yield_signal: YieldSignal | None = None,
+    signals: SupplementalAdmissionSignals = _NO_SUPPLEMENTAL_SIGNALS,
     load_brake: MachineBrake = UNBRAKED,
     static_ceiling: int | None = None,
 ) -> AdmissionDecision:
@@ -351,16 +360,18 @@ def decide_admission(
     if static_ceiling is not None:
         ceiling = max(1, min(ceiling, static_ceiling))
 
-    pressure = pressure_for(quota=quota, machine=machine, load_brake=load_brake)
+    pressure = pressure_for(quota=quota, machine=machine, metered=signals.metered, load_brake=load_brake)
     if pressure.band is PressureBand.HALT:
-        return AdmissionDecision(admit=False, reason=pressure.reason, ceiling=ceiling, braked=True)
+        cause = pressure.dominant.name if pressure.dominant is not None else ""
+        return AdmissionDecision(admit=False, reason=pressure.reason, ceiling=ceiling, braked=True, cause=cause)
 
-    if yield_signal is not None and yield_signal.collapsed:
+    if signals.yield_signal is not None and signals.yield_signal.collapsed:
+        yield_signal = signals.yield_signal
         reason = (
             f"yield collapsed ({yield_signal.completed}/{yield_signal.samples} terminal tasks completed) — "
             "the marginal token is buying zero"
         )
-        return AdmissionDecision(admit=False, reason=reason, ceiling=ceiling, braked=True)
+        return AdmissionDecision(admit=False, reason=reason, ceiling=ceiling, braked=True, cause="yield-collapse")
 
     return AdmissionDecision(
         admit=True, reason=f"admitting up to {ceiling} — signals healthy", ceiling=ceiling, braked=False
@@ -454,7 +465,10 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
 
     try:
         live = PullRequest.objects.live()
-        streaks = SweepSkipStreak.objects.aged(threshold=stuck_after)
+        # Keep the CI-verdict flap in the surfacing streak, but do not turn an
+        # indeterminate forge lookup into proof that a PR is stuck. Three such
+        # transient lookups across a small board previously halted all intake.
+        streaks = SweepSkipStreak.objects.aged(threshold=stuck_after).exclude(reason="required_checks_indeterminate")
         if overlay:
             live = live.filter(overlay=overlay)
             streaks = streaks.filter(overlay=overlay)
@@ -462,15 +476,23 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
             (str(repo).lower(), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()
         }
         streak_keys = {(str(slug).lower(), int(pr_id)) for slug, pr_id in streaks.values_list("slug", "pr_id")}
-        stuck = len(streak_keys & live_keys)
+        stuck_keys = sorted(streak_keys & live_keys)
     except Exception:
         logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
         return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
-    return MergeSignal(fresh=True, open_prs=len(live_keys), stuck_prs=stuck)
+    return MergeSignal(
+        fresh=True,
+        open_prs=len(live_keys),
+        stuck_prs=len(stuck_keys),
+        stuck_refs=tuple(f"{repo}#{iid}" for repo, iid in stuck_keys),
+    )
 
 
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:
     """The deterministic, model-free machine probe (stdlib only, no external process).
+
+    Load and cores come from :func:`~teatree.core.admission.machine_load.read_load_and_cores`,
+    a named seam so the whole signal is pinnable rather than only its memory third.
 
     Memory comes from :attr:`~teatree.utils.ram_scope.RamHeadroom.box_watermark_mib`, the ONE
     cgroup-aware reader. Reading ``/proc/meminfo`` here instead would report the HOST figure
@@ -492,14 +514,39 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     platform with no load average reads ``0.0``: an unknown load is inert wherever it is
     consumed (no brake, full :func:`box_load_headroom`), never a manufactured clamp.
     """
-    try:
-        load1 = os.getloadavg()[0]
-    except OSError:
-        load1 = 0.0
+    host = host_pressure.read_host_pressure()
+    if host is not None:
+        memory_cap_gb = None
+        if ram_available_gb is None:
+            available_mib = host.ram_available_mib
+            headroom = ram_scope.read_ram_headroom()
+            if headroom.cgroup_is_box_scoped:
+                if headroom.available_mib is not None:
+                    available_mib = min(available_mib, headroom.available_mib)
+                memory_cap_gb = headroom.box_watermark_cap_gb
+            ram_available_gb = available_mib / _MIB_PER_GB
+        return MachineSignal(
+            cores=min(host.cores, ram_probe.available_cpu_count()),
+            load1=host.load1,
+            ram_available_gb=ram_available_gb,
+            memory_cap_gb=memory_cap_gb,
+            swap_used_fraction=host.swap_used_fraction,
+        )
+    load1, cores = machine_load.read_load_and_cores()
+    # The cap rides along only on OUR OWN reading: a caller's figure has an unknown scope,
+    # and a cap paired with the wrong scope diagnoses the wrong container.
+    memory_cap_gb = None
     if ram_available_gb is None:
-        available_mib = ram_scope.read_ram_headroom().box_watermark_mib
+        headroom = ram_scope.read_ram_headroom()
+        available_mib = headroom.box_watermark_mib
         ram_available_gb = None if available_mib is None else available_mib / _MIB_PER_GB
-    return MachineSignal(cores=os.cpu_count() or 1, load1=load1, ram_available_gb=ram_available_gb)
+        memory_cap_gb = headroom.box_watermark_cap_gb
+    return MachineSignal(
+        cores=cores,
+        load1=load1,
+        ram_available_gb=ram_available_gb,
+        memory_cap_gb=memory_cap_gb,
+    )
 
 
 def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
@@ -528,6 +575,7 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time
 
     from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: same
+    from teatree.llm.rate_limits import used_fraction  # noqa: PLC0415 — deferred: foundation read at call time
 
     moment = now or timezone.now()
     rows = list(AnthropicTokenUsage.objects.all())
@@ -542,52 +590,17 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
             short_utilization=0.0,
             seconds_to_weekly_reset=None,
         )
-    best = min(sample, key=lambda row: row.utilization_7d)
+    # An unread window is headroom nobody measured; `used_fraction` reads it as fully free,
+    # which is the fail-open the brake already applied when the cache stored it as 0.0.
+    best = min(sample, key=lambda row: used_fraction(row.utilization_7d))
     reset = best.reset_7d
     return QuotaSignal(
         fresh=True,
         all_accounts_exhausted=all_exhausted,
-        weekly_utilization=best.utilization_7d,
-        short_utilization=min(row.utilization_5h for row in sample),
+        weekly_utilization=used_fraction(best.utilization_7d),
+        short_utilization=min(used_fraction(row.utilization_5h) for row in sample),
         seconds_to_weekly_reset=(reset - moment).total_seconds() if reset is not None else None,
     )
-
-
-def read_metered_signal() -> MeteredSignal:
-    """The metered lane's budget and park state, as one signal (#4816).
-
-    The ORM half of the metered dimension — the ledger sum plus the uncleared metered
-    ``UsageWindowState`` a hard provider refusal parks the lane with. The arithmetic stays
-    in :mod:`teatree.core.admission_pressure`, the split that module's docstring mandates.
-    A read that raises is NOT fresh, so an unreadable budget can never brake a lane.
-    """
-    from django.apps import apps  # noqa: PLC0415 — deferred: Django app-registry read at call time
-
-    spend = read_metered_spend()
-    if not spend.fresh:
-        return MeteredSignal(fresh=False)
-    try:
-        attempts = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
-        windows = cast("type[UsageWindowState]", apps.get_model("core", "UsageWindowState"))
-        window = windows.objects.active_for_lane(attempts.Lane.METERED)
-    except Exception:
-        logger.exception("metered usage-window read failed — reporting the lane unparked")
-        window = None
-    return MeteredSignal(
-        fresh=True,
-        utilization=spend.utilization(),
-        parked=window is not None,
-        spend_detail=spend.detail(),
-        park_detail=_park_detail(window),
-    )
-
-
-def _park_detail(window: "object | None") -> str:
-    if window is None:
-        return ""
-    resets_at = getattr(window, "resets_at", None)
-    until = f" until {resets_at.isoformat()}" if resets_at is not None else " with no recorded reset"
-    return f"the metered lane is parked on a {getattr(window, 'cause', '')} window{until} — re-probing it is pure burn"
 
 
 #: Re-exported from :mod:`teatree.core.admission_pressure`, which owns the signals and the
@@ -616,6 +629,7 @@ __all__ = [
     "read_metered_signal",
     "read_quota_signal",
     "resume_agent_ceiling",
+    "resume_ceiling_conflict",
     "resume_shed_directive",
     "weekly_pace",
 ]

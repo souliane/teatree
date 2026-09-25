@@ -1,14 +1,12 @@
-"""PreToolUse: refuse the whole-tree stage ``git add -A`` / ``git add .`` (#4093).
+"""PreToolUse: refuse the whole-tree stage ``git add -A`` / ``git add .``.
 
-``git add -A`` stages whatever the working tree happens to hold. Four recorded
-occurrences: a throwaway scratch file swept into a commit (caught only by
-``tests/test_repo_root_minimal.py``, i.e. AFTER the commit existed and only
-because it landed at the repo root), and — in a worktree shared with another
-agent — that agent's in-progress edits committed under the wrong authorship.
-The rule "stage explicit paths, keep scratch outside the repo" is written down
-and has failed four times, so the deliverable is a gate, not another
-restatement. A PreToolUse deny catches the whole class before anything is
-staged, which is also when the fix is cheapest: the agent names its paths.
+``git add -A`` stages whatever the working tree happens to hold: a throwaway
+scratch file swept into a commit, and — in a worktree shared with another agent
+— that agent's in-progress edits committed under the wrong authorship. The only
+other backstop, ``tests/test_repo_root_minimal.py``, runs AFTER the commit
+exists and sees only the repo root. A PreToolUse deny catches the whole class
+before anything is staged, which is when the fix is cheapest: the agent names
+its paths.
 
 Deliberately narrow. ``git add <explicit paths>`` always passes, and so do
 ``git add -p`` and ``git add -u`` (tracked files only — no untracked sweep).

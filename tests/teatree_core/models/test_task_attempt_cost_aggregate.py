@@ -20,7 +20,12 @@ from teatree.core.models.ticket import Ticket
 from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 
 _MODELS = ("claude-opus-4-8", "sonnet", "haiku", "deepseek/v3", "")
-_LANES = (TaskAttempt.Lane.SUBSCRIPTION, TaskAttempt.Lane.METERED, "")
+_LANES = (
+    TaskAttempt.Lane.SUBSCRIPTION,
+    TaskAttempt.Lane.METERED,
+    TaskAttempt.Lane.MANAGED,
+    "",
+)
 _PHASES = ("coding", "reviewing", "")
 #: Every combination of the five costing-key axes, so no axis is a proxy for another.
 #: ``reported`` and ``estimated`` in particular must vary independently — the metered

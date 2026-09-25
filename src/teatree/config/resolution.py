@@ -16,23 +16,24 @@ table in ``config.raw``) is NOT one of its homes, so it is dropped on read
 unconfigured Django yields no overrides) so an empty table resolves every DB-home
 field to its shipped default.
 
-Beneath every override sits the DEFAULTS base: the shipped, committed
-``config/defaults.toml`` (``_toml_default_rows``) — packaged data, never per-install
-config. It is read with stdlib ``tomllib`` through ``cold_defaults``, NEVER through
-``schema.shipped_defaults``: ``teatree.config``'s package init imports this module
-and the cold hook path imports that package, so a pydantic read here would put
-~110ms on every hook invocation.
+Beneath every override sits the DEFAULTS base: the DECLARATION itself — the
+``UserSettings`` dataclass default, or the registry entry for a key with no field.
+``config/defaults.toml`` is not a tier: it is RENDERED from those declarations
+(``config/declared_defaults.py``), so reading it back would be a second authority that
+can only agree or be a bug. Nothing here imports ``schema``: ``teatree.config``'s package
+init imports this module and the cold hook path imports that package, so a pydantic read
+would put ~110ms on every hook invocation.
 """
 
 import logging
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config import cold_defaults
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode
+from teatree.config.known_settings import SETTING_ENTRIES
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
 from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
@@ -41,9 +42,9 @@ from teatree.config.setting_layers import (
     SettingLayers,
     apply_structured_settings,
     drop_db_home_overlay_keys,
-    shipped_defaults_base,
+    stored_form,
 )
-from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, env_pinned_value
 from teatree.config.settings import OverlayEntry, UserSettings
 from teatree.request_cache import cached_per_request
 
@@ -56,21 +57,10 @@ _logger = logging.getLogger("teatree.config")
 # ``mr_reminder`` highest-layer-wins, ``speak`` as a MERGE up the layers.
 _BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
 
-# Sentinel for "no shipped default at all" — never equals a real value, so a
-# seed/import of such a key is always written.
-_NO_EFFECTIVE_DEFAULT: object = object()
-
-
-def _toml_default_rows() -> dict[str, Any]:
-    """The shipped ``defaults.toml`` ``[teatree]`` table — the DEFAULTS base of every tier chain.
-
-    Read through ``cold_defaults`` (stdlib ``tomllib``, mtime-cached), never through
-    ``schema.shipped_defaults``: this module sits on ``teatree.config``'s package init,
-    which the cold hook path imports, so a pydantic read here would cost ~110ms per hook
-    invocation. The path is read off the module at call time so a test can point the tier
-    at a fixture file.
-    """
-    return cold_defaults.shipped_defaults_table(cold_defaults.DEFAULTS_TOML)
+#: Sentinel for "no declaration owns this key at all" — never equals a real value, so a
+#: seed/import of such a key is always written, and a provenance walk can tell a key whose
+#: declared default IS ``None`` from one that has no declared default.
+NO_EFFECTIVE_DEFAULT: object = object()
 
 
 def effective_default(key: str) -> object:
@@ -80,31 +70,20 @@ def effective_default(key: str) -> object:
     (``config_interchange.migration``), and the resolver all agree on, so a row equal to it is
     provably redundant: writing it and clearing it resolve to the SAME value.
 
-    A ``UserSettings`` scalar field resolves to its ``defaults.toml`` value — the
-    resolver's own DEFAULTS base (``_toml_default_rows``, coerced by the same registry
-    parsers a DB row goes through). A key the shipped file does not carry (a
-    Secret/Personal key, absent by construction) falls back to the dataclass default.
+    Answered from the DECLARATION that states it: a ``UserSettings`` field from the
+    dataclass (the two structured fields in the stored dict form a row holds), every other
+    key from its registry entry. ``defaults.toml`` is not consulted — it is RENDERED from
+    these same declarations (``config/declared_defaults.py``), so reading it back would be
+    a second authority that can only ever agree or be a bug.
 
-    A structured field (``speak`` / ``mr_reminder``) is stored as a dict the resolver
-    rebuilds bespoke; its stored-form default is the ``shipped_defaults`` dict (equal
-    in meaning to the dataclass default), so it is compared in that stored form rather
-    than against the dataclass instance. A non-``UserSettings`` key (cold / cold-hook
-    / registry) resolves to its ``shipped_defaults`` value, which IS its resolver
-    default (the cold reader / registry default sourced from ``defaults.toml``).
-
-    Returns a never-equal sentinel for a key with no shipped default, so its
-    seed/import is always written.
+    Returns a never-equal sentinel for a key no declaration owns, so its seed/import is
+    always written.
     """
-    if key not in _BESPOKE_STRUCTURED_FIELDS:
-        toml_default = _coerce_setting_rows(_toml_default_rows()).get(key, _NO_EFFECTIVE_DEFAULT)
-        if toml_default is not _NO_EFFECTIVE_DEFAULT:
-            return toml_default
-        dataclass_default = getattr(UserSettings(), key, _NO_EFFECTIVE_DEFAULT)
-        if dataclass_default is not _NO_EFFECTIVE_DEFAULT:
-            return dataclass_default
-    from teatree.config.schema import shipped_defaults  # noqa: PLC0415 — deferred: heavy pydantic import
-
-    return getattr(shipped_defaults(), key, _NO_EFFECTIVE_DEFAULT)
+    field_default = getattr(UserSettings(), key, NO_EFFECTIVE_DEFAULT)
+    if field_default is not NO_EFFECTIVE_DEFAULT:
+        return stored_form(field_default)
+    entry = SETTING_ENTRIES.get(key)
+    return NO_EFFECTIVE_DEFAULT if entry is None else entry.default
 
 
 @cached_per_request
@@ -115,19 +94,16 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     The per-install file config tier was removed, so every field is DB-home. A
     DB-home field resolves, first match wins:
 
-        env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> TOML default.
+        env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> declared default.
 
     ``T3_*`` env var, then the ``ConfigSetting`` store (overlay-scope row, then
     global-scope row), then — for a key promoted to an overlay code default (#36,
-    ``overlay_code_defaults``) — the active overlay's ``OverlayConfig`` value, then
-    the shipped ``defaults.toml`` value (:func:`_toml_default_rows`, coerced through
-    the same registry parsers a stored row goes through). A field the shipped file
-    does not carry — a Secret/Personal key, absent by construction — keeps its
-    dataclass default, which is the resolver base. A value for the field in the DB
-    overlays-registry entry (its ``[overlays.<name>]`` table in ``config.raw``) is
-    NOT one of its homes and is dropped on read. Both default tiers are DEFAULTS
-    (never hard pins), so they sit below every DB / env override and must not defeat
-    the autonomy collapse.
+    ``overlay_code_defaults``) — the active overlay's ``OverlayConfig`` value, and
+    finally the dataclass default the field DECLARES, which is the resolver base. A
+    value for the field in the DB overlays-registry entry (its ``[overlays.<name>]``
+    table in ``config.raw``) is NOT one of its homes and is dropped on read. Both
+    default tiers are DEFAULTS (never hard pins), so they sit below every DB / env
+    override and must not defeat the autonomy collapse.
 
     The per-overlay overlays-registry override layer is filtered by home
     (``setting_layers.drop_db_home_overlay_keys`` / ``toml_home``) so a ``[overlays.<name>]``
@@ -215,7 +191,7 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     fail_closed = fail_closed_overrides(layers.degraded_scopes, supplied_by_env=set(env_overrides))
     overrides.update(fail_closed)
     hard_pinned |= set(fail_closed)
-    defaults_base = shipped_defaults_base(base, layers)
+    defaults_base = base
     layered = {**code_defaults, **overrides}
     settings = defaults_base if not layered else replace(defaults_base, **layered)
     settings = apply_structured_settings(settings, layers.db_rows, defaults_base.speak)
@@ -240,7 +216,6 @@ def read_setting_layers(overlay_name: str) -> SettingLayers:
     them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
     WHICH one supplied a value. A second reader would be a second resolution path.
     """
-    toml_rows = _toml_default_rows()
     global_rows, global_degraded = load_global_rows()
     overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
     db_rows = (global_rows, overlay_rows)
@@ -250,9 +225,7 @@ def read_setting_layers(overlay_name: str) -> SettingLayers:
         for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
         if failed
     )
-    return SettingLayers(
-        toml_rows, _coerce_setting_rows(toml_rows), db_rows, global_db, overlay_db, degraded_scopes=degraded
-    )
+    return SettingLayers(db_rows, global_db, overlay_db, degraded_scopes=degraded)
 
 
 def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:
@@ -293,17 +266,60 @@ def _active_overlay_overrides() -> dict[str, Any]:
     return overrides
 
 
+@dataclass(frozen=True, slots=True)
+class EnvOverrideRejection:
+    """A ``T3_*`` var whose exported value the setting's own parser refuses."""
+
+    env_var: str
+    raw: str
+    error: ValueError
+
+    @property
+    def message(self) -> str:
+        return str(self.error)
+
+
+@dataclass(frozen=True, slots=True)
+class EnvOverrideRead:
+    """The parsed ``T3_*`` tier, and every var the parser refused, side by side."""
+
+    values: dict[str, Any]
+    rejected: dict[str, EnvOverrideRejection]
+
+
+def read_env_setting_overrides() -> EnvOverrideRead:
+    """The ``T3_*`` tier WITHOUT raising — a refused value is reported, never dropped.
+
+    The settings surfaces exist to show an operator what their config resolves to, and a
+    misconfigured var is exactly what they came to see; raising there kills the one page
+    that could have named the bad value. Every other caller wants the raise, so the
+    refusal is CARRIED here rather than swallowed, and :func:`env_setting_overrides`
+    re-raises it with its original traceback.
+    """
+    values: dict[str, Any] = {}
+    rejected: dict[str, EnvOverrideRejection] = {}
+    for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
+        raw = env_pinned_value(env_var)
+        if raw is None:
+            continue
+        try:
+            values[field_name] = parser(raw)
+        except ValueError as exc:
+            rejected[field_name] = EnvOverrideRejection(env_var, raw, exc)
+    return EnvOverrideRead(values, rejected)
+
+
 def env_setting_overrides() -> dict[str, Any]:
     """``T3_*`` env overrides, the highest-precedence tier (see ``ENV_SETTING_OVERRIDES``).
 
     Public for the same reason as :func:`read_setting_layers`: provenance names this tier.
+    Fails LOUD on a value the parser refuses — resolving a misconfigured pin to anything at
+    all would silently run the box on a value its operator did not choose.
     """
-    overrides: dict[str, Any] = {}
-    for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
-        raw = os.environ.get(env_var)
-        if raw is not None:
-            overrides[field_name] = parser(raw)
-    return overrides
+    read = read_env_setting_overrides()
+    for rejection in read.rejected.values():
+        raise rejection.error
+    return read.values
 
 
 def _resolved_overlay_name(overlay_name: str | None) -> str:
@@ -452,7 +468,7 @@ def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
 #: second one for the operator removed that control with no signal. Each stays its own
 #: named opt-in, which every tier reads unchanged —
 #: ``require_human_approval_to_merge = false`` for review before merge (#3630), and
-#: ``on_behalf_post_mode = "immediate"`` for colleague egress under the owner's own
+#: a permitting posture for colleague egress under the owner's own
 #: identity (#3895).
 _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
     "require_human_approval_to_answer": False,
@@ -463,8 +479,8 @@ _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FU
 
 #: Every field :func:`_apply_autonomy` may write. Each still has its own home and its own
 #: shipped default, but an autonomous ``autonomy`` tier DERIVES its resolved value, so it
-#: can differ from that default with no ``defaults_approvals.toml`` entry — the reviewed
-#: decision is the tier, not the per-field value. Sourced from the collapse itself so the
+#: can differ from that default without the declaration changing — the reviewed decision is
+#: the tier, not the per-field value. Sourced from the collapse itself so the
 #: set cannot drift from what the resolver actually writes.
 AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset(
     {*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode", "notify_on_behalf", "review_request_post_disabled"}
@@ -476,7 +492,7 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
 
     The set is :data:`_AUTONOMY_COLLAPSED_GATE_VALUES`, which excludes
     ``require_human_approval_to_merge`` (#3630) — no tier removes review before merge —
-    and ``on_behalf_post_mode`` (#3895) — no tier opens colleague egress under the
+    and the posture (#3895) — no tier opens colleague egress under the
     owner's own identity.
 
     Both autonomous tiers fill only the gates the user left unpinned and pin
@@ -489,7 +505,7 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
     ``notify`` → ``True`` (collaborative/customer surface BLOCKs review-request),
     ``full`` → ``False`` (solo tooling surface PROCEEDs). ``babysit`` is a no-op —
     every gate keeps its resolved value, so review-request follows
-    ``on_behalf_post_mode`` like any other colleague-visible post.
+    the active posture like any other colleague-visible post.
 
     Pin precedence:
 

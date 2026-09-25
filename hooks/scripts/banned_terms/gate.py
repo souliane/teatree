@@ -124,7 +124,7 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: Path | None) -
     if verdict.warning is not None:
         sys.stderr.write(verdict.warning)
         return False
-    return emit_pretooluse_deny(verdict.deny_message or "")
+    return emit_pretooluse_deny(verdict.deny_message or "", gate_id="banned_terms")
 
 
 def _run_banned_terms_pretool(data: dict) -> bool:
@@ -150,7 +150,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     # WIDE surface set and block before the payload-None early-return and any skip
     # / override short-circuit (#1672 secrets-always-blocked invariant).
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
-        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
+        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY, gate_id="banned_terms")
 
     payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
     if payload is None:

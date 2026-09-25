@@ -26,10 +26,9 @@ from teatree.config.defaults_snapshot import (
 )
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.schema import _DEFAULTS_TOML, setting_meta
+from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
 from teatree.config.setting_groups import grouped_key_order
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.config.setting_taxonomy import Category
 from teatree.mcp.write_tools import refuse_reason
 
 
@@ -160,9 +159,9 @@ class TestNeverMovedThroughThisPath:
         assert refused <= pinned_fail_closed_keys()
 
     def test_workflow_engagement_override_is_declined(self) -> None:
-        plan = _plan({"mode": "auto", "wip": "full", "issue_implementer_enabled": True})
+        plan = _plan({"mode": "auto", "wip": "full", "active_loop_schedule": "aggressive"})
         assert plan.changes == ()
-        assert {d.key for d in plan.declined} >= {"mode", "wip", "issue_implementer_enabled"}
+        assert {d.key for d in plan.declined} >= {"mode", "wip", "active_loop_schedule"}
 
     def test_conservative_keys_is_the_pinned_set_plus_workflow(self) -> None:
         assert conservative_keys() == pinned_fail_closed_keys() | WORKFLOW_ENGAGEMENT_KEYS
@@ -246,10 +245,12 @@ class TestSerialisedShape:
         # in lockstep keeps a from-scratch write documenting the same tables.
         assert _DEFAULTS_TOML.read_text(encoding="utf-8").startswith(_HEADER)
 
-    def test_the_header_invites_a_hand_edit_rather_than_forbidding_one(self) -> None:
-        header = _plan({}).toml.split("\n\n")[0].lower()
-        assert "hand-editable" in header
-        assert "do not hand-edit" not in header
+    def test_the_header_says_the_settings_table_is_generated(self) -> None:
+        # The snapshot writes `[teatree]`, and a reader who takes the written file as
+        # hand-editable loses their edit to the next render without being told why.
+        header = _plan({}).toml.split("\n\n")[0]
+        assert "`[teatree]` IS GENERATED" in header
+        assert "generate_defaults_toml.py --write" in header
 
 
 class TestTheRenderedBlockIsNested:
@@ -280,7 +281,7 @@ class TestTheRenderedBlockIsNested:
         without = {key: value for key, value in _shipped().items() if key != "merge_wip"}
         block = self._block(_plan({}, shipped=without).toml)
         cadence = block.index('[teatree.Loops."Cadence & throughput"]')
-        assert cadence < block.index("\nmerge_wip = ") < block.index("[teatree.Loops.Scanners]")
+        assert cadence < block.index("\nmerge_wip = ") < block.index('[teatree.Loops."Fan-out & admission"]')
 
     def test_a_genuine_sub_table_setting_keeps_its_own_top_level_path(self) -> None:
         # ``speak`` is a declared setting whose value IS a table, not a group wrapper, so it

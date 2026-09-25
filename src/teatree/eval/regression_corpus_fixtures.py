@@ -44,7 +44,14 @@ def git(repo: Path, *args: str) -> str:
         "GIT_COMMITTER_NAME": "eval",
         "GIT_COMMITTER_EMAIL": "eval@example.com",
     }
-    return run_checked(["git", *args], cwd=repo, env=env).stdout
+    # A throwaway fixture repo has nothing to sign, and inheriting the developer's
+    # `commit.gpgsign` made a PRE-PUSH gate depend on their gpg agent being free:
+    # measured, a host keyboxd and the containerised agents contend for one
+    # bind-mounted keybox, and the signature times out — failing a check about
+    # branch reconciliation for a reason that has nothing to do with it.
+    return run_checked(
+        ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args], cwd=repo, env=env
+    ).stdout
 
 
 def seed_repo_with_diverging_target(work: Path) -> tuple[Path, str]:

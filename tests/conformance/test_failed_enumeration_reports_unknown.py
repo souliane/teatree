@@ -47,6 +47,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.triage_tools import find_duplicates, label_issues, triage_issues
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.triage import DuplicateFinder, ForgeEnumerationError, LabelSuggester, TriageScanner
 
 _TRIAGE_MODULE = Path(__file__).resolve().parents[2] / "src" / "teatree" / "triage.py"
@@ -63,6 +64,16 @@ _RUNNER = "run_allowed_to_fail"
 _MIN_RETURNCODE_BRANCHES = 1
 
 _NEUTRAL_EMPTIES = (ast.List, ast.Dict, ast.Tuple, ast.Set)
+
+
+@pytest.fixture(autouse=True)
+def _github_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "teatree.triage.resolve_slug_token",
+        lambda slug, **_kwargs: ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token=f"routed-{slug}"
+        ),
+    )
 
 
 def _failed_read() -> SimpleNamespace:

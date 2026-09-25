@@ -13,20 +13,22 @@ Membership here answers "is this key a live SETTING". What a key OUTSIDE the uni
 is — retired, internal runtime state, or an orphan — is
 ``teatree.config.stored_row_health``, which builds on this dict.
 
-A leaf below the four registry modules (imports them, imported by neither), so
+A leaf below the two registry modules (imports them, imported by neither), so
 it closes the union without an import cycle.
 """
 
 from collections.abc import Callable
 from typing import Any
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS, ColdHookSetting
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
+
+#: Every key with NO ``UserSettings`` field, paired with the entry that declares it —
+#: parser AND shipped default. The resolver's default authority reads this side; the
+#: write-validation surfaces below read the parser side.
+SETTING_ENTRIES: dict[str, ColdHookSetting] = {**REGISTRY_SETTINGS, **COLD_SETTINGS, **COLD_HOOK_SETTINGS}
 
 ALL_KNOWN_CONFIG_SETTINGS: dict[str, Callable[[Any], Any]] = {
     **OVERLAY_OVERRIDABLE_SETTINGS,
-    **REGISTRY_SETTINGS,
-    **COLD_SETTINGS,
-    **{key: setting.parse for key, setting in COLD_HOOK_SETTINGS.items()},
+    **{key: entry.parse for key, entry in SETTING_ENTRIES.items()},
 }

@@ -1,11 +1,12 @@
 """#4164: a FAILED attempt records the spend its run already billed; a park records NULL."""
 
+import json
+
 import pytest
 from django.test import TestCase
 
-from teatree.agents.runner import HarnessOutcome, _outcome_failure
+from teatree.agents.runner import HarnessOutcome, _outcome_failure, _record_success
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.models.config_setting import ConfigSetting
 from tests.teatree_agents._sdk_fake import result_message
 
 _USAGE = {"input_tokens": 4200, "output_tokens": 310, "cache_read_input_tokens": 90}
@@ -90,9 +91,6 @@ class TestPostTurnParkRecordsItsSpend(SpendRecordingCase):
     ``TaskAttempt`` like every other branch, not discard it as though nothing ran.
     """
 
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
-
     def test_a_rate_limited_run_parks_but_still_records_its_spend(self) -> None:
         task = self.make_task()
         task.claim(claimed_by="headless-worker")
@@ -146,6 +144,75 @@ class TestPreTurnFailureStaysNull(SpendRecordingCase):
         assert attempt.lane == ""
 
 
+_PER_REQUEST = [
+    {
+        "model": "z-ai/glm-5.3-flash",
+        "prompt_tokens": 100,
+        "completion_tokens": 5,
+        "cached_tokens": 0,
+        "cost_usd": 4e-05,
+    },
+    {"model": "", "prompt_tokens": None, "completion_tokens": None, "cached_tokens": None, "cost_usd": None},
+]
+
+
+_TRAJECTORY = [
+    {"tool": "Read", "arg_keys": ["path"], "args_bytes": 16, "output_bytes": 812, "duration_ms": 4},
+    {"tool": "Bash", "arg_keys": ["command"], "args_bytes": 21, "output_bytes": None, "duration_ms": None},
+]
+
+
+class TestPerRequestUsageIsKeptOnTheAttempt(SpendRecordingCase):
+    """The transport's per-request usage lands in ``TaskAttempt.result``, whatever the outcome."""
+
+    def test_a_completed_run_keeps_its_per_request_usage_beside_its_envelope(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="retro")
+        outcome = HarnessOutcome(
+            agent_text=json.dumps({"summary": "done"}),
+            result_message=result_message(
+                usage={**_USAGE, "per_request": _PER_REQUEST, "tool_calls": _TRAJECTORY}, total_cost_usd=4e-05
+            ),
+            stuck_reason=None,
+        )
+
+        attempt = _record_success(task, outcome, phase="retro", lane=TaskAttempt.Lane.METERED)
+
+        attempt.refresh_from_db()
+        assert attempt.error == ""
+        assert attempt.result == {"summary": "done", "usage_per_request": _PER_REQUEST, "tool_calls": _TRAJECTORY}
+        assert attempt.cost_is_estimated is False
+
+    def test_a_refused_run_keeps_the_per_request_usage_it_billed(self) -> None:
+        outcome = HarnessOutcome(
+            agent_text="",
+            result_message=result_message(
+                is_error=True,
+                subtype="error_during_execution",
+                result="status_code: 400, model_name: m, body: bad request",
+                api_error_status=400,
+                usage={**_USAGE, "per_request": _PER_REQUEST, "tool_calls": _TRAJECTORY},
+            ),
+            stuck_reason=None,
+        )
+
+        attempt = _outcome_failure(self.make_task(), outcome, phase="coding", lane=TaskAttempt.Lane.METERED)
+
+        assert attempt is not None
+        attempt.refresh_from_db()
+        assert attempt.result["usage_per_request"] == _PER_REQUEST
+        assert attempt.result["tool_calls"] == _TRAJECTORY, "a failed run keeps the trajectory it made"
+
+    def test_a_run_whose_transport_measured_nothing_records_no_per_request_key(self) -> None:
+        attempt = _outcome_failure(
+            self.make_task(), self.failed_outcome(), phase="coding", lane=TaskAttempt.Lane.SUBSCRIPTION
+        )
+
+        assert attempt is not None
+        assert "usage_per_request" not in attempt.result
+        assert "tool_calls" not in attempt.result
+
+
 class TestSpendUnknownIsDistinguishableFromNothingBilled(SpendRecordingCase):
     """NULL meant BOTH "nothing was billed" and "turns ran, spend unknown" (#4816).
 
@@ -171,9 +238,12 @@ class TestSpendUnknownIsDistinguishableFromNothingBilled(SpendRecordingCase):
         assert attempt.output_tokens is None
 
     def test_a_stream_that_died_before_its_terminal_message_is_marked_unknown(self) -> None:
-        from teatree.agents.runner_usage import _attempt_usage  # noqa: PLC0415 — the mapper under test
+        from teatree.agents.runner_usage import (  # noqa: PLC0415 — the mapper under test
+            UsageObservation,
+            _attempt_usage,
+        )
 
-        usage = _attempt_usage(None, lane=TaskAttempt.Lane.METERED)
+        usage = _attempt_usage(None, UsageObservation(lane=TaskAttempt.Lane.METERED))
 
         assert usage.usage_unknown is True
         assert usage.input_tokens is None

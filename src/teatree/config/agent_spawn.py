@@ -8,13 +8,23 @@ one DB key per setting. Set a value with
     t3 <overlay> config_setting set agent_session_model opus
     t3 <overlay> config_setting set agent_session_effort xhigh
     t3 <overlay> config_setting set agent_skill_models '{"code-review": "opus"}'
+    t3 <overlay> config_setting set agent_skill_models '{"code": [{"harness": "codex_app_server", "model": "codex"}]}'
     t3 <overlay> config_setting set agent_tier_models '{"frontier": "<a-newer-opus-id>"}'
     t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "vendor/some-model"}'
     t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
 
-The per-skill floor (``agent_skill_models``) is MODEL only — there is
-deliberately no ``skill_effort`` axis. The reasoning-effort dial is
-per-ABSTRACT-TIER instead, via ``agent_tier_effort`` (which reaches every
+Each ``agent_skill_models`` value is either the legacy scalar MODEL floor or an
+ordered list of route objects (``harness``, ``model``, optional ``provider``,
+``tier``, and ``effort``). An empty list has the exact legacy inherit behaviour. Route keys use
+the identity emitted by the skill loader (bundled skills are bare manifest names,
+for example ``code``); aliases are not guessed. Exactly one loaded skill may own
+a route list unless the phase's primary lifecycle skill owns one: that primary
+wins over routes on its companions, so a reviewing bundle containing both
+``review`` and ``code`` uses ``review``. Multiple routed companions with no
+primary owner fail loudly. There is deliberately no scalar ``skill_effort``
+axis. A route candidate may pin ``effort`` because each model in an ordered
+fallback can need a different setting. Otherwise the reasoning-effort dial is
+per-ABSTRACT-TIER via ``agent_tier_effort`` (which reaches every
 sub-agent spawn through
 :func:`teatree.agents.model_tiering.resolve_spawn_effort`), while
 ``agent_session_effort`` remains the separate interactive main-agent pin.
@@ -88,11 +98,25 @@ def _normalize_model(value: object) -> str | None:
 
 
 @dataclass(frozen=True)
+class AgentRouteCandidate:
+    harness: str
+    model: str
+    provider: str | None = None
+    tier: str | None = None
+    effort: str | None = None
+
+
+type SkillModelPolicy = str | tuple[AgentRouteCandidate, ...] | None
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     """The resolved ``[agent]`` spawn-model + session-pin settings (teatree#2216).
 
-    *   ``skill_models`` — companion-skill-name → model floor (``None`` for a
-        skill explicitly opted out via an inherit sentinel). MODEL only.
+    *   ``skill_models`` — canonical companion-skill-name → either a legacy
+        model floor, an ordered harness/model route, or ``None`` for inherit.
+        Route entries optionally pin a provider and expose a tier used to
+        enforce scalar floors from the other loaded skills.
     *   ``tier_models`` — abstract-tier-name → concrete model id, merged OVER
         :data:`teatree.agents.model_tiering.TIER_MODELS`. The config escape hatch
         for the single model constant: adopting a new model for a tier is one DB
@@ -157,7 +181,7 @@ class AgentConfig:
         directive-render time (``core.phases._resolved_fanout_n``), fail-loud.
     """
 
-    skill_models: dict[str, str | None] = field(default_factory=dict)
+    skill_models: dict[str, SkillModelPolicy] = field(default_factory=dict)
     session_model: str | None = None
     session_effort: str | None = DEFAULT_SESSION_EFFORT
     session_permission_mode: str = ""
@@ -223,8 +247,47 @@ def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
     return resolved
 
 
-def _skill_models_from(raw: object) -> dict[str, str | None]:
-    """Normalise the ``agent_skill_models`` value into a floor map.
+def _route_candidate(skill: str, index: int, value: object) -> AgentRouteCandidate:
+    if not isinstance(value, dict):
+        message = f"agent_skill_models[{skill!r}][{index}] must be an object"
+        raise TypeError(message)
+    unknown = set(value) - {"harness", "model", "provider", "tier", "effort"}
+    if unknown:
+        message = f"agent_skill_models[{skill!r}][{index}] has unknown keys: {', '.join(sorted(unknown))}"
+        raise ValueError(message)
+    harness = value.get("harness")
+    model = value.get("model")
+    if not isinstance(harness, str) or not harness.strip():
+        message = f"agent_skill_models[{skill!r}][{index}].harness must be a non-empty string"
+        raise ValueError(message)
+    if not isinstance(model, str) or not model.strip():
+        message = f"agent_skill_models[{skill!r}][{index}].model must be a non-empty string"
+        raise ValueError(message)
+    provider = value.get("provider")
+    tier = value.get("tier")
+    effort = value.get("effort")
+    if provider is not None and (not isinstance(provider, str) or not provider.strip()):
+        message = f"agent_skill_models[{skill!r}][{index}].provider must be a non-empty string"
+        raise ValueError(message)
+    if tier is not None and (not isinstance(tier, str) or not tier.strip()):
+        message = f"agent_skill_models[{skill!r}][{index}].tier must be a non-empty string"
+        raise ValueError(message)
+    try:
+        parsed_effort = parse_effort(effort)
+    except ValueError as exc:
+        message = f"agent_skill_models[{skill!r}][{index}].effort is invalid: {exc}"
+        raise ValueError(message) from exc
+    return AgentRouteCandidate(
+        harness=harness.strip(),
+        model=model.strip(),
+        provider=provider.strip() if isinstance(provider, str) else None,
+        tier=tier.strip().lower() if isinstance(tier, str) else None,
+        effort=parsed_effort,
+    )
+
+
+def _skill_models_from(raw: object) -> dict[str, SkillModelPolicy]:
+    """Normalise ``agent_skill_models`` into scalar floors or ordered routes.
 
     Each value is normalised through the inherit sentinels (sentinel → ``None``).
     A non-dict value (a malformed scalar) yields an empty floor map, matching
@@ -232,7 +295,15 @@ def _skill_models_from(raw: object) -> dict[str, str | None]:
     """
     if not isinstance(raw, dict):
         return {}
-    return {str(skill): _normalize_model(model) for skill, model in raw.items()}
+    resolved: dict[str, SkillModelPolicy] = {}
+    for raw_skill, value in raw.items():
+        skill = str(raw_skill)
+        if isinstance(value, list):
+            candidates = tuple(_route_candidate(skill, index, candidate) for index, candidate in enumerate(value))
+            resolved[skill] = candidates or None
+        else:
+            resolved[skill] = _normalize_model(value)
+    return resolved
 
 
 def _tier_models_from(raw: object) -> dict[str, str]:
@@ -327,7 +398,7 @@ def _session_permission_mode_from(raw: object) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
-def resolve_agent_config() -> AgentConfig:
+def resolve_agent_config(scope: str = "") -> AgentConfig:
     """Resolve the effective :class:`AgentConfig` from the DB ``ConfigSetting`` store.
 
     Each ``[agent]`` value is read as its own DB key via
@@ -340,19 +411,19 @@ def resolve_agent_config() -> AgentConfig:
     ``agent_session_effort`` still raises (fail loud), since that is a
     misconfiguration the user must see, not an absence to tolerate.
     """
+
+    def read(key: str) -> object | None:
+        return cold_reader.overlay_then_global(key, scope) if scope else cold_reader.read_setting(key)
+
     return AgentConfig(
-        skill_models=_skill_models_from(cold_reader.read_setting("agent_skill_models")),
-        session_model=_session_model_from(cold_reader.read_setting("agent_session_model")),
-        session_effort=_session_effort_from(cold_reader.read_setting("agent_session_effort")),
-        session_permission_mode=_session_permission_mode_from(
-            cold_reader.read_setting("agent_session_permission_mode")
-        ),
-        phase_fanout=_phase_fanout_from(cold_reader.read_setting("agent_phase_fanout")),
-        honesty_model=_honesty_model_from(cold_reader.read_setting("agent_honesty_model")),
-        tier_models=_tier_models_from(cold_reader.read_setting("agent_tier_models")),
-        pydantic_ai_tier_models=_pydantic_ai_tier_models_from(
-            cold_reader.read_setting("agent_pydantic_ai_tier_models")
-        ),
-        tier_effort=_tier_effort_from(cold_reader.read_setting("agent_tier_effort")),
-        phase_harness=_phase_harness_from(cold_reader.read_setting("agent_phase_harness")),
+        skill_models=_skill_models_from(read("agent_skill_models")),
+        session_model=_session_model_from(read("agent_session_model")),
+        session_effort=_session_effort_from(read("agent_session_effort")),
+        session_permission_mode=_session_permission_mode_from(read("agent_session_permission_mode")),
+        phase_fanout=_phase_fanout_from(read("agent_phase_fanout")),
+        honesty_model=_honesty_model_from(read("agent_honesty_model")),
+        tier_models=_tier_models_from(read("agent_tier_models")),
+        pydantic_ai_tier_models=_pydantic_ai_tier_models_from(read("agent_pydantic_ai_tier_models")),
+        tier_effort=_tier_effort_from(read("agent_tier_effort")),
+        phase_harness=_phase_harness_from(read("agent_phase_harness")),
     )

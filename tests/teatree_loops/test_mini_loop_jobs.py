@@ -149,19 +149,27 @@ class TestResourcePressureLoopBuildJobs:
         with (
             patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake),
             patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+            patch("teatree.loop.global_scanner_factories._artifact_eviction_scanner", return_value=None),
         ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
 
-    def test_omits_scanner_when_disabled(self) -> None:
+    def test_standing_both_pressure_scanners_down_leaves_only_the_artifact_sweep(self) -> None:
+        """#4244: the sweep is loss-free, so it is not switchable and not pressure-gated."""
         from unittest.mock import patch  # noqa: PLC0415
 
+        from teatree.loop.scanners.artifact_eviction import (  # noqa: PLC0415 — mirrors this class's siblings (#4244)
+            ArtifactEvictionScanner,
+        )
+
+        sweep = ArtifactEvictionScanner()
         with (
             patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None),
             patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+            patch("teatree.loop.global_scanner_factories._artifact_eviction_scanner", return_value=sweep),
         ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
-        assert jobs == []
+        assert [job.scanner for job in jobs] == [sweep]
 
     def test_wires_intake_concurrency_scanner(self) -> None:
         """#3992: the loop's second job is independently switchable from the first."""
@@ -173,6 +181,7 @@ class TestResourcePressureLoopBuildJobs:
         with (
             patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None),
             patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=fake),
+            patch("teatree.loop.global_scanner_factories._artifact_eviction_scanner", return_value=None),
         ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
@@ -180,16 +189,22 @@ class TestResourcePressureLoopBuildJobs:
     def test_omits_intake_concurrency_scanner_when_disabled(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415 — deferred: mirrors this class's sibling tests
 
+        from teatree.loop.scanners.artifact_eviction import ArtifactEvictionScanner  # noqa: PLC0415 — deferred: same
+        from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner  # noqa: PLC0415 — deferred: same
         from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415 — deferred: same
 
         pressure = ResourcePressureScanner()
         with (
             patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=pressure),
             patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+            patch(
+                "teatree.loop.global_scanner_factories._artifact_eviction_scanner",
+                return_value=ArtifactEvictionScanner(),
+            ),
         ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
-        assert jobs == [jobs[0]]
-        assert jobs[0].scanner is pressure
+        assert any(job.scanner is pressure for job in jobs)
+        assert not any(isinstance(job.scanner, IntakeConcurrencyScanner) for job in jobs)
 
 
 class TestInboxLoopBuildJobs:
@@ -256,9 +271,17 @@ class TestShipLoopBuildJobs:
         assert len(jobs) == 1
         assert jobs[0].scanner.name == "my_prs"
 
-    def test_backends_path(self, stub_backend: Any) -> None:
+    def test_backends_path_wires_every_shipped_scanner(self, stub_backend: Any) -> None:
+        host = MagicMock()
+        stub_backend.host = host
+        stub_backend.hosts = (host,)
         jobs = SHIP_LOOP.build_jobs(backends=[stub_backend])
-        assert jobs == []
+        assert sorted(job.scanner.name for job in jobs) == [
+            "gitlab_approvals",
+            "mr_conflict",
+            "mr_triage",
+            "my_prs",
+        ]
 
 
 class TestReviewLoopBuildJobs:

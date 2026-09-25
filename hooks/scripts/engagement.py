@@ -108,3 +108,35 @@ def _seed_lifecycle_skills(session_id: str) -> None:
         if name and name not in existing:
             existing.add(name)
             _append_line(skills_file, name)
+
+
+def skill_load_activates_teatree(skills: list[str]) -> bool:
+    """Does loading *skills* opt the session into teatree (directly or via requires:)?
+
+    Resolves the ``requires:`` closure against a bare-mapped copy of the input
+    so a qualified Skill-tool token (``t3:dogfooding``) expands the same as its
+    bare InstructionsLoaded spelling — the trigger index is bare-keyed. The bare
+    mapping is scoped to this detection only; the recorded ``.skills`` closure
+    keeps its own resolution + canonicalization contract.
+    """
+    from hooks.scripts.hook_router import _resolve_skill_closure  # noqa: PLC0415 deferred back-import
+
+    bare = [_bare_skill_segment(s) for s in skills]
+    return any(_is_teatree_skill(s) for s in _resolve_skill_closure(bare))
+
+
+def _is_teatree_skill(name: str) -> bool:
+    from hooks.scripts.hook_router import normalize_skill_name  # noqa: PLC0415 deferred back-import
+
+    return normalize_skill_name(name) in {"t3:interactive", "interactive"}
+
+
+def _bare_skill_segment(name: str) -> str:
+    """The skill index's key form: the bare segment after a namespace prefix.
+
+    ``build_requires_index`` keys every entry (and its ``requires:`` members) by
+    the bare skill-directory name, so a qualified Skill-tool token like
+    ``t3:dogfooding`` must be mapped DOWN to ``dogfooding`` to match an index
+    entry and resolve its ``requires:`` closure.
+    """
+    return name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1].rsplit(":", 1)[-1]

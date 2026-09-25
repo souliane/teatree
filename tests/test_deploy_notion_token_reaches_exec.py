@@ -7,8 +7,9 @@ export reaches only the process tree of the role it ran for. ``docker exec`` sta
 from the CONTAINER's create-time environment, so an exec'd `t3 notion whoami` sees an
 unset ``NOTION_TOKEN`` while the worker had it the whole time — the same boundary
 `test_deploy_gitlab_token_reaches_exec.py` pins for GitLab. The compose files DECLARE
-it per service, and ``deploy/deploy.sh`` resolves it from the SAME default ``pass``
-key the entrypoint uses, so one credential is named in one place.
+it per service, and both scripts export it ONLY from an entry the operator names in
+``NOTION_TOKEN_PASS_PATH``: an exported value beats the ``notion_token_pass_key`` setting,
+so a guessed default would silently shadow the entry the venue routes.
 
 The other half is what must NOT happen: ``deploy/teatree.env`` is regenerated wholesale
 by the deploy workflow on every run and is deliberately secret-free, so a
@@ -28,7 +29,6 @@ DEPLOY_SH = DEPLOY / "deploy.sh"
 ENTRYPOINT = DEPLOY / "entrypoint.sh"
 DEPLOY_WORKFLOW = REPO / ".github" / "workflows" / "deploy.yml"
 
-DEFAULT_PASS_KEY = "notion/integration-token"
 PASS_KEY_OVERRIDE = "NOTION_TOKEN_PASS_PATH"
 
 # Every service an operator or the CLI wrapper `docker exec`s into. The watchdog is
@@ -69,10 +69,13 @@ class TestEveryExecTargetDeclaresTheToken:
         assert all(value.startswith("${") for value in declared.values())
 
 
-class TestOneCredentialNamedInOnePlace:
+class TestNoScriptGuessesAnEntry:
     @pytest.mark.parametrize("script", [ENTRYPOINT, DEPLOY_SH])
-    def test_script_reads_the_shared_default_key(self, script: Path) -> None:
-        assert f"${{{PASS_KEY_OVERRIDE}:-{DEFAULT_PASS_KEY}}}" in script.read_text(encoding="utf-8")
+    def test_script_exports_only_from_an_explicitly_named_entry(self, script: Path) -> None:
+        text = script.read_text(encoding="utf-8")
+
+        assert f'-n "${{{PASS_KEY_OVERRIDE}:-}}"' in text
+        assert f"{PASS_KEY_OVERRIDE}:-notion" not in text
 
 
 class TestTheTokenNeverLandsInTheEnvFile:

@@ -2,7 +2,7 @@
 
 This is the bot asking its own operator about the operator's own work. It is
 NOT a post made as the user to a colleague, so it must never be routed through
-or gated by ``on_behalf_post_mode`` / ``notify_on_post_on_behalf`` — those
+or gated by the posture / ``notify_on_post_on_behalf`` — those
 govern the user's colleague-facing voice. Arming the publish gate (the shipped
 default) would otherwise swallow every one of these questions at exactly the
 moment the operator is most careful about what leaves their machine.
@@ -19,7 +19,7 @@ Two bounds keep the surface from becoming noise. The dedupe marker is
 guard and the sanctioned-post command use, so one merge request can hold at most
 one open question no matter how many ticks re-derive the ambiguity, and the
 marker is provably the same string as every other review-request scope for that
-merge request. Above ``mr_state_questions_max_per_tick`` open questions the ask
+merge request. Above ``MAX_OPEN_QUESTIONS`` open questions the ask
 is REFUSED rather than queued, so a backlog of undecidable merge requests cannot
 arrive as a flood the owner answers none of; the refused merge request is
 re-offered on a later tick once a slot frees.
@@ -29,13 +29,16 @@ import json
 import logging
 from collections.abc import Sequence
 
-from teatree.config import get_effective_settings
 from teatree.core.gates.review_request_guard import canonical_mr_url
 from teatree.core.models.deferred_question import DeferredQuestion
 
 logger = logging.getLogger(__name__)
 
 _MARKER_PREFIX = "mr-state:"
+
+#: Open state questions the owner is asked to hold at once, so a backlog of undecidable
+#: merge requests arrives as a pair rather than a flood nobody answers.
+MAX_OPEN_QUESTIONS = 2
 
 
 def mr_state_marker(mr_url: str) -> str:
@@ -61,9 +64,13 @@ def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> De
     if already_asked is not None:
         return already_asked
 
-    cap = get_effective_settings().mr_state_questions_max_per_tick
-    if open_questions.count() >= cap:
-        logger.info("mr-state question for %s deferred — %s open already (cap %s)", mr_url, open_questions.count(), cap)
+    if open_questions.count() >= MAX_OPEN_QUESTIONS:
+        logger.info(
+            "mr-state question for %s deferred — %s open already (cap %s)",
+            mr_url,
+            open_questions.count(),
+            MAX_OPEN_QUESTIONS,
+        )
         return None
 
     return DeferredQuestion.record(

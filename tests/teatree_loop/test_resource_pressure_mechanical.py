@@ -33,7 +33,6 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.cleanup import process_table
-from teatree.core.cleanup.venv_eviction import VenvEvictionPlan
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.loop import mechanical_resources
@@ -590,10 +589,13 @@ class HelperTests(TestCase):
     def test_persist_plan_failure_is_swallowed(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        plan = mechanical_resources.FreePlan(resource="disk", steps=["x"])
+        from teatree.loop.mechanical_plan import FreePlan, persist_plan  # noqa: PLC0415 — deferred
+
+        plan = FreePlan(resource="disk", steps=["x"])
         marker = ResourcePressureMarker.load()
         with patch.object(type(marker), "save", side_effect=RuntimeError("db")):
-            mechanical_resources._persist_plan(marker, plan)  # must not raise
+            # must not raise
+            persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
 
     def test_uv_cache_prune_noop_without_binary(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -735,10 +737,10 @@ class ScratchSweepLadderTests(TestCase):
         old = timezone.now().timestamp() - 9 * 86400
         os.utime(self.stale, (old, old))
         self.uv_prune = _patch_uv_cache_prune(self)
-        # `_payload` arms allow_destructive_disk for the scratch lane; the worktree-GC,
-        # venv-eviction and done-worktree lanes sharing the disk ladder would otherwise
-        # reach the real workspace. An empty survey leaves each of them nothing to remove.
-        inert = mechanical_resources.DiskSurvey(gc=GcSurvey(), venvs=VenvEvictionPlan())
+        # `_payload` arms allow_destructive_disk for the scratch lane; the worktree-GC
+        # and done-worktree lanes sharing the disk ladder would otherwise reach the real
+        # workspace. An empty survey leaves each of them nothing to remove.
+        inert = mechanical_resources.DiskSurvey(gc=GcSurvey())
         for name, value in (("_reclaim_docker_disk", 0.0), ("_survey_disk", inert), ("_reap_done_worktrees", None)):
             patcher = patch.object(mechanical_resources, name, return_value=value)
             patcher.start()
@@ -877,7 +879,7 @@ class ReclaimStallTests(TestCase):
         self.tmp = Path(mkdtemp(prefix="rp_stall_"))
         self.addCleanup(_rmtree_safe, str(self.tmp))
         self.uv_prune = _patch_uv_cache_prune(self)
-        empty = mechanical_resources.DiskSurvey(gc=GcSurvey(), venvs=VenvEvictionPlan())
+        empty = mechanical_resources.DiskSurvey(gc=GcSurvey())
         patcher = patch.object(mechanical_resources, "_survey_disk", return_value=empty)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -919,12 +921,3 @@ class ReclaimStallTests(TestCase):
         self._pass(free_gb=200.0)
 
         assert ResourcePressureMarker.load().zero_yield_passes == 0
-
-    def test_the_eviction_criterion_is_scaled_by_the_payload_pressure(self) -> None:
-        """The wiring that makes the escalation reachable: below the floor, age must not gate."""
-        with patch.object(mechanical_resources, "plan_venv_eviction", return_value=VenvEvictionPlan()) as planner:
-            mechanical_resources._surveyed_venvs(
-                {"venv_idle_days": 2.0, "free_gb": 0.2, "disk_warn_free_gb": 25.0, "disk_crit_free_gb": 10.0},
-            )
-
-        assert planner.call_args.kwargs["idle_days"] is None

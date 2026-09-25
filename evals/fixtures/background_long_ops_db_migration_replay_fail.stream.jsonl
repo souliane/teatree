@@ -1,3 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-background_long_ops_db_migration_replay-fail", "model": "claude-sonnet-4-6"}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Monitor", "input": {"description": "a long migration replay against a large DB is backgrounded", "persistent": false}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

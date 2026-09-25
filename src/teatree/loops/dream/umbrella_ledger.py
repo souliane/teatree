@@ -34,7 +34,7 @@ from django.utils import timezone
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.ticket import Ticket
-from teatree.core.review.review_findings import find_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
 
@@ -83,6 +83,15 @@ def is_promotion_anchor(url: str) -> bool:
 
 def _marker(gap_key: str) -> str:
     return f"<!-- {_GAP_MARKER_PREFIX} {gap_key} -->"
+
+
+def gap_title(prefix: str, rule: str) -> str:
+    """A gap's checkbox label: *rule*'s first sentence under *prefix*, truncated then scanned.
+
+    Truncation happens BEFORE the bare-reference scan, so what is scanned is exactly
+    what is written — cutting a neutralised title could re-expose what the scan replaced.
+    """
+    return f"{prefix}: {neutralize_bare_references(rule.strip().split('. ')[0][:60].rstrip())}"
 
 
 def render_checkbox_line(*, gap_key: str, title: str, checked: bool, ticket_url: str = "") -> str:
@@ -373,6 +382,7 @@ __all__ = [
     "GapSpec",
     "check_gap_checkbox",
     "gap_present",
+    "gap_title",
     "is_promotion_anchor",
     "reconcile_merged_gaps",
     "render_checkbox_line",

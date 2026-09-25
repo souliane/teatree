@@ -38,7 +38,7 @@ from teatree.core.merge.head_guard import restore_caller_branch
 from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
-from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
+from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
@@ -307,8 +307,12 @@ def execute_bound_merge(
     *,
     ref: PrRef,
     expected_head_oid: str,
+    squash: bool = True,
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
+
+    ``squash=False`` lands a merge commit instead, keeping the source branch's
+    commits and their parents (``ticket merge --no-squash``).
 
     GitHub: ``PUT repos/<slug>/pulls/<n>/merge`` with ``sha=<oid>``. GitLab: ``PUT
     projects/<encoded>/merge_requests/<iid>/merge`` with ``sha=<oid>`` (409s on drift).
@@ -384,7 +388,9 @@ def execute_bound_merge(
                 return _record_pr_landed(ref, landed)
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
-            return _record_pr_landed(ref, _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid))
+            return _record_pr_landed(
+                ref, _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid, squash=squash)
+            )
         except MergeTransientError as exc:
             if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
                 raise
@@ -445,7 +451,7 @@ def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     return merge_state.merge_commit_oid or expected_head_oid
 
 
-def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str) -> str:
+def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str, squash: bool) -> str:
     """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response.
 
     The backend's :meth:`CodeHostBackend.merge_pr_squash_bound` runs the
@@ -459,6 +465,7 @@ def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str) -> str
         slug=slug,
         pr_id=pr_id,
         expected_head_oid=expected_head_oid,
+        squash=squash,
     )
     if result.returncode != 0:
         _raise_bound_merge_failure(
@@ -477,6 +484,7 @@ def merge_ticket_pr(
     executing_loop_identity: str,
     human_authorized: str = "",
     expedite_authorized: str = "",
+    squash: bool = True,
 ) -> MergeOutcome:
     """The full keystone transition: pre-condition → atomic merge → post hook.
 
@@ -513,6 +521,7 @@ def merge_ticket_pr(
             executing_loop_identity=executing_loop_identity,
             human_authorized=human_authorized,
             expedite_authorized=expedite_authorized,
+            squash=squash,
         )
 
 
@@ -534,6 +543,7 @@ def _merge_ticket_pr_inner(
     executing_loop_identity: str,
     human_authorized: str,
     expedite_authorized: str = "",
+    squash: bool = True,
 ) -> MergeOutcome:
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
@@ -564,7 +574,8 @@ def _merge_ticket_pr_inner(
         merged_sha = precheck.already_merged_sha
         reconciled = True
     else:
-        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha)
+        clear.bind_merge_mode(squash=squash)
+        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha, squash=squash)
         reconciled = False
     # Post-merge, for the AUDIT only: no gate reads this back, so an ``unreadable``
     # verdict is stamped as-is rather than laundered into a false ``failed``.
@@ -574,9 +585,10 @@ def _merge_ticket_pr_inner(
         merged_sha=merged_sha,
         required_checks_status=checks,
         repo_slug=slug,
-        authorizers=MergeAuditAuthorizers(
+        authorizers=MergeAuditStamps(
             expedited_by=precheck.expedited_by,
             standing_delegation_by=precheck.standing_delegation_by,
+            merged_without_squash=clear.merged_without_squash,
         ),
     )
     logger.info(

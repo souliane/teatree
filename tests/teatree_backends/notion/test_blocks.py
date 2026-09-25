@@ -4,8 +4,8 @@ from typing import Any, cast
 
 import pytest
 
-from teatree.backends.notion.blocks import RICH_TEXT_LIMIT, build_blocks, rich_text
-from teatree.backends.notion.errors import NotionUnsupportedMarkdownError
+from teatree.backends.notion.blocks import RICH_TEXT_LIMIT, build_blocks, copyable_blocks, rich_text
+from teatree.backends.notion.errors import NotionUncopyableBlockError, NotionUnsupportedMarkdownError
 
 
 def _types(markdown: str) -> list[str]:
@@ -95,3 +95,171 @@ class TestRefusals:
 
     def test_an_empty_body_is_an_empty_block_list_not_an_error(self) -> None:
         assert build_blocks("\n\n  \n") == []
+
+
+SERVER_OWNED = frozenset(
+    {
+        "id",
+        "parent",
+        "created_time",
+        "created_by",
+        "last_edited_time",
+        "last_edited_by",
+        "archived",
+        "in_trash",
+        "has_children",
+    }
+)
+
+
+def _fetched(block_id: str, kind: str, payload: dict[str, Any], *, has_children: bool = False) -> dict[str, Any]:
+    """One block in the shape Notion reads BACK, server-owned fields and all."""
+    return {
+        "object": "block",
+        "id": block_id,
+        "parent": {"type": "page_id", "page_id": "pg-1"},
+        "created_time": "2026-01-01T00:00:00.000Z",
+        "created_by": {"object": "user", "id": "user-1"},
+        "last_edited_time": "2026-01-02T00:00:00.000Z",
+        "last_edited_by": {"object": "user", "id": "user-1"},
+        "archived": False,
+        "in_trash": False,
+        "has_children": has_children,
+        "type": kind,
+        kind: payload,
+    }
+
+
+def _paragraph(block_id: str, text: str) -> dict[str, Any]:
+    return _fetched(block_id, "paragraph", {"rich_text": [{"type": "text", "text": {"content": text}}]})
+
+
+def _lookup(tree: dict[str, list[dict[str, Any]]]) -> Any:
+    return lambda block_id: tree.get(block_id, [])
+
+
+def _server_owned_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        nested = [_server_owned_keys(item) for item in value.values()]
+        return set(SERVER_OWNED & value.keys()).union(*nested, set())
+    if isinstance(value, list):
+        return set().union(*(_server_owned_keys(item) for item in value), set())
+    return set()
+
+
+class TestCopyableBlocks:
+    def test_a_nested_tree_comes_back_inline_and_carries_no_server_fields(self) -> None:
+        toggle = _fetched(
+            "blk-1", "toggle", {"rich_text": [{"type": "text", "text": {"content": "why"}}]}, has_children=True
+        )
+        tree = {
+            "blk-1": [
+                _fetched(
+                    "blk-2",
+                    "bulleted_list_item",
+                    {"rich_text": [{"type": "text", "text": {"content": "because"}}]},
+                    has_children=True,
+                )
+            ],
+            "blk-2": [_paragraph("blk-3", "deepest")],
+        }
+
+        copied = copyable_blocks(_lookup(tree), [toggle])
+
+        assert copied == [
+            {
+                "object": "block",
+                "type": "toggle",
+                "toggle": {
+                    "rich_text": [{"type": "text", "text": {"content": "why"}}],
+                    "children": [
+                        {
+                            "object": "block",
+                            "type": "bulleted_list_item",
+                            "bulleted_list_item": {
+                                "rich_text": [{"type": "text", "text": {"content": "because"}}],
+                                "children": [
+                                    {
+                                        "object": "block",
+                                        "type": "paragraph",
+                                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": "deepest"}}]},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            }
+        ]
+        assert _server_owned_keys(copied) == set()
+
+    def test_a_table_keeps_its_rows(self) -> None:
+        table = _fetched(
+            "tbl-1", "table", {"table_width": 2, "has_column_header": True, "has_row_header": False}, has_children=True
+        )
+        row = _fetched(
+            "row-1",
+            "table_row",
+            {
+                "cells": [
+                    [{"type": "text", "text": {"content": "Rate"}}],
+                    [{"type": "text", "text": {"content": "3.4%"}}],
+                ]
+            },
+        )
+
+        copied = copyable_blocks(_lookup({"tbl-1": [row]}), [table])
+
+        payload = cast("dict[str, Any]", copied[0]["table"])
+        assert payload["children"] == [
+            {
+                "object": "block",
+                "type": "table_row",
+                "table_row": {
+                    "cells": [
+                        [{"type": "text", "text": {"content": "Rate"}}],
+                        [{"type": "text", "text": {"content": "3.4%"}}],
+                    ]
+                },
+            }
+        ]
+        assert payload["table_width"] == 2
+
+    def test_the_source_block_is_left_untouched(self) -> None:
+        toggle = _fetched("blk-1", "toggle", {"rich_text": []}, has_children=True)
+
+        copyable_blocks(_lookup({"blk-1": [_paragraph("blk-2", "child")]}), [toggle])
+
+        assert "children" not in toggle["toggle"]
+
+    @pytest.mark.parametrize("kind", ["child_page", "child_database", "synced_block", "unsupported"])
+    def test_a_type_that_cannot_be_re_posted_is_refused_naming_it(self, kind: str) -> None:
+        block = _fetched("blk-9", kind, {})
+
+        with pytest.raises(NotionUncopyableBlockError, match=f"blk-9.*{kind}"):
+            copyable_blocks(_lookup({}), [block])
+
+    def test_a_refusal_nested_under_a_copyable_parent_still_stops_the_copy(self) -> None:
+        toggle = _fetched("blk-1", "toggle", {"rich_text": []}, has_children=True)
+        tree = {"blk-1": [_fetched("blk-7", "child_page", {"title": "Appendix"})]}
+
+        with pytest.raises(NotionUncopyableBlockError, match="child_page"):
+            copyable_blocks(_lookup(tree), [toggle])
+
+    @pytest.mark.parametrize("kind", ["image", "file"])
+    def test_an_external_asset_is_kept(self, kind: str) -> None:
+        payload = {"type": "external", "external": {"url": "https://example.test/logo.png"}, "caption": []}
+
+        copied = copyable_blocks(_lookup({}), [_fetched("blk-4", kind, payload)])
+
+        assert copied == [{"object": "block", "type": kind, kind: payload}]
+
+    @pytest.mark.parametrize("kind", ["image", "file"])
+    def test_a_notion_hosted_asset_is_refused_because_its_url_expires(self, kind: str) -> None:
+        payload = {
+            "type": "file",
+            "file": {"url": "https://s3.notion.test/signed?x=1", "expiry_time": "2026-01-01T01:00:00.000Z"},
+        }
+
+        with pytest.raises(NotionUncopyableBlockError, match=f"blk-5.*{kind}"):
+            copyable_blocks(_lookup({}), [_fetched("blk-5", kind, payload)])

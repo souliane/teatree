@@ -1,4 +1,4 @@
-"""Block Bash commands that route a secret-bearing source to stdout (#2384 PR4).
+"""Block Bash commands that route a secret-bearing source to stdout.
 
 The privacy scan gates COMMITS, but nothing gates a command that echoes a secret
 to the transcript — once it lands there, rotation is the only remedy. This gate
@@ -13,17 +13,15 @@ Allowed (must NOT false-positive): reading a value into a shell variable
 (``VAR=$(…)``), piping / redirecting to a file (``… > out.txt``), using the
 value via env or header (``curl -H "Token: $VAR"``), cat of ordinary non-secret
 files, and echo of prose that merely MENTIONS a secret-file path. Fails OPEN on
-any internal error — a gate bug must never wedge the agent (consistent with the
-#1164 raw-review-post guard).
+any internal error — a gate bug must never wedge the agent.
 
 The secret-print SHAPE detection lives in the ``teatree.hooks.secret_file_print_detect``
 leaf (per-segment shell-lexed, so a redirect on an unrelated segment cannot mask
 the leak and a print verb not at the whole-command start is still seen), lazily
-imported inside the sibling ``src/`` bootstrap (#1314) — one canonical matcher
-for BOTH the cold PreToolUse subprocess (here) and Lane B's shared hard-deny
-registry, never a duplicated copy that drifts. Extracted whole from ``hook_router``
-(the #2384 Wave-2 router split, PR4) so the dispatcher shrinks; the router
-re-exports :func:`handle_block_secret_file_print` into ``_HANDLERS`` unchanged.
+imported inside the sibling ``src/`` bootstrap — one canonical matcher for BOTH
+the cold PreToolUse subprocess (here) and Lane B's shared hard-deny registry,
+never a duplicated copy that drifts. The router re-exports
+:func:`handle_block_secret_file_print` into ``_HANDLERS``.
 The deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
 (back-imported lazily), so the self-rescue allowlist and the ``danger_gate_fail_open``
 kill-switch apply uniformly and the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny``

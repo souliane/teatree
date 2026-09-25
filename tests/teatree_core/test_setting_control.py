@@ -113,3 +113,29 @@ class TestMaskingIsOneDecisionAppliedToBothRenderings(SimpleTestCase):
         control = SettingControl("merge_wip")
         assert control.display_value(_ON) == "on"
         assert control.wire_value(_ON) == "true"
+
+
+class TestTheControlNamesEveryGovernanceClass:
+    """B12: a surface that knows what a key IS should say so, and from ONE classifier.
+
+    The row announced ``safety-posture`` and nothing else, read straight out of one
+    registry — so a gate, a feature flag and a registry row all rendered as ordinary
+    settings, and an operator flipping one saw nothing that said what they were flipping.
+    """
+
+    def test_a_plain_setting_carries_no_labels(self) -> None:
+        assert SettingControl("issue_implementer_max_concurrent").governance == ()
+
+    def test_a_key_holding_several_classes_names_them_all(self) -> None:
+        labels = SettingControl("critic_gate_mode").governance
+        assert "gate" in labels
+        assert "feature-flag" in labels
+
+    def test_a_flag_carries_its_lifecycle_stage(self) -> None:
+        assert any(label.startswith("stage=") for label in SettingControl("outer_loop_enabled").governance)
+
+    def test_the_safety_posture_flag_is_derived_from_the_same_answer(self) -> None:
+        # One classifier, not a second hand-read of one registry beside it.
+        assert SettingControl("autonomy").is_safety_posture
+        assert "safety-posture" in SettingControl("autonomy").governance
+        assert not SettingControl("issue_implementer_max_concurrent").is_safety_posture

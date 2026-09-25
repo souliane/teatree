@@ -212,7 +212,7 @@ Both layers (the gate and the attestation) run on every PR — the gate runs det
 
 1. **Load the project's code-review skill** (e.g., `/code-review`) if available. This skill contains the exact rules enforced by automated review bots — loading it prevents multi-round push-fix-push cycles.
 2. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
-3. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns, feature flags.
+3. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns.
 4. Fix any violations **before** pushing.
 5. **Run the full CI-equivalent local gate set:** `t3 tool verify-gates`. It runs BOTH `prek run --all-files` AND `prek run --all-files --hook-stage pre-push`, so the push-stage gates (comment-density, doc-update, ensure-pr, the public-repo leak gate) — which a bare `prek run --all-files` STRUCTURALLY skips but CI re-runs — are exercised locally. Report the SHA it says it measured TOGETHER WITH its exit code as the green-proof; an exit code alone does not say which tree earned it, and a commit-stage-only run is not proof. The command takes no target, so it refuses a clean main clone on its default branch rather than grading it — run it in the ticket worktree, or bind it with `--expect-sha <head>`.
 
@@ -236,9 +236,15 @@ If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken ref
 `t3 push` is the ONE supported way to push from the worker container. It resolves the forge token through the same chain the loop scanners use (`GH_TOKEN` → `TEATREE_GH_TOKEN` → the overlay's `pass` store), hands it to git as env only, disables every interactive credential prompt, and refuses a remote whose URL already embeds a credential. It never passes `--no-verify`, so the pre-push hooks still gate the push.
 
 ```bash
-# do X — the supported seam; add --force-with-lease after a rebase:
+# do X — the supported seam, and the answer whenever anyone may have pulled the branch:
 t3 push
+
+# --force-with-lease is not a second spelling of the same command: it DISCARDS the
+# remote tip, so it is decided by the branch's approval state, never by convenience.
+# NO approver on the PR yet → allowed, e.g. straight after a rebase of your own work:
 t3 push --force-with-lease
+# ANY approver, or any review posted → FORBIDDEN. The history is shared from that
+# moment on; land new commits on top instead (§ Rules "No rebase / force push after review").
 
 # never Y — a bare push from a shell the entrypoint did not export GH_TOKEN into
 # (a `docker exec` inherits TEATREE_GH_TOKEN only) BLOCKS on git's credential
@@ -251,6 +257,8 @@ git remote set-url origin https://$GH_TOKEN@github.com/<owner>/<repo>.git   # FO
 ```
 
 A bare `git push` is fine only in a venue whose credential helper you have already confirmed answers — an interactive host shell. In a container, reach for `t3 push` first; if it refuses, the refusal names the fix.
+
+**From a host worktree, name it: `t3 push --repo <absolute-worktree-path>`.** `--repo` defaults to `.`, and `.` is the CONTAINER's cwd — `t3` execs into a container that starts at the image's `WORKDIR` and never inherits where you stood. Every `t3` command taking a repo/path argument shares this default and so shares the omission: `t3 <overlay> pr ensure-pr` and `t3 <overlay> workspace stamp-identity` both take `--repo`, and `t3 <overlay> workspace clean-all`'s branch/stash pass reads the container cwd with **no flag to override it**, so a host-side `cd <repo> && t3 … clean-all` never reaches `<repo>`'s branches. `push` at least fails loudly (it exits non-zero per failure kind); `ensure-pr` does not — it is exempt from the loud-refusal contract, so it prints the error and still exits 0 (`/t3:interactive` § "Using it").
 
 **A non-zero `t3 push` means NOT pushed — never report a branch as delivered on an exit code you did not read.** Success means the remote itself was read back (`git ls-remote`) and holds the branch at the local tip; an rc=0 `git push` is a claim, not delivery ([#4088](https://github.com/souliane/teatree/issues/4088)). Each failure kind carries its own exit status — `t3 push --help` lists them, `--json` carries `failure` and `exit_code` — so the fix is named rather than guessed: a refusing gate, a missing credential and a stale branch are three different repairs ([#4076](https://github.com/souliane/teatree/issues/4076)).
 
@@ -343,17 +351,16 @@ When the target PR/MR repo matches one of these fnmatch patterns and the body st
 
 **STOP — resolve the ticket URL before typing the glab command.**
 
-Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
+Before composing any `glab mr create` or `glab mr update` call, answer these two questions:
 
 1. **What is the ticket URL?** Find the GitLab issue/work item URL from context. If none exists, create one now (`glab issue create`) and copy the URL. Do NOT proceed without a URL.
-2. **What is the feature flag?** Use `[none]` if there is no flag.
-3. **Is the title in the exact format?** `type(scope): description [flag] (ticket_url)` — both `--title` and the first line of `--description` must be identical and match this format exactly.
+2. **Is the title in the exact format?** `type(scope): description (ticket_url)` — both `--title` and the first line of `--description` must be identical and match this format exactly.
 
 This gate exists because the overlay's own CI MR-title validator (the validating overlay mirrors the same `validate_pr` rules in its `release_notes/validate_mr.py`, packaged as `src/<overlay>/mr_validation.py`) fails on every PR that skips the ticket URL, causing a red pipeline that requires a separate fix push. The CI validator is the safety net — not the first line of defence. **Always resolve the URL before creating the PR.**
 
 **Read the project's delivery hooks reference** (e.g. `references/delivery-hooks.md`) for the concrete PR creation template. Critical rules:
 
-- **PR title = squash commit message** (PRs use squash-before-merge, so the title becomes the final commit). It MUST include the ticket URL: `type(scope): description [flag_if_feat] (TICKET_URL)`
+- **PR title = squash commit message** (PRs use squash-before-merge, so the title becomes the final commit). It MUST include the ticket URL: `type(scope): description (TICKET_URL)`
 - **PR description first line = same format as title** (CI validates it). NEVER start with `## Summary` — that fails validation.
 - **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
@@ -498,25 +505,31 @@ Pinned by `no_cosmetic_repush_to_green_ci_pr` (`evals/scenarios/ship.yaml`).
 
 ## One Open PR Per Ticket (Non-Negotiable)
 
+One open **deliverable** per ticket — a single PR, or ONE stack layer (§ "Stacked Delivery" below). A layer targeting its parent layer is compliant; two open deliverables for one ticket are not.
+
 Before opening a new MR/PR, check whether a sibling PR for the **same ticket** is already open on the same repo:
 
 ```bash
 gh pr list --repo <repo> --search "<ticket-ref> is:open" --json number,headRefName,baseRefName
 ```
 
-**First question is whether a second PR should exist at all.** Per [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work", related work ships as **one** PR — if the new commits serve the same goal as the sibling, add them to the sibling's branch (bundle), do not open a second PR. Splitting one coherent change into multiple/stacked PRs needs the user's explicit, up-front approval.
+**First question is whether a second PR should exist at all.** Per [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work", related work ships as **one** PR — if the new commits serve the same goal as the sibling, add them to the sibling's branch (bundle), do not open a second PR. Splitting one ticket's coherent change across multiple PRs needs the user's explicit, up-front approval; a stack layer under § "Stacked Delivery" below is a different ticket's deliverable, not a split.
 
 If a sibling is open, **do not open a second PR targeting the default branch** — the two branches will diverge on the same files and the second one will need a painful 3-way merge. Pick one:
 
 1. **Bundle into the sibling (default)** — add the commits to the sibling's branch (per `## Bundle Into an Existing Open PR` below). One coherent change, one PR.
 2. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the PR — only when the new work is genuinely a *separate* concern.
-3. **Stack on the sibling's branch** — `gh pr create --base <sibling-branch>`. This splits related work across PRs, so use it **only with the user's explicit approval** (or when the two are genuinely disjoint concerns that merely share a base); update the base to the default branch after the sibling merges.
+3. **Layer onto the repo stack** — for a *different* ticket whose paths overlap the sibling's, follow § "Stacked Delivery" below: base on the stack tip and set the ticket's `target_branch` override. Never two tickets in one layer; retarget the layer to the default branch after the sibling merges.
 
 **Never open two PRs on the same ticket targeting the default branch in parallel.** The only exception is when the two PRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second PR's description must name the sibling PR it races with.
 
 ### Also sweep by content for ticketless PRs (Non-Negotiable)
 
 The `gh pr list` sweep commands for open and recently-merged PRs, and the title-keyword / touched-file signals to match them against, are in [`skills/ship/references/pr-siblings-and-bundling.md`](references/pr-siblings-and-bundling.md).
+
+## Stacked Delivery — One Stack Per Repo (Default)
+
+Agent-maintained repos stack systematically and conflict-driven; human-reviewed product repos stack only when the work splits into dependent layers too big to review as one. Every layer's MR/PR targets its PARENT branch (`gh pr edit --base`), overlap is read with `gh pr diff`, published layers are merged forward and never rebased, and a layer the forge retargeted to the default branch never merges on its cheap upper-layer pipeline. Full text: `skills/ship/references/stacked-delivery.md`.
 
 ## Bundle Into an Existing Open PR
 
@@ -527,7 +540,7 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 - **Verify PR state before claiming merge status.** Check with `gh pr view N --json state` or `glab mr view N --output json` — session memory of merge state drifts as other agents push/merge.
 - Untested code must not be pushed. Local verification by the user is mandatory before pushing. If the project requires E2E tests for UI changes, those tests must be **written and green** before pushing — not "pending" or "will do after PR".
 - **Never rewrite settled commits (Non-Negotiable).** Never rebase, amend, or force-push commits that are already on origin. This applies always — not just after review. Before any squash/fixup, check `git log origin/<branch>..HEAD` to confirm which commits are local-only. Even within local-only commits, **only squash commits from the current work session** — older commits on the branch that predate the current task are settled history. When the user says "squash what belongs together", ask which commit range is in scope rather than assuming the entire local history is fair game.
-- **No rebase / force push after review.** Once a PR has been reviewed, the branch history is shared. Only merge the default branch and push new commits.
+- **No rebase / force push after review — the test is the approval state, not how clean the rewrite is.** An approver on the PR, or any posted review, makes the branch history shared: from that moment `--force-with-lease` is forbidden, and new work lands as commits on top after merging the default branch. Before that, rewriting your own unreviewed commits is fine. When you cannot tell whether anyone has pulled the branch, that uncertainty settles it — plain `t3 push`.
 - **Cancel stale pipelines** before every push to a branch with an existing PR.
 - **Cancel running pipelines when closing an MR/PR.** When a PR is closed (abandoned, superseded, or replaced), cancel any running or pending pipelines for that branch immediately — they waste CI resources on code that will never be merged.
 - **Clickable references:** Every PR, ticket, or note reference must be a markdown link — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Clickable References".
@@ -568,6 +581,8 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
   t3 <overlay> ticket merge <clear_id>
   ```
 
+  **A merge that must keep its second parent passes `--no-squash`.** The keystone squashes by default, and a squash keeps one parent, so an ancestry-link merge commit (`UPSTREAM.md` § "The ancestry link") would be dropped. `t3 <overlay> ticket merge <clear_id> --no-squash` lands a merge commit instead and records `merged_without_squash` on the consumed CLEAR.
+
   **The loop NEVER self-issues its own CLEAR** (§17.8 clause 3 — the reviewer identity must differ from the executing loop); it only ever runs step 2 with a `clear_id` the orchestrator handed it. Raw `gh pr merge` / `glab mr merge` are mechanically prohibited (#863) — only this sanctioned two-step path is valid. On any pre-condition failure the FSM is left untouched and the result is flagged `escalated` (the loop re-escalates to the durable backlog; it never self-issues a replacement CLEAR). Substrate-class CLEARs are never auto-merged — see the substrate approval path below.
 - **Substrate PRs require an explicit recorded human approval (`MergeClear.human_authorizer`); the agent then executes the merge — and it still goes through `t3`, never raw `gh` (invariant 8).** A `blast_class=substrate` CLEAR is refused by the loop unconditionally. The sanctioned path: the orchestrator/owner issues the CLEAR with `--human-authorize <owner-id>` (only valid with `--blast-class substrate`) — that recorded approval is the gate — then **the agent executes** `t3 <overlay> ticket merge <clear_id> --human-authorized <owner-id>`. The human approves; the agent merges (the user operates write-only and never performs the merge action). The presented id must match the recorded `human_authorizer`; the merge then runs through the SAME SHA-bound, audited transition (the approval decision is recorded durably on the CLEAR + `MergeAudit`). `--human-authorized` can never unlock a non-substrate CLEAR, so it cannot bypass independent loop review of logic/docs PRs.
 - **Merge-decision axes — own repos merge autonomously; colleague repos are held for review.** Whether a green, cold-review-CLEARED PR is yours to merge through the keystone turns on **ownership**, not visibility. Decide on these axes:
@@ -583,7 +598,38 @@ The eligibility conditions, the seven-step bundling procedure, and the anti-patt
 
   NEVER refuse an own-repo merge as "colleague-facing", ask for a colleague's sign-off, request an unowned-repo approval, or treat the repo's PRIVATE visibility as if it implied colleague ownership. Holding back from merging your own cleared repo is a recurring failure this rule pins; org/colleague framing in the surrounding context does NOT make an owned repo colleague-facing.
 - **A freshly-cloned public souliane/* main clone is not auto-configured (#762).**The provisioner sets the clone-local noreply identity on worktrees, and existing clones are covered by the idempotent `t3 <overlay> workspace stamp-identity` — but a brand-new main clone has neither until that command is run once on it (the #730 pre-push check is the only backstop until then). Run `t3 <overlay> workspace stamp-identity` once after cloning a public souliane/* repo.
-- **Auto-merge is a separate per-overlay knob.** Even in `auto` mode, run the keystone merge (`t3 <overlay> ticket merge <clear_id>`, after the orchestrator's `ticket clear`) only when `require_human_approval_to_merge` is `false` for the active overlay (default `true` — training wheel on). Overlays whose upstream enforces mandatory human review (e.g., GitLab Code Review approval rules) should keep it `true`; the agent then pushes and opens the PR/MR without asking but stops before issuing the CLEAR / queuing the merge. The user flips it to `false` per-overlay (`t3 <overlay> config_setting set require_human_approval_to_merge false --overlay <name>`) once comfortable trusting CI green alone.
+- **`require_human_approval_to_merge` is a SUBSTRATE control — it is not what holds a non-substrate merge (do X, never Y).** The keystone reads it in exactly one place: `_overlay_grants_standing_substrate_signoff`, reached only from the substrate-only `_assert_substrate_authorized` (`core/merge/authorization.py`). A non-substrate CLEAR never reaches it, so a `true` value on the active overlay is NOT a reason to stop on a green, cold-review-CLEARED logic/docs PR. What decides that merge is the ownership axis above plus the substrate hold — never this flag's raw value. The recurring, costly misread is treating `require_human_approval_to_merge = true` as "this MR is blocked on the owner" and handing back finished work.
+
+  ```bash
+  # do X — own repo, non-substrate, green, cold-review-CLEARED (clear id N): merge it,
+  # whatever `require_human_approval_to_merge` reads on the overlay.
+  t3 <overlay> ticket merge N
+  # never Y — reporting "blocked on the owner" because the flag reads true. It governs
+  # substrate; a substrate CLEAR refuses on its OWN message, which names the sanctioned path.
+  ```
+
+  The flag remains the operator's named substrate control, and no autonomy tier collapses it (`config/resolution.py` `_AUTONOMY_COLLAPSED_GATE_VALUES`). Set it per-overlay with `t3 <overlay> config_setting set require_human_approval_to_merge <true|false> --overlay <name>`.
+- **The bot authors so the OWNER'S ACCOUNT stays eligible — and the AGENT records that approval (Non-Negotiable).** On a repo whose MRs are authored under a distinct non-owner credential (the overlay's `get_gitlab_token_for_remote` override), all four identities are fixed, and none of them is a person doing manual work:
+
+  | step | identity | who performs it |
+  |---|---|---|
+  | author | the repo's scoped authoring credential (the bot) | the agent |
+  | review | the agent, cold (maker != checker) | the agent |
+  | **approve** | **the owner's own account** | **the agent, on the owner's behalf** |
+  | merge | — | the agent, via the §17.4 keystone |
+
+  The forge makes an MR's AUTHOR ineligible to approve it, which is the entire reason the bot authors: it keeps the owner's account eligible. "Approved by the owner's account" is therefore the DESIGNED outcome of the agent's own run, not a hand-off — a green, cold-reviewed MR on such a repo is never "blocked on the owner", and saying so is the failure this rule exists to prevent.
+
+  ```bash
+  # do X — the agent reviews cold, then records the approval under the owner's account:
+  t3 review approve <repo> <mr>        # resolves the OWNER credential, never the bot's
+  t3 <overlay> ticket clear <mr> <repo-slug> --reviewed-sha <sha> \
+      --reviewer-identity <independent-reviewer> --blast-class <class> --forge gitlab
+  t3 <overlay> ticket merge <clear_id>
+  # never Y — handing a green, cold-reviewed MR back as "waiting on the owner to approve".
+  ```
+
+  Two prohibitions survive unchanged, and nothing above weakens either. An approval recorded under the **BOT** identity is forbidden — the author cannot approve, and a self-approval is not review. An MR **authored by the owner's account** on such a repo is forbidden — it makes that account ineligible, leaving nobody who can approve. A gate enforcing either is correct and stays; only its MESSAGE is worth fixing if it reads as an approval prohibition on the agent.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
 
 ### Git History Rewriting

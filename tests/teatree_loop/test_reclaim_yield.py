@@ -36,15 +36,20 @@ class _RaisingMarker:
 
 class TestPressureIdleDays:
     def test_a_comfortable_disk_keeps_the_configured_dormancy(self) -> None:
-        payload = {"free_gb": 100.0, "disk_warn_free_gb": _WARN, "disk_crit_free_gb": _CRIT, "venv_idle_days": _IDLE}
+        payload = {
+            "free_gb": 100.0,
+            "disk_warn_free_gb": _WARN,
+            "disk_crit_free_gb": _CRIT,
+            "artifact_idle_days": _IDLE,
+        }
         assert pressure_idle_days(payload) == pytest.approx(_IDLE)
 
     def test_below_the_critical_floor_dormancy_stops_gating(self) -> None:
-        payload = {"free_gb": 1.0, "disk_warn_free_gb": _WARN, "disk_crit_free_gb": _CRIT, "venv_idle_days": _IDLE}
+        payload = {"free_gb": 1.0, "disk_warn_free_gb": _WARN, "disk_crit_free_gb": _CRIT, "artifact_idle_days": _IDLE}
         assert pressure_idle_days(payload) is None
 
     def test_a_threshold_the_payload_omits_never_relaxes(self) -> None:
-        assert pressure_idle_days({"free_gb": 1.0, "venv_idle_days": _IDLE}) == pytest.approx(_IDLE)
+        assert pressure_idle_days({"free_gb": 1.0, "artifact_idle_days": _IDLE}) == pytest.approx(_IDLE)
 
 
 class TestReclaimYieldSteps:

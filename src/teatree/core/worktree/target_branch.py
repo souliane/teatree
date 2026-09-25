@@ -17,6 +17,7 @@ module: the ship runner, the orphan-branch ``ensure-pr`` lane, and the two
 """
 
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
@@ -44,13 +45,14 @@ def bare_target(branch: str) -> str:
     return _REMOTE_QUALIFIED_RE.sub("", branch.strip())
 
 
-def _explicit_target(ticket: "Ticket | None", branch: str) -> str:
+def _explicit_target(ticket: "Ticket | None", repo_slug: str, branch: str) -> str:
     """The bare target named by the ticket or the setting, or ``""`` when neither applies.
 
     Two tiers, highest first:
 
-    1. ``ticket.extra['target_branch']`` — the per-ticket override a stacked PR
-        sets to base on something other than the repo default.
+    1. ``ticket.extra['target_branch'][repo_slug]`` — the per-repo override a
+        stacked PR sets to base on something other than that repo's default.
+        The pre-repo-scope string shape remains a ticket-wide fallback.
     2. The ``target_branch`` SETTING — a whole line of work stacking onto ONE
         long-lived integration branch, rather than every ticket repeating the
         same override.
@@ -60,7 +62,11 @@ def _explicit_target(ticket: "Ticket | None", branch: str) -> str:
     the currency gate merges it into itself.
     """
     extra = (ticket.extra or {}) if ticket is not None else {}
-    explicit = str(extra.get("target_branch") or "").strip()
+    overrides = extra.get("target_branch")
+    if isinstance(overrides, Mapping):
+        explicit = str(overrides.get(repo_slug) or "").strip()
+    else:
+        explicit = overrides.strip() if isinstance(overrides, str) else ""
     if explicit:
         return bare_target(explicit)
     overlay = (ticket.overlay or None) if ticket is not None else None
@@ -70,14 +76,14 @@ def _explicit_target(ticket: "Ticket | None", branch: str) -> str:
     return ""
 
 
-def resolve_pr_target_branch(ticket: "Ticket | None", *, branch: str = "") -> str:
+def resolve_pr_target_branch(ticket: "Ticket | None", *, repo_slug: str = "", branch: str = "") -> str:
     """The bare branch a shipped PR must target; ``""`` defers to the forge default.
 
     Deliberately does NOT fall back to the local clone's idea of the default
     branch: an empty spec field lets the backend read the project's real default
     from the forge, which is the authority on it.
     """
-    return _explicit_target(ticket, branch)
+    return _explicit_target(ticket, repo_slug, branch)
 
 
 def resolve_target_branch(ticket: "Ticket | None", repo: str, *, branch: str = "") -> str:
@@ -86,7 +92,11 @@ def resolve_target_branch(ticket: "Ticket | None", repo: str, *, branch: str = "
     Falls through to ``origin/<default>`` — the historical behaviour, and still
     what an unset setting and an unset ticket override resolve to.
     """
-    explicit = _explicit_target(ticket, branch)
+    try:
+        repo_slug = git.remote_slug(repo=repo)
+    except (CommandFailedError, RuntimeError, ValueError):
+        repo_slug = ""
+    explicit = _explicit_target(ticket, repo_slug, branch)
     if explicit:
         return qualified_target(explicit)
     try:

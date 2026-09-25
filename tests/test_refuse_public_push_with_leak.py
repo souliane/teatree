@@ -143,7 +143,7 @@ def _run_hook(
     )
 
 
-def _push_stdin(work: Path) -> str:
+def _push_stdin(work: Path, local_ref: str = "refs/heads/main", remote_ref: str | None = None) -> str:
     """Build the git pre-push stdin line for the current branch HEAD."""
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],  # noqa: S607
@@ -153,7 +153,7 @@ def _push_stdin(work: Path) -> str:
         check=True,
         env=_hermetic_env(),
     ).stdout.strip()
-    return f"refs/heads/main {sha} refs/heads/main 0000000000000000000000000000000000000000\n"
+    return f"{local_ref} {sha} {remote_ref or local_ref} {ZERO_SHA}\n"
 
 
 class TestRefusePublicPushWithLeak:
@@ -440,6 +440,18 @@ class TestRefusePublicPushWithLeak:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
 
+def _crashing_scan_shim(bin_dir: Path, exit_code: int) -> str:
+    """A fake scan command that always exits ``exit_code`` (never the findings code)."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "fake-scan"
+    shim.write_text(
+        f'#!/usr/bin/env bash\necho "scanner blew up" >&2\nexit {exit_code}\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return str(shim)
+
+
 class TestLeakGateFailsOpenOnScannerCrash:
     """The gate blocks on a genuine FINDING, never on a scanner CRASH (#126 gap 3).
 
@@ -450,23 +462,12 @@ class TestLeakGateFailsOpenOnScannerCrash:
     gate block ONLY on that code, failing OPEN (allow) on any other non-zero.
     """
 
-    def _crashing_scan_shim(self, bin_dir: Path, exit_code: int) -> str:
-        """Write a fake scan command that always exits ``exit_code`` (never the findings code)."""
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        shim = bin_dir / "fake-scan"
-        shim.write_text(
-            f'#!/usr/bin/env bash\necho "scanner blew up" >&2\nexit {exit_code}\n',
-            encoding="utf-8",
-        )
-        shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        return str(shim)
-
     def test_scanner_crash_fails_open(self, tmp_path: Path) -> None:
         """A non-findings, non-zero scan exit (crash) must ALLOW the push."""
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         # Point the gate at a scan command that crashes with code 1 (generic
         # exception) — distinct from the dedicated findings code.
-        shim = self._crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
+        shim = _crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
         env["T3_PRIVACY_SCAN_CMD"] = shim
         (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
@@ -479,7 +480,7 @@ class TestLeakGateFailsOpenOnScannerCrash:
     def test_scanner_usage_error_fails_open(self, tmp_path: Path) -> None:
         """An argparse/usage-error exit (2) is also a crash, not a finding → ALLOW."""
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        shim = self._crashing_scan_shim(tmp_path / "scanbin", exit_code=2)
+        shim = _crashing_scan_shim(tmp_path / "scanbin", exit_code=2)
         env["T3_PRIVACY_SCAN_CMD"] = shim
         (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
@@ -1283,6 +1284,223 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         assert _PROBE_FAILURE_MARKER in result.stderr, result.stdout + result.stderr
         assert result.returncode == 1, result.stdout + result.stderr
         assert "privacy" in (result.stdout + result.stderr).lower()
+
+
+def _make_visibility_shim(bin_dir: Path, verdict: str) -> Path:
+    """A ``T3_REPO_VISIBILITY_CMD`` stand-in that pins the gate's visibility verdict."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / f"visibility-{verdict.lower()}"
+    shim.write_text(f"#!/usr/bin/env bash\necho {verdict}\n", encoding="utf-8")
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return shim
+
+
+def _commit_as(work: Path, name: str, email: str, filename: str, body: str) -> None:
+    (work / filename).write_text(body, encoding="utf-8")
+    _git(work, "add", filename)
+    _git(work, "-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "-m", "add feature")
+
+
+#: Rewrite verbs a refusal must never put in front of an operator: every one of them
+#: rewrites the pushed branch, and a branch under review is exactly what gets pushed.
+_REWRITE_VERBS = ("filter-branch", "filter-repo", "rebase", "--force", "-f ", "amend", "reset --hard")
+
+
+class TestUnconfirmedVisibilityIsNotAPublicFinding:
+    """An unresolvable probe is an absence of evidence, never evidence of publicness.
+
+    The #730 author-identity guard exists because a real, deliverable email in
+    PUBLIC history is a permanent leak. On a private remote the same email is
+    the correct, ordinary state — which is why private remotes are exempt. So
+    the guard needs POSITIVE evidence that the remote is public; firing it on
+    an UNKNOWN verdict converts "could not ask" into "confirmed public", and
+    that is what refused a push to a private GitLab repo and told the operator
+    to rewrite the branch behind an open merge request.
+
+    The CONTENT scan keeps the opposite polarity and is unchanged: a planted
+    secret is a leak wherever it lands, so an undetermined verdict still scans
+    and still blocks (``TestProbeErrorVisibilityFailsClosed`` and
+    ``test_failed_probe_surfaces_its_error_and_still_fails_closed`` pin it).
+    """
+
+    def _unconfirmed(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["T3_REPO_VISIBILITY_CMD"] = str(_make_visibility_shim(tmp_path / "visbin", "UNKNOWN"))
+        return work, env
+
+    def test_unconfirmed_visibility_does_not_refuse_an_internal_commit_identity(self, tmp_path: Path) -> None:
+        work, env = self._unconfirmed(tmp_path)
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_unconfirmed_visibility_never_asserts_the_repo_is_public(self, tmp_path: Path) -> None:
+        work, env = self._unconfirmed(tmp_path)
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        combined = _run_hook(work, env, _push_stdin(work))
+        text = (combined.stdout + combined.stderr).lower()
+
+        assert "public repo" not in text, combined.stdout + combined.stderr
+
+    def test_confirmed_public_still_refuses_the_same_commit_identity(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the guard is intact — only its premise now has to be proven."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "noreply" in result.stdout
+
+
+class TestRefusalNeverRecommendsRewritingThePushedBranch:
+    """Remediation must not name a rewrite: the pushed branch is the reviewed branch.
+
+    A ``git filter-branch`` on a branch backing an open merge request destroys
+    every reviewer's line anchors and forces a full re-review. The remedy for a
+    finding that has not yet reached the remote is a branch cut clean, and a new
+    merge request against it.
+    """
+
+    def test_identity_refusal_names_no_rewrite(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+        text = (result.stdout + result.stderr).lower()
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        named = [verb for verb in _REWRITE_VERBS if verb in text]
+        assert not named, f"refusal recommends rewriting the pushed branch: {named}\n{result.stdout}"
+        assert "new branch" in text, result.stdout
+
+    def test_leak_refusal_names_no_rewrite(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+        text = (result.stdout + result.stderr).lower()
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        named = [verb for verb in _REWRITE_VERBS if verb in text]
+        assert not named, f"refusal recommends rewriting the pushed branch: {named}\n{result.stdout}"
+
+
+class TestRefusePublicPushWithLeakingRefName:
+    """The pushed ref NAME reaches the remote exactly like the content does.
+
+    A branch or tag name lands in the remote's branch list and every fork's
+    view the moment the push completes, and GitHub keeps it in ``refs/pull/*``
+    after the branch is deleted — so a name carrying a customer, partner or
+    internal project is published permanently, and renaming later cannot take
+    it back. The gate scanned commit messages and patches but never the name.
+    """
+
+    def _public_clone_with_banned_term(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["T3_BANNED_TERMS"] = "democorp"
+        (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+        return work, env
+
+    def test_blocks_public_push_when_the_branch_name_carries_a_banned_term(self, tmp_path: Path) -> None:
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "checkout", "-b", "feat/democorp-onboarding")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/democorp-onboarding"))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "feat/democorp-onboarding" in result.stdout, result.stdout
+        combined = (result.stdout + result.stderr).lower()
+        assert "banned_term" in combined, result.stdout
+        assert "refs/pull/*" in result.stdout, result.stdout
+
+    def test_blocks_public_push_when_a_tag_name_carries_a_banned_term(self, tmp_path: Path) -> None:
+        """A ref outside ``refs/heads/`` publishes its own name too — scan it, never skip it."""
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "tag", "v1.0-democorp")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/tags/v1.0-democorp"))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "v1.0-democorp" in result.stdout, result.stdout
+
+    def test_blocks_public_push_when_a_hierarchical_tag_name_carries_the_term(self, tmp_path: Path) -> None:
+        """Every component of a ref name is published, not only the last one."""
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "tag", "democorp/v1.0")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/tags/democorp/v1.0"))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "democorp/v1.0" in result.stdout, result.stdout
+
+    def test_allows_a_clean_hierarchical_tag_name(self, tmp_path: Path) -> None:
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "tag", "release/v1.0")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/tags/release/v1.0"))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_allows_public_push_with_a_clean_branch_name(self, tmp_path: Path) -> None:
+        """Anti-vacuity: same public remote and same banned-terms config, clean name → pass."""
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "checkout", "-b", "feat/onboarding-pipeline")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/onboarding-pipeline"))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_blocks_when_only_the_remote_target_name_carries_the_term(self, tmp_path: Path) -> None:
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "checkout", "-b", "feat/clean-local-name")
+
+        result = _run_hook(
+            work,
+            env,
+            _push_stdin(
+                work,
+                "refs/heads/feat/clean-local-name",
+                "refs/heads/feat/democorp-onboarding",
+            ),
+        )
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "feat/democorp-onboarding" in result.stdout
+
+    def test_allows_a_leaking_local_name_pushed_under_a_clean_remote_name(self, tmp_path: Path) -> None:
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        _git(work, "checkout", "-b", "feat/democorp-local-only")
+
+        result = _run_hook(
+            work,
+            env,
+            _push_stdin(
+                work,
+                "refs/heads/feat/democorp-local-only",
+                "refs/heads/feat/clean-published-name",
+            ),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_scanner_crash_on_the_ref_name_fails_open(self, tmp_path: Path) -> None:
+        """A crashing scanner is cannot-evaluate, never the over-deny lockout (#126 gap 3)."""
+        work, env = self._public_clone_with_banned_term(tmp_path)
+        env["T3_PRIVACY_SCAN_CMD"] = _crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
+        _git(work, "checkout", "-b", "feat/democorp-onboarding")
+
+        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/democorp-onboarding"))
+
+        assert result.returncode == 0, "ref-name scanner crash must fail OPEN: " + result.stdout + result.stderr
+        assert "ref-name privacy scan could not run" in result.stderr, result.stderr
 
 
 if __name__ == "__main__":

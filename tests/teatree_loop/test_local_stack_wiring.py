@@ -40,44 +40,27 @@ class BuilderTests(TestCase):
     """The builders honour the kill-switches and thread config."""
 
     def _cfg(self, settings: object) -> object:
-        return type("Cfg", (), {"user": settings})()
+        return settings
 
     def test_reaper_builds_from_settings(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
         from teatree.loop.global_scanner_factories import _idle_stack_reaper_scanner  # noqa: PLC0415
 
-        settings = UserSettings(idle_stack_idle_minutes=45, idle_stack_reaper_cadence_minutes=10)
-        with patch("teatree.loop.global_scanner_factories.load_config", return_value=self._cfg(settings)):
+        settings = UserSettings(idle_stack_idle_minutes=45)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
             scanner = _idle_stack_reaper_scanner()
         assert scanner is not None
         assert scanner.idle_minutes == 45
-        assert scanner.cadence_minutes == 10
-
-    def test_reaper_kill_switch_returns_none(self) -> None:
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _idle_stack_reaper_scanner  # noqa: PLC0415
-
-        settings = UserSettings(idle_stack_reaper_disabled=True)
-        with patch("teatree.loop.global_scanner_factories.load_config", return_value=self._cfg(settings)):
-            assert _idle_stack_reaper_scanner() is None
 
     def test_drainer_builds_from_settings(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
         from teatree.loop.global_scanner_factories import _local_stack_queue_drainer_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=self._cfg(UserSettings()),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=UserSettings(),
         ):
             assert _local_stack_queue_drainer_scanner() is not None
-
-    def test_drainer_kill_switch_returns_none(self) -> None:
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _local_stack_queue_drainer_scanner  # noqa: PLC0415
-
-        settings = UserSettings(local_stack_queue_disabled=True)
-        with patch("teatree.loop.global_scanner_factories.load_config", return_value=self._cfg(settings)):
-            assert _local_stack_queue_drainer_scanner() is None
 
 
 class BuildDefaultJobsTests(TestCase):

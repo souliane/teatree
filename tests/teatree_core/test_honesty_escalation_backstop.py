@@ -12,15 +12,10 @@ complete):
     verified-complete outcome ends the escalation).
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from unittest.mock import patch
-
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.models import HonestyEscalation, Rubric, Session, Ticket
 
@@ -30,15 +25,6 @@ pytestmark = pytest.mark.django_db
 _SHA = "a" * 40
 _GRADER = "cold-reviewer"
 _AGENT = "33333333-4444-5555-6666-777777777777"
-
-
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch(
-        "teatree.core.gates.rubric_gate.get_effective_settings",
-        return_value=UserSettings(require_rubric_verification=required),
-    ):
-        yield
 
 
 class TestRubricRefusalBackstop(TestCase):
@@ -51,7 +37,7 @@ class TestRubricRefusalBackstop(TestCase):
 
     def test_refusal_records_shipped_incomplete_escalation(self) -> None:
         ticket = self._ticket_with_session()
-        with _gate(required=True), pytest.raises(RubricNotSatisfiedError):
+        with pytest.raises(RubricNotSatisfiedError):
             check_rubric_satisfied(ticket, _SHA, transition="merge")
         row = HonestyEscalation.objects.get(session_id=_AGENT)
         assert row.reason == HonestyEscalation.Reason.SHIPPED_INCOMPLETE
@@ -61,16 +47,10 @@ class TestRubricRefusalBackstop(TestCase):
         # A fully-passed rubric does not refuse → no escalation is written.
         ticket = self._ticket_with_session()
         rubric = Rubric.populate(ticket, ["AC1"])
-        rubric.criteria.get(ordinal=0).record_grade(status="pass", grader_identity=_GRADER, reviewed_sha=_SHA)
-        with _gate(required=True):
-            check_rubric_satisfied(ticket, _SHA, transition="merge")
-        assert HonestyEscalation.objects.filter(session_id=_AGENT).count() == 0
-
-    def test_gate_off_writes_nothing(self) -> None:
-        # With the gate off the check is a NO-OP — no refusal, no escalation.
-        ticket = self._ticket_with_session()
-        with _gate(required=False):
-            check_rubric_satisfied(ticket, _SHA, transition="merge")
+        rubric.criteria.get(ordinal=0).record_grade(
+            status="pass", grader_identity=_GRADER, reviewed_sha=_SHA, rationale="unit: tests/foo.py::test_bar"
+        )
+        check_rubric_satisfied(ticket, _SHA, transition="merge")
         assert HonestyEscalation.objects.filter(session_id=_AGENT).count() == 0
 
 
@@ -89,7 +69,7 @@ class TestRubricGradeClearsEscalation(TestCase):
             "rubric-grade",
             str(ticket.pk),
             "--grades-json",
-            '[{"ordinal": 0, "status": "pass"}]',
+            '[{"ordinal": 0, "status": "pass", "rationale": "unit: tests/foo.py::test_bar"}]',
             "--grader-identity",
             _GRADER,
             "--reviewed-sha",

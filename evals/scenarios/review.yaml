@@ -149,18 +149,15 @@
     - no_tool_call_matching:
         Bash.command: '~ "t3 review post-comment"'
 
-# A review finding is classified on ONE axis: Blocker vs Nit. A Nit has NO
-# severity — it is BY DEFINITION non-blocking, so tagging it MED/LOW/HIGH is the
-# nonsensical "Nit (MED)" the skill names explicitly (SKILL.md § "Review Tone &
-# Formatting" → "never downgrade a HIGH/MED finding to `Nit:` … that produces the
-# nonsensical 'Nit (MED)' — terseness is about length, not severity"). The
-# positive matcher requires a bare `Nit:` post (keeps a no-op transcript RED);
-# the negative refuses ANY nit carrying a severity tag — `Nit (MED)`, `Nit (LOW)`,
-# `Nit (HIGH)`, or the `MED … nit` / `LOW … nit` inversions. A severity belongs
-# on a Blocker-axis finding (`HIGH (correctness):`, `MED:`), never on a Nit.
+# SKILL.md § "Single terse inline finding on a colleague MR" says: "The posted
+# body is either a plain finding or starts with the literal `Nit:`; never prefix
+# it with HIGH/MED/LOW or blocker/major/minor taxonomy." A posted finding carries
+# no severity label at all, while a genuinely trivial nit uses a bare `Nit:`.
+# The positive matcher requires that bare prefix (keeping a no-op transcript RED);
+# the negative refuses every nit carrying a severity tag or inverted taxonomy.
 - name: review_nit_carries_no_severity_tag
   agent_path: skills/review/SKILL.md
-  scenario: "a nit is posted as a bare `Nit:` with no MED/LOW/HIGH severity tag — a nit has no severity (one axis: Blocker vs Nit)"
+  scenario: "a trivial nit is posted as a bare `Nit:` with no MED/LOW/HIGH severity tag"
   tier: balanced
   max_turns: 3
   tools: [Bash]
@@ -178,3 +175,102 @@
     # the `Nit [MED]` bracket form, and the `MED … nit` / `LOW: … nit` inversions.
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(nit\s*[\(\[]\s*(med|low|high)|(med|low|high)\b[^\n]*\bnit)"'
+
+- name: review_approval_posts_nonblocker_without_severity
+  agent_path: skills/review/SKILL.md
+  scenario: "an approved colleague MR carries its nontrivial non-blocking finding with no HIGH/MED/LOW severity label"
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo` under full
+    autonomy. CI is green. The implementation is merge-safe, but one verified
+    maintainability finding is worth publishing: `candidate_rows` silently
+    accepts duplicate identifiers, which does not break today's caller but makes
+    the helper's contract fragile for the next consumer. This is nontrivial and
+    non-blocking. Post the inline finding on
+    `src/teatree/core/sweep.py` line 88 and approve the MR. Run the Bash commands
+    you would issue, with no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3\s+review\s+post-comment\b"'
+    - tool_call: Bash
+      args.command: '~ "t3(?:\s+\S+)?\s+review\s+approve\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?is)t3\s+review\s+post-comment\b.*?[\"''\n]\s*(?:HIGH|MED|LOW|blocker|major|minor)\b\s*(?:\([^)]*\))?\s*:"'
+
+- name: review_blocker_withholds_approval
+  agent_path: skills/review/SKILL.md
+  scenario: "a verified HIGH correctness finding is published and approval is withheld"
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo` under full
+    autonomy. CI is green, but you verified a correctness defect on
+    `src/teatree/core/sweep.py` line 88: the new branch drops every item after the
+    first duplicate identifier, losing valid work. The MR is not merge-safe.
+    Publish the inline finding and act on the verdict. Run the Bash command or
+    commands you would issue, with no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3\s+review\s+post-comment\b"'
+    - no_tool_call_matching:
+        Bash.command_span: '~ "(?i)(?:^|[\n;&|({])\s*(?:t3(?:\s+\S+)?\s+review\s+approve|glab\s+mr\s+approve|gh\s+pr\s+review\b[^\n;&|)}]*\s(?:--approve|-a))(?=\s|$|[;&|)}])"'
+- name: review_one_place_flags_partial_factorization
+  agent_path: skills/review/SKILL.md
+  scenario: "review counts the remaining owners after partial factorization and rejects presentation-only exemptions"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Review this synthetic diff only; do not edit or post. Five adapters used to
+    assemble the same `customer_value` field inline. The diff adds
+    `common/customer_value.py` and routes adapters/a.py, adapters/b.py, and
+    adapters/c.py through it. adapters/d.py keeps its own copy because it renders
+    the value with a locale string, and adapters/e.py keeps its own copy because
+    it appends a presentation flag. The author says the duplicated lines are gone
+    from three sites, so the change is clean. Return a concise review verdict that
+    applies the One-Place Test, states the remaining owner/file count and names
+    them, and explains whether the two presentation differences justify exemptions.
+  expect:
+    # Three independent semantic predicates: reject the diff, state the explicit
+    # current count (3), and reject the presentation-only exemptions. Keep these
+    # separate so formatting and clause order cannot turn a correct review red.
+    - final_state: '~ "(?i)\b(?:HOLD|block(?:ed|ing)?|request(?:ed)? changes|changes (?:needed|required|requested)|needs? changes|not (?:clean|approvable|acceptable)|fails?(?: the)? one-place test|finding)\b"'
+    - final_state: '~ "(?i)(?:\b3\*{0,2}\s+(?:owners?|files?|places?)\b|\bremaining\s+(?:owners?|files?|places?)\s*:?\s*\*{0,2}3\*{0,2}\b|\b(?:answer(?:\s+here|\s+after\s+this\s+diff)?(?:\s+(?:is|must be))?|(?:current\s+)?(?:owner\s+)?count[^:\n]{0,100}(?:is|:))\s*:?\s*\*{0,2}3\*{0,2}\b|\bhow many files do i touch\?[^A-Za-z0-9\n]{0,12}\*{0,2}3\*{0,2}\b)"'
+    - final_state: '~ "(?s)common/customer_value\.py.*adapters/d\.py.*adapters/e\.py|common/customer_value\.py.*adapters/e\.py.*adapters/d\.py"'
+    - final_state: '~ "(?i)\bpresentation\b"'
+    - final_state: '~ "(?i)(?:\b(?:no|neither)(?:,?\s+(?:of\s+)?(?:the\s+)?(?:two|both|these|those|either))?\s+(?:exemptions?|justifications?)\b|\bneither\s+(?:justif|qualif)\w*|\b(?:exempt|exception)\w*\b[^.\n]{0,100}\b(?:doesn.t|does not|don.t|do not|not|no)\b[^.\n]{0,50}\b(?:hold|apply|justif|qualif|earn)\w*|\b(?:doesn.t|does not|don.t|do not|not)\b[^.\n]{0,50}\b(?:exempt|exception|justif|qualif|earn)\w*|\b(?:exempt|justif)\w*\s+nothing\b|\bexemptions?\b[^.\n]{0,80}\b(?:hold|apply)\s+for\s+nothing\b|\b(?:the\s+)?(?:two|both)\s+exemptions?\b[^?\n]{0,50}\?[*_\s]*no\b)"'
+
+- name: review_one_place_rejects_over_unification
+  agent_path: skills/review/SKILL.md
+  scenario: "review rejects a single owner that erases a deliberate strategy difference"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Review this synthetic diff only; do not edit or post. `current_rate.py`
+    deliberately returns `None` when its cached input is absent so a live number
+    is never shown beside a rate computed from an unknown input.
+    `quoted_rate.py` deliberately falls back to a live reading because its data
+    contract allows that. The diff replaces both with one `rate.py` resolver that
+    always falls back to the live reading, arguing that one file is automatically
+    more maintainable. Return a concise review verdict that applies the One-Place
+    Test and says what the shared owner may centralize without choosing the two
+    strategies for its callers.
+  expect:
+    - final_state: '~ "(?i)\b(HOLD|block|blocking|request changes|finding)\b"'
+  judge:
+    rubric: >-
+      The diff merges two resolvers that deliberately differ: `current_rate.py`
+      returns None on a missing cache so a live number never sits beside a rate
+      computed from an unknown input, while `quoted_rate.py` may fall back to a
+      live reading. The review FAILS if it approves, accepts, or waves through the
+      single always-falls-back resolver in any wording ("fine to land", "ship it",
+      "acceptable as is"), if it does not say the two resolvers differ on purpose,
+      or if it lets the shared owner decide the fallback strategy for both callers.
+      The review PASSES only if it blocks the unification, names the deliberate
+      difference between the two behaviours, and says the shared owner may
+      centralize the common mechanism (cache lookup, live fetch, the invariant)
+      while each caller keeps choosing its own fallback strategy.

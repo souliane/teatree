@@ -13,9 +13,6 @@ dominated by the environment — which is exactly the term a per-argument check 
 import os
 
 import typer
-from claude_agent_sdk import ClaudeAgentOptions
-
-from teatree.agents.claude_cli_spawn import preflight_payload
 
 #: Advisory band. A spawn floor spending most of the budget leaves a real dispatch's
 #: per-phase flags nowhere to go, and the failure when it lands is total.
@@ -31,7 +28,20 @@ def _check_agent_spawn_headroom() -> bool:
     doctor run.
     """
     try:
-        payload = preflight_payload(ClaudeAgentOptions(), dict(os.environ))
+        # Deferred to the check body, not the module. `t3 doctor` is one command, but
+        # this module is reached from `teatree.cli.doctor`'s package import, so a
+        # module-scope `claude_agent_sdk` here is paid by EVERY `t3` invocation —
+        # MEASURED as the second of the two paths that pulled the SDK (and `mcp`
+        # behind it) into CLI startup. `claude_cli_spawn` imports the SDK itself, so
+        # both names have to move together or the chain survives.
+        from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: keeps the SDK off CLI startup
+
+        from teatree.agents.claude_cli_spawn import (  # noqa: PLC0415 — deferred: imports the SDK itself
+            preflight_payload,
+        )
+        from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: imports the SDK
+
+        payload = preflight_payload(with_compaction_off(ClaudeAgentOptions()), dict(os.environ))
     except Exception:  # noqa: BLE001 — a diagnostic must never abort the doctor run
         return True
     if payload.total_bytes > payload.total_limit_bytes:

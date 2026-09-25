@@ -20,7 +20,7 @@ provisions the generic delegate the runner hands to ``ClaudeAgentOptions.agents`
 
 from claude_agent_sdk import AgentDefinition
 
-from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
+from teatree.eval.models import AnyOf, EvalSpec, Matcher, SuccessfulToolCallMatcher, canonicalize_tool
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 #: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
@@ -46,7 +46,9 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     """
     referenced: set[str] = set()
     for matcher in spec.matchers:
-        if isinstance(matcher, Matcher):
+        if isinstance(matcher, SuccessfulToolCallMatcher):
+            referenced.update((canonicalize_tool(matcher.tool), canonicalize_tool(matcher.before_tool)))
+        elif isinstance(matcher, Matcher):
             referenced.add(canonicalize_tool(matcher.tool))
             # A negative matcher's ORDER guard names a pivot tool (e.g. Skill);
             # keep it available so the guarded ordering can actually be observed.

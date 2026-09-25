@@ -64,11 +64,12 @@ class LoopSeedSpec:
     the #2904 admission gate skips the loop whenever availability defers questions
     (the owner is unreachable). It is operator-editable and narrower than the
     ``colleague`` reach tag every loop declares in code (#3959): ``review`` reaches
-    colleagues and deliberately keeps running while the owner is away. ``default_enabled``
-    ships the local/read-only operational core ON out of the box (the sound
-    default the squashed ``0001_initial`` seeds ``enabled=True`` on a fresh DB);
-    every colleague-facing, externally-visible, destructive-capable, or
-    token-costly loop stays ``False`` (opt-in).
+    colleagues and deliberately keeps running while the owner is away.
+
+    ``default_enabled`` records which loops are the local/read-only operational core.
+    It is DECLARATIVE only — no live seed path writes it, because the shipped posture is
+    a preset opinion and ``Loop.enabled`` is the manual override. The frozen
+    ``0001_initial`` still carries its inlined copy, pinned against this table.
     """
 
     name: str
@@ -137,13 +138,13 @@ def seed_default_loops_and_prompts() -> SeedResult:
     exactly as-is — the seed only fills in rows that are absent. A prompt-backed
     loop's :class:`Prompt` is seeded first so the FK resolves.
 
-    **Sound operational defaults (reversing the #2513 all-paused cutover).** The
-    local/read-only operational core (``spec.default_enabled``) lands
-    ``enabled=True`` so a fresh install works out of the box; every
-    colleague-facing, externally-visible, destructive-capable, or token-costly
-    loop stays ``enabled=False`` (opt-in). ``get_or_create`` never reaches the
-    ``defaults`` for a row that already exists, so an operator who ENABLED a
-    paused loop — or DISABLED a default-on one — keeps that choice.
+    **The seed never writes ``enabled``.** That column is the MANUAL override layer, so
+    a value there is a human intervention carrying its reason; seeding one would forge an
+    override with no reason that nothing could ever propose lifting — and, because the
+    manual layer outranks the preset, would leave the whole preset cascade inert on a box
+    whose rows the seed created. Which loops RUN is the preset's opinion: the shipped
+    ``[modes.<name>].entries`` tables, and ``Mode.objects.backfill_loop`` writing a new
+    loop OFF in every existing preset so it is quiet at birth.
 
     **Descriptions backfill onto existing rows.** ``get_or_create`` populates
     ``description`` on a fresh row; an earlier install's row predates the field and
@@ -173,7 +174,6 @@ def seed_default_loops_and_prompts() -> SeedResult:
             "delay_seconds": spec.delay_seconds,
             "daily_at": spec.daily_at,
             "description": spec.description,
-            "enabled": spec.default_enabled,
             "colleague_facing": spec.colleague_facing,
         }
         if prompt is not None:

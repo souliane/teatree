@@ -100,11 +100,16 @@ def _validated_slot(days: list[int] | tuple[int, ...], start_time: str, preset_n
 
 
 def _parse_hhmm(raw: str) -> dt.time:
+    value = raw.strip()
     try:
-        return dt.time.fromisoformat(raw.strip())
+        parsed = dt.time.fromisoformat(value)
     except ValueError as exc:
         msg = f"invalid start time {raw!r}; use HH:MM"
         raise PresetEditError(msg) from exc
+    if value != parsed.strftime("%H:%M"):
+        msg = f"invalid start time {raw!r}; use HH:MM"
+        raise PresetEditError(msg)
+    return parsed
 
 
 def _require_schedule(name: str) -> ModeSchedule:

@@ -62,6 +62,32 @@ class TestListSubcommand:
 
         assert "answered" in out
 
+    def test_list_marks_a_row_the_answer_loop_already_handled(self) -> None:
+        """A handled row must not print identically to a queued one.
+
+        The measured failure: row #52 ("where do we stand?") had been
+        :eyes:-reacted, stamped ``loop_replied_at``/``delegated`` and had an
+        ``answering`` Task dispatched — yet printed as ``#52 [question]``,
+        the same shape as an untouched row. Read as "still queued", which is
+        what produced the false "the loop selects nothing" diagnosis.
+        """
+        row = PendingChatInjection.record(channel="D", slack_ts="1", text="where do we stand?")
+        assert row is not None
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.DELEGATED) is True
+
+        out = _call("pending_chat", "list")
+
+        assert "delegated" in out
+
+    def test_list_marks_an_untouched_row_as_queued(self) -> None:
+        """The inverse control: a genuinely unhandled row says so, and says nothing else."""
+        PendingChatInjection.record(channel="D", slack_ts="1", text="where do we stand?")
+
+        out = _call("pending_chat", "list")
+
+        assert "queued" in out
+        assert "delegated" not in out
+
     def test_list_marks_consumed_rows(self) -> None:
         row = PendingChatInjection.record(channel="D", slack_ts="1", text="status update")
         assert row is not None

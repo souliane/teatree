@@ -18,6 +18,10 @@ suppressible shape of the on-behalf gate
 (:mod:`teatree.core.on_behalf_gate_recorded`) and ``MergeClear``:
 
 *   not display-impacting → pass (the gate only governs user-visible work);
+*   the ticket's repo ships no customer display surface at all → pass (a
+    repo-level exemption the overlay declares, for a repo whose every file is
+    non-impacting by construction — a skills/docs repo — so no glob list has to
+    keep up with each new fixture kind it grows);
 *   kill-switch off → pass (the operator's deliberate, audited opt-out);
 *   a green AND posted ``E2eMandatoryRun`` at ``head_sha`` → pass;
 *   an unconsumed ``E2EBypassApproval`` at ``(ticket, head_sha)`` → consume it
@@ -33,10 +37,16 @@ refuse early before expensive prep; the real pass then goes through
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay_loader import get_overlay
+from teatree.utils.url_slug import slug_from_issue_or_pr_url
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 
 class E2EMandatoryGateError(InvalidTransitionError):
@@ -53,9 +63,11 @@ class E2EMandatoryGateError(InvalidTransitionError):
 class GateInputs:
     """The mandatory-E2E gate's inputs, resolved once and passed as a unit.
 
-    ``display_impacting`` is the overlay classifier's verdict over
-    ``changed_files``; ``head_sha`` is the reviewed tree the evidence/bypass
-    bind to; ``gate_enabled`` is the resolved kill-switch.
+    ``display_impacting`` is the overlay's verdict over ``changed_files`` —
+    ``False`` when the ticket's repo carries no customer display surface at all,
+    otherwise the per-path classifier's answer; ``head_sha`` is the reviewed
+    tree the evidence/bypass bind to; ``gate_enabled`` is the resolved
+    kill-switch.
     """
 
     ticket: Ticket
@@ -76,6 +88,17 @@ def _gate_enabled(overlay_name: str | None) -> bool:
     return bool(get_effective_settings(overlay_name).e2e_mandatory_gate_enabled)
 
 
+def _repo_has_no_display_surface(overlay: "OverlayBase", ticket: Ticket) -> bool:
+    """Whether *ticket*'s repo is one the overlay declares wholly free of customer display surface.
+
+    The repo is read off ``ticket.issue_url`` — the only repo identity the gate
+    holds at both of its call sites — and an unparsable or absent URL yields no
+    slug, which matches no declaration and so keeps the per-path classifier.
+    """
+    slug = slug_from_issue_or_pr_url(urlparse(ticket.issue_url or "").path)
+    return bool(slug) and slug in overlay.review.mandatory_e2e_exempt_repo_slugs()
+
+
 def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: str) -> GateInputs:
     """Build :class:`GateInputs` for *ticket* at the reviewed *head_sha*.
 
@@ -90,12 +113,18 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
     presumed display-impacting so the gate is never silently skipped by a
     misconfigured ticket. The evidence / bypass / kill-switch escapes keep this
     from being a hard lockout.
+
+    A repo the overlay declares display-surface-free short-circuits the path
+    classifier: no file in it can reach a customer screen, so no diff in it can.
+    Every other repo still goes through the fail-closed per-path classifier.
     """
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         overlay = get_overlay(ticket.overlay or None)
-        display_impacting = overlay.review.classify_customer_display_impact(changed_files)
+        display_impacting = not _repo_has_no_display_surface(
+            overlay, ticket
+        ) and overlay.review.classify_customer_display_impact(changed_files)
     except ImproperlyConfigured:
         display_impacting = True
     return GateInputs(
@@ -107,11 +136,26 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
     )
 
 
+_DIFF_PATHS_SHOWN = 10
+
+
+def _diff_summary(inputs: GateInputs) -> str:
+    """The diff the verdict was computed over, so the reader never has to guess it."""
+    if not inputs.changed_files:
+        return "the diff enumerated NO files, which is itself ambiguous and classifies impacting"
+    shown = inputs.changed_files[:_DIFF_PATHS_SHOWN]
+    elided = len(inputs.changed_files) - len(shown)
+    return ", ".join(shown) + (f" (+{elided} more)" if elided else "")
+
+
 def _deny_message(inputs: GateInputs) -> str:
     return (
-        f"Refusing to ship/CLEAR ticket {inputs.ticket.pk}: the change is customer-display-impacting "
-        f"(a serializer / view / frontend / template / document-generation file is in the diff) but has "
-        f"no green PUBLISHED E2E evidence at the reviewed tree {inputs.head_sha[:8]}. E2E is a mandatory FSM "
+        f"Refusing to ship/CLEAR ticket {inputs.ticket.pk}: the change classified customer-display-"
+        f"impacting and has no green PUBLISHED E2E evidence at the reviewed tree {inputs.head_sha[:8]}. "
+        f"The verdict is FAIL-CLOSED and says only that a changed path did not match the overlay's "
+        f"non-impacting allowlist — NOT that a serializer / view / frontend / template / "
+        f"document-generation file is present, since an unanticipated path reads identically. "
+        f"The diff at that tree: {_diff_summary(inputs)}. E2E is a mandatory FSM "
         f"step for anything that could impact what is displayed to the customer, and a run recorded only in "
         f"the teatree DB is not enough — the evidence must live where reviewers read it (#1967). Satisfy the "
         f"gate with EITHER:\n"

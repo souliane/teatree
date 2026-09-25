@@ -41,7 +41,7 @@ _FORGE_MERGE_TIMEOUT_SECONDS = 60.0
 
 
 def gh_runner(token: str) -> Runner:
-    """A ``gh`` allow-to-fail runner — auth via ``GH_TOKEN`` when *token* is set.
+    """A ``gh`` allow-to-fail runner authenticated only by its routed token.
 
     Distinct from ``github._run_gh`` (which uses ``run_checked`` and raises on
     non-zero): the merge-RPC methods inspect the return code, so they need the
@@ -51,8 +51,12 @@ def gh_runner(token: str) -> Runner:
     """
 
     def run(argv: list[str]) -> tuple[int, str, str]:
+        if not token:
+            return 4, "", "github_token_pass_key resolved no token; refusing ambient gh authentication"
         gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": token} if token else None
+        env: dict[str, str] = dict(os.environ)
+        env["GH_TOKEN"] = token
+        env.pop("GITHUB_TOKEN", None)
         result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env, timeout=_FORGE_MERGE_TIMEOUT_SECONDS)
         return result.returncode, result.stdout, result.stderr
 
@@ -348,10 +352,13 @@ class GhMergeRpc:
             return [CHANGED_PATHS_UNAVAILABLE]
         return [line.strip() for line in out.splitlines() if line.strip()]
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+    ) -> ForgeMergeResult:
         endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
+        method = "squash" if squash else "merge"
         rc, out, err = self._run(
-            ["api", "--method", "PUT", endpoint, "-f", "merge_method=squash", "-f", f"sha={expected_head_oid}"],
+            ["api", "--method", "PUT", endpoint, "-f", f"merge_method={method}", "-f", f"sha={expected_head_oid}"],
         )
         merged_sha = ""
         if rc == 0:

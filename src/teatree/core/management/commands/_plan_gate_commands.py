@@ -21,8 +21,9 @@ from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.plan_adequacy import declared_seam_paths, is_valid_base_sha
+from teatree.core.models.plan_adequacy import declared_seam_paths, is_plan_bypass_shaped, is_valid_base_sha
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.rubric import RubricError
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from teatree.core.models.types import PlanAdequacy
@@ -84,7 +85,7 @@ def record_bypass_and_advance(*, ticket: Ticket, plan_text: str, recorded_by: st
 
     The audited-bypass sibling of :func:`record_artifact_and_advance`; delegates to
     :meth:`PlanArtifact.record_bypass` so the write is exempt from the strict
-    ``require_plan_adequacy`` enforcement.
+    adequacy enforcement.
     """
     return _advance_with(
         ticket, lambda: PlanArtifact.record_bypass(ticket=ticket, plan_text=plan_text, recorded_by=recorded_by)
@@ -244,14 +245,29 @@ def reaffirm_plan(
             base_sha=cleaned_new,
             adequacy=manifest,
         )
-    except ValueError as exc:
-        # Covers BOTH an inadequate carried-forward manifest (no fresh supplied) and a
-        # thin/garbage fresh_adequacy — the fresh-manifest path is not an adequacy bypass.
+    except RubricError as exc:
+        # The manifest IS adequate — every section speaks. What is refused is the rubric
+        # its criteria would build, so pointing at the manifest sends the operator to the
+        # wrong section.
         msg = (
-            f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc} The manifest to record "
-            f"(carried-forward, or supplied via --adequacy-json) is not adequate. Supply a complete four-section "
-            f"manifest with `--adequacy-json '<{{design,integration_seams,edge_cases,test_strategy}}>'`, OR record "
-            f"an audited bypass (`ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR "
-            f"disable the gate (`config_setting set require_plan_adequacy false --overlay <name>`)."
+            f"cannot reaffirm ticket {ticket.pk}: the acceptance criteria it would record are refused — {exc}. "
+            f"Rewrite `acceptance_criteria` in --adequacy-json with a criterion that can FAIL."
         )
+        raise ReaffirmError(msg) from exc
+    except ValueError as exc:
+        # Covers an inadequate carried-forward manifest (no fresh supplied) and a
+        # thin/garbage fresh_adequacy — the fresh-manifest path is not an adequacy bypass.
+        # A manifest that declares NOTHING is refused for being the human-authorized
+        # bypass, not for being thin — its own message already names the escape.
+        remedy = (
+            ""
+            if is_plan_bypass_shaped(manifest)
+            else (
+                f" The manifest to record (carried-forward, or supplied via --adequacy-json) is not adequate. "
+                f"Supply a complete five-section manifest with `--adequacy-json "
+                f"'<{{design,integration_seams,edge_cases,test_strategy,acceptance_criteria}}>'`, OR record "
+                f"an audited bypass (`ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`)."
+            )
+        )
+        msg = f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc}{remedy}"
         raise ReaffirmError(msg) from exc

@@ -16,6 +16,7 @@ from django.core.management import call_command
 
 from teatree.core.models import ConfigSetting
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -56,15 +57,15 @@ class _RouteAwareFake:
         return "https://slack.example/p1"
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
     ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
-    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
+    seed_forbidding_posture() if forbidding else seed_permitting_posture()
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
 
 class TestNotifyCliBypassClosed:
     def test_notify_react_colleague_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, "ask")
+        _gate(tmp_path, monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         monkeypatch.setattr(
             "teatree.core.management.commands.notify.messaging_from_overlay",
@@ -76,7 +77,7 @@ class TestNotifyCliBypassClosed:
         assert fake.react_routed_calls == []
 
     def test_notify_react_self_dm_ungated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, "ask")
+        _gate(tmp_path, monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         monkeypatch.setattr(
             "teatree.core.management.commands.notify.messaging_from_overlay",
@@ -86,7 +87,7 @@ class TestNotifyCliBypassClosed:
         assert fake.react_routed_calls == [(_DM_CHANNEL, "1.1", "eyes")]
 
     def test_notify_post_colleague_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, "ask")
+        _gate(tmp_path, monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         monkeypatch.setattr(
             "teatree.core.management.commands.notify.messaging_from_overlay",

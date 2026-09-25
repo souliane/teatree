@@ -137,7 +137,13 @@ class TestSiblingSupersedeIsRepoScoped(TestCase):
 class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
     """Both merge paths cross ``execute_bound_merge``; the ticket-scoped gates must run there."""
 
-    def test_unresolvable_ticket_is_a_no_op_with_both_settings_off(self) -> None:
+    def test_a_pr_no_ticket_owns_is_outside_the_rubric_gate(self) -> None:
+        """A PR the factory did not author is outside the rubric gate's subject.
+
+        `pr create` ledgers every factory PR with its ticket and a keystone CLEAR carries
+        one, so no resolvable ticket means no plan to grade and no ticket a bypass could
+        be recorded on — refusing there is a lockout with no escape, not a gate.
+        """
         assert_ticket_scoped_gates(slug=_REPO, pr_id=9001, head_sha=_SHA)
 
     def test_unresolvable_ticket_refuses_while_a_setting_is_in_force(self) -> None:

@@ -2,9 +2,9 @@
 
 ``fetch_live_head_sha`` returns ``""`` for every failure, so an empty result is a
 non-answer. The keystone formatted it into a sentence asserting "PR head moved"
-and offered two hypotheses that excluded the real one — the merge ran from a
-``docker compose exec`` shell carrying none of the ambient forge credentials, so
-every forge read returned nothing while the head had not moved at all.
+and offered two hypotheses that excluded the real one — the routed forge
+credential was unavailable, so every forge read returned nothing while the head
+had not moved at all.
 
 These tests pin the three-state split: resolved+equal proceeds, resolved+differs
 keeps the existing head-moved message byte-for-byte, and unreadable gets its own
@@ -115,9 +115,9 @@ class TestUnreadableHeadIsNotAMovedHead(TestCase):
     def test_message_names_the_credential_and_venue_cause(self) -> None:
         message = _refusal_message(mapping={}, candidates=[_INITIAL_SLUG])
 
+        assert "github_token_pass_key" in message
         assert "GH_TOKEN" in message
-        assert "GITHUB_TOKEN" in message
-        assert "docker compose exec" in message
+        assert "intentionally ignored" in message
 
     def test_message_states_the_clear_survives_for_the_authed_loop(self) -> None:
         message = _refusal_message(mapping={}, candidates=[_INITIAL_SLUG])
@@ -282,7 +282,8 @@ class TestStepTwoUnreadableHeadCarriesTheSameAdvisory(TestCase):
 
         message = str(exc.value)
         assert "could not resolve the live head SHA" in message
-        assert "docker compose exec" in message
+        assert "github_token_pass_key" in message
+        assert "UNREADABLE" in message
         assert "CLEAR stays actionable" in message
         assert "PR head moved" not in message
 
@@ -293,20 +294,21 @@ class TestAdvisoryNeverOverClaims(TestCase):
     def test_unknown_host_kind_falls_back_to_the_github_credentials(self) -> None:
         assert read_credential_env_vars("bitbucket") == read_credential_env_vars("github")
 
-    def test_present_token_rules_the_credential_out(self) -> None:
+    def test_present_ambient_token_does_not_rule_out_the_routed_credential(self) -> None:
         with patch.dict(os.environ, {**_NO_AMBIENT_TOKENS, "GH_TOKEN": "x" * 8}, clear=False):
             advisory = unreadable_head_advisory("github")
 
+        assert "github_token_pass_key" in advisory
         assert "GH_TOKEN" in advisory
-        assert "not the cause" in advisory
-        assert "docker compose exec" not in advisory
+        assert "intentionally ignored" in advisory
 
-    def test_absent_token_names_the_venue_cause(self) -> None:
+    def test_absent_ambient_token_still_names_the_bound_route(self) -> None:
         with patch.dict(os.environ, _NO_AMBIENT_TOKENS, clear=False):
             advisory = unreadable_head_advisory("github")
 
-        assert "docker compose exec" in advisory
-        assert "not the cause" not in advisory
+        assert "github_token_pass_key" in advisory
+        assert "UNSET" in advisory
+        assert "UNREADABLE" in advisory
 
 
 class TestAdvisoryNamesTheChainTheFailingReadActuallyUSES(TestCase):
@@ -319,20 +321,21 @@ class TestAdvisoryNamesTheChainTheFailingReadActuallyUSES(TestCase):
         with patch.dict(os.environ, _NO_AMBIENT_TOKENS, clear=False):
             assert "GLAB_TOKEN" not in unreadable_head_advisory("gitlab")
 
-    def test_gitlab_names_the_pass_fallback_the_absent_env_var_did_not_rule_out(self) -> None:
-        """GitLab resolves ``GITLAB_TOKEN`` env-FIRST then ``pass``, so an unset var proves nothing."""
+    def test_gitlab_names_the_bound_route_the_absent_env_var_did_not_rule_out(self) -> None:
+        """GitLab resolves ``GITLAB_TOKEN`` env-first, then the bound route."""
         with patch.dict(os.environ, _NO_AMBIENT_TOKENS, clear=False):
             advisory = unreadable_head_advisory("gitlab")
 
-        assert "gitlab/pat" in advisory
+        assert "gitlab_token_pass_key" in advisory
+        assert "gitlab/pat" not in advisory
 
-    def test_github_names_the_gh_config_fallback(self) -> None:
-        """``gh`` also authenticates from its own config file, so an unset var proves nothing."""
+    def test_github_names_the_bound_route_and_refuses_gh_config_fallback(self) -> None:
         with patch.dict(os.environ, _NO_AMBIENT_TOKENS, clear=False):
             advisory = unreadable_head_advisory("github")
 
-        assert "gh" in advisory
-        assert "config" in advisory
+        assert "github_token_pass_key" in advisory
+        assert "stored gh login" in advisory
+        assert "ignored" in advisory
 
 
 class TestProbeReportsEveryCandidateHead(TestCase):

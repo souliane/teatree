@@ -6,7 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, FinalStateMatcher, JudgeSpec, Matcher
+from teatree.eval.models import (
+    AnyOf,
+    EvalRun,
+    EvalSpec,
+    EvalToolCall,
+    FinalStateMatcher,
+    JudgeSpec,
+    Matcher,
+    SuccessfulToolCallMatcher,
+)
 from teatree.eval.report import (
     JudgeOutcome,
     MatcherResult,
@@ -67,7 +76,7 @@ class TestEvaluate:
         run = _run(terminal_reason="skipped: claude not on PATH")
         result = evaluate(spec, run)
         assert result.skipped is True
-        assert result.passed is True
+        assert result.passed is False
         assert result.matcher_results == ()
 
     def test_passes_when_positive_matcher_finds_call(self) -> None:
@@ -360,6 +369,30 @@ class TestRenderText:
 
 
 class TestRenderJson:
+    def test_serializes_complete_successful_call_requirement(self) -> None:
+        matcher = SuccessfulToolCallMatcher(
+            tool="Bash",
+            arg_path="command",
+            operator="~",
+            value="pytest",
+            result_operator="contains",
+            result_value="passed",
+            before_tool="Bash",
+            before_arg_path="command",
+            before_operator="~",
+            before_value="git push",
+        )
+        spec = _spec(matchers=(matcher,))
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(),
+            matcher_results=(MatcherResult(matcher=matcher, passed=False, message="not proved"),),
+            skipped=False,
+        )
+        [serialized] = json.loads(render_json([result]))["scenarios"][0]["matchers"]
+        assert serialized["result_value"] == "passed"
+        assert serialized["before_value"] == "git push"
+
     def test_serializes_pass_and_summary(self) -> None:
         spec = _spec()
         result = ScenarioResult(
@@ -596,11 +629,12 @@ class TestJudgeIntegration:
         assert result.passed is False
 
     def test_matchers_still_gate_a_judge_spec_on_a_grader_less_lane(self) -> None:
-        # A spec with BOTH matchers and a judge still grades its matchers when no
-        # grader is injected (only the pure judge-only case skips).
+        # --judge is opt-in; deterministic matchers remain sufficient on the
+        # default weekly lane when no judge was requested.
         spec = _judged_spec()
         result = evaluate(spec, _run(tool_calls=_PASS_CALL))
         assert result.skipped is False
+        assert result.matcher_results[0].passed is True
         assert result.passed is True
 
     def test_judge_pass_with_matchers_pass_is_pass(self) -> None:
@@ -612,14 +646,14 @@ class TestJudgeIntegration:
         result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
         assert result.passed is True
 
-    def test_skipped_judge_does_not_fail_scenario(self) -> None:
+    def test_skipped_required_judge_does_not_pass_scenario(self) -> None:
         spec = _judged_spec()
 
         def _grader(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
             return JudgeOutcome(passed=False, skipped=True, rationale="claude missing")
 
         result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
-        assert result.passed is True
+        assert result.passed is False
 
     def test_judge_rationale_in_text_report_on_failure(self) -> None:
         spec = _judged_spec()

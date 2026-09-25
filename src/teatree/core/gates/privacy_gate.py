@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.hooks import term_match
 from teatree.utils.throttled_log import warn_throttled
 
@@ -297,13 +298,26 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
     visibility probe to the right tool.
 
-    On a PUBLIC target the scan vocabulary is the overlay's ``privacy_redact_terms``
-    UNIONED with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`) — the
-    latter is where the customer codenames actually live, so scanning only the
-    overlay terms let a banned codename leak to a public forge. Both feed the same
-    whole-token :mod:`teatree.hooks.term_match` matcher via :func:`scan_for_publication`.
+    The overlay whose rules attribute the scan is the one that OWNS *target_repo*
+    (:func:`~teatree.core.overlays.repo_ownership.owning_overlay_for_repo`), not
+    whichever is ambient: on a multi-overlay install a bare resolution RAISES on every
+    send, and the #1295 union that caught it also swallowed a genuine per-overlay read
+    failure into ``([], [])`` — scanning a public target with the built-in detectors
+    only. Naming the owner restores the fail-CLOSED read for the overlay that actually
+    governs the target.
 
-    Two fail-CLOSED refusals guard a public target: when the overlay's privacy
+    On a PUBLIC target the scan vocabulary is that overlay's ``privacy_redact_terms``
+    UNIONED with every registered overlay's (:func:`_registered_overlay_rules_union`)
+    and with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`). The
+    registry union is deliberate and unchanged by the attribution above: a term one
+    overlay marks private does not stop being private because a sibling overlay owns
+    the destination, and unioning can only refuse MORE, never leak more (#1295). The
+    banned-terms list is where the customer codenames actually live, so scanning only
+    overlay terms let a banned codename leak to a public forge. All three feed the
+    same whole-token :mod:`teatree.hooks.term_match` matcher via
+    :func:`scan_for_publication`.
+
+    Two fail-CLOSED refusals guard a public target: when the owning overlay's privacy
     rules cannot be resolved (:func:`overlay_privacy_rules` returns ``None``) the
     gate REFUSES with a synthetic ``overlay-rules-unresolvable`` match, and when the
     banned-terms source is unreadable (:func:`_db_banned_terms` returns ``None``) it
@@ -313,7 +327,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     """
     if not _target_is_public(target_repo, forge):
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
-    rules = overlay_privacy_rules()
+    rules = overlay_privacy_rules(owning_overlay_for_repo(target_repo, forge=forge))
     if rules is None:
         warn_throttled(
             logger,
@@ -342,12 +356,13 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
             matches=(PrivacyMatch(pattern_name="banned-terms-unresolvable", matched_text="", position=0),),
         )
     redact_terms, block_patterns = rules
+    union_redact, union_block = _registered_overlay_rules_union()
     return scan_for_publication(
         text=text,
         target_repo=target_repo,
         public_repos=[target_repo],
-        redact_terms=list(dict.fromkeys([*redact_terms, *banned])),
-        block_patterns=block_patterns,
+        redact_terms=list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
+        block_patterns=list(dict.fromkeys([*block_patterns, *union_block])),
     )
 
 

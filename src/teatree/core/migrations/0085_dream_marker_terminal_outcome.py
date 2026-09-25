@@ -5,7 +5,8 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0084_merge_reclaim_pressure"),
+        # Upstream's parent is 0084_merge_reclaim_pressure; the fork runs this chain after its own 0112.
+        ("core", "0112_merge_agent_routes_and_fire_anchor"),
     ]
 
     operations = [

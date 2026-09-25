@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ from teatree.backends.sentry import SentryClient
 from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.types import Service
+from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     OwnerMessagingTransport,
@@ -48,6 +50,11 @@ class _TokenConfig(OverlayConfig):
     def get_gitlab_token(self) -> str:
         return "gl-test-token"
 
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = "test/gitlab" if name == "gitlab_token" else ""
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
 
 class _TokenOverlay(OverlayBase):
     config = _TokenConfig()
@@ -67,12 +74,16 @@ class _NoTokenOverlay(OverlayBase):
         return []
 
 
+@contextmanager
 def _patch_overlay(overlay_cls):
-    return patch.object(
-        overlay_loader_mod,
-        "_discover_overlays",
-        return_value={"test": overlay_cls()},
-    )
+    with (
+        patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay_cls()}),
+        patch(
+            "teatree.core.overlays.forge_credential_provider.read_pass",
+            side_effect=lambda entry: {"test/github": "gh-test-token", "test/gitlab": "gl-test-token"}.get(entry, ""),
+        ),
+    ):
+        yield
 
 
 def test_code_host_from_overlay_returns_none_when_no_token() -> None:
@@ -493,12 +504,17 @@ class _BothTokenConfig(OverlayConfig):
     def get_gitlab_token(self) -> str:
         return "gl-test-token"
 
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = {"github_token": "test/github", "gitlab_token": "test/gitlab"}.get(name, "")
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
 
 class _BothTokenOverlay(OverlayBase):
     config = _BothTokenConfig()
 
     def get_repos(self):
-        return []
+        return ["souliane/teatree"]
 
     def get_provision_steps(self, worktree):
         return []

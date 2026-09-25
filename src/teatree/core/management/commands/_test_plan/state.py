@@ -12,10 +12,11 @@ import re
 from collections.abc import Mapping
 from typing import NotRequired, TypedDict
 
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, coerce_bdd_source
 from teatree.core.management.commands._test_plan.scenario import ScenarioSection, coerce_scenario_section
 
-# The two columns of every workflow table. Dev on the LEFT, Local on the RIGHT.
-_ENVS = ("dev", "local")
+# The evidence sides in column order; Stack is a run against a remote stack.
+_ENVS = ("dev", "local", "stack")
 
 # The known body templates; the default is the side-by-side capture matrix.
 DEFAULT_TEMPLATE = "capture-matrix"
@@ -93,19 +94,22 @@ class PlanState(ScenarioSection):
     mrs: list[str]
     dev: SideState
     local: SideState
+    stack: SideState
     steps: dict[str, list[str]]
     template: NotRequired[str]
     blocked_workflows: NotRequired[dict[str, str]]
+    scenario_source: NotRequired[BddScenarioSource]
 
 
 def empty_state(*, ticket: str, title: str) -> PlanState:
-    """A fresh state with both sides empty."""
+    """A fresh state with every evidence side empty."""
     return {
         "ticket": ticket,
         "title": title,
         "mrs": [],
         "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
         "local": {"commits": {}, "workflows": {}},
+        "stack": {"commits": {}, "workflows": {}},
         "steps": {},
     }
 
@@ -149,6 +153,7 @@ def coerce_state(raw: object) -> PlanState:
         "mrs": [str(m) for m in _as_list(raw_dict.get("mrs"))],
         "dev": _coerce_side(raw_dict.get("dev"), env="dev"),
         "local": _coerce_side(raw_dict.get("local"), env="local"),
+        "stack": _coerce_side(raw_dict.get("stack"), env="stack"),
         "steps": _coerce_steps(raw_dict.get("steps")),
     }
     template = str(raw_dict.get("template") or "").strip()
@@ -157,6 +162,9 @@ def coerce_state(raw: object) -> PlanState:
     blocked = _coerce_blocked_workflows(raw_dict.get("blocked_workflows"))
     if blocked:
         state["blocked_workflows"] = blocked
+    scenario_source = coerce_bdd_source(raw_dict.get("scenario_source"))
+    if scenario_source is not None:
+        state["scenario_source"] = scenario_source
     state.update(coerce_scenario_section(raw_dict))
     return state
 

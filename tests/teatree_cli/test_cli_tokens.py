@@ -27,7 +27,7 @@ class TestTokensCliDelegation:
             result = runner.invoke(_app, [])
         assert result.exit_code == 0
         ensure_mock.assert_called_once_with()
-        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, refresh=False)
+        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, cached=False, pick=False, scope="")
 
     def test_passes_the_json_flag(self) -> None:
         with (
@@ -36,7 +36,7 @@ class TestTokensCliDelegation:
         ):
             result = runner.invoke(_app, ["--json"])
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("tokens", json_output=True, tokens=None, refresh=False)
+        call_mock.assert_called_once_with("tokens", json_output=True, tokens=None, cached=False, pick=False, scope="")
 
     def test_passes_repeated_token_options_in_order(self) -> None:
         with (
@@ -46,21 +46,33 @@ class TestTokensCliDelegation:
             result = runner.invoke(_app, ["--token", "TOK-oauth-A", "--token", "TOK-apikey-B"])
         assert result.exit_code == 0
         call_mock.assert_called_once_with(
-            "tokens", json_output=False, tokens=["TOK-oauth-A", "TOK-apikey-B"], refresh=False
+            "tokens",
+            json_output=False,
+            tokens=["TOK-oauth-A", "TOK-apikey-B"],
+            cached=False,
+            pick=False,
+            scope="",
         )
 
-    def test_passes_the_refresh_flag(self) -> None:
+    def test_passes_the_cached_flag(self) -> None:
         with (
             patch("teatree.cli.tokens.ensure_django"),
             patch("django.core.management.call_command") as call_mock,
         ):
-            result = runner.invoke(_app, ["--refresh"])
+            result = runner.invoke(_app, ["--cached"])
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, refresh=True)
+        call_mock.assert_called_once_with("tokens", json_output=False, tokens=None, cached=True, pick=False, scope="")
 
-    def test_refresh_option_help_names_the_stale_verdict_it_escapes(self) -> None:
-        option = inspect.signature(tokens).parameters["refresh"].default
-        assert "/login" in option.help
+    def test_passes_the_pick_flag_and_its_scope(self) -> None:
+        with (
+            patch("teatree.cli.tokens.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(_app, ["--pick", "--scope", "acme"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with(
+            "tokens", json_output=False, tokens=None, cached=False, pick=True, scope="acme"
+        )
 
     def test_token_option_help_warns_about_command_line_exposure(self) -> None:
         option = inspect.signature(tokens).parameters["tokens"].default

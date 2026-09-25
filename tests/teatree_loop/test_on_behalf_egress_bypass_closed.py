@@ -14,6 +14,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -26,6 +27,7 @@ from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -44,7 +46,7 @@ class _RouteAwareFake:
 
     dm_channel_id: str = _DM_CHANNEL
     user_id: str = _USER_ID
-    routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
+    routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True, "ts": "1700000000.002"})
     react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
     post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
@@ -85,7 +87,7 @@ class _RouteAwareFake:
 @dataclass
 class _Host:
     state: PrOpenState = PrOpenState.MERGED
-    user: str = ""
+    user: str = "owner"
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
         return self.state
@@ -97,10 +99,9 @@ class _Host:
         return "a-colleague"
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
     ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
-    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
-    ConfigSetting.objects.set_value("review_nag_enabled", value=True)
+    seed_forbidding_posture() if forbidding else seed_permitting_posture()
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
 
@@ -123,7 +124,7 @@ class TestMergeReactBypassClosed(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_blocks_and_releases_claim_under_ask(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         post = _seed()
         fake = _RouteAwareFake()
         signal = react_merge_on_post(post, fake, host=_Host(), identities=())
@@ -134,7 +135,7 @@ class TestMergeReactBypassClosed(TestCase):
         assert signal.kind == "review_request_merge_react.gated"
 
     def test_fires_once_and_audits_with_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         OnBehalfApproval.record(target=_MR, action="merge_reaction", approver_id=_APPROVER)
         post = _seed()
         fake = _RouteAwareFake()
@@ -150,7 +151,7 @@ class TestReviewDoneReactionBypassClosed(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_no_reaction_no_claim_under_ask(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         _seed()
         fake = _RouteAwareFake()
         posted = emit_review_done_reactions(slug="o/r", pr_id=1, emojis=["eyes", "white_check_mark"], messaging=fake)
@@ -159,7 +160,7 @@ class TestReviewDoneReactionBypassClosed(TestCase):
         assert OutboundClaim.objects.count() == 0
 
     def test_fires_and_claims_with_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         OnBehalfApproval.record(target=_MR, action="review_done_reaction:eyes", approver_id=_APPROVER)
         _seed()
         fake = _RouteAwareFake()
@@ -185,14 +186,14 @@ class TestBroadcastReactionBypassClosed(TestCase):
         )
 
     def test_no_reaction_under_ask(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         self._scanner(fake).scan()
         assert fake.react_routed_calls == []
         assert fake.react_calls == []
 
     def test_reacts_routed_with_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         OnBehalfApproval.record(
             target=_MR,
             action="broadcast_outcome_reaction:white_check_mark",
@@ -211,11 +212,12 @@ class TestNagPostBypassClosed(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_no_post_and_release_claim_under_ask(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         post = _seed()
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
-        signal = scanner._post_engineers_pray(post, fake, timezone.now())
+        with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
+            signal = scanner._post_engineers_pray(post, fake, timezone.now())
         assert fake.post_message_calls == []
         assert fake.post_routed_calls == []
         post.refresh_from_db()
@@ -224,12 +226,13 @@ class TestNagPostBypassClosed(TestCase):
         assert signal.kind == "review_nag.gated"
 
     def test_posts_with_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, "ask")
+        _gate(self.tmp_path, self.monkeypatch, forbidding=True)
         OnBehalfApproval.record(target=_MR, action="review_nag_post", approver_id=_APPROVER)
         post = _seed()
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
-        scanner._post_engineers_pray(post, fake, timezone.now())
+        with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
+            scanner._post_engineers_pray(post, fake, timezone.now())
         assert fake.post_routed_calls == [(_COLLEAGUE, fake.post_routed_calls[0][1], _TS)]
         post.refresh_from_db()
         assert post.last_nag_at is not None

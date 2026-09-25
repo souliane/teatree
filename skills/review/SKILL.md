@@ -46,7 +46,7 @@ Everything you write and everything you review aims at seven attributes. Treat t
 
 - **Clean** — readable, no dead code or duplication, names that say what they hold, and comments that earn their line. An ADDED comment is one line carrying a non-obvious *why*; a multi-line block that narrates what the next lines already say is a real finding (the fix is a rename or a split, not a shorter paragraph), not a style preference. Judge only what the diff ADDS — pre-existing comments are not this review's business. See [`../code/SKILL.md`](../code/SKILL.md) § "Comments Are Code".
 - **Robust** — survives the real failure case, not only the favorable one; edge cases handled, inputs validated.
-- **Maintainable** — the next reader can change it safely; structure documents itself.
+- **Maintainable** — the next reader can change it safely; structure documents itself. The operational test is § "The One-Place Test" below.
 - **Coherent** — fits the surrounding patterns and stays consistent across the whole changeset. Coherence includes **cross-repo coherence** (a referenced artifact — a skill name, a CLI command, a sibling-repo path — must actually exist where it's referenced) and **wired-and-exercised** (a mechanism must actually fire — a hook that's defined but never invoked, or a gate that's declared but never reached, is incoherent even if it reads correctly).
 - **Reliable** — does what it claims under repeated and concurrent use; no flaky or order-dependent behavior.
 - **Proactive** — sweeps the class, not just the instance; when a fix reveals a broader pattern, address the pattern rather than the single symptom.
@@ -124,7 +124,7 @@ t3 <overlay> review status <pr-url> --json       # the full status record, findi
 t3 <overlay> review publish-findings <pr-url>    # post them to the PR (idempotent) — `review record` already tries
 ```
 
-`review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: on the shipped `draft_or_ask` it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
+`review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: under a forbidding posture it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
 
 Discharging a hold needs no new state: verdicts are newest-wins, so a later `merge_safe` recorded at the same head supersedes the HOLD.
 
@@ -132,7 +132,7 @@ Discharging a hold needs no new state: verdicts are newest-wins, so a later `mer
 
 Cleanup checklist:
 
-- [ ] No code duplication introduced
+- [ ] No code duplication introduced — count the files per § "The One-Place Test" below
 - [ ] No dead code left behind
 - [ ] **Comments earn their line:** every comment the diff ADDS is one line carrying a non-obvious *why*. A multi-line block narrating the code is a refactor signal — rename or split rather than shorten the prose. Pre-existing comments stay untouched.
 - [ ] **Routing reachability:** every modified component is reachable via the target flow's route tree. Read the relevant `routes.ts` and confirm the component (or its parent shell) appears there. If the component lives in a flow-specific folder (e.g., `natural-person-calculation/`), verify the target flow actually routes through it.
@@ -148,13 +148,12 @@ After the cleanup checklist, **actively verify each changed file against the rep
 2. **For each changed file**, check against every applicable rule section. Focus on:
 
 - Architectural patterns (e.g., container-presentational, signals-first, inject vs constructor)
-- Feature flag and multi-tenant rules (see [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md) § Review Checklist)
 - Banned patterns (e.g., manual `.subscribe()`, `any` types, hardcoded strings)
 
 3. **Check consistency across the changeset** — if the same pattern is applied differently in two files within the same PR, that's a finding.
-4. **When a repo rule conflicts with a teatree or overlay skill rule**, do NOT silently pick one. Present both rules to the user with the specific conflict, ask which takes precedence, and save their decision to the agent's memory for future reference.
+4. **When a repo rule conflicts with a teatree or overlay skill rule**, do NOT silently pick one. Present both rules to the user with the specific conflict, ask which takes precedence, and record the answer where the rule lives — the repo's agent config or the skill file — so the next reviewer reads it there.
 
-This step catches the class of bugs where the rules exist but weren't applied during implementation — missed feature flags, wrong DI pattern, manual subscriptions where signals were required, etc.
+This step catches the class of bugs where the rules exist but weren't applied during implementation — wrong DI pattern, manual subscriptions where signals were required, etc.
 
 #### Module-Level Architectural Check (Non-Negotiable)
 
@@ -182,6 +181,10 @@ The Module-Level Architectural Check above asks *what's inside* each touched fil
 5. **Obvious reorg opportunities the change reveals.** When implementing the change makes a misplacement plain (e.g. the file you just edited clearly belongs next to the collaborators it now calls), surface the concrete move — but only for files this diff touches.
 
 Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
+
+#### The One-Place Test — Count the Files (Non-Negotiable)
+
+Ask of every concept the diff touches: *if this concept changes shape tomorrow, how many files do I touch?* The answer must be **ONE**; any higher count is a finding that states the count and names the files. A helper called from N sites or deduplicating 3 of 5 sites still leaves more than one. **Centralising is not flattening**: the shared owner holds the invariant and may keep deliberately-distinct strategies distinct. Full text: `skills/review/references/architecture-checks.md`.
 
 #### Keep BLUEPRINT Tight (Qualitative — Not a Byte Gate)
 
@@ -228,7 +231,7 @@ Correctness is the **maker's** responsibility, not the reviewer's. Colleagues re
 1. **Retrieved and analyzed in depth** — the ticket / Notion / spec and every linked document were fetched and read (the deep-retrieval constraint above), and the diff was mapped against the acceptance criteria, not assumed.
 2. **Planned in depth using the overlay skills** — the architecture pass (`/t3:architecture-design`) and the overlay's coding skill informed the approach before code was written.
 3. **Coded using the skills** — implementation followed the loaded coding skills, not improvised.
-4. **Self-reviewed using the skills** — the checklist above plus the **anti-vacuity proof on every NEW regression test**: revert the production fix and confirm the test goes **RED**; if it stays green it guards nothing. The canonical vacuity pattern is a guard that **skips the failing case** — a `seen >= 2` / `>= N` gate, a first-iteration skip, an assertion on a structurally-guaranteed post-condition the buggy code also satisfies. The full rule is the source of truth in [`../code/SKILL.md`](../code/SKILL.md) § "TDD Discipline" ("A regression test is only valid if it has been observed to FAIL on the pre-fix code"); do not duplicate it, apply it.
+4. **Self-reviewed using the skills** — the checklist above plus the **anti-vacuity proof on every NEW regression test**: revert the production fix and confirm the test goes **RED**; if it stays green it guards nothing. The canonical vacuity pattern is a guard that **skips the failing case** — a `seen >= 2` / `>= N` gate, a first-iteration skip, an assertion on a structurally-guaranteed post-condition the buggy code also satisfies, or a check whose clean verdict came from an input it never actually read. The full rule is the source of truth in [`../code/SKILL.md`](../code/SKILL.md) § "TDD Discipline" ("A regression test is only valid if it has been observed to FAIL on the pre-fix code"); do not duplicate it, apply it.
 5. **E2E created when relevant** — UI / cross-service behavior carries a Playwright spec (`/t3:e2e`).
 
 A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
@@ -243,6 +246,8 @@ t3 <overlay> lifecycle record-anti-vacuity <ticket-id> \
 ```
 
 The flag is `--head-sha`, not `--sha`.
+
+**Record the review's own evidence, or the gates that read it can never be armed** — `review record-evidence`, `lifecycle record-review-context`, and `review record --ticket-id`. Full text: `skills/review/references/verdict-envelope.md`.
 
 **Independent adversarial review is an *optional escalation*, not a requirement.** For a complicated implementation — subtle concurrency, a wide blast radius, a contract change across services — escalate to an independent adversarial pass (e.g. a `codex` cold-review, reviewer ≠ maker) to falsify the diff against each acceptance criterion. For ordinary changes the skilled self-review above is the bar; don't gate every MR on a second reviewer.
 
@@ -288,6 +293,10 @@ This chapter's deliverable is one of two things, and the reporting rules are **o
 
 **In the envelope, record what you actually observed** — every finding, including the uncertain and the low-severity ones, each carrying its severity and your confidence. Coverage is your job; filtering is the merge gate's, downstream. Silence on a check you performed is a **missing record**, not a clean bill of health. `verdict: merge_safe` with an empty `findings` array asserts you looked and found nothing worth saying — emit it only when that is true, and record anything you could not check as a finding rather than leaving the array empty.
 
+#### The Envelope Also Carries the Rubric Grades (Non-Negotiable)
+
+The verdict envelope carries `rubric_grades` for EVERY criterion the brief's `TICKET RUBRIC` block lists; a verdict leaving one ungraded records nothing. Never use `t3 <overlay> ticket rubric-grade` as the reviewer. Full text: `skills/review/references/verdict-envelope.md`.
+
 #### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X — never Y)
 
 A colleague-authored MR on a **shared product repo** (a repo you do NOT solely own — shared with colleagues, gated on their review) is **review work, not merge work**. The action when you are handed one is to **fetch its diff and review it** — never to land it yourself. Do X (fetch + review); never Y (merge a teammate's product-repo MR):
@@ -317,7 +326,7 @@ The A/B distinction: your own solo-owned overlay repo, green and cleared → mer
 
 Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
-**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
+**BINDING — never review an MR/PR that carries any sign somebody else already took the review;** walk candidates with `glab mr list` / `gh pr list`. Full text: `skills/review/references/giving-review-investigation.md`.
 
 **Emit only YOUR OWN verdict reaction — never re-add a check a colleague already placed.** When posting your review verdict as a reaction on the review-broadcast message, react with the emoji for YOUR verdict only. If the broadcast already carries a `:white_check_mark:` (or another verdict emoji) from a different reviewer, do not re-add it alongside your own — that duplicates a colleague's already-recorded signal and reads as if you independently re-verified their check. Your own distinct verdict (e.g. `:question:` for blocking) is the only reaction your review adds. Prefer the `mcp__teatree__slack_react` MCP tool — it places the reaction through the same on-behalf seam; fall back to the CLI when the MCP server isn't connected.
 
@@ -363,14 +372,16 @@ What the agent does *after* an independent cold-review verdict exists on a **col
 **Autonomous tiers (`autonomy = "full"` or `"notify"`):** once an independent cold-review verdict exists, act on it — no "say the word", no per-MR ask. What the tier removes is the *asking*, not the egress gate:
 
 - **Merge-safe verdict** → post the terse verdict / nits **and** `t3 review approve`.
-- **Nits only** → post them; approve per the merge-safe rule above.
+- **Non-blockers only** → post them (plain findings, bare `Nit:` for trivial items); approve per the merge-safe rule above.
 - **A blocking finding** → post it; do **not** approve.
+
+**Approval and severity are coupled — decide the VERDICT first (Non-Negotiable).** Never post a blocking finding and approve, and never soften a real blocker to approve. Full text: `skills/review/references/posting-review-comments.md`.
 
 `notify` additionally DMs the user after each on-behalf post (derived `notify_on_behalf`); `full` posts without the after-the-fact DM.
 
-**The tier does not open colleague egress (#3895).** `_AUTONOMY_COLLAPSED_GATE_VALUES` holds `require_human_approval_to_answer` only; `on_behalf_post_mode` sits outside it exactly as `require_human_approval_to_merge` does (#3630), so speaking to a colleague under the user's own identity stays its own named opt-in. Under the shipped `draft_or_ask` the on-behalf pre-gate still BLOCKs a live post at any tier — so the autonomous form of "act on the verdict" is `t3 review post-comment` (a draft, colleague-invisible, exempt under every mode, and the agent DMs the user the publish command). Go live only where the overlay pins `on_behalf_post_mode = "immediate"`, or where an `OnBehalfApproval` is recorded for that action.
+**The tier does not open colleague egress (#3895).** `_AUTONOMY_COLLAPSED_GATE_VALUES` holds `require_human_approval_to_answer` only; colleague egress is the active posture's (`Mode.egress`) and sits outside it exactly as `require_human_approval_to_merge` does (#3630), so speaking to a colleague under the user's own identity stays its own named opt-in. Under a forbidding posture the on-behalf pre-gate still BLOCKs a live post at any tier — so the autonomous form of "act on the verdict" is `t3 review post-comment` (a draft, colleague-invisible, exempt under every posture, and the agent DMs the user the publish command). Go live only under a permitting posture (`t3 loop preset use present --reason <why>`), or where an `OnBehalfApproval` is recorded for that action.
 
-**Live posts still need a token, even under `full`.** The `--live` colleague-visible publish is gated by the #1207 single-use `LivePostApproval` token (`teatree.core.gates.live_post_gate.require_live_post_approval`), which `publish_live_post` enforces **orthogonally to `on_behalf_post_mode` and to `autonomy`** — it is *not* in the collapsed-gate set, so `post-comment --live` is refused with no token regardless of tier. Under an autonomous tier, mint the token in the same one step that records the on-behalf authorization — `t3 review authorize <repo>!<mr> --approver <user-id>` (#126) — then post live; or post the verdict as a **draft note** (`t3 review post-comment`, the default), which needs no token. Either path keeps the autonomous "act on the verdict, don't ask the user per-MR" posture; the token is a single-use idempotency/audit seal on the outward publish, not a per-MR user decision.
+**Live posts still need a token, even under `full`** — the single-use `LivePostApproval`. Full text: `skills/review/references/posting-review-comments.md`.
 
 **Babysit tier (`autonomy = "babysit"`):** keep the draft-and-ask flow — drafts publish autonomously, every live post / approval waits for the user (Step 3 below; `t3 review authorize`). This is the right setting for client / shared-team overlays.
 
@@ -396,13 +407,12 @@ The rest of steps 0 through 0h — the attachment-fetching recipes and annotatio
 
 1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
 2. **Completeness** — are there missing production code changes that the tests assume? Do test expectation changes have matching implementation changes?
-3. **Feature flag** — follow the review checklist in [`references/multi-tenant-development.md`](../code/references/multi-tenant-development.md). **Before raising a "missing feature flag" finding, trace the full gating chain upward** — the component under review may not have a flag itself but could be hidden/disabled at the container or routing level (e.g., `hidden: !featureFlagService.hasFeatureFlag(...)` in the parent that renders it). A finding is only valid if the feature is reachable without the flag.
-4. **Style** — follows project conventions?
-5. **Tests** — adequate coverage of new behavior?
-6. **Safety** — no security issues, no data loss risks? For shared mutable state (a registry/cache file, a row touched by concurrent processes), the **whole read→decide→write must be inside one lock/transaction** — a flock (or DB lock) that guards only the write still allows a lost-update / double-claim TOCTOU when two processes both read the old value, decide independently, and write in turn. A docstring or BLUEPRINT claim that writes "cannot lose a read-modify-write update" is false unless the read is inside the same critical section as the write; flag the mismatch.
-7. **Migrations** — reversible? data-safe? performance-safe?
-8. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
-9. **PR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
+3. **Style** — follows project conventions?
+4. **Tests** — adequate coverage of new behavior?
+5. **Safety** — no security issues, no data loss risks? For shared mutable state (a registry/cache file, a row touched by concurrent processes), the **whole read→decide→write must be inside one lock/transaction** — a flock (or DB lock) that guards only the write still allows a lost-update / double-claim TOCTOU when two processes both read the old value, decide independently, and write in turn. A docstring or BLUEPRINT claim that writes "cannot lose a read-modify-write update" is false unless the read is inside the same critical section as the write; flag the mismatch.
+6. **Migrations** — reversible? data-safe? performance-safe?
+7. **Scope** — are unrelated changes bundled in? Flag only if genuinely unrelated; small related fixes alongside the main change are normal practice.
+8. **PR metadata** — title and description comply with the overlay's commit message format? If the overlay provides `validate_pr()`, run it programmatically rather than checking by eye.
 
 **Step 2 — Review Tone & Formatting:**
 
@@ -423,15 +433,15 @@ Speculative questions ("is this correct?", "could this cause issues?") without e
 - **Be collegial.** Phrase observations as questions or suggestions, not orders. "Would it make sense to…?" beats "You must…".
 - **Assume good intent.** A reverted line is more likely an accidental rebase artifact than carelessness. Frame it that way.
 - **Acknowledge what's good.** If the approach is sound, say so briefly before raising issues.
-- **Scale severity to impact.** A missing production code change that breaks tests is critical. A minor style nit is not. Don't escalate small things.
+- **Scale severity to impact — and to the venue.** A missing production code change that breaks tests is critical; a minor style nit is not. On a merged or already-approved MR nothing is left to block: raise findings on the ticket that will carry the fix, and post anything left on the MR as a `Nit:`.
 - Separate tickets/PRs are not needed for minor scope additions. A small related fix alongside the main change is normal — only raise scope if genuinely orthogonal work is smuggled in.
 
 **Formatting rules:**
 
-- **Concise, bullet-form, no prose (directive #4).** A review is findings, not an essay. Lead with the finding; skip the preamble and the summary of what the diff does (the author wrote it). One point per bullet, `severity: finding` shape. No "Overall this looks great, however…" wind-up, no restating the PR description. Be RIGHT but concise — trim words, never the evidence that makes a finding actionable. The shape/bloat gates below enforce this structurally on colleague MRs.
-- **Single terse inline finding on a colleague MR.** On a colleague's MR (the MR's author is not your identity), the binding shape for an on-behalf review is **one terse inline comment anchored on the file:line that motivated it, keeping the finding's own severity label** — `HIGH (correctness): ...`, `MED: ...`, `LOW: ...`, and a bare `Nit:` reserved only for a genuinely trivial item (style, naming preference). Never a multi-section Problem/Fix/Verification dump, and **never downgrade a HIGH/MED finding to `Nit:`** to squeeze under the cap (that produces the nonsensical "Nit (MED)" — terseness is about length, not severity). Enforced structurally by the colleague-MR shape gate in `src/teatree/cli/review/shape_gate.py` (souliane/teatree#1114, loosened in #1159): the body is capped at 3 blank-line-separated paragraphs and 200 words; the gate refuses the post with steering text before any GitLab API call. Multi-sentence findings are fine — the cap targets abuse (multi-section dumps), not legitimate ≤3-sentence findings. Own-MR reviews are exempt (long-form self-review summaries are fine).
+- **Concise, bullet-form, no prose (directive #4).** A review is findings, not an essay. Lead with the finding; skip the preamble and the summary of what the diff does (the author wrote it). One point per bullet. No "Overall this looks great, however…" wind-up, no restating the PR description. Be RIGHT but concise — trim words, never the evidence that makes a finding actionable. The shape/bloat gates below enforce this structurally on colleague MRs.
+- **Single terse inline finding on a colleague MR.** On a colleague's MR (the MR's author is not your identity), each posted finding is one inline comment anchored on the motivating file:line — `t3 review post-comment <repo> <mr> "<finding> — <pointer>" --file <path> --line <N>` (the anchor flag is `--file`, never `--path`): the finding plus one concrete pointer, targeting at most ~300 characters. The posted body is either a plain finding or starts with the literal `Nit:`; never prefix it with HIGH/MED/LOW or blocker/major/minor taxonomy. No LGTM notes, and no MR-level verdict note beside inline findings; the evidence chain goes to the owner in chat. Own-MR reviews are exempt. Full text: `skills/review/references/posting-review-comments.md`.
 - **A review comment is about the diff, not the tracker.** Keep project chatter out of the comment body — no `@handle` stakeholder mentions, no Slack-thread timestamps, no "ping the author / sync with the team / discuss in standup" coordination. State the finding on the code. A *bare* `tracked at #1234` non-blocker pointer is fine (it adds genuine context); it is the chatter directive wrapped around the id that bloats. Enforced structurally by the comment-bloat gate in `src/teatree/cli/review/bloat_gate.py` (souliane/teatree#2663): a chatter-laden body is refused before any GitLab API call. `--allow-bloat` is the per-call escape for a genuinely load-bearing reference. The note-length dimension stays with the shape gate above; this gate is orthogonal.
-- **Prefix nits.** When a comment is nitpicking (style, naming, minor preference), prefix with `Nit:` so the author knows it's non-blocking.
+- **Prefix trivial nits.** When a comment is nitpicking (style, naming, minor preference), prefix it with bare `Nit:`. Post a nontrivial non-blocking finding as a plain finding; both can accompany approval.
 - **Backticks for code.** Always wrap code symbols, class names, method names, variable names, file paths, and CLI commands in backticks (`` ` ``).
 - **Use suggestion blocks for concrete code changes.** When you have a specific replacement in mind, use the platform's suggestion feature (` ```suggestion ` fenced block on both GitLab and GitHub) so the author can accept with one click. GitLab supports `:-N+M` to expand the range. Combine explanation text **before** the suggestion block.
 - **Readable structure for longer comments.** Use empty lines to separate distinct sections (problem, suggestion, example). Within a section, use line breaks between sentences (without empty lines) to keep things scannable. Short comments stay on one line — don't over-structure a one-liner.
@@ -496,7 +506,7 @@ t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 
 If it refuses, leave a genuine review (a real finding via `t3 review post-comment` — default draft, #1207 — or record the internal verdict), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
-**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960). No autonomy tier collapses that mode (#3895), so under the shipped `"draft_or_ask"` the command refuses unattended at every tier with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or open egress for the overlay with `t3 <overlay> config_setting set on_behalf_post_mode immediate --overlay <name>`. Raising the `autonomy` tier removes the per-MR ask, not this gate.
+**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the posture pre-gate (souliane/teatree#960). No autonomy tier opens colleague egress (#3895), so under a forbidding posture the command refuses unattended at every tier with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or select a permitting posture with `t3 loop preset use present --reason <why>`. Raising the `autonomy` tier removes the per-MR ask, not this gate.
 
 ### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)
 

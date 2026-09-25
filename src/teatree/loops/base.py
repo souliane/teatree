@@ -78,11 +78,16 @@ class MiniLoop:
     ``Loop`` row — must match the package directory name under
     ``src/teatree/loops/``.
 
-    ``default_cadence_seconds`` is a per-loop seed hint, NOT the live cadence:
-    the #2513 cutover made the DB ``Loop`` row's ``delay_seconds`` / ``daily_at``
-    the single cadence source the loop-table fan-out (``build_loop_table_jobs`` via
-    ``Loop.is_due``) reads. This field records the loop's intended default cadence
-    for documentation / seeding; the live tick consults the row, which may differ.
+    ``default_cadence_seconds`` is NOT the live cadence and is not what a fresh
+    install seeds. Cadence is stored in ONE place — the ``[loops.<name>]`` table of
+    ``config/defaults.toml``, which seeds the DB ``Loop`` row's ``delay_seconds`` /
+    ``daily_at``, and that row is the single source the loop-table fan-out
+    (``build_loop_table_jobs`` via ``Loop.is_due``) reads. Read the row, never this
+    field: they routinely disagree (``arch_review`` and ``news`` declare 3600 here
+    while the shipped row is a daily ``daily_at``), and only the row is live. The one
+    thing this field still decides is the ``cadence_is_floor`` ceiling below
+    (``loop_cadence_editing._registry_floor_seconds``) — a non-floor loop's value is
+    inert, so a second storage of a value nothing reads is what this seam still owes.
 
     ``build_jobs`` returns the list of scanner jobs the loop-table fan-out will
     dispatch via the existing :mod:`teatree.loop.dispatch` pipeline. Signature is

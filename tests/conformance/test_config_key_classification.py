@@ -315,7 +315,7 @@ class TestEveryConfigSettingKeyIsClassified:
     def test_the_walk_resolves_all_three_constant_shapes(self) -> None:
         # Anti-vacuous control: an empty or crippled walk satisfies the assertion above
         # for free. One key per resolution shape the scan claims to cover.
-        assert "low_power_preset_name" in self.SCAN, "module-constant resolution is broken"
+        assert "token_outage_preset_name" in self.SCAN, "module-constant resolution is broken"
         assert "approval_dial" in self.SCAN, "cross-module import resolution is broken"
         assert "default_mode" in self.SCAN, "helper-parameter resolution is broken"
 

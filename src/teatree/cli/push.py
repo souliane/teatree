@@ -19,8 +19,8 @@ def push(
 ) -> None:
     """Push a branch using the forge credential the loop already holds.
 
-    Resolves the token from GH_TOKEN, then TEATREE_GH_TOKEN, then the active
-    overlay's pass store, and hands it to git as env only — never on argv and
+    Resolves the token from the repository's owning overlay and hands it to git
+    as env only — never on argv and
     never written into the remote URL. Interactive credential prompts are
     disabled, so a missing credential fails immediately instead of hanging.
     The pre-push hooks still run.
@@ -29,7 +29,7 @@ def push(
     branch at the local tip. Each way that fails exits with its own code, so a
     caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
     4 gate-refused, 5 non-fast-forward, 6 not-on-remote (and 6 for a
-    remote-sha-mismatch), 7 unverifiable, 8 remote-rejected.
+    remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
     """
     outcome = push_branch(repo=repo, remote=remote, branch=branch, force_with_lease=force_with_lease)
     if json_output:

@@ -82,7 +82,7 @@ class TestResumePlan(TestCase):
         DeferredQuestion.objects.create(question="Which branch — main or dev?")
         # A real mode override — the resume plan reads the merged mode.
         Mode.objects.update_or_create(name="off", defaults={"entries": {}})
-        ModeOverride.objects.set_override("off")
+        ModeOverride.objects.set_override("off", reason="test override")
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             body = stop_snapshot.write_resume_plan("sess-1", str(tmp), base=tmp).read_text()

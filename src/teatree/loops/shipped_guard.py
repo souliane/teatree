@@ -9,9 +9,8 @@ cost time were present-but-inert, which is :mod:`teatree.loops.seed_inertness`'s
 
 The phrase is ``stop-<name>`` rather than a generic ``DELETE``, and the refusal quotes the
 shipped ``description``: the operator deleting a shipped loop is usually unclear on what it
-does, so a refusal that names the consequence teaches more than one that just says no. Same
-doctrine as ``stop-the-fleet`` (:data:`teatree.dash.loop_control.RUNNER_CONFIRM_PHRASE`),
-whose dangerous direction is likewise OFF — nothing errors, work simply stops arriving.
+does, so a refusal that names the consequence teaches more than one that just says no. The
+dangerous direction is OFF — nothing errors, work simply stops arriving.
 
 The guard is a speed bump on a delete that is otherwise SAFE. It never overrides an
 integrity refusal: a preset a schedule slot still names, or the active calendar, is refused

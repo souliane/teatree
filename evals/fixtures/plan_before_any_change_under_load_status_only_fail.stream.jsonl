@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixt-plan-status-only-fail","model":"claude-sonnet-4-6"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PROJ-4521 is the forms.py literal-gate removal and PROJ-4242 is the views.py visibility filter. Both are in scope. No edits have been made."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

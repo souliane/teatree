@@ -1,11 +1,13 @@
 """The resurrected loopback ttyd launcher + claude-argv builder (#3162)."""
 
 from subprocess import DEVNULL, PIPE
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teatree.agents import terminal_launcher, web_terminal
+from teatree.llm.credentials import CredentialError
 
 _UUID = "12345678-1234-1234-1234-123456789abc"
 
@@ -122,3 +124,73 @@ def test_build_claude_command_rejects_non_uuid_resume() -> None:
 def test_build_claude_command_missing_claude_raises() -> None:
     with patch.object(web_terminal.shutil, "which", return_value=None), pytest.raises(FileNotFoundError):
         web_terminal.build_claude_command()
+
+
+class TestTheWebTerminalRidesTheSameCredentialADispatchGets:
+    """The dashboard's `claude` was the ONE spawn resolving no credential of its own.
+
+    A dispatched agent gets its Layer-2 credential through `system_child_env()`;
+    this spawn passed no env at all, so it inherited whatever ambient auth the dash
+    process happened to hold — a different account from the one routing picked, or
+    none at all.
+    """
+
+    _ENV: ClassVar[dict[str, str]] = {"CLAUDE_CODE_OAUTH_TOKEN": "resolved-by-the-selector", "PATH": "/usr/bin"}
+
+    @staticmethod
+    def _spawn_for(child_env: object) -> MagicMock:
+        proc = MagicMock(pid=999)
+        with (
+            patch.object(web_terminal.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
+            patch.object(terminal_launcher, "find_free_port", return_value=45678),
+            patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
+            patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
+            patch.object(web_terminal, "system_child_env", side_effect=child_env),
+        ):
+            web_terminal.launch_web_session()
+        return spawn
+
+    def test_the_resolved_credential_env_reaches_the_spawn(self) -> None:
+        spawn = self._spawn_for(lambda: dict(self._ENV))
+
+        assert spawn.call_args.kwargs["env"] == self._ENV
+
+    def test_no_layer2_pin_still_inherits_the_ambient_environment(self) -> None:
+        # `system_child_env()` returns None for "no explicit pin — use the ambient env
+        # unchanged", and `Popen(env=None)` is exactly that, so an operator who
+        # configured no provider keeps the behaviour they had.
+        spawn = self._spawn_for(lambda: None)
+
+        assert spawn.call_args.kwargs["env"] is None
+
+    def test_an_unresolvable_credential_renders_a_hint_instead_of_raising(self) -> None:
+        # The dash view turns an exception into a 500; a missing credential is an
+        # operator-fixable gap and degrades the way a missing ttyd binary does.
+        with (
+            patch.object(web_terminal.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(web_terminal, "system_child_env", side_effect=CredentialError("no token anywhere")),
+        ):
+            result = web_terminal.launch_web_session()
+
+        assert result.launch_url == ""
+        assert "no token anywhere" in result.error
+
+    def test_the_token_is_never_written_into_the_argv(self) -> None:
+        spawn = self._spawn_for(lambda: dict(self._ENV))
+
+        assert "resolved-by-the-selector" not in " ".join(spawn.call_args.args[0])
+
+
+def test_launch_ttyd_without_an_env_inherits_the_parent_environment() -> None:
+    """The launcher stays credential-agnostic — resolution belongs to its caller."""
+    proc = MagicMock(pid=999)
+    with (
+        patch.object(terminal_launcher.shutil, "which", return_value="/usr/bin/ttyd"),
+        patch.object(terminal_launcher, "find_free_port", return_value=45678),
+        patch.object(terminal_launcher, "spawn", return_value=proc) as spawn,
+        patch.object(terminal_launcher, "_arm_connect_grace_reaper"),
+    ):
+        terminal_launcher.launch_ttyd(["claude"])
+
+    assert spawn.call_args.kwargs["env"] is None

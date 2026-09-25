@@ -11,10 +11,11 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.worktree import branch_classification
 
 _GIT = shutil.which("git") or "/usr/bin/git"
@@ -119,7 +120,7 @@ def squash_then_base_evolved(tmp: Path) -> tuple[Path, str]:
 
 
 def forge_reporting(*, merged_head_sha: str = "", open_pr: bool = False) -> AbstractContextManager[object]:
-    """A fake forge behind ``probe_host_cli``: a merged MR at *merged_head_sha*, an open one, or neither.
+    """A fake GitHub behind the shared forge seams for landed/open evidence.
 
     The fake serves whatever ``extract`` asks of the payload row, so one stub
     answers the merged-number, merged-head-sha and open-number probes alike. It
@@ -141,4 +142,16 @@ def forge_reporting(*, merged_head_sha: str = "", open_pr: bool = False) -> Abst
         except (IndexError, KeyError, TypeError):
             return ""
 
-    return patch.object(branch_classification, "probe_host_cli", side_effect=fake)
+    stack = ExitStack()
+    stack.enter_context(patch.object(branch_classification, "forge_for_repo", return_value="github"))
+    stack.enter_context(patch.object(branch_classification, "probe_host_cli", side_effect=fake))
+    stack.enter_context(
+        patch.object(
+            branch_classification,
+            "find_open_pr_for_branch",
+            return_value=PrProbe.found("https://forge/pr/7") if open_pr else PrProbe.none(),
+        )
+    )
+    branch_classification.reset_forge_probe_cache()
+    stack.callback(branch_classification.reset_forge_probe_cache)
+    return stack

@@ -11,10 +11,14 @@ with a green control alongside proving the fake CAN produce a conflict, so the
 silence is the scanner's decision and not a broken harness.
 """
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
+from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import MergeConflictState, PrMergeState
 from teatree.core.models import ConfigSetting, RedMrFixAttempt, Task
+from teatree.core.overlay import OverlayBase
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt, review_exempt_patterns
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
@@ -26,6 +30,7 @@ from tests.teatree_loop.test_scanners import FakeCodeHost
 
 _SLUG = "org/repo"
 _EXEMPT_SLUG = "devops/charts"
+_SCOPE = ("https://github.com/org/", "https://github.com/devops/")
 
 
 def _mr(pr_id: int, *, slug: str = _SLUG, sha: str = "", **payload: object) -> RawAPIDict:
@@ -54,6 +59,22 @@ def _kinds(signals: list[ScanSignal]) -> list[str]:
     return [signal.kind for signal in signals]
 
 
+def _scanner(host: FakeCodeHost) -> MrConflictScanner:
+    return MrConflictScanner(host=host, allowed_url_prefixes=_SCOPE)
+
+
+class _UnreadableReposOverlay(OverlayBase):
+    def get_repos(self) -> list[str]:
+        return [_SLUG]
+
+    def get_workspace_repos(self) -> list[str]:
+        raise RuntimeError
+
+    def get_provision_steps(self, worktree: object) -> list:
+        _ = worktree
+        return []
+
+
 class TestItCoversEveryOpenMergeRequest(TestCase):
     """No review-policy filter narrows the walk — the rule applies to all of them."""
 
@@ -64,7 +85,7 @@ class TestItCoversEveryOpenMergeRequest(TestCase):
             merge_state_by_pr={(_SLUG, 1): _conflicted()},
         )
 
-        signals = MrConflictScanner(host=host).scan()
+        signals = _scanner(host).scan()
 
         assert _kinds(signals) == ["my_pr.conflicted"]
 
@@ -80,14 +101,14 @@ class TestItCoversEveryOpenMergeRequest(TestCase):
             merge_state_by_pr={(_EXEMPT_SLUG, 2): _conflicted()},
         )
 
-        signals = MrConflictScanner(host=host).scan()
+        signals = _scanner(host).scan()
 
         assert _kinds(signals) == ["my_pr.conflicted"]
 
     def test_a_clean_merge_request_is_silent(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(3)], merge_state_by_pr={(_SLUG, 3): _clean()})
 
-        assert MrConflictScanner(host=host).scan() == []
+        assert _scanner(host).scan() == []
 
 
 class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
@@ -96,7 +117,7 @@ class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
     def test_an_unknown_merge_state_does_not_report_a_conflict(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(4)], merge_state_by_pr={(_SLUG, 4): _unknown()})
 
-        signals = MrConflictScanner(host=host).scan()
+        signals = _scanner(host).scan()
 
         assert _kinds(signals) == ["my_pr.conflict_unknown"]
 
@@ -104,19 +125,19 @@ class TestAnUnreadMergeStateIsNeitherConflictedNorClean(TestCase):
         """The green control for the case above — the harness CAN emit a conflict."""
         host = FakeCodeHost(user="alice", my_prs=[_mr(4)], merge_state_by_pr={(_SLUG, 4): _conflicted()})
 
-        signals = MrConflictScanner(host=host).scan()
+        signals = _scanner(host).scan()
 
         assert _kinds(signals) == ["my_pr.conflicted"]
 
     def test_a_raising_probe_is_unknown_not_clean(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(5)], raise_on_merge_state=RuntimeError("forge down"))
 
-        assert _kinds(MrConflictScanner(host=host).scan()) == ["my_pr.conflict_unknown"]
+        assert _kinds(_scanner(host).scan()) == ["my_pr.conflict_unknown"]
 
     def test_an_unreadable_merge_state_dispatches_no_fix(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(6)], merge_state_by_pr={(_SLUG, 6): _unknown()})
 
-        actions = dispatch(MrConflictScanner(host=host).scan())
+        actions = dispatch(_scanner(host).scan())
 
         assert [action.kind for action in actions] == ["statusline"]
 
@@ -126,7 +147,7 @@ class TestOneFixPerHead(TestCase):
 
     @staticmethod
     def _dispatch_and_persist(host: FakeCodeHost) -> list[Task]:
-        return persist_agent_actions(dispatch(MrConflictScanner(host=host).scan()))
+        return persist_agent_actions(dispatch(_scanner(host).scan()))
 
     def test_two_ticks_on_the_same_head_dispatch_once(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(7)], merge_state_by_pr={(_SLUG, 7): _conflicted()})
@@ -170,8 +191,8 @@ class TestOneFixPerHead(TestCase):
         assert len(self._dispatch_and_persist(host)) == 1
 
 
-class TestItShipsInert(TestCase):
-    """Default-OFF means no scanner is built at all, not a scanner that stays quiet."""
+class TestTheScannerIsAlwaysBuilt(TestCase):
+    """Every open merge request owes a resolved conflict, so the sweep is unconditional."""
 
     @staticmethod
     def _backend() -> object:
@@ -179,13 +200,43 @@ class TestItShipsInert(TestCase):
 
         return OverlayBackends(name="t3-teatree", hosts=(FakeCodeHost(user="alice"),), identities=("alice",))
 
-    def test_no_scanner_is_built_by_default(self) -> None:
+    def test_the_scanner_carries_the_backends_host_and_identities(self) -> None:
         backend = self._backend()
 
-        assert _mr_conflict_scanner_for(backend, backend.hosts[0]) is None
+        scanner = _mr_conflict_scanner_for(backend, backend.hosts[0])
 
-    def test_a_scanner_is_built_once_the_overlay_opts_in(self) -> None:
-        ConfigSetting.objects.set_value("mr_conflict_scan_enabled", value=True)
-        backend = self._backend()
+        assert scanner.host is backend.hosts[0]
+        assert scanner.identities == ("alice",)
+        assert scanner.overlay_name == "t3-teatree"
 
-        assert _mr_conflict_scanner_for(backend, backend.hosts[0]) is not None
+
+class TestAnUnresolvedScopeReadsNothing(TestCase):
+    """An empty scope is an unresolved one — never every merge request the credential can list."""
+
+    def test_an_empty_scope_neither_lists_nor_probes(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[_mr(40, slug="elsewhere/unrelated")],
+            merge_state_by_pr={("elsewhere/unrelated", 40): _conflicted()},
+        )
+
+        with patch.object(host, "list_my_prs", wraps=host.list_my_prs) as listing:
+            signals = MrConflictScanner(host=host, allowed_url_prefixes=()).scan()
+
+        assert signals == []
+        listing.assert_not_called()
+        assert host.fetch_pr_merge_state_calls == []
+
+    def test_a_failing_repository_declaration_dispatches_no_debugging_task(self) -> None:
+        host = FakeCodeHost(
+            user="alice",
+            my_prs=[_mr(41, slug="elsewhere/unrelated")],
+            merge_state_by_pr={("elsewhere/unrelated", 41): _conflicted()},
+        )
+        backend = OverlayBackends(
+            name="t3-teatree", hosts=(host,), identities=("alice",), overlay=_UnreadableReposOverlay()
+        )
+
+        persist_agent_actions(dispatch(_mr_conflict_scanner_for(backend, host).scan()))
+
+        assert not Task.objects.exists()

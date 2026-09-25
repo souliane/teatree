@@ -57,8 +57,9 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 
 The claude.ai Notion connector is interactively authenticated, so it does not exist in a
 cron/headless run. `t3 notion` is the replacement: the public Notion API under an internal
-**integration token** (env `NOTION_TOKEN`, else the overlay's `NOTION_TOKEN_PASS_KEY` entry,
-else `pass show notion/integration-token`). Agents call `t3`, never the API directly.
+**integration token** (env `NOTION_TOKEN`, else the `pass` entry `notion_token_pass_key` routes on this venue;
+there is no default entry). Agents call `t3`, never the API directly. `t3 setup` and `t3 doctor` run the same
+probe: routed entry, token, identity, and every page an in-flight ticket tracks that is not shared yet.
 
 ```bash
 t3 notion setup --page <url>           # mint, store and verify the token; then report each page's sharing
@@ -67,6 +68,7 @@ t3 notion doctor <page>                # triage one page: token present? valid? 
 t3 notion fetch <page> --comments      # page as Markdown, plus its open discussions (--json for raw blocks)
 t3 notion audit-fetch <page> --reason '<why>'     # audit-read a page refused as dead; stamps the output
 t3 notion append <page> --body-file f  # append at the end, verified by a re-fetch
+t3 notion append <page> --body-file f --after-heading 'Design'   # insert after that section instead
 t3 notion section show <page> --heading '## 🔧 …'      # which blocks the owned section covers
 t3 notion section replace <page> --heading '## 🔧 …' --body-file f --legacy '## 🔧 …old…'
 t3 notion comment post <page> --body-file f --marker '[t3:…]'   # post once per marker; re-post needs --allow-duplicate
@@ -86,6 +88,10 @@ matched heading, archives only that section's own blocks, and renames a legacy h
 place — so block-level comments and discussions outside (and on the heading itself) survive.
 There is no whole-page replace on this surface, because one would destroy every discussion on
 the page. Two matching headings stop the write rather than guessing.
+
+**`append --after-heading` positions, it never creates.** A heading the page does not carry
+exits `15` rather than falling back to the end — the opposite of `section replace`, which
+creates the section it cannot find, because a positioned write has no correct place to land.
 
 **`comment post` is dedup-driven by default.** The same skills post a notification comment and
 check for their own marker first, so the marker already being in the page's open discussions
@@ -154,7 +160,7 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 | `provisioning` | `repo_clone_url(repo_name)`, `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
 | `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
-| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)` |
+| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
 | `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()`, `mcp_tool_group()` |
 
@@ -224,6 +230,8 @@ A directive's activation is applied by exactly one actor — the directive loop'
 
 - **Do** leave the byte-identical write to the loop's CONFIGURING step; or route an amendment through re-interpret → re-ratify (a NEW generation via `t3 directive …`); or surface the discrepancy with a structured `AskUserQuestion`.
 - **Never** hand-run `t3 <overlay> config_setting set <directive-key> <drifted-value>` to apply a value that differs from the ratified sketch. A "basically the same" value is a different design and needs a fresh ratification, not a hand-edit.
+
+When asked for the single action at CONFIGURING, issue a real tool call: inspect the admitted generation with `t3 directive status <id>` / `t3 directive history`, or, if the differing value should be considered, invoke `AskUserQuestion` now to start the amendment decision. A prose-only no-op is not an action; never print “Action: None” or narrate a future question while issuing no call. The absence of a manual config write preserves byte-law, but it does not satisfy an explicit request to take the next action.
 
 ```bash
 # ratified sketch: max_open_prs_per_repo_per_ticket = 1. do X — amend via re-ratify, never hand-apply a drifted value:

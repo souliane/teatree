@@ -79,9 +79,6 @@ from hooks.scripts.deny_circuit_breaker import (
     deny_circuit_breaker_enabled as _deny_circuit_breaker_enabled,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.deny_circuit_breaker import (
-    deny_circuit_breaker_threshold as _deny_circuit_breaker_threshold,  # noqa: F401 re-export for test access
-)
-from hooks.scripts.deny_circuit_breaker import (
     deny_is_ux_gate as _deny_is_ux_gate,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
@@ -95,7 +92,9 @@ from hooks.scripts.dispatch_ledger import handle_track_agents
 from hooks.scripts.dispatch_seat_release import handle_subagent_stop_release
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import autoload_skill_demand, engage
+from hooks.scripts.engagement import skill_load_activates_teatree as _skill_load_activates_teatree
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
+from hooks.scripts.foreign_branch_push_gate import handle_block_foreign_branch_push
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _GLAB_GH_API_RE,
@@ -104,14 +103,16 @@ from hooks.scripts.forge_api_detect import (
     _REVIEW_POST_METHOD_RE,  # noqa: F401 re-export for test access
     _effective_method_is_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.forge_api_detect import invokes_raw_merge_subcommand as _invokes_raw_merge_subcommand
+from hooks.scripts.forge_api_detect import is_raw_merge_api_write as _is_raw_merge_api_write
 from hooks.scripts.gate_result import (
     GateOutcome,
     GateSkipped,
     ValidatorTimedOut,
+    announce_cannot_evaluate,
     classify_validator_run,
     validator_timeout_seconds,
     warn_gate_skipped,
-    warn_validator_timed_out,
 )
 from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
@@ -148,12 +149,14 @@ from hooks.scripts.mr_cli_fields import (
     extract_cli_mr_fields,
     extract_mr_target_repo,
     merge_target_managed_state,
+    mr_deny_reason,
 )
 from hooks.scripts.mr_validator import mr_validate_argv, run_mr_validator
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
@@ -192,6 +195,7 @@ from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.session_nudges import handle_todo_freshness_nudge
+from hooks.scripts.session_start_hook_budget import session_start_hook_budget_advisory
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
@@ -205,7 +209,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import run_t3, spawn_t3_detached, t3_argv, t3_available
+from hooks.scripts.t3_invocation import run_t3, spawn_t3_detached, t3_argv, t3_available, t3_never_started
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
@@ -213,11 +217,13 @@ from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_s
 from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
 from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
+from hooks.scripts.unapprovable_author_create_gate import handle_block_unapprovable_author_create
 from hooks.scripts.unbacked_claim_gate import handle_unbacked_claim_gate
 from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
 from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste, handle_record_operator_message
+from hooks.scripts.visible_plan_gate import handle_enforce_visible_plan_before_tools
 
 STATE_DIR = Path(
     os.environ.get(
@@ -385,7 +391,7 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     Returns ``True`` so handlers can ``return emit_pretooluse_deny(...)``,
     or ``False`` when the breaker auto-relaxed a UX gate.
     """
-    decision = _apply_deny_circuit_breaker(reason)
+    decision = _apply_deny_circuit_breaker(reason, gate_id=gate_id)
     if decision.allow:
         return False
     # A sub-agent deny must not advertise the ALLOW_*/QUOTE_OK self-bypass hint it
@@ -516,14 +522,11 @@ def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -
     NEVER call this from the PUBLIC-egress leak path — that path stays
     fail-closed (see the module note above).
     """
-    try:
+    # A raising resolver must NEVER relax a gate: the suppression falls through to the deny.
+    with contextlib.suppress(Exception):
         command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-        if _is_self_rescue(command):
+        if _is_self_rescue(command) or _danger_gate_fail_open_enabled():
             return False
-        if _danger_gate_fail_open_enabled():
-            return False
-    except Exception:  # noqa: BLE001 — a raising resolver must NEVER relax a gate; fail CLOSED to deny.
-        return emit_pretooluse_deny(reason, gate_id=gate_id)
     return emit_pretooluse_deny(reason, gate_id=gate_id)
 
 
@@ -569,35 +572,6 @@ def _loop_auto_load_active(session_id: str) -> bool:
     statusline.
     """
     return _teatree_active(session_id) and _autoload_enabled()
-
-
-def _is_teatree_skill(name: str) -> bool:
-    normalized = normalize_skill_name(name)
-    return normalized in {"t3:interactive", "interactive"}
-
-
-def _bare_skill_segment(name: str) -> str:
-    """The skill index's key form: the bare segment after a namespace prefix.
-
-    ``build_requires_index`` keys every entry (and its ``requires:`` members)
-    by the bare skill-directory name, so a qualified Skill-tool token like
-    ``t3:dogfooding`` must be mapped DOWN to ``dogfooding`` to match
-    an index entry and resolve its ``requires:`` closure.
-    """
-    return name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-
-
-def _skill_load_activates_teatree(skills: list[str]) -> bool:
-    """Does loading *skills* opt the session into teatree (directly or via requires:)?
-
-    Resolves the ``requires:`` closure against a bare-mapped copy of the input
-    so a qualified Skill-tool token (``t3:dogfooding``) expands the same as
-    its bare InstructionsLoaded spelling — the trigger index is bare-keyed. The
-    bare mapping is scoped to this detection only; the recorded ``.skills``
-    closure keeps its own resolution + canonicalization contract.
-    """
-    bare = [_bare_skill_segment(s) for s in skills]
-    return any(_is_teatree_skill(s) for s in _resolve_skill_closure(bare))
 
 
 _read_lines = read_lines
@@ -1384,11 +1358,12 @@ def _handle_broken_validate_env(data: dict) -> bool:
     return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
 
 
-def _mr_validator_verdict(data: dict, result: "subprocess.CompletedProcess[str] | ValidatorTimedOut | None") -> bool:
+def _mr_validator_verdict(
+    data: dict, result: "subprocess.CompletedProcess[str] | ValidatorTimedOut | GateSkipped | None"
+) -> bool:
     """Map a validator run (or its failure to run) to the gate's block decision."""
-    if isinstance(result, ValidatorTimedOut):
-        warn_validator_timed_out("MR-metadata", result.allowance_seconds)
-        return False
+    if isinstance(result, ValidatorTimedOut | GateSkipped):
+        return announce_cannot_evaluate("MR-metadata", result)
     if result is None:
         return _handle_broken_validate_env(data)
 
@@ -1404,9 +1379,7 @@ def _mr_validator_verdict(data: dict, result: "subprocess.CompletedProcess[str] 
         )
         return False
     if outcome is GateOutcome.DENY:
-        return emit_pretooluse_deny(
-            (result.stderr or result.stdout or "").strip() or "MR title/description failed overlay validation."
-        )
+        return emit_pretooluse_deny(mr_deny_reason(data, result.stderr or result.stdout))
     return False
 
 
@@ -1434,8 +1407,7 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     if fields is None:
         return False
     if isinstance(fields, GateSkipped):
-        warn_gate_skipped("MR-metadata", fields.reason)
-        return False
+        return announce_cannot_evaluate("MR-metadata", fields)
     title, description = fields
     command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
     target_repo = extract_mr_target_repo(command) if command else None
@@ -1536,19 +1508,6 @@ def _ai_sig_scan_argv() -> list[str] | None:
 _AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
 
 
-#: Bootstrap-crash markers in the scanner subprocess's stderr — a `t3` binary whose
-#: CLI import chain loads Django models before setup (no DJANGO_SETTINGS_MODULE in the
-#: hook env) crashes with one of these BEFORE the scanner runs, so the gate cannot
-#: confirm the body and must fail OPEN (the documented broken-environment posture),
-#: never fail closed on an unrelated import bug.
-_AI_SIG_BOOTSTRAP_CRASH_MARKERS = (
-    "AppRegistryNotReady",
-    "ImproperlyConfigured",
-    "ModuleNotFoundError",
-    "Apps aren't loaded yet",
-)
-
-
 def _ai_sig_finding(stdout: str) -> str | None:
     """Return the finding summary iff *stdout* is a real banned-trailer finding.
 
@@ -1612,6 +1571,8 @@ def handle_block_ai_signature(data: dict) -> bool:
 
 def _run_block_ai_signature(data: dict) -> bool:
     """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
+    from teatree.hooks import ai_signature_gate  # noqa: PLC0415 — deferred: cold-hook import
+
     payload = _extract_ai_sig_payload(data)
     argv = _ai_sig_scan_argv()
     if payload is None or argv is None:
@@ -1621,27 +1582,17 @@ def _run_block_ai_signature(data: dict) -> bool:
     try:
         result = run_t3(argv, timeout=allowance, stdin_text=payload)
     except subprocess.TimeoutExpired:
-        warn_validator_timed_out("AI-signature", allowance)
-        return False
+        return announce_cannot_evaluate("AI-signature", ValidatorTimedOut(allowance))
     except FileNotFoundError:
         return False
 
     finding = _ai_sig_finding(result.stdout or "")
     if finding is not None:
-        return emit_pretooluse_deny(
-            "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
-            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n" + finding
-        )
-    # A clean exit is ALLOW. A nonzero exit whose stderr shows a bootstrap-crash
-    # marker means the scanner subprocess never RAN — a Django AppRegistryNotReady /
-    # ImproperlyConfigured / ModuleNotFoundError import traceback, e.g. a `t3`
-    # binary whose CLI eagerly loads Django before setup in a hook env with no
-    # DJANGO_SETTINGS_MODULE. That is the "broken environment" case the docstring
-    # promises to FAIL OPEN on (no t3 / import error / timeout) — a gate that
-    # cannot run AT ALL must not lock out every commit. It is distinct from the
-    # fail-closed case below: a scanner that RAN and errored (usage error,
-    # malformed input) with no bootstrap crash still fails closed.
-    if result.returncode == 0 or any(m in (result.stderr or "") for m in _AI_SIG_BOOTSTRAP_CRASH_MARKERS):
+        return emit_pretooluse_deny(ai_signature_gate.format_block_message(finding), gate_id="ai_signature")
+    # A clean exit is ALLOW; a scanner that never STARTED is the broken-environment case
+    # the docstring promises to fail OPEN on. Distinct from the fail-closed case below:
+    # a scanner that RAN and errored still blocks.
+    if result.returncode == 0 or t3_never_started(result):
         return False
     # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
     # a crash/error (traceback, usage error), not a finding. This is a
@@ -1651,12 +1602,8 @@ def _run_block_ai_signature(data: dict) -> bool:
     # not happen, and never silently let an unscanned publish through.
     # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
     # purpose; a leak-prevention gate must not.)
-    return emit_pretooluse_deny(
-        "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
-        "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
-        "not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n"
-        + (result.stderr or result.stdout or "").strip()
-    )
+    detail = (result.stderr or result.stdout or "").strip()
+    return emit_pretooluse_deny(ai_signature_gate.format_scanner_error_message(detail), gate_id="ai_signature")
 
 
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
@@ -1775,7 +1722,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
         block_message = _quote_high_block_message(quote_scanner, quote_gate_messages, tool_name, result, verdict)
-        return emit_pretooluse_deny(block_message) if block_message is not None else False
+        return emit_pretooluse_deny(block_message, gate_id="quote_scanner") if block_message is not None else False
 
     if result.has_medium:
         sys.stderr.write(quote_gate_messages.format_warn_message(result) + "\n")
@@ -1974,7 +1921,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
 
     result = quote_scanner.scan_text(payload)
 
-    if quote_scanner.dispatch_quote_ok_reason(payload):
+    if quote_scanner.dispatch_quote_ok_reason_for_input(tool_input):
         quote_scanner.log_decision(
             tool_name=f"{tool_name}:dispatch",
             decision="allow-override",
@@ -1990,7 +1937,9 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
             result=result,
             override=False,
         )
-        return emit_pretooluse_deny(quote_gate_messages.format_dispatch_block_message(result))
+        return emit_pretooluse_deny(
+            quote_gate_messages.format_dispatch_block_message(result), gate_id="dispatch_quote_scanner"
+        )
 
     # MEDIUM-only or clean: allow silently (no stderr warning on dispatch —
     # the fleet dispatches constantly; only HIGH is actionable here).
@@ -2007,25 +1956,16 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
 
 
 def _dispatch_quote_gate_on_task_create_enabled() -> bool:
-    """Whether the task-list quote gate is enabled (default OFF, opt-in).
+    """Whether the task-list quote gate is enabled.
 
     The PreToolUse dispatch-quote gate (:func:`handle_dispatch_prompt_quote_scanner`)
     keys on ``Agent``/``Task`` and is the ONLY interception point a sub-agent
     dispatch has (#4216). The task-LIST tools are a different family: they bypass
     ``PreToolUse`` entirely, so a quote pasted into a task-list ENTRY is reachable
-    only on ``TaskCreated`` — the concern this arm covers. It ships default-OFF
-    because its live enforcement behaviour is unvalidated: an unvalidated gate
-    stays inert (never wedges the loop) until the operator deliberately enables it
-    with ``[teatree] dispatch_quote_gate_on_task_create_enabled = true``.
-
-    Fails CLOSED to disabled (missing config → False, broken → False) and returns
-    True only on an explicit ``true``. This deliberately DIFFERS from
-    :func:`_mcp_privacy_gate_enabled` (which fails OPEN to enabled): the Slack-MCP
-    arm is the same risk class as an already-live gate, whereas this one's
-    enforcement semantics are not yet validated. See
-    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
+    only on ``TaskCreated`` — the concern this arm covers. It ships enabled after
+    its live-event conformance coverage; an explicit false remains the escape hatch.
     """
-    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
+    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=True)
 
 
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
@@ -2044,14 +1984,11 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     NEVER-LOCKOUT:
     this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
     (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
-    command). The gate ships default-OFF (opt-in via ``[teatree]
-    dispatch_quote_gate_on_task_create_enabled = true``) — a gate whose live
-    enforcement behaviour is unvalidated stays inert by default. When enabled,
-    the off-ramps that keep the operator from being locked out are: the opt-in
-    flag itself (unset/``false`` to disable), the ``[quote-ok: <reason>]`` token
+    command). The gate ships enabled. The off-ramps that keep the operator from
+    being locked out are: an explicit ``false``, the ``[quote-ok: <reason>]`` token
     in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
-    a missing ``session_id`` (fail-open), an unreadable config store
-    (fail-disabled), and ``main``'s per-handler exception swallow. The master
+    a missing ``session_id`` (fail-open), an unreadable config store, and ``main``'s
+    per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
     commands run as ``Bash``, never as task-list entries.
     """
@@ -2161,9 +2098,7 @@ def _is_merge_class_mutation(data: dict) -> bool:
     stripped skeleton, so a mere MENTION inside a quoted argument or heredoc
     body never fires the gate.
     """
-    if data.get("tool_name") != "Bash":
-        return False
-    return _is_merge_class_command(data.get("tool_input", {}).get("command", ""))
+    return data.get("tool_name") == "Bash" and _is_merge_class_command(data.get("tool_input", {}).get("command", ""))
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -2542,9 +2477,7 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     tool_name = data.get("tool_name", "")
     if tool_name == "Agent":
         return _deny_foreground_agent_dispatch(data)
-    if tool_name != "Bash":
-        return False
-    return _deny_heavy_main_agent_bash(data)
+    return tool_name == "Bash" and _deny_heavy_main_agent_bash(data)
 
 
 # ── UserPromptSubmit + PreToolUse: orchestrator turn-budget nudge ────
@@ -3652,21 +3585,16 @@ def _autocompact_kill_switch_advisory() -> str | None:
     decoded harness logic). Best-effort: any import / lookup failure
     returns None so the SessionStart directive always emits.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.core.autocompact_advisory import AutocompactConfig, advisory_text  # noqa: PLC0415 — cold-hook read
+        with _teatree_src_on_path():
+            from teatree.core.autocompact_advisory import (  # noqa: PLC0415 — cold-hook read
+                AutocompactConfig,
+                advisory_text,
+            )
 
-        return advisory_text(AutocompactConfig.from_env())
+            return advisory_text(AutocompactConfig.from_env())
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _account_switch_advisory() -> str | None:
@@ -3680,21 +3608,13 @@ def _account_switch_advisory() -> str | None:
     session until that recovery runs. Any import / read failure returns None so
     the directive never blocks.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.core.account_fingerprint import fingerprint_switched  # noqa: PLC0415 — deferred: cold-hook import
+        with _teatree_src_on_path():
+            from teatree.core.account_fingerprint import fingerprint_switched  # noqa: PLC0415 — cold-hook import
 
-        return _ACCOUNT_SWITCH_DIRECTIVE if fingerprint_switched() else None
+            return _ACCOUNT_SWITCH_DIRECTIVE if fingerprint_switched() else None
     except Exception:  # noqa: BLE001 — never block SessionStart on a fingerprint read hiccup
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _mcp_connectivity_advisory() -> str | None:
@@ -3708,21 +3628,13 @@ def _mcp_connectivity_advisory() -> str | None:
     which is the only detectable trigger. Any import / read failure returns None
     so the directive never blocks SessionStart.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415 — deferred: cold-hook import
+        with _teatree_src_on_path():
+            from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415 — cold-hook import
 
-        return _MCP_CONNECTIVITY_DIRECTIVE if has_enabled_mcp_servers() else None
+            return _MCP_CONNECTIVITY_DIRECTIVE if has_enabled_mcp_servers() else None
     except Exception:  # noqa: BLE001 — never block SessionStart on a config read hiccup
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _merge_session_start_context(context: str, session_id: str, source: str) -> str:
@@ -3750,7 +3662,12 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
         context = f"{handover}\n\n---\n\n{context}"
 
     autocompact = _autocompact_kill_switch_advisory()
-    leading = (_account_switch_advisory(), _mcp_connectivity_advisory(), resume_admission_advisory(session_id, source))
+    leading = (
+        _account_switch_advisory(),
+        _mcp_connectivity_advisory(),
+        session_start_hook_budget_advisory(),
+        resume_admission_advisory(session_id, source),
+    )
     if autocompact:
         context = f"{context}\n\n---\n\n{autocompact}"
     for advisory in leading:
@@ -4386,43 +4303,6 @@ _OUT_OF_BAND_MERGE_REASON = (
     "a full forge URL) so the gate classifies it from the command itself and never "
     "consults the cwd. kill-switch: `t3 <overlay> gate raw-merge disable`."
 )
-
-
-def _is_raw_merge_api_write(command: str) -> bool:
-    """Whether *command* is a raw forge REST WRITE to a merge endpoint.
-
-    Delegates to :func:`teatree.hooks.raw_merge_detect.is_raw_merge_api_write` —
-    the SAME leaf the shared hard-deny registry (Lane B) uses, so the two lanes
-    classify the merge API write identically. Fails CLOSED (treats the command as
-    a possible merge write) on any import error so a broken environment cannot
-    weaken the gate; the cwd-managed check then blocks on uncertainty.
-    """
-    try:
-        with _teatree_src_on_path():
-            from teatree.hooks import raw_merge_detect  # noqa: PLC0415 (lazy src-bootstrap import)
-
-            return raw_merge_detect.is_raw_merge_api_write(command)
-    except Exception:  # noqa: BLE001 (fail-closed: a broken import must not weaken the merge gate)
-        return True
-
-
-def _invokes_raw_merge_subcommand(command: str) -> bool:
-    """Whether ``command`` INVOKES ``gh pr merge`` / ``glab mr merge`` as an executed program.
-
-    Delegates to the action-aware :mod:`teatree.hooks.raw_merge_detect`, which
-    fires only when the merge subcommand sits at a command position — never when
-    the phrase appears inside a heredoc body, a quoted argument, an
-    ``echo``/``printf`` string, or a ``#`` comment (#2387). Fails CLOSED (treats
-    the command as a possible merge) on any import error so a broken environment
-    cannot weaken the gate; the cwd-managed check then blocks on uncertainty.
-    """
-    try:
-        with _teatree_src_on_path():
-            from teatree.hooks import raw_merge_detect  # noqa: PLC0415 — deferred: cold-hook import
-
-            return raw_merge_detect.invokes_raw_merge_subcommand(command)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return True
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
@@ -5157,6 +5037,7 @@ _HANDLERS: dict[str, list] = {
     ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
+        handle_enforce_visible_plan_before_tools,
         handle_block_edit_before_planned,
         handle_block_config_overwrite,
         handle_block_cron_loop_shell,
@@ -5181,13 +5062,19 @@ _HANDLERS: dict[str, list] = {
         handle_block_secret_file_print,
         handle_block_out_of_band_merge,
         handle_block_unknown_repo_push,
+        handle_block_foreign_branch_push,
         handle_block_raw_review_post,
         handle_validate_mr_metadata,
         handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,
         handle_block_ai_signature,
+        # AFTER handle_block_ai_signature: a raw create carrying a banned trailer
+        # must surface the leak-class refusal first (fail-closed-always per
+        # hooks/CLAUDE.md's "Public-surface leak" priority), not the identity one.
+        handle_block_unapprovable_author_create,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
+        handle_block_undelegated_investigation,
         handle_enforce_orchestrator_investigation_boundary,
         handle_warn_merged_detection_probe,
         handle_warn_batched_questions,

@@ -41,6 +41,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -56,13 +57,11 @@ _logger = logging.getLogger("teatree.config")
 #: * ``autonomy`` — ships ``full``; ``babysit`` is the tier that keeps every approval gate.
 #: * ``mode`` — ships ``auto``; ``interactive`` gates publishing on explicit approval.
 #: * ``require_human_approval_to_merge`` / ``_to_answer`` — the two named human controls.
-#: * ``on_behalf_post_mode`` — ``draft_or_ask`` never posts as the user unprompted.
 SAFETY_FAIL_CLOSED_STORED_VALUES: dict[str, Any] = {
     "autonomy": "babysit",
     "mode": "interactive",
     "require_human_approval_to_merge": True,
     "require_human_approval_to_answer": True,
-    "on_behalf_post_mode": "draft_or_ask",
 }
 
 #: The marker filename, beside the primary control DB.
@@ -265,6 +264,22 @@ def clear_degraded_read() -> None:
             _logger.warning("could not clear the ConfigSetting degraded-read marker %s: %s", candidate, exc)
 
 
+@cache
+def note_healthy_read() -> None:
+    """Retire a recorded fault the FIRST time this process proves it can read the tier.
+
+    Nothing else clears the marker, so the TTL was doing the job of a clear — a repaired
+    box kept reporting a fault for a day. A successful read is the evidence the fault is
+    gone, and any process making one is entitled to say so.
+
+    Once per process rather than once per read: the clear is an unlink and the read path is
+    hot, so a per-read stat would put filesystem work on every settings resolution. The
+    trade is that a fault recorded AFTER this process reconciled is left for the next
+    process — the safe direction, since it leaves the alarm standing rather than muting it.
+    """
+    clear_degraded_read()
+
+
 def _read_marker() -> DegradedReadReport | None:
     """The FRESHEST record across every candidate location.
 
@@ -315,5 +330,6 @@ __all__ = [
     "fallback_marker_path",
     "marker_path",
     "marker_paths",
+    "note_healthy_read",
     "record_degraded_read",
 ]

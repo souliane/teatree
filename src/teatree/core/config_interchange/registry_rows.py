@@ -17,6 +17,7 @@ coordinates the guard had just protected (souliane/teatree#4147).
 
 from typing import Any
 
+from teatree.config.secret_settings import is_pass_key_setting
 from teatree.config.stored_row_health import is_operator_configuration
 from teatree.core.models.config_setting import ConfigValue
 
@@ -52,7 +53,9 @@ def overlay_table_split(table: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     is one — into the definition registry, storing the value a second time under a meaning
     nothing reads while its own scoped row stayed behind holding the first.
     """
-    settings = {key: value for key, value in table.items() if is_operator_configuration(key)}
+    settings = {
+        key: value for key, value in table.items() if is_operator_configuration(key) or is_pass_key_setting(key)
+    }
     definitions = {key: value for key, value in table.items() if key not in settings}
     return settings, definitions
 

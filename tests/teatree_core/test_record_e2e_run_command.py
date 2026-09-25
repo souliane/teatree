@@ -35,9 +35,22 @@ class TestRecordE2ERunCommand(TestCase):
             )
 
     def test_records_green_posted_run_satisfying_gate(self) -> None:
-        result = self._run("--spec", "e2e/loan.spec.ts", "--result", "green", "--head-sha", _SHA, "--posted-url", _URL)
+        result = self._run(
+            "--spec",
+            "e2e/loan.spec.ts",
+            "--result",
+            "green",
+            "--head-sha",
+            _SHA,
+            "--posted-url",
+            _URL,
+            "--target",
+            "stack",
+        )
         assert result["recorded"] is True
         assert E2eMandatoryRun.has_green_evidence(self.ticket, _SHA) is True
+        assert E2eMandatoryRun.objects.get(ticket=self.ticket, head_sha=_SHA).target == "stack"
+        assert result["target"] == "stack"
 
     def test_green_run_without_posted_url_does_not_satisfy_gate(self) -> None:
         result = self._run("--spec", "e2e/loan.spec.ts", "--result", "green", "--head-sha", _SHA)

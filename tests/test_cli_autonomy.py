@@ -2,7 +2,7 @@
 
 The first-class CLI surface for the single ``autonomy`` knob (souliane/teatree
 #1668) that collapses the three user-approval gates — colleague auto-approve
-(``on_behalf_post_mode``), auto-merge (``require_human_approval_to_merge``),
+(the active posture), auto-merge (``require_human_approval_to_merge``),
 and answer (``require_human_approval_to_answer``) — so a user flips an overlay
 to full merge/approve autonomy with one command instead of hand-editing config.
 
@@ -28,7 +28,8 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.autonomy import register_autonomy_commands
-from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings
+from teatree.config import Autonomy, Mode, get_effective_settings
+from teatree.core.mode_resolution import owner_voice_forbidden
 from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
@@ -200,7 +201,6 @@ def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     away = tmp_path / "no_manage"
     away.mkdir()
     monkeypatch.chdir(away)
-    monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
     monkeypatch.delenv("T3_MODE", raising=False)
 
 
@@ -229,7 +229,7 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
         # must-KEEP: review before merge, and the owner's colleague-facing voice, are
         # never side effects of the tier — each is its own named opt-in.
         assert settings.require_human_approval_to_merge is True
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert owner_voice_forbidden() is True
         # And the merge-autonomy path is otherwise reachable (gated on mode == AUTO).
         assert settings.mode is Mode.AUTO
 
@@ -256,7 +256,7 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.BABYSIT
         # must-DENY: even with mode = auto, the gates stay blocking under babysit.
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert owner_voice_forbidden() is True
         assert settings.require_human_approval_to_merge is True
         assert settings.require_human_approval_to_answer is True
 

@@ -46,6 +46,7 @@ _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
         ("expected_head_oid", inspect.Parameter.KEYWORD_ONLY),
+        ("squash", inspect.Parameter.KEYWORD_ONLY),
     ],
 }
 
@@ -149,6 +150,7 @@ _ISSUE_SCOPED_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]
     # FILED", which is the whole intake predicate.
     "list_assigned_issues": [
         ("assignee", inspect.Parameter.KEYWORD_ONLY),
+        ("repo_slugs", inspect.Parameter.KEYWORD_ONLY),
     ],
     "list_authored_issues": [
         ("author", inspect.Parameter.KEYWORD_ONLY),

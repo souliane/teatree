@@ -33,18 +33,18 @@ from teatree.loop.review_claim import (
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
-from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
 
 class _GateOffTestCase(TestCase):
-    """``on_behalf_post_mode`` is IMMEDIATE for the lifetime of each test.
+    """The posture permits the owner voice for the lifetime of each test.
 
     These exercise the reaction/claim mechanics, not the on-behalf gate — which
     has its own suites — so the gate is lifted rather than satisfied per post.
     """
 
     def setUp(self) -> None:
-        self.enterContext(mode_immediate_cm())
+        self.enterContext(posture_permits_cm())
 
 
 CHANNEL = "C0REVIEW"

@@ -9,12 +9,16 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
+import os
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import typer
 
 if TYPE_CHECKING:
     from teatree.core.admission_pressure import MachineSignal
+
+_MAX_STALL_MINUTES = 24 * 60
 
 
 def _check_intake_budget_deadlock() -> bool:
@@ -53,8 +57,6 @@ def _check_intake_budget_deadlock() -> bool:
         jammed: list[IntakeBudget] = []
         for overlay in sorted(occupied):
             settings = get_effective_settings(overlay)
-            if not settings.issue_implementer_enabled:
-                continue
             # The LIVE limit, never the static setting: the resource loop may have moved
             # it (#3992), and a doctor reading a different number than the gate is the
             # second opinion this whole surface exists to prevent.
@@ -189,6 +191,9 @@ def _check_starved_intake_candidates() -> bool:
     the operator needs to see it, not have the doctor go red over it. Crash-proof: any
     error degrades to OK.
     """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.intake.budget import read_intake_budget  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.intake.concurrency import resolve_intake_concurrency  # noqa: PLC0415 — lazy CLI import
     from teatree.core.models import UnclaimedIntakeCandidate  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
@@ -200,11 +205,23 @@ def _check_starved_intake_candidates() -> bool:
         return True
     for row in starved:
         typer.echo(f"WARN  Intake starvation: {row.report()}")
+    for overlay in sorted({row.overlay for row in starved}):
+        try:
+            settings = get_effective_settings(overlay)
+            static = settings.issue_implementer_max_concurrent
+            limit = resolve_intake_concurrency(static, overlay=overlay)
+            budget = read_intake_budget(overlay, limit, static_limit=static)
+            typer.echo(
+                f"WARN  {overlay} intake: effective concurrency {limit} "
+                f"(configured {static}), {budget.in_flight} in-flight slot(s); "
+                f"{budget.report()}"
+            )
+        except Exception as exc:  # noqa: BLE001 — context failure must not hide the starved issues
+            typer.echo(f"WARN  {overlay} intake: effective concurrency/in-flight unreadable ({exc.__class__.__name__})")
     typer.echo(
         f"WARN  {len(starved)} issue(s) have been admissible and unclaimed past the threshold. "
-        "Intake claims oldest-filed first, so these are behind a budget that is not freeing "
-        "slots fast enough — raise `issue_implementer_max_concurrent` or clear the in-flight "
-        "work (#4238).",
+        "Intake claims oldest-filed first; inspect the effective concurrency and in-flight "
+        "holders before changing the throttle (#4238).",
     )
     return False
 
@@ -233,3 +250,79 @@ def _check_drain_lane_starved() -> bool:
         "`t3 <overlay> config_setting set drain_slot_reservation <n>` (#4374).",
     )
     return False
+
+
+def _queue_stall_minutes() -> int:
+    """Bound a configurable floor so an invalid override cannot disable the alarm."""
+    try:
+        minutes = int(os.environ.get("TEATREE_QUEUE_STALL_MINUTES", "30"))
+    except ValueError:
+        return 30
+    return minutes if 1 <= minutes <= _MAX_STALL_MINUTES else 30
+
+
+def _check_queue_stall() -> bool:
+    """FAIL when queued work has gone unclaimed for a sustained interval.
+
+    The oldest pending row supplies the age floor. A current claim or a recently
+    finished real attempt is evidence of claim progress, so neither state is a
+    stall. The reason is diagnostic only: missing OTel data cannot hide a stalled
+    queue, and a specific brake is never baked into the stall predicate.
+    """
+    from django.db.models import Count, Min  # noqa: PLC0415 — ORM at check time
+    from django.utils import timezone  # noqa: PLC0415 — ORM at check time
+
+    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415 — ORM import needs app registry
+    from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX  # noqa: PLC0415
+    from teatree.core.telemetry.admission import latest_admission_reason  # noqa: PLC0415 — lazy CLI import
+
+    now = timezone.now()
+    minutes = _queue_stall_minutes()
+    cutoff = now - timedelta(minutes=minutes)
+    try:
+        queue = Task.objects.filter(status=Task.Status.PENDING).aggregate(count=Count("pk"), oldest=Min("created_at"))
+        pending = queue["count"]
+        oldest = queue["oldest"]
+        if not pending or oldest is None or oldest >= cutoff:
+            return True
+        if Task.objects.filter(status=Task.Status.CLAIMED).exists():
+            return True
+        if TaskAttempt.objects.filter(started_at__gte=cutoff).exclude(error__startswith=LIMIT_PARKED_PREFIX).exists():
+            return True
+    except Exception as exc:  # noqa: BLE001 — an unreadable DB is diagnosed by its own doctor gate
+        typer.echo(f"WARN  Queue-stall check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+
+    try:
+        reason = latest_admission_reason()
+    except Exception:  # noqa: BLE001 — no telemetry must not mask the stalled queue
+        reason = None
+    explanation = reason or "no recent admission decision recorded"
+    age_minutes = int((now - oldest).total_seconds() // 60)
+    typer.echo(
+        f"FAIL  Queue stalled: {pending} pending task(s), oldest waiting {age_minutes}m, "
+        f"zero claimed/running for at least {minutes}m; latest admission decision: {explanation}"
+    )
+    return False
+
+
+def _check_merge_brake() -> bool:
+    """FAIL when a whole overlay's live PR board is stopping new issue intake."""
+    from teatree.core.admission_governor import read_merge_signal  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — ORM import needs app registry
+
+    try:
+        overlays = set(PullRequest.objects.live().values_list("overlay", flat=True).distinct())
+        stalled = [(overlay, read_merge_signal(overlay=overlay)) for overlay in sorted(overlays)]
+    except Exception as exc:  # noqa: BLE001 — an unreadable probe is not proof of a halt
+        typer.echo(f"WARN  Merge-brake check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    failures = [(overlay, signal) for overlay, signal in stalled if signal.stalled]
+    for overlay, signal in failures:
+        refs = ", ".join(signal.stuck_refs)
+        typer.echo(
+            f"FAIL  Issue intake halted by merge brake for {overlay or 'default'}: "
+            f"{signal.stuck_prs}/{signal.open_prs} live PRs stuck — {refs}. "
+            "Clear or recheck these PRs before claiming new issues."
+        )
+    return not failures

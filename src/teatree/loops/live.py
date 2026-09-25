@@ -67,14 +67,14 @@ class LoopOwnerStatus:
 class LoopStatusEntry:
     name: str
     kind: LoopKind
-    enabled: bool
+    #: The MANUAL override, when a human set one; ``None`` = the preset decides.
+    enabled: bool | None
     cadence_seconds: int
     last_fired_at: dt.datetime | None
     next_fire_at: dt.datetime | None
-    #: The effective run verdict the tick actually gates on: NOT held, then the
-    #: #3159 preset mask (L3/L2) over the base ``enabled`` flag. Required — every
-    #: construction site resolves it, so a masked loop can never masquerade as a
-    #: running, counting-down loop (the drift #3159's single predicate exists to prevent).
+    #: The effective run verdict the tick actually gates on: NOT held, then the manual
+    #: override, then the preset. Required — every construction site resolves it, so a
+    #: masked loop can never masquerade as a running, counting-down loop.
     admitted: bool
     held: bool = False
     #: Admitted, yet carrying no ``loop_timer`` row at all — nothing is driving it
@@ -150,22 +150,41 @@ def build_report(*, now: dt.datetime | None = None) -> LoopStatusReport:
 
 
 def _infra_entry(slot: str, lease: LoopLease | None) -> LoopStatusEntry:
+    """One infra slot's live status, anchored on when the slot last RAN.
+
+    The anchor is :attr:`LoopLease.last_acquired_at`, not the ``acquired_at`` claim:
+    an infra slot acquires its lease for the length of one cycle and releases it on
+    the way out, and the release nulls the claim. Reading the claim therefore
+    reported every cleanly-finished slot as never-fired with no next tick — the
+    reactive Slack-answer cycle read `last: — next: — idle` in the same minute it
+    :eyes:-reacted and dispatched an answering lane off the owner's DM, which is
+    indistinguishable from a loop that has never run. The live claim still wins
+    while a cycle is in flight, so a currently-running slot dates from its own
+    acquisition rather than the previous one.
+    """
     cadence = cadence_for_loop(slot)
-    acquired_at = lease.acquired_at if lease is not None else None
+    fired_at = _infra_last_fired_at(lease)
     held = lease.is_held if lease is not None else False
-    next_fire_at = acquired_at + dt.timedelta(seconds=cadence) if acquired_at is not None else None
+    next_fire_at = fired_at + dt.timedelta(seconds=cadence) if fired_at is not None else None
     return LoopStatusEntry(
         name=slot,
         kind=LoopKind.INFRA,
-        enabled=True,
+        # No manual-override layer reaches an infra slot, and no preset masks it — its
+        # run verdict is simply "not held".
+        enabled=None,
         cadence_seconds=cadence,
-        last_fired_at=acquired_at,
+        last_fired_at=fired_at,
         next_fire_at=next_fire_at,
-        # An infra slot is always enabled and no preset masks it — its run verdict
-        # is simply "not held".
         admitted=not held,
         held=held,
     )
+
+
+def _infra_last_fired_at(lease: LoopLease | None) -> dt.datetime | None:
+    """When this slot last ran: the live claim if one is open, else the durable anchor."""
+    if lease is None:
+        return None
+    return lease.acquired_at or lease.last_acquired_at
 
 
 _DAY_SECONDS = 86400
@@ -192,16 +211,16 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     statusline and ``t3 loop list`` since both consume :func:`build_report`.
 
     ``held`` is read from the ``LoopState`` control tier the loop tick gates on
-    (the enable verdict's hold arm), so a PAUSED loop — which
-    keeps ``Loop.enabled=True`` and a live cadence anchor — is surfaced as held
-    rather than masquerading as a running, counting-down loop. The hold set is
+    (the enable verdict's hold arm), so a PAUSED loop — which keeps its manual override
+    and a live cadence anchor — is surfaced as held rather than masquerading as a
+    running, counting-down loop. The hold set is
     bulk-resolved ONCE as part of the shared planes, not per loop — the live report
     must not re-introduce the N+1 the tick removed.
 
     ``admitted`` is the SAME instant verdict the tick gates a fire on, read from the one
     :class:`~teatree.loops.enable_verdict.EnablePlanes` seam — so a masked-off loop is
-    reported un-admitted (no live countdown) and a mask-forced-ON base-disabled loop is
-    reported admitted. Reading the preset layer here instead let this surface render
+    reported un-admitted (no live countdown) and one an override forces ON is reported
+    admitted. Reading the preset layer here instead let this surface render
     ``admitted=False`` beside ``starved=True`` in ONE row: starvation is derived from
     chain membership, and the two answers came from two different resolvers (#4196).
 
@@ -226,7 +245,7 @@ def _mini_entry(loop: "Loop", planes: "EnablePlanes", starved_names: set[str]) -
         cadence_seconds=_row_cadence_seconds(loop),
         last_fired_at=loop.last_run_at,
         next_fire_at=loop.next_run_at(),
-        admitted=planes.admits(loop.name, configured_enabled=loop.enabled),
+        admitted=planes.admits(loop.name),
         held=loop.name in planes.held,
         starved=loop.name in starved_names,
     )

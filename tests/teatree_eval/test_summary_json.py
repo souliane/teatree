@@ -8,6 +8,7 @@ field with a sentinel and asserts none of it — nor any transcript key — reac
 the JSON. The triage class is asserted to match :func:`classify_red`.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from teatree.eval.models import (
     EvalRun,
     EvalSpec,
     EvalToolCall,
+    JudgeSpec,
     Matcher,
     TokenUsage,
 )
@@ -118,9 +120,53 @@ class TestPublishSafety:
 
 
 class TestShape:
+    def test_unrequested_optional_judge_blocks_clean_proof_even_if_matcher_passes(self) -> None:
+        result = _passing("optional_judge")
+        result = ScenarioResult(
+            spec=dataclasses.replace(result.spec, matchers=(_MATCHER,), judge=JudgeSpec(rubric="Optional check")),
+            run=result.run,
+            matcher_results=result.matcher_results,
+            skipped=False,
+        )
+        scenario = _render([result])["scenarios"][0]
+        assert scenario["verdict"] == "pass"
+        assert scenario["outcome"] == "UNVERIFIED"
+
+    def test_confirmed_infrastructure_failure_keeps_infra_outcome(self) -> None:
+        payload = json.loads(
+            render_summary_json(
+                [_errored_red()], head_sha=_HEAD_SHA, generated_at="t", escalations={"beta": "confirmed"}
+            )
+        )
+        assert payload["scenarios"][0]["outcome"] == "INFRA_BLOCKED"
+
+    def test_five_outcomes_keep_flaky_separate_from_pass(self) -> None:
+        payload = json.loads(
+            render_summary_json(
+                [_passing("clean"), _behavioral_red("retry"), _behavioral_red("bad"), _errored_red(), _skipped()],
+                head_sha=_HEAD_SHA,
+                generated_at="t",
+                escalations={"retry": "flaky"},
+            )
+        )
+        assert {row["name"]: row["outcome"] for row in payload["scenarios"]} == {
+            "clean": "PASS",
+            "retry": "FLAKY",
+            "bad": "BEHAVIOR_FAIL",
+            "beta": "INFRA_BLOCKED",
+            "delta": "UNVERIFIED",
+        }
+        assert payload["outcome_counts"] == {
+            "PASS": 1,
+            "FLAKY": 1,
+            "BEHAVIOR_FAIL": 1,
+            "INFRA_BLOCKED": 1,
+            "UNVERIFIED": 1,
+        }
+
     def test_top_level_shape_matches_the_spec(self) -> None:
         payload = _render([_passing()])
-        assert set(payload) == {"generated_at", "model", "head_sha", "totals", "scenarios"}
+        assert set(payload) == {"generated_at", "model", "head_sha", "totals", "outcome_counts", "scenarios"}
         assert payload["head_sha"] == _HEAD_SHA
         assert payload["generated_at"] == "2026-07-13T00:00:00Z"
         assert payload["model"] == "claude-sonnet-4-6"
@@ -133,6 +179,7 @@ class TestShape:
         scenario = _render([_behavioral_red("alpha", lane="under_load")])["scenarios"][0]
         assert set(scenario) == {
             "name",
+            "version",
             "lane",
             "surface",
             "verdict",
@@ -141,6 +188,7 @@ class TestShape:
             "matcher_failed",
             "judge_failed",
             "triage_class",
+            "outcome",
             "advisory",
         }
         assert scenario["name"] == "alpha"
@@ -224,6 +272,7 @@ class TestWriteSummaryJson:
     def test_writes_the_file_and_resolves_head_sha_from_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.delenv("CI_COMMIT_SHA", raising=False)
         monkeypatch.setenv("GITHUB_SHA", _HEAD_SHA)
         out = tmp_path / "eval-heal.json"
         write_summary_json([_behavioral_red()], out)
@@ -233,6 +282,7 @@ class TestWriteSummaryJson:
         assert SENTINEL not in out.read_text(encoding="utf-8")
 
     def test_missing_env_yields_empty_head_sha(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CI_COMMIT_SHA", raising=False)
         monkeypatch.delenv("GITHUB_SHA", raising=False)
         out = tmp_path / "eval-heal.json"
         write_summary_json([_passing()], out)

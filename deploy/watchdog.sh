@@ -15,6 +15,10 @@
 #      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
 #      init every pass, which would replay the heavy ~minute init on every tick),
 #      while a missing/failed init IS included so the init-failure outage recovers.
+#      A failed init is replayed at most twice per init container: from the third
+#      consecutive failure of the same container id every `up` is skipped and the
+#      owner is DMed once. A redeploy recreates init under a new id and the count
+#      restarts; a successful init clears it.
 #      Skipped entirely while a convergence is in flight — deploy.sh stages its
 #      swap service by service, and a restart pass landing between two stages
 #      re-creates the container the deploy is mid-swap on.
@@ -49,6 +53,21 @@ PROJECT="${TEATREE_WATCHDOG_PROJECT:-teatree}"
 OVERLAY="${TEATREE_WATCHDOG_OVERLAY:-teatree}"
 INTERVAL="${TEATREE_WATCHDOG_INTERVAL:-300}"
 PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
+if [[ ! "$PASS_TIMEOUT" =~ ^(0|[1-9][0-9]{0,5})$ ]]; then
+  printf 'watchdog: pass timeout must be a bounded positive integer\n' >&2
+  exit 2
+fi
+# The deadline must live inside the exec target: killing only the compose client
+# strands a containerd-owned doctor process. Leave a minute for the rest of the pass.
+DOCTOR_DEADLINE="${TEATREE_WATCHDOG_DOCTOR_DEADLINE:-$((PASS_TIMEOUT - 60))}"
+if [[ ! "$DOCTOR_DEADLINE" =~ ^(0|[1-9][0-9]{0,5})$ ]] || (( DOCTOR_DEADLINE < 1 || DOCTOR_DEADLINE >= PASS_TIMEOUT )); then
+  printf 'watchdog: doctor deadline must be positive and less than pass timeout\n' >&2
+  exit 2
+fi
+# Leave room for the compose exec handshake and the rest of the pass. The
+# server-side timeout is recomputed at each attempt, not measured from pass start.
+DOCTOR_PASS_MARGIN=10
+DOCTOR_SERVER_COMMAND='deadline=$1; cap=$2; margin=$3; [[ $deadline =~ ^(0|[1-9][0-9]{0,11})$ && $cap =~ ^(0|[1-9][0-9]{0,5})$ && $margin =~ ^(0|[1-9][0-9]{0,5})$ ]] || exit 125; now=$(date -u +%s) || exit 125; remaining=$((deadline - now - margin)); if (( remaining < 1 )); then printf "%s\n" WATCHDOG_DOCTOR_PASS_DEADLINE_EXPIRED >&2; exit 120; fi; if (( remaining > cap )); then remaining=$cap; fi; exec timeout "$remaining" t3 doctor check --json'
 INIT_SERVICE="${TEATREE_WATCHDOG_INIT_SERVICE:-teatree-init}"
 # Services to `exec` the read commands in (first reachable one wins). The WORKER
 # leads (#3651): `t3 doctor check --json` boots Django, scans the DB and makes live
@@ -106,6 +125,11 @@ RESTART_EPISODE_LAST=0
 RESTART_EPISODE_COUNT=0
 RESTART_EPISODE_ESCALATED=false
 RESTART_EPISODE_DIGEST=""
+# Init-failure ledger: "<init-container-id> <consecutive-failures>". Keyed on the id
+# because `up -d --no-recreate` restarts the SAME exited container, while a redeploy
+# recreates it under a new one.
+INIT_FAILURE_STATE="${TEATREE_WATCHDOG_INIT_FAILURE_STATE:-/var/tmp/teatree-watchdog-init-failures.state}"
+INIT_BACKOFF_AFTER=3
 
 # Undelivered-page ledger: "<epoch> <key> <base64-body>" per line, newest last, capped.
 UNDELIVERED_STATE="${TEATREE_WATCHDOG_UNDELIVERED_STATE:-/var/tmp/teatree-watchdog-undelivered.state}"
@@ -130,6 +154,32 @@ init_state() {
   printf '%s\n' "$json" | jq -rs 'if length > 0 then "\(.[0].State) \(.[0].ExitCode)" else empty end' 2>/dev/null
 }
 
+init_container_id() {
+  compose ps -a --format json "$INIT_SERVICE" 2>/dev/null | jq -rs '.[0].ID // empty' 2>/dev/null || true
+}
+
+# Count this failure of the init container; succeed when init should be left alone.
+init_backed_off() {
+  local state="$1" id previous count
+  id="$(init_container_id)"
+  [ -n "$id" ] || return 1
+  read -r previous count <<<"$(cat "$INIT_FAILURE_STATE" 2>/dev/null || true)"
+  if [ "${previous:-}" = "$id" ]; then
+    count=$((${count:-0} + 1))
+  else
+    count=1
+  fi
+  printf '%s %s\n' "$id" "$count" >"$INIT_FAILURE_STATE"
+  [ "$count" -ge "$INIT_BACKOFF_AFTER" ] || return 1
+  log "init container $id failed $count times in a row ($state) — not re-running it; redeploy to retry"
+  if [ "$count" -eq "$INIT_BACKOFF_AFTER" ]; then
+    printf 'teatree watchdog: `%s` failed %s times in a row (%s), so the watchdog stopped re-running it and the stack stays down. Read `docker compose -p %s logs %s`, fix the cause, then redeploy — a new init container resets the count.' \
+      "$INIT_SERVICE" "$count" "$state" "$PROJECT" "$INIT_SERVICE" \
+      | notify_owner "watchdog:init-backoff:$id"
+  fi
+  return 0
+}
+
 # Restart anything that went down, gated on init state (see header rationale).
 restart_down_services() {
   local state
@@ -143,8 +193,11 @@ restart_down_services() {
   fi
   state="$(init_state)"
   if [ "$state" = "exited 0" ]; then
+    rm -f "$INIT_FAILURE_STATE"
     log "init complete (exited 0) — restarting app services only: ${APP_SERVICES[*]}"
     compose up -d --no-recreate --no-deps "${APP_SERVICES[@]}"
+  elif [ "${state%% *}" = exited ] && init_backed_off "$state"; then
+    return 0
   else
     log "init not complete (state='${state:-unknown}') — full up -d --no-recreate"
     compose up -d --no-recreate
@@ -376,20 +429,39 @@ _announce_restart_escalation() {
 # set, possibly empty), 125 when NO exec service could be reached at all. Either
 # way DOCTOR_ERR carries the daemon's stderr, which run_doctor classifies.
 _doctor_attempt() {
-  local svc states_b64 err_file probe_err
+  local svc states_b64 err_file probe_err now remaining doctor_seconds
   DOCTOR_RAW=""
   DOCTOR_ERR=""
   states_b64="$(compose_states_b64)"
   err_file="$(mktemp)"
   for svc in $EXEC_SERVICES; do
     probe_err="$(compose exec -T "$svc" true 2>&1 >/dev/null)" && {
+      # A previous client timeout can leave an orphaned in-container doctor.
+      # Skip loudly and never reclassify this deliberate skip as a no-JSON RED.
+      if compose exec -T "$svc" pgrep -f 't3 doctor check' >/dev/null 2>&1; then
+        log "doctor already running in $svc — skipping this pass to preserve singleton"
+        rm -f "$err_file"
+        return 127
+      fi
+      now="$(date -u +%s)"
+      remaining=$((WATCHDOG_PASS_DEADLINE - now - DOCTOR_PASS_MARGIN))
+      if (( remaining < 1 )); then
+        log "doctor skipped: insufficient time before outer pass deadline"
+        rm -f "$err_file"
+        return 128
+      fi
+      doctor_seconds=$((remaining < DOCTOR_DEADLINE ? remaining : DOCTOR_DEADLINE))
       # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
       # the exit code (set -e must not abort, and the code is NOT the signal).
       # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
       # doctor's compose-stack detector, which cannot reach the daemon itself.
-      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>"$err_file" || true)"
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" bash -c "$DOCTOR_SERVER_COMMAND" watchdog-doctor "$WATCHDOG_PASS_DEADLINE" "$doctor_seconds" "$DOCTOR_PASS_MARGIN" 2>"$err_file" || true)"
       DOCTOR_ERR="$(cat "$err_file")"
       rm -f "$err_file"
+      if [[ "$DOCTOR_ERR" == *WATCHDOG_DOCTOR_PASS_DEADLINE_EXPIRED* ]]; then
+        log "doctor skipped: outer pass deadline expired before in-container start"
+        return 128
+      fi
       return 0
     }
     DOCTOR_ERR="$DOCTOR_ERR$probe_err"$'\n'
@@ -416,6 +488,9 @@ run_doctor() {
   local attempt=1 rc
   while :; do
     _doctor_attempt && rc=0 || rc=$?
+    if [ "$rc" -eq 128 ]; then
+      return 128
+    fi
     if [ "$rc" -eq 0 ] && { [ -n "$DOCTOR_RAW" ] || ! _is_transient_exec_error "$DOCTOR_ERR"; }; then
       return 0
     fi
@@ -652,6 +727,12 @@ run_pass() {
   # why an outage the watchdog silently healed left no trace anyone could act on.
   local now down still_down
   now="$(date -u +%s 2>/dev/null || printf 0)"
+  if [ -z "${WATCHDOG_PASS_DEADLINE:-}" ]; then
+    WATCHDOG_PASS_DEADLINE=$((now + PASS_TIMEOUT))
+  elif [[ ! "$WATCHDOG_PASS_DEADLINE" =~ ^(0|[1-9][0-9]{0,11})$ ]]; then
+    log "invalid outer pass deadline — doctor will be skipped"
+    WATCHDOG_PASS_DEADLINE="$now"
+  fi
   down="$(down_app_services)"
 
   log "restarting any down services (gated on init state)"
@@ -680,6 +761,14 @@ run_pass() {
 
   local doctor_rc
   run_doctor && doctor_rc=0 || doctor_rc=$?
+  if [ "$doctor_rc" -eq 127 ]; then
+    log "doctor pass skipped: a prior doctor is still running inside the target container"
+    return 0
+  fi
+  if [ "$doctor_rc" -eq 128 ]; then
+    log "doctor pass skipped: outer pass has insufficient time for a bounded in-container probe"
+    return 0
+  fi
   if [ "$doctor_rc" -eq 126 ]; then
     # The probe could not RUN: its target was restarting / not running for every
     # attempt. That is a transient (#3651) — a retry is the whole remedy, and it
@@ -757,7 +846,8 @@ run_pass() {
 run_loop() {
   log "watchdog loop starting (interval=${INTERVAL}s, pass timeout=${PASS_TIMEOUT}s)"
   while :; do
-    timeout "$PASS_TIMEOUT" bash "$SELF" || log "pass failed or timed out (rc=$?)"
+    WATCHDOG_PASS_DEADLINE="$(($(date -u +%s) + PASS_TIMEOUT))" timeout "$PASS_TIMEOUT" bash "$SELF" \
+      || log "pass failed or timed out (rc=$?)"
     sleep "$INTERVAL"
   done
 }

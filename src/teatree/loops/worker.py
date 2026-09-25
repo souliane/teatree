@@ -2,23 +2,26 @@
 
 One process runs programmatic ``django_tasks_db`` :class:`Worker` executor threads —
 a host-scaled ``loops`` pool (floored at 2, :func:`loops_executor_count`) and a
-host-scaled ``default`` pool (floored at 2, :func:`default_queue_executor_count`) —
+host-scaled ``default`` pool (floored at 2, :func:`default_queue_executor_count`) and
+one protected ``cheap`` executor for review/draining phases —
 so a heavy headless ``default`` job can never starve a reactive loop timer, two slow
 loop ticks can never stall every OTHER loop's timer, and a deep backlog of independent
 headless work still drains in parallel on a bigger box instead of one-or-two-at-a-time.
-A supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s AND
+A supervisor thread re-reads the fleet admission verdict every ~5 s AND
 polls each executor thread's :meth:`is_alive`, respawning any that a swallowed error
 (a ``DBTaskResult`` ``OperationalError`` inside ``db_worker``) silently killed — so a
-dead executor never freezes the whole box while the process still looks healthy. It
-stops every executor on a flip-off, idles until a flip-on rebuilds the pool, and exits
-only on SIGTERM/SIGINT; shutdown joins the pool and SIGKILLs any in-flight tick process
-group the join left orphaned. When a single executor exhausts its respawn budget the worker exits NON-ZERO
+dead executor never freezes the whole box while the process still looks healthy. When the
+active preset admits ZERO loops it stops every executor and keeps POLLING (C1): the
+schedule boundary that will admit work again lives in this process, so exiting would leave
+nobody to notice it. A SIGTERM/SIGINT is what ends the process — joining and, after the
+join timeout, SIGKILLing any in-flight tick process group the join left orphaned;
+when a single executor exhausts its respawn budget the worker exits NON-ZERO
 (loud, never silent) so the OS/container restarts it fresh rather than limping with a
 dead pool. The flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
 at most one worker per box. At startup the worker reconciles the loop-timer chains, seeds
 the maintenance chains — including the ``drive_off_live_tick_loops`` chain that fires
 the tick command of every ``off_live_tick`` loop, the ONLY driver those loops have — and
-expires the stale ``default``-queue backlog BEFORE spawning executors (so a box that
+expires stale ``default``- and ``cheap``-queue jobs BEFORE spawning executors (so a box that
 queued days-old provision/ship jobs while no worker ran never blind-fires them on the
 default-ON flip), so a fresh or crash-recovered box catches up and
 self-heals with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
@@ -29,19 +32,24 @@ import logging
 import os
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from teatree.loop.queue_drain import expire_stale_default_jobs
+from teatree.core.admission_pressure import MACHINE_BRAKE_CAUSES
+from teatree.loop.queue_drain import expire_stale_headless_jobs
 from teatree.loops.deadlined_tick import kill_live_tick_process_groups
-from teatree.loops.timer_chains import LoopRunnerState, read_loop_runner_state
+from teatree.loops.enable_verdict import FleetAdmission, read_fleet_admission
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
+from teatree.loops.worker_health import publish_worker_heartbeat
 from teatree.utils.ram_probe import default_provision_concurrency
 from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from django_tasks_db.management.commands.db_worker import Worker
+
+    from teatree.core.admission_governor import AdmissionDecision
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +60,7 @@ LOOPS_EXECUTOR_FLOOR = 2
 #: The prior hardcoded ``default``-queue width; now the FLOOR so a small box keeps
 #: the old minimum while a bigger box scales up.
 DEFAULT_QUEUE_FLOOR = 2
+MIN_PARTITIONED_CEILING = 2
 
 
 def loops_executor_count() -> int:
@@ -68,10 +77,10 @@ def loops_executor_count() -> int:
 
 
 def default_queue_executor_count() -> int:
-    """Host-scaled width of the ``default`` (FSM/headless) executor pool, floored at 2.
+    """Host-scaled width of the ``default`` coding executor pool, floored at 2.
 
-    A deep backlog of independent PRs drained through a fixed 2 threads reviews and
-    merges one-or-two-at-a-time regardless of host size. Scaling with the shared
+    A deep backlog of independent coding jobs drained through a fixed 2 threads
+    one-or-two-at-a-time regardless of host size. Scaling with the shared
     PR-01 resource ceiling (:func:`default_provision_concurrency` — half the logical
     cores) lets an idle multi-core box run more phase work in parallel; the floor
     preserves the prior minimum on a 1-2 core box.
@@ -80,12 +89,56 @@ def default_queue_executor_count() -> int:
 
 
 def build_executor_queues() -> tuple[str, ...]:
-    """The executor pool: a host-scaled ``loops`` pool + a host-scaled ``default`` pool."""
-    return ("loops",) * loops_executor_count() + ("default",) * default_queue_executor_count()
+    """Control and coding pools plus one protected cheap/draining executor."""
+    return ("loops",) * loops_executor_count() + ("default",) * default_queue_executor_count() + ("cheap",)
 
 
-#: The supervisor re-reads the kill-switch on this cadence — a flip-off stops
-#: further dispatch within ~this many seconds.
+def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str, ...]:
+    """Clamp width, protecting control/review before filling coding capacity."""
+    if ceiling >= len(queues):
+        return queues
+    names = tuple(dict.fromkeys(queues))
+    if ceiling == MIN_PARTITIONED_CEILING and names == ("loops", "default", "cheap"):
+        # The ceiling is for live agents, not waiting worker threads. A third
+        # thread keeps a review executable while one coding agent is active.
+        return names
+    if ceiling == 1 and len(names) > 1:
+        # One executor can subscribe to both queues; assigning it to either
+        # queue alone would permanently starve the other at a one-slot ceiling.
+        return (",".join(names),)
+    remaining = Counter(queues)
+    if names == ("loops", "default", "cheap") and ceiling >= len(names):
+        # A round-robin clamp spends the fourth slot on a second control
+        # executor while coding has only one. Protect one control and one
+        # review lane, then give available capacity to coding first.
+        coding = min(remaining["default"], ceiling - 2)
+        selected = ["loops", *(["default"] * coding), "cheap"]
+        remaining["loops"] -= 1
+        remaining["default"] -= coding
+        remaining["cheap"] -= 1
+        for name in ("default", "loops", "cheap"):
+            extra = min(ceiling - len(selected), remaining[name])
+            selected.extend([name] * extra)
+        return tuple(selected)
+    selected: list[str] = []
+    while len(selected) < max(0, ceiling):
+        for name in names:
+            if remaining[name] and len(selected) < ceiling:
+                selected.append(name)
+                remaining[name] -= 1
+    return tuple(selected)
+
+
+def _read_pool_pressure() -> "AdmissionDecision | None":
+    """Live governor verdict for the pool; its own probe failure is fail-open."""
+    from teatree.loop.admission import governor_verdict  # noqa: PLC0415 — loop orchestration at call time
+    from teatree.loop.statusline import default_path  # noqa: PLC0415 — same sidecar as dispatch
+
+    return governor_verdict(statusline_path=default_path())
+
+
+#: The supervisor re-reads the fleet verdict on this cadence — a preset that stops
+#: admitting work stops further dispatch within ~this many seconds.
 SUPERVISOR_POLL_SECONDS = 5.0
 #: How often the supervisor re-claims ``t3-master`` (#3968). Well inside the 1800 s
 #: lease TTL, and far rarer than the 5 s kill-switch poll so the heartbeat adds no
@@ -100,8 +153,8 @@ EXECUTOR_INTERVAL_SECONDS = 1.0
 #: is a real fault the OS/container should restart the whole worker for, not one the
 #: supervisor should mask by respawning forever).
 MAX_EXECUTOR_RESPAWNS = 5
-#: How many consecutive supervisor polls the kill-switch may read UNREADABLE before the
-#: worker exits NON-ZERO so ``restart: on-failure`` restarts it (F7). A transient blip
+#: How many consecutive supervisor polls the fleet verdict may read UNREADABLE before the
+#: worker exits NON-ZERO so the container's restart policy restarts it (F7). A transient blip
 #: recovers within a poll or two; a persistent read failure is a real fault, never a
 #: clean stop that leaves the factory silently dead.
 MAX_UNREADABLE_POLLS = 3
@@ -119,6 +172,10 @@ class _Handle(Protocol):
     def join(self, timeout: float | None = None) -> None: ...
 
 
+class _HealthPublisher(Protocol):
+    def __call__(self, admission: str, *, active: bool) -> None: ...
+
+
 class LoopWorkerExecutorCrashError(RuntimeError):
     """A ``loops``/``default`` executor thread died and exhausted its respawn budget.
 
@@ -129,22 +186,23 @@ class LoopWorkerExecutorCrashError(RuntimeError):
 
 
 class LoopWorkerExecutorStopError(RuntimeError):
-    pass
+    """Executors survived the shutdown join AND the tick kill — the pool never stopped."""
 
 
-class KillSwitchUnreadableError(RuntimeError):
-    """The kill-switch read UNREADABLE for too many consecutive polls (F7).
+class FleetAdmissionUnreadableError(RuntimeError):
+    """The fleet verdict read UNREADABLE for too many consecutive polls (F7).
 
     Raised out of :meth:`LoopWorker.run` so the worker exits NON-ZERO: a persistent
-    kill-switch read failure is a real fault the supervisor must restart the worker
-    for, never a clean exit-0 that ``restart: on-failure`` ignores while the factory
-    sits silently dead. A legitimate OFF idles in-process; only "cannot confirm" crashes.
+    enable-plane read failure is a real fault the supervisor must restart the worker
+    for, never a clean exit-0, which ``restart: unless-stopped`` spins into a silent
+    boot loop. A preset admitting nothing is a deliberate stop the process stays alive
+    through; only "cannot confirm" crashes.
     """
 
 
 _CRASH_MESSAGE = "A loops/default executor thread died and exhausted its respawn budget; exiting non-zero."
 _STOP_MESSAGE = "The executor pool did not stop within its bounded grace period; exiting non-zero."
-_UNREADABLE_MESSAGE = "The loop_runner_enabled kill-switch was unreadable for too many polls; exiting non-zero."
+_UNREADABLE_MESSAGE = "The fleet admission verdict was unreadable for too many polls; exiting non-zero."
 
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":
@@ -153,7 +211,7 @@ def _build_executor(queue_name: str, worker_id: str) -> "Worker":
     from django_tasks_db.management.commands.db_worker import Worker  # noqa: PLC0415 — deferred: heavy/optional dep
 
     return Worker(
-        queue_names=[queue_name],
+        queue_names=queue_name.split(","),
         interval=EXECUTOR_INTERVAL_SECONDS,
         batch=False,
         backend_name=DEFAULT_TASK_BACKEND_ALIAS,
@@ -250,6 +308,15 @@ def _spawn_executor_thread(executor: _Executor) -> _Handle:
     return thread
 
 
+def _publish_health(admission: str, *, active: bool) -> None:
+    try:
+        publish_worker_heartbeat(admission, active=active)
+    except OSError:
+        logger.warning(
+            "Worker health heartbeat could not be written; private availability will fail closed.", exc_info=True
+        )
+
+
 @dataclass(frozen=True)
 class WorkerSeams:
     """The injectable collaborators — the production defaults wire the real seams.
@@ -258,10 +325,11 @@ class WorkerSeams:
     real DB, or a real clock, while keeping :class:`LoopWorker`'s constructor thin.
     """
 
-    read_state: Callable[[], LoopRunnerState] = read_loop_runner_state
+    read_admission: Callable[[], FleetAdmission] = read_fleet_admission
+    read_pressure: Callable[[], "AdmissionDecision | None"] = _read_pool_pressure
     reconcile: Callable[[], object] = ensure_loop_timers
     seed_chains: Callable[[], object] = ensure_maintenance_chains
-    expire: Callable[[], object] = expire_stale_default_jobs
+    expire: Callable[[], object] = expire_stale_headless_jobs
     make_executor: Callable[[str, str], _Executor] = _build_executor
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
@@ -269,6 +337,7 @@ class WorkerSeams:
     reap_leases: Callable[[], object] = _reap_expired_leases
     claim_master: Callable[[], object] = _claim_t3_master
     release_master: Callable[[], object] = _release_t3_master
+    publish_health: _HealthPublisher = _publish_health
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
     master_refresh_seconds: float = T3_MASTER_REFRESH_SECONDS
@@ -289,12 +358,14 @@ class _Slot:
 
 
 class LoopWorker:
-    """Supervised executor pool: reconcile, drain K queues, pause on kill-switch, stop on signal."""
+    """Supervised executor pool: reconcile, drain K queues, quiesce while the preset admits nothing, stop on signal."""
 
     def __init__(self, seams: WorkerSeams | None = None) -> None:
         self._seams = seams or WorkerSeams()
         self._stop = threading.Event()
         self._slots: list[_Slot] = []
+        self._retiring: list[_Slot] = []
+        self._next_slot_id = 0
         self._polls_since_master_refresh = 0
 
     def request_stop(self) -> None:
@@ -305,31 +376,77 @@ class LoopWorker:
         executor = self._seams.make_executor(queue, f"worker-{os.getpid()}-{index}-{queue}")
         return _Slot(queue=queue, index=index, executor=executor, handle=self._seams.spawn(executor), respawns=respawns)
 
-    def _start_executor_pool(self) -> None:
-        self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(self._seams.executor_queues)]
-
-    def _stop_executor_pool(self) -> bool:
-        for slot in self._slots:
+    def _resize_pool(self, desired: tuple[str, ...]) -> None:
+        """Quiesce surplus slots, then refill only when retired threads have exited."""
+        remaining = list(self._slots)
+        kept: list[_Slot] = []
+        wanted: list[str] = []
+        for queue in desired:
+            match = next((slot for slot in remaining if slot.queue == queue), None)
+            if match is None:
+                wanted.append(queue)
+            else:
+                remaining.remove(match)
+                kept.append(match)
+        for slot in remaining:
             slot.executor.running = False
-        for slot in self._slots:
+            slot.handle.join(timeout=0)
+            self._retiring.append(slot)
+        self._slots = kept
+        self._retiring = [slot for slot in self._retiring if slot.handle.is_alive()]
+        for queue in wanted:
+            if len(self._slots) + len(self._retiring) >= len(desired):
+                break
+            index = self._next_slot_id
+            self._next_slot_id += 1
+            self._slots.append(self._spawn_slot(queue, index))
+
+    def _stop_pool(self) -> list[_Slot]:
+        """Drain active and retiring executors; report survivors after bounded joins."""
+        slots = self._slots + self._retiring
+        self._slots, self._retiring = [], []
+        for slot in slots:
+            slot.executor.running = False
+        for slot in slots:
             slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
-        self._seams.kill_ticks()
-        for slot in self._slots:
-            if slot.handle.is_alive():
-                slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
-        self._slots = [slot for slot in self._slots if slot.handle.is_alive()]
-        return not self._slots
+        return [slot for slot in slots if slot.handle.is_alive()]
 
-    def _ensure_executor_pool_stopped(self) -> None:
-        if not self._stop_executor_pool():
-            raise LoopWorkerExecutorStopError(_STOP_MESSAGE)
+    def _match_pool_to(self, admission: FleetAdmission) -> None:
+        """Hold the pool where the fleet verdict says it should be — spawn or quiesce.
 
-    def _shutdown(self) -> None:
-        self.request_stop()
-        try:
-            self._ensure_executor_pool_stopped()
-        finally:
-            self._release_t3_master()
+        Quiescing keeps the PROCESS alive: the schedule boundary that re-admits work is
+        driven from this supervisor, so an exit here would leave nobody to observe it and
+        the factory would stay stopped past the posture that stopped it.
+        """
+        if admission is FleetAdmission.ADMITS:
+            pressure = self._seams.read_pressure()
+            if pressure is not None and not pressure.admit:
+                if self._slots:
+                    logger.warning(
+                        "admission governor braked coding refill; retaining control and cheap lanes: %s",
+                        pressure.reason,
+                    )
+                # Timer/reconciliation tasks are the control plane: retiring every
+                # executor would also disable the monitor that diagnoses the brake.
+                # Cheap agents are exempt from MACHINE pressure only, never a
+                # spent token budget or collapsed yield. Unknown causes fail
+                # closed for agent execution while control diagnosis continues.
+                desired = ("loops", "cheap") if pressure.cause in MACHINE_BRAKE_CAUSES else ("loops",)
+                self._resize_pool(desired)
+                return
+            desired = self._seams.executor_queues
+            if pressure is not None:
+                desired = _bounded_executor_queues(desired, pressure.ceiling)
+            if not self._slots:
+                logger.info("the active preset admits work again — restarting the executor pool")
+            self._resize_pool(desired)
+            return
+        if self._slots:
+            logger.warning(
+                "the active preset admits ZERO loops — stopping the executor pool; this process stays alive so the "
+                "next schedule boundary still re-admits work. `t3 loop preset show` names the posture."
+            )
+            self._resize_pool(())
 
     def _respawn_dead_executors(self) -> bool:
         """Respawn any executor thread that died; return True iff one exhausted its respawn budget.
@@ -416,7 +533,7 @@ class LoopWorker:
         self._reclaim_dead_owner_leases()
 
     def run(self) -> None:
-        """Reconcile, expire stale jobs, and supervise a kill-switch-controlled executor pool."""
+        """Reconcile, expire stale jobs, then supervise the pool against the fleet verdict until stopped."""
         seams = self._seams
         # Ownership and driving are ONE startup (#3968): the slot is claimed before the
         # chains that fire ticks exist, so `t3 loop owner` can never report "unclaimed"
@@ -434,38 +551,46 @@ class LoopWorker:
         unreadable_polls = 0
         try:
             while not self._stop.is_set():
-                state = seams.read_state()
-                if state is LoopRunnerState.OFF:
-                    unreadable_polls = 0
-                    if self._slots:
-                        self._ensure_executor_pool_stopped()
-                    seams.sleep(seams.poll_seconds)
-                    self._per_poll_maintenance()
-                    continue
-                if state is LoopRunnerState.UNREADABLE:
-                    # F7: a read FAILURE is not an OFF — never a clean exit. Retry a few
-                    # polls (a blip recovers), then crash so restart:on-failure restarts us.
+                admission = seams.read_admission()
+                if admission is FleetAdmission.UNREADABLE:
+                    # F7: a read FAILURE is not a deliberate stop — never a clean exit. Retry a
+                    # few polls (a blip recovers), then crash so the container's restart policy restarts us.
                     unreadable_polls += 1
                     logger.warning(
-                        "kill-switch unreadable (%d/%d consecutive polls) — will crash-restart if it persists",
+                        "fleet verdict unreadable (%d/%d consecutive polls) — will crash-restart if it persists",
                         unreadable_polls,
                         seams.max_unreadable_polls,
                     )
+                    seams.publish_health(admission.value, active=False)
                     if unreadable_polls >= seams.max_unreadable_polls:
                         unreadable = True
                         break
                 else:
-                    unreadable_polls = 0  # ON — a recovered read resets the streak.
-                    if not self._slots:
-                        self._start_executor_pool()
+                    unreadable_polls = 0  # a recovered read resets the streak.
+                    self._match_pool_to(admission)
                 seams.sleep(seams.poll_seconds)
                 if self._slots and self._respawn_dead_executors():
                     crashed = True
                     break
                 self._per_poll_maintenance()
+                if not self._stop.is_set() and admission is not FleetAdmission.UNREADABLE:
+                    seams.publish_health(admission.value, active=bool(self._slots))
         finally:
-            self._shutdown()
+            self.request_stop()
+            survivors = self._stop_pool()
+            # The daemon-join above never reaches a tick SUBPROCESS: a SIGTERM mid-tick
+            # orphans it with no deadline owner. Kill any in-flight tick process group so
+            # no zombie/orphan outlives the worker's shutdown.
+            seams.kill_ticks()
+            for slot in survivors:
+                slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
+            stranded = any(slot.handle.is_alive() for slot in survivors)
+            # Hand t3-master back so a restarting worker (or an operator's session)
+            # finds an unowned slot instead of waiting out this process's TTL.
+            self._release_t3_master()
+        if stranded:
+            raise LoopWorkerExecutorStopError(_STOP_MESSAGE)
         if crashed:
             raise LoopWorkerExecutorCrashError(_CRASH_MESSAGE)
         if unreadable:
-            raise KillSwitchUnreadableError(_UNREADABLE_MESSAGE)
+            raise FleetAdmissionUnreadableError(_UNREADABLE_MESSAGE)

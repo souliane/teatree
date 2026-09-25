@@ -26,6 +26,7 @@ from teatree.core.management.commands._clear_migration_fork import (
 )
 from teatree.core.migration_leaf_probe import MigrationLeafConflict
 from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.overlay import OverlayReview
 
 _BASE_MIGRATION = (
     "from django.db import migrations\n\n\n"
@@ -104,7 +105,7 @@ def _clone_with_feature_migration(tmp_path: Path, bare: Path, *, name: str, pare
     return clone, feature_sha
 
 
-class _SafeReview:
+class _SafeReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return False
@@ -232,7 +233,10 @@ class TestCheckClearMigrationForkResolution(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             state=Ticket.State.IN_REVIEW,
-            extra={"ship_invoking_branch": "feat/invoking", "target_branch": "develop"},
+            extra={
+                "ship_invoking_branch": "feat/invoking",
+                "target_branch": {"acme/invoking": "develop"},
+            },
         )
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="/other", branch="feat/old", extra={"worktree_path": "/other"}
@@ -250,7 +254,10 @@ class TestCheckClearMigrationForkResolution(TestCase):
             seen["repo"] = repo
             seen["target"] = target
 
-        with mock.patch.object(_clear_migration_fork, "sha_forks_migration_graph", _fake_probe):
+        with (
+            mock.patch.object(_clear_migration_fork, "sha_forks_migration_graph", _fake_probe),
+            mock.patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/invoking"),
+        ):
             assert check_clear_migration_fork("a" * 40, ticket) is None
         assert seen["repo"] == "/invoking"
         # An explicit target_branch with no slash is normalized to origin/<branch>.
@@ -299,7 +306,10 @@ class TestCheckClearMigrationForkTargetResolution(TestCase):
             _ = repo, reviewed_sha
             seen["target"] = target
 
-        with mock.patch.object(_clear_migration_fork, "sha_forks_migration_graph", _fake_probe):
+        with (
+            mock.patch.object(_clear_migration_fork, "sha_forks_migration_graph", _fake_probe),
+            mock.patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/repo"),
+        ):
             assert check_clear_migration_fork("a" * 40, ticket) is None
         return seen["target"]
 
@@ -308,5 +318,5 @@ class TestCheckClearMigrationForkTargetResolution(TestCase):
         assert self._observed_target(self._ticket_with_worktree()) == f"origin/{self._INTEGRATION}"
 
     def test_a_prefixed_explicit_target_is_remote_qualified(self) -> None:
-        ticket = self._ticket_with_worktree(target_branch="release/1.2")
+        ticket = self._ticket_with_worktree(target_branch={"acme/repo": "release/1.2"})
         assert self._observed_target(ticket) == "origin/release/1.2"

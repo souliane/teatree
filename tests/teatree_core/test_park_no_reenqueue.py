@@ -16,11 +16,11 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.usage_window import maybe_park_for_active_window
+from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.agent_admission import AgentAdmission
 from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.task_claim import window_parked
 
 #: A phase with no registered agent, so the headless auto-enqueue seam stays live under the
@@ -31,7 +31,6 @@ _LANE = TaskAttempt.Lane.SUBSCRIPTION
 
 class TestParkDoesNotReEnqueue(TestCase):
     def setUp(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         self.admit = mock.patch(
             "teatree.core.agent_admission.agent_admission_verdict",
             return_value=AgentAdmission(expensive_denied=None, cheap_denied=None),
@@ -44,14 +43,13 @@ class TestParkDoesNotReEnqueue(TestCase):
 
     def _dispatching_task(self) -> Task:
         """A headless task mid-dispatch — CLAIMED, exactly as the admission guard finds it."""
-        task = Task.objects.create(
+        return Task.objects.create(
             ticket=self.ticket,
             session=self.session,
             phase=_FREE_FORM_PHASE,
+            status=Task.Status.CLAIMED,
+            admitted_at=timezone.now(),
         )
-        Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED)
-        task.refresh_from_db()
-        return task
 
     def _exhausted_lane(self) -> UsageWindowState:
         return UsageWindowState.record_limit(
@@ -63,7 +61,7 @@ class TestParkDoesNotReEnqueue(TestCase):
     def test_park_does_not_re_arm_the_agent_runner(self) -> None:
         window = self._exhausted_lane()
         task = self._dispatching_task()
-        with mock.patch("teatree.core.tasks.execute_task") as job:
+        with mock.patch.object(task_dispatch_mod, "execute_task") as job:
             attempt = maybe_park_for_active_window(task, lane=_LANE)
         assert job.enqueue.call_count == 0
         task.refresh_from_db()
@@ -77,7 +75,7 @@ class TestParkDoesNotReEnqueue(TestCase):
     def test_repeated_park_stays_one_visible_row(self) -> None:
         self._exhausted_lane()
         task = self._dispatching_task()
-        with mock.patch("teatree.core.tasks.execute_task"):
+        with mock.patch.object(task_dispatch_mod, "execute_task"):
             maybe_park_for_active_window(task, lane=_LANE)
             maybe_park_for_active_window(task, lane=_LANE)
         rows = TaskAttempt.objects.filter(task=task)
@@ -86,7 +84,7 @@ class TestParkDoesNotReEnqueue(TestCase):
 
     def test_unparked_headless_task_is_still_enqueued(self) -> None:
         # Control: the guard is scoped to the park gate, not a blanket disable of the lane.
-        with mock.patch("teatree.core.tasks.execute_task") as job:
+        with mock.patch.object(task_dispatch_mod, "execute_task") as job:
             task = Task.objects.create(
                 ticket=self.ticket,
                 session=self.session,
@@ -102,8 +100,8 @@ class TestParkDoesNotReEnqueue(TestCase):
         # A re-arm is a LATER instant, so the row's admission seat has aged out by then too.
         # Within ADMITTED_INFLIGHT_WINDOW the re-enqueue is a duplicate dispatch (#4125), which
         # is a second suppression this control is not measuring.
-        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW)
-        with mock.patch("teatree.core.tasks.execute_task") as job:
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+        with mock.patch.object(task_dispatch_mod, "execute_task") as job:
             task.save(update_fields=["status", "not_before"])
         job.enqueue.assert_called_once_with(task.pk, task.phase)
 

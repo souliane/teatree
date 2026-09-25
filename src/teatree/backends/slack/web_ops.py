@@ -36,6 +36,24 @@ def run_auth_test(http: SlackHttpClient, bot_token: str) -> RawAPIDict:
     return attach_granted_scopes(body, scopes_header)
 
 
+def read_ext_shared(get: Getter, channel: str) -> bool | None:
+    """Whether *channel* is a Slack-Connect externally-shared channel, or ``None`` when unknown.
+
+    Resolved from ``conversations.info`` (``is_ext_shared`` / ``is_shared``) on the bot
+    token, which can always READ channel metadata even where it cannot post. An
+    ``ok:false`` answer (bad token, missing scope, channel not found, rate-limit) is
+    ``None`` — membership unknown — so the token policy decides by operation class:
+    reads fail safe to the bot, writes/reactions fail toward the user ``xoxp`` (#1110).
+    A transport failure (5xx, connection error) propagates out of *get* and aborts the
+    call: conservative (no wrong-token send), but the call does not complete.
+    """
+    data = get("conversations.info", {"channel": channel})
+    if not data.get("ok"):
+        return None
+    info = cast("RawAPIDict", data.get("channel") or {})
+    return bool(info.get("is_ext_shared")) or bool(info.get("is_shared"))
+
+
 def read_permalink(get: Getter, channel: str, ts: str) -> str:
     """Return the archive permalink for ``(channel, ts)`` or ``""``."""
     if not channel or not ts:

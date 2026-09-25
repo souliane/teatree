@@ -24,7 +24,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
-from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
+from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
 from teatree.loop.statusline_render import default_path
 
 # Generic URL extractor — covers GitHub/GitLab PR + issue URLs in the
@@ -36,13 +36,7 @@ _TERMINAL_TICKET_STATES = Ticket.marker_release_states()
 
 
 def _default_statusline_reader() -> str:
-    path = default_path()
-    if not path.is_file():
-        return ""
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
+    return default_path().read_text(encoding="utf-8")
 
 
 def _default_rerender() -> None:
@@ -94,24 +88,32 @@ class StaleStatuslineEntryDetector:
         return stale
 
     def detect(self) -> list[DetectorReport]:
-        stale_pairs = self._stale_urls()
+        return self.detect_checked().reports
+
+    def detect_checked(self) -> DetectorScan:
+        try:
+            stale_pairs = self._stale_urls()
+        except (OSError, UnicodeError):
+            return DetectorScan([], complete=False, reason="statusline_unreadable")
         if not stale_pairs:
-            return []
+            return DetectorScan([])
         urls = sorted({url for url, _ in stale_pairs})
         reasons = sorted({reason for _, reason in stale_pairs})
         identity = ",".join(urls)
-        return [
-            DetectorReport(
-                detector=self.name,
-                dedup_key=canonical_key(self.name, "render"),
-                state_hash=state_hash(identity, *reasons),
-                severity=self.severity,
-                max_rung=self.max_rung,
-                summary=f"{len(urls)} stale URL(s) on statusline",
-                payload={"urls": urls, "reasons": reasons},
-                auto_fix=self.auto_fix,
-            )
-        ]
+        return DetectorScan(
+            [
+                DetectorReport(
+                    detector=self.name,
+                    dedup_key=canonical_key(self.name, "render"),
+                    state_hash=state_hash(identity, *reasons),
+                    severity=self.severity,
+                    max_rung=self.max_rung,
+                    summary=f"{len(urls)} stale URL(s) on statusline",
+                    payload={"urls": urls, "reasons": reasons},
+                    auto_fix=self.auto_fix,
+                )
+            ]
+        )
 
     def scan(self) -> list[ScanSignal]:
         return [report.to_signal() for report in self.detect()]

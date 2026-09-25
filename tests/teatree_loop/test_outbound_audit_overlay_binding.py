@@ -27,6 +27,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import OutboundClaim
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner, kind_settling_seconds
 
 
@@ -284,393 +285,82 @@ class RecordClaimStampsOverlayTests(TestCase):
 
 
 class OverlayCredentialResolutionTests(TestCase):
-    """Per-overlay credential resolution drives the verifier factories.
-
-    Covers the resolver helpers in
-    ``outbound_audit_overlay_verifiers``: registered-overlay path
-    (``get_overlay`` succeeds, ``config.get_gitlab_token`` /
-    ``config.get_github_token`` returns the token), the TOML-only
-    fallback path (overlay lives in ``[overlays.<name>]`` without a
-    Python class, so ``get_overlay`` raises and the resolver re-reads
-    via ``load_config`` + ``read_pass``), and the empty-overlay legacy
-    branch (delegates to the process-global resolver).
-    """
-
-    def test_gitlab_credentials_from_registered_overlay(self) -> None:
-        """Registered overlay: ``get_overlay(name).config`` provides token + URL."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
-
-        fake_overlay = MagicMock()
-        fake_overlay.config.get_gitlab_token.return_value = "glpat-overlay-A"
-        fake_overlay.config.gitlab_url = "https://gitlab.example.com/api/v4"
-
-        with patch(
-            "teatree.core.overlay_loader.get_overlay",
-            return_value=fake_overlay,
-        ):
-            token, base_url = _overlay_gitlab_credentials("overlay-A")
-
-        assert token == "glpat-overlay-A"
-        assert base_url == "https://gitlab.example.com/api/v4"
-
-    def test_gitlab_credentials_falls_back_to_toml_when_get_overlay_raises(self) -> None:
-        """Path-only TOML overlay: ``get_overlay`` raises; resolver re-reads TOML."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
-
-        toml_config = TeaTreeConfig(
-            raw={
-                "overlays": {
-                    "toml-only": {
-                        "gitlab_token_ref": "gitlab/toml-only-token",
-                        "gitlab_url": "https://gitlab.example.org",
-                    },
-                },
-            },
-        )
-        with (
-            patch(
-                "teatree.core.overlay_loader.get_overlay",
-                side_effect=LookupError("no python class"),
-            ),
-            patch("teatree.config.load_config", return_value=toml_config),
-            patch("teatree.utils.secrets.read_pass", return_value="glpat-from-pass"),
-        ):
-            token, base_url = _overlay_gitlab_credentials("toml-only")
-
-        assert token == "glpat-from-pass"
-        assert base_url == "https://gitlab.example.org/api/v4"
-
-    def test_gitlab_credentials_empty_name_returns_blank_pair(self) -> None:
-        """Empty overlay name short-circuits — legacy global-resolver path."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
-
-        assert _overlay_gitlab_credentials("") == ("", "")
-
-    def test_gitlab_credentials_overlay_config_get_token_raises(self) -> None:
-        """``config.get_gitlab_token`` raising returns empty token + default URL."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
-
-        broken = MagicMock()
-        broken.config.get_gitlab_token.side_effect = RuntimeError("vault unavailable")
-        broken.config.gitlab_url = "https://gitlab.com/api/v4"
-
-        with patch(
-            "teatree.core.overlay_loader.get_overlay",
-            return_value=broken,
-        ):
-            token, base_url = _overlay_gitlab_credentials("broken-overlay")
-
-        assert token == ""
-        assert base_url == "https://gitlab.com/api/v4"
-
-    def test_gitlab_credentials_toml_missing_overlay_returns_blank(self) -> None:
-        """TOML fallback: overlay name absent from config → empty pair."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _overlay_gitlab_credentials_from_toml,
-        )
-
-        with patch(
-            "teatree.config.load_config",
-            return_value=TeaTreeConfig(raw={"overlays": {}}),
-        ):
-            assert _overlay_gitlab_credentials_from_toml("absent") == ("", "")
-
-    def test_gitlab_credentials_toml_missing_token_ref_returns_blank(self) -> None:
-        """TOML fallback: overlay present but no ``gitlab_token_ref`` → empty."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _overlay_gitlab_credentials_from_toml,
-        )
-
-        cfg = TeaTreeConfig(raw={"overlays": {"x": {"gitlab_url": "https://gl.example"}}})
-        with patch("teatree.config.load_config", return_value=cfg):
-            assert _overlay_gitlab_credentials_from_toml("x") == ("", "")
-
-    def test_gitlab_credentials_toml_read_pass_raises_returns_blank_token(self) -> None:
-        """TOML fallback: ``read_pass`` raising → empty token, URL preserved."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _overlay_gitlab_credentials_from_toml,
-        )
-
-        cfg = TeaTreeConfig(
-            raw={
-                "overlays": {
-                    "x": {
-                        "gitlab_token_ref": "gitlab/x",
-                        "gitlab_url": "https://gl.example/api/v4",
-                    },
-                },
-            },
-        )
-        with (
-            patch("teatree.config.load_config", return_value=cfg),
-            patch("teatree.utils.secrets.read_pass", side_effect=RuntimeError("pass down")),
-        ):
-            token, base_url = _overlay_gitlab_credentials_from_toml("x")
-
-        assert token == ""
-        assert base_url == "https://gl.example/api/v4"
-
-    def test_resolve_github_token_for_overlay_empty_falls_through(self) -> None:
-        """Empty overlay name delegates to the legacy process-global resolver."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            resolve_github_token_for_overlay,
-        )
-
-        with patch(
-            "teatree.loop.scanners.outbound_audit._resolve_github_token",
-            return_value="legacy-token",
-        ):
-            assert resolve_github_token_for_overlay("") == "legacy-token"
-
-    def test_resolve_github_token_for_overlay_uses_registered_overlay(self) -> None:
-        """Registered overlay's ``config.get_github_token`` wins over fallback."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            resolve_github_token_for_overlay,
-        )
-
-        fake_overlay = MagicMock()
-        fake_overlay.config.get_github_token.return_value = "ghp-from-overlay"
-        with (
-            patch(
-                "teatree.core.overlay_loader.get_overlay",
-                return_value=fake_overlay,
-            ),
-            patch(
-                "teatree.loop.scanners.outbound_audit._resolve_github_token",
-                return_value="legacy-token",
-            ),
-        ):
-            assert resolve_github_token_for_overlay("work") == "ghp-from-overlay"
-
-    def test_resolve_github_token_for_overlay_falls_back_to_toml(self) -> None:
-        """Registered path returns empty → TOML path resolves the token."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            resolve_github_token_for_overlay,
-        )
-
-        cfg = TeaTreeConfig(
-            raw={
-                "overlays": {
-                    "toml-overlay": {"github_token_ref": "github/toml"},
-                },
-            },
-        )
-        with (
-            patch(
-                "teatree.core.overlay_loader.get_overlay",
-                side_effect=LookupError("no class"),
-            ),
-            patch("teatree.config.load_config", return_value=cfg),
-            patch("teatree.utils.secrets.read_pass", return_value="ghp-from-toml"),
-            patch(
-                "teatree.loop.scanners.outbound_audit._resolve_github_token",
-                return_value="legacy-token",
-            ),
-        ):
-            assert resolve_github_token_for_overlay("toml-overlay") == "ghp-from-toml"
-
-    def test_resolve_github_token_for_overlay_falls_through_to_legacy(self) -> None:
-        """Neither registered nor TOML path resolves → legacy global resolver."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            resolve_github_token_for_overlay,
-        )
-
-        with (
-            patch(
-                "teatree.core.overlay_loader.get_overlay",
-                side_effect=LookupError("no class"),
-            ),
-            patch(
-                "teatree.config.load_config",
-                return_value=TeaTreeConfig(raw={"overlays": {}}),
-            ),
-            patch(
-                "teatree.loop.scanners.outbound_audit._resolve_github_token",
-                return_value="legacy-token",
-            ),
-        ):
-            assert resolve_github_token_for_overlay("unknown") == "legacy-token"
-
-    def test_github_token_from_registered_overlay_get_token_raises(self) -> None:
-        """``config.get_github_token`` raising → empty string (no crash)."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _github_token_from_registered_overlay,
-        )
-
-        broken = MagicMock()
-        broken.config.get_github_token.side_effect = RuntimeError("vault down")
-        with patch(
-            "teatree.core.overlay_loader.get_overlay",
-            return_value=broken,
-        ):
-            assert _github_token_from_registered_overlay("broken") == ""
-
-    def test_github_token_from_toml_overlay_missing_returns_blank(self) -> None:
-        """TOML fallback: overlay absent → empty string."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _github_token_from_toml_overlay,
-        )
-
-        with patch(
-            "teatree.config.load_config",
-            return_value=TeaTreeConfig(raw={"overlays": {}}),
-        ):
-            assert _github_token_from_toml_overlay("absent") == ""
-
-    def test_github_token_from_toml_overlay_no_token_ref_returns_blank(self) -> None:
-        """TOML fallback: overlay present but no ``github_token_ref`` → empty."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _github_token_from_toml_overlay,
-        )
-
-        cfg = TeaTreeConfig(raw={"overlays": {"x": {"slack_token_ref": "slack/x"}}})
-        with patch("teatree.config.load_config", return_value=cfg):
-            assert _github_token_from_toml_overlay("x") == ""
-
-    def test_github_token_from_toml_overlay_read_pass_raises_returns_blank(self) -> None:
-        """TOML fallback: ``read_pass`` raising → empty string."""
-        from teatree.config import TeaTreeConfig  # noqa: PLC0415
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _github_token_from_toml_overlay,
-        )
-
-        cfg = TeaTreeConfig(
-            raw={"overlays": {"x": {"github_token_ref": "github/x"}}},
-        )
-        with (
-            patch("teatree.config.load_config", return_value=cfg),
-            patch("teatree.utils.secrets.read_pass", side_effect=RuntimeError("pass down")),
-        ):
-            assert _github_token_from_toml_overlay("x") == ""
-
-    def test_gitlab_api_for_overlay_empty_name_uses_default_constructor(self) -> None:
-        """Empty overlay name → ``GitLabAPI()`` legacy single-overlay default."""
+    def test_gitlab_api_uses_exact_named_route(self) -> None:
         from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415 — deferred test-local import, matches the sibling gitlab_api_for_overlay cases
             gitlab_api_for_overlay,
         )
 
-        # A real GitLabAPI always carries a resolved ``.token``; the resolve-or-skip
-        # guard returns the client only when that token is present.
-        client = MagicMock(token="resolved")
-        with patch(
-            "teatree.backends.gitlab.api.GitLabAPI",
-            return_value=client,
-        ) as ctor:
-            api = gitlab_api_for_overlay("")
-
-        assert api is client
-        ctor.assert_called_once_with()
-
-    def test_gitlab_api_for_overlay_uses_overlay_credentials(self) -> None:
-        """Resolved overlay credentials → ``GitLabAPI(token=..., base_url=...)``."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
-
-        fake_overlay = MagicMock()
-        fake_overlay.config.get_gitlab_token.return_value = "glpat-z"
-        fake_overlay.config.gitlab_url = "https://gl.example/api/v4"
         client = MagicMock(token="glpat-z")
         with (
+            patch("teatree.forge_credentials.resolve_named_overlay_token") as resolve,
             patch(
-                "teatree.core.overlay_loader.get_overlay",
-                return_value=fake_overlay,
+                "teatree.loop.scanners.outbound_audit_overlay_verifiers._overlay_gitlab_base_url",
+                return_value="https://gl.example/api/v4",
             ),
             patch(
                 "teatree.backends.gitlab.api.GitLabAPI",
                 return_value=client,
             ) as ctor,
         ):
+            resolve.return_value = ForgeTokenResolution(
+                "gitlab_token",
+                "named",
+                ForgeTokenState.TOKEN,
+                token="glpat-z",
+            )
             api = gitlab_api_for_overlay("named")
 
         assert api is client
+        resolve.assert_called_once_with("named", credential="gitlab_token")
         ctor.assert_called_once_with(token="glpat-z", base_url="https://gl.example/api/v4")
 
-    def test_gitlab_api_for_overlay_skips_when_no_token_resolved(self) -> None:
-        """A constructed client with no resolved token → ``None`` (resolve-or-skip).
-
-        The default constructor may build a client whose env/pass resolution
-        yields no token; handing it back would only raise
-        ``BackendResolutionError`` on first use, so the verifier skips cleanly.
-        """
+    def test_gitlab_api_empty_route_never_uses_ambient_login(self) -> None:
         from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
 
-        with patch(
-            "teatree.backends.gitlab.api.GitLabAPI",
-            return_value=MagicMock(token=""),
-        ):
-            assert gitlab_api_for_overlay("") is None
+        for state in (ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE):
+            with self.subTest(state=state.value):
+                resolution = ForgeTokenResolution("gitlab_token", "named", state)
+                with (
+                    patch.dict(os.environ, {"GITLAB_TOKEN": "hostile-ambient"}, clear=False),
+                    patch("teatree.forge_credentials.resolve_named_overlay_token", return_value=resolution),
+                    patch("teatree.backends.gitlab.api.GitLabAPI") as ctor,
+                ):
+                    assert gitlab_api_for_overlay("named") is None
+                ctor.assert_not_called()
 
-    def test_gitlab_api_for_overlay_returns_none_when_ctor_raises(self) -> None:
-        """``GitLabAPI`` constructor raising → ``None`` (graceful degrade)."""
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
-
-        with patch(
-            "teatree.backends.gitlab.api.GitLabAPI",
-            side_effect=RuntimeError("network failed at construction"),
-        ):
-            assert gitlab_api_for_overlay("") is None
-
-    def test_overlay_gitlab_credentials_returns_blank_when_loader_import_fails(self) -> None:
-        """``overlay_loader`` import failure → ``("", "")`` graceful fallback."""
-        import builtins  # noqa: PLC0415
-
-        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
-
-        real_import = builtins.__import__
-
-        def _blocked(name: str, *args: object, **kwargs: object) -> object:
-            if name == "teatree.core.overlay_loader":
-                msg = "synthetic import block"
-                raise ImportError(msg)
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=_blocked):
-            assert _overlay_gitlab_credentials("x") == ("", "")
-
-    def test_overlay_gitlab_credentials_from_toml_blank_when_config_import_fails(self) -> None:
-        """``teatree.config`` import failure inside the TOML helper → blank pair."""
-        import builtins  # noqa: PLC0415
-
+    def test_github_verifier_uses_exact_named_route(self) -> None:
         from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _overlay_gitlab_credentials_from_toml,
+            resolve_github_token_for_overlay,
         )
 
-        real_import = builtins.__import__
+        with patch("teatree.forge_credentials.resolve_named_overlay_token") as resolve:
+            resolve.return_value = ForgeTokenResolution(
+                "github_token",
+                "work",
+                ForgeTokenState.TOKEN,
+                token="ghp-work",
+            )
+            assert resolve_github_token_for_overlay("work") == "ghp-work"
+        resolve.assert_called_once_with("work", credential="github_token")
 
-        def _blocked(name: str, *args: object, **kwargs: object) -> object:
-            if name == "teatree.config":
-                msg = "config blocked"
-                raise ImportError(msg)
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=_blocked):
-            assert _overlay_gitlab_credentials_from_toml("x") == ("", "")
-
-    def test_github_token_from_toml_overlay_blank_when_imports_fail(self) -> None:
-        """Import failure inside the TOML GitHub token helper → empty string."""
-        import builtins  # noqa: PLC0415
-
+    def test_github_empty_route_never_uses_ambient_login(self) -> None:
         from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
-            _github_token_from_toml_overlay,
+            resolve_github_token_for_overlay,
         )
 
-        real_import = builtins.__import__
-
-        def _blocked(name: str, *args: object, **kwargs: object) -> object:
-            if name == "teatree.config":
-                msg = "config blocked"
-                raise ImportError(msg)
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=_blocked):
-            assert _github_token_from_toml_overlay("x") == ""
+        for state in (ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE):
+            with self.subTest(state=state.value):
+                resolution = ForgeTokenResolution(
+                    "github_token",
+                    "work",
+                    state,
+                    detail=f"github_token_pass_key is {state.value}",
+                )
+                with (
+                    patch.dict(os.environ, {"GH_TOKEN": "hostile", "GITHUB_TOKEN": "hostile"}, clear=False),
+                    patch("teatree.forge_credentials.resolve_named_overlay_token", return_value=resolution),
+                ):
+                    assert resolve_github_token_for_overlay("work") == ""
 
     def test_gitlab_approve_verifier_returns_none_when_current_username_raises(self) -> None:
         """``api.current_username()`` raising → ``None`` from the factory."""
@@ -707,28 +397,3 @@ class DefaultVerifierForClaimGitlabApproveBranchTests(TestCase):
 
         assert result is sentinel
         factory.assert_called_once_with("client-A")
-
-
-class ResolveGithubTokenSecretsImportFailureTests(TestCase):
-    """``_resolve_github_token`` graceful handling when secrets import fails."""
-
-    def test_returns_blank_when_secrets_module_unimportable(self) -> None:
-        """No env token + ``teatree.utils.secrets`` unimportable → empty string."""
-        import builtins  # noqa: PLC0415
-        import os  # noqa: PLC0415
-
-        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
-
-        real_import = builtins.__import__
-
-        def _blocked(name: str, *args: object, **kwargs: object) -> object:
-            if name == "teatree.utils.secrets":
-                msg = "secrets blocked"
-                raise ImportError(msg)
-            return real_import(name, *args, **kwargs)
-
-        with (
-            patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False),
-            patch("builtins.__import__", side_effect=_blocked),
-        ):
-            assert _resolve_github_token() == ""

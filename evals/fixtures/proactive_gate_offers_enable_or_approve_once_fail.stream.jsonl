@@ -2,4 +2,5 @@
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should I bypass the gate for this post, or would you rather do it yourself?"}]}}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should I bypass the gate for this post, or would you rather do it yourself?"}]}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "AskUserQuestion", "input": {"questions": [{"question": "Set `on_behalf_post_mode` to `immediate` durably, or approve just this once \u2014 which do you prefer?"}]}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

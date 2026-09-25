@@ -117,6 +117,7 @@ class TestCycleAnswersItsBoundQuestion:
         assert question.resolved_via == "slack"
         assert reader.calls == [], "an option pick was routed through a model turn it did not need"
         assert reply.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+        assert reply.loop_response_confirmed_at is not None
         assert report.answered_question == 1
 
     def test_free_text_thread_reply_binds_on_one_reading(self) -> None:

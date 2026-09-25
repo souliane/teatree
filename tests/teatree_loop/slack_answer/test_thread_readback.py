@@ -10,10 +10,15 @@ These helpers resolve the root FIRST, then read the root's replies — the
 single chokepoint both the dedup and the verification use.
 """
 
+import logging
 from dataclasses import dataclass, field
+from typing import cast
 
+import httpx
 import pytest
 
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
 from teatree.types import RawAPIDict
 
@@ -91,6 +96,40 @@ class TestBotReplyPresentInThread:
 
         assert bot_reply_present_in_thread(backend, channel="D1", thread_root="root.ts")
 
+    def test_old_bot_reply_does_not_acknowledge_a_new_owner_turn(self) -> None:
+        backend = FakeBackend(
+            replies_by_root={
+                "100.000001": [
+                    {"ts": "100.100000", "user": BOT_UID, "text": "old answer"},
+                    {"ts": "100.200000", "user": USER_UID, "text": "new question"},
+                ]
+            }
+        )
+
+        assert not bot_reply_present_in_thread(backend, channel="D1", thread_root="100.000001", after_ts="100.200000")
+        backend.replies_by_root["100.000001"].append({"ts": "100.300000", "user": BOT_UID, "text": "new answer"})
+        assert bot_reply_present_in_thread(backend, channel="D1", thread_root="100.000001", after_ts="100.200000")
+
+    def test_post_confirmation_requires_the_exact_new_reply_timestamp(self) -> None:
+        backend = FakeBackend(
+            replies_by_root={"100.000001": [{"ts": "100.300000", "user": BOT_UID, "text": "another answer"}]}
+        )
+
+        assert not bot_reply_present_in_thread(
+            backend,
+            channel="D1",
+            thread_root="100.000001",
+            after_ts="100.200000",
+            expected_ts="100.400000",
+        )
+        assert bot_reply_present_in_thread(
+            backend,
+            channel="D1",
+            thread_root="100.000001",
+            after_ts="100.200000",
+            expected_ts="100.300000",
+        )
+
     def test_user_only_thread_has_no_bot_reply(self) -> None:
         backend = FakeBackend(replies_by_root={"root.ts": [{"ts": "root.ts", "user": USER_UID, "text": "q"}]})
 
@@ -113,6 +152,43 @@ class TestBotReplyPresentInThread:
         )
 
         assert not bot_reply_present_in_thread(backend, channel="D1", thread_root="root.ts")
+
+
+class TestReadBackThroughTheSlackBackend:
+    """The dedup read-back keeps its conservative "absent" answer when Slack refuses the read."""
+
+    @staticmethod
+    def _serve(monkeypatch: pytest.MonkeyPatch, replies: RawAPIDict) -> None:
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            assert url.endswith("/conversations.replies")
+            assert cast("dict[str, str]", kwargs["headers"])["Authorization"] == "Bearer xoxb-bot"
+            return httpx.Response(200, json=replies, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            _ = kwargs
+            return httpx.Response(200, json={"ok": True, "user_id": BOT_UID}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+
+    def test_a_refused_read_back_reports_absent_and_names_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._serve(monkeypatch, {"ok": False, "error": "not_in_channel"})
+
+        with caplog.at_level(logging.WARNING, logger="teatree.loop.slack_answer.thread_readback"):
+            present = bot_reply_present_in_thread(
+                SlackBotBackend(bot_token="xoxb-bot"), channel="C1", thread_root="root.ts"
+            )
+
+        assert present is False
+        assert "not_in_channel" in caplog.text
+
+    def test_a_readable_thread_still_finds_the_bot_reply(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        thread = [{"ts": "root.ts", "user": USER_UID}, {"ts": "reply.ts", "user": BOT_UID, "text": "a"}]
+        self._serve(monkeypatch, {"ok": True, "messages": thread})
+
+        assert bot_reply_present_in_thread(SlackBotBackend(bot_token="xoxb-bot"), channel="C1", thread_root="root.ts")
 
 
 if __name__ == "__main__":  # pragma: no cover

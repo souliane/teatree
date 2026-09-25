@@ -47,7 +47,6 @@ UNCONVERTED: frozenset[str] = frozenset(
         "_plan_commands:PlanCommands.skip_planning:typed-return-unpinned",
         "_rubric_commands:RubricCommands.rubric_grade:typed-return-unpinned",
         "_rubric_commands:RubricCommands.rubric_set:typed-return-unpinned",
-        "_spec_coverage_commands:SpecCoverageCommands.record_spec_coverage:typed-return-unpinned",
         "_sweep_commands:SweepCommands.reconcile_overlay:typed-return-unpinned",
         "_sweep_commands:SweepCommands.sync_completions:typed-return-unpinned",
         "_ticket_show:TicketShowCommands.expedite:typed-return-unpinned",

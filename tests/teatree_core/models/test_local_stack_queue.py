@@ -16,6 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
+from teatree.core.models.local_stack_queue import MAX_QUEUE_ATTEMPTS
 
 
 def _worktree(*, overlay: str = "t3-heavy", ticket_number: str = "9001") -> Worktree:
@@ -168,9 +169,9 @@ class TestScheduleNextAttempt(TestCase):
         item = LocalStackQueueItem.objects.create(
             overlay=wt.overlay,
             worktree=wt,
-            attempt_count=13,
+            attempt_count=MAX_QUEUE_ATTEMPTS,
         )
-        item.schedule_next_attempt(error="still full", now=timezone.now(), max_attempts=13)
+        item.schedule_next_attempt(error="still full", now=timezone.now(), max_attempts=MAX_QUEUE_ATTEMPTS)
         item.refresh_from_db()
         assert item.status == LocalStackQueueItem.Status.DEAD
 

@@ -24,6 +24,7 @@ from teatree.core.management.commands._ensure_pr import (
 from teatree.core.models import ConfigSetting, PendingPullRequest, PullRequest, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME
+from teatree.utils import git
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
@@ -636,6 +637,44 @@ class TestEnsurePrResolutionError:
         assert "gitlab" in result["error"]
 
 
+class TestEnsurePrRefusesAnUnapprovableAuthor:
+    """An MR its own author cannot approve is refused BEFORE it exists.
+
+    The pre-push hook is pinned to one ``t3 <overlay>`` prefix, so an overlay carrying no
+    scoped-credential declaration opened every MR under the owner — the one identity the forge
+    refuses an approval from. The MR looked normal and the block surfaced days later.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def _create(self, refusal: str) -> tuple[dict[str, object], MagicMock, list[tuple[object, str]]]:
+        host = MagicMock()
+        asked: list[tuple[object, str]] = []
+
+        def _gate(gate_host: object, remote: str) -> str:
+            asked.append((gate_host, remote))
+            return refusal
+
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "unapprovable_author_refusal", _gate)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            return dict(create_or_defer_pr(".", "some-branch")), host, asked
+
+    def test_the_refusal_becomes_the_result_and_no_mr_is_created(self) -> None:
+        result, host, _asked = self._create("would be authored by 'the-owner', who is also the approver")
+        assert "the-owner" in str(result["error"])
+        host.create_pr.assert_not_called()
+
+    def test_the_gate_is_handed_the_repos_own_origin_remote(self) -> None:
+        # A gate handed an empty remote declares nothing and can never fire, so the argument
+        # carries the whole guard.
+        _result, _host, asked = self._create("refused")
+        assert [remote for _host_arg, remote in asked] == [git.remote_url(repo=".")]
+        assert asked[0][1]
+
+
 class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
     """``ensure-pr`` opens its PR against the configured integration branch (#940).
 
@@ -650,23 +689,28 @@ class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
-    def _created_spec(self) -> PullRequestSpec:
+    def _created_spec(
+        self,
+        *,
+        repo_slug: str = "souliane/teatree",
+        branch: str = "feat-q",
+    ) -> PullRequestSpec:
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/940"}
+        host.create_pr.return_value = {"web_url": f"https://github.com/{repo_slug}/pull/940"}
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
-            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(pr_command.git, "current_branch", return_value=branch),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value=f"git@github.com:{repo_slug}.git"),
             patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
             patch.object(
                 pr_command,
                 "classify_branch",
                 return_value=BranchReport(
                     repo=".",
-                    branch="feat-q",
+                    branch=branch,
                     status=BranchStatus.PUSHED_ORPHAN,
                     ahead_count=5,
                 ),
@@ -682,6 +726,26 @@ class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
 
     def test_an_unset_setting_leaves_the_forge_default_in_charge(self) -> None:
         assert self._created_spec().target_branch == ""
+
+    def test_multi_repo_ticket_uses_the_override_for_the_repo_being_pushed(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/940",
+            extra={
+                "target_branch": {
+                    "acme/repo-a": "stack-a",
+                    "acme/repo-b": "stack-b",
+                }
+            },
+        )
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-a", branch="feat-a")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-b", branch="feat-b")
+
+        spec_a = self._created_spec(repo_slug="acme/repo-a", branch="feat-a")
+        spec_b = self._created_spec(repo_slug="acme/repo-b", branch="feat-b")
+
+        assert spec_a.target_branch == "stack-a"
+        assert spec_b.target_branch == "stack-b"
 
 
 class TestEnsurePrReadsTheControlDbTopologyFirst(TestCase):

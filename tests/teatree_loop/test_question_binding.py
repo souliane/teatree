@@ -12,6 +12,7 @@ Driven through :class:`AskUserQuestionReplyScanner` rather than
 answered, not which row a helper returns.
 """
 
+import datetime as dt
 import hashlib
 import itertools
 import json
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.utils import timezone
 
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection
@@ -263,6 +265,12 @@ def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[st
     backend, roots = _threading_slack()
     with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
         drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+    # The re-ask backs off on a WIDENING schedule anchored on the row's own age, and its
+    # first gap IS the mirror post above — a freshly mirrored row is deliberately not bumped
+    # on top of it. Age both past that gap, keeping their relative order, so a bump is due.
+    aged = timezone.now() - dt.timedelta(days=3)
+    DeferredQuestion.objects.filter(pk=older.pk).update(created_at=aged)
+    DeferredQuestion.objects.filter(pk=newer.pk).update(created_at=aged + dt.timedelta(minutes=1))
     older.refresh_from_db()
     newer.refresh_from_db()
     return older, newer, roots

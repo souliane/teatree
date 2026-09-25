@@ -18,6 +18,7 @@ from teatree.agents.dispatch_preflight import (
     declared_seams_brief_lines,
     head_state_brief_lines,
     review_diff_brief_lines,
+    rubric_brief_lines,
 )
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.config.agent_spawn import resolve_agent_config
@@ -51,7 +52,9 @@ _ASSIGNED_IDENTITY_LINES: tuple[str, ...] = (
 
 # The reviewer returns its verdict in the result envelope rather than writing the
 # row itself: maker≠checker requires a different actor, so the orchestrator records
-# it server-side. The phase carries the shell (``phase_tools.VERDICT_REVIEW_PHASES``).
+# it server-side. The rubric grades ride the SAME envelope for a second reason —
+# prose that must be remembered across a long review is the failure mode, and one
+# envelope cannot record a verdict while forgetting the grades.
 def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
     """The verdict-return directive; *identity* is the assigned one, ``""`` to self-name.
 
@@ -83,6 +86,12 @@ def _review_verdict_return_lines(identity: str) -> tuple[str, ...]:
         'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
         "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
         *(_ASSIGNED_IDENTITY_LINES if identity else ()),
+        "",
+        "GRADE THE TICKET'S RUBRIC IN THE SAME ENVELOPE — you are its independent verifier (grader != maker):",
+        '  "rubric_grades": [{"ordinal": 0, "status": "pass"|"fail", "rationale": "<what proves it>"}, ...]',
+        "Grade EVERY criterion the TICKET RUBRIC block below lists; a verdict leaving one ungraded records nothing.",
+        "A PASS cites the test that proves it; a FAIL needs none, is a finding, and no bypass overrides it.",
+        "do NOT run `t3 <overlay> ticket rubric-grade`: it writes outside the transaction recording your verdict.",
     )
 
 
@@ -141,15 +150,18 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
     '  "plan_text": "<the complete plan — file-level changes, data model, API contracts, test',
     '                strategy, and the E2E test plan / Acceptance scenarios section when UI-visible>"',
     "A summary-only result with no `plan_text` drops the plan and the phase is refused, wasting the run.",
-    "ALSO return `base_sha` and `adequacy` — under `require_plan_adequacy` PlanArtifact.record",
-    "REFUSES a plan without them, and the agent lane can only supply them through this envelope:",
+    "ALSO return `base_sha` and `adequacy` — PlanArtifact.record REFUSES a plan without",
+    "them, and the agent lane can only supply them through this envelope:",
     '  "base_sha": "<`git rev-parse origin/<target-branch>` — the full 40-char hex HEAD you planned against>",',
     '  "adequacy": {"design": {"content": "<the approach>"},',
     '               "integration_seams": {"content": ["<registry/contract/sibling path the change touches>"]},',
     '               "edge_cases": {"content": ["<edge case>"]},',
-    '               "test_strategy": {"content": "<what proves it, fail-before included>"}}',
+    '               "test_strategy": {"content": "<what proves it, fail-before included>"},',
+    '               "acceptance_criteria": {"content": ["<one checkable criterion>"]}}',
     "Every section must be substantive OR carry an explicit reasoned negative instead of `content`",
     '(e.g. {"none_reason": "no seams: single leaf module, no registry touched"}); silence never passes.',
+    "`acceptance_criteria` BECOMES the ticket's rubric, which an independent verifier grades before",
+    "the ticket can be delivered — so write criteria that can FAIL, never ones satisfied by inaction.",
 )
 
 # Injected into a scanning_news brief (#3584): the shell-denied scanner
@@ -315,6 +327,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         *_VERIFICATION_BRIEF_LINES,
         *_green_proof_binding_lines(task),
         *_review_verdict_return_lines(assigned_reviewer_identity_for(task)),
+        *rubric_brief_lines(task),
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
     ]

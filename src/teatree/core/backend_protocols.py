@@ -341,6 +341,8 @@ class CodeHostBackend(Protocol):
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch
 
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None: ...  # pragma: no branch
+
     def get_pr_author(self, *, pr_url: str) -> str: ...  # pragma: no branch
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
@@ -394,7 +396,12 @@ class CodeHostBackend(Protocol):
         comment_id: int,
     ) -> RawAPIDict: ...  # pragma: no branch
 
-    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
+    def list_assigned_issues(
+        self,
+        *,
+        assignee: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def list_authored_issues(
         self,
@@ -470,6 +477,7 @@ class CodeHostBackend(Protocol):
         slug: str,
         pr_id: int,
         expected_head_oid: str,
+        squash: bool = True,
     ) -> ForgeMergeResult: ...  # pragma: no branch
 
 

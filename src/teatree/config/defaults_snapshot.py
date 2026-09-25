@@ -1,15 +1,15 @@
 """Pure planner for a DB→``defaults.toml`` snapshot — proposes, never writes.
 
-``defaults.toml`` is the hand-editable authority for the shipped default VALUES, so
-this planner treats the CURRENT file as its BASE and the live GLOBAL-scope
-``ConfigSetting`` rows as the PROPOSED changes on top of it. A hand-edited value the
-live box does not override therefore survives a snapshot run untouched — the file is
-never re-derived from the in-code dataclass defaults.
+This planner treats the CURRENT file as its BASE and the live GLOBAL-scope
+``ConfigSetting`` rows as the PROPOSED changes on top of it, so a value the live box does
+not override survives a snapshot run untouched. The file's ``[teatree]`` table is itself
+GENERATED from the declarations (``config/declared_defaults.py``), so a proposal accepted
+here is a proposal to move the DECLARATION — the next render puts the declared value back.
 
-Nothing here writes. :func:`plan_snapshot` returns the proposed file text plus the
-per-key change list; the owner-approval gate and the file write live in the management
-command (:mod:`teatree.core.management.commands.snapshot_settings_defaults`), so this
-module stays in the ``config`` layer and is unit-testable with plain dicts.
+Nothing here writes, and neither does its one caller: :func:`plan_snapshot` returns the
+proposed file text plus the per-key change list, and the management command
+(:mod:`teatree.core.management.commands.snapshot_settings_defaults`) only reports them. So
+this module stays in the ``config`` layer and is unit-testable with plain dicts.
 
 Exclusions. Every key :func:`pinned_fail_closed_keys` names can never move through this
 path — approval or not — because a write to one is a posture, never a shipped default.
@@ -21,23 +21,23 @@ overlay-scope rows and stale/retired keys are reported, never emitted.
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
 import tomlkit
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import FEATURE_FLAGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
-from teatree.config.schema import setting_meta
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_KEYS
+from teatree.config.schema import Category, setting_meta
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.config.setting_taxonomy import Category
 
-# A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips.
-type SettingValue = bool | int | float | str | list[object] | dict[str, object]
+# A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips. The table
+# arm is a ``Mapping`` because nothing here mutates one, and an invariant ``dict`` would
+# refuse the narrower tables the structured settings (``speak`` / ``mr_reminder``) store.
+type SettingValue = bool | int | float | str | list[object] | Mapping[str, object]
 
 #: Owner-workflow + engagement keys kept at the current shipped value even when the live
 #: box overrides them (O2). The first row is the owner-named workflow set; the second is
@@ -49,18 +49,16 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
         "mode",
         "autoload",
         "contribute",
-        "issue_implementer_enabled",
         "issue_implementer_label",
-        "triage_assessor_enabled",
-        "mr_triage_enabled",
         "active_loop_schedule",
     }
 )
 
 #: Name-shaped safety wires — a gate kill-switch and the opt-in ``require_*`` training
-#: wheels. Mirrors ``teatree.mcp.write_tools._REFUSED_KEY_GLOBS``; the two are held equal
-#: by ``tests/config/test_defaults_snapshot.py``'s superset pin rather than by an import,
-#: because ``config`` sits below ``mcp`` and may not reach up to it.
+#: wheels. Mirrors the name-shaped lane of
+#: :func:`teatree.config.setting_taxonomy.owner_only_reason`; the two are held equal by
+#: ``tests/config/test_defaults_snapshot.py``'s superset pin rather than by an import, so
+#: this module's cold-safe import chain stays free of the schema.
 _SAFETY_KEY_GLOBS: tuple[str, ...] = ("*_gate_enabled", "require_*")
 
 _ABSENT = "(absent)"
@@ -68,17 +66,18 @@ _ABSENT = "(absent)"
 _HEADER = """\
 # teatree shipped defaults — every value a fresh install starts from.
 #
-# HAND-EDITABLE. Edit a value here and the box serves it. `[teatree]` is the last tier of
-# every settings resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
-# default -> THIS FILE); the seed tables below are what `t3 setup` creates the loop, mode
-# and schedule rows from. A `[teatree]` value that diverges from its in-code dataclass
-# default needs a matching entry in `defaults_approvals.toml` — that entry is the reviewed
-# decision, and CI refuses an unrecorded divergence.
+# `[teatree]` IS GENERATED. Every value in it is rendered from the declaration that states
+# it — the `UserSettings` dataclass, `COLD_SETTINGS`, `COLD_HOOK_SETTINGS` — so a hand edit
+# here is rendered away by the next `scripts/hooks/generate_defaults_toml.py --write`, and
+# a shipped default is changed at its declaration. Nothing RESOLVES from this file: the
+# chain ends at the declaration it renders (env -> DB(overlay) -> DB(global) -> overlay
+# code default -> declared default), so a value here can only agree with the declaration
+# or be a bug. The seed tables below are what `t3 setup` creates the loop, mode and
+# schedule rows from, and those ARE hand-maintained.
 #
-# `manage.py snapshot_settings_defaults` proposes a snapshot of the live box's global
-# settings onto the `[teatree]` table; it renders the diff, asks the owner through the
-# deferred-question queue, and writes only once that question is answered `approve`. It
-# rewrites `[teatree]` alone — every seed table below is hand-maintained.
+# `manage.py snapshot_settings_defaults` REPORTS which of the live box's global settings
+# differ from the shipped ones, and writes nothing: adopting one means editing the
+# declaration that states it, reviewed as the code change it is.
 #
 # `[teatree]` — the `config_setting export`/`import` schema, with `speak`/`mr_reminder` as
 # sub-tables. EXACTLY the Category.DEFAULT keys of
@@ -99,21 +98,25 @@ _HEADER = """\
 # overwritten by the next render.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
-# optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
-# it), `default_enabled` (only the local/read-only operational core ships ON),
+# optional `daily_at` for a once-per-day loop, `colleague_facing` (a REPORTING axis —
+# a posture holds colleague work off through `egress`, per action, not by masking a loop),
+# `default_enabled` (declarative: it records the local/read-only operational core; no live
+# seed writes it, because a loop's shipped posture is a mode opinion and `Loop.enabled` is
+# the manual override),
 # `description`, and `prompt_body` for the one prompt-backed loop (every other loop runs
 # its own `src/teatree/loops/<name>/loop.py`). Table ORDER is the seed order, pinned
 # against the frozen `0001_initial` copy.
 #
-# `[modes.<name>]` — a curated mode: its availability posture plus an `entries` table
-# masking each loop on/off. A loop ABSENT from `entries` INHERITS its own enabled flag,
-# which is how a destructive-capable loop is never silently re-enabled by a mode switch.
-# That inheritance is why a mode masking DELIVERY off (`ship` / `tickets`) must also name
-# the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
-# delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
-# The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
-# no mask may quiet it (the low-token mode excepted), and none may keep `db_backup` writing
-# once every reclaim loop is quiet — that shape can only ever consume disk.
+# `[modes.<name>]` — a curated mode: its egress posture plus an `entries` table naming
+# EVERY live loop on or off. The table is TOTAL: there is no absent tier and nothing to
+# inherit, so what a mode does is readable from the mode alone, and a loop added later is
+# written `false` into every mode — quiet at birth, admitted only by a deliberate edit.
+# ONE shape invariant survives (`teatree.loops.mode_shape.backup_without_reclaim`): no
+# mask may keep `db_backup` writing once every reclaim loop is quiet, the shape that can
+# only ever consume disk and the one reached exactly when an operator grabs a halt posture
+# mid-incident. The postures are a chain — `present` >= `afk` >= `maintenance` >= `off` —
+# so stepping down one can only ever remove work; `token-outage` sits outside it, defined
+# by a property rather than a position: it admits only the loops that call no model.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
@@ -250,7 +253,7 @@ def _decline_reason(key: str) -> str:
     return "workflow-engagement"
 
 
-def _classify_non_default(live_global: dict[str, SettingValue], reported: _Reported) -> None:
+def _classify_non_default(live_global: Mapping[str, SettingValue], reported: _Reported) -> None:
     """File every non-DEFAULT live global row into the report (never emitted)."""
     for key in sorted(live_global):
         if key not in ALL_KNOWN_CONFIG_SETTINGS:
@@ -287,7 +290,7 @@ def _decide(
 def plan_snapshot(
     *,
     shipped: "ShippedFile",
-    live_global: dict[str, SettingValue],
+    live_global: Mapping[str, SettingValue],
     overlay_scope_rows: list[tuple[str, str]],
     banned_scan: BannedScan,
 ) -> SnapshotPlan:
@@ -353,7 +356,7 @@ def change_table(changes: tuple[SnapshotChange, ...]) -> tuple[list[str], list[l
     return ["setting", "shipped now", "proposed", "scope"], rows
 
 
-def render_toml(emitted: dict[str, SettingValue], *, base_text: str = "") -> str:
+def render_toml(emitted: Mapping[str, SettingValue], *, base_text: str = "") -> str:
     """Render *emitted* into the canonical ``[teatree]`` TOML text — the ONE shipped-file emitter.
 
     With *base_text* the CURRENT file is parsed and only its ``[teatree]`` table is

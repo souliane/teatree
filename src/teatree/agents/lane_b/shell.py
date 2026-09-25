@@ -9,8 +9,13 @@ PreToolUse hook enforces. This module's denylist is only a cheap first cut so an
 obviously-destructive command is refused even before the gate wrapper runs.
 """
 
+import itertools
+import os
 import shutil
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 
 from pydantic_ai.toolsets.function import FunctionToolset
 
@@ -18,6 +23,8 @@ from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_BASH
 from teatree.utils.run import TimeoutExpired, redact_secrets, run_allowed_to_fail
+
+SHELL_OUTPUT_DIR: Final = Path(".t3-cache") / "tool-output"
 
 
 class ShellDeniedError(ToolInputError, RuntimeError):
@@ -43,33 +50,51 @@ def _denylisted(command: str, denylist: tuple[str, ...]) -> str | None:
     return next((entry for entry in denylist if entry in normalized), None)
 
 
-def _elision_marker(dropped: int) -> str:
-    """The head/tail seam naming the dropped bytes and how to get them back."""
-    return (
-        f"\n[…{dropped} bytes elided from the middle of this output — "
-        f"re-run the command narrowed (grep/head/tail/--stat) to obtain them]\n"
-    )
+class _OutputKeeper:
+    """Writes a capped run's whole output under the worktree, so the model can ``Read`` what the cap left out."""
+
+    def __init__(self, root: Path, max_bytes: int) -> None:
+        self._root = root
+        self._max_bytes = max_bytes
+        self._runs = itertools.count(1)
+
+    def cap(self, text: str) -> str:
+        """Keep the head and the tail — a test run's verdict is at its end, the command's echo at its start."""
+        encoded = text.encode()
+        if self._max_bytes <= 0 or len(encoded) <= self._max_bytes:
+            return text
+        half = self._max_bytes // 2
+        label = _cap_label(self._max_bytes)
+        try:
+            kept = self._keep(encoded)
+        except OSError as exc:
+            marker = (
+                f"[... {len(encoded) - 2 * half} of {len(encoded)} bytes not shown (the "
+                f"{label} Bash output cap) — the whole output could NOT be saved: "
+                f"{exc}; Read the displayed head and tail ...]"
+            )
+        else:
+            marker = (
+                f"[... {len(encoded) - 2 * half} of {len(encoded)} bytes not shown (the "
+                f"{label} Bash output cap) — the whole output is in {kept}; "
+                "Read it with offset/limit ...]"
+            )
+        return f"{encoded[:half].decode(errors='ignore')}\n{marker}\n{encoded[-half:].decode(errors='ignore')}"
+
+    def _keep(self, encoded: bytes) -> Path:
+        directory = self._root / SHELL_OUTPUT_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        # Self-ignoring, because not every repo a dispatch works in ignores .t3-cache/.
+        (directory / ".gitignore").write_text("*\n", encoding="utf-8")
+        prefix = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{next(self._runs)}-"
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=".log", dir=directory)
+        with os.fdopen(fd, "wb") as spill:
+            spill.write(encoded)
+        return SHELL_OUTPUT_DIR / Path(path).name
 
 
-def _capped(output: str, max_bytes: int) -> str:
-    """Return *output* bounded to *max_bytes* as head + marker + tail; ``0`` disables the cap.
-
-    An oversized return is re-sent on every later request of the thread, so it is
-    the per-request cost this bounds — not the command, which always ran to
-    completion and is never failed on its output size. Head and tail are both kept
-    because a long run's first lines (what it was doing) and last lines (how it
-    ended) are the load-bearing ones. The marker is sized against the whole-output
-    worst case, so the result never exceeds ``max(max_bytes, marker length)`` — below
-    the marker length only the marker is returned — and the byte slices are decoded
-    with ``errors="ignore"`` so a cut never splits a codepoint.
-    """
-    encoded = output.encode()
-    if max_bytes <= 0 or len(encoded) <= max_bytes:
-        return output
-    budget = max(0, max_bytes - len(_elision_marker(len(encoded)).encode()))
-    head = encoded[: budget // 2].decode(errors="ignore")
-    tail = encoded[len(encoded) - (budget - budget // 2) :].decode(errors="ignore") if budget else ""
-    return f"{head}{_elision_marker(len(encoded) - len(head.encode()) - len(tail.encode()))}{tail}"
+def _cap_label(max_bytes: int) -> str:
+    return f"{max_bytes // 1024} KiB" if max_bytes % 1024 == 0 else f"{max_bytes}-byte"
 
 
 def _resolve_shell() -> str:
@@ -102,17 +127,22 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
     runner still evaluates a full shell string (pipes, redirects) — the runner is
     the sanctioned chokepoint, not raw ``subprocess``.
 
-    The combined output is bounded by :func:`_capped` to
-    ``config.shell_max_output_bytes`` before it is returned. That bounds what every
-    LATER request of the thread re-sends; the command itself always runs to
-    completion and is never failed on its output size.
+    The combined output is bounded by :class:`_OutputKeeper` to
+    ``config.shell_max_output_bytes`` before it is returned, with the whole output kept
+    in a file the marker names. That bounds what every LATER request of the thread
+    re-sends; the command itself always runs to completion and is never failed on its
+    output size.
     """
     toolset: FunctionToolset[None] = FunctionToolset()
     cwd = str(config.fs_root) if config.fs_root else str(Path.cwd())
     shell_bin = _resolve_shell()
+    keeper = _OutputKeeper(Path(cwd), config.shell_max_output_bytes)
 
     def shell(command: str) -> str:
-        """Run a shell command in the worktree and return its combined output."""
+        """Run a shell command in the worktree and return its combined output.
+
+        Past the output cap only the head and tail come back; the marker between them names the file holding all of it.
+        """
         denied = _denylisted(command, config.shell_denylist)
         if denied is not None:
             msg = f"command refused: matches Shell denylist entry {denied!r}"
@@ -132,7 +162,7 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
             # TaskAttempt.error record, not just the model's own turn.
             msg = f"command timed out after {exc.timeout}s: {redact_secrets(command)}"
             raise ShellTimeoutError(msg) from exc
-        return f"exit={result.returncode}\n{_capped(f'{result.stdout}{result.stderr}', config.shell_max_output_bytes)}"
+        return keeper.cap(f"exit={result.returncode}\n{result.stdout}{result.stderr}")
 
     # Exposed to the model as ``Bash`` (the skill/SDK vocabulary) so a skill saying
     # ``Bash`` names this tool; the pythonic ``shell`` function name stays local.

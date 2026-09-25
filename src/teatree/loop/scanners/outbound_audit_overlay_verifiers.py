@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 
+from teatree import forge_credentials
+
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
     from teatree.core.models import OutboundClaim as OutboundClaimModel
@@ -95,11 +97,12 @@ def gitlab_api_for_overlay(overlay_name: str) -> "GitLabAPI | None":
         from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: loaded at tick time, not import
     except Exception:  # noqa: BLE001 — a GitLabAPI import failure degrades to no verifier
         return None
-    token, base_url = _overlay_gitlab_credentials(overlay_name)
+    resolution = forge_credentials.resolve_named_overlay_token(overlay_name, credential="gitlab_token")
+    if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
+        return None
+    base_url = _overlay_gitlab_base_url(overlay_name)
     try:
-        # Legacy fallback: an empty/unregistered overlay uses the process-global
-        # default resolver (env/pass), same shape pre-#1275.
-        client = GitLabAPI(token=token, base_url=base_url) if token else GitLabAPI()
+        client = GitLabAPI(token=resolution.token, base_url=base_url)
     except Exception:  # noqa: BLE001 — a failed GitLabAPI construction yields no verifier
         return None
     # Resolve-or-skip: a client with no resolved token would raise
@@ -108,61 +111,34 @@ def gitlab_api_for_overlay(overlay_name: str) -> "GitLabAPI | None":
     return client if getattr(client, "token", "") else None
 
 
-def _overlay_gitlab_credentials(overlay_name: str) -> tuple[str, str]:
-    """Return ``(token, base_url)`` for the named overlay's GitLab config.
-
-    Empty overlay name (or an unresolvable name) returns ``("", "")`` so
-    the caller falls back to the legacy single-overlay default. Reading
-    through the overlay config is the load-bearing change — a wrapper
-    script that opts an overlay into a non-default ``gitlab_token_ref``
-    now drives the audit verifier through THAT token.
-    """
-    if not overlay_name:
-        return ("", "")
+def _overlay_gitlab_base_url(overlay_name: str) -> str:
+    """Return only the named overlay's API URL; credentials use the central resolver."""
     try:
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
     except Exception:  # noqa: BLE001 — overlay loader unavailable degrades to the legacy default
-        return ("", "")
+        return "https://gitlab.com/api/v4"
     try:
-        overlay = get_overlay(overlay_name)
-    except Exception:  # noqa: BLE001 — a TOML-only overlay (no Python class) falls back to the raw config table
-        # TOML overlay (no Python class) — try the raw config table.
-        return _overlay_gitlab_credentials_from_toml(overlay_name)
-    try:
-        token = overlay.config.get_gitlab_token()
-    except Exception:  # noqa: BLE001 — an unreadable token degrades to empty
-        token = ""
+        overlay = get_overlay(overlay_name or None)
+    except Exception:  # noqa: BLE001 — TOML-only overlays use the raw URL below
+        return _overlay_gitlab_base_url_from_toml(overlay_name)
     base_url = getattr(overlay.config, "gitlab_url", "https://gitlab.com/api/v4")
-    return (token or "", base_url or "https://gitlab.com/api/v4")
+    return base_url or "https://gitlab.com/api/v4"
 
 
-def _overlay_gitlab_credentials_from_toml(overlay_name: str) -> tuple[str, str]:
-    """Resolve a TOML-only overlay's ``gitlab_token_ref`` via ``pass``.
-
-    Path-only overlays (no Python class, opted in via
-    ``[overlays.<name>]`` in the DB overlays registry) keep their credentials
-    in that config table, mirroring ``backend_factory._hosts_from_toml``.
-    """
+def _overlay_gitlab_base_url_from_toml(overlay_name: str) -> str:
+    """Resolve a TOML-only overlay's API URL without touching credentials."""
     try:
         from teatree.config import load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
-    except Exception:  # noqa: BLE001 — config/secrets unavailable degrades to no credentials
-        return ("", "")
+    except Exception:  # noqa: BLE001 — unavailable config uses the public default
+        return "https://gitlab.com/api/v4"
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
     if not isinstance(cfg, dict):
-        return ("", "")
-    token_ref = str(cfg.get("gitlab_token_ref", ""))
+        return "https://gitlab.com/api/v4"
     base_url = str(cfg.get("gitlab_url", "https://gitlab.com")).rstrip("/")
-    if not token_ref:
-        return ("", "")
     if not base_url.endswith("/api/v4"):
         base_url = f"{base_url}/api/v4"
-    try:
-        token = read_pass(token_ref)
-    except Exception:  # noqa: BLE001 — an unreadable secret degrades to empty token
-        token = ""
-    return (token or "", base_url)
+    return base_url
 
 
 def gitlab_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
@@ -247,63 +223,9 @@ def gitlab_approve_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
 
 
 def resolve_github_token_for_overlay(overlay_name: str) -> str:
-    """Resolve a GitHub PAT bound to ``overlay_name``'s config.
-
-    Empty overlay name (or an unresolvable name) falls through to the
-    legacy resolver (env → ``pass`` default keys). A registered overlay
-    with its own ``github_token_ref`` (or ``github_pat`` getter) takes
-    precedence — this is the credential pipeline that #1275 binds
-    verifiers to.
-    """
-    from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415 — deferred: import cycle
-
-    if not overlay_name:
-        return _resolve_github_token()
-    token = _github_token_from_registered_overlay(overlay_name)
-    if token:
-        return token
-    token = _github_token_from_toml_overlay(overlay_name)
-    if token:
-        return token
-    return _resolve_github_token()
-
-
-def _github_token_from_registered_overlay(overlay_name: str) -> str:
-    """Read the GitHub token off a Python-class-registered overlay."""
-    try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        overlay = get_overlay(overlay_name)
-    except Exception:  # noqa: BLE001 — an unresolvable overlay degrades to no token
-        return ""
-    try:
-        return overlay.config.get_github_token() or ""
-    except Exception:  # noqa: BLE001 — an unreadable token degrades to empty
-        return ""
-
-
-def _github_token_from_toml_overlay(overlay_name: str) -> str:
-    """Read the GitHub token off a path-only TOML overlay.
-
-    Mirrors ``backend_factory._hosts_from_toml`` so path-only overlays
-    keep one credential pipeline shared with the loop's host scanners.
-    """
-    try:
-        from teatree.config import load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
-    except Exception:  # noqa: BLE001 — config/secrets unavailable degrades to no token
-        return ""
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return ""
-    token_ref = str(cfg.get("github_token_ref", ""))
-    if not token_ref:
-        return ""
-    try:
-        return read_pass(token_ref) or ""
-    except Exception:  # noqa: BLE001 — an unreadable secret degrades to empty token
-        return ""
+    """Resolve only the named overlay's routed GitHub PAT; never cross-fallback."""
+    resolution = forge_credentials.resolve_named_overlay_token(overlay_name, credential="github_token")
+    return resolution.token if resolution.state is forge_credentials.ForgeTokenState.TOKEN else ""
 
 
 def github_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":

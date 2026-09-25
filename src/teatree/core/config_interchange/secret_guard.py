@@ -29,6 +29,7 @@ from typing import Any, cast
 
 import tomlkit
 
+from teatree.config.extra_headers import carries_unlisted_header
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
@@ -46,7 +47,7 @@ class RedactedRow:
 
     scope: str
     key: str
-    reason: str  # "private-key" / "credential-coordinate" / "personal-identifier" / "banned-term:<term>"
+    reason: str  # private-key / credential-coordinate / personal-identifier / unlisted-header / banned-term:<term>
 
 
 def resolve_export_scan_terms() -> tuple[str, ...]:
@@ -74,11 +75,11 @@ def redaction_reason(key: str, value: ConfigValue | None, terms: tuple[str, ...]
     ``value`` is optional: a key-only caller passes ``None`` to match just the
     value-independent classes, and the term scan json-dumps it either way.
 
-    Four withhold classes, first match wins: an explicit private key
+    Five withhold classes, first match wins: an explicit private key
     (``SECRET_SETTINGS``); a credential coordinate (the SAME suffix rule the dashboard
     credential band uses — ``anthropic_oauth_pass_paths`` / ``*_credential_entry`` /
     ``*_token_ref`` etc.); a personal identifier (``slack_user_id`` /
-    ``slack_user_channel``); or a value carrying a banned
+    ``slack_user_channel``); an extra-headers map naming a header off its allowlist; or a value carrying a banned
     customer/brand term. The credential + personal classes close the F2 leak where
     pass-store coordinates and personal handles shipped by default on export.
     """
@@ -88,6 +89,8 @@ def redaction_reason(key: str, value: ConfigValue | None, terms: tuple[str, ...]
         return "credential-coordinate"
     if key in PERSONAL_IDENTIFIERS:
         return "personal-identifier"
+    if carries_unlisted_header(key, value):
+        return "unlisted-header"
     hit = matched_term(f"{key} {json.dumps(value, default=str)}", terms)
     return f"banned-term:{hit}" if hit else None
 

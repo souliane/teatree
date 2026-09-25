@@ -11,6 +11,8 @@ from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack import scopes as slack_scopes
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
+from teatree.backends.slack.token_validation import SlackTokenMissingError
 from teatree.core.backend_protocols import MessagingBackend
 
 
@@ -419,9 +421,10 @@ def test_slack_get_reactions_returns_empty_when_no_reactions(monkeypatch: pytest
     assert backend.get_reactions(channel="C1", ts="123.456") == []
 
 
-def test_slack_get_returns_empty_when_no_token() -> None:
+def test_slack_get_without_a_token_fails_loud() -> None:
     backend = SlackBotBackend(bot_token="")
-    assert backend.get_reactions(channel="C1", ts="123") == []
+    with pytest.raises(SlackTokenMissingError, match=r"reactions\.get"):
+        backend.get_reactions(channel="C1", ts="123")
 
 
 def test_slack_get_reactions_skips_non_dict_entries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -830,14 +833,60 @@ def test_slack_fetch_thread_replies_returns_thread_with_channel_stamped(monkeypa
     assert all(r["channel"] == "D1" for r in replies)
 
 
-def test_slack_fetch_thread_replies_returns_empty_on_non_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_slack_fetch_thread_replies_raises_on_a_refused_read(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False, "error": "thread_not_found"}, request=httpx.Request("GET", url))
 
     monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
-    assert backend.fetch_thread_replies(channel="D1", thread_ts="root.ts") == []
+    with pytest.raises(SlackReadRefusedError, match="thread_not_found"):
+        backend.fetch_thread_replies(channel="D1", thread_ts="root.ts")
+
+
+def _auth_test_ok(url: str, **kwargs: object) -> httpx.Response:
+    _ = kwargs
+    return httpx.Response(200, json={"ok": True, "user_id": "UBOT"}, request=httpx.Request("POST", url))
+
+
+def _replies_by_bearer(by_token: dict[str, dict[str, object]], asked: list[str]) -> object:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        assert url.endswith("/conversations.replies")
+        bearer = cast("dict[str, str]", kwargs["headers"])["Authorization"].removeprefix("Bearer ")
+        asked.append(bearer)
+        return httpx.Response(200, json=by_token[bearer], request=httpx.Request("GET", url))
+
+    return fake_get
+
+
+def test_slack_fetch_thread_replies_reads_through_the_user_token_when_the_bot_is_not_in_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+    thread = [{"ts": f"1700000000.00010{i}", "text": f"m{i}"} for i in range(8)]
+    by_token: dict[str, dict[str, object]] = {
+        "xoxb-bot": {"ok": False, "error": "not_in_channel"},
+        "xoxp-user": {"ok": True, "messages": thread},
+    }
+    monkeypatch.setattr(slack_http.httpx, "get", _replies_by_bearer(by_token, asked))
+    monkeypatch.setattr(slack_http.httpx, "post", _auth_test_ok)
+    backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+    replies = backend.fetch_thread_replies(channel="C_TEAM", thread_ts="1700000000.000100")
+
+    assert len(replies) == 8
+    assert asked == ["xoxb-bot", "xoxp-user"]
+
+
+def test_slack_fetch_thread_replies_without_any_token_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(slack_http.httpx, "get", _replies_by_bearer({}, asked))
+    backend = SlackBotBackend()
+
+    with pytest.raises(SlackTokenMissingError, match="no Slack token configured"):
+        backend.fetch_thread_replies(channel="C1", thread_ts="root.ts")
+
+    assert asked == []
 
 
 def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.MonkeyPatch) -> None:

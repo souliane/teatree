@@ -34,14 +34,17 @@ from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_int
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HOOK_SCRIPTS = _REPO_ROOT / "hooks" / "scripts"
 
-# ``teatree_bool_setting("x")`` / ``_teatree_bool_setting("x")`` — the shared cold
-# ``[teatree] <flag>`` boolean adapter. A call captures the flag's exact key.
-_BOOL_FLAG_CALL = re.compile(r"(?:_)?teatree_bool_setting\(\s*[\"']([a-z0-9_]+)[\"']")
+# ``teatree_bool_setting("x")`` / ``_teatree_bool_setting("x")`` / the fail-loud
+# ``_loud`` variant — the shared cold ``[teatree] <flag>`` boolean adapters. A call
+# captures the flag's exact key. The ``_loud`` suffix is part of the pattern because a
+# name-then-``(`` shape silently excluded the only reader using it, and an excluded
+# reader's key reads here as no reader at all.
+_BOOL_FLAG_CALL = re.compile(r"(?:_)?teatree_bool_setting(?:_loud)?\(\s*[\"']([a-z0-9_]+)[\"']")
 
 # Same call WITH its ``default=`` so the registered default can be pinned to the
 # hook's own fallback — a drift between them would seed the wrong DB default.
 _BOOL_FLAG_DEFAULT = re.compile(
-    r"(?:_)?teatree_bool_setting\(\s*[\"']([a-z0-9_]+)[\"']\s*,\s*default=(True|False)\s*\)",
+    r"(?:_)?teatree_bool_setting(?:_loud)?\(\s*[\"']([a-z0-9_]+)[\"']\s*,\s*default=(True|False)\s*\)",
 )
 
 # The ``[teatree] <key>`` integer budgets ``hook_router`` reads cold through the
@@ -65,7 +68,7 @@ _MODULE_INT_CONST = re.compile(r"^(_[A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\b", re.MULTIL
 def _enumerate_cold_int_budgets() -> set[str]:
     """Every ``[teatree]`` integer budget read cold via the int adapter, across the hook leaves."""
     keys: set[str] = set()
-    for script in _HOOK_SCRIPTS.glob("*.py"):
+    for script in _HOOK_SCRIPTS.rglob("*.py"):
         text = script.read_text(encoding="utf-8")
         keys.update(_INT_BUDGET_KEY.findall(text))
         keys.update(_SECTION_INT_BUDGET_KEY.findall(text))
@@ -99,7 +102,7 @@ def _recognised_homes() -> set[str]:
 def _enumerate_cold_bool_flags() -> set[str]:
     """Every ``[teatree]`` gate flag read cold via the bool adapter, across the hook leaves."""
     keys: set[str] = set()
-    for script in _HOOK_SCRIPTS.glob("*.py"):
+    for script in _HOOK_SCRIPTS.rglob("*.py"):
         keys.update(_BOOL_FLAG_CALL.findall(script.read_text(encoding="utf-8")))
     return keys
 
@@ -110,6 +113,11 @@ def test_enumeration_is_not_vacuous() -> None:
     flags = _enumerate_cold_bool_flags()
     assert _HOOK_SCRIPTS.is_dir()
     assert "deny_circuit_breaker_enabled" in flags
+    # The two shapes the enumeration's scope used to exclude: a ``_loud`` reader, and a
+    # reader in a hook SUBPACKAGE. An excluded reader's key reads as an unread key, so
+    # narrowing back to ``teatree_bool_setting(`` or to a flat glob turns this red.
+    assert "dispatch_quote_scan_enabled" in flags
+    assert "banned_terms_gate_enabled" in flags
     assert len(flags) >= 10
 
 
@@ -125,7 +133,7 @@ def test_cold_bool_flag_defaults_match_the_hook_default() -> None:
     # Pin each registered default to the hook's own ``default=`` so the DB-seeded
     # default can never drift from what the cold reader falls back to.
     declared: dict[str, bool] = {}
-    for script in _HOOK_SCRIPTS.glob("*.py"):
+    for script in _HOOK_SCRIPTS.rglob("*.py"):
         for key, value in _BOOL_FLAG_DEFAULT.findall(script.read_text(encoding="utf-8")):
             declared[key] = value == "True"
     registered = {key: want for key, want in declared.items() if key in COLD_HOOK_SETTINGS}
@@ -145,7 +153,6 @@ def test_int_budget_cold_reads_equal_the_registered_int_keys() -> None:
     # Anti-vacuity: the three known budgets must surface, so a broken regex / moved
     # reader cannot make the guard pass against an empty enumeration.
     assert {
-        "deny_circuit_breaker_threshold",
         "orchestrator_turn_budget",
         "orchestrator_turn_wall_clock_seconds",
     } <= budgets
@@ -158,7 +165,7 @@ def test_int_budget_defaults_match_the_registered_default() -> None:
     # default so the DB-seeded default can never drift from the hook's own fallback.
     const_values: dict[str, int] = {}
     declared: dict[str, str] = {}
-    for script in _HOOK_SCRIPTS.glob("*.py"):
+    for script in _HOOK_SCRIPTS.rglob("*.py"):
         text = script.read_text(encoding="utf-8")
         const_values.update({name: int(value) for name, value in _MODULE_INT_CONST.findall(text)})
         declared.update(_INT_BUDGET_DEFAULT.findall(text))

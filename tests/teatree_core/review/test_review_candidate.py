@@ -4,12 +4,101 @@ The auto-sweep / discover surfaces previously relied on agent-side BINDING
 memory to apply these rules; this module is the canonical structural fix.
 """
 
+from teatree.config import cold_reader
 from teatree.core.review.review_candidate import (
+    _is_self_authored,
     author_is_self,
-    eyes_reacted_by_other,
+    broadcast_claimed_by_other,
     should_review_candidate,
     should_review_candidate_reasons,
 )
+
+
+class _Host:
+    def __init__(self, *, current: str = "owner", author: str = "owner", error: Exception | None = None) -> None:
+        self.current = current
+        self.author = author
+        self.error = error
+        self.current_user_calls = 0
+
+    def current_user(self) -> str:
+        self.current_user_calls += 1
+        return self.current
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        _ = pr_url
+        if self.error is not None:
+            raise self.error
+        return self.author
+
+
+class TestForgeAuthorshipProof:
+    def test_declared_bot_author_is_self_on_its_configured_host(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            cold_reader,
+            "mapping_setting",
+            lambda _key: {"gitlab.com": ["factory-bot"]},
+        )
+
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", _Host(author="factory-bot"), ())
+
+    def test_owner_alias_is_self_without_reading_the_credential(self, monkeypatch) -> None:
+        host = _Host(current="undeclared-credential", author="owner-alias")
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", host, ("owner-alias",))
+        assert host.current_user_calls == 0
+
+    def test_undeclared_current_credential_is_not_self(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+        host = _Host(current="credential-owner", author="credential-owner")
+
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", host, ()) is False
+
+    def test_empty_aliases_and_no_configured_bot_is_not_self(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+        host = _Host(current="credential-owner", author="credential-owner")
+
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", host, ()) is False
+
+    def test_missing_alias_key_still_honours_the_declared_bot(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            cold_reader,
+            "mapping_setting",
+            lambda _key: {"gitlab.com": ["factory-bot"]},
+        )
+
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", _Host(author="factory-bot"), ())
+
+    def test_unknown_host_does_not_inherit_another_hosts_bot(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            cold_reader,
+            "mapping_setting",
+            lambda _key: {"gitlab.com": ["factory-bot"]},
+        )
+
+        host = _Host(current="factory-bot", author="factory-bot")
+
+        assert _is_self_authored("https://forge.example/group/repo/pull/1", host, ()) is False
+
+    def test_unreadable_author_or_host_stays_unresolved(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
+
+        assert (
+            _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", _Host(author=""), ("owner",)) is None
+        )
+        assert (
+            _is_self_authored(
+                "https://gitlab.com/group/repo/-/merge_requests/1",
+                _Host(error=RuntimeError("down")),
+                ("owner",),
+            )
+            is None
+        )
+        assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", None, ("owner",)) is None
+
+        credential_host = _Host(current="credential-owner", author="credential-owner")
+        assert _is_self_authored("https://[unreadable", credential_host, ()) is False
 
 
 class TestAuthorIsSelf:
@@ -362,24 +451,39 @@ class TestClassificationIsAuthorNotNamespace:
         assert should_review_candidate_reasons(pr, current_user="souliane") == []
 
 
-class TestEyesReactedByOther:
+class TestBroadcastClaimedByOther:
+    """Any reaction or thread reply from outside the self-set is a colleague's claim (#159)."""
+
+    SELF = ("UME", "UBOT")
+
     def test_eyes_from_colleague_is_a_claim(self) -> None:
         message = {"reactions": [{"name": "eyes", "users": ["UC0LLEAGUE"], "count": 1}]}
-        assert eyes_reacted_by_other(message, user_id="UME") is True
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True
 
-    def test_eyes_only_from_user_is_not_a_claim(self) -> None:
-        message = {"reactions": [{"name": "eyes", "users": ["UME"], "count": 1}]}
-        assert eyes_reacted_by_other(message, user_id="UME") is False
-
-    def test_non_eyes_colleague_reaction_is_not_a_claim(self) -> None:
+    def test_any_emoji_from_colleague_is_a_claim(self) -> None:
         message = {"reactions": [{"name": "thumbsup", "users": ["UC0LLEAGUE"], "count": 1}]}
-        assert eyes_reacted_by_other(message, user_id="UME") is False
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True
 
-    def test_no_reactions_is_not_a_claim(self) -> None:
-        assert eyes_reacted_by_other({}, user_id="UME") is False
+    def test_reactions_only_from_the_owner_or_the_bot_are_not_a_claim(self) -> None:
+        message = {"reactions": [{"name": "eyes", "users": ["UME"], "count": 1}, {"name": "rocket", "users": ["UBOT"]}]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is False
 
-    def test_malformed_reactions_block_is_not_a_claim(self) -> None:
-        assert eyes_reacted_by_other({"reactions": "nope"}, user_id="UME") is False
+    def test_colleague_thread_reply_is_a_claim(self) -> None:
+        message = {"reply_count": 1, "reply_users": ["UC0LLEAGUE"]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True
+
+    def test_own_thread_replies_are_not_a_claim(self) -> None:
+        message = {"reply_count": 2, "reply_users": ["UME", "UBOT"]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is False
+
+    def test_reply_count_without_reply_users_fails_closed_as_a_claim(self) -> None:
+        assert broadcast_claimed_by_other({"reply_count": 1}, self_ids=self.SELF) is True
+
+    def test_no_reactions_and_no_replies_is_not_a_claim(self) -> None:
+        assert broadcast_claimed_by_other({}, self_ids=self.SELF) is False
+
+    def test_malformed_blocks_are_not_a_claim(self) -> None:
+        assert broadcast_claimed_by_other({"reactions": "nope", "reply_users": "nope"}, self_ids=self.SELF) is False
 
     def test_malformed_reaction_entry_and_users_are_skipped(self) -> None:
         message = {
@@ -389,8 +493,40 @@ class TestEyesReactedByOther:
                 {"name": "eyes", "users": [42, "", "UME", "UC0LLEAGUE"], "count": 1},
             ],
         }
-        assert eyes_reacted_by_other(message, user_id="UME") is True
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True
 
-    def test_empty_user_id_treats_every_eyes_as_other(self) -> None:
+    def test_empty_self_set_treats_every_reactor_as_other(self) -> None:
         message = {"reactions": [{"name": "eyes", "users": ["UC0LLEAGUE"], "count": 1}]}
-        assert eyes_reacted_by_other(message, user_id="") is True
+        assert broadcast_claimed_by_other(message, self_ids=()) is True
+
+    def test_candidate_reasons_read_thread_replies_too(self) -> None:
+        mr = {"author": {"username": "bob"}, "state": "opened"}
+        broadcast = {"reply_count": 1, "reply_users": ["U_BOB"]}
+        assert "broadcast_reacted_by_other" in should_review_candidate_reasons(
+            mr, current_user="U_ALICE", broadcast=broadcast
+        )
+        own_reply = {"reply_count": 1, "reply_users": ["U_ALICE"]}
+        assert should_review_candidate(mr, current_user="U_ALICE", broadcast=own_reply) is True
+
+
+class TestBotReplyIsNotAColleagueClaim:
+    """A B…-prefixed Slack bot/app-integration id in reply_users is not a colleague claim.
+
+    Modelled on a live incident: a forge integration's own status reply in the
+    broadcast thread (a ``B…``-prefixed bot id, never a human ``U…`` id)
+    suppressed dispatch even though no human had claimed the review.
+    """
+
+    SELF = ("UOWNER", "UBOTOWN")
+
+    def test_bot_reply_alone_does_not_suppress(self) -> None:
+        message = {"reply_count": 1, "reply_users": ["BINTEGRATION"]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is False
+
+    def test_human_colleague_reply_still_suppresses(self) -> None:
+        message = {"reply_count": 1, "reply_users": ["UC0LLEAGUE"]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True
+
+    def test_mixed_bot_and_human_reply_still_suppresses(self) -> None:
+        message = {"reply_count": 2, "reply_users": ["BINTEGRATION", "UC0LLEAGUE"]}
+        assert broadcast_claimed_by_other(message, self_ids=self.SELF) is True

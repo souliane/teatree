@@ -32,12 +32,15 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 from django.db import connections
+from django.db.migrations.recorder import MigrationRecorder
+from django.test import override_settings
 
 from teatree.core.gates.review_request_guard import GuardTarget, _claim_or_reclaim, canonical_mr_url
 from teatree.core.models import ReviewRequestPost
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
-from tests.db_alias import run_racing_threads
+from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="the-review-team", token="xoxb-bot")
@@ -52,46 +55,11 @@ def _make_alias(tmp_path: Path) -> str:
     """
     alias = f"rrg_{uuid.uuid4().hex}"
     db_file = tmp_path / f"{alias}.sqlite3"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(db_file),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
-    # Only ``teatree_review_request_post`` is touched by the claim codepath
-    # under test; the minimal schema suffices and avoids replaying the data
-    # migrations against the empty default.
-    with connections[alias].cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE teatree_review_request_post (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                mr_url VARCHAR(512) NOT NULL UNIQUE,
-                slack_channel_id VARCHAR(64) NOT NULL,
-                slack_thread_ts VARCHAR(64) NOT NULL,
-                bot_id VARCHAR(64) NOT NULL,
-                last_nag_at DATETIME NULL,
-                nag_count INTEGER NOT NULL DEFAULT 0,
-                resumed_at DATETIME NULL,
-                created_at DATETIME NOT NULL,
-                done_at DATETIME NULL
-            )
-            """
-        )
+    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
+    with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
+        call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()
     return alias
-
-
-def _teardown_alias(alias: str) -> None:
-    for conn in connections.all():
-        if conn.alias == alias:
-            conn.close()
-    connections.databases.pop(alias, None)
 
 
 def _run_two_claims(alias: str, canonical: str) -> list[str]:
@@ -100,7 +68,7 @@ def _run_two_claims(alias: str, canonical: str) -> list[str]:
 
     def claim(_idx: int) -> str:
         barrier.wait(timeout=10)
-        return _claim_or_reclaim(canonical, _TARGET, using=alias).action
+        return _claim_or_reclaim(canonical, _TARGET, "overlay-a", using=alias).action
 
     return run_racing_threads(claim, 2)
 
@@ -125,10 +93,13 @@ class TestReviewRequestClaimConcurrent:
         canonical = canonical_mr_url(_MR_URL)
         alias = _make_alias(tmp_path)
         try:
+            assert ("core", "0102_review_request_post_overlay") in MigrationRecorder(
+                connections[alias]
+            ).applied_migrations()
             outcomes = _run_two_claims(alias, canonical)
             rows = ReviewRequestPost.objects.using(alias).count()
         finally:
-            _teardown_alias(alias)
+            teardown_sqlite_alias(alias)
 
         posts = [o for o in outcomes if o == "post"]
         suppressed = [o for o in outcomes if o == "suppress"]

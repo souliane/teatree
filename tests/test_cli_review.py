@@ -10,7 +10,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.service import _find_added_line
-from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+from tests.teatree_core._on_behalf_gate_helpers import arm_on_behalf_gate, disable_on_behalf_gate, posture_forbids_cm
 
 runner = CliRunner()
 
@@ -25,13 +25,12 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set ``on_behalf_post_mode = "immediate"`` for these mechanics tests.
+    """Pin a permitting posture for these mechanics tests.
 
-    The CLI's on-behalf gate (#960) is exercised by its own dedicated
-    suite in ``tests/teatree_cli/test_review_on_behalf_gate.py``. These
-    tests exercise GitLab API mechanics (post payload shape, line code
-    validation, fallback to discussions) and need the gate OFF so the
-    HTTP call actually happens and the mocked GitLabAPI sees the request.
+    The CLI's on-behalf gate is exercised by its own dedicated suite in
+    ``tests/teatree_cli/test_review_on_behalf_gate.py``. These tests exercise GitLab API
+    mechanics (post payload shape, line code validation, fallback to discussions) and need
+    the gate OFF so the HTTP call actually happens and the mocked GitLabAPI sees it.
     """
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
@@ -139,14 +138,15 @@ class TestGetGitlabToken:
         monkeypatch.setenv("GITLAB_TOKEN", "gl-token-123")
         assert ReviewService.get_gitlab_token("acme/widgets") == "gl-token-123"
 
-    def test_from_glab(self, monkeypatch):
+    def test_does_not_inherit_glab_login(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  Token: glpat-ABCDEF\n  User: test\n",
                 returncode=0,
             )
-            assert ReviewService.get_gitlab_token("acme/widgets") == "glpat-ABCDEF"
+            assert ReviewService.get_gitlab_token("acme/widgets") == ""
+            mock_run.assert_not_called()
 
     def test_returns_empty_when_not_found(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
@@ -190,38 +190,25 @@ class TestGetGitlabToken:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
             assert ReviewService.get_gitlab_token() == "gl-from-overlay"
 
-    def test_overlay_wins_over_env(self, monkeypatch):
-        """The owning overlay's secret beats an ambient ``$GITLAB_TOKEN``.
-
-        Mirrors the ``_resolve_base_url`` precedence exactly: there the overlay's
-        ``gitlab_url`` is taken whenever it reads, and ``$GITLAB_URL`` serves as the
-        fallback beneath it. The token has to resolve the same way or a post is
-        addressed to the overlay's instance while authenticating with another's —
-        one process-wide env value cannot be the right credential for two forges.
-        """
+    def test_explicit_env_wins_over_overlay(self, monkeypatch):
+        """The documented explicit operator override is resolved before the route."""
         monkeypatch.setenv("GITLAB_TOKEN", "gl-from-env")
         overlay = MagicMock()
         overlay.config.get_gitlab_token.return_value = "gl-from-overlay"
         monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: overlay)
-        assert ReviewService.get_gitlab_token() == "gl-from-overlay"
+        assert ReviewService.get_gitlab_token() == "gl-from-env"
 
-    def test_falls_back_to_glab_when_overlay_has_no_token(self, monkeypatch):
-        """An overlay with no configured secret still reaches the ambient ``glab`` credential."""
+    def test_empty_overlay_route_does_not_fall_back_to_glab(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         overlay = MagicMock()
         overlay.config.get_gitlab_token.return_value = ""
         monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: overlay)
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="  Token: glpat-AMBIENT\n", returncode=0)
-            assert ReviewService.get_gitlab_token() == "glpat-AMBIENT"
+            assert ReviewService.get_gitlab_token() == ""
+            mock_run.assert_not_called()
 
-    def test_unreadable_overlay_does_not_break_the_token_read(self, monkeypatch):
-        """A broken overlay must not take the review surface down — fall through to ``glab``.
-
-        Unlike the base URL, an unreadable overlay here cannot silently redirect a post
-        to the wrong instance, so refusing outright would be a downgrade: it would turn
-        a recoverable config problem into a dead review surface.
-        """
+    def test_unreadable_overlay_is_preserved_as_a_failed_read(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
 
         monkeypatch.setattr(
@@ -230,7 +217,10 @@ class TestGetGitlabToken:
         )
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="  Token: glpat-AMBIENT\n", returncode=0)
-            assert ReviewService.get_gitlab_token() == "glpat-AMBIENT"
+            outcome = ReviewService.read_gitlab_token()
+            assert outcome.failed
+            assert outcome.value == ""
+            mock_run.assert_not_called()
 
 
 # -- Review service operations -------------------------------------------------
@@ -397,11 +387,23 @@ class TestPostComment:
             assert "inline DiffNote" in result.output
 
     def test_inline_live_post_refused_without_approval(self, monkeypatch):
-        """``post-comment --live`` without a recorded approval refuses (#1207)."""
+        """``post-comment --live`` without a recorded approval refuses (#1207).
+
+        This module's autouse fixture pins a permitting posture so the surrounding
+        mechanics tests can reach the mocked HTTP call — but under a permitting
+        posture the live-post token isn't required at all,
+        so THIS test — the one case in the file actually exercising the token
+        refusal — pins a forbidding posture instead, with the
+        #960 on-behalf approval recorded so ONLY the missing live-post token (#1207)
+        is under test.
+        """
+        from teatree.core.models import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        OnBehalfApproval.record(target="org/repo!1", action="post_comment", approver_id="souliane")
         diff = "@@ -0,0 +5,1 @@\n+added\n"
         mock_api = _inline_api(diff)
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api), posture_forbids_cm():
             result = runner.invoke(
                 app,
                 ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
@@ -992,11 +994,9 @@ class TestApprove:
     def test_approve_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → approve refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        # The autouse ``_no_on_behalf_gate`` fixture sets the gate to immediate
-        # via ``T3_ON_BEHALF_POST_MODE`` (``on_behalf_post_mode`` is DB-home,
-        # #1775). This test needs the gate ON, so undo that override and let the
-        # mode resolve to its blocking ``DRAFT_OR_ASK`` default.
-        monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
+        # The autouse ``_no_on_behalf_gate`` fixture pins a permitting posture; this test
+        # needs the gate ARMED, so replace that pin rather than clear it.
+        arm_on_behalf_gate(monkeypatch)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
         mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
@@ -1041,10 +1041,8 @@ class TestApprove:
     def test_unapprove_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → unapprove refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        # See ``test_approve_blocked_by_on_behalf_gate``: undo the autouse
-        # gate-off (DB-home ``on_behalf_post_mode`` via env, #1775) so the mode
-        # resolves to its blocking ``DRAFT_OR_ASK`` default.
-        monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
+        # See ``test_approve_blocked_by_on_behalf_gate``: replace the autouse gate-off pin.
+        arm_on_behalf_gate(monkeypatch)
         mock_api = MagicMock()
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])

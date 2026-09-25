@@ -93,7 +93,7 @@ def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
 
 
 def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
-    toothless = dataclasses.replace(_scenario_spec(), matchers=())
+    toothless = dataclasses.replace(_scenario_spec(), matchers=(), judge=None)
     result = _result(toothless, _FAIL_FIXTURE, tmp_path)
     assert result.passed is True, (
         "with matchers removed the marketing _fail fixture must go GREEN — "

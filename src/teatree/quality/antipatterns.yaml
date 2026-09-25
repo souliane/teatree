@@ -166,6 +166,28 @@
   linter: null
   eval_invariant: null
 
+- id: unearned-configurable-surface
+  name: New configurable surface that was not earned
+  severity: medium
+  detection: judgement
+  anti_pattern: >-
+    A change that answers "where does this variation live?" by ADDING surface —
+    a new setting, a new flag, a new abstract member — where the value was
+    derivable from something already known, or the specialisation belonged in
+    the single caller that wanted it. The cost is paid at every reader and every
+    implementation rather than once at the definition, so the diff that
+    introduces it looks cheap.
+  preferred_pattern: >-
+    Derive the value instead of configuring it. Give a setting one reader that
+    resolves it into a value the rest of the code consumes. Put a member only
+    one implementation fills meaningfully into that implementation, not on the
+    base. When an existing surface would have to widen to fit one caller, change
+    the caller.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["minimal-configurable-surface"]
+  linter: null
+  eval_invariant: null
+
 - id: gate-side-effect-before-verdict
   name: Gate performs the guarded side effect before concluding refusal
   severity: high
@@ -438,6 +460,31 @@
     the concrete target path so the fix needs no re-derivation.
   consumers: [ac-reviewing-codebase, architecture-design]
   refs: ["file-hierarchy-check", "module-health-hook"]
+  linter: null
+  eval_invariant: null
+
+- id: concept-with-many-owners
+  name: One concept edited in N files
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A concept whose next change costs more than one file — most often a
+    module-level helper called from N call sites, which removes the duplicated
+    lines while leaving N places to edit. Two near-misses read as factorization
+    too: exempting a surface over a difference of presentation (a locale string,
+    a date stringified for an encoder, an appended flag) rather than of behaviour
+    or data shape, and deduplicating 3 of 5 sites. god-module asks what is INSIDE
+    one file and file-outside-its-package asks WHERE files live; this asks WHO
+    owns the concept.
+  preferred_pattern: >-
+    Ask what the next change costs — if this concept changes shape tomorrow, how
+    many files do I touch — and answer ONE. Give the concept an owner the call
+    sites hand the work to, not a function they each re-invoke. Centralising is
+    not flattening: the owner holds the invariant and may keep deliberately
+    distinct strategies distinct, so an owner that erased a deliberate difference
+    is the same finding pointed the other way.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["one-place-test", "file-hierarchy-check"]
   linter: null
   eval_invariant: null
 

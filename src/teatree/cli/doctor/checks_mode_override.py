@@ -28,28 +28,26 @@ class OverridePosture:
     mode_name: str
     #: Colleague-facing loops the named mode forces OFF — empty when it suppresses none.
     suppressed_loops: tuple[str, ...]
-    has_expiry: bool
     set_at: datetime | None
 
 
 def stale_override_finding(
     posture: OverridePosture, *, now: datetime, max_age: timedelta = STALE_OVERRIDE_AGE
 ) -> str | None:
-    """A `t3 doctor` warning when a no-expiry SUPPRESSING mode override outlives *max_age*.
+    """A `t3 doctor` warning when a SUPPRESSING mode override outlives *max_age*.
 
-    Returns ``None`` (no finding) unless every footgun condition holds: the override
-    has NO ``until`` (a bounded override self-clears, so it is not the silent-forever
-    footgun), its mode masks at least one colleague-facing loop OFF, and it was set
-    more than *max_age* ago.
+    Nothing expires an override any more (A5/A7), so ageing is the whole signal — and it
+    is a reason to ASK, never to clear. Returns ``None`` unless the mode masks at least
+    one colleague-facing loop OFF and the override was set more than *max_age* ago.
     """
-    if posture.has_expiry or not posture.suppressed_loops:
+    if not posture.suppressed_loops:
         return None
     if posture.set_at is None or now - posture.set_at < max_age:
         return None
     hours = int((now - posture.set_at) / timedelta(hours=1))
     loops = ", ".join(sorted(posture.suppressed_loops))
     return (
-        f"WARN  mode override {posture.mode_name!r} has had NO expiry for ~{hours}h — it "
+        f"WARN  mode override {posture.mode_name!r} has stood for ~{hours}h — it "
         f"silently suppresses the colleague-facing loops ({loops}). "
         f"If unintended, clear it with `t3 loop preset auto`. (#3274)"
     )
@@ -74,7 +72,7 @@ def _check_mode_override_staleness() -> None:
 
     try:
         now = datetime.now(tz=UTC)
-        override = ModeOverride.objects.current(now)
+        override = ModeOverride.objects.current()
         if override is None:
             return
         mode = Mode.objects.by_name(override.preset_name)
@@ -82,7 +80,6 @@ def _check_mode_override_staleness() -> None:
         posture = OverridePosture(
             mode_name=override.preset_name,
             suppressed_loops=_suppressed_colleague_loops(mode.entries if mode is not None else {}, colleague_facing),
-            has_expiry=override.until is not None,
             set_at=override.set_at,
         )
         message = stale_override_finding(posture, now=now)

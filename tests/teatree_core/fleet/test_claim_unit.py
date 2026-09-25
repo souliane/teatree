@@ -197,6 +197,36 @@ class TestWireResolvers:
         )
         assert fleet_claim_wire.owner_repo_from_issue_url("https://example.com/nothing") == ""
 
+    def test_a_work_item_url_resolves_like_the_issue_url_it_aliases(self) -> None:
+        """The alias a forge hands out for a work item — the SAME object, one URL shape apart.
+
+        A resolver that does not know it answers "" for the slug, so the claim mutex
+        fails safe and refuses to start work on anything the forge names that way. Every
+        other parser in this tree already folds the two spellings together; this one kept
+        a private marker list that did not.
+        """
+        work_item = "https://gitlab.com/grp/sub/proj/-/work_items/7"
+        issue = "https://gitlab.com/grp/sub/proj/-/issues/7"
+
+        assert fleet_claim_wire.owner_repo_from_issue_url(work_item) == fleet_claim_wire.owner_repo_from_issue_url(
+            issue
+        )
+        assert fleet_claim_wire.repo_name_from_issue_url(work_item) == fleet_claim_wire.repo_name_from_issue_url(issue)
+        assert fleet_claim_wire.owner_repo_from_issue_url(work_item) == "grp/sub/proj"
+
+    def test_a_merge_request_url_still_resolves(self) -> None:
+        assert fleet_claim_wire.owner_repo_from_issue_url("https://gitlab.com/grp/proj/-/merge_requests/3") == (
+            "grp/proj"
+        )
+        assert fleet_claim_wire.repo_name_from_issue_url("https://github.com/o/widget/pulls/9") == "widget"
+
+    def test_a_trailing_slash_or_fragment_does_not_defeat_the_resolver(self) -> None:
+        assert fleet_claim_wire.owner_repo_from_issue_url("https://gitlab.com/grp/proj/-/work_items/7/") == "grp/proj"
+        assert (
+            fleet_claim_wire.owner_repo_from_issue_url("https://github.com/souliane/teatree/issues/3009#directive=5")
+            == "souliane/teatree"
+        )
+
     def test_resolve_falls_back_to_t3_repo_env_when_origin_matches(self, tmp_path, monkeypatch) -> None:
         repo = init_with_origin(tmp_path / "teatree", "https://github.com/souliane/teatree.git")
         monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: None)

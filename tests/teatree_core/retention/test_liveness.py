@@ -66,6 +66,21 @@ class HeldPathsTests(SimpleTestCase):
 
         assert held_paths(self.proc).held == frozenset({str(self.elsewhere)})
 
+    def test_an_excluded_pid_contributes_nothing(self) -> None:
+        """The caller asking whether anyone ELSE is inside holds its own descriptors."""
+        (self._pid("101") / "3").symlink_to(self.elsewhere / "open.db")
+        (self._pid("202") / "3").symlink_to(self.elsewhere / "mine.db")
+
+        view = held_paths(self.proc, exclude_pid="202")
+
+        assert view.held == frozenset({str(self.elsewhere / "open.db")})
+        assert view.sighted is True
+
+    def test_a_table_holding_only_the_excluded_pid_has_not_answered(self) -> None:
+        (self._pid("202") / "3").symlink_to(self.elsewhere / "mine.db")
+
+        assert held_paths(self.proc, exclude_pid="202").sighted is False
+
     def test_a_table_with_no_numeric_pid_is_not_a_procfs(self) -> None:
         (self.proc / "sys").mkdir()
 

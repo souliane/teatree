@@ -36,6 +36,7 @@ from teatree.core.merge.execution import assert_not_draft
 from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 _DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
@@ -84,6 +85,9 @@ _PR_IID = 6264
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
+    # The rubric done-gate runs at this chokepoint; the real path has an independent
+    # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
+    waive_rubric(ticket)
     defaults: dict[str, object] = {
         "ticket": ticket,
         "pr_id": _PR_IID,

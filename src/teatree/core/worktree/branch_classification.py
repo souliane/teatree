@@ -33,17 +33,27 @@ that are pushed but not yet on main.
 """
 
 import json
-import re
 import shutil
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from functools import cache, lru_cache
+from tempfile import TemporaryDirectory
 from typing import Any
 
-from teatree.core.forge_pr_probe import forge_cli_env
+from teatree.core.forge_pr_probe import find_open_pr_for_branch, forge_cli_env, forge_for_repo, gitlab_cli_env
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base
+from teatree.core.worktree.branch_subject_prefilter import BranchCommit as _BranchCommit
+from teatree.core.worktree.branch_subject_prefilter import SubjectPrefilterResult as _SubjectPrefilterResult
+from teatree.core.worktree.branch_subject_prefilter import (
+    prefilter_branch_commits_by_subject as _prefilter_branch_commits_by_subject,
+)
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+
+BranchCommit = _BranchCommit
+SubjectPrefilterResult = _SubjectPrefilterResult
+prefilter_branch_commits_by_subject = _prefilter_branch_commits_by_subject
 
 # The one RedundancyVerdict.source that means no content layer decided anything.
 # Named so every consumer of the verdict's provenance reads the same token.
@@ -52,49 +62,6 @@ INCONCLUSIVE_SOURCE = "inconclusive"
 # PR open (#3093). It sits on `branch_redundancy` itself, so no caller can reach a
 # `redundant=True` that an open PR should have vetoed.
 OPEN_PR_VETO_SOURCE = "open-pr-veto"
-
-_PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
-_RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
-_TYPE_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
-_BRANCH_LOG_FIELDS = 3
-
-
-@dataclass(frozen=True)
-class BranchCommit:
-    """A commit on a branch that is not reachable from any remote by SHA."""
-
-    sha: str
-    subject: str
-    is_merge: bool
-
-
-@dataclass(frozen=True)
-class SubjectPrefilterResult:
-    """A subject-only pre-filter of a branch's unsynced commits — NEVER authorizes a destroy.
-
-    The bucketing is by canonicalized SUBJECT membership alone, with no
-    content/patch-id/tree check, so it can only *recognize* a likely
-    squash-merged candidate cheaply — it must never be the sole gate on a
-    destructive action. :func:`content_equivalence_blockers` is the authoritative
-    content gate every destructive caller passes instead.
-
-    ``squash_merged`` — subject matches a commit on the target branch, so the
-    content is *probably* already integrated (typical squash-merge case,
-    including the ``relax:`` → ``feat:`` prefix rewrite). A subject collision with
-    an unrelated upstream commit lands a genuine commit here — hence pre-filter
-    only.
-
-    ``merge_commits`` — commits with multiple parents (Merge branch 'main' into
-    feature). They carry no net content of their own and are usually safe to
-    discard, but an evil-merge can, so the content gate still has final say.
-
-    ``genuinely_ahead`` — everything else. The branch has work whose subject does
-    not appear on the target.
-    """
-
-    squash_merged: list[BranchCommit] = field(default_factory=list)
-    merge_commits: list[BranchCommit] = field(default_factory=list)
-    genuinely_ahead: list[BranchCommit] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,69 +95,6 @@ class RedundancyVerdict:
         stale merged signal.
         """
         return self.forge_merged and not self.redundant and bool(self.unique_shas)
-
-
-def _canonicalize_subject(subject: str) -> str:
-    """Normalize a commit subject for cross-branch matching.
-
-    Strips, in order: trailing ``(#NNN)`` (added on squash-merge), trailing
-    ``[flag] (ticket_url)`` (release-note suffix enforced by the PR-metadata
-    hook — present on the merged title but usually absent from the local
-    commit), and leading ``type(scope):`` so the ``relax:`` → ``feat(scope):``
-    rewrite still matches.
-    """
-    stripped = _PR_SUFFIX_RE.sub("", subject).strip()
-    stripped = _RELEASE_NOTE_SUFFIX_RE.sub("", stripped).strip()
-    stripped = _TYPE_PREFIX_RE.sub("", stripped).strip()
-    return stripped.lower()
-
-
-def prefilter_branch_commits_by_subject(repo: str, branch: str, target: str = "origin/main") -> SubjectPrefilterResult:
-    """Subject-only PRE-FILTER of the branch's unsynced commits — NEVER authorizes a destroy.
-
-    Buckets into squash-merged / merge / genuinely-ahead by canonicalized SUBJECT
-    alone. This is a cheap recognizer, NOT an authorizer: a genuine un-upstreamed
-    commit whose subject collides with an already-upstreamed subject slips into
-    ``squash_merged``, so no destructive caller may act on this result without the
-    authoritative :func:`content_equivalence_blockers` content gate confirming it.
-
-    Runs two git log invocations: one to list branch commits not on any remote
-    (same as :func:`git.unsynced_commits`), one to fetch subjects on ``target``
-    for subject matching. Both use :func:`git.run_strict` — a real git failure
-    (e.g. ``repo`` is not a filesystem path to a checkout, such as a forge
-    slug like ``owner/repo`` passed where a path is expected) raises
-    :class:`CommandFailedError` instead of returning empty output, which used
-    to be indistinguishable from "branch has no unsynced commits" and
-    misclassified a genuinely-ahead branch as synced (#2937).
-    """
-    raw = git.run_strict(
-        repo=repo,
-        args=["log", branch, "--not", target, "--format=%H%x00%P%x00%s"],
-    )
-    classification = SubjectPrefilterResult()
-    if not raw.strip():
-        return classification
-
-    target_raw = git.run_strict(repo=repo, args=["log", target, "--format=%s", "-n", "500"])
-    target_subjects = {_canonicalize_subject(line) for line in target_raw.splitlines() if line.strip()}
-    target_subjects.discard("")
-
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\x00", 2)
-        if len(parts) < _BRANCH_LOG_FIELDS:
-            continue
-        sha, parents, subject = parts
-        is_merge = len(parents.split()) > 1
-        commit = BranchCommit(sha=sha, subject=subject, is_merge=is_merge)
-        if is_merge:
-            classification.merge_commits.append(commit)
-        elif _canonicalize_subject(subject) in target_subjects:
-            classification.squash_merged.append(commit)
-        else:
-            classification.genuinely_ahead.append(commit)
-    return classification
 
 
 _FALLBACK_DEFAULT_TARGET = "origin/main"
@@ -316,6 +220,7 @@ def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/m
     return blockers
 
 
+@cache
 def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     """Return the SHA of the merge/squash commit for ``branch``'s merged PR, or ``""``.
 
@@ -328,18 +233,14 @@ def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     Returns ``""`` when neither CLI is available (sandbox, CI without auth) —
     the caller falls back to subject-match classification.
     """
-    sha = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
-        repo,
-        lambda data: data[0]["mergeCommit"]["oid"],
-    )
-    if sha:
-        return sha
-    return probe_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        repo,
-        lambda data: data[0]["merge_commit_sha"],
-    )
+    forge = forge_for_repo(repo)
+    if forge == "github":
+        cmd = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"]
+        return probe_host_cli(cmd, repo, lambda data: data[0]["mergeCommit"]["oid"])
+    if forge == "gitlab":
+        cmd = ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"]
+        return probe_host_cli(cmd, repo, lambda data: data[0]["merge_commit_sha"])
+    return ""
 
 
 def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, timeout: float = 30.0) -> str:
@@ -354,16 +255,21 @@ def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, 
     fail-safe "not found / skip" value as every other failure path, so a timeout
     can never produce a positive merged signal and never wrongly reaps work.
 
-    Every failure path being fail-safe is precisely why the credential matters
-    (souliane/teatree#4116): an unauthenticated read of a private repo is
-    indistinguishable here from "no such PR", so the keep that an open PR earns
-    would silently disappear. :func:`~teatree.core.forge_pr_probe.forge_cli_env`
-    gives it the same token the writer path uses.
+    Authentication is mandatory: an anonymous private-repo read looks like
+    "no PR" and could wrongly reap live work (souliane/teatree#4116).
     """
-    try:
-        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout, env=forge_cli_env())
-    except (OSError, TimeoutExpired):
+    tool = cmd[0] if cmd else ""
+    env = forge_cli_env(repo) if tool == "gh" else gitlab_cli_env(repo) if tool == "glab" else None
+    if env is None:
         return ""
+    config_home = TemporaryDirectory(prefix="t3-glab-") if tool == "glab" else nullcontext("")
+    with config_home as clean_config:
+        if clean_config:
+            env["GLAB_CONFIG_DIR"] = clean_config
+        try:
+            result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout, env=env)
+        except (OSError, TimeoutExpired):
+            return ""
     if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:
         return ""
     try:
@@ -399,6 +305,7 @@ def reset_forge_probe_cache() -> None:
     """
     _branch_pr_is_merged.cache_clear()
     _merged_pr_head_sha.cache_clear()
+    _pr_merge_commit_sha.cache_clear()
 
 
 @cache
@@ -415,18 +322,14 @@ def _merged_pr_head_sha(repo: str, branch: str) -> str:
     Fail-safe to ``""``: a missing CLI, a network/auth failure, or an
     unparsable payload all answer "no record", never a positive sha.
     """
-    sha = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid", "--limit", "1"],
-        repo,
-        lambda data: data[0]["headRefOid"],
-    )
-    if sha:
-        return sha
-    return probe_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        repo,
-        lambda data: data[0]["sha"],
-    )
+    forge = forge_for_repo(repo)
+    if forge == "github":
+        cmd = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid", "--limit", "1"]
+        return probe_host_cli(cmd, repo, lambda data: data[0]["headRefOid"])
+    if forge == "gitlab":
+        cmd = ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"]
+        return probe_host_cli(cmd, repo, lambda data: data[0]["sha"])
+    return ""
 
 
 def forge_merged_tip_captured(repo: str, branch: str) -> bool:
@@ -469,19 +372,14 @@ def _branch_pr_is_merged(repo: str, branch: str) -> bool:
     ``False`` so the caller keeps the conservative refuse-and-report — ambiguity
     never reaps real work.
     """
-    found = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
-        repo,
-        lambda data: str(data[0]["number"]),
-    )
-    if found:
-        return True
-    found = probe_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        repo,
-        lambda data: str(data[0]["iid"]),
-    )
-    return bool(found)
+    forge = forge_for_repo(repo)
+    if forge == "github":
+        cmd = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"]
+        return bool(probe_host_cli(cmd, repo, lambda data: str(data[0]["number"])))
+    if forge == "gitlab":
+        cmd = ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"]
+        return bool(probe_host_cli(cmd, repo, lambda data: str(data[0]["iid"])))
+    return False
 
 
 def _branch_has_open_pr(repo: str, branch: str) -> bool:
@@ -500,19 +398,7 @@ def _branch_has_open_pr(repo: str, branch: str) -> bool:
     reaped, and the content-based :func:`analyze_worktree_changes` remains the fail-closed
     data-loss guard when the forge cannot answer.
     """
-    found = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1"],
-        repo,
-        lambda data: str(data[0]["number"]),
-    )
-    if found:
-        return True
-    found = probe_host_cli(
-        ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json", "-P", "1"],
-        repo,
-        lambda data: str(data[0]["iid"]),
-    )
-    return bool(found)
+    return find_open_pr_for_branch(repo, branch).is_found
 
 
 def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
@@ -631,36 +517,3 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     NAME, and the data-loss guards downstream keep an uncertain branch.
     """
     return branch_redundancy(repo, branch, f"origin/{default}").redundant
-
-
-def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
-    """Whether every unique commit of ``branch`` is already in ``origin/<default>`` (patch-id).
-
-    The forge-CLI-free per-commit cherry-zero signal the orphaned-stash reaper
-    uses on a ``stash@{N}`` ref. ``git cherry`` prints ``- <sha>`` for each commit
-    whose change is already upstream (a squash captured it) and ``+ <sha>`` for
-    one that is not; the ref is captured only when cherry actually RAN, produced
-    at least one comparison line, and every line is a ``-``.
-
-    Two data-loss traps this closes (#F4.1). (1) The probe runs through the STRICT
-    runner, so a real ``git cherry`` failure (unresolvable ``origin/<default>``,
-    the ref gone, a corrupt repo) raises :class:`CommandFailedError` and is caught
-    to ``False`` (not-captured) — the LENIENT runner degraded a failure to ``""``,
-    which the ``all(...)`` below then read as vacuously-captured. (2) EMPTY cherry
-    output is NOT captured: ``all([])`` is ``True``, but a stash ref that is a
-    merge commit (``git cherry`` compares no patch and prints nothing) or any ref
-    that produced no comparison line was never actually content-compared, so
-    treating it as captured would drop the ONLY copy of the work. Both now resolve
-    to ``False`` — a keep — so the orphaned-stash reaper keeps the stash on any
-    inconclusive probe.
-
-    The richer current-tip detector is :func:`branch_redundancy` (which also runs
-    the synthetic-squash and ``--merged`` layers); this one stays the minimal
-    per-commit form the stash path wants.
-    """
-    try:
-        cherry = git.run_strict(repo=repo, args=["cherry", f"origin/{default}", branch])
-    except CommandFailedError:
-        return False
-    lines = [line for line in cherry.splitlines() if line.strip()]
-    return bool(lines) and all(line.startswith("-") for line in lines)

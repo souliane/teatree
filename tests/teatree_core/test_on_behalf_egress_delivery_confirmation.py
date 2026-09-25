@@ -18,8 +18,10 @@ from django.test import TestCase
 
 from teatree.core.models import OnBehalfApproval, PendingChatInjection
 from teatree.core.models.on_behalf_approval import OnBehalfAudit
-from teatree.core.on_behalf_egress import OnBehalfSlackEgress
+from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfSlackEgress
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 _DM_CHANNEL = "D_SELF"
 _USER_ID = "U_OPERATOR"
@@ -82,7 +84,7 @@ class TestApprovalSurvivesAnUnlandedColleaguePost(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_cold_slack_user(tmp_path, monkeypatch)
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
+        seed_forbidding_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _Fake())
 
     def test_ok_false_react_leaves_the_approval_unconsumed_and_unaudited(self) -> None:
@@ -110,9 +112,10 @@ class TestApprovalSurvivesAnUnlandedColleaguePost(TestCase):
             text="nag",
             target=_TARGET,
             action="review_nag_post",
+            context=OnBehalfContext(own_mr=True, target=_TARGET),
         )
 
-        assert response == {}
+        assert response == NO_TOKEN_FOR_DESTINATION
         assert OnBehalfApproval.objects.get(target=_CANON, action="review_nag_post").consumed_at is None
         assert not OnBehalfAudit.objects.exists()
 
@@ -139,6 +142,7 @@ class TestApprovalSurvivesAnUnlandedColleaguePost(TestCase):
             text="nag",
             target=_TARGET,
             action="review_nag_post",
+            context=OnBehalfContext(own_mr=True, target=_TARGET),
         )
 
         assert OnBehalfApproval.objects.get(target=_CANON, action="review_nag_post").consumed_at is not None
@@ -149,7 +153,7 @@ class TestQuestionRetiresOnlyOnAnAcceptedAnswer(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_cold_slack_user(tmp_path, monkeypatch)
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
+        seed_forbidding_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _Fake())
 
     def _record_question(self) -> None:

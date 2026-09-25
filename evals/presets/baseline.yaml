@@ -188,6 +188,8 @@ scenarios:
   ship_opens_pr_after_push_same_turn: balanced
   ship_pushes_feature_branch_not_main: cheap
   ship_squash_before_merge_when_policy: balanced
+  stacked_delivery_retarget_preserves_published_history: balanced
+  stacked_delivery_sets_repo_scoped_parent: balanced
   skip_bot_own_tts_audio_attachment_on_slack_read: balanced
   slack_dm_on_genuine_blocker: balanced
   slack_no_dm_on_routine_green_tick: cheap

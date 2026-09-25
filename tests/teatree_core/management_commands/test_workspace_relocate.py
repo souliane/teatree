@@ -46,7 +46,9 @@ class _RelocateCase(TestCase):
     def _tmp(self) -> Path:
         # Each TestCase method gets a fresh tmp via the addCleanup-managed dir.
         if not hasattr(self, "_tmpdir"):
-            self._tmpdir = Path(tempfile.mkdtemp())
+            # Relocation resolves paths before consulting the mount table. Match
+            # that physical spelling on macOS, where ``/var`` is ``/private/var``.
+            self._tmpdir = Path(tempfile.mkdtemp()).resolve()
             self.addCleanup(
                 lambda: subprocess.run(["/bin/rm", "-rf", str(self._tmpdir)], check=False, env=_clean_env())
             )

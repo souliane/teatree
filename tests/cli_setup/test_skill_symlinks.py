@@ -14,6 +14,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker, _ensure_skill_link
+from teatree.config import UserSettings
 
 
 class TestRemoveExcludedSkills:
@@ -256,33 +257,32 @@ class TestAgentSkillDirs:
 
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         dirs = dict(agent_skill_dirs())
-        assert dirs["codex"] == tmp_path / ".codex" / "skills"
+        assert dirs["codex"] == tmp_path / ".agents" / "skills"
         assert dirs["claude"] == tmp_path / ".claude" / "skills"
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
-class TestSetupSyncsCodexWhenDirExists(TestCase):
+class TestSetupSyncsHarnessSkillDirectories(TestCase):
     @pytest.fixture(autouse=True)
     def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_syncs_codex_core_but_leaves_claude_to_plugin(self) -> None:
-        """Claude core skills come from the t3 plugin; Codex gets symlinks.
-
-        Setup should symlink core skills into ~/.codex/skills but NOT into
-        ~/.claude/skills.
-        """
+    def test_both_plugins_own_core_skills_while_both_runtimes_get_overlays(self) -> None:
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
         skills_src = self.tmp_path / "core_skills"
         skills_src.mkdir()
-        (skills_src / "code").mkdir()
-        (skills_src / "code" / "SKILL.md").touch()
+        (skills_src / "interactive").mkdir()
+        (skills_src / "interactive" / "SKILL.md").touch()
+
+        overlay_skill = self.tmp_path / "overlay" / "sample-overlay"
+        overlay_skill.mkdir(parents=True)
+        (overlay_skill / "SKILL.md").touch()
 
         home = self.tmp_path / "home"
         claude_skills = home / ".claude" / "skills"
-        codex_skills = home / ".codex" / "skills"
+        codex_skills = home / ".agents" / "skills"
         claude_skills.mkdir(parents=True)
         codex_skills.mkdir(parents=True)
 
@@ -296,28 +296,25 @@ class TestSetupSyncsCodexWhenDirExists(TestCase):
         with (
             patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
             patch.object(setup_module, "find_main_clone", return_value=repo),
-            patch.object(setup_module, "ApmInstaller"),
             patch.object(setup_module, "PluginRegistrar"),
             patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
+            patch.object(setup_module, "provision_declared_notion_routing"),
+            patch.object(setup_module, "provision_all_overlay_dm_channels"),
+            patch.object(setup_module, "report_notion_connections"),
+            patch.object(setup_module, "seed_default_loops"),
             patch("teatree.cli.setup.skill_linker.DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
-            mock_svc.collect_overlay_skills.return_value = []
-            mock_load.return_value.user.contribute = False
-            mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
+            mock_svc.collect_overlay_skills.return_value = [(overlay_skill, "sample-overlay")]
+            mock_load.return_value.user = UserSettings(workspace_dir=str(self.tmp_path / "workspace"))
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
-        assert not (claude_skills / "code").exists()
-        assert (codex_skills / "code").is_symlink()
+        assert not (claude_skills / "interactive").exists()
+        assert (claude_skills / "sample-overlay").is_symlink()
+        assert not (codex_skills / "interactive").exists()
+        assert (codex_skills / "sample-overlay").is_symlink()
 
-    def test_prunes_stale_claude_core_symlinks(self) -> None:
-        """Leftover core symlinks from pre-plugin installs are removed.
-
-        ~/.claude/skills/ may still contain symlinks created by earlier
-        teatree versions; they must be pruned so they don't shadow the
-        plugin's copies of the same skills.
-        """
+    def test_prunes_stale_plugin_core_symlinks(self) -> None:
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
         skills_src = self.tmp_path / "core_skills"
@@ -327,8 +324,11 @@ class TestSetupSyncsCodexWhenDirExists(TestCase):
 
         home = self.tmp_path / "home"
         claude_skills = home / ".claude" / "skills"
+        codex_skills = home / ".agents" / "skills"
         claude_skills.mkdir(parents=True)
+        codex_skills.mkdir(parents=True)
         (claude_skills / "code").symlink_to(skills_src / "code")
+        (codex_skills / "code").symlink_to(skills_src / "code")
 
         self.monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
 
@@ -340,22 +340,23 @@ class TestSetupSyncsCodexWhenDirExists(TestCase):
         with (
             patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
             patch.object(setup_module, "find_main_clone", return_value=repo),
-            patch.object(setup_module, "ApmInstaller"),
             patch.object(setup_module, "PluginRegistrar"),
             patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
+            patch.object(setup_module, "provision_declared_notion_routing"),
+            patch.object(setup_module, "provision_all_overlay_dm_channels"),
+            patch.object(setup_module, "report_notion_connections"),
+            patch.object(setup_module, "seed_default_loops"),
             patch("teatree.cli.setup.skill_linker.DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
             mock_svc.collect_overlay_skills.return_value = []
-            mock_load.return_value.user.contribute = False
-            mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
+            mock_load.return_value.user = UserSettings(workspace_dir=str(self.tmp_path / "workspace"))
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (claude_skills / "code").exists()
+        assert not (codex_skills / "code").exists()
 
-    def test_skips_codex_when_dir_missing(self) -> None:
-        """Setup does not create ~/.codex/skills if it doesn't already exist."""
+    def test_creates_universal_skill_directory_when_missing(self) -> None:
         from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
         skills_src = self.tmp_path / "core_skills"
@@ -365,7 +366,7 @@ class TestSetupSyncsCodexWhenDirExists(TestCase):
 
         home = self.tmp_path / "home"
         (home / ".claude" / "skills").mkdir(parents=True)
-        # No ~/.codex dir
+        # No ~/.agents dir
 
         self.monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
 
@@ -377,19 +378,20 @@ class TestSetupSyncsCodexWhenDirExists(TestCase):
         with (
             patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
             patch.object(setup_module, "find_main_clone", return_value=repo),
-            patch.object(setup_module, "ApmInstaller"),
             patch.object(setup_module, "PluginRegistrar"),
             patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
+            patch.object(setup_module, "provision_declared_notion_routing"),
+            patch.object(setup_module, "provision_all_overlay_dm_channels"),
+            patch.object(setup_module, "report_notion_connections"),
+            patch.object(setup_module, "seed_default_loops"),
             patch("teatree.cli.setup.skill_linker.DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
             mock_svc.collect_overlay_skills.return_value = []
-            mock_load.return_value.user.contribute = False
-            mock_load.return_value.user.excluded_skills = []
-            mock_load.return_value.user.workspace_dir = str(self.tmp_path / "workspace")
+            mock_load.return_value.user = UserSettings(workspace_dir=str(self.tmp_path / "workspace"))
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
-        assert not (home / ".codex").exists()
+        assert (home / ".agents" / "skills").is_dir()
 
 
 class TestPrunesStaleSkillLinks:

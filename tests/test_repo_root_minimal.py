@@ -60,6 +60,8 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         "settings.json",
         ".apm",
         ".claude-plugin",
+        ".codex-plugin",
+        ".agents",
         ".github",
         ".ast-grep",
         ".vscode",

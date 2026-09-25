@@ -15,10 +15,10 @@ from django.test import TestCase
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.unplanned_ticket_redispatch import redispatch_unplanned_tickets
+from tests.factories import record_test_plan
 
 # A migration module name starts with a digit, so it is unreachable by import syntax.
 _backfill = importlib.import_module("teatree.core.migrations.0081_plan_missing_failure_kind")
@@ -140,7 +140,7 @@ class TestWhatTheSweepMustNotTouch(TestCase):
     def test_a_ticket_planned_since_the_refusal_is_left_alone(self) -> None:
         """The gate is re-read LIVE, so a hand-planned ticket is not dragged back through planning."""
         ticket = _refused_ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="a plan recorded by hand", recorded_by="owner")
+        record_test_plan(ticket, plan_text="a plan recorded by hand", recorded_by="owner")
 
         assert redispatch_unplanned_tickets() == 0
         assert _planning_tasks(ticket) == []

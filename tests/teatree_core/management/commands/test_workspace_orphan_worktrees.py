@@ -101,6 +101,21 @@ class TestKeepsUnpushedOrphan(OrphanWorktreeFixture):
         assert any("uncommitted changes" in line for line in results)
 
 
+class TestKeepsAnOrphanAVenvImportsThrough(OrphanWorktreeFixture):
+    def test_a_synced_orphan_the_clone_venv_names_is_kept(self) -> None:
+        wt_path = self._add_orphan("synced-feat", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-feat", cwd=wt_path)
+        site = self.repo_main / ".venv" / "lib" / "python3.13" / "site-packages"
+        site.mkdir(parents=True)
+        (site / "wt_probe.pth").write_text(f"{wt_path / 'src'}\n", encoding="utf-8")
+
+        with patch.dict("os.environ", {"UV_TOOL_DIR": str(self.workspace / "no-tools")}):
+            results = self._reap()
+
+        assert wt_path.exists()
+        assert any("KEPT orphan" in line and "wt_probe.pth" in line for line in results), results
+
+
 class TestReapsSquashMergedOrphan(OrphanWorktreeFixture):
     def test_squash_merged_orphan_with_deleted_remote_branch_is_reaped_under_keep(self) -> None:
         """A single-commit branch squash-merged into main, its remote branch deleted on merge.

@@ -13,7 +13,7 @@ the backends app never crashes — it simply builds no backends.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -63,6 +63,35 @@ class ReviewMatchLike(Protocol):
 
     @property
     def permalink(self) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SlackMessagingSpec:
+    """The credentials and owner restriction a Slack messaging backend is built from."""
+
+    bot_token: str
+    app_token: str
+    user_token: str
+    user_id: str
+    dm_channel_id: str
+    owner_dm_only: bool
+
+
+type SlackScopeProfile = Literal["full", "dm_only"]
+
+_SLACK_SCOPE_PROFILES: dict[str, SlackScopeProfile] = {"": "full", "full": "full", "dm_only": "dm_only"}
+
+
+class UnknownSlackScopeProfileError(ValueError):
+    pass
+
+
+def parse_slack_scope_profile(value: object) -> SlackScopeProfile:
+    """Only unset means ``full``: any other value raises, so a typo cannot silently drop a dm_only bot's owner guard."""
+    if isinstance(value, str) and (profile := _SLACK_SCOPE_PROFILES.get(value)):
+        return profile
+    msg = f"unknown slack_scope_profile {value!r} (expected 'full' or 'dm_only')."
+    raise UnknownSlackScopeProfileError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,15 +210,7 @@ class BackendProvider(Protocol):
 
     def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend": ...  # pragma: no branch
 
-    def build_slack_messaging(
-        self,
-        *,
-        bot_token: str,
-        app_token: str,
-        user_token: str,
-        user_id: str,
-        dm_channel_id: str,
-    ) -> "MessagingBackend": ...  # pragma: no branch
+    def build_slack_messaging(self, spec: SlackMessagingSpec) -> "MessagingBackend": ...  # pragma: no branch
 
     def build_sync_backends(self) -> "list[SyncBackend]": ...  # pragma: no branch
 
@@ -240,15 +261,7 @@ class _UnconfiguredProvider:
         msg = "no backend provider registered — teatree.backends app is not installed"
         raise RuntimeError(msg)
 
-    def build_slack_messaging(  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
-        self,
-        *,
-        bot_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
-        app_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
-        user_token: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
-        user_id: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
-        dm_channel_id: str,  # noqa: ARG002 — unused in this default seam; the concrete provider consumes it
-    ) -> "MessagingBackend":
+    def build_slack_messaging(self, spec: SlackMessagingSpec) -> "MessagingBackend":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         msg = "no backend provider registered — teatree.backends app is not installed"
         raise RuntimeError(msg)
 

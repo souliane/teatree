@@ -61,8 +61,8 @@ class TestWorkerStatus(django.test.TestCase):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 0
         assert "NOT running" in result.stdout
-        # PR-28 default is ON, so a not-running worker is surfaced as actionable.
-        assert "loop_runner_enabled: True" in result.stdout
+        # The preset admits work, so a not-running worker is surfaced as actionable.
+        assert "admits work" in result.stdout
         assert "t3 worker ensure" in result.stdout
 
     def test_status_json_shape(self) -> None:
@@ -75,8 +75,7 @@ class TestWorkerStatus(django.test.TestCase):
         payload = json.loads(result.stdout)
         assert payload["running"] is True
         assert payload["holder_pid"] == 4242
-        assert payload["loop_runner_enabled"] is True
-        assert payload["source"] == "default"
+        assert payload["fleet_admits"] is True
         assert isinstance(payload["timers"], dict)
 
     def test_status_reports_running_via_flock_when_pid_file_absent(self) -> None:
@@ -189,7 +188,7 @@ class TestWorkerStatus(django.test.TestCase):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 1
         assert "RUNNING (pid 4242)" in result.stdout
-        assert "loop_runner_enabled: True" in result.stdout
+        assert "admits work" in result.stdout
         assert "ticking NOTHING" in result.stdout
         assert "tickets" in result.stdout
 
@@ -210,25 +209,15 @@ class TestWorkerStatus(django.test.TestCase):
 
 
 class TestWorkerEnsure(django.test.TestCase):
-    def test_ensure_refuses_when_kill_switch_off(self) -> None:
-        with mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(False, "global")):
-            result = runner.invoke(worker_app, ["ensure"])
-        assert result.exit_code == 1
-        assert "disabled" in result.stdout
-
     def test_ensure_reports_already_running(self) -> None:
-        with (
-            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
-            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
-        ):
+        with mock.patch("teatree.utils.singleton.flock_is_held", return_value=True):
             result = runner.invoke(worker_app, ["ensure"])
         assert result.exit_code == 0
         assert "already-running" in result.stdout
 
-    def test_ensure_spawns_when_enabled_and_flock_free(self) -> None:
+    def test_ensure_spawns_when_the_flock_is_free(self) -> None:
         spawns: list[bool] = []
         with (
-            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
             mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
             mock.patch(
                 "teatree.utils.worker_spawn.spawn_detached_worker", side_effect=lambda: spawns.append(True) or True
@@ -248,7 +237,6 @@ class TestWorkerEnsure(django.test.TestCase):
         # exists and the child's streams go to DEVNULL, so a startup crash read as
         # "spawned". The verdict now rests on the flock, and the child's output is shown.
         with (
-            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
             mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
             mock.patch("teatree.utils.worker_spawn.spawn_detached_worker", return_value=True),
             mock.patch(
@@ -268,7 +256,6 @@ class TestWorkerEnsure(django.test.TestCase):
 
     def test_ensure_errors_when_t3_absent(self) -> None:
         with (
-            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
             mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
             mock.patch("teatree.utils.worker_spawn.spawn_detached_worker", return_value=False),
         ):
@@ -303,7 +290,6 @@ def test_ensure_is_a_no_op_for_a_live_flock_holder_with_a_stale_pid_file(
 
         spawns: list[bool] = []
         with (
-            mock.patch.object(worker_cli, "_resolve_kill_switch", return_value=(True, "default")),
             mock.patch(
                 "teatree.utils.worker_spawn.spawn_detached_worker",
                 side_effect=lambda: spawns.append(True) or True,
@@ -611,15 +597,15 @@ class TestWorkerRestart(django.test.TestCase):
         assert quiescing_at_spawn == [False]
         assert ConfigSetting.objects.get_effective(QUIESCING_SETTING) is False
 
-    def test_refuses_when_the_kill_switch_is_off(self) -> None:
+    def test_refuses_when_the_fresh_worker_cannot_be_verified(self) -> None:
         stopped = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242)
         with (
             mock.patch.object(WorkerStopper, "stop", return_value=stopped),
-            mock.patch.object(worker_cli, "_ensure_worker", return_value=("disabled", "loop_runner_enabled is OFF")),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("error", "`t3` not found on PATH")),
         ):
             result = runner.invoke(worker_app, ["restart"])
         assert result.exit_code == 1
-        assert "disabled" in result.stdout
+        assert "error" in result.stdout
 
 
 class TestDoctorWorkerCheck(django.test.TestCase):
@@ -668,26 +654,25 @@ class TestTimerCountsCoverTheChainSet(django.test.TestCase):
     """The per-loop chain diagnostic counts the loops that SHOULD carry a chain (#4185).
 
     Keyed on ``Loop.enabled`` it silently omitted every preset-admitted loop — the exact
-    set whose missing chains the diagnostic existed to surface.
+    set whose missing chains the diagnostic existed to surface. The row carries no manual
+    override, so the preset is what decides.
     """
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
-        Loop.objects.create(
-            name="inbox",
-            script="src/teatree/loops/inbox/loop.py",
-            delay_seconds=60,
-            enabled=False,
-        )
+        Loop.objects.create(name="inbox", script="src/teatree/loops/inbox/loop.py", delay_seconds=60)
         Mode.objects.create(name="preset-4185", entries={"inbox": True})
-        ModeOverride.objects.set_override("preset-4185")
+        ModeOverride.objects.set_override("preset-4185", reason="test override")
 
-    def test_a_preset_admitted_column_disabled_loop_is_counted(self) -> None:
+    def test_a_preset_admitted_loop_is_counted(self) -> None:
         assert "inbox" in worker_cli._timer_counts()
 
     def test_a_preset_masked_off_loop_is_not_counted(self) -> None:
-        Loop.objects.filter(name="inbox").update(enabled=True)
         Mode.objects.filter(name="preset-4185").update(entries={"inbox": False})
+        assert "inbox" not in worker_cli._timer_counts()
+
+    def test_a_manual_override_outranks_the_preset(self) -> None:
+        Loop.objects.set_manual_override("inbox", runs=False, reason="chain is broken")
         assert "inbox" not in worker_cli._timer_counts()
 
 

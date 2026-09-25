@@ -8,6 +8,7 @@ from teatree.agents.lane_b.filesystem import (
     build_filesystem_toolset,
     resolve_within,
 )
+from teatree.agents.lane_b.tool_errors import ToolInputError
 
 
 class TestResolveWithin:
@@ -74,6 +75,37 @@ class TestFilesystemTools:
         ts = build_filesystem_toolset(tmp_path)
         with pytest.raises(PathTraversalError):
             _tool(ts, "Write")("../escape.txt", "x")
+
+
+def _numbered(path: Path, count: int) -> None:
+    path.write_text("".join(f"line{n}\n" for n in range(1, count + 1)), encoding="utf-8")
+
+
+class TestReadWindow:
+    def test_read_honours_offset_and_limit(self, tmp_path: Path) -> None:
+        _numbered(tmp_path / "f.txt", 10)
+        out = _tool(build_filesystem_toolset(tmp_path), "Read")("f.txt", offset=3, limit=2)
+        assert out == "line4\nline5\n[... truncated at 2 lines; call Read with offset=5 for the rest ...]"
+
+    def test_read_defaults_to_2000_lines_with_a_continuation_trailer(self, tmp_path: Path) -> None:
+        _numbered(tmp_path / "f.txt", 2500)
+        body, trailer = _tool(build_filesystem_toolset(tmp_path), "Read")("f.txt").rsplit("\n", 1)
+        assert body.splitlines() == [f"line{n}" for n in range(1, 2001)]
+        assert trailer == "[... truncated at 2000 lines; call Read with offset=2000 for the rest ...]"
+
+    def test_a_window_reaching_the_end_carries_no_trailer(self, tmp_path: Path) -> None:
+        _numbered(tmp_path / "f.txt", 10)
+        assert _tool(build_filesystem_toolset(tmp_path), "Read")("f.txt", offset=8, limit=2) == "line9\nline10\n"
+
+    def test_an_offset_past_the_end_reads_nothing(self, tmp_path: Path) -> None:
+        _numbered(tmp_path / "f.txt", 3)
+        assert _tool(build_filesystem_toolset(tmp_path), "Read")("f.txt", offset=5) == ""
+
+    @pytest.mark.parametrize(("offset", "limit"), [(-1, 10), (0, -1)])
+    def test_read_refuses_a_negative_window(self, tmp_path: Path, offset: int, limit: int) -> None:
+        _numbered(tmp_path / "f.txt", 3)
+        with pytest.raises(ToolInputError, match="must be >= 0"):
+            _tool(build_filesystem_toolset(tmp_path), "Read")("f.txt", offset=offset, limit=limit)
 
 
 class TestSearchStaysInsideTheJail:

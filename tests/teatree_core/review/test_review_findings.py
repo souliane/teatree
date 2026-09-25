@@ -292,3 +292,48 @@ class TestLeakClosure:
         assert len(host.created) == 1
         # The actual filed body trips no banned-terms gate.
         assert banned_terms_scanner.scan_text(str(host.created[0]["body"])) is None
+
+
+class TestFilingRefusesWhateverTheStoreCannotVouchFor:
+    """Filing an issue IS a publishing path, so its no-term-list disposition is the gate's.
+
+    The three cases are one decision seen from a real caller: absence is an answer and files;
+    a deployment that declares it MUST scrub refuses on that same absence; and a store that
+    ERRORED refuses with no flag set at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_terms(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+
+    def _file(self) -> tuple[_FakeHost, object]:
+        host = _FakeHost()
+        filed = file_class_c_issue(
+            host, finding=_finding(body="Prefer composition here"), enforcement="Add a gate.", context=_CONTEXT
+        )
+        return host, filed
+
+    def test_an_absent_store_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        host, filed = self._file()
+        assert not filed.withheld
+        assert len(host.created) == 1
+
+    def test_the_required_flag_refuses_that_same_absence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        host, filed = self._file()
+        assert filed.withheld
+        assert banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER in filed.withheld_reason
+        assert host.created == []
+
+    def test_an_errored_store_refuses_with_no_flag_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        host, filed = self._file()
+        assert filed.withheld
+        assert banned_terms_scanner.STORE_UNREADABLE_MARKER in filed.withheld_reason
+        assert host.created == []

@@ -33,7 +33,7 @@ import ast
 import tomllib
 from pathlib import Path
 
-from tests.quality._deferred_imports import diff_pegs, load_pegs, per_file_counts
+from tests.quality._deferred_imports import diff_pegs, in_package, load_pegs, per_file_counts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORE_ROOT = _REPO_ROOT / "src" / "teatree" / "core"
@@ -70,7 +70,7 @@ def _runtime_models_imports(source: Path) -> list[str]:
         f"{source.name}:{node.lineno}"
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
-        and (node.module or "").startswith("teatree.core.models")
+        and in_package(node.module or "", "teatree.core.models")
         and not under_type_checking(node)
     ]
 

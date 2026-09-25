@@ -16,11 +16,11 @@ next ``post-comment --live`` publishes with no second command.
 
 :func:`resolve_live_authorization` is the consolidated helper the
 ``post_comment(..., live=True)`` path consults to decide whether a live
-post is authorized. It returns ``""`` (proceed) when EITHER:
+post is authorized. Its :class:`LiveAuthorization` proceeds when EITHER:
 
-* the on-behalf mode is :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`
-    (the user has globally opted into autonomous posting — no token at
-    all is required); OR
+* the active posture permits the owner voice
+    (the user has globally opted into autonomous posting — the ONE state
+    in which no token at all is required); OR
 * a recorded, unconsumed
     :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval` for
     ``(<scope>, <action>)`` exists (the durable human authorization).
@@ -35,6 +35,8 @@ Kept in its own module (registered by :mod:`teatree.cli.review` via
 mechanics module stays under the OOP/LOC ceiling.
 """
 
+from dataclasses import dataclass
+
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
@@ -45,22 +47,52 @@ from teatree.utils.django_bootstrap import ensure_django
 _POST_ACTION = "post_comment"
 
 
-def resolve_live_authorization(*, scope: str, action: str = _POST_ACTION) -> str:
-    """Return ``""`` when a live post on ``scope`` is authorized, else an actionable refusal.
+@dataclass(frozen=True, slots=True)
+class LiveAuthorization:
+    """Whether a live post may proceed, and whether it must still burn a live-post token.
+
+    ONE resolution answers both, because they are the same verdict read twice: the
+    #1207 token asserted independently of it refused posts this helper had just
+    declared authorized. ``refusal`` is ``""`` to proceed,
+    else the actionable message.
+
+    ``token_required`` is ``False`` for exactly ONE state — a PROCEED verdict reached
+    under a permitting posture, the owner's global opt-in to autonomous posting, which
+    is the state this module's docstring calls "no token at all is required". A PROCEED
+    reached any OTHER way still burns the token: the
+    ``on_behalf_auto_actions`` allowlist is documented for the owner's routine
+    self-documentation on their own ticket, so naming ``post_comment`` in it would
+    otherwise waive a colleague-visible publish seal through a setting that never
+    mentions one — a widening no governing document states, and the direction a safety
+    gate must never drift on its own.
+    """
+
+    refusal: str
+    token_required: bool
+
+
+def resolve_live_authorization(*, scope: str, action: str = _POST_ACTION) -> LiveAuthorization:
+    """Whether a live post on ``scope`` is authorized, and whether it still needs the token.
 
     Consults, in order:
 
-    * the tri-state on-behalf mode — under
-        :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` no token is
-        needed (the user opted into autonomous posting globally);
+    * the active posture — under a permitting one no token is needed (the
+        user opted into autonomous posting globally), and
+        :attr:`LiveAuthorization.token_required` carries that to the
+        publish chokepoint so the two gates cannot disagree. The waiver is
+        the POSTURE's, not the verdict's: a PROCEED the
+        ``on_behalf_auto_actions`` allowlist produced authorizes the post
+        and still burns the token;
     * a recorded, unconsumed
         :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`
         for ``(<scope>, <action>)`` — the durable human authorization a
-        single ``t3 review authorize`` records.
+        single ``t3 review authorize`` records. This one authorizes the post
+        but does NOT waive the token: the posture is still forbidding.
 
-    The mode is read for the overlay that OWNS the scope's repo
+    The posture is box-global; the carve-out allowlist is read for the overlay that
+    OWNS the scope's repo
     (:func:`~teatree.cli.review.on_behalf.target_overlay`), so a multi-overlay
-    install judges a live post by the target's setting rather than the invoking
+    install judges a live post by the target's own data rather than the invoking
     cwd's. Only an MR scope carries a repo — a ticket compound or a Slack ref
     names none, and resolves ambiently exactly as before.
 
@@ -74,25 +106,28 @@ def resolve_live_authorization(*, scope: str, action: str = _POST_ACTION) -> str
         OnBehalfApproval,
         canonical_on_behalf_target,
     )
-    from teatree.on_behalf_gate import (  # noqa: PLC0415 — lazy CLI import
-        OnBehalfContext,
-        OnBehalfVerdict,
-        resolve_on_behalf_verdict,
+    from teatree.core.on_behalf_gate_recorded import (  # noqa: PLC0415 — lazy CLI import
+        owner_voice_permitted,
+        resolve_posture_verdict,
     )
+    from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict  # noqa: PLC0415 — lazy CLI import
 
     clean_scope = canonical_on_behalf_target(scope)
     repo = clean_scope.split("!", 1)[0] if "!" in clean_scope else ""
     context = OnBehalfContext(overlay=target_overlay(repo) if repo else None, target=repo)
-    if resolve_on_behalf_verdict(action, context) is OnBehalfVerdict.PROCEED:
-        return ""
+    if resolve_posture_verdict(action, context) is OnBehalfVerdict.PROCEED:
+        return LiveAuthorization(refusal="", token_required=not owner_voice_permitted())
 
     if OnBehalfApproval.objects.filter(target=clean_scope, action=action, consumed_at__isnull=True).exists():
-        return ""
-    return (
-        f"live post on {clean_scope!r} is not authorized. Record one durable "
-        f"authorization (no terminal required) with:\n"
-        f"    t3 review authorize {clean_scope} --approver <user-id>\n"
-        f"then re-run the live post. Never publish unattended."
+        return LiveAuthorization(refusal="", token_required=True)
+    return LiveAuthorization(
+        refusal=(
+            f"live post on {clean_scope!r} is not authorized. Record one durable "
+            f"authorization (no terminal required) with:\n"
+            f"    t3 review authorize {clean_scope} --approver <user-id>\n"
+            f"then re-run the live post. Never publish unattended."
+        ),
+        token_required=True,
     )
 
 

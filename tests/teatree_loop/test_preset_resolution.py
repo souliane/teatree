@@ -16,15 +16,16 @@ from django.utils import timezone
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import (
     ACTIVE_SCHEDULE_SETTING,
-    active_overlay_scope,
     next_boundary,
     resolve_active_preset,
+    resolve_preset_resolution,
     resolve_preset_state,
 )
+from teatree.request_cache import invalidate, request_scope
 
 
 def _preset(name: str, entries: dict[str, bool], **kwargs: object) -> Mode:
-    return Mode.objects.create(name=name, entries=entries, **kwargs)
+    return Mode.objects.update_or_create(name=name, defaults={"entries": entries, **kwargs})[0]
 
 
 def _activate_schedule(name: str) -> None:
@@ -47,9 +48,6 @@ class TestEmptyTableNoOp(django.test.TestCase):
         assert resolve_active_preset() is None
         assert resolve_preset_state("review") is None
 
-    def test_overlay_scope_empty_when_no_active_preset(self) -> None:
-        assert active_overlay_scope() == []
-
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestManualOverride(django.test.TestCase):
@@ -57,26 +55,27 @@ class TestManualOverride(django.test.TestCase):
 
     def test_override_selects_the_preset(self) -> None:
         _preset("away", {"review": False, "dispatch": True})
-        ModeOverride.objects.set_override("away")
+        ModeOverride.objects.set_override("away", reason="test override")
         active = resolve_active_preset()
         assert active is not None
         assert active.layer == "override"
         assert resolve_preset_state("review") is False
         assert resolve_preset_state("dispatch") is True
 
-    def test_absent_entry_is_inherit_not_off(self) -> None:
-        _preset("away", {"review": False})
-        ModeOverride.objects.set_override("away")
-        assert resolve_preset_state("issue_implementer") is None
+    def test_a_loop_the_preset_never_named_reads_off(self) -> None:
+        _preset("afk", {"review": False})
+        ModeOverride.objects.set_override("afk", reason="test override")
+        assert resolve_preset_state("issue_implementer") is False
 
-    def test_expired_override_is_inert(self) -> None:
+    def test_an_override_past_its_expected_lift_still_governs(self) -> None:
+        """A5/A7: an override nobody lifted is worse than one that vanished on a timer."""
         _preset("off", {"review": False})
         past = timezone.now() - dt.timedelta(hours=1)
-        ModeOverride.objects.create(preset_name="off", until=past)
-        assert resolve_active_preset() is None
+        ModeOverride.objects.set_override("off", reason="holiday hold", expected_lift_at=past)
+        assert resolve_active_preset().preset.name == "off"
 
     def test_override_naming_deleted_preset_fails_open(self) -> None:
-        ModeOverride.objects.set_override("ghost")
+        ModeOverride.objects.set_override("ghost", reason="test override")
         assert resolve_active_preset() is None
         assert resolve_preset_state("review") is None
 
@@ -88,7 +87,7 @@ class TestManualOverride(django.test.TestCase):
             schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="present"
         )
         _activate_schedule("standard")
-        ModeOverride.objects.set_override("off")
+        ModeOverride.objects.set_override("off", reason="test override")
         assert resolve_preset_state("review") is False
 
 
@@ -218,3 +217,26 @@ class TestScheduleTimezone(django.test.TestCase):
         # 09:00 Zurich local Monday = present; the same instant is 07:00 UTC.
         nine_zurich = dt.datetime(2026, 7, 13, 9, 0, tzinfo=zurich)
         assert resolve_preset_state("review", now=nine_zurich) is True
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestTheMemoizedRead(django.test.TestCase):
+    """The branch a bare call never enters — the memo the dashboard's repeated reads ride on."""
+
+    def test_an_override_set_inside_the_scope_is_served_stale_until_the_memo_is_dropped(self) -> None:
+        _preset("present", {})
+        with request_scope():
+            assert resolve_preset_resolution().active is None
+
+            ModeOverride.objects.set_override("present", reason="set mid-scope")
+            assert resolve_preset_resolution().active is None
+
+            invalidate()
+            assert resolve_preset_resolution().active is not None
+
+    def test_a_failed_resolution_is_memoized_as_a_failure_not_as_an_absence(self) -> None:
+        """The carried failure has to survive the memo, or a second reader sees permission."""
+        ModeOverride.objects.set_override("deleted-preset", reason="names a preset nobody kept")
+        with request_scope():
+            assert resolve_preset_resolution().failed is True
+            assert resolve_preset_resolution().failed is True

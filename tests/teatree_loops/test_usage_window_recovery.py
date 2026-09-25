@@ -2,7 +2,7 @@
 
 The crux behavioural contract: a parked usage window is cleared (and its parked tasks
 released, the loop pumped, one Slack line posted) ONLY once the reset instant has passed —
-never before — and the whole path is inert while ``limit_autorecovery_enabled`` is OFF.
+never before.
 """
 
 from datetime import datetime, timedelta
@@ -13,7 +13,6 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models import BotPing, Session, Task, Ticket, UsageWindowState
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.loops.usage_window_recovery import (
@@ -21,10 +20,6 @@ from teatree.loops.usage_window_recovery import (
     recover_windows,
     usage_window_recovery,
 )
-
-
-def _set_autorecovery(*, on: bool) -> None:
-    ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=on)
 
 
 class _DownError(RuntimeError):
@@ -144,7 +139,6 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         # A task parked because every configured account drained must auto-resume at its reset.
         from teatree.agents.usage_window import park_task_on_all_exhausted  # noqa: PLC0415 — test-local
 
-        _set_autorecovery(on=True)
         now = timezone.now()
         reset = now + timedelta(hours=2)
         task = _parked_task(not_before=now)  # placeholder; the park below sets the real gate
@@ -177,24 +171,8 @@ class TestReArmsOnlyAfterReset(django.test.TestCase):
         assert UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED) is not None
 
 
-class TestInertWhenFlagOff(django.test.TestCase):
-    def test_task_body_no_ops_and_does_not_clear(self) -> None:
-        _set_autorecovery(on=False)
-        now = timezone.now()
-        window = UsageWindowState.record_limit(
-            lane=TaskAttempt.Lane.SUBSCRIPTION,
-            cause=LimitCause.SUBSCRIPTION_SESSION.value,
-            resets_at=now - timedelta(minutes=1),  # already due
-            now=now - timedelta(hours=5),
-        )
-        result = usage_window_recovery.func()
-        assert result.get("disabled")
-        window.refresh_from_db()
-        assert window.cleared_at is None  # untouched while the flag is off
-        assert not BotPing.objects.exists()
-
-    def test_task_body_recovers_when_flag_on(self) -> None:
-        _set_autorecovery(on=True)
+class TestTaskBody(django.test.TestCase):
+    def test_task_body_recovers_a_due_window(self) -> None:
         now = timezone.now()
         window = UsageWindowState.record_limit(
             lane=TaskAttempt.Lane.SUBSCRIPTION,
@@ -210,7 +188,7 @@ class TestInertWhenFlagOff(django.test.TestCase):
 
 # The suite's default TASKS backend does not persist enqueues; the real DatabaseBackend
 # (mirroring test_timer_reconciler's `_DB_TASKS`) is required to assert a queued successor.
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
@@ -234,12 +212,10 @@ class TestChainScheduling(django.test.TestCase):
         assert pending.count() == 1
 
     def test_self_dedups_when_a_recovery_is_already_pending(self) -> None:
-        _set_autorecovery(on=True)
         ensure_usage_window_recovery_chain()  # one pending recovery already carries the chain
         assert usage_window_recovery.func() == {"deduped": 1}
 
     def test_reschedules_itself_after_a_pass(self) -> None:
-        _set_autorecovery(on=True)
         usage_window_recovery.func()
         from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
@@ -255,7 +231,6 @@ class TestChainScheduling(django.test.TestCase):
         from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
-        _set_autorecovery(on=True)
         with (
             mock.patch("teatree.loops.usage_window_recovery.recover_windows", side_effect=_DownError),
             pytest.raises(_DownError),
@@ -293,10 +268,3 @@ class TestSideEffectsAreBestEffort(django.test.TestCase):
         with mock.patch("teatree.loops.chain_membership.timer_chain_loop_names", _raise_down):
             outcome = recover_windows(timezone.now())
         assert outcome.cleared == [window.pk]  # cleared despite the loop pump blowing up
-
-    def test_config_read_failure_disables_the_task_body(self) -> None:
-        # ``_autorecovery_enabled`` defers ``from teatree.config import get_effective_settings``,
-        # so the source attribute is the patch target — a read failure fails safe to OFF.
-        _due_window()
-        with mock.patch("teatree.config.get_effective_settings", _raise_down):
-            assert usage_window_recovery.func() == {"disabled": 1}

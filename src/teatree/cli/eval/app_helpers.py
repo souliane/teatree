@@ -161,30 +161,24 @@ def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str 
 
 
 def require_metering_backend_for_cost_bounds(*, backend: str, gate_cost_bounds: bool) -> None:
-    """Refuse ``--gate-cost-bounds`` on a backend whose runner records no cost at all.
+    """Refuse ``--gate-cost-bounds`` on a backend that produces no TRANSPORT-REPORTED bill.
 
     Every backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` drives the
     model through ``PydanticAiRunner``, whose ``total_cost_usd`` is ``None`` for any
-    provider that surfaces no cost key — always the case for Anthropic — so
-    ``extract_cost_usd`` floors to ``$0`` on a run that genuinely executed. Against
-    :func:`~teatree.eval.cost_bounds.check_cost_bounds` that makes the gate
-    unsatisfiable in BOTH directions: an empty ceiling set is VACUOUS red, and every
-    ceiling a populated one pins is ``MISSING`` red — so calibrating a bound makes the
-    lane worse, not better.
-
-    Asking an unmetered backend for a cost verdict is therefore an OPERATOR ERROR, not a
-    cost regression, and it exits 2 here naming the backend: passing it through would
-    either reintroduce skip-as-pass or manufacture per-scenario ``MISSING`` violations
-    indistinguishable from a real cost blow-up.
+    provider that surfaces no cost key — always the case for Anthropic. Its ``cost_usd``
+    is instead derived from the run's token usage at list price, which is a DIFFERENT
+    quantity from the one ``evals/cost_bounds.yaml``'s ceilings were calibrated against.
+    Gating a bill-shaped ceiling on a list-price estimate reports a verdict neither
+    number supports, so the pairing exits 2 here naming the backend.
     """
     if not gate_cost_bounds or backend not in UNMETERED_FRESH_BACKENDS:
         return
     typer.echo(
-        f"--gate-cost-bounds needs a backend that METERS cost, and --backend {backend!r} reports "
-        "none: it drives the model through PydanticAiRunner, which records no cost_usd, so every "
-        "pinned ceiling reads MISSING on a run that executed fine and an unpinned set reads "
-        f"VACUOUS. Run the gate on --backend {API_BACKEND} (the fresh lane that records cost_usd), "
-        "or drop --gate-cost-bounds.",
+        f"--gate-cost-bounds needs a backend that reports its own metered bill, and --backend "
+        f"{backend!r} does not: it drives the model through PydanticAiRunner, whose cost is derived "
+        "from token usage at list price rather than billed by the transport. The committed ceilings "
+        f"are calibrated against a reported bill. Run the gate on --backend {API_BACKEND}, or drop "
+        "--gate-cost-bounds.",
         err=True,
     )
     raise typer.Exit(code=2)

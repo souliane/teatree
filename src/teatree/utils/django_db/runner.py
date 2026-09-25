@@ -5,7 +5,11 @@ pipenv-vs-uv dependency-manager detection lives in one place; a hand-rolled
 second prefix silently diverges (pinned by ``test_runner_prefix_chokepoint``).
 """
 
+import sys
 from pathlib import Path
+
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.venv_artifacts import foreign_venv_interpreter
 
 
 def _is_pipenv_repo(repo: Path) -> bool:
@@ -55,17 +59,39 @@ def project_env_is_drivable(repo: Path) -> bool:
     ``uv run`` would delete the replacement) — a working tree destroyed by a read-only
     status command.
 
-    A repo with no ``.venv`` is drivable: uv creates one, destroying nothing. A repo
-    whose ``.venv`` names an interpreter that exists here is ours. A ``.venv`` whose
-    recorded interpreter home is absent belongs to the other side of the boundary, and
-    the caller must reach the code some other way rather than have uv clear it out.
+    A repo with no ``.venv`` is drivable: uv creates one, destroying nothing.
+
+    ABSENCE of the recorded interpreter is not a sufficient test, and stopped being
+    one the moment the two venues were given ONE interpreter root at ONE address
+    (#4642): under a true identity mount the container's interpreter directory is
+    PRESENT on the host and vice-versa, so an existence check calls every foreign
+    environment drivable and hands it straight to the ``uv run`` that deletes it.
+    :func:`~teatree.utils.venv_artifacts.foreign_venv_interpreter` carries both
+    signals — the absent home, and the uv platform tag naming an OS this is not —
+    and is the single place either is judged.
     """
+    return foreign_venv_interpreter(repo / ".venv", platform=sys.platform) is None
+
+
+_IMPORT_PROBE_TIMEOUT_SECONDS = 15
+
+
+def project_env_import_error(repo: Path, module: str = "django.apps") -> str | None:
+    """Why *repo*'s own ``.venv`` interpreter cannot import *module*, or ``None`` when it can.
+
+    ``None`` too when there is no interpreter to ask (``uv run`` creates the venv) or the
+    probe itself cannot finish — it only explains a failure, so it never invents one.
+    """
+    interpreter = repo / ".venv" / "bin" / "python"
+    if not interpreter.is_file():
+        return None
     try:
-        lines = (repo / ".venv" / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return True
-    for line in lines:
-        key, _, value = line.partition("=")
-        if key.strip() == "home":
-            return Path(value.strip()).is_dir()
-    return True
+        probe = run_allowed_to_fail(
+            [str(interpreter), "-c", f"import {module}"], expected_codes=None, timeout=_IMPORT_PROBE_TIMEOUT_SECONDS
+        )
+    except (OSError, TimeoutExpired):
+        return None
+    if probe.returncode == 0:
+        return None
+    lines = [line.strip() for line in probe.stderr.splitlines() if line.strip()]
+    return lines[-1] if lines else f"exit {probe.returncode}"

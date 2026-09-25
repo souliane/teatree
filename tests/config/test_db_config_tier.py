@@ -296,9 +296,6 @@ class TestTheTierSeamsAreTheOneReader(TestCase):
         _global_rows, overlay_rows = read_setting_layers("").db_rows
         assert "merge_wip" not in overlay_rows
 
-    def test_the_shipped_file_tier_is_carried_beside_the_db_scopes(self) -> None:
-        assert "merge_wip" in read_setting_layers("").toml_rows
-
     def test_the_fold_serves_what_the_layers_say_wins(self) -> None:
         ConfigSetting.objects.set_value("merge_wip", 4)
         global_rows, _overlay_rows = read_setting_layers("").db_rows

@@ -31,8 +31,8 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 
 | Service | Role | Restart | Notes |
 | --- | --- | --- | --- |
-| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup` + DB config; exits 0 |
-| `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
+| `teatree-init` | one-shot prep | `no` | clone + editable install + `t3 setup --strict-agent-skills` + DB config; exits only after declared skills, inventory, and both portable-plugin registrations are ready |
+| `teatree-worker` | `t3 worker` | `unless-stopped` | the loop cadence owner; hard-fails without the strict skill readiness marker; `DEBUG` off; CPU/RAM caps derived from the host at deploy time (see [Worker sizing](#worker-sizing-derived-from-the-host)) |
 | `teatree-admin` | `t3 admin` | `unless-stopped` | Django admin under gunicorn on the box loopback `127.0.0.1:8000` (host networking); `DEBUG` off |
 | `teatree-slack-listener` | `t3 slack listen` | `unless-stopped` | Socket-Mode receiver; harmless no-op-retry on a box with no Slack overlay |
 | `teatree-watchdog` | `watchdog.sh --loop` | `always` | the in-daemon self-heal sidecar (docker socket + read-only checkout; no secrets); see [Self-heal watchdog](#self-heal-watchdog-h24-owner-directive-10) |
@@ -58,8 +58,10 @@ source == target (path identity).
 | pass store | `/home/teatree/.password-store` | `$TEATREE_HOST_HOME/.password-store` | **host bind mount** | the gpg-encrypted secret store (Anthropic OAuth token, …) |
 | GPG home | `/home/teatree/.gnupg` | `$TEATREE_HOST_HOME/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
 | GPG runtime home | `/home/teatree/.gnupg-run` | — | `tmpfs` | the container-local GPG home, when the bind mount above cannot host a socket (see below) |
-| session plane | `/home/teatree/.claude/projects` | `$TEATREE_HOST_HOME/.claude/projects` | **host bind mount** | Claude session transcripts + the per-project memory corpus (the dream pass's input and product) |
-| interpreter plane | `/home/teatree/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** | the uv-managed CPython interpreters every worktree venv is built against <!-- privacy-scan:allow — the box's public, documented deploy home --> |
+| Claude home | `/home/teatree/.claude` | — | named volume `teatree_claude_home` | factory-only settings, plugins, sessions, and memory |
+| Codex home | `/home/teatree/.codex` | — | named volume `teatree_codex_home` | factory-only Codex settings, TeaTree-installed skills/plugins, sessions, and guarded auth cache |
+| universal skills | `/home/teatree/.agents` | — | named volume `teatree_agents_home` | skills.sh front doors installed by `t3 setup` |
+| interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
 | `teatree_uv` | `/opt/teatree/uv` | — | named volume | the TOOL plane: the runtime teatree venv, the `t3`/`prek` tool shims, and the interpreter those tool venvs record |
 
 `deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
@@ -77,6 +79,31 @@ pointed inside it). Secrets stay gpg-encrypted on the host disk, outside the
 backed-up data dir. A box using the `CLAUDE_CODE_OAUTH_TOKEN` env path instead just
 leaves these dirs empty (`deploy.sh` pre-creates them owned by the deploy user).
 
+The three agent-home volumes are the factory boundary: no host `~/.claude`,
+`~/.codex`, or `~/.agents` directory is mounted. The image supplies the Claude,
+Codex, and skills.sh executables; `init` runs `t3 setup` once and runtime roles
+consume exactly that reconciled state. Their sessions and memories persist across
+container recreation without importing an operator's personal instructions or
+skills. The headless Codex App Server's `$T3_CODEX_HOME` is the same
+factory-owned `/home/teatree/.codex` volume, so the
+App Server sees exactly the Codex skills and plugin state reconciled by `t3 setup`.
+It also uses that private home for its guarded auth-cache
+hydrate/run/persist lifecycle.
+
+`t3 setup --strict-agent-skills` removes any stale readiness marker before it
+starts and writes `~/.local/share/teatree/skills/ready` with mode `0600` only
+after the declared skills, inventory, Claude plugin, and Codex plugin all
+converge. The worker verifies that marker and the enabled Claude plugin before
+admitting work. This keeps an incomplete network-dependent setup observable and
+prevents a factory task from silently inheriting a partial agent environment.
+
+The Codex plugin is registered from a slim copy of what its manifest declares
+(`~/.local/share/teatree/codex-plugin`, capped at 50 MiB), never from the
+checkout: `codex plugin add` copies its source, and a checkout carries `.git`,
+every virtualenv and the `plugins/t3 -> ..` loop. A failed or timed-out add has
+its `plugins/cache/*/plugin-install-*` staging removed, and setup prints the Codex
+CLI's exit code and stderr.
+
 ### The GPG home off-box: a container-local copy
 
 `gpg-agent` and `keyboxd` bind their `S.*` sockets **inside** `GNUPGHOME`. On the
@@ -88,15 +115,26 @@ Off-box the same mount is served by a file-sharing transport that cannot host a
 unix socket at all (Docker Desktop for Mac reports the filesystem as `fakeowner`).
 A host whose `common.conf` carries `use-keyboxd` — the GnuPG 2.4 default on
 Homebrew — routes the **public** keyring through `keyboxd`, which then dies with
-`exit status 2` trying to bind `S.keyboxd`. gpg reports `No Keybox daemon running`,
-finds zero keys, and every `pass show` fails even though `private-keys-v1.d` is
-mounted and intact — surfacing at boot as *"the pass store lists anthropic/ entries
-but gpg cannot DECRYPT them"*.
+`exit status 2` trying to bind `S.keyboxd`. Were a container to open that home, gpg
+would report `No Keybox daemon running`, find zero keys, and fail every `pass show`
+even though `private-keys-v1.d` is mounted and intact — surfacing at boot as *"the
+pass store lists anthropic/ entries but gpg cannot DECRYPT them"*. The pin below is
+what keeps a container off that path; `deploy/secret-decryption-probe.sh` is how you
+check, in about two seconds, that it is still working right now.
 
-So `deploy/entrypoint.sh`'s `resolve_gnupg_home` reads the mount table, and when
-`GNUPGHOME` sits on anything that cannot host a socket it copies the key material
-into a container-local home on the `.gnupg-run` **tmpfs** and points `GNUPGHOME`
-there. Boot logs the switch. Notes:
+So the container has exactly ONE GPG home, at a FIXED path — no venue resolves its
+own. It is pinned twice, and the redundancy is the point: `deploy/Dockerfile` bakes
+`GNUPGHOME` for a bare `docker run`, and `docker-compose.yml` pins the same value on
+every service so a container running an image that predates the fix still resolves it
+— `up -d` applies create-time environment with no rebuild, which matters wherever
+`deploy.sh` cannot converge (it needs `flock`, which macOS does not ship) and the
+running image can therefore lag the merged fix.
+`t3 doctor check` reads the running container's own environment and reports any that
+still opens the host keybox. `deploy/entrypoint.sh`'s
+`seed_container_gnupg_home` only ever SEEDS that path: it reads the mount table and,
+when the host home is socket-capable, symlinks it in place so the box keeps one shared
+`gpg-agent`; otherwise it copies the key material onto the `.gnupg-run` **tmpfs**. Boot
+logs which branch it took. Notes:
 
 - The **host GPG home is strictly read-only**. The switch is decided from
   `/proc/mounts`, so not even the detection touches it; the stale `S.*` sockets in
@@ -110,14 +148,12 @@ there. Boot logs the switch. Notes:
   It is re-derived at every boot, so a rotated host key is picked up on restart.
 - Absence stays a no-op: a host with no key material yields an empty derived home
   and the same "no credential" diagnostics as before.
-- This covers the entrypoint's own process tree — the role process and everything
-  it spawns. A `docker exec` bypasses the entrypoint and starts from the container
-  environment fixed at create time, so the home is re-established per invocation
-  from the evidence on disk: `deploy/t3` carries the predicate inline, and the image
-  ships it as `/etc/profile.d/10-teatree-gnupg-home.sh`, which a **login** shell
-  sources — so `docker exec <service> sh -lc 'pass show <path>'` decrypts with no
-  `-e` flag. A non-login `docker exec <service> pass show <path>` reads no profile
-  and still needs `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`.
+- A `docker exec` bypasses the entrypoint and starts from the container environment
+  fixed at create time — which is the BAKED value, so it needs no login shell, no `-e`
+  flag and no wrapper prologue. `docker exec <service> pass show <path>` decrypts as it
+  stands. Re-deriving the home per venue is the defect class this replaced: each entry
+  point patched separately left every unpatched one reaching for the host home, where
+  gpg's dotlock records a hostname no container can match and the wait never ends.
 
 ### Staged convergence: the control plane never goes fully down (#4214)
 
@@ -245,16 +281,43 @@ silently. 37 such environments took the box to 100% full.
 
 There are therefore **two** interpreter roots, and keeping them apart is the point:
 
-- the **project** root — uv's own default under the container HOME, bound from the
-  host at path identity, and the one every *worktree* venv is built against. It is
-  set at runtime by `docker-compose.yml` (the `x-uv-project-python-root` anchor) on
-  each app service. Read-write, because `uv python install` provisions it at runtime
+- the **project** root — uv's own default under the **host** home, bound at path
+  identity, and the one every *worktree* venv is built against. It is set at runtime
+  by `docker-compose.yml` (the `x-uv-project-python-root` anchor) on each app service.
+  Read-write, because `uv python install` provisions it at runtime
   (`deploy/entrypoint.sh`'s init role, which also refuses to boot naming the remedy
   when the shared root holds no interpreter at all).
 - the **tool** plane — `/opt/teatree/uv/python` on the `teatree_uv` volume, which the
   image ENV owns and where the baked `teatree` and `prek` tool venvs record their
   `home`. The entrypoint's runtime `uv tool install` calls pin it explicitly, so a
   tool venv is only ever rebuilt where it was baked.
+
+#### Why the project root is the HOST's address on both sides
+
+Every other state bind rebases a **fixed container path** onto the host home: the
+target stays `/home/teatree/...` and only the source moves. The interpreter plane is
+the exception, and must be — it is an **identity** mount, like the deploy checkout,
+with the same string on both sides.
+
+The reason is that this root is not merely *read* across the boundary; it is
+**written**. `uv python install` maintains a `cpython-<minor>-<os>-<arch>` alias for
+each interpreter, and writes it as an **absolute** symlink — uv has no relative-link
+mode. So whatever the *container* calls this directory is literally the text the
+*host* reads back out of it.
+
+While the target was pinned to the container coordinate, the mount was an identity
+only on a box whose deploy home happens to be `/home/teatree`. Anywhere else, every
+online boot ran `uv python install` (the init role) against a directory the container
+called `/home/teatree/.local/share/uv/python` and the host called something else — and
+uv rewrote the alias set in the **host's** root to point inside the container. On the
+host every one of those aliases then dangles, and each venv or hook env that resolves
+through one breaks. On a Linux host with a different home it is worse, not better: the
+platform tag matches, so the container overwrites the host's own real interpreter
+rather than merely adding a broken alias beside it.
+
+Because the box's `TEATREE_HOST_HOME` defaults to `/home/teatree`, both spellings
+render byte-identically there — the fix is a no-op on the deployed box and only ever
+changes what an off-box host gets.
 
 Setting the project root in the image instead would collapse the two: the image's own
 `uv python install` runs after that ENV, so the baked tool venvs would record a
@@ -585,68 +648,6 @@ only once the stack is verified. A fresh box does not need this step.
 
 Re-running the deploy workflow is **idempotent** — it converges the same stack.
 
-## Fleet role split — which loops run where
-
-teatree runs as a small fleet: the operator's laptop plus this headless box.
-Some autonomous loops are **fleet-scoped** — they must run on exactly **one**
-instance or they double-act. The box now **hosts the DM-only Slack conversational
-loop** for the owner overlay, so `inbox` (the inbound-messaging scanners: Slack DM
-→ `PendingChatInjection`, review-intent, red-card, mentions) runs here and drives
-the headless drain → 👀-ack → answer cycle. Only the **colleague-facing** Slack
-loops stay on the laptop, since running them here would both misfire and duplicate
-the laptop's. The split:
-
-| Instance | Runs | Does not run |
-| --- | --- | --- |
-| **Laptop** | `review` (colleague PR review → Slack), `directive_loop` (asks the human via Slack) | `tickets` — the operator disables it by hand |
-| **Box** (this deploy) | `inbox` (DM-only owner Slack loop), `tickets` (issue scanning/dispatch) + all machine-local loops | `review`, `directive_loop` |
-
-The box enforces its side in `deploy/entrypoint.sh` (init role) via
-`apply_fleet_loop_policy`, after seeding config. Per-loop enable/disable is now
-EMERGENCY-only (#3248) and, more importantly, admission resolves
-`hold > forced > preset > base` — so no preset, schedule, or `t3 loop override`
-can revive a loop a prior deploy left in a durable `LoopState` **hold** (older
-images ran `t3 loop disable inbox`). The step therefore drives the two
-authoritative planes:
-
-- **ENABLED set** (default `inbox`) → `t3 loop enable <name> --emergency`, the one
-  handle that clears a stale hold and sets `Loop.enabled=True`, so a box whose
-  `inbox` an older image disabled recovers. Idempotent.
-- **DISABLED set** (default `review`) → `t3 loop override <name> off`, the
-  sanctioned NON-emergency forced-off that replaces the deprecated
-  `t3 loop disable`. Forced-off beats the preset mask and the base config, so the
-  colleague-facing `review` loop stays off here under any mode. Idempotent.
-- **OWNER-INTAKE loops are never forced off** (`t3 loop intake-loops` —
-  `directive_loop` / `dispatch` / `inbox`). They interpret the owner's captured
-  directives and deliver deferred owner questions; an away mode means the
-  human is unreachable *now*, so that intent must QUEUE for later, not be dropped
-  unread. Any intake loop listed in `TEATREE_DISABLED_LOOPS` is pruned (with a
-  warning) before the DISABLED set is applied, so a redeploy can never re-mask it.
-
-`TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` (comma-separated) override the
-defaults; an **empty** value acts on nothing. Every name in both lists is
-validated against the registered mini-loops first, so a typo fails the deploy
-loudly. **The repository variables are the authority** — the deploy workflow
-rewrites `teatree.env` from them on every run, so a hand-edit on the box is
-reverted by the next deploy:
-
-```bash
-gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review
-gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>   # restore the default
-```
-
-**Setting the variable REPLACES the default — it does not extend it.** Declaring
-`TEATREE_DISABLED_LOOPS=inbox,directive_loop` masks neither name (both are
-owner-intake, and `inbox` also sits in the ENABLED set) *and* drops the `review`
-default, so the colleague-facing loop is no longer forced off either. When every
-declared name is pruned that way the entrypoint prints one consolidated net-effect
-line naming the displaced default, and
-`teatree.config.fleet_policy.fleet_policy_contradiction` raises a
-`fleet-loop-policy-contradiction` health WARNING that keeps the chip yellow until
-the variable is fixed — deploy stderr scrolls away, a `KnownIssue` row does not.
-Init still warns rather than exiting: crash-looping on the config the box already
-shipped would turn a mis-mask into an outage.
-
 ## One-time bootstrap (on the box)
 
 Do this once as an admin on the box.
@@ -715,16 +716,17 @@ verify the fingerprint out of band).
 No plaintext GitHub token or admin password ever lands on the box disk. Both live
 in the box's gpg-encrypted [`pass`](https://www.passwordstore.org/) store — the same
 credential plane (`~/.password-store` + `~/.gnupg`, bind-mounted into every app
-service) that holds the Anthropic OAuth tokens — and `deploy/entrypoint.sh` sources
-them into the environment at boot (`source_secret_from_pass`), before the token
-preflight and `t3 setup`.
+service) that holds the Anthropic OAuth tokens. `deploy/entrypoint.sh` sources the
+GitHub token only when `TEATREE_GH_TOKEN_PASS_PATH` explicitly names its bootstrap
+entry; the admin password keeps its deployment-level default. Both reads happen
+before the token preflight and `t3 setup`.
 
 | Boot env var | Default `pass` path | Override |
 | --- | --- | --- |
-| `TEATREE_GH_TOKEN` | `github/souliane/pat` | `TEATREE_GH_TOKEN_PASS_PATH` |
+| `TEATREE_GH_TOKEN` | none — read only when named | `TEATREE_GH_TOKEN_PASS_PATH` |
 | `T3_ADMIN_PASSWORD` | `teatree/admin-password` | `T3_ADMIN_PASSWORD_PASS_PATH` |
-| `GITLAB_TOKEN` | `gitlab/pat` | `TEATREE_GITLAB_TOKEN_PASS_PATH` |
-| `NOTION_TOKEN` | `notion/integration-token` | `NOTION_TOKEN_PASS_PATH` |
+| `GITLAB_TOKEN` | none — read only when named | `TEATREE_GITLAB_TOKEN_PASS_PATH` |
+| `NOTION_TOKEN` | none — exported only when named | `NOTION_TOKEN_PASS_PATH` |
 
 `GITLAB_TOKEN` is read on the HOST as well, by `deploy/deploy.sh` and `deploy/t3`,
 and interpolated into every service's `environment:` (`NOTION_TOKEN` rides the same
@@ -734,15 +736,28 @@ starts from the container's create-time environment, so a process launched that 
 saw an unset token while the role process had it. The baked GitLab credential helper
 then interpolated the empty value and authenticated with an EMPTY password, which
 GitLab reports as `HTTP Basic: Access denied` — a message easily read as a missing
-branch rather than a missing credential. The entrypoint's own read stays as the
-fallback for a container created with no host value (the watchdog cannot reach the
-host's pass store).
+branch rather than a missing credential. An explicitly configured
+`TEATREE_GITLAB_TOKEN_PASS_PATH` remains the bootstrap fallback for a container
+created with no host value (the watchdog cannot reach the host's pass store).
 
 An existing env value always wins; the store is the fallback. So a box that still
 carries a literal in `teatree.env` keeps working, and a missing `pass` entry is a
 no-op (the `TEATREE_GH_TOKEN` preflight then fails loud; a missing admin password
 just yields a generated one, since loopback auto-login — not the password — is the
 admin boundary).
+
+The optional headless Codex harness uses this same credential plane, but its
+entry contains the complete base64-encoded `auth.json`, not a bare OAuth token.
+The factory does not mount the host Codex home; forward the cache over bounded
+stdin to the running worker:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec -T teatree-worker \
+  t3 codex auth import --from - < ~/.codex/auth.json
+```
+
+See the [Codex App Server runbook](../docs/codex-app-server.md) for bootstrap,
+locking, rotation, recovery, and revocation.
 
 **One-time provisioning on the box** (as the deploy user, needs host access once):
 
@@ -766,6 +781,8 @@ EOF
 pass init teatree@localhost
 printf '%s' "<github-pat>"      | pass insert -m -f github/souliane/pat
 printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
+# Explicitly name the chosen GitHub bootstrap entry in teatree.env:
+printf '%s\n' 'TEATREE_GH_TOKEN_PASS_PATH=github/souliane/pat' >> deploy/teatree.env
 # Anthropic tokens follow the same store, one per account:
 printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
 ```
@@ -816,7 +833,7 @@ is checked deterministically instead.
 **Secrets-only rotation** — no SSH edit of `teatree.env`, no host file surgery:
 
 ```bash
-# Update the entry in the pass store (host access to run `pass`, one command):
+# Update the explicitly configured entry (host access to run `pass`, one command):
 printf '%s' "<new-github-pat>" | pass insert -m -f github/souliane/pat
 ```
 
@@ -824,6 +841,35 @@ Then re-run **Actions → Deploy teatree** (or restart the stack): the
 entrypoint re-sources the rotated value from `pass` at boot. Because the token is no
 longer written into `teatree.env`, rotation is a `pass` update plus a redeploy —
 the deploy workflow never rewrites the on-disk secret file for it.
+
+### Is decryption working right now? — `deploy/secret-decryption-probe.sh`
+
+```bash
+deploy/secret-decryption-probe.sh                 # every container in the project
+deploy/secret-decryption-probe.sh <name> [<name>] # only these
+```
+
+Answers one question — do the containers decrypt secrets **at this moment** — in about
+two seconds, on the host, with no `t3` and no Django boot. Exit 0 is green, 1 is red.
+
+Run it instead of quoting anyone, including yourself. It exists because a GPG failure
+that was fixed within hours went on being reported as current for the rest of the day:
+each session relayed the previous one's finding without re-measuring, and nothing in
+the finding said when it was taken or which container it came from. So every line
+carries the measurement time AND that container's creation time — **if a container is
+newer than a result you were given, that result is void** — and every service is probed
+and reported separately, because they are recreated independently and a healthy worker
+is not evidence about the admin.
+
+It probes each container in all three invocation shapes an agent actually uses (login
+shell, non-login shell, bare exec), since the failure it guards against distinguished
+them. It proves decryption by byte length or exit status and never prints a secret. An
+unreachable daemon, a missing container, or a check that does not answer is RED, never
+a silent pass; a service with no credential plane at all (the watchdog) is excluded by
+a create-time fact rather than by name, and says so on its own line.
+
+For the related host-side wedge — a keybox lock held across a pid namespace, which
+looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh`.
 
 ## Access & networking
 
@@ -870,6 +916,18 @@ the deploy workflow never rewrites the on-disk secret file for it.
   auto-login above applies unchanged — a published port straight onto the admin would
   NAT the source to the docker gateway and silently lose it. An url that does not
   answer is refused with the cause instead of opening a browser at a dead page.
+
+- **`t3 <overlay> tool <leaf>` — the generic host hop:** the same shape as the two
+  above, keyed on the command's SHAPE rather than a core verb, so an overlay owns a
+  host half without core knowing the tool exists. An overlay tool leaf is
+  `t3 <overlay> tool <leaf>` — `tool` is the SECOND word, which is what keeps core's
+  own top-level `t3 tool` out of it. The wrapper truncates
+  `$TEATREE_HOST_HOME/.local/share/teatree/host-run/plan`, dispatches into the
+  container, and then: a non-zero container exit is the command's result; an EMPTY
+  plan means the tool finished by itself (the common case) and exits 0; otherwise
+  `runner.sh` staged beside the plan runs on the host and ITS exit code is the
+  command's. `teatree.core.host_hop.host_run` writes what the wrapper reads and pins the three
+  spellings.
 
 - **No Tailscale.** SSH is the only inbound port. This works with a corporate VPN
   up — the tunnel rides your normal SSH access.
@@ -976,9 +1034,9 @@ role** from the image-baked, committed template `deploy/claude-settings.template
 (plus env overrides) *before* `t3 setup` runs — so the loop's agent has a
 deliberate model, permission mode, `autoMode` grants, `autoCompactEnabled`, and a
 box-sized `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` instead of stock CLI defaults.
-Only `~/.claude/projects` is bind-mounted from the host; the reason that mount is
-scoped is **credentials** (`~/.claude/.credentials.json`), which stay host-only —
-settings are non-secret and get their own provisioning path here.
+The complete `~/.claude` tree is a factory-owned named volume. Host settings,
+credentials, plugins, skills, sessions, and memories are never mounted into the
+factory; only the generated settings and state created by factory runs live there.
 
 Configure the loop agent by editing the committed, reviewable
 `deploy/claude-settings.template.json` and re-deploying, or override the box-specific knobs
@@ -1022,7 +1080,12 @@ service is down — exactly the outage it exists to repair.
    from the `up -d`, because `up -d --no-recreate` re-runs a completed one-shot
    init on every pass (verified empirically) and that would replay the heavy
    ~minute init every 5 minutes; a *missing or failed* init is included, so the
-   init-failure outage still recovers. Skipped entirely while a convergence is in
+   init-failure outage still recovers. A failing init is replayed at most twice
+   per init container: from its third consecutive failure (same container id,
+   ledger `TEATREE_WATCHDOG_INIT_FAILURE_STATE`, default
+   `/var/tmp/teatree-watchdog-init-failures.state`) the pass skips every `up` and
+   DMs the owner once. A redeploy creates a new init container and restarts the
+   count; a successful init clears the ledger. Skipped entirely while a convergence is in
    flight: `deploy.sh` stages its swap service by service, so a restart pass
    landing between two stages would re-create the container the deploy is mid-swap
    on. One pass is given up; the next heals whatever the deploy left down.
@@ -1172,6 +1235,7 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
 | the alerting channel is down when a page is raised | ✅ | the page is parked in the undelivered ledger and re-sent every pass until it lands; the depth is logged meanwhile |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
+| a service that exits cleanly and Docker's `unless-stopped` restarts it, over and over | ❌ | Docker's own restart keeps it Up, so a revive-only pass sees nothing wrong; `t3 doctor check` FAILs it instead (≥ 20 restarts, last start within 10 minutes, last exit 0 — or running again, which is when Docker zeroes the exit code) |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
 | the **host** is dead / unreachable | ❌ | out of scope for any in-host mechanism; use an external ping |
@@ -1183,6 +1247,10 @@ The watchdog is a normal compose service, so its passes are in its container log
 ```bash
 docker compose -p teatree logs -f teatree-watchdog
 ```
+
+Every service's json-file log rotates at 5 × 50 MB (`x-teatree-logging` in
+`docker-compose.yml`), so no service's log grows past about 250 MB. A `logging:` change
+applies when a container is next recreated; a log that grew before then stays until it is.
 
 ### Knobs (compose `environment:` on the `teatree-watchdog` service)
 

@@ -20,6 +20,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config import value_coercion
+from teatree.config.extra_headers import listed_headers
+from teatree.harness_skills import parse_harness_skill_exclusions
 
 
 def _parse_str_list(raw: object) -> list[str]:
@@ -32,12 +34,24 @@ def _parse_str_list(raw: object) -> list[str]:
     return value_coercion.strict_str_list(raw)
 
 
+def _parse_harness_skill_exclusions(raw: object) -> list[str]:
+    return parse_harness_skill_exclusions(raw)
+
+
 _DEFAULT_DISK_CACHE_ALLOWLIST = (
     "~/.cache/pre-commit",
     "~/.cache/puppeteer",
     "~/.cache/codex-runtimes",
     "~/.cache/go-build",
 )
+
+
+def _parse_header_map(raw: object) -> dict[str, str]:
+    """A strict ``dict[str, str]`` header map narrowed to the extra-headers allowlist."""
+    if not isinstance(raw, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in raw.items()):
+        msg = "Invalid header map; expected a JSON/TOML table of header names to string values"
+        raise TypeError(msg)
+    return listed_headers(raw)
 
 
 def _parse_disk_cache_allowlist(raw: object) -> list[str]:
@@ -59,33 +73,34 @@ _DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
 
 
 _ENV_BOOL_TRUE = frozenset({"1", "true", "yes", "on"})
-_ENV_BOOL_FALSE = frozenset({"", "0", "false", "no", "off"})
+_ENV_BOOL_FALSE = frozenset({"0", "false", "no", "off"})
 
 
 def _parse_env_bool(raw: str) -> bool:
     """Coerce a ``T3_*`` env string to a bool for ``ENV_SETTING_OVERRIDES``.
 
-    Truthy ``1``/``true``/``yes``/``on``, falsy ``0``/``false``/``no``/``off`` (and the
-    empty string, which is how a shell clears the flag) — case-insensitive. Anything else
-    RAISES, like the ``Mode.parse`` / ``Wip.parse`` enum entries beside it: coercing an
-    unrecognised token to ``False`` let a typo (``T3_ENFORCE_REGULATED_PATH=treu``) silently
-    disable the very control the operator was reaching for.
+    Truthy ``1``/``true``/``yes``/``on``, falsy ``0``/``false``/``no``/``off`` —
+    case-insensitive. Anything else RAISES, like the ``Mode.parse`` / ``Wip.parse`` enum
+    entries beside it: coercing an unrecognised token to ``False`` let a typo
+    (``T3_ENFORCE_REGULATED_PATH=treu``) silently disable the very control the operator was
+    reaching for. An EMPTY var raises here too, and :func:`env_pinned_value` reads that
+    refusal as no opinion, so clearing an inherited pin falls through to the next tier.
     """
     token = raw.strip().lower()
     if token in _ENV_BOOL_TRUE:
         return True
     if token in _ENV_BOOL_FALSE:
         return False
-    accepted = sorted(_ENV_BOOL_TRUE | (_ENV_BOOL_FALSE - {""}))
-    msg = f"Invalid boolean env value {raw!r}; expected one of {accepted} (or empty to clear)"
+    accepted = sorted(_ENV_BOOL_TRUE | _ENV_BOOL_FALSE)
+    msg = f"Invalid boolean env value {raw!r}; expected one of {accepted} (or clear it to fall through)"
     raise ValueError(msg)
 
 
 # A default-ON ``T3_*`` env flag: present-and-off-value disables, anything else
 # enables. Mirrors the legacy ``T3_HOOK_FETCH_TITLES`` semantics so a typo never
-# silently disables the feature (the resolver only invokes this when the var is set).
+# silently disables the feature (the resolver only invokes this when the var carries one).
 def _parse_env_bool_default_on(raw: str) -> bool:
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
+    return raw.strip().lower() not in _ENV_BOOL_FALSE
 
 
 def _parse_env_str_list(raw: str) -> list[str]:

@@ -5,9 +5,22 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 """
 
 import contextlib
+import datetime as dt
+from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 
 import typer
+
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+
+RESTART_LOOP_MIN_RESTARTS: Final = 20
+RESTART_LOOP_WINDOW_SECONDS: Final = 600
+_DOCKER_TIMEOUT_SECONDS: Final = 15
+_CONTAINER_ROW_FORMAT: Final = (
+    '{{index .Config.Labels "com.docker.compose.service"}}\t{{.RestartCount}}\t{{.State.ExitCode}}'
+    "\t{{.State.StartedAt}}\t{{.State.Status}}"
+)
 
 
 def _check_singletons() -> bool:
@@ -33,21 +46,80 @@ def _check_singletons() -> bool:
 
 
 def _check_worker_running() -> bool:
-    """WARN when the loop worker is enabled but not running (PR-28).
+    """WARN when the active preset admits work but no worker is running.
 
-    Default-ON ``loop_runner_enabled`` with a FREE ``worker`` flock means no worker is
-    draining the loop-timer chains — the loops are silently dead. Actionable: run
-    ``t3 worker ensure``. Read-only; always returns ``True`` (a WARN, not a hard FAIL),
-    and any read error is swallowed so the doctor run never crashes on it.
+    A FREE ``worker`` flock means no worker is draining the loop-timer chains — the loops
+    are silently dead. Actionable: run ``t3 worker ensure``. Read-only; always returns
+    ``True`` (a WARN, not a hard FAIL), and any read error is swallowed so the doctor run
+    never crashes on it.
     """
     # A doctor check must never crash the doctor run — any read error is swallowed.
     with contextlib.suppress(Exception):
-        from teatree.config import get_effective_settings  # noqa: PLC0415 (deferred: light doctor-check import)
+        from teatree.loops.enable_verdict import fleet_admits_work  # noqa: PLC0415 (deferred: pulls the ORM)
         from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held  # noqa: PLC0415 (deferred: light import)
 
-        if get_effective_settings().loop_runner_enabled and not flock_is_held(WORKER_SINGLETON):
-            typer.echo("WARN  loop_runner_enabled is ON but no worker holds the flock — run `t3 worker ensure`")
+        if fleet_admits_work() and not flock_is_held(WORKER_SINGLETON):
+            typer.echo("WARN  the active preset admits work but no worker holds the flock — run `t3 worker ensure`")
     return True
+
+
+def _inspect_compose_containers() -> list[str] | None:
+    """A ``service, restarts, exit, started, status`` row per compose container; ``None`` if docker cannot answer."""
+    try:
+        listed = run_allowed_to_fail(
+            ["docker", "ps", "--all", "--quiet", "--filter", "label=com.docker.compose.service"],
+            expected_codes=None,
+            timeout=_DOCKER_TIMEOUT_SECONDS,
+        )
+        if listed.returncode != 0:
+            return None
+        ids = listed.stdout.split()
+        if not ids:
+            return []
+        inspected = run_allowed_to_fail(
+            ["docker", "inspect", "--format", _CONTAINER_ROW_FORMAT, *ids],
+            expected_codes=None,
+            timeout=_DOCKER_TIMEOUT_SECONDS,
+        )
+    except (OSError, TimeoutExpired):
+        return None
+    return inspected.stdout.splitlines() if inspected.returncode == 0 else None
+
+
+def _restart_loop_finding(row: str, now: dt.datetime) -> str | None:
+    service, restarts, exit_code, started_at, status = row.split("\t")
+    since_start = int((now - dt.datetime.fromisoformat(started_at)).total_seconds())
+    if int(restarts) < RESTART_LOOP_MIN_RESTARTS or int(exit_code) != 0 or since_start > RESTART_LOOP_WINDOW_SECONDS:
+        return None
+    # Docker zeroes ExitCode when a container starts, so only a stopped one still carries its last exit.
+    how = "and is running again, its exit code zeroed by Docker" if status == "running" else "last exit 0"
+    return (
+        f"FAIL  {service} restarted {restarts} times, {how}, started {since_start}s ago — a restart loop the "
+        f"watchdog cannot see; `t3 loop preset show` names the posture, `docker compose logs {service}` why it exits"
+    )
+
+
+def _check_clean_exit_restart_loop(*, inspect: Callable[[], list[str] | None] = _inspect_compose_containers) -> bool:
+    """FAIL a compose service Docker keeps restarting after a clean exit — the watchdog only revives an exited one."""
+    rows = inspect()
+    if rows is None:
+        typer.echo(
+            "INFO  restart-loop check unverifiable here (docker daemon unreachable) — run `t3 doctor check` in "
+            "teatree-worker, the service the docker socket is granted to"
+        )
+        return True
+    now = dt.datetime.now(dt.UTC)
+    ok = True
+    for row in rows:
+        try:
+            finding = _restart_loop_finding(row, now)
+        except ValueError:
+            typer.echo(f"INFO  restart-loop check could not read the container row {row!r}")
+            continue
+        if finding is not None:
+            typer.echo(finding)
+            ok = False
+    return ok
 
 
 def _holder_findings(*, env: dict[str, str] | None, pid_path: Path | None, refusal_path: Path | None) -> list[str]:

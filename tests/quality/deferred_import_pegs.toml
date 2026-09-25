@@ -25,9 +25,13 @@
 # rather than in `teatree.loop`, where it would have been an intra-loop deferred edge and
 # hidden from tach's acyclic guard.
 "src/teatree/core/admission_governor.py" = 2
+# The SQL rank needs Ticket.State after Django has registered the Ticket model;
+# phase_spellings is a pure leaf and is imported eagerly in admission_priority.
+"src/teatree/core/admission_priority.py" = 1
 # 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
 # the app registry is not ready at module import, so these can never be top-level.
-"src/teatree/core/apps.py" = 3
+# 4: `ready()` runs before the app registry is ready, so wiring the fleet-admission refusal stays call-time.
+"src/teatree/core/apps.py" = 4
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
@@ -49,6 +53,15 @@
 # teatree.core.overlay_loader import get_overlay` and degrades to the ambient
 # credential helper when it raises, rather than importing at module load time.
 "src/teatree/core/forge_push.py" = 1
+# 1: the GitLab arm of the open-MR probe resolves the repo's own code host through
+# `backend_factory.code_host_for_repo_from_overlay` (#151). The import stays call-time
+# for a REFUSAL reason, not a cost one: `probe_gitlab_open_pr` wraps the call in
+# `except Exception -> UNKNOWN` because it runs inside the git pre-push hook, where a
+# raise aborts the push itself. `backend_factory` reaches `overlay_loader`, which
+# registers the overlay-code-defaults provider AT IMPORT TIME; hoisting the import to
+# module scope moves that side effect outside the guard, so an overlay/Django failure
+# would break every importer of this module instead of degrading to UNKNOWN.
+"src/teatree/core/forge_pr_probe.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 2
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
@@ -66,8 +79,8 @@
 "src/teatree/core/gates/plan_dispatch_gate.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
-"src/teatree/core/gates/review_request_guard.py" = 6
-"src/teatree/core/gates/rubric_gate.py" = 2
+"src/teatree/core/gates/review_request_guard.py" = 7
+# 7: overlay_for_mr_url resolves the ambient overlay at call time like resolve_guard_target; the edge is already eager.
 # 6: #3551/#3555 made the hand-off derive live state when the snapshot payload is
 # empty — Worktree / Ticket / PullRequest / LoopLease / SessionHandover are all ORM
 # reads that must resolve after the app registry is ready, so each stays call-time.
@@ -83,9 +96,11 @@
 # ORM-adjacent imports that must resolve after the app registry is ready — the module is
 # imported from the pre-push hook, which runs before Django is set up.
 "src/teatree/core/management/commands/_ensure_pr.py" = 4
-"src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/_ship/exec.py" = 1
 "src/teatree/core/management/commands/_ship/gates.py" = 2
+# 2: this setup-only command must import the ORM model and overlay discovery after
+# Django's app registry is ready; TyperCommand construction remains import-light.
+"src/teatree/core/management/commands/provision_declared_notion_routing.py" = 2
 "src/teatree/core/management/commands/checking.py" = 3
 "src/teatree/core/management/commands/cost.py" = 2
 "src/teatree/core/management/commands/db.py" = 1
@@ -100,7 +115,9 @@
 "src/teatree/core/management/commands/loop_dispatch.py" = 3
 "src/teatree/core/management/commands/loop_drain_queue.py" = 1
 "src/teatree/core/management/commands/loop_owner.py" = 4
-"src/teatree/core/management/commands/loop_self_improve.py" = 1
+# 3: owner-alert egress and active-overlay discovery stay call-time, so command
+# import does not register credential/default providers before Django is ready.
+"src/teatree/core/management/commands/loop_self_improve.py" = 3
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
 # 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
 # app-registry reason as the rest of this command's ORM reads.
@@ -188,7 +205,7 @@
 # routed to the pulled surface.
 "src/teatree/core/notify_ledger.py" = 8
 "src/teatree/core/on_behalf_egress.py" = 2
-"src/teatree/core/on_behalf_gate_recorded.py" = 6
+"src/teatree/core/on_behalf_gate_recorded.py" = 7
 "src/teatree/core/on_behalf_post_receipt.py" = 1
 # preflight() defers `from teatree.core.connector_probes import standard_probes` to
 # build its default probes without an import cycle (connector_probes → overlay) (#3333).
@@ -274,12 +291,13 @@
 "src/teatree/loop/domain_optional_scanner_jobs.py" = 1
 "src/teatree/loop/global_scanner_factories.py" = 1
 "src/teatree/loop/loop_scoping.py" = 1
-# #3569: `_handle_reviewer` defers `from teatree.loop.persistence_self_pr_review
-# import handle_self_pr_review`. The sibling module (split out to keep persistence
-# under the module-health LOC cap) imports persistence's shared ticket/task helpers
-# at top level, so persistence can only import it lazily — the load-bearing edge
-# that breaks the persistence<->sibling import cycle.
+# Each sibling (split out to keep persistence under the module-health LOC cap) imports
+# persistence's shared ticket/task helpers at top level, so persistence can only import
+# it lazily — the load-bearing edge that breaks the persistence<->sibling import cycle.
+# persistence defers `persistence_reviewer.handle_reviewer`; that leaf in turn defers
+# `persistence_self_pr_review.handle_self_pr_review` (#3569) for the same reason.
 "src/teatree/loop/persistence.py" = 1
+"src/teatree/loop/persistence_reviewer.py" = 1
 "src/teatree/loop/phases/render.py" = 8
 "src/teatree/loop/scanners/failed_e2e_posts.py" = 1
 "src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py" = 5

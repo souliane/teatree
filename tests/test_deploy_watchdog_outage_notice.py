@@ -18,6 +18,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -88,6 +89,7 @@ def _write_docker_stub(bin_dir: Path) -> None:
         "    shift || true\n"
         '    case "$*" in\n'
         "      true) exit 0 ;;\n"
+        '      *"pgrep -f t3 doctor check"*) exit 1 ;;\n'
         '      *"doctor check --json"*) printf "%s\\n" "$STUB_DOCTOR_JSON"; exit "${STUB_DOCTOR_RC:-0}" ;;\n'
         '      *"notify send"*) cat >>"$STUB_NOTIFY_FILE"; printf "\\n" >>"$STUB_NOTIFY_FILE"; exit 0 ;;\n'
         "      *) exit 0 ;;\n"
@@ -212,6 +214,7 @@ class TestDowntimeIsAnswerable:
 
 
 class TestDeployWindowDoesNotPage:
+    @pytest.mark.skipif(sys.platform == "darwin", reason="deploy image uses GNU date -d for container timestamps")
     def test_a_recently_recreated_stack_is_not_reported_as_an_outage(self, tmp_path: Path) -> None:
         """A rolling swap legitimately stops containers — that is a deploy, not an outage."""
         created = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 5)) + ".683288764Z"

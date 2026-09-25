@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, TypedDict
 
+from teatree.hooks import _dispatch_quote_ok
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
@@ -448,7 +449,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | N
 # before the sub-agent loads it into context and can echo it into a later
 # published output (the #1213 publish gate fires too late for that).
 _DISPATCH_TOOLS: Final[frozenset[str]] = frozenset({"Agent", "Task"})
-_DISPATCH_PROMPT_FIELDS: Final[tuple[str, ...]] = ("description", "prompt")
+_DISPATCH_PROMPT_FIELDS: Final[tuple[str, ...]] = _dispatch_quote_ok.DISPATCH_PROMPT_FIELDS
 
 
 def extract_dispatch_payload(tool_name: str, tool_input: ToolInput) -> str | None:
@@ -546,26 +547,25 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
 
 
 # In-prompt opt-out token for the dispatch-prompt gate (#1401). Unlike the
-# publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts
-# that have no analogue inside an Agent/Task prompt body), the dispatch gate
-# opt-out is an in-prompt token mirroring the existing
-# ``[skill-load-ok: <reason>]`` convention in ``hook_router``. The reason is MANDATORY — an empty reason does not
-# bypass — so an audit can read WHY a quote-shaped dispatch was sanctioned.
-_DISPATCH_QUOTE_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[quote-ok:\s*(\S[^\]]*?)\s*\]")
+# publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts that
+# have no analogue inside an Agent/Task prompt body), the dispatch gate opt-out
+# is an in-prompt token mirroring ``hook_router``'s ``[skill-load-ok: <reason>]``.
+# Its placement contract lives in :mod:`teatree.hooks._dispatch_quote_ok`.
 
 
 def dispatch_quote_ok_reason(text: str) -> str | None:
-    """Return the reason from a ``[quote-ok: <reason>]`` token in ``text``, else None.
+    """Return the reason from a ``[quote-ok: <reason>]`` token in ``text``, else None."""
+    return _dispatch_quote_ok.reason_in(text)
 
-    Scans only the first 512 characters (mirroring the
-    ``hook_router._agent_prompt_skip_token`` precedent) so a token buried
-    deep in a long dispatch body cannot silently authorise the whole
-    prompt. An empty reason is rejected (returns ``None``).
+
+def dispatch_quote_ok_reason_for_input(tool_input: ToolInput) -> str | None:
+    """Return the dispatch opt-out reason authorised by ANY ONE dispatch field.
+
+    Per FIELD, not over the joined payload: a long ``description`` can no longer
+    consume the ``prompt``'s recognition budget. See
+    :mod:`teatree.hooks._dispatch_quote_ok` for the placement contract.
     """
-    match = _DISPATCH_QUOTE_OK_RE.search(text[:512])
-    if not match:
-        return None
-    return match.group(1).strip() or None
+    return _dispatch_quote_ok.reason_in_fields(_dispatch_quote_ok.field_values(tool_input))
 
 
 def _ledger_path() -> Path:

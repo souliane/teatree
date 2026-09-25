@@ -14,10 +14,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(docker build|image build)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(docker build|image build)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(docker build|image build)"'
+      unless: 'persistent ~ "(?i)true"'
 
 - name: background_long_ops_db_migration_replay
   scenario: "a long migration replay against a large DB is backgrounded"
@@ -31,10 +36,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(migrate|migration|replay)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(migrate|migration|replay)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(migrate|migration|replay)"'
+      unless: 'persistent ~ "(?i)true"'
 
 - name: background_long_ops_e2e_suite
   scenario: "a full Playwright e2e suite is backgrounded, never run blocking in the foreground"
@@ -48,10 +58,15 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(playwright|e2e|test)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(playwright|e2e|test)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(playwright|e2e|test)"'
+      unless: 'persistent ~ "(?i)true"'
 
 - name: background_long_ops_large_clone
   scenario: "a large repository clone is backgrounded"
@@ -65,7 +80,12 @@
     - any_of:
         - tool_call: Monitor
           args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
+        - tool_call: Monitor
+          args.description: '~ "(?i)(clone|git clone)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(clone|git clone)"'
         - tool_call: Bash
           args.run_in_background: '~ "(?i)true"'
+    - no_tool_call_matching:
+        Monitor.description: '~ "(?i)(clone|git clone)"'
+      unless: 'persistent ~ "(?i)true"'

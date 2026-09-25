@@ -9,12 +9,14 @@ load-bearing invariant — that a token value never reaches any captured output.
 """
 
 import datetime as dt
+import json
 
 import pytest
 from django.test import TestCase
 
 from teatree.ci_oauth_switch import (
     CI_ACCOUNT_VARIABLE,
+    CI_OAUTH_POOL_SECRET,
     CI_OAUTH_SECRET,
     WEIGHT_5H,
     WEIGHT_7D,
@@ -23,6 +25,7 @@ from teatree.ci_oauth_switch import (
     select_account,
 )
 from teatree.credential_config import TokenKind
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.token_report import TokenAccountRow, TokenSource, TokenStatus
 
 RUN_START = dt.datetime(2026, 7, 21, 12, 0, tzinfo=dt.UTC)
@@ -71,9 +74,13 @@ def _live_rows() -> list[TokenAccountRow]:
 class FakeGh:
     """A recording ``gh`` stand-in: canned variable value, captured argv + stdin."""
 
-    def __init__(self, *, active: str = "", fail_on: str = "") -> None:
+    def __init__(
+        self, *, active: str = "", pool_accounts: str | None = None, fail_on: str = "", fail_output: str = "boom"
+    ) -> None:
         self.active = active
+        self.pool_accounts = pool_accounts
         self.fail_on = fail_on
+        self.fail_output = fail_output
         self.calls: list[list[str]] = []
         self.stdin: list[str | None] = []
 
@@ -81,8 +88,10 @@ class FakeGh:
         self.calls.append(list(args))
         self.stdin.append(stdin_text)
         if self.fail_on and self.fail_on in args:
-            return 1, "boom"
+            return 1, self.fail_output
         if args[0] == "api":
+            if "EVAL_OAUTH_POOL_ACCOUNTS" in args[1]:
+                return (0, self.pool_accounts) if self.pool_accounts is not None else (1, "not found")
             return (0, self.active) if self.active else (1, "not found")
         return 0, ""
 
@@ -97,6 +106,56 @@ class FakeGh:
 
 def _switcher(gh: FakeGh) -> CiAccountSwitcher:
     return CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _account: SECRET_TOKEN)
+
+
+class TestPoolReconciliation:
+    def test_readable_pool_membership_is_read_back(self) -> None:
+        gh = FakeGh(pool_accounts=json.dumps([SOULIANE, AGENTICALLY]))
+        assert _switcher(gh).active_pool_accounts() == (SOULIANE, AGENTICALLY)
+
+    def test_missing_pool_membership_is_unknown_not_empty(self) -> None:
+        assert _switcher(FakeGh()).active_pool_accounts() is None
+
+    def test_full_configured_set_including_exhausted_is_written_as_one_secret(self) -> None:
+        gh = FakeGh()
+        tokens = {SOULIANE: "sk-token-one", AGENTICALLY: "sk-token-two", JOHNJOHN: "sk-token-three"}
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
+
+        accounts = switcher.reconcile_pool(_live_rows())
+
+        assert accounts == tuple(sorted(tokens))
+        pool_writes = [i for i, args in enumerate(gh.calls) if args[:3] == ["secret", "set", CI_OAUTH_POOL_SECRET]]
+        assert len(pool_writes) == 1
+        assert set((gh.stdin[pool_writes[0]] or "").splitlines()) == set(tokens.values())
+        assert all(token not in " ".join(args) for token in tokens.values() for args in gh.calls)
+
+    def test_removal_replaces_pool_with_only_remaining_accounts(self) -> None:
+        gh = FakeGh()
+        tokens = {SOULIANE: "sk-token-one", AGENTICALLY: "sk-token-two"}
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=tokens.__getitem__)
+
+        switcher.reconcile_pool(_live_rows()[:2])
+        assert switcher.reconcile_pool(_live_rows()[:1]) == (SOULIANE,)
+
+        bodies = [body for args, body in zip(gh.calls, gh.stdin, strict=True) if CI_OAUTH_POOL_SECRET in args]
+        assert bodies == ["sk-token-one\nsk-token-two", "sk-token-one"]
+
+    def test_missing_token_refuses_before_overwriting_existing_pool(self) -> None:
+        gh = FakeGh()
+        switcher = CiAccountSwitcher(repo="souliane/teatree", gh=gh, secret_reader=lambda _: "")
+
+        with pytest.raises(RuntimeError, match="no token stored"):
+            switcher.reconcile_pool(_live_rows())
+        assert not gh.wrote_secret
+
+    def test_failed_pool_write_reports_gh_error_without_leaking_token(self) -> None:
+        gh = FakeGh(fail_on=CI_OAUTH_POOL_SECRET, fail_output=f"permission denied: {SECRET_TOKEN}")
+        switcher = _switcher(gh)
+
+        with pytest.raises(RuntimeError) as caught:
+            switcher.reconcile_pool(_live_rows())
+        assert "permission denied" in str(caught.value)
+        assert SECRET_TOKEN not in str(caught.value)
 
 
 class TestSelectionRule(TestCase):
@@ -272,13 +331,15 @@ class TestSwitch(TestCase):
         assert not gh.wrote_secret
 
     def test_a_failed_secret_write_never_echoes_the_token(self) -> None:
-        gh = FakeGh(active=JOHNJOHN, fail_on=CI_OAUTH_SECRET)
+        gh = FakeGh(active=JOHNJOHN, fail_on=CI_OAUTH_SECRET, fail_output=f"permission denied: {SECRET_TOKEN}")
         switcher = _switcher(gh)
 
         with pytest.raises(RuntimeError) as caught:
             switcher.switch(_live_rows(), run_start=RUN_START)
 
         assert SECRET_TOKEN not in str(caught.value)
+        assert "permission denied" in str(caught.value)
+        assert "[REDACTED]" in str(caught.value)
         assert CI_OAUTH_SECRET in str(caught.value)
         assert not gh.wrote_variable
 
@@ -302,3 +363,21 @@ class TestSwitch(TestCase):
         switcher = _switcher(FakeGh(active=""))
 
         assert switcher.active_account() == ""
+
+    def test_default_client_refuses_ambient_login_when_route_is_unset(self) -> None:
+        calls: list[object] = []
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("GH_TOKEN", "hostile")
+            monkeypatch.setattr(
+                "teatree.ci_oauth_switch.resolve_slug_token",
+                lambda *_args, **_kwargs: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
+                raising=False,
+            )
+            monkeypatch.setattr(
+                "teatree.ci_oauth_switch.run_allowed_to_fail",
+                lambda *args, **kwargs: calls.append((args, kwargs)),
+            )
+            switcher = CiAccountSwitcher(repo="souliane/teatree")
+
+            assert switcher.active_account() == ""
+        assert calls == []

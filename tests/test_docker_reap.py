@@ -8,12 +8,15 @@ main-clone deps image safe — compose only labels artifacts it built for that
 project, so they never appear under a removed worktree's project.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from subprocess import CompletedProcess
 
 import pytest
 
+from teatree.docker import reap
 from teatree.docker.reap import (
+    OwnedStacks,
     ReapResult,
     _parse_docker_timestamp,
     is_worktree_compose_project,
@@ -23,11 +26,14 @@ from teatree.docker.reap import (
     reap_compose_project,
     reap_orphan_compose_projects,
     reap_stale_compose_projects,
+    running_compose_projects,
     stale_compose_projects,
 )
 from teatree.utils.run import TimeoutExpired
 
 _LABEL = "com.docker.compose.project"
+_WORKDIR_LABEL = "com.docker.compose.project.working_dir"
+_CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
 _MISSING_DOCKER = "docker"
 
 
@@ -42,30 +48,27 @@ def _is_enumeration(cmd: list[str]) -> bool:
     return f"label={_LABEL}" in cmd and not _scoped_project(cmd)
 
 
+@dataclass
 class _FakeDocker:
     """Canned docker daemon: serves per-project containers/images and records removals.
 
     ``containers`` / ``images`` map a scoped project to the ids its filter
     returns; ``enumerated`` is the project-label list returned by the unscoped
-    enumeration calls (``list_compose_projects``). Removal commands are recorded
-    rather than executed.
+    enumeration calls (``list_compose_projects``), and ``running`` names those of
+    them whose containers are still up. Removal commands are recorded rather
+    than executed.
     """
 
-    def __init__(
-        self,
-        *,
-        containers: dict[str, list[str]] | None = None,
-        images: dict[str, list[str]] | None = None,
-        enumerated: list[str] | None = None,
-        inspect: dict[str, str] | None = None,
-    ) -> None:
-        self.containers = containers or {}
-        self.images = images or {}
-        self.enumerated = enumerated or []
-        self.inspect = inspect or {}
-        self.removed_containers: list[str] = []
-        self.removed_images: list[str] = []
-        self.calls: list[list[str]] = []
+    containers: dict[str, list[str]] = field(default_factory=dict)
+    images: dict[str, list[str]] = field(default_factory=dict)
+    enumerated: list[str] = field(default_factory=list)
+    inspect: dict[str, str] = field(default_factory=dict)
+    running: set[str] = field(default_factory=set)
+    working_dirs: dict[str, list[str]] = field(default_factory=dict)
+    config_files: dict[str, list[str]] = field(default_factory=dict)
+    removed_containers: list[str] = field(default_factory=list)
+    removed_images: list[str] = field(default_factory=list)
+    calls: list[list[str]] = field(default_factory=list)
 
     def __call__(self, cmd, *, expected_codes=None, timeout=None, **_kwargs) -> CompletedProcess:
         del expected_codes, timeout
@@ -78,6 +81,27 @@ class _FakeDocker:
         sink.extend(cmd[3:])
         return "\n".join(cmd[3:]) + "\n"
 
+    def _enumeration(self, cmd: list[str]) -> str:
+        if cmd[:2] != ["docker", "ps"]:
+            return "\n".join(self.enumerated) + "\n"
+        states = (f"{p}|{'running' if p in self.running else 'exited'}" for p in self.enumerated)
+        return "\n".join(states) + "\n"
+
+    def _ps(self, cmd: list[str]) -> str:
+        project = _scoped_project(cmd)
+        if _CONFIG_FILES_LABEL in " ".join(cmd):
+            ids = self.containers.get(project, [])
+            files = self.config_files.get(project, [])
+            return "\n".join(f"{cid}\t{cf}" for cid, cf in zip(ids, files, strict=False)) + "\n"
+        if _WORKDIR_LABEL not in " ".join(cmd):
+            return "\n".join(self.containers.get(project, [])) + "\n"
+        # The real query asks for `{{.ID}}\t{{.Label ...}}`, so an UNLABELLED container is
+        # a row with an empty second field rather than an empty line that gets dropped on
+        # the way back. `working_dirs` carries one entry per container, `""` for unlabelled.
+        ids = self.containers.get(project, [])
+        dirs = self.working_dirs.get(project, [])
+        return "\n".join(f"{cid}\t{wd}" for cid, wd in zip(ids, dirs, strict=False)) + "\n"
+
     def _stdout(self, cmd: list[str]) -> str:
         if cmd[:3] in (["docker", "rm", "-f"], ["docker", "rmi", "-f"]):
             return self._remove(cmd)
@@ -85,12 +109,16 @@ class _FakeDocker:
             ids = cmd[4:]  # ["docker", "inspect", "--format", <fmt>, *ids]
             return "\n".join(self.inspect.get(cid, "") for cid in ids) + "\n"
         if _is_enumeration(cmd):
-            return "\n".join(self.enumerated) + "\n"
+            return self._enumeration(cmd)
         if cmd[:2] == ["docker", "ps"]:
-            return "\n".join(self.containers.get(_scoped_project(cmd), [])) + "\n"
+            return self._ps(cmd)
         if cmd[:2] == ["docker", "images"]:
             return "\n".join(self.images.get(_scoped_project(cmd), [])) + "\n"
         return ""
+
+
+def _owned(*names: str, checkouts: tuple[str, ...] = ()) -> OwnedStacks:
+    return OwnedStacks(project_names=frozenset(names), checkout_paths=frozenset(checkouts))
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, fake: object) -> None:
@@ -319,40 +347,39 @@ class TestListComposeProjects:
 
 
 class TestReapOrphanComposeProjects:
-    def test_reaps_only_projects_absent_from_live_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_reaps_only_projects_with_nothing_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeDocker(
             containers={"orphan-wt9": ["orphan-wt9-web-1"]},
             images={"orphan-wt9": ["sha256:orphanimg"]},
             enumerated=["live-wt1", "orphan-wt9"],
+            running={"live-wt1"},
         )
         _patch(monkeypatch, fake)
 
-        results = reap_orphan_compose_projects(live_projects={"live-wt1"})
+        results = reap_orphan_compose_projects(_owned())
 
         assert fake.removed_containers == ["orphan-wt9-web-1"]
         assert fake.removed_images == ["sha256:orphanimg"]
         assert [r.project for r in results] == ["orphan-wt9"]
 
-    def test_no_orphans_when_every_project_is_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _FakeDocker(enumerated=["live-wt1"])
+    def test_no_orphans_when_every_project_is_still_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(enumerated=["live-wt1"], running={"live-wt1"})
         _patch(monkeypatch, fake)
 
-        results = reap_orphan_compose_projects(live_projects={"live-wt1"})
+        results = reap_orphan_compose_projects(_owned())
 
         assert results == []
         assert fake.removed_containers == []
         assert fake.removed_images == []
 
-    def test_orphan_compose_projects_selects_owned_non_live_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Selection-only preview seam (#3489): everything teatree owns minus the
-        # live set, and never a foreign stack. The deploy stack and a user project
+    def test_orphan_compose_projects_selects_owned_settled_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Selection-only preview seam (#3489): everything teatree owns with nothing
+        # running in it, and never a foreign stack. The deploy stack and a user project
         # carry no worktree label, so they are excluded even though they are unowned.
-        monkeypatch.setattr(
-            "teatree.docker.reap.list_compose_projects",
-            lambda: {"live-wt1", "orphan-wt9", "teatree", "someuser-project"},
-        )
+        fake = _FakeDocker(enumerated=["live-wt1", "orphan-wt9", "teatree", "someuser-project"], running={"live-wt1"})
+        _patch(monkeypatch, fake)
 
-        selected = orphan_compose_projects({"live-wt1"})
+        selected = orphan_compose_projects(_owned())
 
         assert selected == ["orphan-wt9"]
 
@@ -363,6 +390,8 @@ _NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 _OLD = "2026-06-10T01:00:00.123456789Z"  # 11h before _NOW — past any sane threshold
 _FRESH = "2026-06-10T11:45:00Z"  # 15m before _NOW — must never be reaped
 _ZERO = "0001-01-01T00:00:00Z"  # docker's "never happened" value
+_MINE = "/w/managed/1234-corridor"  # a registered worktree's checkout
+_THEIRS = "/w/adhoc-session/webapp"  # an unticketed session's checkout
 
 
 class TestParseDockerTimestamp:
@@ -404,10 +433,10 @@ class TestStaleComposeProjects:
         )
         _patch(monkeypatch, fake)
 
-        selected = stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
+        selected = stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW)
         assert selected == ["abandoned-wt42"]
 
-        results = reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
+        results = reap_stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW)
         assert [r.project for r in results] == ["abandoned-wt42"]
         assert fake.removed_containers == ["c1"]
 
@@ -420,8 +449,8 @@ class TestStaleComposeProjects:
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
-        assert reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+        assert reap_stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
         assert fake.removed_containers == []
 
     def test_unknown_age_fails_safe_to_keep(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,18 +461,25 @@ class TestStaleComposeProjects:
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
         assert fake.removed_containers == []
 
-    def test_live_project_is_never_selected_even_when_old(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_continuously_running_project_is_never_selected_even_when_old(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Its newest lifecycle stamp is its own days-old StartedAt, because a container
+        # that never stopped has the docker zero FinishedAt — so age reads it as stale
+        # while it serves traffic. Only the container state separates the two.
         fake = _FakeDocker(
             containers={"backend-wt5": ["c1"]},
             enumerated=["backend-wt5"],
             inspect={"c1": f"{_OLD}|{_OLD}|{_ZERO}"},
+            running={"backend-wt5"},
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects({"backend-wt5"}, min_age_minutes=240, now=_NOW) == []
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+        assert reap_stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
         assert fake.removed_containers == []
 
     def test_dry_selection_removes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,7 +490,7 @@ class TestStaleComposeProjects:
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["abandoned-wt42"]
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == ["abandoned-wt42"]
         assert fake.removed_containers == []
         assert fake.removed_images == []
 
@@ -478,7 +514,7 @@ class TestForeignStackOwnershipGate:
         )
         _patch(monkeypatch, fake)
 
-        results = reap_orphan_compose_projects(set())
+        results = reap_orphan_compose_projects(_owned())
 
         assert [r.project for r in results] == ["backend-wt9"]
         assert fake.removed_containers == ["c1"]
@@ -493,8 +529,8 @@ class TestForeignStackOwnershipGate:
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
-        assert reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+        assert reap_stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
         assert fake.removed_containers == []
         assert fake.removed_images == []
 
@@ -518,6 +554,429 @@ class TestForeignStackOwnershipGate:
         )
         _patch(monkeypatch, fake)
 
-        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["teatree-wt7"]
-        assert [r.project for r in reap_orphan_compose_projects(set())] == ["teatree-wt7"]
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == ["teatree-wt7"]
+        assert [r.project for r in reap_orphan_compose_projects(_owned())] == ["teatree-wt7"]
         assert fake.removed_containers == ["c1"]
+
+
+class TestRepoTestStacksAreOwnedByTheRegistryNotByTheirName:
+    """``<checkout-dir>-test`` is a name compose gives ANY directory of that name.
+
+    A repo's own test runner starts its postgres + redis under
+    ``$(basename $PWD)-test``, so those stacks must be reapable — but the suffix
+    identifies the harness, never the owner: a foreign checkout called
+    ``anything-test`` mints exactly the same project name. Ownership therefore
+    comes from the worktree registry the caller walks, never from the name.
+    """
+
+    @pytest.mark.parametrize("project", ["dummy-combined-test", "config-api-snapshot-test", "unrelated-tests"])
+    def test_a_test_suffix_alone_never_proves_ownership(self, project: str) -> None:
+        assert not is_worktree_compose_project(project)
+
+    def test_a_foreign_test_stack_no_worktree_vouches_for_is_never_a_candidate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `~/src/acme-test` running its own compose stack mints `acme-test`; nothing
+        # about that name says teatree provisioned it.
+        fake = _FakeDocker(
+            containers={"acme-test": ["db-1"]},
+            enumerated=["acme-test"],
+            inspect={"db-1": f"{_OLD}|{_OLD}|{_ZERO}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_owned()) == []
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+        assert reap_orphan_compose_projects(_owned()) == []
+        assert fake.removed_containers == []
+
+    def test_a_running_test_stack_is_reaped_by_neither_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Its containers were CREATED and STARTED days ago and have never finished,
+        # so age alone reads it as stale while it is serving a live agent's database.
+        fake = _FakeDocker(
+            containers={"dummy-live-test": ["db-1"]},
+            enumerated=["dummy-live-test"],
+            inspect={"db-1": f"{_OLD}|{_OLD}|{_ZERO}"},
+            running={"dummy-live-test"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_owned("dummy-live-test")) == []
+        assert stale_compose_projects(_owned("dummy-live-test"), min_age_minutes=240, now=_NOW) == []
+        assert reap_orphan_compose_projects(_owned("dummy-live-test")) == []
+        assert fake.removed_containers == []
+
+    def test_an_owned_settled_test_stack_is_still_reaped_by_both_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Every container runs from the checkout the row owns, so the name is backed.
+        fake = _FakeDocker(
+            containers={"dummy-merged-test": ["db-1", "rd-1"]},
+            enumerated=["teatree", "dummy-merged-test"],
+            inspect={"db-1": f"{_OLD}|{_OLD}|{_OLD}", "rd-1": f"{_OLD}|{_OLD}|{_OLD}"},
+            working_dirs={"dummy-merged-test": [_MINE, _MINE]},
+        )
+        _patch(monkeypatch, fake)
+        owned = _owned("dummy-merged-test", checkouts=(_MINE,))
+
+        assert orphan_compose_projects(owned) == ["dummy-merged-test"]
+        assert stale_compose_projects(owned, min_age_minutes=240, now=_NOW) == ["dummy-merged-test"]
+        assert [r.project for r in reap_orphan_compose_projects(owned)] == ["dummy-merged-test"]
+        assert fake.removed_containers == ["db-1", "rd-1"]
+
+    def test_one_unlabelled_container_withholds_the_whole_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ALL of them, not the ones that answered — a reap is per project LABEL.
+
+        Asked for the label alone, an unlabelled container renders an EMPTY line and
+        empty lines are dropped, so this project answered with one owned path, matched
+        cleanly, and was torn down WITH the container nothing had vouched for.
+        """
+        fake = _FakeDocker(
+            containers={"dummy-mixed-test": ["db-1", "stray-1"]},
+            enumerated=["dummy-mixed-test"],
+            inspect={"db-1": f"{_OLD}|{_OLD}|{_OLD}", "stray-1": f"{_OLD}|{_OLD}|{_OLD}"},
+            working_dirs={"dummy-mixed-test": [_MINE, ""]},
+        )
+        _patch(monkeypatch, fake)
+        owned = _owned("dummy-mixed-test", checkouts=(_MINE,))
+
+        assert orphan_compose_projects(owned) == []
+        assert stale_compose_projects(owned, min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+        # UNPROVEN, not "runs from a checkout called empty string". Both keep the project,
+        # but only one of them is a reason: an empty path read as a foreign CHECKOUT is a
+        # coincidence that evaporates the moment the ownership set is widened.
+        assert reap._project_working_dirs("dummy-mixed-test") is None
+
+    def test_a_docker_that_cannot_report_states_reaps_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # "could not answer" is not "nothing is running": reading a refusal as an
+        # empty live set would tear down every stack on the host.
+        def refuse_enumeration(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            if _is_enumeration(cmd):
+                return CompletedProcess(cmd, 1, "", "Cannot connect to the Docker daemon")
+            return CompletedProcess(cmd, 0, "", "")
+
+        _patch(monkeypatch, refuse_enumeration)
+
+        assert running_compose_projects() is None
+        assert orphan_compose_projects(_owned("dummy-merged-test")) == []
+        assert stale_compose_projects(_owned("dummy-merged-test"), min_age_minutes=240, now=_NOW) == []
+
+
+class TestReapingNeverTouchesAVolume:
+    """A compose file can name one shared volume that every project mounts.
+
+    Such a volume carries the label of whichever project created it, so it sits
+    under a name the ownership gate matches, and the only thing keeping it alive
+    is that reaping addresses containers and images and nothing else.
+    Anti-vacuity control: adding a ``docker volume rm`` (or a ``--volumes`` flag)
+    to the reap engine turns this red.
+    """
+
+    def test_reaping_the_project_that_labels_a_shared_volume_issues_no_volume_removal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeDocker(
+            containers={"backend-wt96": ["web-1"]},
+            images={"backend-wt96": ["sha256:img"]},
+            enumerated=["backend-wt96"],
+        )
+        _patch(monkeypatch, fake)
+
+        reap_orphan_compose_projects(_owned())
+
+        assert fake.removed_containers == ["web-1"]
+        for call in fake.calls:
+            assert "volume" not in call, f"the reaper must never address a volume: {call}"
+            assert "--volumes" not in call, f"the reaper must never pass --volumes: {call}"
+            assert "backend-uv-cache" not in call
+
+
+class TestRunningComposeProjects:
+    """Liveness is what a project's containers are DOING, not whether a directory still exists."""
+
+    def _fake(self, monkeypatch: pytest.MonkeyPatch, lines: list[str]) -> None:
+        def fake(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            if cmd[:2] == ["docker", "ps"]:
+                return CompletedProcess(cmd, 0, "\n".join(lines) + "\n", "")
+            return CompletedProcess(cmd, 0, "", "")
+
+        _patch(monkeypatch, fake)
+
+    def test_a_project_whose_containers_have_all_settled_is_not_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._fake(monkeypatch, ["dead-wt1|exited", "dead-wt1|created"])
+        assert running_compose_projects() == set()
+
+    def test_one_running_container_makes_the_whole_project_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._fake(monkeypatch, ["busy-wt1|exited", "busy-wt1|running"])
+        assert running_compose_projects() == {"busy-wt1"}
+
+    @pytest.mark.parametrize("state", ["running", "restarting", "paused"])
+    def test_a_project_that_is_still_doing_something_is_live(self, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+        self._fake(monkeypatch, [f"busy-wt1|{state}"])
+        assert running_compose_projects() == {"busy-wt1"}
+
+    def test_a_host_with_no_compose_containers_reports_an_empty_live_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._fake(monkeypatch, [])
+        assert running_compose_projects() == set()
+
+    def test_an_unavailable_docker_reports_none_rather_than_an_empty_live_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def raise_missing(cmd, **_kwargs):
+            raise FileNotFoundError(_MISSING_DOCKER)
+
+        _patch(monkeypatch, raise_missing)
+        assert running_compose_projects() is None
+
+
+class TestATestStackNameIsNotOwnership:
+    """A ``<basename>-test`` project name is shared by every checkout of that basename.
+
+    Measured on one host: 11 registered worktrees shared one checkout basename, so the
+    registry contributed that basename's ``-test`` name — and the live project of
+    that name spanned TWO working dirs, both ad-hoc session checkouts nobody registered.
+    Reaping is per project LABEL, so admitting the name would have torn both down.
+    """
+
+    def _fake(self, working_dirs: list[str] | None) -> _FakeDocker:
+        return _FakeDocker(
+            containers={"webapp-test": ["db-1", "rd-1"]},
+            enumerated=["webapp-test"],
+            inspect={"db-1": f"{_OLD}|{_OLD}|{_OLD}", "rd-1": f"{_OLD}|{_OLD}|{_OLD}"},
+            working_dirs={"webapp-test": working_dirs} if working_dirs is not None else {},
+        )
+
+    def test_a_foreign_checkout_sharing_the_basename_is_never_reaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = self._fake([_THEIRS, _THEIRS])
+        _patch(monkeypatch, fake)
+        owned = _owned("webapp-test", checkouts=(_MINE,))
+
+        assert stale_compose_projects(owned, min_age_minutes=240, now=_NOW) == []
+        assert reap_orphan_compose_projects(owned) == []
+        assert fake.removed_containers == []
+
+    def test_one_foreign_container_withholds_the_whole_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The measured shape: one project, two checkouts. A per-label reap cannot take
+        # only the owned half, so a single unowned container keeps all of it.
+        fake = self._fake([_MINE, _THEIRS])
+        _patch(monkeypatch, fake)
+        owned = _owned("webapp-test", checkouts=(_MINE,))
+
+        assert stale_compose_projects(owned, min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+
+    def test_an_unreadable_working_dir_keeps_the_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = self._fake(None)
+        _patch(monkeypatch, fake)
+        owned = _owned("webapp-test", checkouts=(_MINE,))
+
+        assert stale_compose_projects(owned, min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+
+    def test_teatrees_own_stack_still_needs_no_path_proof(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The `-wt<pk>` name is self-identifying, so the ownership rule is unchanged for it.
+        fake = _FakeDocker(
+            containers={"repo-wt42": ["c1"]},
+            enumerated=["repo-wt42"],
+            inspect={"c1": f"{_OLD}|{_OLD}|{_OLD}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == ["repo-wt42"]
+
+
+class TestEachKeepGuardAloneStopsAReap:
+    """Running / too-young / unknown-age each prevent a reap on its own.
+
+    The base fixture is reapable — the control below proves it — so each test flips
+    exactly one condition and nothing else.
+    """
+
+    def _fake(self, **overrides: object) -> _FakeDocker:
+        base: dict[str, object] = {
+            "containers": {"abandoned-wt9": ["c1"]},
+            "enumerated": ["abandoned-wt9"],
+            "inspect": {"c1": f"{_OLD}|{_OLD}|{_OLD}"},
+        }
+        return _FakeDocker(**{**base, **overrides})  # type: ignore[arg-type]
+
+    def test_control_the_base_fixture_is_reapable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch(monkeypatch, self._fake())
+
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == ["abandoned-wt9"]
+
+    def test_running_alone_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch(monkeypatch, self._fake(running={"abandoned-wt9"}))
+
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+
+    def test_too_young_alone_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch(monkeypatch, self._fake(inspect={"c1": f"{_OLD}|{_FRESH}|{_ZERO}"}))
+
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+
+    def test_unknown_age_alone_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch(monkeypatch, self._fake(inspect={"c1": f"{_ZERO}|{_ZERO}|{_ZERO}"}))
+
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+
+    def test_a_refused_age_probe_reads_as_unknown_not_as_old(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The distinction that matters: docker refusing the inspect must not resolve to
+        # "no timestamps, therefore older than any threshold".
+        fake = self._fake()
+
+        def refuse_inspect(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            if cmd[:2] == ["docker", "inspect"]:
+                return CompletedProcess(cmd, 1, "", "Cannot connect to the Docker daemon")
+            return CompletedProcess(cmd, 0, fake._stdout(cmd), "")
+
+        _patch(monkeypatch, refuse_inspect)
+
+        assert project_last_activity("abandoned-wt9") is None
+        assert stale_compose_projects(_owned(), min_age_minutes=240, now=_NOW) == []
+
+
+_WORKTREE_ROOT = "/w/t3-workspaces/backend"
+_LEAKED_CHECKOUT = f"{_WORKTREE_ROOT}/1234-a-ticket"
+_LEAKED_PROJECT = "1234-a-ticket-test"
+_TEST_COMPOSE = f"{_LEAKED_CHECKOUT}/docker-compose.test.yml"
+
+# The deploy stack's OWN labels, read off the running `teatree-teatree-worker-1`.
+# Its config_files is comma-separated and carries a /tmp override, which is exactly
+# the shape a naive "endswith" test on the raw label would mis-handle.
+_DEPLOY_CLONE = "/w/clones/teatree"
+_DEPLOY_PROJECT = "teatree"
+_DEPLOY_WORKING_DIR = f"{_DEPLOY_CLONE}/deploy"
+_DEPLOY_CONFIG_FILES = f"{_DEPLOY_CLONE}/deploy/docker-compose.yml,/tmp/t3-uv-constraint.override.yml"
+
+
+def _leaked_stack_docker(**overrides: object) -> _FakeDocker:
+    """A settled ``<checkout>-test`` stack whose Worktree row is gone — the leak (#4682)."""
+    spec: dict[str, object] = {
+        "enumerated": [_LEAKED_PROJECT],
+        "containers": {_LEAKED_PROJECT: ["db1", "rd1"]},
+        "images": {_LEAKED_PROJECT: []},
+        "working_dirs": {_LEAKED_PROJECT: [_LEAKED_CHECKOUT, _LEAKED_CHECKOUT]},
+        "config_files": {_LEAKED_PROJECT: [_TEST_COMPOSE, _TEST_COMPOSE]},
+    }
+    spec.update(overrides)
+    return _FakeDocker(**spec)  # type: ignore[arg-type]
+
+
+def _rooted(*roots: str) -> OwnedStacks:
+    return OwnedStacks(checkout_roots=frozenset(roots))
+
+
+class TestOrphanedTestStackRoute:
+    """A leaked ``<checkout>-test`` stack is reapable on PATH evidence, with no live row.
+
+    The registry route proves ownership from a ``Worktree`` row, so it cannot reach the
+    orphan case whose defining property is that the row is gone: measured on this host,
+    nine settled ``*-test`` stacks were unreachable by every reaper at any age.
+    """
+
+    def test_a_leaked_test_stack_under_a_known_root_is_reaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _leaked_stack_docker()
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == [_LEAKED_PROJECT]
+
+    def test_supplying_no_roots_leaves_the_route_shut(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _leaked_stack_docker()
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(OwnedStacks()) == []
+
+    def test_a_checkout_under_no_known_root_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _leaked_stack_docker()
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted("/somewhere/else")) == []
+
+    def test_a_running_leaked_stack_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _leaked_stack_docker(running={_LEAKED_PROJECT})
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == []
+
+    def test_a_project_name_its_checkout_did_not_mint_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The name must be the one compose derives from that very directory."""
+        fake = _leaked_stack_docker(
+            enumerated=["someone-elses-test"],
+            containers={"someone-elses-test": ["db1"]},
+            working_dirs={"someone-elses-test": [_LEAKED_CHECKOUT]},
+            config_files={"someone-elses-test": [_TEST_COMPOSE]},
+        )
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == []
+
+    def test_a_dev_stack_under_a_known_root_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the repo's own throwaway test harness qualifies — never a dev stack."""
+        fake = _leaked_stack_docker(config_files={_LEAKED_PROJECT: [f"{_LEAKED_CHECKOUT}/docker-compose.yml"] * 2})
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == []
+
+    def test_one_unlabelled_container_keeps_the_whole_stack(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A container it cannot place is one it cannot own — fail safe, as on working_dir."""
+        fake = _leaked_stack_docker(config_files={_LEAKED_PROJECT: [_TEST_COMPOSE, ""]})
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == []
+
+    def test_a_container_outside_the_root_keeps_the_whole_stack(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _leaked_stack_docker(working_dirs={_LEAKED_PROJECT: [_LEAKED_CHECKOUT, "/elsewhere/thing"]})
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT)) == []
+
+
+class TestDeployStackIsUnreapable:
+    """The deploy stack is refused by the orphan route on its OWN labels.
+
+    Planted verbatim from the running ``teatree-teatree-worker-1``. Four independent
+    refusals — the name is not ``<basename>-test``, the base compose file is not the
+    test harness's, the checkout is not under a worktree root, and it is running — so
+    no single mistake can expose it.
+    """
+
+    @staticmethod
+    def _deploy_docker(**overrides: object) -> _FakeDocker:
+        spec: dict[str, object] = {
+            "enumerated": [_DEPLOY_PROJECT],
+            "containers": {_DEPLOY_PROJECT: ["worker", "admin", "watchdog"]},
+            "images": {_DEPLOY_PROJECT: ["img1"]},
+            "working_dirs": {_DEPLOY_PROJECT: [_DEPLOY_WORKING_DIR] * 3},
+            "config_files": {_DEPLOY_PROJECT: [_DEPLOY_CONFIG_FILES] * 3},
+            "running": {_DEPLOY_PROJECT},
+        }
+        spec.update(overrides)
+        return _FakeDocker(**spec)  # type: ignore[arg-type]
+
+    def test_the_running_deploy_stack_is_never_a_candidate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = self._deploy_docker()
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT, _DEPLOY_CLONE, "/w")) == []
+
+    def test_a_stopped_deploy_stack_is_still_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Liveness is the weakest guard — a stopped deploy stack must still be refused."""
+        fake = self._deploy_docker(running=set())
+        _patch(monkeypatch, fake)
+
+        assert orphan_compose_projects(_rooted(_WORKTREE_ROOT, _DEPLOY_CLONE, "/w")) == []
+
+    def test_nothing_of_the_deploy_stack_is_removed_by_a_full_reap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = self._deploy_docker(running=set())
+        _patch(monkeypatch, fake)
+
+        reap_orphan_compose_projects(_rooted(_DEPLOY_CLONE, "/w"))
+
+        assert fake.removed_containers == []
+        assert fake.removed_images == []

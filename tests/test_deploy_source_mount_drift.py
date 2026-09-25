@@ -38,13 +38,14 @@ DRIFT_MARKER = "runs a DIFFERENT source tree"
 
 
 def _docker_stub(*, running: bool, container_source: str, mount_type: str = "bind") -> str:
-    """A ``docker`` stub answering `compose ps` and `inspect` the way a live daemon would.
+    """A ``docker`` stub answering the `ps` label query and `inspect` the way a live daemon would.
 
-    ``inspect`` emits the ``<type> <source>`` line the wrapper's one templated call
-    produces. ``compose exec`` is answered as a silent success so the wrapper's final
-    hop needs no container; only what it says BEFORE dispatching is under test.
+    A ``ps`` row is ``<id> <service> <oneoff>`` — the label columns the wrapper's own
+    ``--format`` asks for. ``inspect`` emits the ``<type> <source>`` line the wrapper's
+    one templated call produces. ``compose exec`` is answered as a silent success so the
+    wrapper's final hop needs no container; only what it says BEFORE dispatching is under test.
     """
-    ps_reply = "echo teatree-worker-1" if running else "true"
+    ps_reply = "echo 'teatree-worker-1 teatree-worker False'" if running else "true"
     inspected = f"{mount_type} {container_source}".strip()
     return f"""#!/usr/bin/env bash
 if [ "$1" = inspect ]; then

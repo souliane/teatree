@@ -32,15 +32,23 @@ REPO_ROOT="${1:?usage: fast-forward-checkout.sh <repo-root>}"
 
 git -C "$REPO_ROOT" fetch --prune origin
 
+# Every path git reports below is relative to the checkout's TOPLEVEL, which is not
+# always the argument: a fork that vendors teatree passes `<fork>/vendor/teatree`, a
+# SUBDIRECTORY of the checkout git manages. Resolving those paths against the argument
+# doubles the prefix, so each dirty file reads as absent — `lossless_to_discard` then
+# calls it a lossless deletion and the `checkout` that follows dies on `pathspec ... did
+# not match`, wedging every deploy on a checkout carrying any dirty tracked file.
+TOPLEVEL="$(git -C "$REPO_ROOT" rev-parse --show-toplevel)"
+
 # The exact ref `git pull --ff-only` would merge. Without an upstream there is
 # nothing to compare against, so no dirt is provably lossless and none is touched.
-FF_TARGET="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+FF_TARGET="$(git -C "$TOPLEVEL" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
 
 retained=()
 
 # Blob sha of <rev>:<path>, or empty when that rev does not carry the path.
 blob_at() {
-    git -C "$REPO_ROOT" rev-parse --quiet --verify "$1:$2" 2>/dev/null || true
+    git -C "$TOPLEVEL" rev-parse --quiet --verify "$1:$2" 2>/dev/null || true
 }
 
 # True when discarding the local state of <path> destroys nothing: either the
@@ -49,10 +57,10 @@ blob_at() {
 lossless_to_discard() {
     local path="$1" target_blob="$2"
     [ -n "$target_blob" ] || return 1
-    if [ ! -e "$REPO_ROOT/$path" ]; then
+    if [ ! -e "$TOPLEVEL/$path" ]; then
         return 0
     fi
-    [ "$(git -C "$REPO_ROOT" hash-object -- "$path" 2>/dev/null || true)" = "$target_blob" ]
+    [ "$(git -C "$TOPLEVEL" hash-object -- "$path" 2>/dev/null || true)" = "$target_blob" ]
 }
 
 if [ -n "$FF_TARGET" ]; then
@@ -62,11 +70,11 @@ if [ -n "$FF_TARGET" ]; then
     while IFS= read -r -d '' path; do
         if [ -n "$(blob_at HEAD "$path")" ] && lossless_to_discard "$path" "$(blob_at "$FF_TARGET" "$path")"; then
             echo "deploy: discarding the local change to '$path' — its content already equals ${FF_TARGET}'s, so the fast-forward restores it byte-for-byte."
-            git -C "$REPO_ROOT" checkout HEAD -- "$path"
+            git -C "$TOPLEVEL" checkout HEAD -- "$path"
         else
             retained+=("$path")
         fi
-    done < <(git -C "$REPO_ROOT" diff --name-only -z HEAD)
+    done < <(git -C "$TOPLEVEL" diff --name-only -z HEAD)
 
     # Untracked paths the incoming commits would create. git refuses the merge for
     # these too, and removing one whose bytes the target already carries is equally
@@ -74,22 +82,26 @@ if [ -n "$FF_TARGET" ]; then
     while IFS= read -r -d '' path; do
         if lossless_to_discard "$path" "$(blob_at "$FF_TARGET" "$path")"; then
             echo "deploy: removing the untracked '$path' — ${FF_TARGET} carries that exact content."
-            rm -f "$REPO_ROOT/$path"
+            rm -f "$TOPLEVEL/$path"
         else
             retained+=("$path")
         fi
-    done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z)
+    done < <(git -C "$TOPLEVEL" ls-files --others --exclude-standard -z)
 fi
 
-if git -C "$REPO_ROOT" pull --ff-only; then
+# `merge.autostash` in the operator's own git config would silently stash the dirt this
+# script just decided to RETAIN, merge, and re-apply — leaving conflict markers in a
+# tree the contract above promises to leave untouched. Pinned off so the verdict is
+# this script's, not the ambient config's.
+if git -C "$TOPLEVEL" -c merge.autostash=false -c rebase.autostash=false pull --ff-only; then
     exit 0
 fi
 
-echo "deploy: FATAL — could not fast-forward $REPO_ROOT to ${FF_TARGET:-its upstream}." >&2
+echo "deploy: FATAL — could not fast-forward $TOPLEVEL to ${FF_TARGET:-its upstream}." >&2
 if [ "${#retained[@]}" -gt 0 ]; then
     echo "deploy: these paths hold content that is NOT in ${FF_TARGET:-the upstream}, so they were kept, never discarded:" >&2
     printf 'deploy:   %s\n' "${retained[@]}" >&2
-    echo "deploy: inspect each with 'git -C $REPO_ROOT diff -- <path>', then either move it to a branch or discard it with 'git -C $REPO_ROOT checkout HEAD -- <path>', and re-run the deploy." >&2
+    echo "deploy: inspect each with 'git -C $TOPLEVEL diff -- <path>', then either move it to a branch or discard it with 'git -C $TOPLEVEL checkout HEAD -- <path>', and re-run the deploy." >&2
 else
     echo "deploy: no local changes were retained, so the dirt is not the cause — read the git error above (diverged history, or an index lock / permission problem)." >&2
 fi

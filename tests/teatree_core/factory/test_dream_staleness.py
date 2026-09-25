@@ -112,9 +112,9 @@ class TestADeliberateOffIsANoteNotAFault:
 
         assert dream_fallen_behind(timezone.now()) is None
 
-    def test_a_force_off_override_is_not_behind(self) -> None:
+    def test_a_manual_off_override_is_not_behind(self) -> None:
         _dream_loop(enabled=True)
-        LoopState.objects.override(DreamRunMarker.NAME, on=False)
+        Loop.objects.set_manual_override(DreamRunMarker.NAME, runs=False, reason="test override")
 
         assert dream_fallen_behind(timezone.now()) is None
 

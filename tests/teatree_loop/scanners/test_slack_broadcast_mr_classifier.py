@@ -10,11 +10,23 @@ import subprocess
 
 import pytest
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier, _classifier_head_sha
 
 GH_URL = "https://github.com/team/project/pull/42"
 GL_URL = "https://gitlab.example.com/team/project/-/merge_requests/7"
+
+
+@pytest.fixture(autouse=True)
+def _routed_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
+        return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
+
+    monkeypatch.setattr(
+        "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
+        _resolve,
+    )
 
 
 def _completed(stdout: str, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
@@ -27,7 +39,7 @@ class TestVerdicts:
             "teatree.utils.run.run_allowed_to_fail",
             lambda *a, **k: _completed('{"state": "MERGED", "reviewDecision": "APPROVED", "author": {"login": "me"}}'),
         )
-        [state] = GlabGhMrStateClassifier(github_token="ghp-fake")([GH_URL])
+        [state] = GlabGhMrStateClassifier()([GH_URL])
         assert state.merged is True
         assert state.approved is True
         assert state.author_username == "me"
@@ -37,7 +49,7 @@ class TestVerdicts:
             "teatree.utils.run.run_allowed_to_fail",
             lambda *a, **k: _completed('{"state": "opened", "upvotes": 0, "author": {"username": "colleague"}}'),
         )
-        [state] = GlabGhMrStateClassifier(glab_token="glpat-fake")([GL_URL])
+        [state] = GlabGhMrStateClassifier()([GL_URL])
         assert state.merged is False
         assert state.approved is False
         assert state.author_username == "colleague"
@@ -49,13 +61,41 @@ class TestVerdicts:
 
 
 class TestFailureIsNotAVerdict:
+    def test_empty_route_never_inherits_ambient_gh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+        monkeypatch.setenv("GH_TOKEN", "ambient-token")
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr(
+            "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
+            lambda *_a, **_k: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
+        )
+
+        with pytest.raises(ScannerError, match="refusing ambient gh authentication"):
+            GlabGhMrStateClassifier()([GH_URL])
+
+        assert calls == []
+
+    def test_empty_route_never_inherits_ambient_glab(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+        monkeypatch.setenv("GITLAB_TOKEN", "ambient-token")
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+        monkeypatch.setattr(
+            "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
+            lambda *_a, **_k: ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.UNREADABLE),
+        )
+
+        with pytest.raises(ScannerError, match="gitlab_token_pass_key"):
+            GlabGhMrStateClassifier()([GL_URL])
+
+        assert calls == []
+
     def test_nonzero_return_code_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "teatree.utils.run.run_allowed_to_fail",
             lambda *a, **k: _completed("", returncode=1, stderr="token expired"),
         )
         with pytest.raises(ScannerError):
-            GlabGhMrStateClassifier(github_token="ghp-fake")([GH_URL])
+            GlabGhMrStateClassifier()([GH_URL])
 
     def test_garbage_json_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -63,7 +103,7 @@ class TestFailureIsNotAVerdict:
             lambda *a, **k: _completed("not json at all"),
         )
         with pytest.raises(ScannerError):
-            GlabGhMrStateClassifier(glab_token="glpat-fake")([GL_URL])
+            GlabGhMrStateClassifier()([GL_URL])
 
 
 class TestClassifierHeadSha:

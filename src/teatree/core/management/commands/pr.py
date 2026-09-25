@@ -585,9 +585,9 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         a naive ``"## Test Plan" in body`` scan that could clobber a colleague's
         unrelated comment.
 
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
-        ``draft_or_ask``): the call is refused with no upload or host side
-        effect when no recorded :class:`OnBehalfApproval` matches
+        Gated by the active posture (BLOCK under a forbidding one): the call is
+        refused with no upload or host side effect when no recorded
+        :class:`OnBehalfApproval` matches
         ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
         is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
         value even though the command is now named ``post-test-plan``. The gate

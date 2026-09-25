@@ -1,6 +1,8 @@
 # teatree headless deployment — one image, five services
 # (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
 # installs teatree once and worker/admin run it.
+# Agent settings and plugin state live only in the dedicated named volumes (#3359);
+# host credentials are not reused by the factory runtimes.
 #
 # The box-side env file `teatree.env` (next to this file, gitignored, written by
 # the deploy workflow) supplies the non-secret runtime env and the Anthropic auth
@@ -18,14 +20,30 @@
 # baked credential helper then interpolated the empty value and authenticated with
 # an EMPTY password, which GitLab reports as `HTTP Basic: Access denied` — read for
 # a whole day as a missing branch rather than a missing token. Declaring it here is
-# what a `docker exec` inherits; the entrypoint's pass read stays as the fallback
-# for a container created without it (the watchdog cannot read the host's pass).
+# what a `docker exec` inherits; an explicitly named bootstrap pass entry remains
+# available to a container created without it (the watchdog cannot read the host's pass).
 # The value is interpolated from the deploying host, never written here: deploy.sh
-# and deploy/t3 both resolve it from `pass` (TEATREE_GITLAB_TOKEN_PASS_PATH,
-# default `gitlab/pat`). Unset, it renders empty and nothing changes.
+# and deploy/t3 resolve it from `pass` only when TEATREE_GITLAB_TOKEN_PASS_PATH is
+# explicitly set. Unset, it renders empty and nothing changes.
 # NOTION_TOKEN crosses the same boundary for the same reason, resolved by deploy.sh
-# from NOTION_TOKEN_PASS_PATH (default `notion/integration-token`).
+# only from an explicitly set NOTION_TOKEN_PASS_PATH (no default entry).
 name: teatree
+
+# CREATE-TIME environment every service must carry, merged into each `environment:`
+# below rather than set on the x-teatree-common anchor: a YAML merge key REPLACES the
+# key it merges into, so a service declaring its own `environment:` shadows the
+# anchor's outright and the pin renders away silently.
+#
+# GNUPGHOME is pinned here as well as in the image because correctness must not depend
+# on image freshness. Compose sets what every `docker exec` / `compose exec` /
+# `compose run` starts from, and applies it on `up -d` with no rebuild — so a container
+# whose image predates the container-local home still resolves it. deploy/Dockerfile's
+# ENV and deploy/entrypoint.sh's CONTAINER_GNUPG_HOME are the other two copies, each
+# covering a venue the others cannot (a bare `docker run`; the tree the entrypoint
+# seeds). tests/test_deploy_gnupg_lock_isolation.py holds the three in sync.
+x-teatree-create-env: &teatree-create-env
+  TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
+  GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
 
 # The PROJECT interpreter root every worktree virtualenv is built against: uv's
 # own default under the container HOME, bind-mounted from the host at path
@@ -42,15 +60,18 @@ name: teatree
 # `docker run` without this file therefore gets no shared root and falls back to
 # the image's tool-plane value — correct, because without the bind there is no
 # shared root to point at.
-x-uv-project-python-root: &uv-project-python-root /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+x-uv-project-python-root: &uv-project-python-root ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
 
+# Docker's default json-file driver never rotates (the worker log once grew to 516 MB):
+# 5 x 50m caps each service at 250 MB. A logging change applies on the next recreate.
 x-teatree-logging: &teatree-logging
   driver: json-file
   options:
-    max-size: "10m"
-    max-file: "3"
+    max-size: "50m"
+    max-file: "5"
 
 x-teatree-common: &teatree-common
+  logging: *teatree-logging
   # Pull a PUBLISHED self-contained image by setting TEATREE_IMAGE (the publish
   # workflow's lockfile-keyed tag, #3451) in a `.env` next to this file or in the
   # deploy shell; leaving it unset builds locally from deploy/Dockerfile (the
@@ -59,6 +80,9 @@ x-teatree-common: &teatree-common
   # the same image; the watchdog's `up -d --no-recreate` never recreates a running
   # container on a value change regardless.
   image: ${TEATREE_IMAGE:-teatree-headless:latest}
+  entrypoint:
+    - bash
+    - ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh
   build:
     context: ..
     dockerfile: deploy/Dockerfile
@@ -79,7 +103,6 @@ x-teatree-common: &teatree-common
     # local runs take their config from the host environment and the DB instead.
     - path: teatree.env
       required: false
-  logging: *teatree-logging
   # All services mount all state so admin and worker share ONE db.sqlite3 and one
   # editable install. The worktrees and workspaces are HOST bind mounts at their
   # canonical absolute paths, so the container and the host see the same files
@@ -180,13 +203,24 @@ x-teatree-common: &teatree-common
     # invalid and DELETED it, ~1 GB a flip, 37 rebuilds to a 100% full disk
     # (#4642). rw: `uv python install` provisions this root at runtime.
     #
+    # Bound at the HOST's address on BOTH sides — like the deploy checkout above,
+    # and unlike the state binds, which rebase a fixed container path onto the
+    # host home. It has to be: uv writes its `cpython-<minor>` aliases as ABSOLUTE
+    # symlinks into this root and has no relative mode, so whatever the CONTAINER
+    # calls this directory is what the HOST reads back. Hardcoding the container
+    # coordinate made every alias point inside the container on any host whose
+    # home is not `/home/teatree` — dangling every one of them, and on a Linux
+    # host (same platform tag) overwriting the host's own interpreter. Where the
+    # variable takes its default the two spellings coincide, so the box is
+    # unchanged. Pinned by tests/test_deploy_interpreter_plane.py.
+    #
     # Deliberately the narrow `.../uv/python`, not the whole `.../uv`: only
     # `python/` is named by a recorded `home`, while `uv/tools/` is precisely
     # what UV_TOOL_DIR keeps container-local on teatree_uv and `uv/credentials/`
     # has no business crossing the venue boundary.
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
-      target: /home/teatree/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+      target: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
     # The host's PATH bin dir, so the CONTAINER can write the host `t3` launcher
     # (#3232). Retiring the host CLI leaves nothing on the host able to write it,
     # which would make a relocated checkout unrepairable; this one directory is
@@ -213,13 +247,25 @@ x-teatree-common: &teatree-common
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg
       target: /home/teatree/.gnupg
-    # Backing store for the CONTAINER-LOCAL GPG home (deploy/entrypoint.sh's
-    # resolve_gnupg_home). gpg-agent and keyboxd bind their `S.*` sockets inside
-    # GNUPGHOME, and the bind mount above cannot host a unix socket when the host
-    # is not Linux (Docker Desktop for Mac serves it over `fakeowner`), so keyboxd
-    # dies and gpg finds zero keys. The entrypoint copies the key material here,
-    # where a socket binds normally. On the box the bind mount works in place and
-    # this stays EMPTY and unused.
+    # Factory-owned agent homes. They are shared between init and runtime roles so
+    # `t3 setup` is the sole skill/plugin reconciler, but never bind the operator's
+    # Claude/Codex settings, skills, sessions, memories, or credentials into the
+    # factory. Fresh volumes inherit the image's non-root ownership.
+    - teatree_claude_home:/home/teatree/.claude
+    - teatree_codex_home:/home/teatree/.codex
+    - teatree_agents_home:/home/teatree/.agents
+    # Backing store for the CONTAINER-LOCAL GPG home — the ONE `GNUPGHOME` this file and
+    # deploy/Dockerfile pin, seeded by deploy/entrypoint.sh's seed_container_gnupg_home.
+    # The reason is the DOTLOCK, which is socket-independent: a keybox shared across two
+    # PID namespaces carries a lock naming a pid/hostname the other side cannot match, so
+    # neither will judge it stale and both wait forever. Host `keyboxd` takes that
+    # lock at daemon start and holds it for its whole lifetime, so every container read
+    # against the shared home blocks at ZERO concurrency. Secondarily, gpg-agent and
+    # keyboxd bind their `S.*` sockets inside GNUPGHOME, which a bind mount served over a
+    # file-sharing transport may not host at all. The entrypoint copies the key material
+    # here, where the lock is the container's own. On the box the bind mount works in
+    # place, so the entrypoint symlinks this at the host home instead and the services
+    # keep sharing ONE gpg-agent.
     #
     # tmpfs, not a bind and not the container's own disk layer: it holds a copy of
     # the host's PRIVATE KEY material, so it belongs in RAM and must vanish with
@@ -232,28 +278,10 @@ x-teatree-common: &teatree-common
     # which lands as octal 3361 (`d-wxrwS--t`) and the non-root user cannot even
     # create the home inside it.
     - type: tmpfs
-      target: /home/teatree/.gnupg-run
+      target: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
       tmpfs:
         size: 16m
         mode: 0o1777
-    # Claude session plane: session transcripts + per-project memory corpus —
-    # the dream pass's input AND product (#3277 classifies dream's use as PRODUCT
-    # DATA: it reads transcripts and maintains */memory; runtime STATE still never
-    # resolves from assistant memory). Without this the containerized dream pass
-    # globs an empty ~/.claude/projects and every nightly consolidation is a
-    # permanent no-op (0 members). Path identity; rw — dream phases 4-6 write
-    # cross-links / MEMORY.md / decay archives, and container-run headless sessions
-    # persist their transcripts to the backed-up host disk. Scoped to projects/
-    # only, never the whole ~/.claude — the reason is CREDENTIALS
-    # (~/.claude/.credentials.json) which must stay host-only, NOT settings.
-    # settings.json is non-secret and needs its own provisioning: the init role
-    # generates it from the image-baked deploy/claude-settings.template.json (+ env
-    # overrides) so the headless agent's model / permission mode / autoMode grants
-    # / tool-use concurrency are configurable rather than stock CLI defaults
-    # (#3359 — see deploy/entrypoint.sh seed_claude_settings).
-    - type: bind
-      source: ${TEATREE_HOST_HOME:-/home/teatree}/.claude/projects
-      target: /home/teatree/.claude/projects
     - teatree_uv:/opt/teatree/uv
     # The daemon control channel. `worktree provision` builds the overlay's base
     # image and `worktree start` brings that stack up, so the WORKER — the service
@@ -316,6 +344,7 @@ services:
     # ephemeral root. The `${TEATREE_DISK_TMPDIR:-/var/tmp}` default matches
     # deploy/entrypoint.sh's setup_disk_tmpdir.
     environment:
+      <<: *teatree-create-env
       TEATREE_ROLE: init
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       # See the header: what a `docker exec` inherits, unlike the entrypoint's export.
@@ -349,6 +378,7 @@ services:
   teatree-worker:
     <<: *teatree-common
     environment:
+      <<: *teatree-create-env
       TEATREE_ROLE: worker
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
@@ -435,6 +465,7 @@ services:
   teatree-admin:
     <<: *teatree-common
     environment:
+      <<: *teatree-create-env
       TEATREE_ROLE: admin
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
@@ -471,13 +502,16 @@ services:
 
   # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every
   # Slack-enabled overlay, writing inbound DMs/mentions/reactions to the JSONL
-  # queue on the shared data mount that the worker's drain-queue slot drains.
+  # queue on the shared data mount that the worker's mention scanner drains on
+  # its tick. It runs no drain of its own: an inbound DM is recorded and the
+  # answer cycle woken in-process.
   # Separate from the worker so a WebSocket reconnect never disturbs the loop
   # cadence, and vice-versa. Harmless on a box with no Slack overlay: the
   # process exits and `restart: unless-stopped` retries.
   teatree-slack-listener:
     <<: *teatree-common
     environment:
+      <<: *teatree-create-env
       TEATREE_ROLE: slack-listener
       UV_PYTHON_INSTALL_DIR: *uv-project-python-root
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
@@ -513,6 +547,9 @@ services:
   # only the docker socket + a read-only view of this checkout.
   teatree-watchdog:
     image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    entrypoint:
+      - bash
+      - ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -522,6 +559,7 @@ services:
         TEATREE_UID: ${TEATREE_UID:-1001}
         TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
     environment:
+      <<: *teatree-create-env
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"
       # Where deploy.sh's single-convergence flock lands inside THIS container — the
@@ -599,11 +637,11 @@ services:
     # restart: always (NOT unless-stopped) — it must resurrect even after a manual
     # stop followed by a daemon restart, so the supervisor is never silently gone.
     restart: always
+    logging: *teatree-logging
     # The socket is the only channel it needs; the owner DM goes out via a
     # `compose exec` inside an app container, not from this container's network.
     network_mode: "none"
     init: true
-    logging: *teatree-logging
     # 256m: measured at 61 MiB, ~48% of the old 128m cap. It is the supervisor
     # that resurrects everything else, so it is the last container that should
     # ever OOM; 256m buys ~4x observed peak for 128 MiB of ceiling that stays
@@ -614,6 +652,11 @@ services:
 volumes:
   teatree_src:
   teatree_uv:
+  # The factory's agent configuration boundary. These volumes persist across
+  # recreation without importing anything from the deploying user's home.
+  teatree_claude_home:
+  teatree_codex_home:
+  teatree_agents_home:
   # The container's OWN clone root — the source clones provisioning creates
   # worktrees from. A named volume, NOT a bind of the host's `~/workspace`,
   # because sharing checkouts across the boundary CANNOT work: a git worktree

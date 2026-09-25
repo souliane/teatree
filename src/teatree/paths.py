@@ -71,9 +71,10 @@ def canonical_db_in(data_dir: Path, *, env: Mapping[str, str]) -> Path:
 TRUE_CANONICAL_DB = canonical_db_in(_TRUE_CANONICAL_DATA_DIR, env=os.environ)
 
 # A repo root that is definitionally NOT a worktree (no ``.git`` file), so
-# ``ControlDb.for_repo`` takes its primary branch. Lets ``ControlDb.primary``
-# reuse the one seam instead of re-deriving the env precedence.
-_PRIMARY_CLONE_SENTINEL = Path("/nonexistent-primary-clone")
+# ``ControlDb.for_repo`` takes its primary branch. Lets ``ControlDb.primary`` and
+# ``_hook_state.shared_hook_state_root`` reuse the one seam instead of
+# re-deriving the env precedence.
+PRIMARY_CLONE_SENTINEL = Path("/nonexistent-primary-clone")
 
 
 class ControlDbResolution(NamedTuple):
@@ -374,7 +375,7 @@ class ControlDb:
         a Django path come to disagree about the same fact.
         """
         home = self.home if self.home is not None else Path.home()
-        return resolve_data_dir(env=dict(self.env), home=home, repo_root=_PRIMARY_CLONE_SENTINEL).path
+        return resolve_data_dir(env=dict(self.env), home=home, repo_root=PRIMARY_CLONE_SENTINEL).path
 
     def primary(self) -> Path:
         """The PRIMARY control DB — the same answer a main clone resolves to.
@@ -385,7 +386,7 @@ class ControlDb:
         :meth:`for_repo` against a synthetic primary-clone root so the env precedence
         has ONE implementation, never a second copy that can drift.
         """
-        return self.for_repo(_PRIMARY_CLONE_SENTINEL).path
+        return self.for_repo(PRIMARY_CLONE_SENTINEL).path
 
     def divergence_message(self, repo_root: Path) -> str | None:
         """The message naming both DBs when *repo_root*'s answer is not the primary.
@@ -496,6 +497,18 @@ _CONTROL_DB_ARTIFACT_GLOBS = ("{name}*", "*/{name}*")
 
 class PathHelpers:
     """Module-level helpers grouped so the module keeps a readable public surface."""
+
+    @staticmethod
+    def true_canonical_data_dir() -> Path:
+        """The machine's ONE data dir — never the auto-isolated per-worktree sibling.
+
+        :func:`data_dir_root` answers "where does this process keep its data", which a
+        process running inside a checkout resolves to ``teatree-worktrees/<hash>/``. For a
+        handoff to a reader that is not this process — the ``deploy/t3`` wrapper on the
+        host — that is the wrong dir twice over: nothing looks there, and the worktree
+        reaper deletes it.
+        """
+        return _TRUE_CANONICAL_DATA_DIR
 
     @staticmethod
     def core_repo_root(*, root: Path | None = None) -> Path | None:

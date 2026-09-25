@@ -39,6 +39,7 @@ from pathlib import Path
 
 from teatree.docker.workflow import is_running_in_container
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.uv_constraints import uv_tool_install_hint
 
 #: A client that gives up before the server finishes booting reports only
 #: ``Connection closed``, indistinguishable from a crash. Claude Code allows ~30s by
@@ -71,10 +72,11 @@ _STALE_ENV_MARKERS = ("ImportError", "ModuleNotFoundError", "cannot import name"
 _UNREACHABLE_DB_MARKERS = ("unable to open database file", "OperationalError")
 _STDERR_EXCERPT_LINES = 12
 
+_STALE_ENV_REINSTALL = uv_tool_install_hint("uv tool install --editable . --overrides uv-overrides.txt --reinstall")
 _STALE_ENV_REMEDY = (
     "the installed dists have drifted behind pyproject.toml, so the server dies on "
     "import before it writes a byte. Repair the env that actually runs `t3`: "
-    "`uv tool install --editable . --overrides uv-overrides.txt --reinstall` from the "
+    f"`{_STALE_ENV_REINSTALL}` from the "
     "teatree clone (or `uv sync` for a project venv). Run it after EVERY update — this "
     "is the #4049 declared-versus-installed skew class."
 )

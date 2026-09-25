@@ -21,11 +21,15 @@ The four claims below are the contract:
 """
 
 from dataclasses import dataclass, field
+from datetime import timedelta
+from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from teatree.core.models import DmContext, PendingChatInjection, Task, Ticket
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.orchestration import WorkOrigin, dispatch_work, find_coverage
 from teatree.loop.slack_answer.vocabulary import InboundReaction
@@ -59,7 +63,7 @@ class RecordingBackend:
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))
-        return {"ok": True}
+        return {"ok": True, "ts": str(Decimal(ts) + Decimal("0.000001"))}
 
     def open_dm(self, user_id: str) -> str:
         _ = user_id
@@ -87,7 +91,10 @@ class RecordingBackend:
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
         """Reflect the posts this backend recorded, so the read-back sees a real delivery."""
         _ = channel
-        return [{"ts": thread_ts, "text": text, "bot_id": "B-bot"} for _c, _t, text in self.replies]
+        return [
+            {"ts": str(Decimal(ts) + Decimal("0.000001")), "text": text, "bot_id": "B-bot"}
+            for _c, ts, text in self.replies
+        ]
 
     @property
     def emojis(self) -> list[str]:
@@ -166,6 +173,57 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
         assert InboundReaction.IN_FLIGHT in backend.emojis
         assert InboundReaction.DONE not in backend.emojis
 
+    def test_confirmed_in_flight_reaction_is_a_response_not_task_fulfillment(self) -> None:
+        row = _row("Please fix the rounding", ts="1.1")
+        backend = RecordingBackend()
+
+        run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=_reader(_work("fix rounding")))
+
+        row.refresh_from_db()
+        assert row.answer_kind == PendingChatInjection.AnswerKind.DELEGATED
+        assert row.loop_response_confirmed_at is not None
+        PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
+        assert not [
+            report for report in LifecycleIncidentDetector().detect() if report.payload["kind"] == "inbound_unanswered"
+        ]
+        assert Task.objects.filter(status=Task.Status.PENDING).exists()
+
+    def test_unconfirmed_in_flight_reaction_leaves_message_retryable_and_detectable(self) -> None:
+        class RefusingBackend(RecordingBackend):
+            def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+                if emoji == InboundReaction.IN_FLIGHT:
+                    return {"ok": False}
+                return super().react(channel=channel, ts=ts, emoji=emoji)
+
+        row = _row("Please fix the rounding", ts="1.2")
+        result = run_slack_answer_cycle(
+            messaging_resolver=_resolver(RefusingBackend()), reader=_reader(_work("fix rounding"))
+        )
+
+        row.refresh_from_db()
+        assert result.errors == 1
+        assert row.loop_replied_at is None
+        assert row.loop_response_confirmed_at is None
+        PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
+        assert any(report.payload["kind"] == "inbound_unanswered" for report in LifecycleIncidentDetector().detect())
+
+    def test_retried_in_flight_already_reacted_confirms_response(self) -> None:
+        class AlreadyReactedBackend(RecordingBackend):
+            def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+                if emoji == InboundReaction.IN_FLIGHT:
+                    return {"ok": False, "error": "already_reacted"}
+                return super().react(channel=channel, ts=ts, emoji=emoji)
+
+        row = _row("Please fix the rounding", ts="1.3")
+        result = run_slack_answer_cycle(
+            messaging_resolver=_resolver(AlreadyReactedBackend()), reader=_reader(_work("fix rounding"))
+        )
+
+        row.refresh_from_db()
+        assert result.dispatched == 1
+        assert result.errors == 0
+        assert row.loop_response_confirmed_at is not None
+
 
 class TestAlreadyCoveredDispatchesNothingAndSaysSo:
     """Claim 2 — a live lane on the same request wins; the loop reports it instead."""
@@ -178,7 +236,7 @@ class TestAlreadyCoveredDispatchesNothingAndSaysSo:
         first = Task.objects.get()
 
         # Same request, different words, a later message.
-        _row("did anyone look at the interest-rate rounding on the PDF yet", ts="2.0")
+        second = _row("did anyone look at the interest-rate rounding on the PDF yet", ts="2.0")
         second_backend = RecordingBackend()
         report = run_slack_answer_cycle(
             messaging_resolver=_resolver(second_backend),
@@ -189,6 +247,8 @@ class TestAlreadyCoveredDispatchesNothingAndSaysSo:
         assert report.covered == 1
         assert Task.objects.count() == 1, "a rival lane was minted for a request already covered"
         assert second_backend.replies, "the owner was told nothing about the request being covered"
+        second.refresh_from_db()
+        assert second.loop_response_confirmed_at is not None
         body = second_backend.replies[0][2]
         assert str(first.pk) in body, f"the reply does not name the covering lane: {body!r}"
 

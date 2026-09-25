@@ -33,8 +33,19 @@ sites — that global equality is precisely the mistake the split exists to avoi
 The two tiers may happen to name the same version when the SDK's bundle catches up
 with the runtime's choice; that coincidence is not a coupling, and either constant
 moves on its own.
-"""
 
+Both tiers reconcile pinned STRINGS, which agree with each other whatever the wheel
+ships. :class:`TestTheBundledCliIsTheBinaryThatActuallyRuns` is the third concern:
+it opens the installed wheel, execs its bundled CLI, and holds that binary to the
+:data:`_FRONTIER_MODEL_CLI_FLOOR` — the gap that let a bundle too old for
+``claude-opus-5`` sit here for five days with every lane green (#239).
+"""
+# test-path: cross-cutting — scans every Dockerfile/workflow install site plus the SDK's
+# installed wheel, and cross-checks teatree.agents.model_tiering; no single src/teatree/ mirror.
+
+import importlib.metadata
+import importlib.util
+import platform
 import re
 import shutil
 import subprocess
@@ -42,9 +53,11 @@ import tomllib
 from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from teatree.agents.model_tiering import MODEL_MINIMUM_CLI_VERSIONS, TIER_MODELS
 from tests._git_repo import make_git_repo
 
 _GIT = shutil.which("git") or "git"
@@ -53,6 +66,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SELF = Path(__file__).resolve()
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
+
+_SDK_PACKAGE = "claude-agent-sdk"
+_SDK_MODULE = "claude_agent_sdk"
 
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
@@ -66,9 +82,14 @@ _SDK_BUNDLED_CLI_VERSION = "2.1.277"
 #: The deployed runtime's pin: the version the factory host runs today.
 _RUNTIME_CLI_VERSION = "2.1.277"
 
+_FRONTIER_MODEL = TIER_MODELS["frontier"]
+_FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
+
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
 
+#: Fork delta: this fork runs the eval lanes from its own root pipeline, so the vendored
+#: core carries no `.gitlab-ci.yml`. Upstream's copy of this set keeps that entry.
 #: The oldest CLI the API accepts for the models teatree dispatches. Under it every
 #: dispatch dies with ``400 ... Claude Code 2.1.233 does not support this model; version
 #: 2.1.251 or newer is required`` BEFORE the task is claimed, so nothing local sees it.
@@ -111,6 +132,9 @@ _SKIP_DIRS = frozenset(
 
 _INSTALL_PATTERN = re.compile(r"npm install -g [^\n]*?@anthropic-ai/claude-code(?:@(?P<version>[0-9][^\s\\'\"]*))?")
 _PYRIGHT_PATTERN = re.compile(r"npm install -g [^\n]*?\bpyright(?:@(?P<version>[0-9][^\s\\'\"]*))?")
+
+#: ``claude --version`` prints ``<version> (Claude Code)``.
+_CLI_VERSION_PATTERN = re.compile(r"(\d+\.\d+\.\d+)")
 
 
 def _is_skipped_dir(name: str) -> bool:
@@ -231,6 +255,58 @@ def _sdk_pin() -> str:
 
 def _as_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
+
+
+def _bundled_cli_binary() -> Path:
+    """The CLI inside the installed wheel, located the way ``_find_bundled_cli`` locates it."""
+    spec = importlib.util.find_spec(_SDK_MODULE)
+    assert spec is not None, f"{_SDK_MODULE} is not installed"
+    assert spec.submodule_search_locations, f"{_SDK_MODULE} exposes no package directory"
+    name = "claude.exe" if platform.system() == "Windows" else "claude"
+    return Path(next(iter(spec.submodule_search_locations))) / "_bundled" / name
+
+
+def _probe_cli_version(binary: Path) -> str:
+    """*binary*'s reported version, or a raised CAUSE — never a value standing in for one.
+
+    A bundle this venue cannot read is an UNVERIFIED pin, not a passing one, and the two are
+    indistinguishable once a probe is allowed to degrade to a skip or a default.
+    """
+    if not binary.is_file():
+        absent = (
+            f"no bundled CLI at {binary}: the pinned wheel is not installed here, "
+            "or the SDK came from an sdist with no bundled binary"
+        )
+        raise RuntimeError(absent)
+    try:
+        probed = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=120, check=False)
+    except OSError as error:
+        unrunnable = (
+            f"cannot execute {binary} here ({error}). The wheel is platform-specific, so run the "
+            "suite in the venue whose venv matches this platform."
+        )
+        raise RuntimeError(unrunnable) from error
+    if probed.returncode != 0:
+        refused = f"{binary} --version exited {probed.returncode}: {probed.stderr.strip()!r}"
+        raise RuntimeError(refused)
+    reported = _CLI_VERSION_PATTERN.match(probed.stdout.strip())
+    if reported is None:
+        unparsable = f"{binary} --version printed {probed.stdout.strip()!r}, which carries no version"
+        raise RuntimeError(unparsable)
+    return reported.group(1)
+
+
+@cache
+def _bundled_cli_version() -> str:
+    """``--version`` from the bundled CLI of the installed wheel, which must BE the pinned one."""
+    installed = importlib.metadata.version(_SDK_PACKAGE)
+    if installed != _PINNED_SDK_VERSION:
+        unpinned = (
+            f"this environment has {_SDK_PACKAGE}=={installed}, not the pinned {_PINNED_SDK_VERSION}; "
+            "run `uv sync` so the probe reads the wheel the pin actually names."
+        )
+        raise RuntimeError(unpinned)
+    return _probe_cli_version(_bundled_cli_binary())
 
 
 class TestTheScanRootSpansTheWholeCheckout:
@@ -393,6 +469,14 @@ class TestTheRuntimeTierIsPinnedIndependently:
             f"the runtime pin {_RUNTIME_CLI_VERSION} trails the SDK-bundled {_SDK_BUNDLED_CLI_VERSION}."
         )
 
+    def test_the_runtime_clears_the_frontier_models_floor_too(self) -> None:
+        # The runtime tier is the one that execs the GLOBAL binary, so it needs the floor on
+        # its own account — the ordering assertion above only chains it to the bundle.
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_FRONTIER_MODEL_CLI_FLOOR), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} is older than {_FRONTIER_MODEL_CLI_FLOOR}, so every "
+            f"`{_FRONTIER_MODEL}` call the deployed box makes is refused."
+        )
+
     def test_pyright_is_pinned_in_the_runtime_image(self) -> None:
         # Installed in the same `npm install -g` line, with the same unpinned-drift
         # exposure: it provides the `pyright-langserver` the pyright-lsp plugin execs.
@@ -401,6 +485,77 @@ class TestTheRuntimeTierIsPinnedIndependently:
         assert versions == {_PYRIGHT_VERSION}, (
             f"deploy/Dockerfile must install pyright@{_PYRIGHT_VERSION}; got {versions or 'no install'}."
         )
+
+
+class TestTheBundledCliIsTheBinaryThatActuallyRuns:
+    """The third concern: the version INSIDE the wheel, which neither tier above reads.
+
+    Both tiers agree pinned STRINGS with each other, and a string agrees with a string whatever
+    the wheel ships. So a bundle below what the frontier model serves keeps every lane green
+    while ``_find_cli()`` — which returns this binary before any ``shutil.which`` fallback —
+    execs a CLI that refuses every call (#239).
+    """
+
+    def test_the_bundled_constant_is_what_the_wheel_actually_ships(self) -> None:
+        assert _bundled_cli_version() == _SDK_BUNDLED_CLI_VERSION, (
+            f"claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude {_bundled_cli_version()}, but "
+            f"_SDK_BUNDLED_CLI_VERSION says {_SDK_BUNDLED_CLI_VERSION}. Re-derive the constant from the "
+            "wheel and re-pin every eval/test site to it — the eval tier tracks the bundle, and a "
+            "hand-copied constant is the one thing in this file nothing else measures."
+        )
+
+    def test_the_bundled_cli_serves_the_frontier_model(self) -> None:
+        assert _as_tuple(_bundled_cli_version()) >= _as_tuple(_FRONTIER_MODEL_CLI_FLOOR), (
+            f"the wheel of claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude {_bundled_cli_version()}, "
+            f"older than the {_FRONTIER_MODEL_CLI_FLOOR} that serves `{_FRONTIER_MODEL}`. Every SDK-driven "
+            "agent execs this binary, so planning is down factory-wide until the SDK pin moves."
+        )
+
+
+class TestTheProbeRefusesRatherThanReportAClean:
+    """The controls: a probe that degraded on unreadable input would pass both assertions above."""
+
+    def test_an_absent_bundle_raises_its_cause(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            RuntimeError,
+            match="not installed here, or the SDK came from an sdist with no bundled binary",
+        ):
+            _probe_cli_version(tmp_path / "claude")
+
+    def test_a_binary_that_reports_no_version_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.write_text("#!/bin/sh\necho 'Claude Code'\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+        with pytest.raises(RuntimeError, match="carries no version"):
+            _probe_cli_version(binary)
+
+    def test_a_binary_that_exits_non_zero_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.write_text("#!/bin/sh\necho boom >&2\nexit 3\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+        with pytest.raises(RuntimeError, match="exited 3"):
+            _probe_cli_version(binary)
+
+    def test_an_os_error_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.touch()
+
+        with (
+            patch.object(subprocess, "run", side_effect=OSError("Exec format error")),
+            pytest.raises(RuntimeError, match=r"cannot execute.*wheel is platform-specific"),
+        ):
+            _probe_cli_version(binary)
+
+    def test_an_installed_sdk_version_mismatch_raises_its_cause(self) -> None:
+        _bundled_cli_version.cache_clear()
+        with (
+            patch.object(importlib.metadata, "version", return_value="0.2.151"),
+            pytest.raises(RuntimeError, match=r"has claude-agent-sdk==0\.2\.151, not the pinned 0\.2\.157"),
+        ):
+            _bundled_cli_version()
+        _bundled_cli_version.cache_clear()
 
 
 class TestEveryPinClearsTheApiFloor:

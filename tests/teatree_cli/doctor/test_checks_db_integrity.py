@@ -352,10 +352,11 @@ class TestTheHostProjectionIsCurrent:
 
 
 class TestWriterClassificationIsFalsifiable:
-    """The writers gate's classification, proven in BOTH directions.
+    """The writers gate is proven in BOTH directions.
 
-    It is pinned at the OS read in the doctor smoke tests, so a stub that let the
-    wrong answer pass would retire the flake without retiring the defect.
+    Its OS read is pinned in the doctor smoke tests, so only the classification is left to
+    prove here — and a stub that let the wrong answer pass would retire the flake without
+    retiring the defect.
     """
 
     def test_a_holder_is_reported_and_fails(self, capsys: pytest.CaptureFixture[str]) -> None:

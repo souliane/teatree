@@ -1,44 +1,20 @@
-"""Loop control as a user-visible round trip (#3162), and the starved chip (#4185).
+"""The fail-open gate toggle on the loops page, and the starved chip (#4185).
 
-Pause flips the row to held and swaps the verb to resume, resume restores, and
-the fail-open gate refuses without the exact confirm phrase. A loop the preset admits
-with no timer chain behind it shows a ``starved`` chip until the chain is headed.
+The gate refuses without the exact confirm phrase and turns on with it. A loop the
+preset admits with no timer chain behind it shows a ``starved`` chip until the chain
+is headed.
 """
 
 from http import HTTPStatus
 
 import pytest
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_preset import Mode, ModeOverride
 from teatree.loops.registry import iter_loops
 from teatree.loops.timer_reconciler import ensure_loop_timers
-
-
-def _loop_row(page: Page, name: str = "e2e_loop") -> Locator:
-    return page.locator("tr").filter(has_text=name)
-
-
-@pytest.mark.usefixtures("seeded_board")
-def test_pause_flips_to_held_and_swaps_the_verb(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/loops/")
-    _loop_row(page).get_by_role("button", name="pause").click()
-    row = _loop_row(page)
-    expect(row).to_contain_text("held")
-    expect(row.get_by_role("button", name="resume")).to_be_visible()
-    expect(row.get_by_role("button", name="pause")).to_have_count(0)
-
-
-@pytest.mark.usefixtures("seeded_board")
-def test_resume_restores_running(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/loops/")
-    _loop_row(page).get_by_role("button", name="pause").click()
-    _loop_row(page).get_by_role("button", name="resume").click()
-    row = _loop_row(page)
-    expect(row).to_contain_text("running")
-    expect(row.get_by_role("button", name="pause")).to_be_visible()
 
 
 @pytest.mark.usefixtures("seeded_board")
@@ -74,9 +50,9 @@ def starved_loop(request: pytest.FixtureRequest) -> str:
     request.getfixturevalue("transactional_db")
     name = iter_loops()[0].name
     Loop.objects.filter(name=name).delete()
-    Loop.objects.create(name=name, script=f"{name}/run.py", delay_seconds=60, enabled=False, last_run_at=None)
+    Loop.objects.create(name=name, script=f"{name}/run.py", delay_seconds=60, enabled=None, last_run_at=None)
     Mode.objects.create(name="e2e-forced-on", entries={name: True})
-    ModeOverride.objects.set_override("e2e-forced-on")
+    ModeOverride.objects.set_override("e2e-forced-on", reason="e2e: force the loop admitted")
     return name
 
 

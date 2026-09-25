@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from teatree.config import get_effective_settings
+from teatree.core.authoring_credential import authorized_pr_host
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
 from teatree.core.forge_push import push_branch
@@ -18,10 +19,12 @@ from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.core.worktree.branch_verdict import branch_is_landed
 from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
 from teatree.core.worktree.worktree_paths import paths_match
+from teatree.quality.gate_receipt import append_gate_notice
 from teatree.utils import git
 
 if TYPE_CHECKING:
@@ -250,61 +253,6 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     return rows[0] if rows else None
 
 
-def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
-    """Return the worktree's actual git branch, reconciling the DB to it.
-
-    #1519: ``Worktree.branch`` is minted as ``<N>-ticket`` and the agent
-    renames the real git branch to ``<N>-<type>-<desc>``. Every branch-range
-    consumer must read what exists, so read ``git rev-parse --abbrev-ref HEAD``
-    in the worktree dir and adopt it — but only when it is a real branch that
-    belongs to this ticket. A detached ``HEAD`` or an unrelated branch (not
-    prefixed ``<ticket_id>-``) falls back to the recorded branch and logs a
-    WARNING, never silently adopting an unrelated ref.
-
-    On a genuine drift the recorded ``Worktree.branch`` (and the ticket-level
-    ``extra['branch']`` when it matched the old name) are updated to the current
-    branch so every later reader — the pre-push gates (#1587), the ship
-    executor, the merge path, ``_recorded_url_for_branch``, the provisioner —
-    sees the same branch. This is the single reconcile chokepoint: callers run
-    it BEFORE reading ``worktree.branch`` so the stale ``<N>-ticket`` ref can no
-    longer reach a ``git`` range query that fails fail-soft (#1587). Idempotent:
-    once reconciled, a second call resolves the same current branch with no
-    further write.
-    """
-    recorded = worktree.branch
-    current = git.current_branch(repo=repo_path)
-    prefix = f"{ticket.ticket_number}-"
-    if not current or current == "HEAD" or not current.startswith(prefix):
-        if current and current != recorded:
-            logger.warning(
-                "Ship branch resolution for ticket %s: worktree at %s is on %r "
-                "(detached or not prefixed %r) — falling back to recorded branch %r",
-                ticket.ticket_number,
-                repo_path,
-                current,
-                prefix,
-                recorded,
-            )
-        return recorded
-    if current != recorded:
-        logger.info(
-            "Ship reconciling ticket %s worktree branch %r → %r (renamed in the worktree)",
-            ticket.ticket_number,
-            recorded,
-            current,
-        )
-        worktree.branch = current
-        worktree.save(update_fields=["branch"])
-        extra = ticket.extra or {}
-        # A key still naming the OLD branch matches no row after this write, so
-        # every later re-resolution (the async ``execute_ship``, the CLEAR
-        # preflight) would refuse or pick another repo's row.
-        renamed = {key: current for key in ("branch", "ship_invoking_branch") if extra.get(key) == recorded}
-        if renamed:
-            ticket.merge_extra(set_keys=cast("TicketExtra", renamed))
-    return current
-
-
 class ShipExecutor(RunnerBase):
     """Push the worktree branch and open the pull request.
 
@@ -469,21 +417,19 @@ class ShipExecutor(RunnerBase):
 
     @staticmethod
     def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":
-        """Resolve the forge from *repo_path*'s actual origin host (#2025).
+        """Resolve the forge from *repo_path*'s actual origin host (#2025), or refuse structurally.
 
-        Token-presence precedence picked GitHub for a GitLab-hosted repo on
-        an overlay carrying both PATs, so ship ran ``gh`` against a GitLab
-        remote. Deriving the forge from the repo's origin fixes that; a
-        forge with no configured credentials surfaces as a structured
-        failure here, before any raw ``gh``/``glab`` GraphQL error.
+        Token-presence precedence picked GitHub for a GitLab-hosted repo on an overlay carrying
+        both PATs, so ship ran ``gh`` against a GitLab remote. Deriving the forge from the repo's
+        origin fixes that; an absent credential — and an author the forge would bar from approving
+        its own MR — surface here, before any raw ``gh``/``glab`` GraphQL error.
         """
         try:
             host = code_host_for_repo_from_overlay(repo_path)
         except BackendResolutionError as exc:
             return RunnerResult(ok=False, detail=str(exc))
-        if host is None:
-            return RunnerResult(ok=False, detail="no code host configured")
-        return host
+        checked = authorized_pr_host(host, repo_path)
+        return RunnerResult(ok=False, detail=checked) if isinstance(checked, str) else checked
 
     def _open_pr_and_record(
         self,
@@ -656,6 +602,7 @@ class ShipExecutor(RunnerBase):
             repo=git.remote_slug(repo=repo_path),
             patterns=get_overlay_publish_gates(ticket.overlay),
         )
+        description = append_gate_notice(description, repo_path)
         warn_if_open_questions_missing(description)
         warn_if_owner_ratification_unbacked(description)
         warn_if_precheck_incomplete(description)
@@ -665,7 +612,7 @@ class ShipExecutor(RunnerBase):
             branch=branch,
             title=title,
             description=description,
-            target_branch=resolve_pr_target_branch(ticket, branch=branch),
+            target_branch=resolve_pr_target_branch(ticket, repo_slug=git.remote_slug(repo=repo_path), branch=branch),
             labels=overlay_pr_labels(overlay),
             assignee=assignee,
             reviewers=pr_reviewers_for_remote(overlay, git.remote_url(repo=repo_path)),

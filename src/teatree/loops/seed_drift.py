@@ -24,7 +24,6 @@ import datetime as dt
 from collections import Counter
 from collections.abc import Iterable, Mapping
 
-from teatree.loops.mode_shape import loop_opinion
 from teatree.loops.seed import DEFAULT_LOOPS
 
 #: Fields whose shipped value is the classification the away-gate reads. Operator-
@@ -35,12 +34,12 @@ CLASSIFICATION_FIELDS: tuple[str, ...] = ("colleague_facing",)
 #: One weekly start point: the weekdays it fires on, its local wall clock, the preset it activates.
 type SlotShape = tuple[tuple[int, ...], dt.time, str]
 
-_INHERITS = "absent (inherits Loop.enabled)"
+_UNNAMED = "absent (reads off)"
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 def mode_entry_drift(shipped: Mapping[str, object], live: Mapping[str, object]) -> tuple[str, ...]:
-    """One line per loop whose live tri-state opinion differs from the shipped mask."""
+    """One line per loop whose live opinion differs from the shipped mask."""
     lines = []
     for loop in sorted(set(shipped) | set(live)):
         was, now = _entry_label(shipped, loop), _entry_label(live, loop)
@@ -63,9 +62,9 @@ def schedule_slot_drift(shipped: Iterable[SlotShape], live: Iterable[SlotShape])
 
 
 def _entry_label(entries: Mapping[str, object], loop: str) -> str:
-    opinion = loop_opinion(entries, loop)
-    if opinion is None:
-        return _INHERITS
+    opinion = entries.get(loop)
+    if not isinstance(opinion, bool):
+        return _UNNAMED
     return "true" if opinion else "false"
 
 

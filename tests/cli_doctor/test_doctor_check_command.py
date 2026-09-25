@@ -14,6 +14,7 @@ import pytest
 from django.test import TestCase
 from typer.testing import CliRunner
 
+import teatree.cli.doctor.checks_bootstrap as teatree_doctor_bootstrap
 import teatree.cli.doctor.run_checks as teatree_cli_doctor
 import teatree.cli.update as teatree_cli_update
 import teatree.core.overlay_loader as teatree_overlay_loader
@@ -100,6 +101,13 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # exercised in tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to
     # a pass here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
+    # These checks read the live t3 installation, PATH, worker role and checkout
+    # remotes. Their dedicated modules exercise those probes against staged state;
+    # this command-aggregation smoke test must not inherit the deployed box's state.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_t3_shim_receipt", lambda *, repair=False: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_check_stale_path_t3", lambda: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_run_worker_gates", lambda: True)
+    monkeypatch.setattr(teatree_doctor_bootstrap, "_check_github_remotes_are_https", lambda: True)
     # The loop/intent gates (#3978/#4140/#4253/#4250/#4466 — intent freshness, intake
     # budget/pass, schedule liveness, the t3-master lease, unconsumed merge clears) read
     # this runner's REAL loop/ticket state. A pytest-django TestCase's fresh DB carries

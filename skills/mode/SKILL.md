@@ -1,6 +1,6 @@
 ---
 name: mode
-description: The operating mode — one of five named presets (present / away / maintenance / low-token / off) deciding which loops run. Use when switching mode for a holiday or an unattended run, configuring the weekly schedule, answering the deferred-question backlog, or debugging the mode resolver.
+description: The operating mode — one of five named presets (present / afk / maintenance / token-outage / off) deciding which loops run. Use when switching mode for a holiday or an unattended run, configuring the weekly schedule, answering the deferred-question backlog, or debugging the mode resolver.
 eval_exempt: thin chairside reference for the `t3 loop preset` and `t3 teatree questions` commands; behaviour is enforced by the PreToolUse question hook and pinned by scenarios/askuserquestion_slack_resolution.yaml, not by this skill's prose
 compatibility: any
 metadata:
@@ -33,36 +33,45 @@ Load `/t3:mode` when the user wants to:
 
 | preset | what it admits |
 |---|---|
-| `present` | the full working-hours table — deliver, interact, keep the improvement loops warm |
-| `away` | the factory keeps TAKING new work while the owner is unreachable; `followup` (the sole colleague-facing loop) is OFF |
-| `maintenance` | drain-only: `ship` / `review` ON, `tickets` / `issue_implementer` OFF |
-| `low-token` | only the deterministic model-free local loops — the token-budget guard |
-| `off` | every WORK loop off — the hard hold; the load-bearing tier stays up so the box can still relieve itself |
+| `present` | everything — deliver, interact, keep the improvement loops warm |
+| `afk` | the daily job with NO colleague interaction: implement and take intake, but review no colleague's MR and post nothing on the owner's behalf (`egress = "forbid"`) |
+| `maintenance` | self-repair only: keep the box healthy, drain the local queue, heal CI and back up |
+| `token-outage` | only the loops that call no model — the token-budget guard |
+| `off` | completely off; the switch reports what it strands, because nothing reaps stacks and nothing answers Slack |
 
-`away` and `maintenance` differ on INTAKE: `away` keeps taking new work, `maintenance`
-drains only what is already in flight. For a holiday, pick by what you want to happen
-while you are gone — `off` for a hard stop, `maintenance` to drain first.
+The postures are a CHAIN — `present` >= `afk` >= `maintenance` >= `off` — so stepping
+down one can only ever remove work. `token-outage` sits outside it: it is defined by a
+PROPERTY (no model call), not by a position, so a new AI loop lands outside it by
+construction rather than by someone remembering to add it.
 
-A stored `offline` override / slot / setting migrates to `off` (#4202): the two shipped
-the same loop mask and differed only in the three posture booleans that are now gone.
+Every preset is TOTAL — it holds a `true`/`false` opinion on EVERY live loop, so what a
+preset does is readable from the preset alone, and a loop added later is written `false`
+into every one of them. A stored `offline` override / slot / setting migrates to `off`.
 
 The names are operator-editable data, but an override naming a mode no row carries is
 REFUSED rather than written — a dangling name would silently fall open to base config.
 
 ## Resolution — a single deterministic precedence
 
-1. **L3 manual override (unexpired)** — the `ModeOverride` row, set by
-   `t3 loop preset use <mode>`. A deliberate posture is authoritative and is never
-   overridden by a keystroke: this is how an operator pins `off` or `low-token`.
-2. **Presence upgrade (upgrade-only)** — a `UserPromptSubmit` heartbeat within
-   `PRESENCE_FRESHNESS` (15 min) is direct evidence the user is at the keyboard now, so
-   it upgrades a mode reached BY SCHEDULE OR DEFAULT to the configured
-   `presence_upgrade_mode`. It never downgrades, and never touches a manual override.
-3. **L2 active schedule slot** — the `active_loop_schedule` calendar's governing slot.
-4. **L0 default** — the configured `default_mode` (`present` when unset).
+1. **A `LoopState` hold** — the emergency brake (`t3 loop pause` / `disable`). A held
+   loop never runs, whatever anything below says.
+2. **The manual override** — `Loop.enabled` as a TRI-STATE (`None` = no opinion, the
+   normal state). It carries the REQUIRED reason it was set, nothing auto-clears it, and
+   `t3 loop override <name> clear` is the only thing that lifts it.
+3. **The manual preset override** — the `ModeOverride` row, set by
+   `t3 loop preset use <mode>`. This is how an operator pins `off` or `token-outage`.
+4. **The active schedule slot** — the `active_loop_schedule` calendar's governing slot.
+5. **The configured `default_mode`** (`present` when unset).
 
-Everything fails toward ASKING: an unreadable DB, a deleted mode, a malformed slot all
-resolve to a mode with no opinion, so every loop falls back to its own `Loop.enabled`.
+A keystroke decides nothing here. Presence used to upgrade a schedule- or default-reached
+mode, and it was the one arm that flipped with no observable event — raised by typing,
+lowered by the mere absence of it — so a decision persisted under one side of it could
+not be kept correct. It is still read for live-turn QUESTION routing; it no longer
+decides which loops run.
+
+Everything fails OPEN: an unreadable DB, a deleted mode, a malformed slot all resolve to
+a mode that admits every loop, because a resolution that could not answer at all must not
+mask the whole fleet.
 Failing closed to the most restrictive posture is what muted the owner for a week; a
 broken control plane must interrupt the user, not silence them.
 

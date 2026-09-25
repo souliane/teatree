@@ -11,14 +11,48 @@ loud, so a caller that never registered one fails with a clear message rather
 than silently bypassing the gate-carrying seam.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
+
+#: An inline anchor — ``(file, line)`` on an added line of the MR diff; ``None`` posts a general note.
+type InlineAnchor = tuple[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class SeamNote:
+    """One review finding crossing the seam — its body, its anchor, and its gate inputs.
+
+    The same record serves the single-post and the batch surfaces, so a finding
+    carries the identical set either way and the batch is literally N of these.
+
+    ``evidence_json`` crosses as the very JSON text ``t3 review post-comment
+    --evidence-json`` takes: :class:`~teatree.cli.review.evidence_gate.FindingEvidence`
+    lives ABOVE this layer, so the seam carries the text and
+    :func:`~teatree.cli.review.evidence_gate.FindingEvidence.from_json` stays the one
+    parser. Without it the #1280 evidence gate refuses every "wrong/broken" finding —
+    the class a review most needs to post.
+
+    ``force_general`` / ``allow_bloat`` are the #126 per-call escapes for the
+    multi-finding general-note and comment-bloat gates; both default to the value
+    that changes nothing, so an unset one never widens a gate.
+    """
+
+    note: str
+    anchor: InlineAnchor | None = None
+    evidence_json: str = ""
+    force_general: bool = False
+    allow_bloat: bool = False
 
 
 class ReviewPostSeam(Protocol):
-    def post_draft_note(self, repo: str, mr: int, note: str) -> tuple[str, int]: ...
+    def post_draft_note(self, repo: str, mr: int, note: SeamNote) -> tuple[str, int]: ...
 
-    def post_comment(self, repo: str, mr: int, note: str, *, live: bool = False) -> tuple[str, int]: ...
+    def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]: ...
+
+    def post_comments(
+        self, repo: str, mr: int, notes: Sequence[SeamNote], *, live: bool = False
+    ) -> tuple[str, int]: ...
 
 
 SeamFactory = Callable[[str], ReviewPostSeam]

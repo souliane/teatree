@@ -75,7 +75,7 @@ class TestOverlayDbHomeOverrides(TestCase):
         for env in (
             "T3_MODE",
             "T3_OVERLAY_NAME",
-            "T3_ISSUE_IMPLEMENTER_ENABLED",
+            "T3_HOOK_FETCH_TITLES",
             "T3_ORCHESTRATE_CLAIM_ENABLED",
         ):
             monkeypatch.delenv(env, raising=False)
@@ -142,15 +142,10 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().require_review_context is True
 
-    def test_overlay_can_override_require_rubric_verification(self) -> None:
-        ConfigSetting.objects.set_value("require_rubric_verification", value=True, scope="my-overlay")
+    def test_overlay_can_override_require_merge_evidence(self) -> None:
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True, scope="my-overlay")
         self._activate()
-        assert get_effective_settings().require_rubric_verification is True
-
-    def test_overlay_can_override_require_spec_coverage(self) -> None:
-        ConfigSetting.objects.set_value("require_spec_coverage", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().require_spec_coverage is True
+        assert get_effective_settings().require_merge_evidence is True
 
     def test_overlay_can_override_max_concurrent_local_stacks(self) -> None:
         ConfigSetting.objects.set_value("max_concurrent_local_stacks", value=1, scope="my-overlay")
@@ -173,28 +168,25 @@ class TestOverlayDbHomeOverrides(TestCase):
         assert get_effective_settings().dashboard_instance_label == "per-overlay"
 
     def test_overlay_can_override_issue_implementer_settings(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=True, scope="my-overlay")
         ConfigSetting.objects.set_value("issue_implementer_label", "auto-implement", scope="my-overlay")
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=3, scope="my-overlay")
         self._activate()
         effective = get_effective_settings()
-        assert effective.issue_implementer_enabled is True
+        assert effective.hook_fetch_titles is True
         assert effective.issue_implementer_label == "auto-implement"
         assert effective.issue_implementer_max_concurrent == 3
 
     def test_env_kill_switch_beats_overlay_db_override(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
-        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=True, scope="my-overlay")
+        self.monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "false")
         self._activate()
-        assert get_effective_settings().issue_implementer_enabled is False
+        assert get_effective_settings().hook_fetch_titles is False
 
     def test_overlay_can_override_positive_int_settings(self) -> None:
-        ConfigSetting.objects.set_value("db_backup_cadence_hours", value=4, scope="my-overlay")
         ConfigSetting.objects.set_value("db_backup_retention_days", value=60, scope="my-overlay")
         self._activate()
-        settings = get_effective_settings()
-        assert settings.db_backup_cadence_hours == 4
-        assert settings.db_backup_retention_days == 60
+        assert get_effective_settings().db_backup_retention_days == 60
 
     def test_overlay_can_override_mr_title_regex(self) -> None:
         ConfigSetting.objects.set_value("mr_title_regex", r"^JIRA-\d+: .+", scope="my-overlay")
@@ -208,12 +200,9 @@ class TestOverlayDbHomeOverrides(TestCase):
         assert get_effective_settings().e2e_mandatory_gate_enabled is False
 
     def test_positive_int_overlay_override_non_positive_fails_safe(self) -> None:
-        ConfigSetting.objects.set_value("db_backup_cadence_hours", value=0, scope="my-overlay")
         ConfigSetting.objects.set_value("db_backup_retention_days", "garbage", scope="my-overlay")
         self._activate()
-        settings = get_effective_settings()
-        assert settings.db_backup_cadence_hours == 24
-        assert settings.db_backup_retention_days == 7
+        assert get_effective_settings().db_backup_retention_days == 7
 
 
 class TestAliasScopeGroupsMerge(TestCase):

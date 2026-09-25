@@ -32,6 +32,7 @@ _MIGRATIONS = (
     "teatree.core.migrations.0027_generic_openai_compatible_backend",
     "teatree.core.migrations.0001_squashed_0030",
 )
+_IDLE_WINDOW_MIGRATION = "teatree.core.migrations.0099_carry_the_venv_idle_window_onto_every_artifact"
 _OLD_KEY = "orca_router_name"
 _NEW_KEY = "openai_compatible_model"
 
@@ -126,6 +127,34 @@ class TestConfigSettingDataMigrationUsesTheSchemaEditorConnection(TestCase):
         self._module(_MIGRATIONS[0])._carry_configured_values(apps, _StubSchemaEditor(connection.alias))
 
         assert not self._canonical().filter(key__in=(_OLD_KEY, _NEW_KEY)).exists()
+
+    def test_the_idle_window_rename_uses_the_migrated_connection(self) -> None:
+        old_key = "venv_idle_days"
+        new_key = "artifact_idle_days"
+        self._migrated().all().delete()
+        self._migrated().create(scope="global", key=old_key, value="9")
+
+        self._module(_IDLE_WINDOW_MIGRATION).carry_configured_value(
+            apps,
+            _StubSchemaEditor(connection.alias),
+        )
+
+        assert self._migrated().get(key=new_key).value == "9"
+        assert not self._canonical().filter(key__in=(old_key, new_key)).exists()
+
+    def test_the_idle_window_reverse_uses_the_migrated_connection(self) -> None:
+        old_key = "venv_idle_days"
+        new_key = "artifact_idle_days"
+        self._migrated().all().delete()
+        self._migrated().create(scope="global", key=new_key, value="9")
+
+        self._module(_IDLE_WINDOW_MIGRATION).restore_the_venv_only_key(
+            apps,
+            _StubSchemaEditor(connection.alias),
+        )
+
+        assert self._migrated().get(key=old_key).value == "9"
+        assert not self._canonical().filter(key__in=(old_key, new_key)).exists()
 
     def test_a_router_selected_query_reaches_the_canonical_store(self) -> None:
         self._canonical().create(scope="global", key=_OLD_KEY, value="canonical-only")

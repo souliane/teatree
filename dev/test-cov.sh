@@ -17,8 +17,8 @@ cd "$(cd -P "$(dirname "$0")" && pwd)/.."
 
 # `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
 # change — so a memory-capped container spawns host-many workers and dies as an opaque
-# xdist crash. Default the pool from the cap instead (an explicit
-# PYTEST_XDIST_AUTO_NUM_WORKERS still wins; an uncapped box is left alone).
+# xdist crash. Bound the pool from available cgroup memory instead (an explicit
+# PYTEST_XDIST_AUTO_NUM_WORKERS is a ceiling; an uncapped box is left alone).
 . dev/lib/xdist-workers.sh
 bound_xdist_workers_to_memory
 

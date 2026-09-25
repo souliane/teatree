@@ -19,7 +19,7 @@ where every rolled-up name is required. Only the unstoppable external — the
 
 import json
 from collections.abc import Callable
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -30,18 +30,51 @@ from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_
 from teatree.core.merge.ci_rollup import (
     _check_identity,
     _check_name,
-    _classify_gitlab_pipeline,
     _dedupe_newest_per_name,
     _expected_required_contexts_floor,
     _required_contexts_verdict,
     attach_touched_paths,
+    classify_gitlab_pipeline,
 )
 from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeClear
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.pr_ref import PrRef
 
 _SLUG = "souliane/teatree"
 _PR_ID = 2580
+
+
+class TestCodeHostQueryCredentialRouting:
+    def test_github_query_builds_host_with_slug_owners_routed_token(self) -> None:
+        provider = MagicMock()
+        backend = MagicMock()
+        provider.build_github_host.return_value = backend
+        resolution = ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token="db-routed", pass_key="owner/github"
+        )
+        with (
+            patch.dict("os.environ", {"GH_TOKEN": "hostile-gh", "GITHUB_TOKEN": "hostile-github"}, clear=False),
+            patch("teatree.core.merge.ci_rollup.get_backend_provider", return_value=provider),
+            patch("teatree.core.merge.ci_rollup.resolve_slug_token", return_value=resolution) as resolve,
+        ):
+            query = CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID))
+
+        assert query.backend is backend
+        resolve.assert_called_once_with(_SLUG, forge="github", credential="github_token")
+        provider.build_github_host.assert_called_once_with(token="db-routed")
+
+    def test_github_query_never_inherits_ambient_token_when_owner_route_is_empty(self) -> None:
+        provider = MagicMock()
+        resolution = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNREADABLE)
+        with (
+            patch.dict("os.environ", {"GH_TOKEN": "hostile-gh", "GITHUB_TOKEN": "hostile-github"}, clear=False),
+            patch("teatree.core.merge.ci_rollup.get_backend_provider", return_value=provider),
+            patch("teatree.core.merge.ci_rollup.resolve_slug_token", return_value=resolution),
+        ):
+            CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID))
+
+        provider.build_github_host.assert_called_once_with(token="")
 
 
 class _SeqRunner:
@@ -898,30 +931,30 @@ class TestGitlabPipelineClassification:
     """F2.1: ONLY ``success`` is green; ``manual`` / ``skipped`` are pending (not-passed CI)."""
 
     def test_success_is_green(self) -> None:
-        assert _classify_gitlab_pipeline("success") == "green"
+        assert classify_gitlab_pipeline("success") == "green"
 
     def test_manual_is_pending_not_green(self) -> None:
         # A blocked-manual pipeline has NOT run its later required stages — it must
         # never merge a keystone MR as "all checks passed".
-        assert _classify_gitlab_pipeline("manual") == "pending"
+        assert classify_gitlab_pipeline("manual") == "pending"
 
     def test_skipped_is_pending_not_green(self) -> None:
         # A skipped required pipeline never ran — pending, not green.
-        assert _classify_gitlab_pipeline("skipped") == "pending"
+        assert classify_gitlab_pipeline("skipped") == "pending"
 
     def test_running_is_pending(self) -> None:
-        assert _classify_gitlab_pipeline("running") == "pending"
+        assert classify_gitlab_pipeline("running") == "pending"
 
     def test_failed_is_failed(self) -> None:
-        assert _classify_gitlab_pipeline("failed") == "failed"
+        assert classify_gitlab_pipeline("failed") == "failed"
 
     def test_canceled_is_failed(self) -> None:
-        assert _classify_gitlab_pipeline("canceled") == "failed"
+        assert classify_gitlab_pipeline("canceled") == "failed"
 
     def test_case_insensitive_manual_is_pending(self) -> None:
         # The classifier lower-cases first, so a MANUAL/Manual status is still pending.
-        assert _classify_gitlab_pipeline("MANUAL") == "pending"
-        assert _classify_gitlab_pipeline("Skipped") == "pending"
+        assert classify_gitlab_pipeline("MANUAL") == "pending"
+        assert classify_gitlab_pipeline("Skipped") == "pending"
 
 
 class TestRollupEntryTypename:

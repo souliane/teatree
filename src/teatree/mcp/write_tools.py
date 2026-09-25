@@ -23,7 +23,6 @@ agent self-approve (maker≠checker).
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from fnmatch import fnmatch
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
@@ -31,32 +30,19 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from teatree.config import SAFETY_POSTURE_KEYS
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
-from teatree.config.feature_flags import is_feature_flag
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
+from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
-from teatree.mcp.review_seam import review_post_seam
+from teatree.core.notify_types import NotifyOptions
+from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments, _review_post_draft_note
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
-
-# Safety-gate keys an MCP caller may never flip: cold-hook gate wires, feature
-# flags (directive-/lifecycle-governed), the opt-in ``require_*`` training
-# wheels, ``*_gate_enabled`` kill-switches, the registry rows (``overlays`` /
-# ``e2e_repos`` redirect overlay code paths), and the cold-read ``COLD_SETTINGS``
-# — the leak-scrub input lists (``banned_terms`` / ``banned_brands`` /
-# ``overlay_leak_terms`` …), the master ``danger_gate_fail_open`` switch, and the
-# agent-routing tables. Emptying a leak-scrub list or flipping fail-open over MCP
-# would neuter a live guard; those stay a human/CLI act — a TIGHTENING over the
-# Bash ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
-_REFUSED_KEY_GLOBS = ("*_gate_enabled", "require_*")
 
 # Reviewed carve-out (F9.1): fields whose NAME matches the delegation/allowlist
 # heuristics the conformance test walks (``*allowlist``, ``*_threshold``…) but whose
@@ -81,24 +67,11 @@ MCP_SETTABLE_OK: frozenset[str] = frozenset(
 def refuse_reason(key: str) -> str:
     """Why the MCP surface refuses to set *key* (empty string = allowed).
 
-    Each clause is a distinct refusal LANE. The ``SAFETY_POSTURE_KEYS`` clause is the
-    effect-based one (F9.1): setting one of those IS an authorization / delegation /
-    fail-closed-boundary act (e.g. self-granting substrate-merge delegation, widening the
-    fail-closed intake allowlist), so it stays a human/CLI act even though its name matches
-    no ``*_gate_enabled`` glob that the last, name-shaped clause would catch.
+    Delegates to the ONE governance predicate (B11): this surface is unattended by
+    definition, so every key an owner has to decide is refused here. Re-deriving the lanes
+    locally is how the same question comes to have two answers.
     """
-    lanes: tuple[tuple[bool, str], ...] = (
-        (key in COLD_HOOK_SETTINGS, "cold-hook gate wire — flip via the CLI, never via MCP"),
-        (is_feature_flag(key), "feature flag — directive-/lifecycle-governed, human/CLI-only"),
-        (key in REGISTRY_KEYS, "registry row — redirects overlay code paths, human/CLI-only"),
-        (key in COLD_SETTINGS, "cold-read key — leak-scrub list / fail-open switch / agent routing, human/CLI-only"),
-        (key in SAFETY_POSTURE_KEYS, "safety-posture key — its write IS an authorization; human/CLI-only"),
-        (any(fnmatch(key, glob) for glob in _REFUSED_KEY_GLOBS), "safety-gate key — flip via the CLI, never via MCP"),
-    )
-    for matched, reason in lanes:
-        if matched:
-            return reason
-    return ""
+    return owner_only_reason(key)
 
 
 async def _pr_create(ticket: str, *, title: str = "") -> dict[str, Any]:
@@ -244,6 +217,13 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     the human sentence. A bare ``sent=false`` with no reason is what let five
     completed reviews go unannounced for a day — the caller could not tell a
     disabled feature from a dead transport, so nothing escalated.
+
+    Every call here is a DIRECTLY REQUESTED DM: this surface is reachable only from
+    an agent's deliberate tool call, never from a recurring alarm site, so the
+    push/pull registry does not withhold it. Without that, a one-off message about
+    one merge request read as an unregistered alarm and was recorded rather than
+    delivered. An alarm still earns its DM by registering in
+    :data:`~teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`.
     """
     try:
         kind_value = NotifyKind(kind)
@@ -256,7 +236,13 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
         raise ToolError(msg) from None
     audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
     outcome = await sync_to_async(
-        lambda: notify_user_outcome(text, kind=kind_value, idempotency_key=idempotency_key, audience=audience),
+        lambda: notify_user_outcome(
+            text,
+            kind=kind_value,
+            idempotency_key=idempotency_key,
+            audience=audience,
+            options=NotifyOptions(requested_push=True),
+        ),
         thread_sensitive=True,
     )()
     return {
@@ -318,35 +304,6 @@ async def _worktree_teardown(path: str, *, force: bool = False) -> str:
         lambda: str(run_command("workspace", "teardown", path=path, force=force)),
         thread_sensitive=True,
     )()
-
-
-async def _review_post_draft_note(repo: str, mr: int, note: str) -> dict[str, Any]:
-    """Post a colleague-INVISIBLE MR-level draft review note — always safe, gate-exempt.
-
-    Routes through the registered review seam (the exact ``t3 review
-    post-draft-note`` service), so the shape / bloat / banned-terms pre-publish
-    gates still apply. Inline (file/line) anchoring stays on the CLI for now.
-    """
-    message, code = await sync_to_async(
-        lambda: review_post_seam(repo).post_draft_note(repo, mr, note),
-        thread_sensitive=True,
-    )()
-    return {"message": message, "code": code}
-
-
-async def _review_post_comment(repo: str, mr: int, note: str, *, live: bool = False) -> dict[str, Any]:
-    """Post an MR-level comment — DRAFT by default; ``live=true`` stays approval-gated.
-
-    Routes through the registered review seam (the exact ``t3 review
-    post-comment`` service): ``live=true`` requires the single-use
-    LivePostApproval (#1207) plus the on-behalf verdict, identically to the CLI.
-    Inline (file/line) anchoring stays on the CLI for now.
-    """
-    message, code = await sync_to_async(
-        lambda: review_post_seam(repo).post_comment(repo, mr, note, live=live),
-        thread_sensitive=True,
-    )()
-    return {"message": message, "code": code}
 
 
 async def _review_request_check(mr_url: str) -> dict[str, Any]:
@@ -522,17 +479,34 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _review_post_draft_note,
         _WRITE,
         "teatree.mcp.review_seam (ReviewService.post_draft_note)",
-        "- review_post_draft_note(repo, mr, note): colleague-INVISIBLE MR-level "
-        "draft note — always safe, gate-exempt by design.",
+        "- review_post_draft_note(repo, mr, finding): colleague-INVISIBLE draft note — always "
+        "safe, gate-exempt by design. finding={note, anchor='path/to/file.py:LINE', evidence, "
+        "force_general, allow_bloat}; a blank anchor posts a general note, and evidence is the "
+        "#1280 record as a JSON object or its JSON string, required by the gate for a "
+        "'X is wrong/broken/missing' body.",
     ),
     _WriteTool(
         "review_post_comment",
         _review_post_comment,
         _WRITE,
         "teatree.mcp.review_seam (ReviewService.post_comment; live gated #1207)",
-        "- review_post_comment(repo, mr, note, live): MR-level, DRAFT by default; "
-        "live=true requires the recorded LivePostApproval + on-behalf verdict, same "
-        "as the CLI.",
+        "- review_post_comment(repo, mr, finding, live): DRAFT by default; one finding per "
+        "anchor. finding takes the same shape as one review_post_comments entry — {note, "
+        "anchor='path/to/file.py:LINE', evidence, force_general, allow_bloat}, where evidence is "
+        "a JSON object or its JSON string. live=true requires the recorded LivePostApproval + "
+        "on-behalf verdict, same as the CLI; without evidence a 'X is wrong/broken/missing' "
+        "body is refused.",
+    ),
+    _WriteTool(
+        "review_post_comments",
+        _review_post_comments,
+        _WRITE,
+        "teatree.mcp.review_seam (ReviewService.post_comments; one envelope, live gated #1207)",
+        "- review_post_comments(repo, mr, comments, live): a whole review in ONE batch — "
+        "comments=[{note, anchor='path/to/file.py:LINE', evidence}, …] where evidence is a JSON "
+        "object or its JSON string, every body gated exactly as review_post_comment, one "
+        "authorization consume for the review. evidence / force_general / allow_bloat are "
+        "per-COMMENT, because every gate they feed is. Prefer this over N single posts.",
     ),
     _WriteTool(
         "review_request_check",

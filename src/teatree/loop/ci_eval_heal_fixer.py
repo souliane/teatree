@@ -37,10 +37,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from teatree.loops.enable_verdict import EnablePlanes
 from teatree.utils.git_worktree import worktree_add_at_ref, worktree_remove
 from teatree.utils.run import CommandFailedError, run_checked
 
 if TYPE_CHECKING:
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    from teatree.agents.compaction_guard import CompactionGuard
     from teatree.core.models import CiEvalHealSession
 
 logger = logging.getLogger(__name__)
@@ -106,19 +110,26 @@ class CiEvalHealFixer(Protocol):
 
 
 def autofix_armed(session: "CiEvalHealSession") -> bool:
-    """True only when BOTH the DARK flag AND the ``ci_eval_heal`` loop row are on.
+    """True only when BOTH the DARK flag AND the ``ci_eval_heal`` loop's verdict are on.
 
     Either switch off ⇒ observe-only (the caller HALTs + escalates a red exactly as
     PR-3a). The flag resolves per-overlay so an overlay can trial the fixer on its
-    own budget; the loop-row check keeps even a by-hand ``t3 eval ci-heal advance``
-    from mutating CI unless the operator deliberately enabled the autonomous loop.
+    own budget; the verdict keeps even a by-hand ``t3 eval ci-heal advance`` from
+    mutating CI unless the active layering actually admits the autonomous loop.
+
+    The verdict, not ``Loop.enabled``: that column is the manual-override layer, empty
+    until a human intervenes, so reading it would leave the fixer permanently disarmed
+    on a box whose preset admits the loop. An unreadable control plane RAISES rather
+    than answering — a gate that cannot read its own input must not arm.
     """
     from teatree.config.resolution import get_effective_settings  # noqa: PLC0415 — deferred: config resolve reaches DB
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     if not get_effective_settings(session.overlay or None).ci_eval_heal_autofix_enabled:
         return False
-    return Loop.objects.filter(name=_LOOP_NAME, enabled=True).exists()
+    if not Loop.objects.filter(name=_LOOP_NAME).exists():
+        return False
+    return EnablePlanes.resolve().admits(_LOOP_NAME)
 
 
 def build_fixer_prompt(session: "CiEvalHealSession") -> str:
@@ -171,14 +182,31 @@ def _run_fix_turn(prompt: str, cwd: Path) -> None:  # pragma: no cover
     asyncio.run(_drive_fix_turn(prompt, cwd=cwd, env=env))
 
 
-async def _drive_fix_turn(prompt: str, *, cwd: Path, env: dict[str, str] | None) -> None:  # pragma: no cover
-    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
+#: Where a stopped turn's committed work is pinned, so removing its worktree cannot destroy the fix.
+SALVAGE_REF_PREFIX = "refs/ci-eval-heal-salvage/"
 
-    from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
-        ClaudeAgentOptions,
-        ClaudeSDKClient,
-    )
+
+@dataclass(frozen=True, slots=True)
+class Salvage:
+    """What preserving a stopped turn's work came to — the three outcomes the caller must tell apart.
+
+    A ``ref`` means the work is durably pinned and the worktree is disposable. Neither field set
+    means the turn produced nothing to keep. ``failed`` means the work is still ONLY in the
+    worktree, so removing it is the data loss the salvage exists to prevent.
+    """
+
+    ref: str = ""
+    failed: bool = False
+
+
+def _fix_turn_options(
+    prompt: str, *, cwd: Path, env: dict[str, str] | None, guard: "CompactionGuard | None" = None
+) -> "ClaudeAgentOptions":
+    """The write-capable options for one fix turn, with compaction switched off like every factory run."""
+    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
     from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415 — deferred: optional heavy SDK dep
+
+    from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
     options = ClaudeAgentOptions(
         system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=prompt),
@@ -190,10 +218,30 @@ async def _drive_fix_turn(prompt: str, *, cwd: Path, env: dict[str, str] | None)
     )
     if env is not None:
         options.env = env
+    return with_compaction_off(options, guard)
+
+
+async def _drive_fix_turn(prompt: str, *, cwd: Path, env: dict[str, str] | None) -> None:  # pragma: no cover
+    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
+        ClaudeSDKClient,
+    )
+
+    from teatree.agents.compaction_guard import (  # noqa: PLC0415 — deferred: optional heavy SDK dep
+        COMPACTION_BLOCKED_REASON,
+        CompactionGuard,
+    )
+
+    guard = CompactionGuard()
+    options = _fix_turn_options(prompt, cwd=cwd, env=env, guard=guard)
     async with asyncio.timeout(_FIX_TURN_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
+        guard.arm(client.interrupt)
         await client.query(prompt)
         async for _message in client.receive_response():
             pass
+    if guard.stopped_run:
+        raise RuntimeError(COMPACTION_BLOCKED_REASON)
 
 
 @dataclass(slots=True)
@@ -222,9 +270,19 @@ class _HeadlessFixer:
         try:
             self.turn_runner(build_fixer_prompt(session), Path(wt_path))
             changed, commit_sha = self._commit(wt_path, base_sha)
-        except Exception:
+        except Exception as exc:
+            salvage = self._salvage(wt_path, base_sha)
+            if salvage.failed:
+                msg = f"{exc} — its work could not be preserved and is ONLY in the kept worktree {wt_path}"
+                raise RuntimeError(msg) from exc
             worktree_remove(self.repo, wt_path)
-            raise
+            if not salvage.ref:
+                raise
+            msg = (
+                f"{exc} — the stopped turn's work is preserved at {salvage.ref}; "
+                f"recover it with `git worktree add <path> {salvage.ref}`"
+            )
+            raise RuntimeError(msg) from exc
         return FixProposal(changed_paths=changed, worktree_path=wt_path, base_sha=base_sha, commit_sha=commit_sha)
 
     def publish(self, session: "CiEvalHealSession", proposal: FixProposal) -> str:
@@ -239,6 +297,61 @@ class _HeadlessFixer:
 
     def discard(self, proposal: FixProposal) -> None:
         worktree_remove(self.repo, proposal.worktree_path)
+
+    def _salvage(self, wt_path: str, base_sha: str) -> Salvage:
+        """Pin what a stopped turn produced to :data:`SALVAGE_REF_PREFIX`, telling the three outcomes apart.
+
+        A turn stopped mid-flight — a blocked auto-compaction, the watchdog, a full context
+        window — may already have written or committed a valid fix, and the caller force-removes
+        its worktree on the way out. A ref in the shared object store survives that removal, so
+        it is claimed only once a re-read proves the ref resolves to the commit; anything that
+        goes wrong is :attr:`Salvage.failed`, which keeps the worktree rather than destroying
+        the only copy. It never masks the failure that stopped the turn.
+
+        A clean tree at *base_sha* is not proof the turn produced nothing: a commit the turn
+        reset away survives only in this worktree's HEAD reflog, which removing the worktree
+        deletes — so the reflog is read before the empty outcome is returned.
+        """
+        try:
+            _, commit_sha = self._commit(wt_path, base_sha)
+            if not commit_sha:
+                commit_sha = run_checked(["git", "rev-parse", "HEAD"], cwd=wt_path).stdout.strip()
+            if not commit_sha or commit_sha == base_sha:
+                commit_sha = self._reset_away_commit(wt_path, base_sha)
+            if not commit_sha:
+                return Salvage()
+            ref = f"{SALVAGE_REF_PREFIX}{commit_sha}"
+            run_checked(["git", "update-ref", ref, commit_sha], cwd=self.repo)
+            pinned = run_checked(["git", "rev-parse", "--verify", ref], cwd=self.repo).stdout.strip()
+        except Exception:
+            logger.exception("ci_eval_heal fixer: could not preserve the stopped turn's work in %s", wt_path)
+            return Salvage(failed=True)
+        if pinned != commit_sha:
+            logger.error("ci_eval_heal fixer: %s does not resolve to the salvaged commit %s", ref, commit_sha)
+            return Salvage(failed=True)
+        return Salvage(ref=ref)
+
+    @staticmethod
+    def _reset_away_commit(wt_path: str, base_sha: str) -> str:
+        """The newest commit in this worktree's HEAD reflog that *base_sha* does not contain, or ``""``.
+
+        ``git reflog show`` exits 0 with NO entries when the worktree's HEAD reflog is absent or
+        unmaintained, which is indistinguishable from "the turn kept nothing" — and answering
+        the empty outcome there removes the worktree, the one place a reset-away commit still
+        lives. An unusable reflog (no entries, or none naming the base the worktree started at)
+        therefore raises, which the caller reports as :attr:`Salvage.failed`.
+        """
+        reflog = run_checked(["git", "reflog", "show", "--format=%H", "HEAD"], cwd=wt_path).stdout.split()
+        if base_sha not in reflog:
+            msg = f"the HEAD reflog of {wt_path} names no entry for {base_sha[:12]}; it cannot be read as empty"
+            raise RuntimeError(msg)
+        for sha in reflog:
+            if (
+                sha != base_sha
+                and run_checked(["git", "rev-list", "-1", f"{base_sha}..{sha}"], cwd=wt_path).stdout.strip()
+            ):
+                return sha
+        return ""
 
     def _fetch(self, branch: str) -> None:
         try:
@@ -276,8 +389,10 @@ def default_fixer() -> CiEvalHealFixer:
 
 
 __all__ = [
+    "SALVAGE_REF_PREFIX",
     "CiEvalHealFixer",
     "FixProposal",
+    "Salvage",
     "TurnRunner",
     "autofix_armed",
     "build_fixer_prompt",

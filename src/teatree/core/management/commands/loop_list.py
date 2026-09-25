@@ -54,30 +54,27 @@ def _next_tick_label(entry: LoopStatusEntry, now: dt.datetime) -> str:
 
 
 def _held_cell(entry: LoopStatusEntry) -> str:
+    """Which layer decided the State beside it — empty when the preset simply admits it."""
     if entry.kind.value == "infra-slot":
         return "held" if entry.held else "idle"
     if entry.held:
-        # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
         return "held"
-    # #4185: admitted with no timer chain at all. Takes precedence over the preset
-    # labels below — those say WHO decided the loop runs, this says nothing is
-    # driving it, which is the alarming half of the signal.
+    # #4185: admitted with no timer chain at all. Takes precedence over the layer labels
+    # below — those say WHO decided the loop runs, this says nothing is driving it, which
+    # is the alarming half of the signal.
     if entry.starved:
         return "starved"
-    # A #3159 preset can flip a mini-loop with NO LoopState hold: the disagreement
-    # between the effective `admitted` verdict and the base `enabled` flag is the
-    # preset's doing — masking a base-enabled loop off, or forcing a base-disabled one on.
-    if entry.enabled and not entry.admitted:
-        return "masked"
-    if not entry.enabled and entry.admitted:
-        return "forced-on"
-    return ""
+    if entry.enabled is not None:
+        # An override nobody can see is one nobody lifts (A7), so it is labelled even
+        # when it agrees with the preset underneath it.
+        return "manual-on" if entry.enabled else "manual-off"
+    return "" if entry.admitted else "masked"
 
 
 def _entry_row(entry: LoopStatusEntry, now: dt.datetime) -> list[str]:
     return [
         entry.name,
-        "enabled" if entry.enabled else "disabled",
+        "enabled" if entry.admitted else "disabled",
         _human_age(entry.cadence_seconds),
         _human_age(entry.age_seconds(now)),
         _next_tick_label(entry, now),

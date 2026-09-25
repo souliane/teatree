@@ -276,7 +276,54 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # overlay_metadata, overlay_repos, overlay_url); core/overlays/ is the namespace +
 # code-defaults provider package, not the loader's own resolution seam, so filing it
 # there would separate it from its siblings to satisfy a counter.
-PINNED_FLAT_CORE_MODULES = 118
+# 119: +setting_cell.py — "what does ONE column say about this key, and can it be
+# written", the half the box-comparison grid shares with the single-instance one.
+# setting_control.py answers the other half ("what IS this key") and is a root leaf for
+# the documented reason that the Django admin depends on that vocabulary and may not
+# import dash. The two are read together; filing the new half under a subpackage would
+# separate the pair to satisfy a counter, which is what 118's own entry declined to do.
+# 120: +authoring_credential.py — which credential a remote's MRs are authored under, read
+# across every registered overlay so the identity stops depending on the ambient one. A root
+# leaf by layering, not by preference: teatree.backends.loader must import it to build the
+# GitLab host, so it can sit in no core subpackage the backends layer may not reach, and it
+# is the read half of the flat identity_wiring.py it classifies through.
+# 119: -host_run.py / -peer_forward.py — the host hop became the subpackage core/host_hop/
+# the moment it grew its second module. peer_forward.py landed at the root (116 above) because
+# no subpackage owned reaching ANOTHER box; the generic hop host_run.py is that same shape
+# generalised — its own docstring names `t3 admin`'s and `t3 peer`'s handoff as what it
+# generalises — so the two are one concern: the container half resolves what it can and writes
+# a plan, and the wrapper on the host is the single place the act happens. Packaging the PAIR is
+# what this ratchet asks for; packaging host_run alone would have separated it from its sibling
+# to satisfy a counter, which the overlay_ownership.py and setting_cell.py entries above
+# expressly declined to do. Two root leaves collapse to one package entry, mirroring retention/
+# and config_interchange/.
+# 120: +hook_quarantine.py (!274) — the durability half of the flat root installer
+# prek_hook.py: it parks the operator's hook before `prek install -f` destroys it, and
+# three consumers read the park back from the world. A leaf helper carved beside the flat
+# root hub it serves, the shape this ledger repeats (speak_cleaning.py/speak.py,
+# notify_targets.py/notify.py, forge_push_refs.py/forge_push.py). gates/ is gate/deny
+# logic, not an installer — the ruling entry 80 already recorded for prek_hook's sibling.
+# 121: +forge_push_verdict.py (push-gate OOM) — the push failure types and their
+# classification, carved out of forge_push.py to keep it under the 500-LOC cap once
+# GATE_ABORTED joined. The leaf-beside-its-hub shape entry 120 names, and the same
+# pairing forge_push_refs.py already holds with forge_push.py.
+# 122: +push_gate_record.py (push-gate OOM) — the per-worktree record of the last
+# pre-push gate run, written by dev/lib/gate-record.sh and read back to tell a gate
+# that died mid-run from one that reached a verdict. Read by forge_push_verdict.py,
+# owned by no subpackage (merge/ is the keystone transition, gates/ is deny logic).
+# 123: +session_start_hook_budget.py (!223) — the pure rule behind the SessionStart advisory
+# that catches an under-bounded hook in the operator's OWN `~/.claude/settings.json`, the one
+# file `tests/test_hooks_json_declare_timeouts.py` cannot see. It is dependency-free (stdlib
+# only) so the cold hook can import it without Django, mirroring invocation_cwd.py's "no
+# teatree deps" root placement. It never denies — only advises — so gates/ does not own it
+# either, the same ruling entry 120 already recorded for hook_quarantine.py's sibling
+# prek_hook.py; no other subpackage owns "is a SessionStart registration bounded".
+# 125: +admission_priority.py / task_dispatch.py. The SQL rank is shared
+# by core task inspection and loop claims, beside the flat managers_* query
+# leaves. Task dispatch is shared by core signals/tasks and loop timers.
+# Admission spans, their schema, skill assurance, and checked observation reads
+# form one cohesive core/telemetry/ package; none needs a flat root leaf.
+PINNED_FLAT_CORE_MODULES = 125
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

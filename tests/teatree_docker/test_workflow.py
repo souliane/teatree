@@ -49,6 +49,16 @@ farewell() {
 _MANAGED_ALIAS_BLOCK = f'{ALIAS_MARKER_BEGIN}\nalias t3="/somewhere/deploy/t3"\n{ALIAS_MARKER_END}\n'
 
 
+def _checkout(root: Path, name: str) -> Path:
+    """A checkout with a real executable ``deploy/t3`` — what a launcher can actually exec."""
+    repo = root / name
+    wrapper = repo / "deploy" / "t3"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return repo
+
+
 class TestIsRunningInContainer:
     def test_true_when_teatree_role_set(self) -> None:
         assert is_running_in_container({"TEATREE_ROLE": "worker"}, dockerenv=Path("/nope")) is True
@@ -147,22 +157,24 @@ class TestLauncherWrapperTarget:
 class TestInstallLauncher:
     def test_writes_an_executable_launcher(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        assert install_launcher(target, tmp_path / "clone") is LauncherInstall.INSTALLED
-        assert target.read_text(encoding="utf-8") == render_launcher_script(tmp_path / "clone")
+        assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.INSTALLED
+        assert target.read_text(encoding="utf-8") == render_launcher_script(_checkout(tmp_path, "clone"))
         assert target.stat().st_mode & 0o111
 
     def test_rerun_is_idempotent(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        install_launcher(target, tmp_path / "clone")
+        install_launcher(target, _checkout(tmp_path, "clone"))
         before = target.read_bytes()
-        assert install_launcher(target, tmp_path / "clone") is LauncherInstall.ALREADY_PRESENT
+        assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.ALREADY_PRESENT
         assert target.read_bytes() == before
 
     def test_repoints_a_managed_launcher_at_a_relocated_clone(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        install_launcher(target, tmp_path / "old-clone")
-        assert install_launcher(target, tmp_path / "new-clone") is LauncherInstall.UPDATED
-        assert launcher_wrapper_target(target.read_text(encoding="utf-8")) == wrapper_path(tmp_path / "new-clone")
+        install_launcher(target, _checkout(tmp_path, "old-clone"))
+        assert install_launcher(target, _checkout(tmp_path, "new-clone")) is LauncherInstall.UPDATED
+        assert launcher_wrapper_target(target.read_text(encoding="utf-8")) == wrapper_path(
+            _checkout(tmp_path, "new-clone")
+        )
 
     def test_replaces_the_uv_console_script_symlink(self, tmp_path: Path) -> None:
         uv_script = tmp_path / ".local" / "share" / "uv" / "tools" / "teatree" / "bin" / "t3"
@@ -172,7 +184,7 @@ class TestInstallLauncher:
         target.parent.mkdir()
         target.symlink_to(uv_script)
 
-        assert install_launcher(target, tmp_path / "clone") is LauncherInstall.UPDATED
+        assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.UPDATED
         assert not target.is_symlink()
         assert is_managed_launcher(target)
         assert uv_script.is_file()
@@ -182,7 +194,7 @@ class TestInstallLauncher:
         target.parent.mkdir()
         target.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
 
-        assert install_launcher(target, tmp_path / "clone") is LauncherInstall.REFUSED
+        assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.REFUSED
         assert target.read_text(encoding="utf-8") == "#!/bin/sh\necho mine\n"
 
     def test_refuses_a_symlink_that_is_not_uvs(self, tmp_path: Path) -> None:
@@ -193,13 +205,13 @@ class TestInstallLauncher:
         target.parent.mkdir()
         target.symlink_to(elsewhere)
 
-        assert install_launcher(target, tmp_path / "clone") is LauncherInstall.REFUSED
+        assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.REFUSED
         assert target.is_symlink()
 
     def test_unwritable_when_the_parent_is_a_file(self, tmp_path: Path) -> None:
         wall = tmp_path / "wall"
         wall.write_text("", encoding="utf-8")
-        assert install_launcher(wall / "t3", tmp_path / "clone") is LauncherInstall.UNWRITABLE
+        assert install_launcher(wall / "t3", _checkout(tmp_path, "clone")) is LauncherInstall.UNWRITABLE
 
 
 class TestInstallIsAtomic:
@@ -214,7 +226,7 @@ class TestInstallIsAtomic:
 
     def test_a_concurrent_resolver_always_finds_one_whole_executable_launcher(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        repos = [tmp_path / "clone-a", tmp_path / ("clone-" + "b" * 200)]
+        repos = [_checkout(tmp_path, "clone-a"), _checkout(tmp_path, "clone-" + "b" * 200)]
         whole = {render_launcher_script(repo) for repo in repos}
         install_launcher(target, repos[0])
 
@@ -255,20 +267,20 @@ class TestInstallIsAtomic:
 
     def test_a_failed_publish_leaves_the_previous_launcher_intact(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        install_launcher(target, tmp_path / "old-clone")
+        install_launcher(target, _checkout(tmp_path, "old-clone"))
         previous = target.read_bytes()
 
         with patch.object(workflow.os, "replace", side_effect=OSError("interrupted")):
-            assert install_launcher(target, tmp_path / "new-clone") is LauncherInstall.UNWRITABLE
+            assert install_launcher(target, _checkout(tmp_path, "new-clone")) is LauncherInstall.UNWRITABLE
         assert target.read_bytes() == previous
         assert os.access(target, os.X_OK)
 
     def test_leaves_no_scratch_file_beside_the_launcher(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        install_launcher(target, tmp_path / "old-clone")
-        install_launcher(target, tmp_path / "new-clone")
+        install_launcher(target, _checkout(tmp_path, "old-clone"))
+        install_launcher(target, _checkout(tmp_path, "new-clone"))
         with patch.object(workflow.os, "replace", side_effect=OSError("interrupted")):
-            install_launcher(target, tmp_path / "third-clone")
+            install_launcher(target, _checkout(tmp_path, "third-clone"))
         assert [entry.name for entry in target.parent.iterdir()] == ["t3"]
 
 
@@ -278,7 +290,7 @@ class TestInstallIsVerified:
     def test_a_publish_that_lands_nothing_is_unverified(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
         with patch.object(workflow.os, "replace", lambda *_args: None):
-            assert install_launcher(target, tmp_path / "clone") is LauncherInstall.UNVERIFIED
+            assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.UNVERIFIED
         assert not target.exists()
 
     def test_a_publish_that_lands_another_checkout_is_unverified(self, tmp_path: Path) -> None:
@@ -290,15 +302,15 @@ class TestInstallIsVerified:
             destination.chmod(0o755)
 
         with patch.object(workflow.os, "replace", land_the_decoy):
-            assert install_launcher(target, tmp_path / "clone") is LauncherInstall.UNVERIFIED
+            assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.UNVERIFIED
 
     def test_a_non_executable_publish_is_unverified(self, tmp_path: Path) -> None:
         target = tmp_path / "bin" / "t3"
-        script = render_launcher_script(tmp_path / "clone")
+        script = render_launcher_script(_checkout(tmp_path, "clone"))
 
         def land_without_the_exec_bit(_staged: Path, destination: Path) -> None:
             destination.write_text(script, encoding="utf-8")
             destination.chmod(0o644)
 
         with patch.object(workflow.os, "replace", land_without_the_exec_bit):
-            assert install_launcher(target, tmp_path / "clone") is LauncherInstall.UNVERIFIED
+            assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.UNVERIFIED

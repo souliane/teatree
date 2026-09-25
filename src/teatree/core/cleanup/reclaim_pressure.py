@@ -1,7 +1,7 @@
 """How disk pressure scales the reclaim criterion, and when a stalled reclaim is an alarm (#4644).
 
 Dormancy-by-mtime was the evictor's only size-relevant criterion, so a checkout
-some other process rewrites more often than ``venv_idle_days`` was ineligible by
+some other process rewrites more often than ``artifact_idle_days`` was ineligible by
 construction — not on this pass, but on every pass forever, however full the disk
 got. Age is the wrong authority under pressure precisely because a ``.venv`` is a
 ``uv sync`` product: rebuilding one costs a re-sync, and nothing else, so on a
@@ -12,7 +12,7 @@ So the criterion decays with measured free space, between two thresholds that
 already ship. Below the critical floor it stops applying at all — expressed as
 ``None`` rather than a cutoff of "now", because a cutoff races a directory
 written during the pass and that race is the churn hole this closes. Liveness is
-untouched by any of it: :mod:`teatree.core.cleanup.venv_eviction` still refuses
+untouched by any of it: :mod:`teatree.core.cleanup.artifact_eviction` still refuses
 the whole pass on an unreadable process table, and a checkout a live process is
 inside is still never a candidate at any pressure.
 

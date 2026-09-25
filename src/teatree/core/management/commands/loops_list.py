@@ -3,13 +3,13 @@
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
 rows and prints each loop's name, effective admitted state, cadence (interval or
 daily schedule), last run, next-due, the loop's code-declared ``[reach … determinism]``
-tags (#3959), and an ``away-gated`` marker when the row is gated off during any
-availability-deferring mode. ``--tag`` narrows the listing to the loops carrying
-every named tag. The state
-column folds a :class:`teatree.core.models.LoopState` pause/disable hold into the
-row's ``enabled`` flag (#3117) — ``t3 loop pause`` holds a loop WITHOUT flipping
-``Loop.enabled``, so a pause is now confirmable at a glance. ORM access lives in
-a management command (the project's "anything touching the ORM is a management
+tags (#3959), and a ``colleague-facing`` marker for a row that reaches a colleague on
+the owner's behalf. ``--tag`` narrows the listing to the loops carrying every named tag.
+
+The state column is the TICK's verdict — hold, then the manual override, then the active
+preset — never one plane read alone, and a ``LoopState`` hold renders ``paused`` rather
+than ``disabled`` so ``t3 loop pause`` is confirmable at a glance (#3117). ORM access
+lives in a management command (the project's "anything touching the ORM is a management
 command" rule).
 
 Strictly read-only: ORM reads only — it never ticks, marks a run, or mutates a
@@ -27,7 +27,7 @@ from django_typer.management import TyperCommand
 from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
-from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
+from teatree.loops.enable_verdict import EnablePlanes, LoopVerdict
 from teatree.loops.registry import iter_loops
 
 _NEVER = "—"
@@ -67,25 +67,23 @@ class _LoopRow:
 
     loop: Loop
     status: LoopStatus
-    verdict: LoopVerdict | None
+    verdict: LoopVerdict
     mini_loop: MiniLoop | None
     starved: bool
 
 
-def _effective_state(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus) -> str:
+def _effective_state(verdict: LoopVerdict, status: LoopStatus) -> str:
     """The state the TICK would take, keyed on the effective verdict (#4185).
 
-    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping ``Loop.enabled``,
-    so the row alone still reads ``enabled`` — ``paused`` surfaces the hold so a pause is
-    confirmable at a glance (#3117). Everything else follows the verdict rather than the
-    raw column: a preset-forced-on loop the tick WILL fire read ``disabled``, and a
-    preset-masked-off one the tick will skip read ``enabled``. The ``forced-on`` /
-    ``masked`` note from :func:`_preset_note` still carries WHY.
+    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT touching ``Loop.enabled``, so
+    ``paused`` surfaces the hold that ``disabled`` alone would not distinguish (#3117).
+    Everything else follows the verdict rather than any single plane: reading the manual
+    override column showed ``disabled`` for every loop a preset admits, which is nearly all
+    of them. :func:`_deciding_layer_note` carries WHY.
     """
     if status is LoopStatus.PAUSED:
         return "paused"
-    admitted = verdict.admitted if verdict is not None else loop.enabled
-    return "enabled" if admitted else "disabled"
+    return "enabled" if verdict.admitted else "disabled"
 
 
 def _human_duration(seconds: float | None) -> str:
@@ -101,12 +99,11 @@ def _human_duration(seconds: float | None) -> str:
     return f"{hours}h{remainder // _SECONDS_PER_MINUTE:02d}m"
 
 
-def _next_label(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
+def _next_label(verdict: LoopVerdict, loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
     # A loop the verdict refuses won't tick — its next-fire is meaningless. Keyed on the
-    # verdict, not ``Loop.enabled``: a preset-forced-on loop the tick will fire showed no
-    # countdown at all (#4185).
-    admitted = verdict.admitted if verdict is not None else loop.enabled
-    if not admitted or status is not LoopStatus.ENABLED:
+    # verdict, not any single plane: a loop the tick will fire showed no countdown at
+    # all (#4185).
+    if not verdict.admitted or status is not LoopStatus.ENABLED:
         return _NEVER
     if loop.is_due(now):
         return "due"
@@ -116,16 +113,19 @@ def _next_label(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus, now
     return f"in {_human_duration((next_at - now).total_seconds())}"
 
 
-def _preset_note(verdict: LoopVerdict | None) -> str:
-    """The masked/forced note when a preset (not base/hold) decides the loop, else ``""``.
+def _deciding_layer_note(verdict: LoopVerdict) -> str:
+    """Why the verdict is what it is, when the state column alone does not say it.
 
-    A masked-off loop reads ``masked (preset maintenance)`` instead of silently
-    vanishing; a preset that forces a base-disabled loop on reads ``forced-on``.
+    A manual override is ALWAYS annotated — an override nobody can see is one nobody
+    lifts (A7) — and a preset-masked loop reads ``masked (…)`` instead of silently
+    vanishing. A preset ADMITTING a loop needs no note: the state column already says so,
+    and annotating every admitted row buries the two that matter.
     """
-    if verdict is None or verdict.layer in {"base", "hold"}:
+    if verdict.layer == "hold":
         return ""
-    tag = "masked" if not verdict.admitted else "forced-on"
-    return f"  {tag} ({verdict.detail})"
+    if verdict.layer == "manual":
+        return f"  {verdict.detail}"
+    return "" if verdict.admitted else f"  masked ({verdict.detail})"
 
 
 def _withholding_note(loop: Loop, now: dt.datetime) -> str:
@@ -143,7 +143,7 @@ def _withholding_note(loop: Loop, now: dt.datetime) -> str:
 
 def _line(row: "_LoopRow", now: dt.datetime) -> str:
     loop = row.loop
-    state = _effective_state(row.verdict, loop, row.status)
+    state = _effective_state(row.verdict, row.status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(row.verdict, loop, row.status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
@@ -151,10 +151,10 @@ def _line(row: "_LoopRow", now: dt.datetime) -> str:
     if row.mini_loop is not None and row.mini_loop.tags:
         line += f"  [{' '.join(row.mini_loop.tags)}]"
     if loop.colleague_facing:
-        line += "  away-gated"
+        line += "  colleague-facing"
     if row.starved:
         line += "  starved"
-    return line + _preset_note(row.verdict)
+    return line + _deciding_layer_note(row.verdict)
 
 
 def _description_line(loop: Loop) -> str | None:
@@ -174,7 +174,7 @@ def _payload(row: "_LoopRow", now: dt.datetime) -> dict[str, Any]:
     return {
         "name": loop.name,
         "enabled": loop.enabled,
-        "status": _effective_state(verdict, loop, row.status),
+        "status": _effective_state(verdict, row.status),
         "description": loop.description,
         "delay_seconds": loop.delay_seconds,
         "daily_at": loop.daily_at.strftime("%H:%M") if loop.daily_at else "",
@@ -187,8 +187,8 @@ def _payload(row: "_LoopRow", now: dt.datetime) -> dict[str, Any]:
         "reach": [member.value for member in LoopReach if mini_loop is not None and member in mini_loop.reach],
         "determinism": mini_loop.determinism.value if mini_loop is not None and mini_loop.determinism else "",
         "tags": list(mini_loop.tags) if mini_loop is not None else [],
-        "effective_admitted": verdict.admitted if verdict is not None else None,
-        "effective_layer": verdict.layer if verdict is not None else "base",
+        "effective_admitted": verdict.admitted,
+        "effective_layer": verdict.layer,
         "starved": row.starved,
     }
 
@@ -211,8 +211,8 @@ class Command(TyperCommand):
         loops = [row for row in Loop.objects.all() if wanted <= _tags_of(registered.get(row.name))]
         # One read of the LoopState control plane; an absent name → ENABLED default.
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
-        # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
-        verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
+        # One read of every enable plane: the per-loop effective verdict + deciding layer.
+        planes = EnablePlanes.resolve(now)
         # One read of the admitted-but-driverless set (#4185).
         from teatree.loops.chain_membership import starved_loop_names  # noqa: PLC0415 — deferred: resolved at call time
 
@@ -221,7 +221,7 @@ class Command(TyperCommand):
             _LoopRow(
                 loop=loop,
                 status=held.get(loop.name, LoopStatus.ENABLED),
-                verdict=verdicts.get(loop.name),
+                verdict=planes.verdict_for(loop.name, reason=loop.override_reason),
                 mini_loop=registered.get(loop.name),
                 starved=loop.name in starved,
             )

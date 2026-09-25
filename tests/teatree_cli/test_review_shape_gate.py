@@ -1,14 +1,14 @@
 """Colleague-MR review-shape gate (souliane/teatree#1114, loosened in #1159).
 
 When a review is posted on a colleague's MR (the MR's author is NOT the
-current identity), the binding rule from the review skill is **single
-terse INLINE comment that keeps the finding's own severity label**
-(``HIGH (correctness): ...``, ``MED: ...``, ``LOW: ...``, or a bare
-``Nit:`` only for a genuinely trivial item) — never a multi-section
-Problem/Fix/Verification dump and never a blanket downgrade of every
-finding to ``Nit:``. The previous safety-net was a memory entry (a
-guideline an agent could forget). The structural gate enforces it
-deterministically before the GitLab API call hits.
+current identity), the binding rule from the review skill is one terse
+inline comment anchored on the motivating file:line: an unlabelled
+finding plus one concrete pointer, targeting ~300 characters. A bare
+``Nit:`` is reserved for a genuinely trivial item; a real finding is
+never relabelled as a nit to get past the cap. The previous safety-net
+was a memory entry (a guideline an agent could forget). The structural
+gate enforces its coarser paragraph and word caps deterministically
+before the GitLab API call hits.
 
 Shape rule (post-#1159): refuse when the body exceeds
 ``COLLEAGUE_PROSE_CAP_PARAGRAPHS`` paragraphs (blank-line separated)
@@ -28,9 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -47,10 +45,10 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     keeps the on-behalf gate silent so any blocking comes from the shape gate
     we are testing.
 
-    ``on_behalf_post_mode`` is DB-home (#1775): it resolves only from the
+    The active posture resolves only from the
     ``ConfigSetting`` store.
     """
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 class _StubAPI:
@@ -143,14 +141,14 @@ class TestColleagueMRShapeGate:
         assert code == 1, f"expected refuse, got code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
         assert "paragraph" in msg, f"steering must name the breach concretely: {msg!r}"
-        # The steering must NOT downgrade every finding to a bare "Nit:" — a
-        # HIGH/MED finding keeps its own severity label (souliane/teatree#1114
-        # severity-label fix). The example command shows a severity-labelled
-        # inline note, never a "Nit:"-prefixed one.
-        assert "Re-post as an inline Nit:-prefixed comment" not in msg
-        assert '"Nit: ..."' not in msg
-        assert "severity label" in msg
-        assert "HIGH (correctness): ..." in msg
+        assert "one concrete pointer" in msg
+        assert "~300 characters" in msg
+        assert "with no severity label" in msg
+        assert "HIGH (correctness)" not in msg
+        assert "MED:" not in msg
+        assert "LOW:" not in msg
+        assert '"<finding> — <pointer>"' in msg
+        assert "relabel a real finding as `Nit:`" in msg
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
 
     def test_legitimate_three_sentence_finding_passes(self) -> None:
@@ -200,8 +198,8 @@ class TestColleagueMRShapeGate:
 
         Issue #1159 loosens the gate but preserves its anti-abuse intent.
         A 27-sentence dump exceeds the word-count cap and must still be
-        refused with the steering message pointing at a terse severity-
-        labelled inline note.
+        refused with steering toward a terse, unlabelled inline finding
+        carrying one concrete pointer.
         """
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
@@ -216,10 +214,14 @@ class TestColleagueMRShapeGate:
         assert code == 1, f"27-sentence dump must be refused: code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
         assert "word" in msg, f"steering must name the word-count breach: {msg!r}"
-        # The remediation keeps the finding's own severity label rather than
-        # downgrading everything to a bare "Nit:".
-        assert "Re-post as an inline Nit:-prefixed comment" not in msg
-        assert "severity label" in msg
+        assert "one concrete pointer" in msg
+        assert "~300 characters" in msg
+        assert "with no severity label" in msg
+        assert "HIGH (correctness)" not in msg
+        assert "MED:" not in msg
+        assert "LOW:" not in msg
+        assert '"<finding> — <pointer>"' in msg
+        assert "relabel a real finding as `Nit:`" in msg
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
 
     def test_inline_nit_comment_accepted(self) -> None:
@@ -545,16 +547,12 @@ class TestShapeGateFailOpenAndCarveOuts:
         assert "inline note" in msg
         assert "paragraph" in msg
 
-    def test_steering_keeps_severity_label_not_blanket_nit(self) -> None:
-        """The refusal keeps the finding's severity label, not a blanket ``Nit:``.
+    def test_steering_uses_unlabelled_finding_with_pointer_and_reserves_nit(self) -> None:
+        """The refusal teaches the terse posted-comment contract.
 
-        souliane/teatree#1114 severity-label fix: the gate previously told
-        the agent to "Re-post as an inline Nit:-prefixed comment", which
-        downgraded a HIGH/MED finding to the nonsensical "Nit (MED)". The
-        steering must instead instruct a terse inline note that KEEPS the
-        finding's own severity label (``HIGH (correctness): ...``, ``MED:
-        ...``, ``LOW: ...``) and reserve a bare ``Nit:`` only for genuinely
-        trivial items. The example command shows a severity-labelled note.
+        A posted finding is unlabelled and retains one concrete pointer;
+        only a genuinely trivial item starts with a bare ``Nit:``. A real
+        finding must not be relabelled as a nit to evade the coarse cap.
         """
         from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
@@ -574,12 +572,16 @@ class TestShapeGateFailOpenAndCarveOuts:
                 body=body,
                 inline=inline,
             )
-            assert "Re-post as an inline Nit:-prefixed comment" not in msg
-            assert '"Nit: ..."' not in msg
-            assert "severity label" in msg
-            assert "HIGH (correctness): ..." in msg
-            # A bare "Nit:" survives only as the reserved trivial-item example.
-            assert "trivial" in msg.lower()
+            assert "one concrete pointer" in msg
+            assert "~300 characters" in msg
+            assert "with no severity label" in msg
+            assert "HIGH (correctness)" not in msg
+            assert "MED:" not in msg
+            assert "LOW:" not in msg
+            assert '"<finding> — <pointer>"' in msg
+            assert "Reserve `Nit:` for a genuinely trivial item" in msg
+            assert "relabel a real finding as `Nit:`" in msg
+            assert "owner in chat, not the review thread" in msg
 
     def test_mr_level_note_over_word_cap_is_refused(self) -> None:
         """An MR-level note over the 200-word cap is refused.

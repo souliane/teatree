@@ -17,11 +17,11 @@ does not need to know which — it is the one fact an empty read does not settle
 its own, and the keystone must establish it before diagnosing drift, whatever
 emptied the read — refusing there left the ticket unadvanced against a merged PR.
 
-Each chain below is the one that host's merge READ actually authenticates from,
-which is neither the PUSH credential ``core.forge_push`` resolves nor the same
-across hosts: GitHub shells ``gh`` with an empty token so it inherits the ambient
-env (``backends.forge_merge_rpc.gh_runner``), while GitLab retired the ``glab``
-binary for an httpx client reading ``GITLAB_TOKEN`` env-first then ``pass``
+Each chain below is the one that host's merge READ actually authenticates from.
+GitHub resolves the owning overlay's ``github_token_pass_key`` and refuses
+ambient ``GH_TOKEN`` / ``GITHUB_TOKEN`` / stored ``gh`` login. GitLab retired the
+``glab`` binary for an httpx client reading ``GITLAB_TOKEN`` env-first, then the
+overlay's ``gitlab_token_pass_key`` route
 (#4007). Naming a variable the failing call never reads would repeat this
 ticket's own defect inside its fix.
 """
@@ -44,12 +44,12 @@ class ReadCredentialChain:
 
 _READ_CREDENTIAL_CHAINS: dict[str, ReadCredentialChain] = {
     "github": ReadCredentialChain(
-        env_vars=("GH_TOKEN", "GITHUB_TOKEN"),
-        non_env_source="`gh`'s own config file",
+        env_vars=(),
+        non_env_source="the `pass` entry routed by `github_token_pass_key`",
     ),
     "gitlab": ReadCredentialChain(
         env_vars=("GITLAB_TOKEN",),
-        non_env_source="the `pass` store entry `gitlab/pat`",
+        non_env_source="the `pass` entry routed by `gitlab_token_pass_key`",
     ),
 }
 
@@ -77,28 +77,43 @@ def landed_merge_commit(query: "CodeHostQuery") -> str:
     return state.merge_commit_oid if state.is_merged else ""
 
 
-def unreadable_head_advisory(host_kind: str) -> str:
-    """The likely cause of an empty live-head read in THIS venue, plus the CLEAR's state.
+def read_credential_state(host_kind: str) -> str:
+    """What this venue was actually READ to carry for *host_kind*'s forge reads.
 
-    States what was actually read (which credentials this process carries) rather
-    than asserting a cause, and names the non-env fallback an unset variable did
-    NOT rule out — so an absent env var reads as evidence, never proof.
+    States which credentials this process holds rather than asserting a cause, and
+    names the non-env fallback an unset variable did NOT rule out — so an absent
+    env var reads as evidence, never proof. Shared by every surface that reports a
+    forge read it could not complete, so none of them has to describe the chain
+    itself and then drift from it.
     """
     chain = read_credential_chain(host_kind)
+    if host_kind not in _READ_CREDENTIAL_CHAINS or host_kind == "github":
+        return (
+            "GitHub merge reads authenticate only with the owning overlay's "
+            "`github_token_pass_key` route. The route may be UNSET or UNREADABLE, "
+            "or repository ownership may be unresolved; ambient GH_TOKEN, "
+            "GITHUB_TOKEN, and stored gh login are intentionally ignored"
+        )
     present = [name for name in chain.env_vars if os.environ.get(name, "")]
-    cause = (
-        f"an ambient credential IS present here ({', '.join(present)}), so a missing credential "
-        f"is not the cause — the forge itself did not answer (network, rate limit, a revoked "
-        f"token, or no PR of that number in that repo)"
-        if present
-        else f"this venue carries none of {', '.join(chain.env_vars)}, the credentials the merge "
+    if present:
+        return (
+            f"an ambient credential IS present here ({', '.join(present)}), so a missing credential "
+            f"is not the cause — the forge itself did not answer (network, rate limit, a revoked "
+            f"token, or no PR of that number in that repo)"
+        )
+    return (
+        f"this venue carries none of {', '.join(chain.env_vars)}, the credentials the merge "
         f"read transport authenticates from — which is what a `docker compose exec` shell looks "
         f"like, since the entrypoint exports the token into the role process tree only and a "
         f"fresh exec inherits the image env instead. That is evidence, not proof: the transport "
         f"also falls back to {chain.non_env_source}"
     )
+
+
+def unreadable_head_advisory(host_kind: str) -> str:
+    """The likely cause of an empty live-head read in THIS venue, plus the CLEAR's state."""
     return (
-        f"An empty read is a non-answer, not a verdict about the head: {cause}. This refusal "
-        f"consumes nothing — the CLEAR stays actionable, so a venue whose forge reads work (the "
-        f"authed loop) merges it unchanged on a later tick."
+        f"An empty read is a non-answer, not a verdict about the head: {read_credential_state(host_kind)}. "
+        f"This refusal consumes nothing — the CLEAR stays actionable, so a venue whose forge reads work "
+        f"(the authed loop) merges it unchanged on a later tick."
     )

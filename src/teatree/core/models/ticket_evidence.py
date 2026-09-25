@@ -5,22 +5,22 @@ from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import FIX_RECORD_FIELDS, ac_label, spec_coverage_criteria, validated_ticket_extra
+from teatree.core.models.types import FIX_RECORD_FIELDS, validated_ticket_extra
 
 if TYPE_CHECKING:
     from teatree.core.models.types import (
-        AcceptanceCriterion,
         AntiVacuityAttestation,
         FixRecord,
         FixRecordOverride,
         JSONObject,
         ReviewContext,
         ReviewSkillRun,
-        SpecCoverageManifest,
-        SpecCoverageOverride,
         TicketExtra,
         TicketSiblingFields,
     )
+
+#: ``extra`` slot holding one durable agent conversation per ``Task.pk`` (``TicketExtra.pydantic_ai_threads``).
+TASK_THREADS_KEY = "pydantic_ai_threads"
 
 
 class TicketEvidenceModel(TicketFacet):
@@ -67,6 +67,20 @@ class TicketEvidenceModel(TicketFacet):
             self.merge_extra(merge_into_dicts={"phase_attempts": {phase: already + 1}})
             return True
 
+    def has_task_thread(self, task_pk: int) -> bool:
+        """Whether *task_pk* holds a stored conversation, read from the row rather than this instance."""
+        return type(self).objects.filter(pk=self.pk, **{f"extra__{TASK_THREADS_KEY}__has_key": str(task_pk)}).exists()
+
+    def pop_task_thread(self, task_pk: int) -> object | None:
+        """Remove and return *task_pk*'s stored conversation, re-reading ``extra`` so a sibling's entry survives."""
+        self.refresh_from_db(fields=["extra"])
+        stored = self.extra.get(TASK_THREADS_KEY) if isinstance(self.extra, dict) else None
+        threads = dict(stored) if isinstance(stored, dict) else {}
+        raw = threads.pop(str(task_pk), None)
+        if raw is not None:
+            self.merge_extra(set_keys=cast("TicketExtra", {TASK_THREADS_KEY: threads}))
+        return raw
+
     def merge_extra(
         self,
         *,
@@ -110,7 +124,9 @@ class TicketEvidenceModel(TicketFacet):
         URL (the whole list is overwritten); ``append_to_lists={"pr_urls":[url]}``
         appends only the new item to whatever the locked re-read holds, so the
         concurrent writer's entry survives. Items already present are not
-        duplicated.
+        duplicated. ``merge_into_dicts`` replaces a legacy scalar string with
+        the new mapping inside the same lock; other shapes keep their existing
+        conversion or validation behaviour.
 
         A merge that changes nothing issues no ``UPDATE``. Re-stamping a value the
         row already holds is what a replaying caller does — the review sweep
@@ -130,7 +146,8 @@ class TicketEvidenceModel(TicketFacet):
                 existing.extend(item for item in items if item not in existing)
                 merged[key] = existing
             for key, entries in (merge_into_dicts or {}).items():
-                base = dict(merged.get(key) or {})
+                current = merged.get(key)
+                base = {} if isinstance(current, str) else dict(current or {})
                 base.update(entries)
                 merged[key] = base
             for key in pop_keys or []:
@@ -224,31 +241,6 @@ class TicketEvidenceModel(TicketFacet):
             "at": timezone.now().isoformat(),
         }
         self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
-
-    def record_spec_coverage(self, criteria: "list[AcceptanceCriterion]", *, replace: bool = False) -> None:
-        """Stamp the per-ticket spec-coverage manifest the DoD gate reads (#2232).
-
-        The producer half of ``teatree.core.gates.spec_coverage_gate``, which
-        without one made ``require_spec_coverage`` unsatisfiable — its ON state
-        refused every delivery because nothing could ever write the manifest.
-
-        Criteria are upserted by :func:`ac_label`, so a later run adds tests to
-        one AC without restating the rest; ``replace`` records exactly *criteria*
-        (the only way to drop a mis-recorded AC). The read side runs against the
-        ``select_for_update``-locked row rather than the possibly-stale in-memory
-        ``extra``, so a concurrent writer's AC survives the merge.
-        """
-        with transaction.atomic():
-            locked = type(self).objects.select_for_update().get(pk=self.pk)
-            merged = {} if replace else {ac_label(ac): ac for ac in spec_coverage_criteria(locked.extra)}
-            merged.update({ac_label(ac): ac for ac in criteria})
-            manifest: SpecCoverageManifest = {"acceptance_criteria": list(merged.values())}
-            self.merge_extra(set_keys={"spec_coverage": manifest})
-
-    def record_spec_coverage_override(self, reason: str) -> None:
-        """Stamp the audited escape hatch for a genuinely AC-less ticket (#2232)."""
-        override: SpecCoverageOverride = {"reason": reason}
-        self.merge_extra(set_keys={"spec_coverage_override": override})
 
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.

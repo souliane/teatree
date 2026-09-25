@@ -19,7 +19,7 @@ from teatree.core.backend_protocols import ApprovalState
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.pr_approvals import PrApprovalScanner, sync_forge_approvals
-from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 
 
 class _ApprovedHost:
@@ -69,7 +69,7 @@ class TestPrApprovalScannerEmitsSignal(_PrApprovalScannerTestBase):
     def test_forge_approved_pr_emits_pr_approved_signal(self) -> None:
         pr = self._review_requested_pr()
 
-        with mode_immediate_cm():
+        with posture_permits_cm():
             signals = PrApprovalScanner(overlay="teatree", host=_ApprovedHost()).scan()
 
         assert [s.kind for s in signals] == ["pr.approved"]
@@ -91,21 +91,21 @@ class TestPrApprovalScannerEmitsSignal(_PrApprovalScannerTestBase):
 
 
 class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
-    """The revived lane must not fire the #961 approval reaction at default settings."""
+    """The revived lane must not fire the #961 approval reaction under a forbidding posture."""
 
     @pytest.fixture(autouse=True)
     def _gate_on(self) -> Iterator[None]:
-        # This case is about the gate BLOCKING, so it pins the mode it exercises
+        # This case is about the gate BLOCKING, so it pins the posture it exercises
         # rather than leaning on the shipped default resolving that way (#3895).
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             yield
 
-    def test_no_reaction_when_gate_on_default(self) -> None:
+    def test_no_reaction_under_a_forbidding_posture(self) -> None:
         pr = self._review_requested_pr()
         publisher = _FakeReactionPublisher()
 
-        # Gate ON (default draft_or_ask) — no recorded approval → the reaction
-        # is skipped even though the PR does transition to APPROVED.
+        # The posture forbids and no approval is recorded → the reaction is
+        # skipped even though the PR does transition to APPROVED.
         with patch.object(signals_mod, "get_reaction_publisher", lambda: publisher):
             PrApprovalScanner(overlay="teatree", host=_ApprovedHost()).scan()
 
@@ -118,7 +118,7 @@ class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
         publisher = _FakeReactionPublisher()
 
         with (
-            mode_immediate_cm(),
+            posture_permits_cm(),
             patch.object(signals_mod, "get_reaction_publisher", lambda: publisher),
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -145,7 +145,7 @@ class TestApprovalEffectsFollowTheCommittedState(_PrApprovalScannerTestBase):
             raise DatabaseError(msg)
 
         with (
-            mode_immediate_cm(),
+            posture_permits_cm(),
             patch.object(signals_mod, "get_reaction_publisher", lambda: publisher),
             patch.object(PullRequest, "save", _boom),
             self.captureOnCommitCallbacks(execute=True),
@@ -165,7 +165,7 @@ class TestSyncForgeApprovals(_PrApprovalScannerTestBase):
         pr = self._review_requested_pr()
         host = _ApprovedHost()
 
-        with mode_immediate_cm():
+        with posture_permits_cm():
             approved = sync_forge_approvals(host, [pr])
 
         assert [row.pk for row in approved] == [pr.pk]

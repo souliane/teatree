@@ -19,7 +19,9 @@ the probe implementation no longer forks per caller.
 authenticates through the same credential chain the writer path already resolves
 (souliane/teatree#4116). A probe shelled without it comes back UNKNOWN for every
 private repo, and a caller reading that as "no PR" refuses the second push to a
-branch whose PR already exists.
+branch whose PR already exists. It serves the GitHub arm only: the GitLab arm shells
+out to nothing, because the deploy IMAGE declares no ``glab`` and a probe must not
+depend on a binary only an operator's host bind mount happens to supply.
 """
 
 import json
@@ -29,39 +31,55 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from teatree.core.forge_push import resolve_forge_credential
+from teatree.forge_credentials import ForgeTokenState, resolve_repo_token, resolve_url_token
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# Both CLIs list only OPEN PRs/MRs here, one row, so a non-empty payload IS an open
-# PR/MR. The branch selector is appended by the forge-specific wrapper (``--head`` on
-# GitHub, ``--source-branch`` on GitLab).
+# ``gh`` lists only OPEN PRs here, one row, so a non-empty payload IS an open PR. The
+# branch selector (``--head``) is appended by the forge-specific wrapper. The GitLab arm
+# runs no CLI at all — the image declares no ``glab``, so that side reads over the
+# token-authenticated HTTP API instead (see :func:`probe_gitlab_open_pr`).
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
-# glab has no state flag: open is its default and --all/--closed/--merged are the opt-outs.
-_GLAB_OPEN_MR: tuple[str, ...] = ("glab", "mr", "list", "--output", "json", "-P", "1")
 
 
-def forge_cli_env() -> dict[str, str] | None:
-    """The subprocess env a forge CLI read needs, or ``None`` when no token resolves.
-
-    :func:`~teatree.core.forge_push.resolve_forge_credential` is the one chain
-    every forge WRITE already goes through (``GH_TOKEN`` env, then the compose
-    ``env_file``'s ``TEATREE_GH_TOKEN``, then the overlay ``pass`` store), so a
-    read routed through here sees exactly what the writer sees.
-
-    ``None`` rather than a copy of ``os.environ``: an ambient ``gh auth login``
-    is a legitimate credential of its own, and handing it an explicit empty
-    ``GH_TOKEN`` would override it. ``glab`` keeps ambient auth either way —
-    teatree resolves no GitLab token, and a GitHub one in ``GITLAB_TOKEN`` would
-    be a credential sent to the wrong forge.
-    """
-    credential = resolve_forge_credential()
-    if not credential.token:
+def forge_cli_env(repo: str | Path = ".") -> dict[str, str] | None:
+    """Return a GitHub-only environment with the owning overlay's routed token."""
+    resolution = resolve_repo_token(str(repo), credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
         return None
-    return {**os.environ, "GH_TOKEN": credential.token}
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env.pop("GITLAB_TOKEN", None)
+    env.pop("GLAB_CONFIG_DIR", None)
+    env["GH_TOKEN"] = resolution.token
+    return env
+
+
+def gitlab_cli_env(repo: str | Path = ".") -> dict[str, str] | None:
+    """Return a GitLab-only environment with the owning overlay's routed token."""
+    resolution = resolve_repo_token(str(repo), credential="gitlab_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return None
+    env = dict(os.environ)
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    env.pop("GLAB_CONFIG_DIR", None)
+    env["GITLAB_TOKEN"] = resolution.token
+    return env
+
+
+def forge_url_cli_env(url: str) -> dict[str, str] | None:
+    """Return an explicit GitHub env bound to the overlay owning *url*."""
+    resolution = resolve_url_token(url, credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return None
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = resolution.token
+    return env
 
 
 class PrProbeOutcome(Enum):
@@ -140,15 +158,22 @@ def find_open_pr_for_branch(repo_dir: str | Path, branch: str) -> PrProbe:
     """
     if not branch:
         return PrProbe.unknown()
-    remote = run_with_status(repo=str(repo_dir), args=["remote", "get-url", "origin"])
-    if remote.returncode != 0:
+    kind = forge_for_repo(repo_dir)
+    if kind is None:
         return PrProbe.unknown()
-    kind = forge_from_remote(remote.stdout.strip())
     if kind == "github":
         return probe_github_open_pr(repo_dir, branch)
     if kind == "gitlab":
         return probe_gitlab_open_pr(repo_dir, branch)
     return PrProbe.none()
+
+
+def forge_for_repo(repo_dir: str | Path) -> str | None:
+    """Return the forge owning ``origin``; ``None`` means the remote was unreadable."""
+    remote = run_with_status(repo=str(repo_dir), args=["remote", "get-url", "origin"])
+    if remote.returncode != 0:
+        return None
+    return forge_from_remote(remote.stdout.strip())
 
 
 def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
@@ -157,8 +182,52 @@ def probe_github_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
 
 
 def probe_gitlab_open_pr(repo_dir: str | Path, branch: str) -> PrProbe:
-    """The tri-state open-MR probe for a known-GitLab repo (``glab mr list --source-branch``)."""
-    return _probe_open_pr([*_GLAB_OPEN_MR, "--source-branch", branch], repo_dir, key="web_url")
+    """The tri-state open-MR probe for a known-GitLab repo, over the HTTP API (#151).
+
+    Shells out to nothing, because the deploy IMAGE declares no ``glab``
+    (``deploy/Dockerfile``): a role may only shell out to a tool the image carries.
+    Where the operator's host happens to bind-mount one — ``~/.local/bin`` is such a
+    mount, and a ``glab`` found there IS executable and authenticated — the old
+    ``glab mr list --source-branch`` worked by accident of that host's contents, and
+    the same probe answered UNKNOWN on any box without it. So the CLI's presence was
+    never the thing to reason from; an undeclared dependency was. Over HTTP this arm
+    answers the same everywhere, on the token the overlay picks for that remote.
+
+    Any failure below is UNKNOWN, including one raised while BUILDING the backend: this
+    runs inside the git pre-push hook, where an exception would abort the push itself.
+    """
+    try:
+        url = _gitlab_open_mr_url(repo_dir, branch)
+    except Exception:  # noqa: BLE001 — the probe runs in a pre-push hook and must never raise into it.
+        logger.warning("open-MR probe could not build a GitLab backend for %s — unknown", repo_dir)
+        return PrProbe.unknown()
+    if url is None:
+        return PrProbe.unknown()
+    return PrProbe.found(url) if url else PrProbe.none()
+
+
+def _gitlab_open_mr_url(repo_dir: str | Path, branch: str) -> str | None:
+    """The repo's own code host answering ``fetch_open_pr_url_for_branch``, or ``None``.
+
+    Reached through :func:`~teatree.core.backend_factory.code_host_for_repo_from_overlay`
+    — the sanctioned core↔backends bridge — so ``teatree.core`` never names a concrete
+    forge backend (``tach`` enforces that boundary) AND the read authenticates with the
+    token the overlay picks FOR THIS REMOTE. That second property matters: a repo whose
+    MRs are authored under a scoped bot credential is then probed with the same
+    credential that would create the MR, rather than whatever ambient token happened to
+    be in the environment.
+
+    ``None`` (no host configured) is UNKNOWN, never "no PR" — a fail-closed caller must
+    not read an unresolvable credential as verified absence. The import is deferred
+    because ``backend_factory`` pulls Django in at import time and this probe runs
+    inside the git pre-push hook.
+    """
+    from teatree.core.backend_factory import code_host_for_repo_from_overlay  # noqa: PLC0415 — deferred: Django (#151)
+
+    host = code_host_for_repo_from_overlay(str(repo_dir))
+    if host is None:
+        return None
+    return host.fetch_open_pr_url_for_branch(repo=str(repo_dir), branch=branch)
 
 
 def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe:
@@ -181,8 +250,12 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
 
 def _open_pr_stdout(cmd: list[str], repo_dir: str | Path) -> str | None:
     """*cmd*'s stdout, or ``None`` when the forge CLI could not answer at all."""
+    env = forge_cli_env(repo_dir)
+    if env is None:
+        logger.warning("open-PR probe has no routed GitHub token for %s — unknown", repo_dir)
+        return None
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=forge_cli_env())
+        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=env)
     except OSError:
         logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
         return None

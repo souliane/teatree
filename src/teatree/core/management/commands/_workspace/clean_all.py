@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.invocation_cwd import invocation_cwd
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.broken_worktrees import report_unresolvable_worktree_dirs
 from teatree.core.management.commands._workspace.cleanup import (
@@ -94,14 +95,14 @@ def run_clean_all(
     # checkout is UNKNOWN, and UNKNOWN never authorises a deletion (#3912).
     cleaned.extend(report_unresolvable_worktree_dirs(*broken_dir_roots))
 
-    repo_root = Path.cwd()
+    repo_root = invocation_cwd()
     if (repo_root / ".git").exists():
         cleaned.extend(prune_branches(str(repo_root), dry_run=dry_run))
         cleaned.extend(drop_orphaned_stashes(str(repo_root), dry_run=dry_run))
     else:
         # Both passes are cwd-gated, so from a non-repo cwd a LIVE run is a silent
         # no-op too. A preview that hid that would misreport the command's scope.
-        cleaned.append(f"SKIPPED branch + stash prune: cwd {repo_root} is not a git repo")
+        cleaned.append(f"SKIPPED branch + stash prune: resolved invocation cwd {repo_root} is not a git repo")
 
     cleaned.extend(_wh.prune_dslr_snapshots_skipping(keep=keep_dslr, in_use_tenants=in_use, dry_run=dry_run))
 

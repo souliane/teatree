@@ -42,6 +42,8 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # known-good release and may lead the bundle, never trail it: a generation behind
 # `claude-opus-5` breaks model_tiering's `frontier` tier. Both tiers are guarded by
 # tests/test_claude_cli_pin.py.
+# `@openai/codex` is the reviewer's second-pass CLI (agents/reviewer.md); its pin is
+# guarded by tests/test_codex_cli_pin.py and matches the laptop's installed codex.
 # bash with `pipefail`, not the default dash `/bin/sh`. dash has no `pipefail`, so
 # a `curl ... | bash` whose FETCH fails still reports only the shell's exit status
 # and the `&&` chain sails on. That silently broke the box: NodeSource answered the
@@ -54,7 +56,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv git gnupg jq pass postgresql-client sqlite3 ttyd && \
+        ca-certificates curl direnv git gnupg jq pass postgresql-client procps sqlite3 ttyd && \
     # Fetch the NodeSource setup script to a FILE, never straight into a shell, so
     # a truncated or error body cannot be executed as a script; and retry, so a
     # transient CDN 403/5xx costs seconds instead of the whole deploy.
@@ -90,7 +92,7 @@ RUN apt-get update -qq && \
         echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
         exit 1; \
     fi && \
-    npm install -g @anthropic-ai/claude-code@2.1.277 pyright@1.1.411 && \
+    npm install -g @anthropic-ai/claude-code@2.1.277 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 
@@ -153,16 +155,17 @@ RUN useradd -m -d /home/teatree -s /bin/bash teatree
 # inherits teatree ownership (Docker seeds an empty volume from the image dir).
 # /opt/teatree/uv carries the runtime-installed teatree python + venv + shims so
 # all three services see the same t3.
-# ~/.claude/projects is pre-created (and so chowned to teatree below) BEFORE it is
-# used as the projects bind-mount target: without it, Docker creates the mount's
-# parent ~/.claude as ROOT at container start, so `t3 setup` cannot write
-# ~/.claude/settings.json and the init container crash-loops (whole factory down).
+# The complete Claude, Codex and universal agent homes are named-volume targets.
+# Docker seeds a fresh volume from these image directories, including ownership,
+# so `t3 setup` can reconcile them as the non-root runtime user.
 RUN mkdir -p \
         /home/teatree/teatree \
         /home/teatree/.local/share/teatree \
         /home/teatree/.local/share/teatree-worktrees \
         /home/teatree/workspace/t3-workspaces \
-        /home/teatree/.claude/projects \
+        /home/teatree/.claude \
+        /home/teatree/.codex \
+        /home/teatree/.agents \
         /var/lib/teatree/control-db \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
@@ -212,14 +215,6 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 # this committed, reviewable file to change the loop agent's configuration.
 COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
 
-# The GPG home a hand-issued `docker exec … sh -lc` resolves. The entrypoint's
-# redirect onto the container-local key copy reaches only the role process, so an
-# exec keeps the baked GNUPGHOME and reads every secret EMPTY with rc=0. /etc/profile
-# globs `/etc/profile.d/*.sh`, which is the one channel that reaches an exec the
-# entrypoint never ran for. Baked at the SYSTEM level because it holds no secret —
-# only the instruction to prefer the home the entrypoint already built.
-COPY --chmod=0644 deploy/profile-gnupg-home.sh /etc/profile.d/10-teatree-gnupg-home.sh
-
 # The GitLab https credential helper, baked at the SYSTEM level because it holds no
 # secret — only the instruction to read one from `GITLAB_TOKEN` at use time. In the
 # image rather than the entrypoint so it also covers the containers the entrypoint
@@ -230,8 +225,12 @@ COPY --chmod=0644 deploy/profile-gnupg-home.sh /etc/profile.d/10-teatree-gnupg-h
 # NOT `glab auth git-credential`: it answers with an EMPTY username, which GitLab's
 # basic auth rejects. This is git's own documented shell-helper extension point —
 # the same mechanism `gh auth setup-git` installs — emitting the conventional
-# `oauth2` username with the token as password. With `GITLAB_TOKEN` unset the helper
-# emits nothing and git falls through exactly as if it were not registered.
+# `oauth2` username with the token as password. It is NOT conditional on that token:
+# with `GITLAB_TOKEN` unset it answers with the same 26 bytes as an empty one —
+# `username=oauth2` and a blank `password=` — which GitLab rejects as `HTTP Basic:
+# Access denied`, indistinguishable from a branch that does not exist. So every dispatch
+# venue resolves the token for itself (`deploy/t3`'s credential prologue); there is no
+# fall-through here to rely on.
 RUN git config --system --replace-all "credential.https://gitlab.com.helper" \
     '!f() { test "$1" = get && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
 
@@ -290,18 +289,22 @@ RUN for attempt in 1 2 3 4 5; do \
 # the two planes apart is what stops that fix from coupling the container's own
 # toolchain to a host-controlled directory.
 ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
+    HOME=/home/teatree \
+    CLAUDE_CONFIG_DIR=/home/teatree/.claude \
+    CODEX_HOME=/home/teatree/.codex \
     UV_TOOL_DIR=/opt/teatree/uv/tools \
     UV_TOOL_BIN_DIR=/opt/teatree/uv/bin \
     UV_PYTHON_INSTALL_DIR=/opt/teatree/uv/python \
     TEATREE_CLONE_DIR=/home/teatree/teatree \
     TEATREE_REPO_URL=https://github.com/souliane/teatree.git \
+    T3_CODEX_HOME=/home/teatree/.codex \
     PASSWORD_STORE_DIR=/home/teatree/.password-store \
-    GNUPGHOME=/home/teatree/.gnupg
+    TEATREE_HOST_GNUPG_DIR=/home/teatree/.gnupg \
+    GNUPGHOME=/home/teatree/.gnupg-run/gnupg
 
-# `uv tool install` never reads the installed package's own `[tool.uv]
-# override-dependencies`, so the SDK's `mcp` cap would make every install in this
-# image unresolvable. `UV_OVERRIDE` is the one setting that reaches ALL of them —
-# the bake below, the entrypoint's runtime reinstall, `t3 update`, doctor repair.
+# SDK 0.2.152's `mcp<3.0.0` admits teatree's `mcp>=2,<3`, so the override set is
+# empty. `UV_OVERRIDE` keeps the bake, runtime reinstall, update, and repair paths
+# wired to one file because `uv tool install` does not read the package's own table.
 # A separate ENV so it can expand $TEATREE_CLONE_DIR from the block above.
 ENV UV_OVERRIDE="${TEATREE_CLONE_DIR}/uv-overrides.txt"
 
@@ -310,10 +313,11 @@ ENV UV_OVERRIDE="${TEATREE_CLONE_DIR}/uv-overrides.txt"
 # `packaging` dependency; `packaging` reached the tool env only through that edge, and
 # `teatree.utils.dep_skew` imports it on the `t3 doctor` path — the doctor plane was down
 # for 72 watchdog passes while `uv.lock` still pinned gunicorn 26.0.0 and every CI lane
-# stayed green. `UV_CONSTRAINT` is the one setting that reaches ALL of them — the bake
-# below, the entrypoint's runtime reinstall, `t3 update`, doctor repair — exactly as
-# `UV_OVERRIDE` above. The file is DERIVED from the clone's own `uv.lock` (never
-# committed), baked here and regenerated on every boot by `entrypoint.sh`'s
+# stayed green. This value is the BUILD-time default, correct for the bake below and for a
+# standalone clone; a fork that vendors core re-points $TEATREE_CLONE_DIR at runtime, so
+# `entrypoint.sh` re-exports it from the runtime clone dir and teatree's own install sites
+# pass `--constraints` explicitly (#4659). The file is DERIVED from the clone's own
+# `uv.lock` (never committed), baked here and regenerated on every boot by `entrypoint.sh`'s
 # `ensure_uv_constraints`; uv errors outright on a missing constraints path, so that
 # function always leaves a file behind.
 ENV UV_CONSTRAINT="${TEATREE_CLONE_DIR}/uv-constraints.txt"

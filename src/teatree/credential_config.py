@@ -22,8 +22,13 @@ exhausted:
     metered/eval consumers). The subscription OAuth credential has NO built-in default, so
     :func:`resolve_subscription_credential` instead fails loud (unless
     ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the env) — it never lands on a dead entry.
-*   A sticky pick whose health-cache row is fresh and non-exhausted is reused with NO
-    probe — the hot path reads the CACHED table only, never the network.
+*   A sticky pick whose health-cache row is fresh, non-exhausted and below the WARNING
+    band is reused with NO probe and no comparison — the hot path reads the CACHED table
+    only, never the network, and a healthy pick keeps its warm prompt-cache prefix.
+*   Once the pinned account reaches the WARNING band it is re-ranked against its siblings
+    and moves only to one carrying its own fresh measured row. Exhaustion is far too late
+    to start looking: an account may sit at 98 % of its weekly window for days without ever
+    being "exhausted", stranding the whole scope on it while an idle account goes unused.
 *   A candidate with no row, or one whose verdict has aged out, is OFFERED rather than
     skipped and pinned as the new sticky pick — a cold or lagging table must never halt
     dispatch, and a genuinely spent account costs one refused call before
@@ -42,13 +47,20 @@ parsed health are persisted.
 import datetime as dt
 import logging
 import os
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.account_headroom import AccountHeadroom, headroom_at, rank
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
-from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import (
+    REJECTED_STATUS,
+    AnthropicTokenUsage,
+    TokenHealthReading,
+    UnifiedVerdict,
+)
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
 from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
 from teatree.llm.credentials import (
@@ -60,12 +72,15 @@ from teatree.llm.credentials import (
 from teatree.llm.rate_limits import (
     MeteredKeyReader,
     MeteredKeySnapshot,
+    RateLimitProbeError,
     RateLimitReader,
     RateLimitSnapshot,
     read_api_key_status,
     read_rate_limits,
+    used_fraction,
 )
 from teatree.utils.eval_container import in_container
+from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
 
 if TYPE_CHECKING:
     from teatree.config.agent_enums import AgentHarnessProvider
@@ -127,8 +142,9 @@ class PassPathSelector:
     def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE) -> str | None:
         """The ``pass_path`` override for *kind* in *scope*, or ``None`` for the built-in.
 
-        Reuses a still-configured, fresh, non-exhausted sticky pick with no probe; else selects the first
-        non-exhausted account from the overlay's list, then falls back across overlays.
+        Reuses a still-configured, fresh, non-exhausted, non-warning sticky pick with no
+        probe; else ranks the overlay's list on headroom and takes the richest, then falls
+        back across overlays.
         When the REQUESTED scope has no routing configured, falls back to the cross-scope
         union — a bare eval shell (no active overlay → :data:`GLOBAL_SCOPE`) still routes
         to an overlay-scoped account without a manual env export. An empty union (nothing
@@ -153,9 +169,9 @@ class PassPathSelector:
         if sticky is not None and sticky in everywhere and self._sticky_is_usable(sticky, now):
             return sticky
 
-        chosen = self._first_usable(configured, now)
+        chosen = self._best_usable(configured, now)
         if chosen is None:
-            chosen = self._first_usable([path for path in everywhere if path not in configured], now)
+            chosen = self._best_usable([path for path in everywhere if path not in configured], now)
         if chosen is None:
             raise self._all_exhausted_error(kind)
 
@@ -174,29 +190,58 @@ class PassPathSelector:
 
     @staticmethod
     def _sticky_is_usable(pass_path: str, now: dt.datetime) -> bool:
+        """Whether the pin is reusable with NO comparison — the zero-work hot path.
+
+        A pin that has reached the WARNING band is not: it goes back through the ranking,
+        which either confirms it or moves to a richer account. Below that band it is
+        reused unconditionally, so a healthy account keeps its warm prompt-cache prefix
+        and no amount of sibling headroom can thrash the routing.
+        """
         row = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
-        return row is not None and row.is_fresh(now) and not row.is_exhausted
+        return row is not None and row.is_fresh(now) and not row.is_exhausted and not row.is_warning
 
     @staticmethod
-    def _first_usable(candidates: list[str], now: dt.datetime) -> str | None:
-        """The first candidate the STORED health does not rule out — no network here.
+    def _best_usable(candidates: list[str], now: dt.datetime) -> str | None:
+        """The candidate with the most headroom the STORED health does not rule out.
 
-        Selection reads :class:`AnthropicTokenUsage` and nothing else, so picking an account
-        costs one query and cannot be stalled by a slow, throttled or unreachable rate-limit
-        API.
+        Selection reads :class:`AnthropicTokenUsage` and nothing else — one query for the
+        whole list — so picking an account cannot be stalled by a slow, throttled or
+        unreachable rate-limit API.
 
         An account with no row, or one whose row has gone stale, is OFFERED rather than
         skipped: a cold or lagging table must never be able to halt dispatch. A genuinely
         spent account costs one refused call and then records itself through
         :func:`record_reactive_exhaustion_and_reselect`, so the mistake is self-correcting
         and bounded. Only a FRESH exhausted verdict rules a candidate out.
+
+        Among the offered candidates, the ones we have actually MEASURED (``is_measured``,
+        both windows read — else ``used_fraction(None)`` fabricates full headroom) are
+        ranked and the richest wins; an unmeasured candidate is never ranked, because
+        there is nothing to rank it on. So a measured healthy account beats an unmeasured
+        one, and a wholly unmeasured list falls back to the operator's declared order.
         """
-        for pass_path in candidates:
-            row = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
-            if row is not None and row.is_fresh(now) and row.is_exhausted:
-                continue
-            return pass_path
-        return None
+        rows = {row.pass_path: row for row in AnthropicTokenUsage.objects.filter(pass_path__in=candidates)}
+        usable = [
+            path
+            for path in candidates
+            if not ((row := rows.get(path)) is not None and row.is_fresh(now) and row.is_exhausted)
+        ]
+        measured = [
+            AccountHeadroom(
+                account=path,
+                order=order,
+                utilization_5h=used_fraction(rows[path].utilization_5h),
+                utilization_7d=used_fraction(rows[path].utilization_7d),
+                headroom_5h=headroom_at(rows[path].utilization_5h, rows[path].reset_5h, now)[0],
+                headroom_7d=headroom_at(rows[path].utilization_7d, rows[path].reset_7d, now)[0],
+                resets_before_run=False,
+            )
+            for order, path in enumerate(usable)
+            if path in rows and rows[path].is_fresh(now) and rows[path].is_measured
+        ]
+        if measured:
+            return rank(measured)[0].account
+        return usable[0] if usable else None
 
     def _health_reading(self, kind: TokenKind, token: str) -> TokenHealthReading:
         """Probe *token* the way its *kind* authenticates and fold it into a cache reading.
@@ -260,6 +305,7 @@ def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
         status_7d=snapshot.unified_7d_status,
         reset_5h=snapshot.unified_5h_reset,
         reset_7d=snapshot.unified_7d_reset,
+        verdict=UnifiedVerdict(status=snapshot.unified_status, representative_claim=snapshot.representative_claim),
     )
 
 
@@ -272,8 +318,8 @@ def reading_from_metered(snapshot: MeteredKeySnapshot) -> TokenHealthReading:
     """
     return TokenHealthReading(
         organization_id=snapshot.organization_id,
-        utilization_5h=0.0,
-        utilization_7d=0.0,
+        utilization_5h=None,
+        utilization_7d=None,
         status_5h="",
         status_7d=REJECTED_STATUS if snapshot.out_of_credits else "",
         reset_5h=None,
@@ -296,33 +342,105 @@ def _as_path_list(stored: object) -> list[str]:
 _SELECTOR = PassPathSelector()
 
 
-def _record_account_exhausted(pass_path: str, *, resets_at: dt.datetime, weekly: bool, now: dt.datetime) -> None:
-    """Cache *pass_path* as exhausted until *resets_at* so the selector routes off it.
+@dataclass(frozen=True)
+class AccountProber:
+    """How to read one account's live OAuth health: fetch its token, then probe it.
 
-    A weekly hit blocks the 7d window, else the 5h one; the verdict is trusted until the
-    reset. Only the ``pass_path`` health verdict is written — the token is never read here.
+    The store read and the probe are one seam because neither is useful alone, and a
+    caller that needs one always needs the other.
     """
-    reading = TokenHealthReading(
+
+    reader: RateLimitReader
+    secret_reader: SecretReader
+
+    def read(self, pass_path: str) -> TokenHealthReading | None:
+        """*pass_path*'s REAL current health, or ``None`` when the account cannot be read.
+
+        A 429 carries the same unified headers as a 200, so probing a SPENT account is
+        exactly how its true windows are learned.
+        """
+        try:
+            token = self.secret_reader(pass_path)
+        except SecretStoreError:
+            logger.warning("reactive exhaustion: the secret store could not be read for %s", pass_path)
+            return None
+        if not token:
+            return None
+        try:
+            return reading_from(self.reader(token, is_oauth=True))
+        except RateLimitProbeError:
+            logger.warning("reactive exhaustion: probing %s failed; recording an unverified verdict", pass_path)
+            return None
+
+
+def _unverified_exhaustion(*, resets_at: dt.datetime, weekly: bool) -> TokenHealthReading:
+    """The fallback verdict for an unprobeable account — a weekly hit blocks 7d, else 5h.
+
+    Nothing here is measured, so ``verified=False`` caps its trust at ``HEALTH_TTL``: a
+    wrong window or a wrong account self-corrects in minutes instead of days.
+    """
+    return TokenHealthReading(
         organization_id="",
-        utilization_5h=0.0 if weekly else 1.0,
-        utilization_7d=1.0 if weekly else 0.0,
+        utilization_5h=None if weekly else 1.0,
+        utilization_7d=1.0 if weekly else None,
         status_5h="",
         status_7d=REJECTED_STATUS if weekly else "",
         reset_5h=None if weekly else resets_at,
         reset_7d=resets_at if weekly else None,
+        verified=False,
     )
+
+
+@dataclass(frozen=True)
+class ReactiveLimit:
+    """One account's mid-run limit as the SDK reported it — the account, and its own claim.
+
+    *pass_path* is the account the failing dispatch signed with, resolved before the turn
+    ran; ``None`` leaves the sticky pointer to decide. *resets_at* and *weekly* are the
+    SDK's own account-blind claim about the window, used ONLY to synthesize a verdict for
+    an account that cannot be probed.
+    """
+
+    resets_at: dt.datetime
+    weekly: bool
+    pass_path: str | None = None
+
+
+def _record_account_exhausted(
+    pass_path: str, *, resets_at: dt.datetime, weekly: bool, now: dt.datetime, prober: AccountProber
+) -> None:
+    """Cache *pass_path*'s health after a reactive limit — its own PROBED windows where readable.
+
+    The SDK's limit signal names neither the binding window reliably nor the account that
+    signed the failing request, so a synthesized verdict can be wrong in both — including
+    stamping another account's reset onto this row. Probing records what is true of THIS
+    account; only an unreadable one falls back to the unverified synthesis. The token is
+    read to sign the probe and never stored.
+    """
+    reading = prober.read(pass_path) or _unverified_exhaustion(resets_at=resets_at, weekly=weekly)
     AnthropicTokenUsage.objects.record(pass_path, reading, now=now)
 
 
 def record_reactive_exhaustion_and_reselect(
-    *, scope: str, resets_at: dt.datetime, weekly: bool, now: dt.datetime | None = None
+    *,
+    scope: str,
+    limit: ReactiveLimit,
+    now: dt.datetime | None = None,
+    prober: AccountProber | None = None,
 ) -> str | None:
-    """Record the CURRENT subscription account exhausted after a mid-run limit, then re-select.
+    """Record the account that hit a mid-run limit as exhausted, then re-select.
 
     A mid-run 5h/weekly limit is observed by the SDK, NOT the health cache — so without
     recording it the selector's sticky pick would route the SAME spent account again. This
-    marks the sticky OAuth account for *scope* exhausted (its ``resets_at`` cached so the
-    verdict is trusted until the window re-arms) and re-consults the selector:
+    re-probes the account, caches its REAL windows (an unprobeable one falls back to an
+    unverified verdict capped at ``HEALTH_TTL``), and re-consults the selector.
+
+    ``limit.pass_path`` is the account the failing dispatch actually signed with, resolved
+    before the turn ran. The sticky pointer is shared per scope and moves whenever another
+    dispatch re-selects, so reading it HERE would attribute this limit — and this reset —
+    to whichever account happens to be pinned minutes later. A caller with no routed
+    account (an unrouted harness resolving its credential lazily) leaves it ``None`` and
+    the sticky pointer decides, as before.
 
     * returns the next healthy account's ``pass_path`` — another account is available, so the
         caller REQUEUES the task to rotate onto it rather than parking the whole lane;
@@ -332,10 +450,16 @@ def record_reactive_exhaustion_and_reselect(
         unrouted credential), so the caller falls back to the existing lane park unchanged.
     """
     moment = now or timezone.now()
-    current = AnthropicActivePick.objects.pick_for(TokenKind.OAUTH.value, scope)
+    current = limit.pass_path or AnthropicActivePick.objects.pick_for(TokenKind.OAUTH.value, scope)
     if current is None:
         return None
-    _record_account_exhausted(current, resets_at=resets_at, weekly=weekly, now=moment)
+    _record_account_exhausted(
+        current,
+        resets_at=limit.resets_at,
+        weekly=limit.weekly,
+        now=moment,
+        prober=prober or AccountProber(reader=read_rate_limits, secret_reader=read_pass),
+    )
     return _SELECTOR.select(TokenKind.OAUTH, scope)
 
 
@@ -384,7 +508,24 @@ def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyC
     return AnthropicApiKeyCredential(pass_path_override=override, missing_context=missing_context)
 
 
-def _active_overlay_scope() -> str:
+def api_key_lane_available(*, scope: str = GLOBAL_SCOPE) -> bool:
+    """Whether a metered dispatch in *scope* would actually get a key — asked before failing over.
+
+    The question is not "is one configured" but "does one RESOLVE", so it is answered the
+    only way that cannot be wrong: by resolving the credential the dispatch would use. That
+    covers both ways the metered lane is unusable — nothing routed in any scope and no
+    ``ANTHROPIC_API_KEY`` (a plain :class:`CredentialError`), and every configured key
+    freshly out of credits (:class:`AllTokensExhaustedError`, its subclass). The resolved
+    value is discarded unread; a secret never leaves this frame.
+    """
+    try:
+        resolve_api_key_credential(scope=scope).resolve()
+    except CredentialError:
+        return False
+    return True
+
+
+def active_overlay_scope() -> str:
     """The active overlay's routing scope, read from ``T3_OVERLAY_NAME``.
 
     Empty (the :data:`GLOBAL_SCOPE` sentinel) when no overlay is active, so the
@@ -443,6 +584,10 @@ def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope
         effort tier, a smaller trial count, per-account routing) or a full fan-out
         throttles the plan's 5h/7d window mid-run AND starves the main loop.
     *   :attr:`AgentHarnessProvider.SUBSCRIPTION_OAUTH` → subscription OAuth.
+    *   :attr:`AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY` → subscription OAuth, even
+        while the plans are exhausted. An eval run is not a ``Task``, records no
+        ``TaskAttempt``, and is therefore outside the daily metered spend cap — letting it
+        fail over would open an uncapped metered path.
     *   :attr:`AgentHarnessProvider.API_KEY` / :attr:`AgentHarnessProvider.ANTHROPIC_API`
         → the metered ``ANTHROPIC_API_KEY`` (per-token cost, no usage window).
     *   :attr:`AgentHarnessProvider.OPENAI_COMPATIBLE` → subscription OAuth with a
@@ -451,7 +596,7 @@ def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope
         than failing a validly-configured ``pydantic_ai`` deployment.
 
     ``scope`` (``None``, the default) resolves to the ACTIVE OVERLAY (``T3_OVERLAY_NAME``)
-    via :func:`_active_overlay_scope`, so the per-account routing reads the overlay-scoped
+    via :func:`active_overlay_scope`, so the per-account routing reads the overlay-scoped
     ``anthropic_oauth_pass_paths`` first and the selector's overlay→global fallback covers
     the global list. The eval lane is a teatree-overlay eval, so its account routing is
     configured at the overlay scope — defaulting to :data:`GLOBAL_SCOPE` here made a
@@ -475,7 +620,7 @@ def resolve_eval_credential(*, kind: "AgentHarnessProvider | None" = None, scope
     )
 
     if scope is None:
-        scope = _active_overlay_scope()
+        scope = active_overlay_scope()
     if kind is None:
         kind = get_effective_settings().agent_harness_provider
     if kind in {AgentHarnessProvider.API_KEY, AgentHarnessProvider.ANTHROPIC_API}:

@@ -1,7 +1,9 @@
 """Consolidation ledger tests (#1933).
 
 The ledger advances each member cluster through a monotonic status ladder
-(CANDIDATE → VERIFIED → PROMOTED, plus SUPERSEDED / EXPIRED retirement),
+(CANDIDATE → VERIFIED → PROMOTED, plus SUPERSEDED / EXPIRED retirement)
+whose every rung has a production writer — recording a cited cluster, a wider
+cluster covering a narrower row, and the merged fix of a core gap —
 is idempotent on ``cluster_key`` so re-clustering the same members never
 duplicates a row, refuses to leave CANDIDATE without a cited mistake, and
 never silently drops BINDING feedback on expire.
@@ -270,6 +272,171 @@ class TestDispositionLadder(TestCase):
             row.retire("archive/x.md")
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+
+
+class TestCitedClusterIsRecordedVerified(TestCase):
+    """A citation proven at the door is the VERIFIED rung — no second trust step."""
+
+    def test_a_recorded_citation_lands_the_row_verified(self) -> None:
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=_key("cited"),
+            rule="Always run the gate before pushing.",
+            source_files=["MEMORY.md"],
+            member_count=1,
+            max_member_weight=5,
+            is_binding=False,
+            verified_citation="Pushed without running the gate on 2026-06-01",
+        )
+
+        row.refresh_from_db()
+        assert row.status == ConsolidatedMemory.Status.VERIFIED
+        assert row.verified_citation == "Pushed without running the gate on 2026-06-01"
+
+    def test_an_uncited_row_still_lands_candidate(self) -> None:
+        assert _record("uncited").status == ConsolidatedMemory.Status.CANDIDATE
+
+
+class TestSupersedeCoveredBy(TestCase):
+    """A wider re-cluster takes over the untriaged row it covers, without homing either."""
+
+    def _row(self, seed: str, paths: list[object], *, is_binding: bool = False) -> ConsolidatedMemory:
+        return ConsolidatedMemory.record_cluster(
+            cluster_key=_key(seed),
+            rule="Always run the gate before pushing.",
+            source_files=paths,
+            member_count=len(paths),
+            max_member_weight=5,
+            is_binding=is_binding,
+            overlay="acme",
+            verified_citation="a cited mistake",
+        )
+
+    def test_a_strict_superset_supersedes_the_row_it_covers(self) -> None:
+        narrow = self._row("narrow", ["a.jsonl"])
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == [narrow]
+        narrow.refresh_from_db()
+        assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
+        assert narrow.superseded_by_id == wide.pk
+
+    def test_a_partial_overlap_supersedes_nothing(self) -> None:
+        other = self._row("overlap", ["a.jsonl", "c.jsonl"])
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
+        other.refresh_from_db()
+        assert other.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_a_binding_row_is_never_superseded(self) -> None:
+        binding = self._row("binding", ["a.jsonl"], is_binding=True)
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
+        binding.refresh_from_db()
+        assert binding.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_a_row_from_another_overlay_is_never_superseded(self) -> None:
+        other_overlay = ConsolidatedMemory.record_cluster(
+            cluster_key=_key("other-overlay"),
+            rule="Always run the gate before pushing.",
+            source_files=["a.jsonl"],
+            member_count=1,
+            max_member_weight=5,
+            is_binding=False,
+            overlay="other",
+            verified_citation="a cited mistake",
+        )
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
+        other_overlay.refresh_from_db()
+        assert other_overlay.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_an_already_terminal_row_is_left_where_it_is(self) -> None:
+        promoted = self._row("promoted", ["a.jsonl"])
+        promoted.mark_promoted("skills/rules/SKILL.md")
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
+        promoted.refresh_from_db()
+        assert promoted.status == ConsolidatedMemory.Status.PROMOTED
+
+    def test_a_row_pass_two_already_routed_keeps_its_decision(self) -> None:
+        kept = self._row("kept", ["a.jsonl"])
+        kept.classify_user_specific()
+        wide = self._row("wide", ["a.jsonl", "b.jsonl"])
+
+        assert ConsolidatedMemory.objects.supersede_covered_by(wide) == []
+        kept.refresh_from_db()
+        assert kept.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_a_superseded_row_is_not_a_durable_home(self) -> None:
+        narrow = ConsolidatedMemory.record_cluster(
+            cluster_key=_key("narrow-with-hint"),
+            rule="Always run the gate before pushing.",
+            source_files=["a.md"],
+            member_count=1,
+            max_member_weight=5,
+            is_binding=False,
+            overlay="acme",
+            durable_destination="feedback/run_gate.md",
+            verified_citation="a cited mistake",
+        )
+        wide = self._row("wide", ["a.md", "b.md"])
+
+        ConsolidatedMemory.objects.supersede_covered_by(wide)
+
+        narrow.refresh_from_db()
+        assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
+        assert narrow.can_prune_index_line is False
+        assert list(ConsolidatedMemory.objects.prunable()) == []
+
+    def test_member_paths_reads_both_stored_member_shapes(self) -> None:
+        row = self._row("shapes", ["a.jsonl", {"path": "b.jsonl", "span": [1, 4]}, 7])
+
+        assert row.member_paths == frozenset({"a.jsonl", "b.jsonl"})
+
+
+class TestRetireWalksTheTrustLadder(TestCase):
+    """The merged fix homes the rule and retires the prose — what feeds the decay rail."""
+
+    def _ticketed(self) -> ConsolidatedMemory:
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=_key("gap"),
+            rule="A gate must fail loud, never skip as pass.",
+            source_files=["a.jsonl"],
+            member_count=1,
+            max_member_weight=5,
+            is_binding=False,
+            durable_destination="src/teatree/core/gates/rubric_gate.py",
+            verified_citation="a cited mistake",
+        )
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        return row
+
+    def test_retire_promotes_the_rule_and_expires_the_prose(self) -> None:
+        row = self._ticketed()
+
+        row.retire("https://github.com/souliane/teatree/issues/42")
+
+        row.refresh_from_db()
+        assert row.status == ConsolidatedMemory.Status.EXPIRED
+        assert row.promoted_at is not None
+        assert row.durable_destination == "src/teatree/core/gates/rubric_gate.py"
+
+    def test_a_retired_row_is_what_the_prune_rail_reads(self) -> None:
+        row = self._ticketed()
+
+        row.retire("https://github.com/souliane/teatree/issues/42")
+
+        assert list(ConsolidatedMemory.objects.prunable()) == [row]
+
+    def test_a_ticketed_row_is_not_prunable_before_its_fix_lands(self) -> None:
+        self._ticketed()
+
+        assert list(ConsolidatedMemory.objects.prunable()) == []
 
 
 class TestDispositionManager(TestCase):

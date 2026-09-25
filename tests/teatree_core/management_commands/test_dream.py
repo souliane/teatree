@@ -151,7 +151,6 @@ class DreamDryRunTestCase(TestCase):
             call_command("dream", "run", "--dry-run", stdout=StringIO())
 
         assert called["dry_run"] is True
-        assert called["eval_proposals"] is None
         assert not DreamRunMarker.objects.exists()
         assert ConsolidatedMemory.objects.count() == 0
 
@@ -179,11 +178,13 @@ class DreamProposeEvalsFlagTestCase(TestCase):
 
         return _run
 
-    def test_propose_evals_off_by_default(self) -> None:
+    def test_the_run_path_follows_the_shipped_setting_default(self) -> None:
+        # One setting, one default, both entry points — `run` and `tick` used to carry
+        # disagreeing defaults under the same name.
         seen: dict[str, object] = {}
         with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)):
             call_command("dream", "run", stdout=StringIO())
-        assert seen["eval_proposals"] is None
+        assert seen["eval_proposals"] is not None
 
     def test_propose_evals_flag_enables_the_phase(self) -> None:
         seen: dict[str, object] = {}

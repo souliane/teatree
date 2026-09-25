@@ -36,11 +36,12 @@ A token value never enters a snapshot, a score, a reason string, the returned
 :class:`OAuthSelection`, or any log this module emits; the caller indexes back into its
 own token list to fetch the winning value.
 
-DJANGO-FREE. This runs in the CI step BEFORE any ``django.setup()``, so it imports only
-the foundation-pure :mod:`teatree.llm.rate_limits`. The exhaustion thresholds and the
-tie-break weights are replicated from their canonical homes
-(:mod:`teatree.core.models.anthropic_token_usage`, :mod:`teatree.ci_oauth_switch`) and
-pinned by a parity test rather than imported, so a drift is caught mechanically.
+DJANGO-FREE. This runs in the CI step BEFORE any ``django.setup()``, so it reaches only
+foundation leaves: the ranking arithmetic and the tie-break weights are IMPORTED from
+:mod:`teatree.account_headroom`, the one home all three selectors share. The exhaustion
+thresholds stay replicated from :mod:`teatree.core.models.anthropic_token_usage` (a Django
+module this cannot import) and are pinned by a parity test, so a drift is caught
+mechanically.
 """
 
 import datetime as dt
@@ -48,7 +49,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from teatree.llm.rate_limits import RateLimitProbeError, RateLimitReader, RateLimitSnapshot, read_rate_limits
+from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, sort_key
+from teatree.llm.rate_limits import (
+    RateLimitProbeError,
+    RateLimitReader,
+    RateLimitSnapshot,
+    read_rate_limits,
+    used_fraction,
+)
 
 # Replicated from teatree.core.models.anthropic_token_usage (the canonical routing
 # exhaustion rule) to keep this selector Django-free; pinned by the parity test in
@@ -56,10 +64,6 @@ from teatree.llm.rate_limits import RateLimitProbeError, RateLimitReader, RateLi
 UTILIZATION_5H_LIMIT = 0.95
 UTILIZATION_7D_LIMIT = 0.99
 REJECTED_STATUS = "rejected"
-
-# Replicated from teatree.ci_oauth_switch's tie-break blend; parity-pinned.
-WEIGHT_5H = 0.4
-WEIGHT_7D = 0.6
 
 
 class TokenProbeStatus(StrEnum):
@@ -92,14 +96,27 @@ class CandidateHealth:
         return self.status is TokenProbeStatus.HEALTHY
 
     @property
+    def headroom(self) -> AccountHeadroom:
+        """This candidate as the shared ranking's row type — ``index`` is its tie-break order."""
+        return AccountHeadroom(
+            account=self.label,
+            order=self.index,
+            utilization_5h=0.0,
+            utilization_7d=0.0,
+            headroom_5h=self.headroom_5h,
+            headroom_7d=self.headroom_7d,
+            resets_before_run=False,
+        )
+
+    @property
     def binding_headroom(self) -> float:
         """The scarcer window's free fraction — what actually throttles the run."""
-        return min(self.headroom_5h, self.headroom_7d)
+        return self.headroom.binding_headroom
 
     @property
     def weighted_headroom(self) -> float:
         """The blended headroom — tie-break between equally-constrained candidates."""
-        return WEIGHT_5H * self.headroom_5h + WEIGHT_7D * self.headroom_7d
+        return self.headroom.weighted_headroom
 
 
 @dataclass(frozen=True)
@@ -134,18 +151,11 @@ def parse_tokens(raw: str) -> list[str]:
     return list(seen)
 
 
-def _headroom(utilization: float, reset: dt.datetime | None, run_start: dt.datetime) -> float:
-    """A window's free fraction at *run_start* — fully free if it resets by then."""
-    if reset is not None and reset <= run_start:
-        return 1.0
-    return max(0.0, 1.0 - utilization)
-
-
 def _is_exhausted(snapshot: RateLimitSnapshot) -> bool:
     """The routing exhaustion rule applied to a probe snapshot."""
     return (
-        snapshot.unified_5h_utilization >= UTILIZATION_5H_LIMIT
-        or snapshot.unified_7d_utilization >= UTILIZATION_7D_LIMIT
+        used_fraction(snapshot.unified_5h_utilization) >= UTILIZATION_5H_LIMIT
+        or used_fraction(snapshot.unified_7d_utilization) >= UTILIZATION_7D_LIMIT
         or snapshot.unified_7d_status == REJECTED_STATUS
     )
 
@@ -155,8 +165,8 @@ def _health_from_snapshot(
 ) -> CandidateHealth:
     if _is_exhausted(snapshot):
         reason = (
-            f"exhausted — 5h {snapshot.unified_5h_utilization * 100:.0f}% used, "
-            f"weekly {snapshot.unified_7d_utilization * 100:.0f}% used"
+            f"exhausted — 5h {used_fraction(snapshot.unified_5h_utilization) * 100:.0f}% used, "
+            f"weekly {used_fraction(snapshot.unified_7d_utilization) * 100:.0f}% used"
         )
         return CandidateHealth(
             index=index,
@@ -170,8 +180,8 @@ def _health_from_snapshot(
         label=label,
         status=TokenProbeStatus.HEALTHY,
         organization_id=snapshot.organization_id,
-        headroom_5h=_headroom(snapshot.unified_5h_utilization, snapshot.unified_5h_reset, run_start),
-        headroom_7d=_headroom(snapshot.unified_7d_utilization, snapshot.unified_7d_reset, run_start),
+        headroom_5h=headroom_at(snapshot.unified_5h_utilization, snapshot.unified_5h_reset, run_start)[0],
+        headroom_7d=headroom_at(snapshot.unified_7d_utilization, snapshot.unified_7d_reset, run_start)[0],
     )
 
 
@@ -208,10 +218,7 @@ def select_freshest(
             continue
         candidates.append(_health_from_snapshot(index, label, snapshot, run_start))
     eligible = [candidate for candidate in candidates if candidate.is_eligible]
-    ranked = sorted(
-        eligible,
-        key=lambda candidate: (-candidate.binding_headroom, -candidate.weighted_headroom, candidate.index),
-    )
+    ranked = sorted(eligible, key=lambda candidate: sort_key(candidate.headroom))
     return OAuthSelection(candidates=tuple(candidates), ranked=tuple(ranked))
 
 

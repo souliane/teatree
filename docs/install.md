@@ -20,6 +20,56 @@ apm install -g souliane/teatree   # skills + companion deps
 t3 setup                          # links plugin, syncs skills, migrates self-DB
 ```
 
+### One portable plugin, two interactive harnesses
+
+TeaTree ships one portable plugin payload: the shared `skills/` tree and
+`.mcp.json`, plus thin Claude Code and Codex manifests/hook adapters. `t3 setup`
+registers that same checkout with both runtimes. It does not maintain two copies
+of the workflow prose.
+
+The Claude plugin is not an authentication or SDK requirement. Historically it
+was the native package that made namespaced `t3:*` skills, `t3 mcp serve`, and
+TeaTree lifecycle hooks discoverable in a normal interactive Claude Code
+session. Codex needs a native registration for the same interactive experience,
+so the portable package exposes Codex's local-marketplace manifest as well.
+Hooks are mapped only where the two runtimes have equivalent events; unsupported
+Claude-only events are not simulated.
+
+The headless `codex_app_server` harness is separate. It injects its prompt and
+MCP configuration through the App Server protocol and manages its own ChatGPT
+credential cache, so it does not need the interactive plugin for transport or
+authentication. Install the plugin when people should be able to use ordinary
+attended TeaTree sessions from Codex.
+
+### Selective harness skills
+
+`apm.yml` is the reviewed, read-only declaration of TeaTree's third-party skill
+requirements. The dashboard never rewrites it. Setup enumerates those individual
+requirements and any active overlay runtime demands, then calls the installed
+exact `skills@1.7.0` CLI for only that set on Claude Code and Codex. It does not
+install an entire skills repository merely because one skill is needed, and it
+never downloads an implicit `npx` version at runtime.
+
+Optional harness skills can be kept absent during headless setup with the
+DB-backed `harness_skill_exclusions` list:
+
+```sh
+t3 <overlay> config_setting set harness_skill_exclusions \
+  '["claude-code:unused-skill", "codex:unused-skill"]'
+```
+
+The Skills dashboard writes the same entries when an operator removes a skill.
+TeaTree-owned prompt skills and independently required third-party skills remain
+read-only; exclusions cannot disable context TeaTree needs for its workflow.
+See [the dashboard Skills control plane](dashboard.md#skills-control-plane) for
+inventory, provenance refresh, collision warnings, and removal behavior.
+
+Headless deployments use `t3 setup --strict-agent-skills`. Strict setup removes
+its previous readiness marker first and exits non-zero unless declared skills,
+the inventory receipt, and both portable-plugin registrations converge. A normal
+interactive `t3 setup` keeps its best-effort behavior. `--strict-agent-skills`
+cannot be combined with `--skip-plugin`.
+
 ### Work locally on an overlay
 
 Clone the overlay and install dependencies:

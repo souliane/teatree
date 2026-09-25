@@ -17,7 +17,9 @@ Three entry points:
     lifetime (``.terminate()`` / ``.wait()``).
 """
 
+import os
 import re
+import signal
 import subprocess
 import sys
 from collections import deque
@@ -53,6 +55,7 @@ __all__ = [
     "TimeoutExpired",
     "redact_secrets",
     "run_allowed_to_fail",
+    "run_bounded_group",
     "run_checked",
     "run_streamed",
     "spawn",
@@ -135,6 +138,69 @@ def run_checked(
     if result.returncode != 0:
         raise CommandFailedError(cmd, result.returncode, result.stdout, result.stderr)
     return result
+
+
+def _kill_process_group(process: "Popen[str]") -> None:
+    """SIGKILL the whole session *process* leads, falling back to the child alone.
+
+    ``os.getpgid`` raises once the child is reaped, and a container without the
+    privilege to signal the group raises ``PermissionError``; neither may leave the
+    caller with an un-killed child, so both degrade to the direct kill.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except OSError:
+        process.kill()
+
+
+def run_bounded_group(
+    cmd: Sequence[str],
+    *,
+    timeout: float,
+    expected_codes: Iterable[int] | None = (0,),
+    env: dict[str, str] | None = None,
+    stdin_text: str | None = None,
+) -> CompletedProcess[str]:
+    """Run *cmd* under a deadline that terminates the whole process GROUP.
+
+    :func:`run_checked`'s ``timeout`` is not a bound for a command that forks.
+    ``subprocess.run`` kills only the DIRECT child and then waits on the captured
+    pipes, which a surviving grandchild still holds open — so the wait never ends and
+    the grandchild is orphaned rather than reaped. ``pass show`` is exactly that shape
+    (a bash script that execs ``gpg``), which is how a 20s credential deadline became a
+    ten-hour hang with 322 orphaned ``pass``/``gpg`` pairs behind it.
+
+    ``start_new_session`` makes the child a session leader, so the deadline can
+    ``killpg`` every descendant at once. Use this for any command that shells out to a
+    daemon-backed helper; :func:`run_checked` remains right for a simple leaf process.
+
+    *expected_codes* matches :func:`run_allowed_to_fail`: ``None`` returns every
+    completed exit code, while an unexpected code raises :class:`CommandFailedError`.
+
+    Past the deadline the wait is ``wait()``, never a second ``communicate()``: a
+    descendant that ``setsid``-ed out of the killed group still holds the captured pipes,
+    so draining to EOF would restore the very unbounded wait this exists to remove.
+    ``subprocess.run`` reserves that drain for its ``_mswindows`` branch for the same
+    reason.
+    """
+    with subprocess.Popen(
+        list(cmd),
+        env=env,
+        stdin=PIPE if stdin_text is not None else DEVNULL,
+        stdout=PIPE,
+        stderr=PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(input=stdin_text, timeout=timeout)
+        except TimeoutExpired:
+            _kill_process_group(process)
+            process.wait()
+            raise
+    if expected_codes is not None and process.returncode not in expected_codes:
+        raise CommandFailedError(cmd, process.returncode, stdout, stderr)
+    return CompletedProcess(list(cmd), process.returncode, stdout, stderr)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions

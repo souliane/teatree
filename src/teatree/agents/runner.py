@@ -1,7 +1,6 @@
 """Headless agent runner — executes tasks without a terminal.
 
-Drives an in-process agent session behind the
-:class:`~teatree.agents.harness.Harness` seam: builds a real-environment
+Drives an in-process agent behind the :class:`~teatree.agents.harness.Harness` seam and builds a real-environment
 :class:`~claude_agent_sdk.ClaudeAgentOptions`, opens a session via the harness
 backend selected by ``agent_harness`` (default: the ``claude-agent-sdk``
 ``ClaudeSDKClient``), captures the typed messages it yields, and stores the
@@ -19,83 +18,80 @@ import contextlib
 import logging
 import os
 import shutil
-import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from pathlib import Path
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    RateLimitEvent,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-)
-from claude_agent_sdk.types import RateLimitInfo
+from claude_agent_sdk import ClaudeAgentOptions
+from django.utils import timezone
 
-from teatree.agents._runner_env import _overlay_scope, _provider_child_env, with_test_worker_cap
-from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_agent_max_turns
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.agents.harness import (
-    Harness,
-    HarnessSession,
-    pydantic_ai_thread,
-    resolve_dispatch_provider,
-    resolve_harness,
+from teatree.agents._runner_env import (
+    DispatchCredential,
+    _overlay_scope,
+    _provider_child_env,
+    agent_spawn_env,
+    with_test_worker_cap,
 )
-from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
+from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
+from teatree.agents.compaction_guard import GuardedHarness
+from teatree.agents.dispatch_refusal import pre_harness_refusal
+from teatree.agents.harness import Harness
+from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.agents.harness_registry import (
+    HarnessFallbackError,
+    HarnessFallbackKind,
+    InvalidHarnessProviderError,
+    UnknownHarnessError,
+)
 from teatree.agents.model_tiering import resolve_spawn_effort
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
+from teatree.agents.phase_handoff import delivered_phase_handoff
+from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
-from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
 from teatree.agents.runner_budget import TicketBudget
-from teatree.agents.runner_failure_taxonomy import error_result_reason as _error_result_reason
-from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match
-from teatree.agents.runner_interruption import _record_failure, _record_stuck_outcome
-from teatree.agents.runner_truncation import (
-    alert_owner_max_tokens_truncation,
-    alert_owner_max_turns_truncation,
-    is_max_tokens_truncation,
-    is_max_turns_truncation,
-    max_turns_failure_reason,
-)
-from teatree.agents.runner_usage import DispatchProvenance, _attempt_usage
+from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat, renew_lease_closing_connection
+from teatree.agents.runner_interruption import CeilingSalvage, _record_failure
+from teatree.agents.runner_outcomes import UNROUTED as _UNROUTED  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_outcomes import Transport as _Transport
+from teatree.agents.runner_outcomes import outcome_failure as _outcome_failure  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_outcomes import record_outcome as _record_outcome
+from teatree.agents.runner_outcomes import record_skill_assurance_attempt
+from teatree.agents.runner_outcomes import record_success as _record_success  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_outcomes import resolve_dispatch_lane as _resolve_dispatch_lane
+from teatree.agents.runner_preparation import Preflight as _Preflight
+from teatree.agents.runner_preparation import PreparedRun as _PreparedRun
+from teatree.agents.runner_preparation import prepare_run as _prepare_run_impl
+from teatree.agents.runner_route_recording import NO_ROUTE_FALLBACK as _NO_ROUTE_FALLBACK
+from teatree.agents.runner_route_recording import RouteFailureRecord as _RouteFailureRecord
+from teatree.agents.runner_route_recording import RouteFallback as _RouteFallback
+from teatree.agents.runner_route_recording import dispatch_provider_name as _dispatch_provider_name
+from teatree.agents.runner_route_recording import fallback_reason_for_outcome as _fallback_reason_for_outcome
+from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
+from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
+from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
+from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
+from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
+from teatree.agents.skill_assurance import SkillDispatchError
 from teatree.agents.skill_bundle import (
     ArchitecturalReviewSkillMissingError,
     resolve_skill_bundle,
     stage_skills_for_dispatch,
 )
+from teatree.agents.skill_routing import (
+    AmbiguousSkillRouteError,
+    ConflictingHarnessRoutingError,
+    runtime_fallback_reason,
+)
 from teatree.agents.spawn_payload import AgentSpawnError
-from teatree.agents.usage_window import (
-    LimitSignal,
-    maybe_park_for_active_window,
-    park_or_rotate_on_limit,
-    park_task_on_all_exhausted,
-)
+from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider
-from teatree.core.admission.dispatch_lane import dispatch_lane
-from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
-from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
-from teatree.core.models import LeaseLostError, Task, TaskAttempt
-from teatree.core.models.task_claim import describe_lease_loss, drive_claim
+from teatree.core.models import Task, TaskAttempt
+from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.worktree.occupancy import (
-    WorktreeOccupancyLostError,
-    WorktreeOccupiedError,
-    occupy_ticket_checkout,
-    renew_ticket_checkout,
-    task_holder_id,
-)
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
-from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-from teatree.utils.git_run import git_env_hermetic
-from teatree.utils.thread_db import close_thread_db_connections
-
-if TYPE_CHECKING:
-    from pydantic_ai.messages import ModelMessage
 
 logger = logging.getLogger(__name__)
 
@@ -115,37 +111,151 @@ _HEARTBEAT_INTERVAL = 60  # seconds
 # and the still-running coder then aborts with "lease lost: re-claimed by another
 # worker" — a self-inflicted reclaim, NOT a second executor. Renewing to 15x the
 # heartbeat interval widens the slack to ~15 min of continuous starvation before a
-# false lapse, which absorbs realistic load spikes. A genuinely dead session's task
-# still reclaims — just after the wider window.
+# false lapse, while a genuinely dead session's task still reclaims after the wider window.
 _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
 
-#: Truncation applied to the agent's raw text when it stands in for an envelope.
-_PROSE_SUMMARY_CHARS = 1000
+
+@dataclass(frozen=True, slots=True)
+class _ChildEnvDispatch:
+    lane: str = ""
+    phase: str = ""
+    route_candidate: bool = False
 
 
-@dataclass(frozen=True)
-class HarnessOutcome:
-    """The captured result of one in-process harness-driven agent run."""
+_DEFAULT_CHILD_ENV_DISPATCH = _ChildEnvDispatch()
 
-    agent_text: str
-    result_message: ResultMessage | None
-    stuck_reason: str | None
-    #: The last REJECTED rate-limit window the stream carried (a ``RateLimitEvent``
-    #: with ``status == "rejected"``), used to classify a limit failure from the
-    #: SDK's unambiguous typed field. ``None`` when the stream named no rejected
-    #: window — the classifier then falls back to phrase-matching the result text.
-    rate_limit_info: RateLimitInfo | None = None
-    #: (#2886) The pydantic_ai session's conversation, ``None`` for every other backend.
-    thread: "list[ModelMessage] | None" = None
-    #: (#3982) Whether ``stuck_reason`` is a LOST LEASE rather than a watchdog breach. A
-    #: typed flag, not a phrase match on the reason: the reason now names the actual
-    #: reclaimer, so any discriminator built on its wording would drift with it.
-    lease_lost: bool = False
-    #: ``ToolUseBlock``s the run emitted. Both backends yield tool use in this same
-    #: vocabulary, so the count is lane-agnostic evidence that the agent ACTED —
-    #: what :mod:`teatree.agents.action_verification` gates an acting phase on. A
-    #: watchdog breach leaves it at the count observed before the breach.
-    tool_calls: int = 0
+
+@dataclass(frozen=True, slots=True)
+class _RouteRetry:
+    task: Task
+    phase: str
+    overlay_skill_metadata: SkillMetadata
+    handoff: Path | None
+    dispatch: DispatchHarness
+
+    def after(self, record: _RouteFailureRecord) -> TaskAttempt:
+        attempt = _record_route_failure_attempt(self.task, self.dispatch, record)
+        if record.outcome is not None:
+            release_finished_thread(self.task)
+            if record.outcome.tool_calls:
+                self.task.park(not_before=timezone.now())
+                return attempt
+        _learn_route_failure(self.task, self.dispatch, record.reason, phase=self.phase)
+        return _run_agent(
+            self.task,
+            phase=self.phase,
+            overlay_skill_metadata=self.overlay_skill_metadata,
+            handoff=self.handoff,
+            route_fallback=_RouteFallback(record.reason, int(attempt.pk)),
+        )
+
+
+def _retry_route_exception(
+    exc: CredentialError | AgentSpawnError | HarnessFallbackError,
+    *,
+    task: Task,
+    preflight: "_Preflight",
+    route_retry: _RouteRetry,
+    route_fallback: _RouteFallback,
+) -> TaskAttempt | None:
+    fallback = _RouteFallback(
+        _selected_fallback_reason(route_fallback, preflight.dispatch),
+        route_fallback.source_attempt_id,
+    )
+    record = _RouteFailureRecord(
+        str(exc),
+        preflight.skills,
+        fallback=fallback,
+        agent_session_id=exc.agent_session_id if isinstance(exc, HarnessFallbackError) else "",
+    )
+    if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
+        attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
+        task.park(not_before=timezone.now())
+        return attempt
+    if preflight.dispatch.route_candidate_index is None:
+        return None
+    if isinstance(exc, HarnessFallbackError) or runtime_fallback_reason(exc):
+        return route_retry.after(record)
+    return None
+
+
+def _prepare_run(
+    task: Task,
+    preflight: "_Preflight",
+    *,
+    phase: str,
+    handoff: Path | None,
+    credential: DispatchCredential,
+) -> _PreparedRun:
+    return _prepare_run_impl(
+        task,
+        preflight,
+        phase=phase,
+        handoff=handoff,
+        credential=credential,
+    )
+
+
+def _credential_or_route_retry(
+    preflight: "_Preflight",
+    route_retry: _RouteRetry,
+    route_fallback: _RouteFallback,
+    lane: str,
+) -> DispatchCredential | TaskAttempt:
+    task = route_retry.task
+    harness = preflight.dispatch.harness
+    try:
+        return _admission_park_or_child_env(
+            task,
+            harness,
+            preflight.dispatch.provider,
+            context=_ChildEnvDispatch(
+                lane=lane,
+                phase=route_retry.phase,
+                route_candidate=preflight.dispatch.route_candidate_index is not None,
+            ),
+        )
+    except HarnessFallbackError as exc:
+        _restore_unconsumed_resume_thread(harness)
+        retry = _retry_route_exception(
+            exc,
+            task=task,
+            preflight=preflight,
+            route_retry=route_retry,
+            route_fallback=route_fallback,
+        )
+        if retry is not None:
+            return retry
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        return _record_failure(task, error=str(exc))  # no-usage: credential admission failed before any turn was billed
+
+
+def _ready_run_or_failure(
+    preflight: "_Preflight",
+    route_retry: _RouteRetry,
+    route_fallback: _RouteFallback,
+    lane: str,
+) -> tuple[DispatchCredential, _PreparedRun] | TaskAttempt:
+    credential = _credential_or_route_retry(preflight, route_retry, route_fallback, lane)
+    if isinstance(credential, TaskAttempt):
+        return credential
+    try:
+        prepared = _prepare_run(
+            route_retry.task,
+            preflight,
+            phase=route_retry.phase,
+            handoff=route_retry.handoff,
+            credential=credential,
+        )
+    except SkillDispatchError as exc:
+        _restore_unconsumed_resume_thread(preflight.dispatch.harness)
+        logger.warning("Refusing task %s: %s", route_retry.task.pk, exc)
+        attempt = _record_failure(  # no-usage: required skill refused before the harness opened; no turn billed
+            route_retry.task, error=str(exc), result={"skill_assurance": exc.assurance}
+        )
+        record_skill_assurance_attempt(route_retry.task, attempt)
+        return attempt
+    return credential, prepared
 
 
 def run_agent(
@@ -180,8 +290,9 @@ def run_agent(
         with (
             occupy_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session),
             drive_claim(task),
+            delivered_phase_handoff(task) as handoff,
         ):
-            return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+            return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
     except WorktreeOccupiedError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: refused before the harness opened — no turn billed
@@ -192,46 +303,24 @@ def _run_agent(
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
+    handoff: Path | None = None,
+    route_fallback: _RouteFallback = _NO_ROUTE_FALLBACK,
 ) -> TaskAttempt:
     """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
-    from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
-
-    preflight = _preflight(task, phase=phase)
+    preflight = _preflight(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
     if isinstance(preflight, TaskAttempt):
         return preflight
-    stage_skills, harness = preflight.stage_skills, preflight.harness
+    harness = preflight.dispatch.harness
+    route_retry = _RouteRetry(task, phase, overlay_skill_metadata, handoff, preflight.dispatch)
 
-    skills = resolve_skill_bundle(
-        phase=phase,
-        overlay_skill_metadata=overlay_skill_metadata,
-        worktree_path=dispatch_worktree_path(task.ticket),
-        stage_skills=stage_skills,
-    )
+    # Read off the SAME selection that built the harness, so a probe answering differently on
+    # a second pass can never split the transport from its credential.
+    lane = _resolve_dispatch_lane(harness, preflight.dispatch.provider)
 
-    # Resolved through the SAME task-overlay settings scope and the SAME phase pin the
-    # harness above came from, so the transport and the credential can never disagree
-    # about which harness this dispatch is running.
-    provider = resolve_dispatch_provider(task, phase=phase)
-    lane = _resolve_dispatch_lane(harness, provider)
-
-    child_env = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
-    if isinstance(child_env, TaskAttempt):
-        return child_env
-
-    prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
-    system_context = build_system_context(
-        task,
-        skills=skills,
-        lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase),
-        stage_skills=stage_skills,
-    )
-    options = _build_options(
-        task,
-        system_context,
-        phase=phase,
-        skills=skills,
-        overrides=SpawnOverrides(env=child_env, turn_ceiling=_turn_ceiling(harness)),
-    )
+    ready = _ready_run_or_failure(preflight, route_retry, route_fallback, lane)
+    if isinstance(ready, TaskAttempt):
+        return ready
+    credential, prepared = ready
 
     # Resolved HERE, not inside the coroutine (#3980): Django refuses a synchronous ORM read to a
     # thread that owns a running event loop, and the config resolver catches that refusal and
@@ -245,9 +334,17 @@ def _run_agent(
         # point the child is guaranteed credential-free (belt; ``options.env`` is the
         # suspenders). A no-op ``nullcontext`` for every non-reader phase.
         reader_scrub = reader_env_hermetic() if is_reader_phase(phase) else contextlib.nullcontext()
-        with git_env_hermetic(), reader_scrub:
-            outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness, watchdog=watchdog))
-    except (CredentialError, AgentSpawnError) as exc:
+        with agent_spawn_env(), reader_scrub:
+            outcome = asyncio.run(
+                _drive_with_heartbeat(
+                    task,
+                    prepared.prompt,
+                    prepared.options,
+                    GuardedHarness(harness=harness, guard=prepared.compaction_guard),
+                    watchdog=watchdog,
+                )
+            )
+    except (CredentialError, AgentSpawnError, HarnessFallbackError) as exc:
         # Two ways a run never STARTS, recorded identically as their own one-line cause.
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
@@ -255,50 +352,89 @@ def _run_agent(
         # ``AgentSpawnError`` is the child that could not be exec'd (#4301): recorded
         # here so the durable text is the named cause the repair-halt reads, not the
         # forty SDK frames the generic re-raise below would store.
-        # ``resolve_harness`` (above) already popped any resumed pydantic_ai
+        # ``resolve_dispatch_harness`` (above) already popped any resumed pydantic_ai
         # thread as a side effect of BUILDING the harness — restore it, since
         # a run that never opened never actually consumed it (#2916).
         _restore_unconsumed_resume_thread(harness)
+        retry = _retry_route_exception(
+            exc,
+            task=task,
+            preflight=preflight,
+            route_retry=route_retry,
+            route_fallback=route_fallback,
+        )
+        if retry is not None:
+            return retry
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the harness never opened, so no turn was billed
     except Exception:
         # AH-3 / #2916: a NON-CredentialError ``open()`` (or drive) failure must not
-        # irrecoverably destroy a resumed task's parked thread either. ``resolve_harness``
-        # popped it when BUILDING the harness, and the thread is re-persisted ONLY on the
-        # success path (``_record_success`` below, outside this try) — never reached here.
-        # Restore it so the resumed conversation survives for a retry, then let the failure
-        # propagate: the caller (``tasks.py``) records the durable failed attempt with the
-        # full traceback exactly as before, so only the thread-loss changes.
+        # irrecoverably destroy a resumed task's parked thread either. ``resolve_dispatch_harness``
+        # popped it when BUILDING the harness, and an escaping exception yields no outcome,
+        # so the retain below never runs. Restore it so the resumed conversation survives for
+        # a retry, then let the failure propagate: the caller (``tasks.py``) records the
+        # durable failed attempt with the full traceback exactly as before.
         _restore_unconsumed_resume_thread(harness)
         raise
 
-    failure = _outcome_failure(task, outcome, phase=phase, lane=lane)
-    if failure is not None:
-        return failure
+    # Retained before any outcome write, since the requeue sweep can see the row from that write on.
+    retain_run_thread(task, outcome.thread)
+    route_failure = _fallback_reason_for_outcome(
+        outcome,
+        metered_transport=harness.capabilities.metered_lane,
+    )
+    if preflight.dispatch.route_candidate_index is not None and route_failure:
+        return route_retry.after(
+            _RouteFailureRecord(
+                route_failure,
+                preflight.skills,
+                outcome,
+                lane,
+                _RouteFallback(
+                    _selected_fallback_reason(route_fallback, preflight.dispatch),
+                    route_fallback.source_attempt_id,
+                ),
+            ),
+        )
     # #3673 Tier 3 provenance: resolve the per-tier effort the same way
     # ``_build_options`` pins it on the spawn (a deterministic settings read, so
     # the two resolutions never diverge) and pair it with the resolved skill
     # bundle, so the recorded attempt carries exactly what this dispatch ran with.
-    return _record_success(
+    attempt = _record_outcome(
         task,
-        outcome,
-        phase=phase,
-        lane=lane,
-        provenance=DispatchProvenance(reasoning_effort=resolve_spawn_effort(phase) or "", skills_loaded=tuple(skills)),
+        replace(outcome, compaction_stopped=prepared.compaction_guard.stopped_run),
+        harness,
+        CeilingSalvage(
+            phase=phase,
+            lane=lane,
+            provenance=DispatchProvenance(
+                reasoning_effort=preflight.dispatch.effort
+                or resolve_provenance_effort(resolve_spawn_effort, phase, preflight.dispatch.name),
+                skills_loaded=tuple(preflight.skills),
+                skill_assurance=prepared.skill_assurance,
+                selected_harness=preflight.dispatch.name,
+                selected_provider=_dispatch_provider_name(preflight.dispatch),
+                selected_model=preflight.dispatch.model or prepared.options.model or "",
+                route_candidate_index=preflight.dispatch.route_candidate_index,
+                route_source_skill=preflight.dispatch.route_source_skill,
+                fallback_reason=_selected_fallback_reason(route_fallback, preflight.dispatch),
+                fallback_from_attempt_id=route_fallback.source_attempt_id,
+            ),
+        ),
+        transport=_Transport(account=credential.account, metered=harness.capabilities.metered_lane),
     )
+    release_finished_thread(task)
+    return attempt
 
 
-@dataclass(frozen=True, slots=True)
-class _Preflight:
-    """What the three checks before the harness opens resolve, once none of them refused."""
-
-    stage_skills: list[str]
-    harness: Harness
-
-
-def _preflight(task: Task, *, phase: str) -> _Preflight | TaskAttempt:
+def _preflight(
+    task: Task,
+    *,
+    phase: str,
+    overlay_skill_metadata: SkillMetadata,
+) -> _Preflight | TaskAttempt:
     """The refusals that must all pass before a turn can be billed, as one short-circuit."""
-    refusal = _pre_harness_refusal(task, phase=phase)
+    refusal = pre_harness_refusal(task, phase=phase)
     if refusal is not None:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
         return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
@@ -307,37 +443,17 @@ def _preflight(task: Task, *, phase: str) -> _Preflight | TaskAttempt:
     if isinstance(stage_skills, TaskAttempt):
         return stage_skills
 
-    harness = _resolve_backend_or_failure(task, phase=phase)
-    if isinstance(harness, TaskAttempt):
-        return harness
+    skills = resolve_skill_bundle(
+        phase=phase,
+        overlay_skill_metadata=overlay_skill_metadata,
+        worktree_path=dispatch_worktree_path(task.ticket),
+        stage_skills=stage_skills,
+    )
+    dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
+    if isinstance(dispatch, TaskAttempt):
+        return dispatch
 
-    return _Preflight(stage_skills=stage_skills, harness=harness)
-
-
-def _pre_harness_refusal(task: Task, *, phase: str) -> str | None:
-    """Why this dispatch must not run at all, or ``None`` to proceed.
-
-    Every check is resolved BEFORE the harness (souliane/teatree#2916): for a
-    resumed pydantic_ai task, resolving the harness destructively pops the parked
-    ancestor's thread, and a refused dispatch must never trigger that pop or the
-    conversation is lost even though the run never starts.
-
-    Order is cheapest-first: the plan and budget checks read the local DB, while
-    the closed-issue check costs a forge round trip, so it runs only once the free
-    refusals have passed.
-    """
-    plan_refusal = unplanned_dispatch_refusal(task.ticket, phase=phase)
-    if plan_refusal is not None:
-        return plan_refusal
-    budget_refusal = TicketBudget.from_settings().breach_reason(task.ticket)
-    if budget_refusal is not None:
-        return budget_refusal
-    return closed_issue_dispatch_refusal(task.ticket, phase=phase)
-
-
-def _turn_ceiling(harness: Harness) -> int:
-    """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none."""
-    return resolve_agent_max_turns() if harness.capabilities.spawns_cli_child else 0
+    return _Preflight(stage_skills=stage_skills, dispatch=dispatch, skills=skills)
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:
@@ -368,55 +484,79 @@ def _stage_skills_or_refusal(task: Task, *, phase: str) -> list[str] | TaskAttem
         return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched
 
 
-def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | TaskAttempt:
-    """Resolve the headless transport, or a recorded failure for an unimplemented backend."""
+def _resolve_backend_or_failure(
+    task: Task, *, phase: str = "", skills: list[str] | None = None
+) -> DispatchHarness | TaskAttempt:
+    """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
     try:
-        return resolve_harness(task, phase=phase or None)
-    except (NotImplementedError, UnknownHarnessError, InvalidHarnessProviderError, CredentialError) as exc:
+        return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
+    except (
+        NotImplementedError,
+        UnknownHarnessError,
+        InvalidHarnessProviderError,
+        CredentialError,
+        AmbiguousSkillRouteError,
+        ConflictingHarnessRoutingError,
+    ) as exc:
         return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
 
 
 def _admission_park_or_child_env(
-    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str, phase: str = ""
-) -> dict[str, str] | TaskAttempt | None:
+    task: Task,
+    harness: Harness,
+    provider: AgentHarnessProvider | None,
+    *,
+    context: _ChildEnvDispatch = _DEFAULT_CHILD_ENV_DISPATCH,
+) -> DispatchCredential | TaskAttempt:
     """Directive #3 admission guard, then the child-env resolution — one early-return seam."""
-    admission_park = maybe_park_for_active_window(task, lane=lane)
+    admission_park = maybe_park_for_active_window(task, lane=context.lane)
     if admission_park is not None:
         _restore_unconsumed_resume_thread(harness)
         return admission_park
-    return _resolve_child_env_or_failure(task, harness, provider, lane=lane, phase=phase)
+    return _resolve_child_env_or_failure(task, harness, provider, context=context)
 
 
 def _resolve_child_env_or_failure(
-    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str = "", phase: str = ""
-) -> dict[str, str] | TaskAttempt | None:
+    task: Task,
+    harness: Harness,
+    provider: AgentHarnessProvider | None,
+    *,
+    context: _ChildEnvDispatch = _DEFAULT_CHILD_ENV_DISPATCH,
+) -> DispatchCredential | TaskAttempt:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
-        return None
+        return DispatchCredential()
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:
+        if context.route_candidate:
+            message = "claude is not installed"
+            raise HarnessFallbackError(message, kind=HarnessFallbackKind.TRANSPORT)
         return _record_failure(
             task, error="claude is not installed"
         )  # no-usage: the CLI is absent, so nothing was dispatched
     try:
-        base_env = _provider_child_env(provider, scope=_overlay_scope(task))
+        resolved = _provider_child_env(provider, scope=_overlay_scope(task))
     except CredentialError as exc:
         # #C2: every configured account drained (an ``AllTokensExhaustedError``) → quiesce the
         # lane and auto-resume at the earliest reset rather than escalating to a human; any
         # other credential gap (or flag-off) records the loud terminal FAILED as before.
         if isinstance(exc, AllTokensExhaustedError):
-            parked = park_task_on_all_exhausted(task, resets_at=exc.earliest_reset, lane=lane)
+            parked = park_task_on_all_exhausted(task, resets_at=exc.earliest_reset, lane=context.lane)
             if parked is not None:
                 return parked
+        if context.route_candidate:
+            kind = HarnessFallbackKind.QUOTA if isinstance(exc, AllTokensExhaustedError) else HarnessFallbackKind.AUTH
+            raise HarnessFallbackError(str(exc), kind=kind) from exc
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
-    if is_reader_phase(phase):
-        # ``base_env is None`` means "provider unset → use ambient os.environ"; the
-        # reader instead pins exactly the allowlist (inference credential survives if
-        # ambiently present, everything else dropped).
-        return reader_child_env(base_env if base_env is not None else dict(os.environ))
-    return with_test_worker_cap(base_env, active_agents=_active_agent_count())
+    if is_reader_phase(context.phase):
+        # A ``None`` env means "provider unset → use ambient os.environ"; the reader
+        # instead pins exactly the allowlist (inference credential survives if ambiently
+        # present, everything else dropped).
+        ambient = resolved.env if resolved.env is not None else dict(os.environ)
+        return replace(resolved, env=reader_child_env(ambient))
+    return replace(resolved, env=with_test_worker_cap(resolved.env, active_agents=_active_agent_count()))
 
 
 def _active_agent_count() -> int:
@@ -424,82 +564,8 @@ def _active_agent_count() -> int:
     return max(1, Task.objects.claimed_agent_count())
 
 
-def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt | None:
-    """Fold a non-success drive outcome into a recorded failure (or park), or ``None``.
-
-    Every branch here is POST-turn — the agent ran and the SDK reported a result — so each
-    carries the drive's own usage onto the recorded attempt (#4164). A park is the one
-    exception and records its own row.
-    """
-    # Sampled once from the SAME ``ResultMessage`` every branch below classifies, so the
-    # recorded spend can never describe a different run than the recorded error.
-    usage = _attempt_usage(outcome.result_message, lane=lane, tool_calls=outcome.tool_calls)
-    if outcome.stuck_reason is not None:
-        return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason, usage=usage)
-    limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
-    if limit is not None:
-        sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
-        signal = LimitSignal(sdk_resets_at=sdk_resets_at, usage=usage)
-        parked = park_or_rotate_on_limit(task, limit, lane=lane, signal=signal)
-        if parked is not None:
-            maybe_persist_on_limit_park(task, outcome.thread)
-            return parked
-        reason = limit.as_reason()
-        logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
-        return _record_failure(task, error=reason, usage=usage)
-    if is_max_turns_truncation(outcome.result_message):
-        reason = max_turns_failure_reason(outcome.result_message)
-        alert_owner_max_turns_truncation(task, phase=phase, message=outcome.result_message)
-        logger.warning("Task %s stopped at the turn ceiling: %s", task.pk, reason)
-        return _record_failure(task, error=reason, usage=usage)
-    error_reason = _error_result_reason(outcome.result_message)
-    if error_reason is not None:
-        if is_max_tokens_truncation(outcome.result_message):
-            alert_owner_max_tokens_truncation(task, phase=phase)
-        logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
-        return _record_failure(task, error=error_reason, usage=usage)
-    return None
-
-
-def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | None) -> str:
-    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
-
-    The mapping lives in :mod:`teatree.core.admission.dispatch_lane` so the governor judges a
-    dispatch against the same lane the attempt is stamped with (#4816).
-    """
-    return dispatch_lane(provider=provider, metered_harness=harness.capabilities.metered_lane)
-
-
 def _renew_lease_closing_connection(task: Task) -> None:
-    """Renew *task*'s lease and close THIS thread's DB connection.
-
-    A lost lease is re-raised naming what actually took the claim (#3982). The diagnosis
-    is a read-back, so it must run in THIS thread — the ``finally`` below closes the only
-    DB connection this thread owns.
-    """
-    try:
-        task.renew_lease(lease_seconds=_LEASE_SECONDS)
-        # The checkout claim rides the SAME heartbeat as the task lease (#3952): a
-        # long coding run must not let its occupancy TTL lapse under it and hand a
-        # live working tree to the next requester. A claim this run does not hold
-        # (the ticket was unprovisioned at dispatch, or the gate is off) renews
-        # nothing — the heartbeat must never manufacture one mid-run.
-        #
-        # Guarded on ``ticket_id`` rather than ``task.ticket``: an unsaved/ticketless
-        # Task raises on the descriptor, and the LEASE renewal above is the
-        # load-bearing half — the occupancy add-on must never be what breaks it.
-        if task.ticket_id is not None:  # ty: ignore[unresolved-attribute]  # Django FK accessor
-            renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
-    except LeaseLostError as exc:
-        raise LeaseLostError(describe_lease_loss(task)) from exc
-    except WorktreeOccupancyLostError as exc:
-        # Re-raised as a lost LEASE so the heartbeat's existing abort path fires: a run
-        # whose checkout claim moved on has lost its right to drive just as surely as one
-        # whose task claim did, and continuing would put two agents in one working tree.
-        msg = f"lease lost for task {task.pk}: {exc}"
-        raise LeaseLostError(msg) from exc
-    finally:
-        close_thread_db_connections()
+    renew_lease_closing_connection(task, lease_seconds=_LEASE_SECONDS)
 
 
 async def _drive_with_heartbeat(
@@ -510,145 +576,15 @@ async def _drive_with_heartbeat(
     *,
     watchdog: LoopWatchdog,
 ) -> HarnessOutcome:
-    """Run the agent in-process while sending lease heartbeats (#882, #997).
-
-    *watchdog* is REQUIRED rather than resolved here: its ceilings come from the DB-home config
-    tier, and this coroutine runs inside the event loop where that read is refused (#3980).
-    """
-    # Sample accumulated deltas once before the run: prior-attempt totals are
-    # static for this run. The read runs in a worker thread (so the event loop
-    # is never blocked) that gets its OWN Django DB connection; close it in the
-    # same thread or the connection outlives the thread and surfaces as a
-    # ``ResourceWarning: unclosed database`` when the thread is GC'd (an
-    # order-dependent test flake, and a real connection leak in production).
-    usage = await asyncio.to_thread(_sample_usage_closing_connection, task)
-    started_at = time.monotonic()
-    breach: list[str] = []
-    lease_lost = False
-
-    async with harness.open(options) as session:
-
-        async def _heartbeat() -> None:
-            nonlocal lease_lost
-            try:
-                while True:
-                    await asyncio.sleep(_HEARTBEAT_INTERVAL)
-                    try:
-                        await asyncio.to_thread(_renew_lease_closing_connection, task)
-                    except LeaseLostError as exc:
-                        # Something took over this task's claim (the lease lapsed and was
-                        # reclaimed). Abort THIS run — two drivers on the same unit is the
-                        # double-spend the CAS guards. The reason names the actual
-                        # reclaimer, which is often this very process (#3982).
-                        breach.append(str(exc))
-                        lease_lost = True
-                        logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
-                        await session.interrupt()
-                        return
-                    except Exception:
-                        logger.warning("Heartbeat failed for task %s", task.pk, exc_info=True)
-                    # Re-sample the accumulated turn/cost deltas each tick (F9.3) so the
-                    # turn/cost ceilings observe the CURRENT run's spend, not the pre-run
-                    # static snapshot — the "cost spike DURING the heartbeat loop" the
-                    # watchdog docstring promises. Only pay the DB read when a turn/cost
-                    # ceiling is armed (the runtime ceiling needs no usage).
-                    live_usage = usage
-                    if watchdog.max_turns or watchdog.max_cost_usd:
-                        live_usage = await asyncio.to_thread(_sample_usage_closing_connection, task)
-                    reason = watchdog.breach_reason(
-                        task,
-                        elapsed_seconds=time.monotonic() - started_at,
-                        usage=live_usage,
-                    )
-                    if reason and not breach:
-                        breach.append(reason)
-                        logger.warning("Watchdog interrupting stuck task %s: %s", task.pk, reason)
-                        await session.interrupt()
-                        return
-            finally:
-                # Belt to the per-call suspenders: every offload target above
-                # closes its own thread's handle, so this only reaps a worker
-                # thread the pool happened to reuse without a closing target.
-                await asyncio.to_thread(close_thread_db_connections)
-
-        heartbeat_task = asyncio.create_task(_heartbeat())
-        try:
-            timeout = watchdog.max_runtime_seconds or None
-            outcome = await asyncio.wait_for(_collect(session, prompt), timeout=timeout)
-        except TimeoutError:
-            await session.interrupt()
-            elapsed = time.monotonic() - started_at
-            reason = watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
-                f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"
-            )
-            return HarnessOutcome(agent_text="", result_message=None, stuck_reason=reason)
-        finally:
-            heartbeat_task.cancel()
-
-    if breach:
-        return HarnessOutcome(
-            agent_text=outcome.agent_text,
-            result_message=outcome.result_message,
-            stuck_reason=breach[0],
-            rate_limit_info=outcome.rate_limit_info,
-            lease_lost=lease_lost,
-        )
-    return outcome
-
-
-async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
-    """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window."""
-    await session.query(prompt)
-    text_parts: list[str] = []
-    result_message: ResultMessage | None = None
-    rate_limit_info: RateLimitInfo | None = None
-    tool_calls = 0
-    async for message in session.receive_response():
-        if isinstance(message, AssistantMessage):
-            text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
-            tool_calls += sum(1 for block in message.content if isinstance(block, ToolUseBlock))
-        elif isinstance(message, ResultMessage):
-            result_message = message
-        elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
-            rate_limit_info = message.rate_limit_info
-    return HarnessOutcome(
-        agent_text="\n".join(text_parts),
-        result_message=result_message,
-        stuck_reason=None,
-        rate_limit_info=rate_limit_info,
-        thread=pydantic_ai_thread(session),  # (#2886) captured while `session` is still open
-        tool_calls=tool_calls,
+    return await drive_with_heartbeat(
+        task,
+        prompt,
+        options,
+        harness,
+        runtime=HeartbeatRuntime(
+            watchdog=watchdog,
+            heartbeat_interval=_HEARTBEAT_INTERVAL,
+            sample_usage=_sample_usage_closing_connection,
+            renew_lease=_renew_lease_closing_connection,
+        ),
     )
-
-
-def _record_success(
-    task: Task,
-    outcome: HarnessOutcome,
-    *,
-    phase: str = "",
-    lane: str = "",
-    provenance: DispatchProvenance | None = None,
-) -> TaskAttempt:
-    """Record a successful SDK run via the shared recorder."""
-    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
-    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — deferred: call-time import
-
-    provenance = provenance or DispatchProvenance()
-    usage = _attempt_usage(
-        outcome.result_message,
-        lane=lane,
-        reasoning_effort=provenance.reasoning_effort,
-        skills_loaded=list(provenance.skills_loaded),
-        tool_calls=outcome.tool_calls,
-    )
-    parsed = parse_result(outcome.agent_text)
-    result = parsed
-    if not parsed:
-        prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
-        if not ProseSummaryPolicy.allowed(phase or task.phase):
-            logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
-            return _record_failure(task, exit_code=0, error=NO_ENVELOPE_ERROR, result=prose, usage=usage)
-        result = prose
-
-    maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
-    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))

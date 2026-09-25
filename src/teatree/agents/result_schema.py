@@ -14,12 +14,20 @@ proof.
 """
 
 from collections.abc import Callable
-from typing import TypedDict, cast
+from typing import TypedDict
 
+from teatree.agents.result_payloads import (
+    answer_text,
+    candidate_carries_payload,
+    interpretation_carries_payload,
+    recommendation_persists,
+    suggestion_url,
+    verdict_carries_payload,
+)
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
-from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, PlanAdequacy, RubricGrade
 
 
 class FileChange(TypedDict, total=False):
@@ -34,6 +42,11 @@ class SingleTestResult(TypedDict, total=False):
     passed: bool
     duration_seconds: float
     error: str
+
+
+class SkillApplication(TypedDict):
+    skill: str
+    evidence: str
 
 
 class ReviewFinding(TypedDict, total=False):
@@ -93,6 +106,7 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     blast_class: str
     findings: list[ReviewFinding]
     merge_result_retake: bool
+    rubric_grades: list[RubricGrade]
 
 
 class CriticItemVerdictDict(TypedDict, total=False):
@@ -153,13 +167,14 @@ class AgentResult(TypedDict, total=False):
     user_input_reason: str
     next_steps: list[str]
     commands_executed: list[str]
+    skill_application: list[SkillApplication]
 
 
 type JSONSchema = dict[str, object]
 
 #: One :class:`~teatree.core.models.types.AdequacySection` — substantive ``content``
 #: (free text, or a list of items for ``integration_seams``/``edge_cases``) OR an
-#: explicit reasoned ``none_reason`` negative. Shared by all four required sections
+#: explicit reasoned ``none_reason`` negative. Shared by all five required sections
 #: of the ``adequacy`` manifest so the schema cannot drift section-to-section.
 _ADEQUACY_SECTION_SCHEMA: JSONSchema = {
     "type": "object",
@@ -173,6 +188,16 @@ RESULT_JSON_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
+        "skill_application": {
+            "type": "array",
+            "description": "One honest reference per required skill; self-report, not verified compliance.",
+            "items": {
+                "type": "object",
+                "properties": {"skill": {"type": "string"}, "evidence": {"type": "string"}},
+                "required": ["skill", "evidence"],
+                "additionalProperties": False,
+            },
+        },
         "plan_text": {"type": "string", "description": "Full plan text produced by the planner agent."},
         "base_sha": {
             "type": "string",
@@ -184,7 +209,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         "adequacy": {
             "type": "object",
             "description": (
-                "The plan's four-section adequacy manifest recorded on the PlanArtifact (SELFCATCH-3). "
+                "The plan's five-section adequacy manifest recorded on the PlanArtifact (SELFCATCH-3). "
                 "Each section is substantive (`content`) OR carries an explicit reasoned negative "
                 "(`none_reason`); silence never passes."
             ),
@@ -193,10 +218,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "integration_seams": _ADEQUACY_SECTION_SCHEMA,
                 "edge_cases": _ADEQUACY_SECTION_SCHEMA,
                 "test_strategy": _ADEQUACY_SECTION_SCHEMA,
+                "acceptance_criteria": _ADEQUACY_SECTION_SCHEMA,
                 "mechanism_placement": {
                     "type": "object",
                     "description": (
-                        "A directive-linked ticket's fifth section — the generic-shape decision checked "
+                        "A directive-linked ticket's extra section — the generic-shape decision checked "
                         "against the ratified MechanismSketch."
                     ),
                 },
@@ -282,6 +308,30 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                         "branch checkout alone. Without it such a finding cannot carry blocking severity "
                         "and the whole verdict is refused (#4251)."
                     ),
+                },
+                "rubric_grades": {
+                    "type": "array",
+                    "description": (
+                        "Your grade of EVERY criterion on the reviewed ticket's rubric — you are the "
+                        "independent verifier the done-gate requires. A verdict leaving any criterion "
+                        "ungraded is refused and records nothing. NOT in `required`: whether the ticket "
+                        "HAS a rubric is a DB question only the recorder can answer."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ordinal": {"type": "integer"},
+                            "status": {"type": "string", "enum": ["pass", "fail"]},
+                            "rationale": {
+                                "type": "string",
+                                "description": (
+                                    "What proves the criterion — any test kind, free-form prose. "
+                                    "REQUIRED on a pass; a fail needs none."
+                                ),
+                            },
+                        },
+                        "required": ["ordinal", "status"],
+                    },
                 },
             },
             "required": ["verdict", "reviewed_sha"],
@@ -523,69 +573,6 @@ class ProseSummaryPolicy:
 
 
 type AgentResultBlob = dict[str, object]
-
-
-def suggestion_url(item: object) -> str:
-    """The persistable source URL of one article suggestion, or ``""`` if absent."""
-    if not isinstance(item, dict):
-        return ""
-    return str(cast("ArticleSuggestion", item).get("url") or "").strip()
-
-
-def answer_text(answer: object) -> str:
-    """The persistable reply text of an answer envelope, or ``""`` if absent."""
-    if not isinstance(answer, dict):
-        return ""
-    return str(cast("AnswerEnvelope", answer).get("text") or "").strip()
-
-
-def recommendation_issue_url(item: object) -> str:
-    """The persistable issue URL of one triage recommendation, or ``""`` if absent."""
-    if not isinstance(item, dict):
-        return ""
-    return str(cast("TriageRecommendation", item).get("issue_url") or "").strip()
-
-
-def recommendation_persists(item: object) -> bool:
-    """Whether one triage recommendation carries what the recorder actually PERSISTS."""
-    from teatree.core.models.pending_triage_recommendation import (  # noqa: PLC0415 — ORM/app-registry
-        VALID_TRIAGE_VERDICTS,
-    )
-
-    if not recommendation_issue_url(item):
-        return False
-    verdict = str(cast("TriageRecommendation", item).get("verdict") or "").strip().lower()
-    return verdict in VALID_TRIAGE_VERDICTS
-
-
-def candidate_carries_payload(envelope: object) -> bool:
-    """Whether a directive-candidate envelope carries something the recorder persists (#116)."""
-    if not isinstance(envelope, dict):
-        return False
-    typed = cast("DirectiveCandidateEnvelope", envelope)
-    return typed.get("is_directive") is True and bool(str(typed.get("normalized_constraint") or "").strip())
-
-
-def interpretation_carries_payload(envelope: object) -> bool:
-    """Whether a directive-interpretation envelope carries something the recorder persists."""
-    if not isinstance(envelope, dict):
-        return False
-    typed = cast("DirectiveInterpretationEnvelope", envelope)
-    sketch = typed.get("sketch")
-    if isinstance(sketch, dict) and sketch:
-        return True
-    questions = typed.get("clarifying_questions")
-    return isinstance(questions, list) and any(str(q).strip() for q in questions)
-
-
-def verdict_carries_payload(envelope: object) -> bool:
-    """Whether a review-verdict envelope names a verdict the recorder can persist (#3654)."""
-    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    if not isinstance(envelope, dict):
-        return False
-    verdict = str(cast("ReviewVerdictEnvelope", envelope).get("verdict") or "").strip().lower()
-    return verdict in {choice.value for choice in ReviewVerdict.Verdict}
 
 
 #: Channels whose "evidence present" test is stricter than coarse truthiness:

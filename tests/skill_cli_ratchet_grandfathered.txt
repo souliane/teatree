@@ -9,7 +9,6 @@
 # key that no longer occurs (forced banking -- remove it once migrated). Per-item, set-union mergeable.
 # Regenerate the exact live set with: python -m teatree.quality.skill_cli_ratchet --update-baseline
 skills/ac-reviewing-codebase/SKILL.md::t3 pr create
-skills/answerer/SKILL.md::t3 config_setting set
 skills/checking/SKILL.md::gh api user
 skills/checking/SKILL.md::glab auth status
 skills/checking/SKILL.md::t3 tasks list
@@ -70,8 +69,10 @@ skills/review/SKILL.md::t3 config_setting set
 skills/review/SKILL.md::t3 lifecycle visit-phase
 skills/review/SKILL.md::t3 review post-comment
 skills/review/references/giving-review-investigation.md::gh issue view
+skills/review/references/giving-review-investigation.md::gh pr list
 skills/review/references/giving-review-investigation.md::glab api
 skills/review/references/giving-review-investigation.md::glab issue view
+skills/review/references/giving-review-investigation.md::glab mr list
 skills/review/references/posting-review-comments.md::t3 review post-comment
 skills/rules/SKILL.md::gh run watch
 skills/rules/SKILL.md::glab ci status
@@ -100,6 +101,8 @@ skills/setup/references/recommended-automode-authorizations.md::t3 lifecycle vis
 skills/setup/references/recommended-automode-authorizations.md::t3 ticket merge
 skills/ship/SKILL.md::gh issue list
 skills/ship/SKILL.md::gh pr create
+skills/ship/SKILL.md::gh pr diff
+skills/ship/SKILL.md::gh pr edit
 skills/ship/SKILL.md::gh pr list
 skills/ship/SKILL.md::gh pr view
 skills/ship/SKILL.md::gh run watch
@@ -118,6 +121,7 @@ skills/ship/SKILL.md::t3 ticket list
 skills/ship/SKILL.md::t3 ticket merge
 skills/ship/references/pr-siblings-and-bundling.md::gh pr list
 skills/ship/references/review-gate-fsm.md::t3 lifecycle visit-phase
+skills/ship/references/stacked-delivery.md::glab mr list
 skills/sweeping-prs/SKILL.md::gh pr view
 skills/sweeping-prs/SKILL.md::glab mr view
 skills/sweeping-prs/SKILL.md::t3 ticket merge

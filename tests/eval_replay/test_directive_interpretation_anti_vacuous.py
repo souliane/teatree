@@ -42,6 +42,14 @@ def _spec(name: str) -> EvalSpec:
     return spec
 
 
+def test_activation_prompt_requires_a_real_tool_action() -> None:
+    prompt = _spec(_CONFORM).prompt
+
+    assert "A prose-only response is invalid" in prompt
+    assert "t3 directive status 7" in prompt
+    assert "invoke AskUserQuestion" in prompt
+
+
 def _grade(spec: EvalSpec, suffix: str, tmp_path: Path) -> bool:
     fixture = _FIXTURES / f"{spec.name}_{suffix}.stream.jsonl"
     (tmp_path / f"{spec.name}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")

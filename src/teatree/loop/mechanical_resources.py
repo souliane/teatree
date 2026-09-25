@@ -1,7 +1,7 @@
 """Resource-pressure freeing handler — the executor for ``resource.cleanup_needed`` (#128).
 
 Split out of :mod:`teatree.loop.mechanical` so the ladder (cache purge,
-Docker disk reclaim, dormant-venv eviction, the done-worktree sweep,
+Docker disk reclaim, dormant-artifact eviction, the done-worktree sweep,
 idle-container stop, flag-gated worktree GC, flag-gated renderer SIGTERM) lives
 in one self-describing module and ``mechanical.py`` only registers the entry
 point in ``HANDLERS``.
@@ -10,7 +10,7 @@ WHAT A PASS RECLAIMS, AND WHY IT USED TO BE ONLY DOCKER (#4244). The worktree GC
 enumerated by running ``git worktree list`` against the worktree ROOT — a
 directory that CONTAINS worktrees and is not a repository — so git refused, the
 helper mapped the refusal to ``[]``, and the pass reclaimed nothing but ~1.6 GB
-of rebuildable docker cache while tens of gigabytes of dormant virtualenvs
+of rebuildable docker cache while tens of gigabytes of dormant build artifacts
 accumulated. Enumeration now runs through
 :func:`teatree.core.cleanup.checkout_registry.linked_worktree_paths`, an
 unreadable answer is an ERROR line rather than an empty candidate list, and the
@@ -30,7 +30,10 @@ prune`` — it runs WITHOUT the ``allow_destructive_disk`` flag.
 Contract — every step is dry-run-first and best-effort. (1) Compute the
 freeing *plan* (candidate paths/targets + byte estimates) and persist it to
 ``ResourcePressureMarker.last_plan`` BEFORE executing, so the plan is recorded
-even when a destructive flag is off and the user sees what *would* have run.
+even when a destructive flag is off and the user sees what *would* have run. The
+loss-free artifact sweep is its own pass in :mod:`teatree.loop.mechanical_artifacts`,
+recording to its own marker field; the plan primitives both share are in
+:mod:`teatree.loop.mechanical_plan`.
 (2) Execute only the steps the payload's flags permit; destructive steps
 (worktree GC, process SIGTERM) require an explicit opt-in flag and run
 allow-LIST only, skipping on any ambiguity. (3) Every subprocess / IO failure
@@ -50,33 +53,22 @@ import os
 import re
 import shutil
 import signal
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
 from teatree.config import worktree_root
 from teatree.core.cleanup.disk_usage import dir_size_gb
-from teatree.core.cleanup.venv_eviction import VenvEvictionPlan, evict_venvs, plan_venv_eviction
 from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
-from teatree.loop.reclaim_yield import pressure_idle_days, reclaim_yield_steps
+from teatree.loop.mechanical_plan import GIB, FreePlan, append_stopped_deletions, persist_plan, sampled
+from teatree.loop.reclaim_yield import reclaim_yield_steps
 from teatree.loop.worktree_gc import GcSurvey, collect, survey_worktrees
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
-if TYPE_CHECKING:
-    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
-
 logger = logging.getLogger(__name__)
-
-_GIB = 1024 * 1024 * 1024
-
-# How many per-item lines one plan section prints before summarising the rest.
-# The plan is read by a human on a full disk; hundreds of keep-lines would bury
-# the counts that say whether the pass did anything.
-_PLAN_SAMPLE = 5
 
 # Paths that must NEVER be auto-removed regardless of the allow-list, because
 # they hold irreplaceable state. ``~/.claude/projects`` is session memory.
@@ -87,23 +79,6 @@ _STALE_STATUSLINE_DAYS = 2
 # The well-known statusline scratch dir. A module constant so it is patchable
 # in tests without monkeypatching ``pathlib.Path`` itself.
 _STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
-
-
-@dataclass(slots=True)
-class FreePlan:
-    """The computed freeing plan for one pass — persisted before execution."""
-
-    resource: str
-    steps: list[str] = field(default_factory=list)
-    estimated_reclaim_gb: float = 0.0
-    reclaimed_gb: float = 0.0
-
-    def render(self) -> str:
-        head = (
-            f"[{timezone.now().isoformat()}] resource={self.resource} "
-            f"est={self.estimated_reclaim_gb:.2f}GB reclaimed={self.reclaimed_gb:.2f}GB"
-        )
-        return head + "\n" + "\n".join(f"  - {s}" for s in self.steps)
 
 
 def free_resources(payload: ActionPayload) -> None:
@@ -135,22 +110,14 @@ def _free_resources_inner(payload: ActionPayload) -> None:
         return
 
     marker = ResourcePressureMarker.load()
-    _persist_plan(marker, plan)
+    persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
     _execute_plan(plan, payload, survey)
     if resource == "disk":
         plan.steps.extend(reclaim_yield_steps(marker, reclaimed_gb=plan.reclaimed_gb, payload=payload))
-    _persist_plan(marker, plan)
+    persist_plan(marker, plan, field_name="last_plan", caller="free_resources")
     marker.last_freed_at = timezone.now()
     marker.save(update_fields=["last_freed_at", "last_plan"])
     logger.info("free_resources(%s) reclaimed ~%.2f GB", resource, plan.reclaimed_gb)
-
-
-def _persist_plan(marker: "ResourcePressureMarker", plan: FreePlan) -> None:
-    try:
-        marker.last_plan = plan.render()
-        marker.save(update_fields=["last_plan"])
-    except Exception:
-        logger.exception("free_resources: failed to persist plan")
 
 
 # ---------------------------------------------------------------------------
@@ -177,25 +144,9 @@ def _plan_disk(payload: ActionPayload, survey: "DiskSurvey") -> FreePlan:
     plan.steps.append(f"CLEAN /tmp/claude-statusline entries older than {_STALE_STATUSLINE_DAYS}d")
     plan.steps.append(_scratch_plan_step(payload))
     plan.steps.append("RECLAIM docker build cache + dangling images + unreferenced volumes (safe, never -a)")
-    _append_venv_steps(plan, survey.venvs)
     plan.steps.append("REAP worktrees whose ticket is done and whose every change is redundant")
     _append_gc_steps(plan, survey.gc, allowed=bool(payload.get("allow_destructive_disk")))
     return plan
-
-
-def _append_venv_steps(plan: FreePlan, eviction: VenvEvictionPlan) -> None:
-    if eviction.refusal:
-        plan.steps.append(f"SKIP venv eviction — {eviction.refusal}")
-        return
-    plan.steps.append(
-        f"EVICT dormant venvs: considered={eviction.considered} evicting={len(eviction.candidates)} "
-        f"kept={len(eviction.kept)}"
-    )
-    for line in _sampled(eviction.kept):
-        plan.steps.append(f"  keep {line}")
-    for gap in _sampled(eviction.gaps):
-        plan.steps.append(f"  ERROR checkout enumeration incomplete — {gap}")
-    plan.estimated_reclaim_gb += eviction.estimated_bytes / _GIB
 
 
 def _append_gc_steps(plan: FreePlan, survey: "GcSurvey", *, allowed: bool) -> None:
@@ -205,22 +156,15 @@ def _append_gc_steps(plan: FreePlan, survey: "GcSurvey", *, allowed: bool) -> No
     plan.steps.append(
         f"GC worktrees: considered={survey.considered} eligible={len(survey.candidates)} kept={len(survey.kept)}"
     )
-    for line in _sampled(survey.kept):
+    for line in sampled(survey.kept):
         plan.steps.append(f"  keep {line}")
-    for gap in _sampled(survey.gaps):
+    for gap in sampled(survey.gaps):
         plan.steps.append(f"  ERROR worktree enumeration incomplete — {gap}")
     if not allowed:
         plan.steps.append("SKIP worktree GC (allow_destructive_disk=false)")
         return
     for wt in survey.candidates:
         plan.steps.append(f"GC worktree {wt} (clean + pushed + stale + nothing running inside)")
-
-
-def _sampled(lines: tuple[str, ...]) -> list[str]:
-    """The first few lines plus an honest trailer — a plan nobody reads reports nothing."""
-    if len(lines) <= _PLAN_SAMPLE:
-        return list(lines)
-    return [*lines[:_PLAN_SAMPLE], f"… and {len(lines) - _PLAN_SAMPLE} more"]
 
 
 def _resolve_disk_allowlist(payload: ActionPayload) -> list[str]:
@@ -254,22 +198,11 @@ def _execute_disk(plan: FreePlan, payload: ActionPayload, survey: "DiskSurvey") 
     _clean_stale_statusline()
     plan.reclaimed_gb += _sweep_scratch(plan, payload)
     plan.reclaimed_gb += _reclaim_docker_disk(plan)
-    eviction = evict_venvs(survey.venvs)
-    plan.reclaimed_gb += eviction.freed_bytes / _GIB
-    _append_stopped_deletions(plan, "venv eviction", eviction.refusal, eviction.skipped)
     _reap_done_worktrees(plan)
     if payload.get("allow_destructive_disk"):
         collection = collect(survey.gc)
         plan.reclaimed_gb += collection.reclaimed_gb
-        _append_stopped_deletions(plan, "worktree GC", collection.refusal, collection.skipped)
-
-
-def _append_stopped_deletions(plan: FreePlan, what: str, refusal: str, skipped: tuple[str, ...]) -> None:
-    """Record what the delete-time guard stopped — a silent skip is the defect class itself."""
-    if refusal:
-        plan.steps.append(f"ABORT {what} at deletion time — {refusal}")
-    for line in _sampled(skipped):
-        plan.steps.append(f"  SKIP {line}")
+        append_stopped_deletions(plan, "worktree GC", collection.refusal, collection.skipped)
 
 
 def _reap_done_worktrees(plan: FreePlan) -> None:
@@ -313,13 +246,17 @@ def _reclaim_docker_disk(plan: FreePlan) -> float:
     if report.venue_blocked:
         plan.steps.append(f"  → docker reclaim did not run: {report.failure_summary()}")
         return 0.0
-    reclaimed_gb = report.total_bytes / _GIB
+    reclaimed_gb = report.total_bytes / GIB
     plan.steps.append(f"  → docker reclaimed {report.total_human}")
     return reclaimed_gb
 
 
 def _purge_dir(path: str) -> float:
-    """Remove a cache directory's contents; return GB reclaimed (best-effort)."""
+    """Remove the cache DIRECTORY itself; return GB reclaimed (best-effort).
+
+    ``rmtree`` takes the directory, not just its contents, so an allow-list entry
+    is only safe for a cache whose owner recreates its own root on next use.
+    """
     target = Path(path).expanduser()
     if not target.is_dir():
         return 0.0
@@ -399,7 +336,7 @@ def _sweep_scratch(plan: FreePlan, payload: ActionPayload) -> float:
         plan.steps.append(f"  → REFUSED agent-scratch sweep ({swept.probe_gap})")
         return 0.0
     plan.steps.append(f"  → {swept.summary}")
-    return swept.reclaimed_bytes / _GIB
+    return swept.reclaimed_bytes / GIB
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +344,6 @@ class DiskSurvey:
     """The disk ladder's read-only findings, computed once and used by plan and execute."""
 
     gc: GcSurvey
-    venvs: VenvEvictionPlan
 
 
 def _survey_disk(payload: ActionPayload) -> DiskSurvey:
@@ -419,7 +355,7 @@ def _survey_disk(payload: ActionPayload) -> DiskSurvey:
     survey that raises must cost its own step, never the docker reclaim and cache
     purge further up the ladder that had nothing to do with it.
     """
-    return DiskSurvey(gc=_surveyed_worktrees(payload), venvs=_surveyed_venvs(payload))
+    return DiskSurvey(gc=_surveyed_worktrees(payload))
 
 
 def _surveyed_worktrees(payload: ActionPayload) -> GcSurvey:
@@ -428,14 +364,6 @@ def _surveyed_worktrees(payload: ActionPayload) -> GcSurvey:
     except Exception as exc:
         logger.exception("free_resources: worktree survey failed — swallowed")
         return GcSurvey(gaps=(f"the worktree survey raised ({exc})",))
-
-
-def _surveyed_venvs(payload: ActionPayload) -> VenvEvictionPlan:
-    try:
-        return plan_venv_eviction(worktree_root(), idle_days=pressure_idle_days(payload))
-    except Exception as exc:
-        logger.exception("free_resources: venv survey failed — swallowed")
-        return VenvEvictionPlan(refusal=f"the venv survey raised ({exc})")
 
 
 # ---------------------------------------------------------------------------

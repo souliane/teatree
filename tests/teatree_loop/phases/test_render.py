@@ -3,16 +3,19 @@
 import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import PullRequest, SelfImproveFiring, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases import render_phase
-from teatree.loop.phases.render import _identity_aliases_for_request
+from teatree.loop.phases.render import _identity_aliases_for_request, rerender_statusline
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
+from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.tick import TickReport, TickRequest
 
 _NOW = dt.datetime(2026, 6, 16, tzinfo=dt.UTC)
@@ -142,6 +145,55 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
     render_phase(report, TickRequest(), jobs=[], statusline_path=sl, colorize=False)
 
     assert "scanner errors" not in sl.read_text(encoding="utf-8")
+
+
+class TestSelfImproveStatuslineVisibility(TestCase):
+    def test_idle_render_shows_only_active_statusline_firings(self) -> None:
+        active = DetectorReport(
+            detector="lifecycle_incident",
+            dedup_key="lifecycle_incident::task_failed:harness_crash",
+            state_hash="active",
+            severity="warn",
+            max_rung=ActionRung.STATUSLINE,
+            summary="private task details",
+            payload={"kind": "task_failed", "cause": "harness_crash", "count": 1},
+        )
+        resolved = DetectorReport(
+            detector="lifecycle_incident",
+            dedup_key="lifecycle_incident::inbound_unanswered:old",
+            state_hash="old",
+            severity="warn",
+            max_rung=ActionRung.STATUSLINE,
+            summary="private message text",
+            payload={"kind": "inbound_unanswered", "cause": "old", "count": 1},
+        )
+        record_firing(active, action=ActionRung.STATUSLINE)
+        old = record_firing(resolved, action=ActionRung.STATUSLINE)
+        SelfImproveFiring.objects.filter(pk=old.pk).update(resolved_at=dt.datetime.now(tz=dt.UTC))
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            report = TickReport(started_at=_NOW)
+            render_phase(report, TickRequest(), jobs=[], statusline_path=sl, colorize=False)
+            rendered = sl.read_text(encoding="utf-8")
+            assert "self-improve: task_failed (harness_crash; 1)" in rendered
+            assert "inbound_unanswered" not in rendered
+            assert "private" not in rendered
+
+    def test_self_improve_rerender_preserves_active_finding(self) -> None:
+        report = DetectorReport(
+            detector="lifecycle_incident",
+            dedup_key="lifecycle_incident::inbound_unanswered:message_without_substantive_reply",
+            state_hash="active",
+            severity="warn",
+            max_rung=ActionRung.STATUSLINE,
+            summary="private message text",
+            payload={"kind": "inbound_unanswered", "cause": "message_without_substantive_reply", "count": 1},
+        )
+        record_firing(report, action=ActionRung.STATUSLINE)
+        with TemporaryDirectory() as directory:
+            sl = Path(directory) / "statusline.txt"
+            rerender_statusline(sl, colorize=False)
+            assert "self-improve: inbound_unanswered (message_without_substantive_reply; 1)" in sl.read_text()
 
 
 def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:

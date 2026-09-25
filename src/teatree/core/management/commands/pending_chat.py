@@ -1,7 +1,11 @@
 """``t3 <overlay> pending-chat`` — manage the inbound Slack-DM queue (#1063).
 
 Subcommands. ``t3 <overlay> pending-chat list`` prints rows from the
-last hour (or all pending if ``--all``), oldest first.
+last hour (or all pending if ``--all``), oldest first. Each row carries the
+reactive Slack-answer loop's disposition — ``queued`` while the loop has not
+replied, else the ``answer_kind`` it settled on (``ack`` / ``simple`` /
+``delegated`` / ``question_reply``) — so a handled row can never be misread as
+one still waiting for the loop.
 ``t3 <overlay> pending-chat mark-answered <slack_ts>`` stamps
 ``answered_at`` on the row(s) matching ``slack_ts``; the agent calls
 this once per direct reply to a queued user question, so the Stop hook
@@ -26,17 +30,30 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.models import PendingChatInjection
 
 
+def _loop_flag(row: PendingChatInjection) -> str:
+    """How the reactive Slack-answer loop left this row — its ``answer_kind``, or ``queued``.
+
+    Always emitted, because the absence of a flag is not readable as a state.
+    A row the loop had already :eyes:-reacted, stamped ``delegated`` and dispatched an
+    ``answering`` lane for printed as ``#52 [question]`` — byte-identical to a row
+    nothing had touched. Read as "still queued", it produced a false "the loop selects
+    nothing" diagnosis against a loop that had done its whole job.
+    """
+    if row.loop_replied_at is None:
+        return "queued"
+    return row.answer_kind or "loop-replied"
+
+
 def _format_row(row: PendingChatInjection) -> str:
     when = row.received_at.isoformat() if row.received_at is not None else "?"
     flags: list[str] = []
     if row.is_question:
         flags.append("question")
+    flags.append(_loop_flag(row))
     if row.consumed_at is not None:
         flags.append("consumed")
     if row.answered_at is not None:
         flags.append("answered")
-    if not flags:
-        flags.append("pending")
     snippet = row.text.strip().replace("\n", " ")[:120]
     return f"  #{row.pk} [{'/'.join(flags)}] ts={row.slack_ts} {when}\n     {snippet}"
 

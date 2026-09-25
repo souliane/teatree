@@ -102,6 +102,7 @@ class ScenarioSelection:
         if not self.truncated:
             return None
         return (
+            f"coverage incomplete: {self.deferred} deferred; "
             f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
             f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
         )
@@ -125,10 +126,26 @@ _PRECISE = 0
 _BROAD = 1
 
 
+def _outer_checkout_root(repo_root: Path) -> Path:
+    """The checkout enclosing *repo_root* — the fork root when core is vendored, else itself."""
+    return next((p for p in (repo_root, *repo_root.parents) if (p / ".git").exists()), repo_root)
+
+
 def _relative_to_root(path: Path, repo_root: Path) -> str:
-    candidate = path if path.is_absolute() else repo_root / path
+    """The key a spec and a diff line must agree on, keyed to whichever checkout holds the path.
+
+    An overlay ships its scenarios OUTSIDE the vendored core (``overlay/evals/specs/``) while
+    ``repo_root`` is that core, so keying only against it fell through to the ABSOLUTE path —
+    which no repo-relative diff line can equal. Every MR touching an overlay scenario therefore
+    selected zero, and a lane that selects nothing reports success.
+    """
+    candidate = (path if path.is_absolute() else repo_root / path).resolve()
     try:
-        return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+        return candidate.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        outer = _outer_checkout_root(repo_root)  # walked only when the core root does not hold it
+    try:
+        return candidate.relative_to(outer.resolve()).as_posix()
     except ValueError:
         return candidate.as_posix()
 

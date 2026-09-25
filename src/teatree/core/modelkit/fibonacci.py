@@ -44,4 +44,20 @@ def fibonacci_minutes(attempt: int) -> int:
     return BACKOFF_BASE_MINUTES * fibonacci_step(attempt)
 
 
+def fibonacci_bump_index(elapsed: float) -> int:
+    """How many whole backoff gaps *elapsed* base units cover — the bump now due.
+
+    The schedule read from the OTHER end: instead of "when is attempt N due", this asks
+    "which attempt is due at time T", so a caller with only a timestamp computes its own
+    position without storing a counter. Uncapped by construction — the gaps keep widening
+    (1, 1, 2, 3, 5 …) rather than repeating, which is what stops a long-unanswered item
+    nagging at a fixed rate forever.
+    """
+    index, spent = 0, 0
+    while spent + fibonacci_step(index) <= elapsed:
+        spent += fibonacci_step(index)
+        index += 1
+    return index
+
+
 __all__ = ["BACKOFF_BASE_MINUTES", "fibonacci_minutes", "fibonacci_step"]

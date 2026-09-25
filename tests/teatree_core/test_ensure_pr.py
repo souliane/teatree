@@ -8,17 +8,21 @@ stay in ``test_pr_command`` because they drive ``call_command("pr",
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import override
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.core.authoring_credential import reset_authoring_credential_cache
 from teatree.core.backend_protocols import PrOpenState, PullRequestSpec
+from teatree.core.identity_wiring import AuthoringIdentity
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import _ticket_extra_for_branch, create_or_defer_pr
 from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.models import PullRequest, Ticket, Worktree
-from teatree.core.overlay import OverlayConfig
+from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, run_checked
 from tests.teatree_core.conftest import CommandOverlay
@@ -301,3 +305,103 @@ class TestEnsurePrRecordsTheVerifiedUrl(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == [AssignableHost.URL]
         assert PullRequest.objects.filter(url=AssignableHost.URL).count() == 1
+
+
+class _UnreachableBotConfig(OverlayConfig):
+    """An overlay that routes one remote to a bot credential this venue cannot read."""
+
+    def get_gitlab_token(self) -> str:
+        return "owner-token"
+
+    @override
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        return "" if "bot-authored" in remote else "owner-token"
+
+
+class TestAnUnresolvableBotCredentialRefusesLoudly(TestCase):
+    """A declared non-owner author that does not resolve here must SAY so.
+
+    An overlay hands one repo its own credential precisely so the MR is authored by a
+    non-human the owner stays eligible to approve — GitLab forbids an author approving
+    their own MR, so a human-authored MR breaks the audit trail as badly as a bot
+    approval would. When that credential does not resolve in this venue,
+    ``get_code_host_for_repo`` correctly declines to build a host rather than falling
+    back to the owner token, and ``ensure-pr`` reported the generic "no code host
+    configured".
+
+    That message names neither the cause nor the fix, so it reads as "no forge here" —
+    and the agent's next move is a host ``glab``, which holds the HUMAN token. Four MRs
+    were opened that way in one session, one of which had to be closed and re-created.
+    The refusal must name the identity and the remedy, so the wrong path is loud.
+    """
+
+    BRANCH = "fix/bot-authored"
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _repo(self, remote: str) -> Path:
+        work = self._tmp_path / "work"
+        run_checked(["git", "init", "-b", "main", str(work)])
+        run_checked(["git", "remote", "add", "origin", remote], cwd=work)
+        return work
+
+    def _result(self, *, identity: AuthoringIdentity, remote: str = "git@gitlab.com:group/bot-authored.git") -> dict:
+        repo = self._repo(remote)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: None)
+        overlay = SimpleNamespace(config=SimpleNamespace())
+        self._monkeypatch.setattr(ensure_pr_mod, "get_overlay", lambda *_a, **_k: overlay)
+        # Repo-keyed, so the identity comes from every registered overlay's declaration rather
+        # than from the ambient overlay's own config. Patched on authoring_credential, not
+        # ensure_pr_mod: the no-host refusal now delegates to unresolvable_author_refusal there.
+        self._monkeypatch.setattr(
+            "teatree.core.authoring_credential.authoring_identity_for_remote",
+            lambda _remote, *, fallback: identity,
+        )
+        return dict(create_or_defer_pr(str(repo), self.BRANCH))
+
+    def test_the_refusal_names_the_identity_not_a_missing_code_host(self) -> None:
+        error = self._result(identity=AuthoringIdentity.UNRESOLVABLE).get("error", "")
+
+        assert "no code host configured" not in error
+        assert "cannot approve" in error
+        assert "secret store" in error
+
+    def test_the_refusal_names_the_remote_it_is_about(self) -> None:
+        error = self._result(identity=AuthoringIdentity.UNRESOLVABLE).get("error", "")
+
+        assert "group/bot-authored" in error
+
+    def test_a_declaration_made_by_a_different_overlay_is_named_too(self) -> None:
+        """The pre-push hook is pinned to one overlay prefix; the declaration may be another's."""
+        remote = "git@gitlab.com:group/bot-authored.git"
+        repo = self._repo(remote)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: None)
+        self._monkeypatch.setattr(ensure_pr_mod, "get_overlay", lambda *_a, **_k: SimpleNamespace(config=None))
+        declaring = MagicMock(spec=OverlayBase)
+        declaring.config = _UnreachableBotConfig()
+        reset_authoring_credential_cache()
+        with patch("teatree.core.authoring_credential.get_all_overlays", return_value={"other": declaring}):
+            error = dict(create_or_defer_pr(str(repo), self.BRANCH)).get("error", "")
+        reset_authoring_credential_cache()
+
+        assert "cannot approve" in error
+        assert "group/bot-authored" in error
+
+    def test_it_owes_nothing_because_no_retry_can_discharge_it(self) -> None:
+        """A missing credential is not a transient race — a deferral would retry forever."""
+        assert self._result(identity=AuthoringIdentity.UNRESOLVABLE).get("owed") is not True
+
+    def test_an_owner_authored_repo_keeps_the_generic_message(self) -> None:
+        """Behaviour preservation: an ordinary repo with no forge is not an identity fault."""
+        error = self._result(identity=AuthoringIdentity.OWNER).get("error", "")
+
+        assert error == "no code host configured"
+
+    def test_a_resolvable_distinct_identity_keeps_the_generic_message(self) -> None:
+        """DISTINCT means the bot credential DID resolve, so a None host is a different fault."""
+        error = self._result(identity=AuthoringIdentity.DISTINCT).get("error", "")
+
+        assert error == "no code host configured"

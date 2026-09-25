@@ -11,7 +11,7 @@ from teatree.core.models.loop_state import LoopState
 from teatree.dash.loop_control import build_loop_rows
 
 
-def _loop(name: str, *, enabled: bool = True, delay_seconds: int = 60) -> Loop:
+def _loop(name: str, *, enabled: bool | None = None, delay_seconds: int = 60) -> Loop:
     loop, _ = Loop.objects.update_or_create(
         name=name,
         defaults={
@@ -32,24 +32,27 @@ class DecidingLayerTestCase(TestCase):
     """One loop decided at each layer renders the layer that actually decided it."""
 
     def setUp(self) -> None:
-        _loop("review", enabled=False)
-        _loop("inbox", enabled=True)
-        _loop("dream", enabled=True)
+        _loop("review")
+        _loop("inbox")
+        _loop("dream")
         self.addCleanup(ModeOverride.objects.clear)
 
-    def test_base_layer_when_no_preset_holds_an_opinion(self) -> None:
-        assert _row("review").deciding_layer.startswith("L1")
+    def test_the_manual_layer_names_itself(self) -> None:
+        Loop.objects.set_manual_override("review", runs=False, reason="incident 42")
+        row = _row("review")
+        assert row.deciding_layer == "manual override — incident 42"
+        assert row.effective is False
 
     def test_preset_layer_when_the_active_preset_masks_the_loop(self) -> None:
         Mode.objects.update_or_create(name="present", defaults={"entries": {"inbox": False}})
-        ModeOverride.objects.set_override("present")
+        ModeOverride.objects.set_override("present", reason="test override")
         row = _row("inbox")
-        assert row.deciding_layer.startswith("L3 override")
+        assert row.deciding_layer == "preset (pinned)"
         assert row.effective is False
 
     def test_hold_layer_when_a_loop_state_hold_is_in_force(self) -> None:
         LoopState.objects.pause("dream")
-        assert _row("dream").deciding_layer.startswith("L4 hold")
+        assert _row("dream").deciding_layer.startswith("hold")
 
     def test_rows_carry_the_cadence_and_schedule_columns(self) -> None:
         row = _row("inbox")
@@ -110,5 +113,5 @@ class UnifiedLoopsPageTestCase(TestCase):
 
     def test_page_steers_to_the_preset_editor_as_the_normal_handle(self) -> None:
         content = self.client.get(reverse("dash:loops")).content
-        assert b"emergency handle" in content
+        assert b"Break glass" in content
         assert reverse("dash:presets").encode() in content

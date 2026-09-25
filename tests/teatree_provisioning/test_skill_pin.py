@@ -76,8 +76,8 @@ class TestMeasureSkillPins:
         [line] = pin_advisory_lines([status])
         assert line.startswith("INFO")
         assert moved_to in line
-        # Pasteable: the fix is a runnable command carrying the NEW sha.
-        assert f"apm install {_OWNER_REPO}/{_SKILL}#{moved_to}" in line
+        assert f"{_OWNER_REPO}/{_SKILL}#{moved_to}" in line
+        assert "t3 setup" in line
 
     def test_unreachable_source_is_unmeasurable_never_up_to_date(self, tmp_path: Path) -> None:
         [status] = _measure(tmp_path, "d0008a3", base=f"{tmp_path / 'nowhere'}/")

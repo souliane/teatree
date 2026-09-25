@@ -415,21 +415,33 @@ def _upsert(cluster: DistilledCluster, *, max_member_weight: int, overlay: str) 
         is_binding=cluster.is_binding,
         overlay=overlay,
         durable_destination=cluster.durable_destination,
+        verified_citation=cluster.verified_citation,
     )
-    # durable_destination is triage metadata, not the binding rule, so keep it
-    # current on an existing row even when binding — BEFORE the binding early-out.
+    # durable_destination is triage metadata, not the binding rule, so it stays current
+    # on an existing row even when binding.
     if cluster.durable_destination and cluster.durable_destination != row.durable_destination:
         row.durable_destination = cluster.durable_destination
         row.save(update_fields=["durable_destination", "updated_at"])
-    if row.is_binding:
-        return
-    row.rule = cluster.rule
-    row.source_files = sources
-    row.member_count = len(sources)
-    row.max_member_weight = max_member_weight
-    row.save(
-        update_fields=["rule", "source_files", "member_count", "max_member_weight", "durable_destination", "updated_at"]
-    )
+    if row.status == ConsolidatedMemory.Status.CANDIDATE:
+        row.mark_verified(cluster.verified_citation)
+    if not row.is_binding:
+        row.rule = cluster.rule
+        row.source_files = sources
+        row.member_count = len(sources)
+        row.max_member_weight = max_member_weight
+        row.verified_citation = cluster.verified_citation.strip()
+        row.save(
+            update_fields=[
+                "rule",
+                "source_files",
+                "member_count",
+                "max_member_weight",
+                "durable_destination",
+                "verified_citation",
+                "updated_at",
+            ]
+        )
+    ConsolidatedMemory.objects.supersede_covered_by(row)
 
 
 def run_consolidation(

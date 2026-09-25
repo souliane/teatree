@@ -22,9 +22,9 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.cli.review.own_mr import owner_authored_mr
-from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval
 from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict, resolve_on_behalf_verdict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -34,8 +34,6 @@ _COLLEAGUE = "someone.else"
 _REPO = "org/product"
 _MR = 42
 _TARGET = f"{_REPO}!{_MR}"
-
-_BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
 
 
 class _AuthoredStubAPI:
@@ -94,17 +92,12 @@ def _service(api: object) -> ReviewService:
     return service
 
 
-def _mode(mode: OnBehalfPostMode) -> None:
-    ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
-
-
 class TestAuthorSideReplyOnOwnMrPosts:
     """Direction 1 — the carve-out the owner granted."""
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_reply_on_owner_authored_mr_publishes_without_any_approval(self, mode: OnBehalfPostMode) -> None:
-        """RED before the carve-out: this BLOCKed with `on_behalf_post_mode (#960)`."""
-        _mode(mode)
+    def test_reply_on_owner_authored_mr_publishes_without_any_approval(self) -> None:
+        """RED before the carve-out: this BLOCKed on the posture."""
+        seed_forbidding_posture()
         api = _AuthoredStubAPI(author=_OWNER)
 
         msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Deleted, with both comment references.")
@@ -115,7 +108,7 @@ class TestAuthorSideReplyOnOwnMrPosts:
 
     def test_reply_recognises_an_mr_authored_under_a_configured_alias(self) -> None:
         """A secondary forge handle in ``user_identity_aliases`` is still the owner's own work."""
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
+        seed_forbidding_posture()
         ConfigSetting.objects.set_value("user_identity_aliases", ["owner-secondary-handle"])
         api = _AuthoredStubAPI(author="owner-secondary-handle", identity="some-other-login")
 
@@ -127,9 +120,8 @@ class TestAuthorSideReplyOnOwnMrPosts:
 class TestColleagueAuthoredMrStillRefused:
     """Direction 2 — the control the carve-out must NOT remove."""
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_reply_on_colleague_authored_mr_is_still_blocked(self, mode: OnBehalfPostMode) -> None:
-        _mode(mode)
+    def test_reply_on_colleague_authored_mr_is_still_blocked(self) -> None:
+        seed_forbidding_posture()
         api = _AuthoredStubAPI(author=_COLLEAGUE)
 
         msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
@@ -138,10 +130,9 @@ class TestColleagueAuthoredMrStillRefused:
         assert "approve-on-behalf" in msg
         assert api.published == [], "no GitLab write may be attempted on a colleague's MR"
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_colleague_mr_reply_still_publishes_with_a_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+    def test_colleague_mr_reply_still_publishes_with_a_recorded_approval(self) -> None:
         """The pre-existing satisfier is untouched — the carve-out adds a path, it replaces none."""
-        _mode(mode)
+        seed_forbidding_posture()
         OnBehalfApproval.record(target=_TARGET, action="reply_to_discussion", approver_id="souliane")
         api = _AuthoredStubAPI(author=_COLLEAGUE)
 
@@ -155,7 +146,7 @@ class TestOtherOnBehalfSurfacesStillRefusedOnOwnMr:
 
     @pytest.fixture(autouse=True)
     def _own_mr(self) -> None:
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
+        seed_forbidding_posture()
         self.api = _AuthoredStubAPI(author=_OWNER)
         self.service = _service(self.api)
 
@@ -212,7 +203,7 @@ class TestReceiptDmStillFires:
     """Direction 4 — autonomy removes the pre-ask, never the owner's visibility."""
 
     def test_carved_out_reply_still_dms_the_owner(self) -> None:
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
+        seed_forbidding_posture()
         api = _AuthoredStubAPI(author=_OWNER)
 
         _, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
@@ -232,7 +223,7 @@ class TestAuthorshipProofFailsClosed:
         ],
     )
     def test_unresolvable_authorship_blocks_the_reply(self, author: str, identity: str) -> None:
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
+        seed_forbidding_posture()
         api = _AuthoredStubAPI(author=author, identity=identity)
 
         msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
@@ -251,7 +242,7 @@ class TestAuthorshipProofFailsClosed:
                     raise RuntimeError(msg)
                 return super().get_json(endpoint)
 
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
+        seed_forbidding_posture()
         api = _RaisingAPI(author=_OWNER)
 
         msg, code = _service(api).reply_to_discussion(_REPO, _MR, "d1", "Fixed.")
@@ -274,12 +265,15 @@ class TestVerdictResolverCarveOutIsActionScoped:
 
     @pytest.mark.parametrize("action", ["approve", "unapprove", "post_comment", "publish_draft_notes", "update_note"])
     def test_own_mr_does_not_exempt_any_other_action(self, action: str) -> None:
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
-
-        assert resolve_on_behalf_verdict(action, OnBehalfContext(own_mr=True)) is OnBehalfVerdict.BLOCK
+        # The pure resolver takes the posture as an argument; it never reads the row.
+        assert (
+            resolve_on_behalf_verdict(action, OnBehalfContext(own_mr=True), egress_forbidden=True)
+            is OnBehalfVerdict.BLOCK
+        )
 
     def test_reply_without_proved_authorship_still_blocks(self) -> None:
-        _mode(OnBehalfPostMode.DRAFT_OR_ASK)
-
-        assert resolve_on_behalf_verdict("reply_to_discussion") is OnBehalfVerdict.BLOCK
-        assert resolve_on_behalf_verdict("reply_to_discussion", OnBehalfContext(own_mr=True)) is OnBehalfVerdict.PROCEED
+        assert resolve_on_behalf_verdict("reply_to_discussion", egress_forbidden=True) is OnBehalfVerdict.BLOCK
+        assert (
+            resolve_on_behalf_verdict("reply_to_discussion", OnBehalfContext(own_mr=True), egress_forbidden=True)
+            is OnBehalfVerdict.PROCEED
+        )

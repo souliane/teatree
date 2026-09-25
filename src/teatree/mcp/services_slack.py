@@ -37,7 +37,9 @@ INSTRUCTIONS = (
     "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
     "(never returns an empty list) when the bot cannot read the channel — a bot token "
     "reads only channels it was invited to, so `[]` always means genuinely empty.\n"
-    "- slack_thread_replies(channel, thread_ts): replies under one thread.\n"
+    "- slack_thread_replies(channel, thread_ts): replies under one thread. Errors with Slack's "
+    "error code (never returns an empty list) when the read is refused; a thread in a channel "
+    "the bot is not in is read through the user token, so `[]` always means genuinely empty.\n"
     "- slack_permalink(channel, ts): the permalink for one message.\n"
     "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
     "ungated; a colleague/channel reaction goes through the on-behalf gate and "
@@ -110,6 +112,14 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
 
 
 async def _slack_thread_replies(channel: str, thread_ts: str) -> list[dict[str, Any]]:
+    """Every message in one thread — raises with Slack's error code rather than returning a misleading ``[]``.
+
+    "Nobody replied" and "this token may not read that channel" are opposite facts; the
+    backend retries a bot ``not_in_channel`` through the user token and raises what is left.
+    """
+    if not channel or not thread_ts:
+        msg = "slack_thread_replies needs a non-empty channel and thread_ts; Slack was not asked."
+        raise ToolError(msg)
     return await sync_to_async(
         lambda: _client().fetch_thread_replies(channel=channel, thread_ts=thread_ts), thread_sensitive=True
     )()

@@ -33,12 +33,14 @@ class TestRequireTokenDiagnosesAnEmptyCredential:
         assert "Multiple overlays found" in result.output
         assert _GLAB_ADVICE not in result.output
 
-    def test_a_genuinely_absent_credential_still_advises_glab_login(self) -> None:
+    def test_a_genuinely_absent_credential_names_the_explicit_routes(self) -> None:
         # ``acme/bravo`` resolves cleanly to an overlay that simply has no credential
         # configured — nothing failed, so the login advice is the right advice.
         result = _runner.invoke(app, ["review", "post-comment", "acme/bravo", "1", "note"])
         assert result.exit_code == 1
-        assert result.output.strip() == f"No GitLab token found. Run: {_GLAB_ADVICE}"
+        assert _GLAB_ADVICE not in result.output
+        assert "gitlab_token_pass_key" in result.output
+        assert "GITLAB_TOKEN" in result.output
 
 
 @pytest.mark.usefixtures("two_overlays", "no_glab_login")

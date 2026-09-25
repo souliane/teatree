@@ -9,6 +9,7 @@ doctrine).
 
 import os
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 from unittest.mock import patch
 
@@ -16,13 +17,20 @@ import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import ApprovalState, ReviewState
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase, OverlayReview
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
+from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner as _GitLabApprovalsScanner
+from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 from teatree.types import RawAPIDict
+
+GitLabApprovalsScanner = partial(
+    _GitLabApprovalsScanner,
+    allowed_url_prefixes=("https://gitlab.com/acme/",),
+)
 
 
 @dataclass
@@ -37,12 +45,14 @@ class FakeCodeHost:
     my_prs: list[RawAPIDict] = field(default_factory=list)
     approvals: dict[tuple[str, int], ApprovalState] = field(default_factory=dict)
     approval_calls: list[tuple[str, int]] = field(default_factory=list)
+    list_calls: list[str] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
-        _ = (author, updated_after)
+        _ = updated_after
+        self.list_calls.append(author)
         return self.my_prs
 
     def list_review_requested_prs(self, *, reviewer: str, updated_after: str | None = None) -> list[RawAPIDict]:
@@ -129,6 +139,62 @@ class _StubOverlay:
 
 
 class TestGitLabApprovalsScanner(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(
+            overlay_loader_mod,
+            "get_overlay_for_url",
+            return_value=_StubOverlay(MergeGuard(allowed=True)),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_empty_scope_logs_once_and_never_lists(self) -> None:
+        host = FakeCodeHost(my_prs=[_gitlab_mr()])
+        scanner = GitLabApprovalsScanner(host=host, allowed_url_prefixes=())
+
+        with self.assertLogs("teatree.loop.scanners.gitlab_approvals", level="WARNING") as logs:
+            first = scanner.scan()
+            second = scanner.scan()
+
+        assert first == second == []
+        assert host.list_calls == []
+        assert len(logs.output) == 1
+
+    def test_resolver_failure_scans_nothing(self) -> None:
+        host = FakeCodeHost(my_prs=[_gitlab_mr()])
+        overlay = _MergeGuardOverlay(repos=["acme/backend"], guard=MergeGuard(allowed=True))
+        backend = OverlayBackends(name="overlay-a", hosts=(host,), overlay=overlay)
+        with patch.object(overlay, "get_workspace_repos", side_effect=RuntimeError("registry down")):
+            prefixes = _allowed_url_prefixes_for_host(backend, host)
+        scanner = GitLabApprovalsScanner(host=host, allowed_url_prefixes=prefixes)
+
+        with self.assertLogs("teatree.loop.scanners.gitlab_approvals", level="WARNING"):
+            signals = scanner.scan()
+
+        assert signals == []
+        assert host.list_calls == []
+
+    def test_mr_outside_the_overlay_url_claim_is_not_inspected(self) -> None:
+        host = FakeCodeHost(
+            my_prs=[_gitlab_mr(iid=41, project="other/backend")],
+            approvals={
+                ("other/backend", 41): ApprovalState(
+                    approvals_left=0,
+                    approved_by=["bob"],
+                    unresolved_resolvable=0,
+                ),
+            },
+        )
+
+        signals = GitLabApprovalsScanner(
+            host=host,
+            allowed_url_prefixes=("https://gitlab.com/acme/backend/",),
+        ).scan()
+
+        assert signals == []
+        assert host.approval_calls == []
+
     def test_approved_clean_mr_emits_merge_needed(self) -> None:
         """An approved MR with no unresolved threads emits ``merge_needed``."""
         host = FakeCodeHost(
@@ -209,7 +275,7 @@ class TestGitLabApprovalsScanner(TestCase):
         scanner = GitLabApprovalsScanner(host=host)
         guard = MergeGuard(allowed=False, reason="human review required", escalate=True)
 
-        with patch.object(overlay_loader_mod, "get_overlay", return_value=_StubOverlay(guard)):
+        with patch.object(overlay_loader_mod, "get_overlay_for_url", return_value=_StubOverlay(guard)):
             signals = scanner.scan()
 
         assert len(signals) == 1
@@ -328,7 +394,7 @@ class TestGitLabApprovalsScanner(TestCase):
         scanner = GitLabApprovalsScanner(host=host)
         guard = MergeGuard(allowed=False, reason="freeze window", escalate=False)
 
-        with patch.object(overlay_loader_mod, "get_overlay", return_value=_StubOverlay(guard)):
+        with patch.object(overlay_loader_mod, "get_overlay_for_url", return_value=_StubOverlay(guard)):
             signals = scanner.scan()
 
         assert len(signals) == 1
@@ -466,7 +532,7 @@ class TestPerPrIsolation(TestCase):
             review = _RaisingFirstReview()
 
         scanner = GitLabApprovalsScanner(host=host)
-        with patch.object(overlay_loader_mod, "get_overlay", return_value=_RaisingFirstOverlay()):
+        with patch.object(overlay_loader_mod, "get_overlay_for_url", return_value=_RaisingFirstOverlay()):
             signals = scanner.scan()
 
         assert len(signals) == 1

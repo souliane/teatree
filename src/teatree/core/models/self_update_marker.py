@@ -1,15 +1,12 @@
 """Per-repo last-pull-at ledger for the self-update scanner (#1249).
 
-The :class:`SelfUpdateScanner` runs every loop tick but actually issues
-``git fetch`` / ``git pull --ff-only`` against each editable clone only
-when the cadence has elapsed. ``SelfUpdateMarker`` is the durable record
-that carries the cadence gate across tick boundaries — without it, a
-short tick cadence (e.g. 30s) would degenerate into a 30s git-fetch
-cadence and spam the upstream remote on every machine running the loop.
+The :class:`SelfUpdateScanner` issues ``git fetch`` / ``git pull --ff-only``
+against each editable clone on each fire of the hourly ``housekeeping`` ``Loop``
+row. ``SelfUpdateMarker`` is the durable record of what the last pass did to
+each clone — its outcome, the SHA it landed on, and when.
 
-One row per ``repo_label``. The scanner upserts the row after each pass
-(success or skip) so the next tick can short-circuit cheaply by reading
-the ``last_pull_at`` column instead of shelling out to git.
+One row per ``repo_label``, upserted after each pass (success or skip), so a
+reader can see a clone's last pull without shelling out to git.
 """
 
 from typing import ClassVar

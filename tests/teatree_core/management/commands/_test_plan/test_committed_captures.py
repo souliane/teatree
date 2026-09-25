@@ -15,7 +15,7 @@ same user-authorised bypass and no second implementation.
 import io
 import json
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,13 +23,22 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core import invocation_cwd as _invocation_cwd
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, render_bdd_source
 from teatree.core.management.commands._test_plan import committed_captures as _captures
 from teatree.core.management.commands._test_plan import file_store as _file_store
+from teatree.core.management.commands._test_plan import render as _render
 from teatree.core.management.commands._test_plan import write as _write
 from teatree.core.models import Ticket
 
 _MOCK_OVERLAY_NAME = "test"
-_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
+_Side = Literal["dev", "local", "stack"]
+_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/4521"
+_FINAL_BDD_SOURCE: BddScenarioSource = {
+    "prd_page": "https://notion.so/example-prd",
+    "bdd_revision": "2026-09-22",
+    "status": "final",
+    "scenario_ids": ["BDD-4521-001"],
+}
 
 
 def _red_boxed_png(path: Path, *, fill: tuple[int, int, int] = (245, 245, 245)) -> Path:
@@ -82,17 +91,18 @@ class _PlanCaptureTestBase(TestCase):
 
     @property
     def _plan_path(self) -> Path:
-        return self._checkout / "test-plans" / "repo-8521.md"
+        return self._checkout / "test-plans" / "repo-4521.md"
 
     @property
     def _evidence_dir(self) -> Path:
-        return self._checkout / "test-plans" / "evidence" / "repo-8521"
+        return self._checkout / "test-plans" / "evidence" / "repo-4521"
 
     def _manifest(self, *, images: list[Path], env: str = "local") -> str:
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "title": "Example plan",
+                "scenario_source": _FINAL_BDD_SOURCE,
                 env: {"commits": {"repo": "aabb"}},
                 "workflows": [
                     {
@@ -114,6 +124,25 @@ class _PlanCaptureTestBase(TestCase):
         with pytest.raises(SystemExit):
             call_command("e2e", "write-test-plan", ticket=_ISSUE_URL, manifest=manifest, **_STILLS_ONLY, **kwargs)
 
+    def _make_capture_legacy_flat(self, *, env: _Side, name: str, also_cite_from: _Side | None = None) -> Path:
+        namespaced = self._evidence_dir / env / name
+        legacy = self._evidence_dir / name
+        namespaced.replace(legacy)
+        state = _file_store.read_plan_state(self._plan_path)
+        flat_link = f"evidence/{self._evidence_dir.name}/{name}"
+        namespaced_link = f"evidence/{self._evidence_dir.name}/{env}/{name}"
+        for workflow in state[env]["workflows"].values():
+            workflow["video_md"] = workflow["video_md"].replace(namespaced_link, flat_link)
+            workflow["image_md"] = [link.replace(namespaced_link, flat_link) for link in workflow["image_md"]]
+        if also_cite_from is not None:
+            state[also_cite_from] = {
+                "commits": {},
+                "workflows": state[env]["workflows"],
+                "env": also_cite_from,
+            }
+        _file_store.write_plan(self._plan_path, _render.render_body(state))
+        return legacy
+
 
 class TestCapturesCommittedBesideThePlan(_PlanCaptureTestBase):
     """``--embed-captures`` is the only way a capture gets into the repo — and it is gated."""
@@ -124,9 +153,9 @@ class TestCapturesCommittedBesideThePlan(_PlanCaptureTestBase):
 
         result = self._run(self._manifest(images=[image]), embed_captures=True)
 
-        assert (self._evidence_dir / "step1.png").read_bytes() == image.read_bytes()
+        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == image.read_bytes()
         body = self._plan_path.read_text(encoding="utf-8")
-        assert "](evidence/repo-8521/step1.png)" in body
+        assert "](evidence/repo-4521/local/step1.png)" in body
         assert str(self._tmp) not in body
         assert result["action"] == "created"
 
@@ -157,6 +186,181 @@ class TestCapturesCommittedBesideThePlan(_PlanCaptureTestBase):
         assert not self._plan_path.exists()
 
 
+class TestStackCapturesTakeTheSameEmbedPath(_PlanCaptureTestBase):
+    """A run against a remote stack records its captures as ``stack``, and an outward plan needs them in git."""
+
+    def _refusal(self, manifest: str, **kwargs: object) -> str:
+        err = io.StringIO()
+        with pytest.raises(SystemExit):
+            call_command(
+                "e2e", "write-test-plan", ticket=_ISSUE_URL, manifest=manifest, stderr=err, **_STILLS_ONLY, **kwargs
+            )
+        return err.getvalue()
+
+    def test_stack_captures_are_copied_and_embedded_in_the_stack_column(self) -> None:
+        self._ticket()
+        image = _red_boxed_png(self._tmp / "step1.png")
+
+        result = self._run(self._manifest(images=[image], env="stack"), embed_captures=True)
+
+        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == image.read_bytes()
+        body = self._plan_path.read_text(encoding="utf-8")
+        assert "| Dev | Local | Stack |" in body
+        assert "| — | — | ![Login — step1](evidence/repo-4521/stack/step1.png) |" in body
+        assert result["envs"] == ["stack"]
+
+    def test_without_the_flag_stack_captures_are_cited_not_copied(self) -> None:
+        self._ticket()
+        artifacts_root = self._tmp / "artifacts"
+        (artifacts_root / "stack").mkdir(parents=True)
+        image = _red_boxed_png(artifacts_root / "stack" / "step1.png")
+
+        self._run(self._manifest(images=[image], env="stack"), artifacts_dir=str(artifacts_root))
+
+        assert not self._evidence_dir.exists()
+        assert "| — | — | `stack/step1.png` |" in self._plan_path.read_text(encoding="utf-8")
+
+    def test_local_and_stack_captures_land_in_their_own_columns(self) -> None:
+        self._ticket()
+        (self._tmp / "local").mkdir()
+        (self._tmp / "stack").mkdir()
+        local = _red_boxed_png(self._tmp / "local" / "step1.png")
+        stack = _red_boxed_png(self._tmp / "stack" / "step1.png", fill=(200, 220, 240))
+        manifest = json.dumps(
+            {
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE,
+                "local": {"commits": {"repo": "aabb"}},
+                "stack": {"commits": {"repo": "ccdd"}},
+                "workflows": [
+                    {"workflow": "Login", "local": {"images": [str(local)]}, "stack": {"images": [str(stack)]}},
+                ],
+            },
+        )
+
+        result = self._run(manifest, embed_captures=True)
+
+        body = self._plan_path.read_text(encoding="utf-8")
+        assert (
+            "| — | ![Login — step1](evidence/repo-4521/local/step1.png) | "
+            "![Login — step1](evidence/repo-4521/stack/step1.png) |"
+        ) in body
+        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == local.read_bytes()
+        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == stack.read_bytes()
+        assert result["envs"] == ["local", "stack"]
+
+    def test_a_later_stack_capture_keeps_the_frozen_local_bytes(self) -> None:
+        self._ticket()
+        (self._tmp / "local").mkdir()
+        (self._tmp / "stack").mkdir()
+        local = _red_boxed_png(self._tmp / "local" / "step1.png")
+        stack = _red_boxed_png(self._tmp / "stack" / "step1.png", fill=(200, 220, 240))
+
+        self._run(self._manifest(images=[local]), embed_captures=True)
+        self._run(self._manifest(images=[stack], env="stack"), embed_captures=True)
+
+        body = self._plan_path.read_text(encoding="utf-8")
+        assert "evidence/repo-4521/local/step1.png" in body
+        assert "evidence/repo-4521/stack/step1.png" in body
+        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == local.read_bytes()
+        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == stack.read_bytes()
+
+    def test_a_legacy_flat_capture_stays_in_place_beside_a_namespaced_one(self) -> None:
+        self._ticket()
+        self._evidence_dir.mkdir(parents=True)
+        legacy = _red_boxed_png(self._evidence_dir / "step1.png", fill=(210, 230, 250))
+        legacy_bytes = legacy.read_bytes()
+        (self._tmp / "stack").mkdir()
+        stack = _red_boxed_png(self._tmp / "stack" / "step1.png")
+
+        self._run(self._manifest(images=[stack], env="stack"), embed_captures=True)
+
+        assert legacy.read_bytes() == legacy_bytes
+        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == stack.read_bytes()
+
+    def test_an_identical_legacy_flat_capture_is_migrated_on_same_side_rerun(self) -> None:
+        self._ticket()
+        fresh = _red_boxed_png(self._tmp / "step1.png")
+        self._run(self._manifest(images=[fresh]), embed_captures=True)
+        legacy = self._make_capture_legacy_flat(env="local", name="step1.png")
+
+        self._run(self._manifest(images=[fresh]), embed_captures=True)
+
+        assert not legacy.exists()
+        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == fresh.read_bytes()
+        assert "evidence/repo-4521/step1.png" not in self._plan_path.read_text(encoding="utf-8")
+
+    def test_a_changed_legacy_flat_capture_is_replaced_on_same_side_rerun(self) -> None:
+        self._ticket()
+        self._run(self._manifest(images=[_red_boxed_png(self._tmp / "step1.png")]), embed_captures=True)
+        legacy = self._make_capture_legacy_flat(env="local", name="step1.png")
+        (self._tmp / "recapture").mkdir()
+        changed = _red_boxed_png(self._tmp / "recapture" / "step1.png", fill=(200, 220, 240))
+
+        self._run(self._manifest(images=[changed]), embed_captures=True)
+
+        assert not legacy.exists()
+        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == changed.read_bytes()
+        assert "evidence/repo-4521/step1.png" not in self._plan_path.read_text(encoding="utf-8")
+
+    def test_an_identical_legacy_flat_capture_another_side_cites_is_refused_as_a_duplicate(self) -> None:
+        self._ticket()
+        fresh = _red_boxed_png(self._tmp / "step1.png")
+        self._run(self._manifest(images=[fresh]), embed_captures=True)
+        legacy = self._make_capture_legacy_flat(env="local", name="step1.png", also_cite_from="stack")
+        body = self._plan_path.read_text(encoding="utf-8")
+
+        self._run_expecting_exit(self._manifest(images=[fresh]), embed_captures=True)
+
+        assert legacy.read_bytes() == fresh.read_bytes()
+        assert not (self._evidence_dir / "local" / "step1.png").exists()
+        assert self._plan_path.read_text(encoding="utf-8") == body
+
+    def test_a_stack_capture_identical_to_a_committed_local_one_is_refused(self) -> None:
+        self._ticket()
+        (self._tmp / "local").mkdir()
+        (self._tmp / "stack").mkdir()
+        local = _red_boxed_png(self._tmp / "local" / "login.png")
+        stack = _red_boxed_png(self._tmp / "stack" / "dashboard.png")
+        self._run(self._manifest(images=[local]), embed_captures=True)
+
+        err = self._refusal(self._manifest(images=[stack], env="stack"), embed_captures=True)
+
+        assert "dashboard.png is byte-identical to login.png" in err
+
+    def test_a_stack_capture_with_no_red_box_is_refused_by_the_preflight(self) -> None:
+        self._ticket()
+
+        err = self._refusal(
+            self._manifest(images=[_plain_png(self._tmp / "plain.png")], env="stack"), embed_captures=True
+        )
+
+        assert "no red highlight box found in plain.png" in err
+        assert not self._plan_path.exists()
+        assert not self._evidence_dir.exists()
+
+    def test_byte_identical_stack_captures_are_refused_by_the_preflight(self) -> None:
+        self._ticket()
+        first = _red_boxed_png(self._tmp / "first.png")
+        second = _red_boxed_png(self._tmp / "second.png")
+
+        err = self._refusal(self._manifest(images=[first, second], env="stack"), embed_captures=True)
+
+        assert "second.png is byte-identical to first.png" in err
+        assert not self._plan_path.exists()
+        assert not self._evidence_dir.exists()
+
+    def test_a_stack_re_capture_replaces_a_stale_committed_image(self) -> None:
+        self._ticket()
+        (self._evidence_dir / "stack").mkdir(parents=True)
+        _plain_png(self._evidence_dir / "stack" / "step1.png")
+        fresh = _red_boxed_png(self._tmp / "step1.png")
+
+        self._run(self._manifest(images=[fresh], env="stack"), embed_captures=True)
+
+        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == fresh.read_bytes()
+
+
 class TestCapturesAlreadyInGitAreGated(_PlanCaptureTestBase):
     """The half a command alone cannot own: evidence someone committed by hand."""
 
@@ -185,7 +389,16 @@ class TestCapturesAlreadyInGitAreGated(_PlanCaptureTestBase):
         self._ticket()
         self._commit_by_hand("hand-dropped.png", valid=False)
         body = self._tmp / "plan.md"
-        body.write_text("## Test Plan\n\n![shot](evidence/repo-8521/hand-dropped.png)\n", encoding="utf-8")
+        body.write_text(
+            f"""\
+{render_bdd_source(_FINAL_BDD_SOURCE)}
+
+## Test Plan
+
+![shot](evidence/repo-4521/hand-dropped.png)
+""",
+            encoding="utf-8",
+        )
 
         with pytest.raises(SystemExit):
             call_command("e2e", "write-test-plan", ticket=_ISSUE_URL, body_file=str(body))
@@ -194,12 +407,13 @@ class TestCapturesAlreadyInGitAreGated(_PlanCaptureTestBase):
 
     def test_re_capturing_over_a_stale_bad_image_is_allowed(self) -> None:
         self._ticket()
-        self._commit_by_hand("step1.png", valid=False)
+        (self._evidence_dir / "local").mkdir(parents=True)
+        _plain_png(self._evidence_dir / "local" / "step1.png")
 
         self._run(self._manifest(images=[_red_boxed_png(self._tmp / "step1.png")]), embed_captures=True)
 
         assert self._plan_path.is_file()
-        assert _captures.committed_captures(self._evidence_dir) == [self._evidence_dir / "step1.png"]
+        assert _captures.committed_captures(self._evidence_dir) == [self._evidence_dir / "local" / "step1.png"]
 
     def test_skip_validation_is_the_documented_bypass(self) -> None:
         self._ticket()
@@ -220,8 +434,8 @@ class TestEvidenceDirIsKeyedLikeThePlanFile(_PlanCaptureTestBase):
     def test_two_repos_same_numbered_tickets_do_not_share_a_directory(self) -> None:
         plans_dir = self._checkout / "test-plans"
 
-        product = _captures.evidence_dir_for(plans_dir / "product-8521.md")
-        client = _captures.evidence_dir_for(plans_dir / "client-8521.md")
+        product = _captures.evidence_dir_for(plans_dir / "product-4521.md")
+        client = _captures.evidence_dir_for(plans_dir / "client-4521.md")
 
         assert product != client
         assert product.parent == plans_dir / "evidence"
@@ -229,7 +443,7 @@ class TestEvidenceDirIsKeyedLikeThePlanFile(_PlanCaptureTestBase):
     def test_a_legacy_unprefixed_plan_keeps_its_unprefixed_directory(self) -> None:
         plans_dir = self._checkout / "test-plans"
 
-        assert _captures.evidence_dir_for(plans_dir / "8521.md") == plans_dir / "evidence" / "8521"
+        assert _captures.evidence_dir_for(plans_dir / "4521.md") == plans_dir / "evidence" / "4521"
 
 
 class TestVerifyPlanCapturesCommand(_PlanCaptureTestBase):
@@ -237,6 +451,17 @@ class TestVerifyPlanCapturesCommand(_PlanCaptureTestBase):
 
     def _plans_dir(self) -> Path:
         return self._checkout / "test-plans"
+
+    def _write_plan(self, name: str, **source: object) -> Path:
+        plan = self._plans_dir() / name
+        plan.parent.mkdir(parents=True, exist_ok=True)
+        declaration = json.dumps(_FINAL_BDD_SOURCE | source)
+        plan.write_text(f"<!-- t3-bdd-source {declaration} -->\n## Test Plan\n", encoding="utf-8")
+        return plan
+
+    def _one_capture(self) -> None:
+        self._evidence_dir.mkdir(parents=True)
+        _red_boxed_png(self._evidence_dir / "a.png")
 
     def test_refuses_a_plans_dir_with_an_unhighlighted_capture(self) -> None:
         self._evidence_dir.mkdir(parents=True)
@@ -249,10 +474,53 @@ class TestVerifyPlanCapturesCommand(_PlanCaptureTestBase):
         self._evidence_dir.mkdir(parents=True)
         _red_boxed_png(self._evidence_dir / "a.png")
         _red_boxed_png(self._evidence_dir / "b.png", fill=(200, 220, 240))
+        self._write_plan("repo-4521.md")
 
         failures = call_command("e2e", "verify-plan-captures", plans_dir=str(self._plans_dir()))
 
         assert failures == []
+
+    def test_refuses_captures_no_plan_owns(self) -> None:
+        self._one_capture()
+
+        failures = _captures.verify_plans_dir(self._plans_dir())
+
+        assert len(failures) == 1
+        assert failures[0].startswith("repo-4521: no plan owns these captures")
+
+    def test_checks_every_language_edition(self) -> None:
+        self._one_capture()
+        self._write_plan("repo-4521.md")
+        self._write_plan("repo-4521-en.md", status="preflight")
+
+        failures = _captures.verify_plans_dir(self._plans_dir())
+
+        assert [failure.split(":", 1)[0] for failure in failures] == ["repo-4521-en"]
+        assert "preflight" in failures[0]
+
+    def test_final_editions_pass(self) -> None:
+        self._one_capture()
+        self._write_plan("repo-4521-de.md")
+        self._write_plan("repo-4521-en.md")
+
+        assert _captures.verify_plans_dir(self._plans_dir()) == []
+
+    def test_an_unreadable_plan_is_a_failure_not_a_crash(self) -> None:
+        self._one_capture()
+        self._write_plan("repo-4521-en.md")
+        (self._plans_dir() / "repo-4521-de.md").write_bytes(b"\xff\xfe not utf-8")
+
+        failures = _captures.verify_plans_dir(self._plans_dir())
+
+        assert [failure.split(":", 1)[0] for failure in failures] == ["repo-4521-de"]
+
+    def test_refuses_a_committed_plan_without_a_final_bdd_source(self) -> None:
+        self._evidence_dir.mkdir(parents=True)
+        _red_boxed_png(self._evidence_dir / "a.png")
+        self._plan_path.write_text("## Test Plan\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            call_command("e2e", "verify-plan-captures", plans_dir=str(self._plans_dir()))
 
     def test_refuses_rather_than_reporting_success_when_there_is_nothing_to_look_at(self) -> None:
         with pytest.raises(SystemExit):
@@ -288,9 +556,12 @@ class TestTheDefaultPlansDirIsInvocationRelative(_PlanCaptureTestBase):
     """
 
     def _valid_plans_dir(self) -> Path:
-        evidence = self._checkout / "test-plans" / "evidence" / "repo-8521"
+        evidence = self._checkout / "test-plans" / "evidence" / "repo-4521"
         evidence.mkdir(parents=True)
         _red_boxed_png(evidence / "a.png")
+        (self._checkout / "test-plans" / "repo-4521.md").write_text(
+            f"{render_bdd_source(_FINAL_BDD_SOURCE)}\n## Test Plan\n", encoding="utf-8"
+        )
         return self._checkout / "test-plans"
 
     def _stand_in_another_tree(self) -> Path:

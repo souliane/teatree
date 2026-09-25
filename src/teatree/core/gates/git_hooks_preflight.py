@@ -26,7 +26,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.prek_hook import is_foreign_config_hook
+from teatree.core import hook_quarantine
+from teatree.core.prek_hook import is_root_bound_prek_hook
+from teatree.utils.git_worktree_query import git_common_dir
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 # Absent either of these, a commit or a push runs with no local gate layer at all.
@@ -53,6 +55,12 @@ class GitHooksProbe:
     dir at all, so ``missing`` stays empty and nothing may be installed over it.
     ``indeterminate_reason`` is set when the checkout could not be inspected
     (not a repo, ``git`` unavailable) — a probe fault is never read as a gap.
+    ``quarantined`` is three-valued: the pre-existing hooks parked out of
+    ``prek install -f``'s way and NOT gating this clone, ``()`` for none, and
+    ``None`` when the quarantine directory could not be read — which is a
+    finding, never "nothing parked". ``common_dir`` anchors both the quarantine
+    and the DEFAULT hooks dir a parked hook came from, which under a custom
+    ``core.hooksPath`` is not ``hooks_dir``.
     """
 
     checkout: Path
@@ -60,6 +68,8 @@ class GitHooksProbe:
     missing: tuple[str, ...] = ()
     custom_hooks_path: str | None = None
     indeterminate_reason: str | None = None
+    quarantined: tuple[Path, ...] | None = ()
+    common_dir: Path | None = None
 
     @property
     def ok(self) -> bool:
@@ -69,6 +79,14 @@ class GitHooksProbe:
     def installable(self) -> bool:
         """True when this checkout's default hooks dir is ours to write into."""
         return self.indeterminate_reason is None and self.custom_hooks_path is None
+
+    @property
+    def parked(self) -> tuple[Path, ...] | None:
+        """``quarantined``, folded to ``None`` when the checkout could not be inspected at all.
+
+        A probe that never reached the quarantine did not find it empty.
+        """
+        return self.quarantined if self.indeterminate_reason is None else None
 
 
 def _git(repo: Path, *args: str) -> tuple[int, str]:
@@ -91,8 +109,11 @@ def _is_installed_hook(path: Path) -> bool:
     repo on that subdirectory's config, so the repo's own hooks never fire. It is a real
     executable file, which is why a presence-only test reports it installed and the
     repair keyed off that verdict never runs.
+
+    Each conjunct states a property this repo's gate HAS. Absence of a detected fault is
+    not one of them: a file nothing can read exhibits no fault, and used to pass here.
     """
-    return path.is_file() and path.stat().st_mode & 0o111 != 0 and not is_foreign_config_hook(path)
+    return path.is_file() and path.stat().st_mode & 0o111 != 0 and is_root_bound_prek_hook(path)
 
 
 def probe_git_hooks(repo: Path) -> GitHooksProbe:
@@ -101,17 +122,37 @@ def probe_git_hooks(repo: Path) -> GitHooksProbe:
     Resolves the git COMMON dir, so probing a worktree reports the shared state
     the whole family inherits.
     """
-    code, common = _git(repo, "rev-parse", "--git-common-dir")
-    if code != 0 or not common:
+    try:
+        common_dir = git_common_dir(repo)
+    except OSError:
+        # A missing `git` binary must read indeterminate: `GitHooksInstaller.install` does not
+        # wrap this, and `t3 setup` runs under `set -e`, so the raise would kill container init.
+        common_dir = None
+    if common_dir is None:
         return GitHooksProbe(checkout=repo, indeterminate_reason=f"{repo} is not a git checkout (git rev-parse failed)")
-    default_hooks_dir = (_resolve(repo, common) / "hooks").resolve()
+    default_hooks_dir = (common_dir / "hooks").resolve()
+    # The indeterminate return above never reached `pending()` at all, which is what `parked`
+    # says on its behalf — its `()` is a default, not an answer.
+    quarantined = hook_quarantine.pending(common_dir)
 
     _code, configured = _git(repo, "config", "--get", "core.hooksPath")
     if configured and _resolve(repo, configured) != default_hooks_dir:
-        return GitHooksProbe(checkout=repo, hooks_dir=_resolve(repo, configured), custom_hooks_path=configured)
+        return GitHooksProbe(
+            checkout=repo,
+            hooks_dir=_resolve(repo, configured),
+            custom_hooks_path=configured,
+            quarantined=quarantined,
+            common_dir=common_dir,
+        )
 
     missing = tuple(name for name in REQUIRED_HOOK_NAMES if not _is_installed_hook(default_hooks_dir / name))
-    return GitHooksProbe(checkout=repo, hooks_dir=default_hooks_dir, missing=missing)
+    return GitHooksProbe(
+        checkout=repo,
+        hooks_dir=default_hooks_dir,
+        missing=missing,
+        quarantined=quarantined,
+        common_dir=common_dir,
+    )
 
 
 def expects_hooks(repo: Path) -> bool:
@@ -142,7 +183,20 @@ def probe_checkouts(checkouts: Iterable[Path]) -> list[GitHooksProbe]:
 
 
 def format_remediation(probe: GitHooksProbe) -> list[str]:
-    """Remediation lines naming each missing hook, the gates it carries, and the fix. Pure/print-free."""
+    """Remediation lines for each missing hook and each parked operator hook. Pure/print-free.
+
+    Two independent findings, so two independent sections: a fully-installed clone can still
+    be holding a pre-existing gate that is no longer running.
+
+    An indeterminate probe yields nothing: ``_check_git_hooks_installed`` reads a line here as
+    a hard doctor FAIL, and a checkout nothing could inspect has no finding to attribute.
+    """
+    if probe.indeterminate_reason is not None:
+        return []
+    return _missing_hook_lines(probe) + _quarantine_lines(probe)
+
+
+def _missing_hook_lines(probe: GitHooksProbe) -> list[str]:
     if not probe.missing:
         return []
     lines = [
@@ -157,6 +211,11 @@ def format_remediation(probe: GitHooksProbe) -> list[str]:
         f"Install them with: {INSTALL_COMMAND}"
     )
     return lines
+
+
+def _quarantine_lines(probe: GitHooksProbe) -> list[str]:
+    finding = hook_quarantine.parked_finding(probe.parked, probe.common_dir)
+    return [] if finding is None else [f"{probe.checkout}: {finding}"]
 
 
 __all__ = [

@@ -60,7 +60,7 @@ def test_fail_fixture_is_red(name: str, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", _NAMES)
 def test_removing_matchers_turns_fail_green(name: str, tmp_path: Path) -> None:
-    toothless = dataclasses.replace(_spec(name), matchers=())
+    toothless = dataclasses.replace(_spec(name), matchers=(), judge=None)
     assert _grade(toothless, "fail", tmp_path) is True, (
         f"with the matchers removed {name}'s _fail fixture must go GREEN — else it fails for a "
         "reason unrelated to the matchers and the teeth proof is moot"

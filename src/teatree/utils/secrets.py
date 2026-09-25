@@ -5,7 +5,7 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from teatree.utils.run import CommandFailedError, TimeoutExpired, run_checked
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,22 @@ class SecretStoreError(RuntimeError):
 
     @classmethod
     def unreadable(cls, key: str, returncode: int, detail: str) -> "SecretStoreError":
+        """The read never completed, so nothing is known about the entry — say only that.
+
+        Claiming "the entry exists but could not be decrypted" asserts a lookup that did
+        not happen: gpg exits 2 when its keybox daemon will not start, before any entry is
+        reached, and that sends the reader to check the entry rather than the keyring.
+        ``$GNUPGHOME`` is quoted because it is the datum that separates a working host
+        from a container carrying a different one.
+        """
         tail = detail.strip().splitlines()
         hint = f": {tail[-1]}" if tail else ""
+        home = os.environ.get("GNUPGHOME") or "<unset>"
         return cls(
             f"reading secret {key!r} from the `pass` password store failed (rc={returncode}){hint} — "
-            f"the entry exists but could not be decrypted (check $GNUPGHOME and the gpg agent)"
+            f"the KEYRING did not answer, so whether the entry exists is unknown. "
+            f"GNUPGHOME={home}; try `gpgconf --kill all`, and note a daemon under a "
+            f"DIFFERENT GNUPGHOME survives that (`pgrep -al keyboxd gpg-agent`)"
         )
 
 
@@ -114,7 +125,7 @@ def _pass_show(key: str) -> str | None:
     """
     deadline = keyring_read_timeout_seconds()
     try:
-        result = run_checked(["pass", "show", key], timeout=deadline)
+        result = run_bounded_group(["pass", "show", key], timeout=deadline)
     except TimeoutExpired as exc:
         raise SecretStoreError.timed_out(key, deadline) from exc
     except CommandFailedError as exc:
@@ -123,6 +134,11 @@ def _pass_show(key: str) -> str | None:
         raise SecretStoreError.unreadable(key, exc.returncode, exc.stderr) from exc
     lines = result.stdout.strip().splitlines()
     return lines[0] if lines else ""
+
+
+#: The injected store-read seam: given a ``pass`` entry, return its secret (``""`` when
+#: absent). :func:`read_pass` satisfies it; a test maps entries to canned values.
+type SecretReader = Callable[[str], str]
 
 
 def read_pass(key: str) -> str:
@@ -191,7 +207,7 @@ def write_pass(key: str, value: str) -> bool:
     """
     deadline = keyring_read_timeout_seconds()
     try:
-        run_checked(["pass", "insert", "--multiline", "--force", key], stdin_text=value, timeout=deadline)
+        run_bounded_group(["pass", "insert", "--multiline", "--force", key], stdin_text=value, timeout=deadline)
     except TimeoutExpired as exc:
         raise SecretStoreError.timed_out(key, deadline) from exc
     except (CommandFailedError, FileNotFoundError):
@@ -235,7 +251,7 @@ def remove_pass(key: str) -> bool:
     """
     deadline = keyring_read_timeout_seconds()
     try:
-        run_checked(["pass", "rm", "--force", key], timeout=deadline)
+        run_bounded_group(["pass", "rm", "--force", key], timeout=deadline)
     except TimeoutExpired as exc:
         raise SecretStoreError.timed_out(key, deadline) from exc
     except (CommandFailedError, FileNotFoundError):

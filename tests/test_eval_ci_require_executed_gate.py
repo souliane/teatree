@@ -20,6 +20,7 @@ metered key still selectable), and that ``ci.yml`` no longer carries an eval job
 the PR path. They go RED if ``--require-executed`` is removed.
 """
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -58,6 +59,20 @@ def _gh_eval_step_env() -> dict[str, str]:
     for step in cast("list[dict[str, Any]]", jobs["eval"]["steps"]):
         env.update(cast("dict[str, str]", step.get("env", {})))
     return env
+
+
+def _preflight_text(before_script: list[str]) -> str:
+    """The before_script, with any shell script it delegates to inlined after it.
+
+    A preflight that has to tell four indistinguishable API refusals apart outgrows a
+    here-doc in a job definition, so a host project may extract it into a script the
+    before_script invokes. The obligation follows the logic; asserting the shape stays
+    inline would forbid the extraction rather than the regression.
+    """
+    text = "\n".join(before_script)
+    root = _GITLAB_CI.parent
+    delegated = [root / name for name in re.findall(r"\b(?:ba)?sh\s+([\w./-]+\.sh)\b", text)]
+    return "\n".join([text, *(path.read_text(encoding="utf-8") for path in delegated if path.is_file())])
 
 
 def _gitlab_eval_script() -> list[str]:
@@ -300,20 +315,18 @@ class TestGitLabRequireExecutedUnconditional:
         # here; neither may carry none.
         config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
         suite = cast("dict[str, Any]", config[".eval-suite"])
-        before = "\n".join(cast("list[str]", suite["before_script"]))
+        before = _preflight_text(cast("list[str]", suite["before_script"]))
         script = "\n".join(cast("list[str]", suite["script"]))
 
-        if "--backend anthropic_api" not in script:
+        if "--backend anthropic_api" not in script or "--judge" in script:
             assert "claude --version" in before, (
-                "The GitLab eval-suite runs a CLI-backed backend, so it must assert the Claude "
-                "CLI install (`claude --version`) — a missing binary must fail the job."
+                "The GitLab eval-suite uses the Claude CLI for its backend or judge, so it must "
+                "assert the install (`claude --version`)."
             )
+        else:
+            assert "claude --version" not in before
+        if "--backend anthropic_api" not in script:
             return
-
-        assert "claude --version" not in before, (
-            "The CLI-free lane (--backend anthropic_api) must not install or assert the Claude "
-            "CLI: it spawns no `claude` child, so that assertion gates a dependency it does not have."
-        )
         assert "EVAL_BLOCKED=75" in before, (
             "The CLI-free lane must name the blocked-credential exit code its allow_failure scopes to."
         )
@@ -480,3 +493,60 @@ class TestWeeklyIsBaselineNotThreeTierFan:
             f"{_GH_EVAL_WEEKLY_REUSABLE.name}: the benchmark effort axis must be caller-driven "
             "(inputs.efforts), not a schedule-keyed low,medium,high fan."
         )
+
+
+class TestGitLabDeclinedRunNeverRendersGreen:
+    """A guard that DECLINES to run must not be indistinguishable from a pass.
+
+    The eval-suite preflight self-skips in two places, and they are different facts.
+    ``RUN_EVAL != true`` means scenarios were in scope and the cost guard chose not to
+    run them — exiting 0 there made "nothing was measured" and "everything passed" the
+    same green job, and five consecutive scheduled runs measured nothing behind it.
+    Declining stays legitimate, so it exits the code the job's own ``allow_failure``
+    already tolerates (75, the eval lanes' nothing-was-billed status): orange, never
+    green, and the pipeline is not reddened.
+
+    The empty-selection branch is the OTHER fact — the MR's diff defines no scenario,
+    so the collected set is empty and nothing declined to run. It exits 0, exactly as
+    ``teatree.eval.skip_guard.graded_nothing`` (``collected > 0``) and ``t3 eval run``
+    over zero specs do. These tests pin the split, so neither branch can drift onto
+    the other's status.
+    """
+
+    @staticmethod
+    def _suite() -> dict[str, Any]:
+        config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
+        return cast("dict[str, Any]", config[".eval-suite"])
+
+    @classmethod
+    def _branch(cls, guard: str) -> str:
+        """The preflight's ``if`` body for one guard, up to its ``fi``."""
+        before = "\n".join(cast("list[str]", cls._suite()["before_script"]))
+        rest = before[before.index(guard) :]
+        return rest[: rest.index("fi")]
+
+    def test_the_cost_guard_declines_rather_than_reporting_a_pass(self) -> None:
+        branch = self._branch("RUN_EVAL")
+        assert not re.search(r"^\s*exit 0\s*$", branch, re.MULTILINE), (
+            "Exiting 0 when the cost guard declines reports a suite that measured NOTHING as a "
+            "pass — the two are opposite facts and the job made them one green."
+        )
+        assert 'exit "$EVAL_BLOCKED"' in branch, (
+            "the declined scheduled run must exit the tolerated nothing-was-billed code."
+        )
+
+    def test_the_declined_code_is_one_the_job_already_tolerates(self) -> None:
+        before = "\n".join(cast("list[str]", self._suite()["before_script"]))
+        match = re.search(r"^\s*EVAL_BLOCKED=(\d+)\s*$", before, re.MULTILINE)
+        assert match, "the preflight must name the exit code it uses when it declines to run."
+        tolerated = cast("list[int]", self._suite()["allow_failure"]["exit_codes"])
+        assert int(match.group(1)) in tolerated, (
+            f"the declined-run exit code {match.group(1)} must be one allow_failure scopes to "
+            f"({tolerated}), or a legitimate decline reddens the pipeline."
+        )
+
+    def test_an_empty_selection_in_a_running_job_is_orange(self) -> None:
+        # The job exists only for eval-relevant changes; no selected scenario is an
+        # incomplete selective measurement, represented as not run.
+        branch = self._branch("EVAL_SCENARIOS")
+        assert 'exit "$EVAL_BLOCKED"' in branch

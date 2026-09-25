@@ -190,3 +190,38 @@ class TestHeredocBodyConsumption:
         assert len(segments) == 2
         assert segments[0] == ["cmd", ">", "/tmp/out"]
         assert segments[1] == ["echo", "done"]
+
+
+class TestClobberOverrideRedirect:
+    """``>|`` is one redirect operator, never ``>`` followed by a pipe.
+
+    Splitting at the ``|`` stranded the redirect target in a segment of its own,
+    led by the filename — so the shared write-target resolver saw a segment whose
+    ``>`` names nothing and reported the command as writing nothing at all. The
+    same shape as the ``2>&1`` phantom segment above, on the operator the house
+    temp-file rule mandates against zsh ``noclobber``.
+    """
+
+    def test_clobber_override_stays_one_word_and_one_segment(self) -> None:
+        segments = split_commands(tokenize("echo hi >| notes.txt"))
+        assert len(segments) == 1
+        assert [t.value for t in segments[0]] == ["echo", "hi", ">|", "notes.txt"]
+
+    @pytest.mark.parametrize("redirect", [">|", "2>|", ">|out.txt"])
+    def test_clobber_override_forms_do_not_split_segments(self, redirect: str) -> None:
+        assert len(split_commands(tokenize(f"cmd {redirect}"))) == 1
+
+    def test_a_genuine_pipe_still_splits(self) -> None:
+        assert len(split_commands(tokenize("grep -rn needle src/ | head -20"))) == 2
+
+    def test_a_redirect_to_a_file_then_a_pipe_still_splits(self) -> None:
+        # The ``|`` is preceded by the filename, not by ``>`` — a real pipe.
+        assert len(split_commands(tokenize("cmd > out.txt| cmd2"))) == 2
+
+    def test_quoted_redirect_char_before_pipe_still_splits(self) -> None:
+        assert len(split_commands(tokenize('echo ">"| cmd2'))) == 2
+
+    def test_append_redirect_before_pipe_still_splits(self) -> None:
+        # ``>>|`` is not a bash operator, so the ``|`` is not glue; gluing it
+        # would emit the pipe's right-hand side as a literal write target.
+        assert len(split_commands(tokenize("cmd >>out.txt| cmd2"))) == 2

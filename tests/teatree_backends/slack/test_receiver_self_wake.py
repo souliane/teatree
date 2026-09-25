@@ -78,7 +78,7 @@ class TestReceiverCallbackDoesNotWakeOnItsOwnPosts:
         # rather than fixing the loop.
         on_event = _drive(tmp_path, {"type": "message", "user": "U0HUMAN", "ts": "1.0"}, auth_body=_AUTH_OK)
 
-        on_event.assert_called_once_with()
+        on_event.assert_called_once_with("ov", {"type": "message", "user": "U0HUMAN", "ts": "1.0"})
 
 
 class TestAnUnresolvedIdentityStillBreaksTheLoop:
@@ -97,7 +97,7 @@ class TestAnUnresolvedIdentityStillBreaksTheLoop:
     def test_a_user_message_still_wakes_without_an_identity(self, tmp_path: Path) -> None:
         on_event = _drive(tmp_path, {"type": "message", "user": "U0HUMAN", "ts": "1.0"}, auth_body=None)
 
-        on_event.assert_called_once_with()
+        on_event.assert_called_once_with("ov", {"type": "message", "user": "U0HUMAN", "ts": "1.0"})
 
 
 class TestProbeOwnIdentity:

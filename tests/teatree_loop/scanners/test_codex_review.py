@@ -8,15 +8,28 @@
     dispatch for the other PRs in the sweep.
 """
 
+import json
 import logging
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from unittest.mock import patch
 
+import pytest
+
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.codex_review import _LIST_OPEN_PRS_LIMIT, CodexReviewScanner, GhCodexPrApi, PrSummary
+from teatree.loop.scanners.codex_review import (
+    _LIST_OPEN_PRS_LIMIT,
+    CodexReviewScanner,
+    GhCodexPrApi,
+    PrSummary,
+    head_checks_unsettled,
+)
+from teatree.types import ScannerError
 
 _SLUG = "souliane/teatree"
+_PROBE = "teatree.loop.scanners.codex_review.head_checks_unsettled"
+_QUERY = "teatree.loop.scanners.codex_review.CodeHostQuery"
 # codex_review binds ``run_allowed_to_fail`` at module import, so patch the name
 # in the scanner's namespace (not the utils source).
 _RUN = "teatree.loop.scanners.codex_review.run_allowed_to_fail"
@@ -51,12 +64,11 @@ class TestListLimit:
         assert _LIST_OPEN_PRS_LIMIT >= 200
 
     def test_full_page_warns_about_truncation(self, caplog) -> None:
-        import json  # noqa: PLC0415
-
         payload = json.dumps([_pr_json(n) for n in range(_LIST_OPEN_PRS_LIMIT)])
         api = GhCodexPrApi()
         with (
             patch(_RUN, return_value=_completed(returncode=0, stdout=payload)),
+            patch(_PROBE, return_value=False),
             caplog.at_level(logging.WARNING, logger="teatree.loop.scanners.codex_review"),
         ):
             prs = api.list_open_self_prs(slug=_SLUG)
@@ -64,17 +76,27 @@ class TestListLimit:
         assert any("cap" in rec.message for rec in caplog.records)
 
     def test_under_limit_does_not_warn(self, caplog) -> None:
-        import json  # noqa: PLC0415
-
         payload = json.dumps([_pr_json(1), _pr_json(2)])
         api = GhCodexPrApi()
         with (
             patch(_RUN, return_value=_completed(returncode=0, stdout=payload)),
+            patch(_PROBE, return_value=False),
             caplog.at_level(logging.WARNING, logger="teatree.loop.scanners.codex_review"),
         ):
             prs = api.list_open_self_prs(slug=_SLUG)
         assert len(prs) == 2
         assert not caplog.records
+
+    def test_empty_route_never_inherits_ambient_gh(self, monkeypatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "ambient-token")
+        empty = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="route unset")
+        with (
+            patch("teatree.forge_credentials.resolve_slug_token", return_value=empty),
+            patch(_RUN) as run,
+            pytest.raises(ScannerError, match="refusing ambient gh authentication"),
+        ):
+            GhCodexPrApi().list_open_self_prs(slug=_SLUG)
+        run.assert_not_called()
 
 
 @dataclass
@@ -137,3 +159,74 @@ class TestHealthyScan:
         scanner = CodexReviewScanner(repos=(_SLUG,), api=api)
         signals = scanner.scan()
         assert sorted(s.payload["pr_id"] for s in signals) == [1, 2]
+
+
+class TestHeadChecksUnsettled:
+    """The predicate that decides whether a head has settled enough to be worth a review."""
+
+    def test_pending_required_checks_are_unsettled(self) -> None:
+        with patch(_QUERY) as query:
+            query.for_ref.return_value.required_checks_status.return_value = "pending"
+            assert head_checks_unsettled(slug=_SLUG, pr_id=1254) is True
+
+    def test_failing_required_checks_are_unsettled(self) -> None:
+        with patch(_QUERY) as query:
+            query.for_ref.return_value.required_checks_status.return_value = "failed"
+            assert head_checks_unsettled(slug=_SLUG, pr_id=1254) is True
+
+    def test_green_required_checks_are_settled(self) -> None:
+        with patch(_QUERY) as query:
+            query.for_ref.return_value.required_checks_status.return_value = "green"
+            assert head_checks_unsettled(slug=_SLUG, pr_id=1254) is False
+
+    def test_unreadable_rollup_never_skips_the_review(self) -> None:
+        # Missing evidence spends a run rather than silently skipping one: this gate
+        # only ever DELAYS a review, so a forge outage must not mute the doublecheck.
+        with patch(_QUERY) as query:
+            query.for_ref.return_value.required_checks_status.return_value = "unreadable"
+            assert head_checks_unsettled(slug=_SLUG, pr_id=1254) is False
+
+    def test_a_raising_probe_never_skips_the_review(self) -> None:
+        with patch(_QUERY) as query:
+            query.for_ref.side_effect = RuntimeError("no backend provider")
+            assert head_checks_unsettled(slug=_SLUG, pr_id=1254) is False
+
+
+class TestAdapterStampsHeadChecks:
+    """``list_open_self_prs`` resolves the standing ONCE so neither scanner re-probes."""
+
+    def test_decoded_pr_carries_the_probe_verdict(self) -> None:
+        payload = json.dumps([_pr_json(7)])
+        with (
+            patch(_RUN, return_value=_completed(returncode=0, stdout=payload)),
+            patch(_PROBE, return_value=True) as probe,
+        ):
+            prs = GhCodexPrApi().list_open_self_prs(slug=_SLUG)
+
+        assert [pr.checks_unsettled for pr in prs] == [True]
+        assert probe.call_args.kwargs == {"slug": _SLUG, "pr_id": 7}
+
+    def test_draft_pr_is_never_probed(self) -> None:
+        # Nothing reviews a draft, so its required-checks read would be pure cost.
+        payload = json.dumps([{**_pr_json(8), "isDraft": True}])
+        with (
+            patch(_RUN, return_value=_completed(returncode=0, stdout=payload)),
+            patch(_PROBE, return_value=True) as probe,
+        ):
+            prs = GhCodexPrApi().list_open_self_prs(slug=_SLUG)
+
+        assert [pr.checks_unsettled for pr in prs] == [False]
+        assert probe.call_count == 0
+
+
+class TestUnsettledHeadIsNotReviewed:
+    def test_unsettled_head_dispatches_no_codex_review(self) -> None:
+        unsettled = replace(_summary(1), checks_unsettled=True)
+        scanner = CodexReviewScanner(repos=(_SLUG,), api=_RecordingApi(prs=[unsettled]))
+
+        assert scanner.scan() == []
+
+    def test_control_settled_head_still_dispatches(self) -> None:
+        scanner = CodexReviewScanner(repos=(_SLUG,), api=_RecordingApi(prs=[_summary(1)]))
+
+        assert [s.payload["pr_id"] for s in scanner.scan()] == [1]

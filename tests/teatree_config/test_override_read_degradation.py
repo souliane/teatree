@@ -22,12 +22,13 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from django.apps import apps
 from django.core.exceptions import AppRegistryNotReady, SynchronousOnlyOperation
 from django.db.utils import OperationalError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
+from teatree.config.enums import Autonomy, Mode
 from teatree.config.override_read_health import (
     MARKER_FILENAME,
     MAX_RECORDED_CALLERS,
@@ -38,11 +39,15 @@ from teatree.config.override_read_health import (
     fallback_marker_path,
     marker_path,
     marker_paths,
+    note_healthy_read,
     record_degraded_read,
 )
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.resolution import fail_closed_overrides, read_setting_layers
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, ModeOverride
+from teatree.core.models import Mode as Posture
+from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict
 from teatree.paths import ControlDb, data_dir_root
 
 _GLOBAL = "global"
@@ -81,6 +86,28 @@ def _with_failing_reads(exc: BaseException, **kwargs: object) -> Any:
     model = mock.Mock(objects=manager)
     patcher = mock.patch("django.apps.apps.get_model", return_value=model)
     return patcher, manager
+
+
+def _with_failing_config_setting_reads(exc: BaseException) -> Any:
+    """Fail ONLY the ``ConfigSetting`` lookup, leaving every other model readable.
+
+    :func:`_with_failing_reads` replaces the whole registry, so the posture's own tables
+    go down with the config tier and the two faults become one observation. Separating
+    them is what makes "the posture answered" distinguishable from "nothing was readable".
+    """
+    real_get_model = apps.get_model
+
+    def selective(app_label: str, model_name: str = "", *args: object, **kwargs: object) -> Any:
+        if "configsetting" in f"{app_label}.{model_name}".lower():
+            raise exc
+        return real_get_model(app_label, model_name, *args, **kwargs)
+
+    return mock.patch("django.apps.apps.get_model", side_effect=selective)
+
+
+def _pin_posture(name: str, egress: str) -> None:
+    Posture.objects.update_or_create(name=name, defaults={"entries": {}, "egress": egress})
+    ModeOverride.objects.set_override(name, reason=f"pinning {name!r} for this test")
 
 
 class TestAFailedReadIsNotAnAbsentOverride(TestCase):
@@ -136,12 +163,11 @@ class TestSafetyGatesFailClosedRatherThanToAShippedDefault(TestCase):
             settings = get_effective_settings("t3-teatree")
         assert settings.autonomy is Autonomy.BABYSIT
 
-    def test_mode_and_on_behalf_posting_fail_closed(self) -> None:
+    def test_the_mode_gate_fails_closed(self) -> None:
         patcher, _ = _with_failing_reads(OperationalError("database is locked"))
         with patcher:
             settings = get_effective_settings("t3-teatree")
         assert settings.mode is Mode.INTERACTIVE
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
     def test_an_env_override_still_wins_over_the_fail_closed_value(self) -> None:
         # `T3_*` is process state the failed DB read cannot have affected, so it is a
@@ -155,6 +181,46 @@ class TestSafetyGatesFailClosedRatherThanToAShippedDefault(TestCase):
         settings = get_effective_settings("t3-teatree")
         for key in SAFETY_FAIL_CLOSED_STORED_VALUES:
             assert hasattr(settings, key), f"{key!r} is not a UserSettings field"
+
+
+class TestTheOwnersVoiceFollowsThePostureNotTheConfigTier(TestCase):
+    """What replaced the on-behalf half of the fail-closed set.
+
+    ``on_behalf_post_mode`` was a ``ConfigSetting`` row, so a degraded override read used
+    to reach the owner's voice and pin it shut. The control is now ``Mode.egress``, which
+    lives in its own tables — a config-tier fault says nothing about it, and re-pinning
+    the old polarity would pin a coupling that no longer exists.
+
+    The floor did not move, and the last case is where it now sits: a store unreadable
+    all the way down cannot name a posture either, and an unnameable posture is not
+    permission to speak as someone else.
+    """
+
+    def setUp(self) -> None:
+        ModeOverride.objects.all().delete()
+
+    def test_a_config_tier_fault_leaves_a_permitting_posture_permitting(self) -> None:
+        _pin_posture("present", "allow")
+
+        with _with_failing_config_setting_reads(OperationalError("database is locked")):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.PROCEED
+
+    def test_a_config_tier_fault_leaves_a_forbidding_posture_forbidding(self) -> None:
+        """The foil: the verdict tracks the posture, it is not a blanket permit."""
+        _pin_posture("afk", "forbid")
+
+        with _with_failing_config_setting_reads(OperationalError("database is locked")):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
+
+    def test_a_store_unreadable_all_the_way_down_still_refuses_the_owners_voice(self) -> None:
+        # No override row, so naming the posture falls through to the setting read too —
+        # and with that failing as well, nothing establishes a posture at all.
+        failing = OperationalError("database is locked")
+        with (
+            _with_failing_config_setting_reads(failing),
+            mock.patch.object(ConfigSetting.objects, "get_effective", side_effect=failing),
+        ):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
 
 
 class TestATransientLockIsRetriedRatherThanDegradedStraightAway(TestCase):
@@ -256,8 +322,8 @@ class TestTheDivergenceIsObservable(TestCase):
             resolved = resolve_settings(["autonomy"])["autonomy"]
         assert resolved.source is ValueSource.UNRESOLVED
 
-    def test_provenance_still_credits_the_shipped_file_on_a_clean_read(self) -> None:
-        assert resolve_settings(["autonomy"])["autonomy"].source is ValueSource.SHIPPED_FILE
+    def test_provenance_still_credits_the_declared_default_on_a_clean_read(self) -> None:
+        assert resolve_settings(["autonomy"])["autonomy"].source is ValueSource.CODE_DEFAULT
 
     def test_a_degraded_read_is_recorded_outside_the_database_it_could_not_read(self) -> None:
         # The record cannot live in the DB — the DB is the thing that failed.
@@ -542,3 +608,39 @@ class TestTheFreshestRecordDecides(TestCase):
         report = self._report_over((fresh, stale))
         assert report is not None
         assert (report.scopes, report.path) == (("fresh",), fresh)
+
+
+class TestAHealedTierClearsItsOwnMarker(TestCase):
+    """Nothing in `src/` cleared the marker, so a repaired box reported a fault for a day.
+
+    The 24h TTL was the only thing that ever retired one — a stale throttle standing in for
+    a clear that was never wired. A process that PROVES it can read the tier is the evidence
+    the fault is gone, so the first healthy read of a process reconciles it. Once per
+    process, not once per read: the clear is an unlink, and the read path is hot.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        note_healthy_read.cache_clear()
+        self.addCleanup(note_healthy_read.cache_clear)
+        self.addCleanup(clear_degraded_read)
+
+    def test_a_successful_read_retires_a_marker_an_earlier_fault_left(self) -> None:
+        record_degraded_read("", caller="test")
+        assert degraded_read_report() is not None
+        read_setting_layers("")
+        assert degraded_read_report() is None
+
+    def test_the_reconcile_costs_one_unlink_per_process_not_one_per_read(self) -> None:
+        read_setting_layers("")
+        record_degraded_read("", caller="a fault recorded AFTER this process reconciled")
+        read_setting_layers("")
+        assert degraded_read_report() is not None, "a later fault was silently swallowed by the reconcile"
+
+    def test_a_still_failing_read_leaves_the_marker_alone(self) -> None:
+        # The control: the clear keys on a read that SUCCEEDED, never on merely running.
+        record_degraded_read("", caller="test")
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            read_setting_layers("")
+        assert degraded_read_report() is not None

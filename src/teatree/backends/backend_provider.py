@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         ReviewSearchSpec,
         SentryReadClient,
         SharePointReadClient,
+        SlackMessagingSpec,
         ThreadActivityReadLike,
         ThreadActivitySpec,
     )
@@ -68,21 +69,14 @@ class ConcreteBackendProvider:
     def build_gitlab_host(self, *, token: str, base_url: str) -> "CodeHostBackend":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return GitLabCodeHost(token=token, base_url=base_url)
 
-    def build_slack_messaging(  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
-        self,
-        *,
-        bot_token: str,
-        app_token: str,
-        user_token: str,
-        user_id: str,
-        dm_channel_id: str,
-    ) -> "MessagingBackend":
+    def build_slack_messaging(self, spec: "SlackMessagingSpec") -> "MessagingBackend":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return SlackBotBackend(
-            bot_token=bot_token,
-            app_token=app_token,
-            user_token=user_token,
-            user_id=user_id,
-            dm_channel_id=dm_channel_id,
+            bot_token=spec.bot_token,
+            app_token=spec.app_token,
+            user_token=spec.user_token,
+            user_id=spec.user_id,
+            dm_channel_id=spec.dm_channel_id,
+            owner_dm_only=spec.owner_dm_only,
             degrade_bad_user_token=True,
         )
 

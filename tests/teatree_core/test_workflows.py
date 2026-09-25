@@ -20,6 +20,7 @@ import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket, Worktree
 from teatree.core.overlay import (
     OverlayBase,
@@ -32,6 +33,7 @@ from teatree.core.overlay import (
     ToolCommand,
 )
 from teatree.core.overlay_loader import reset_overlay_cache
+from tests.factories import record_test_plan
 
 pytestmark = [
     pytest.mark.filterwarnings(
@@ -137,9 +139,7 @@ WORKFLOW_SETTINGS: dict[str, object] = {}
 
 def _plan_ticket(ticket: Ticket) -> None:
     """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
-    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
 
@@ -275,6 +275,10 @@ class TestLifecycleProvision(TestCase):
         with (
             _patch_overlay(),
             patch.object(utils_run_mod, "subprocess") as mock_start_sp,
+            patch(
+                "teatree.core.gates.local_stack_gate.check_provision_admission",
+                return_value=ProvisionAdmissionVerdict.allow(),
+            ),
         ):
             mock_start_sp.run.return_value = MagicMock(returncode=0)
             call_command("worktree", "start", path=backend_path)

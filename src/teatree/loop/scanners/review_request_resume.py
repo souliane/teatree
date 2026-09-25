@@ -28,24 +28,26 @@ rollup that errors each hold the request, because the reply tells colleagues the
 merge request is reviewable and an unverified one is exactly the claim this rule
 exists to keep off the channel.
 
-Ships INERT behind ``review_resume_reply_enabled`` (default false): nothing
-reaches a colleague thread until an overlay opts in.
+Unconditional. What keeps the reply off a colleague thread is the repo-exemption
+guard and the fail-closed readiness ladder above, never a flag.
 """
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.utils import timezone
 
-from teatree.config import get_effective_settings
-from teatree.core.backend_protocols import CodeHostBackend, DraftState, MessagingBackend
+from teatree.core.backend_protocols import CodeHostBackend, DraftState, MessagingBackend, PrOpenState
 from teatree.core.gates.review_request_draft_gate import draft_state
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.models import ReviewRequestPost
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.review.repo_exemption import mr_url_is_review_exempt
+from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
@@ -60,7 +62,18 @@ _CHECKS_GREEN = "green"
 
 
 def _claim_resume(post: ReviewRequestPost, claimed_at: dt.datetime) -> bool:
-    return ReviewRequestPost.objects.filter(pk=post.pk, resumed_at__isnull=True).update(resumed_at=claimed_at) == 1
+    """Take the one-shot, refusing a row RETIRED since the queryset read it.
+
+    ``done_at`` is re-checked in the same conditional UPDATE: a merge-react landing
+    between the listing and the claim would otherwise still get "Now ready for
+    review." posted onto an already-merged merge request.
+    """
+    return (
+        ReviewRequestPost.objects.filter(pk=post.pk, resumed_at__isnull=True, done_at__isnull=True).update(
+            resumed_at=claimed_at
+        )
+        == 1
+    )
 
 
 def _release_resume(post: ReviewRequestPost, claimed_at: dt.datetime) -> None:
@@ -86,7 +99,25 @@ def _required_checks_green(mr_url: str, host: CodeHostBackend) -> bool:
         return False
 
 
-def _claim_and_reply(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
+def _is_open(mr_url: str, host: CodeHostBackend) -> bool:
+    """Resume ONLY on a forge-CONFIRMED open merge request — merged, closed and unreadable all hold.
+
+    Read through ``get_pr_open_state`` because it normalizes each forge's own vocabulary:
+    GitLab's raw merge state for an open merge request is ``OPENED``, not ``OPEN``.
+    """
+    try:
+        return host.get_pr_open_state(pr_url=mr_url) is PrOpenState.OPEN
+    except Exception:
+        logger.exception("review_request_resume: open-state read failed for %s — holding the resume", mr_url)
+        return False
+
+
+def _claim_and_reply(
+    post: ReviewRequestPost,
+    messaging: MessagingBackend,
+    *,
+    context: OnBehalfContext,
+) -> ScanSignal | None:
     """Claim the one-shot, reply in the tracked thread, release the claim on any refusal.
 
     One ``claimed_at`` governs both the claim and its release, so the conditional
@@ -97,7 +128,7 @@ def _claim_and_reply(post: ReviewRequestPost, messaging: MessagingBackend) -> Sc
     if not _claim_resume(post, claimed_at):
         return None
     try:
-        OnBehalfSlackEgress(messaging).post(
+        response = OnBehalfSlackEgress(messaging).post(
             channel=post.slack_channel_id,
             text=RESUME_REPLY_TEXT,
             target=post.mr_url,
@@ -105,6 +136,7 @@ def _claim_and_reply(post: ReviewRequestPost, messaging: MessagingBackend) -> Sc
             thread_ts=post.slack_thread_ts,
             destination=f"review-request thread for {post.mr_url}",
             summary="now ready for review",
+            context=context,
         )
     except OnBehalfPostBlockedError as blocked:
         _release_resume(post, claimed_at)
@@ -116,11 +148,10 @@ def _claim_and_reply(post: ReviewRequestPost, messaging: MessagingBackend) -> Sc
     except Exception as exc:
         _release_resume(post, claimed_at)
         logger.exception("review_request_resume: reply failed for %s on %s", post.mr_url, post.slack_channel_id)
-        return ScanSignal(
-            kind="review_request.resume_failed",
-            summary=f"Slack resume reply failed for {post.mr_url}: {exc}",
-            payload={"mr_url": post.mr_url, "error": str(exc), "post_id": post.pk},
-        )
+        return _resume_failed(post, error=str(exc))
+    if response.get("ok") is not True:
+        _release_resume(post, claimed_at)
+        return _resume_failed(post, error=str(response.get("error") or "empty response"))
     return ScanSignal(
         kind="review_request.resumed",
         summary=f"Replied in thread — {post.mr_url} is ready for review again",
@@ -138,17 +169,20 @@ class ReviewRequestResumeScanner:
 
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
     overlay: str = ""
     name: str = "review_request_resume"
 
     def scan(self) -> list[ScanSignal]:
         messaging = self.messaging
         host = self.host
-        if messaging is None or host is None:
+        if messaging is None:
             return []
-        if not get_effective_settings(self.overlay or None).review_resume_reply_enabled:
-            return []
-        open_rows = ReviewRequestPost.objects.filter(done_at__isnull=True, resumed_at__isnull=True)
+        open_rows = ReviewRequestPost.objects.filter(
+            done_at__isnull=True,
+            resumed_at__isnull=True,
+            overlay=self.overlay,
+        )
         signals = (self._process_one(post, messaging, host) for post in open_rows.order_by("created_at"))
         return [signal for signal in signals if signal is not None]
 
@@ -156,8 +190,16 @@ class ReviewRequestResumeScanner:
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
-        host: CodeHostBackend,
+        host: CodeHostBackend | None,
     ) -> ScanSignal | None:
+        authorship = _is_self_authored(post.mr_url, host, self.identities)
+        if authorship is not True:
+            return _authorship_skip(post, authorship=authorship)
+        if host is None:
+            return _authorship_skip(post, authorship=None)
+        # The reply asks colleagues to review, so an exempt repo is skipped here too.
+        if mr_url_is_review_exempt(post.mr_url, overlay_name=self.overlay):
+            return None
         pause = read_pause_state(post, messaging)
         if pause is PauseState.UNKNOWN:
             return ScanSignal(
@@ -167,9 +209,35 @@ class ReviewRequestResumeScanner:
             )
         if pause is not PauseState.PAUSED or not self._is_ready(post.mr_url, host):
             return None
-        return _claim_and_reply(post, messaging)
+        return _claim_and_reply(
+            post,
+            messaging,
+            context=OnBehalfContext(overlay=self.overlay or None, own_mr=True, target=post.mr_url),
+        )
 
     def _is_ready(self, mr_url: str, host: CodeHostBackend) -> bool:
         if draft_state(mr_url, overlay_name=self.overlay) is not DraftState.NOT_DRAFT:
             return False
-        return _required_checks_green(mr_url, host)
+        return _is_open(mr_url, host) and _required_checks_green(mr_url, host)
+
+
+def _resume_failed(post: ReviewRequestPost, *, error: str) -> ScanSignal:
+    return ScanSignal(
+        kind="review_request.resume_failed",
+        summary=f"Slack resume reply failed for {post.mr_url}: {error}",
+        payload={"mr_url": post.mr_url, "error": error, "post_id": post.pk},
+    )
+
+
+def _authorship_skip(post: ReviewRequestPost, *, authorship: bool | None) -> ScanSignal:
+    if authorship is False:
+        kind = "review_request.foreign_author"
+        reason = "the merge request was authored by a colleague"
+    else:
+        kind = "review_request.authorship_unreadable"
+        reason = "owner authorship could not be proved from the forge"
+    return ScanSignal(
+        kind=kind,
+        summary=f"Holding resume for {post.mr_url} — {reason}",
+        payload={"mr_url": post.mr_url, "post_id": post.pk, "reason": reason},
+    )

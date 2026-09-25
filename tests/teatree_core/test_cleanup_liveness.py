@@ -20,6 +20,7 @@ from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.utils.throttled_log import reset_throttle
+from tests._process_table_venue import this_process_in
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -243,7 +244,9 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         proc = self._tmp_path / "proc"
         (proc / pid).mkdir(parents=True)
         (proc / pid / "cwd").symlink_to(cwd_target)
+        (proc / pid / "exe").symlink_to(cwd_target / "bin" / "process")
         (proc / "nonpid").mkdir()  # a non-numeric entry the scan must skip
+        this_process_in(proc)
         return proc
 
     def test_scans_proc_for_foreign_process_cwd_inside_worktree(self) -> None:
@@ -314,6 +317,8 @@ class TestBlindGuardIsUnverifiableNotSettled(TestCase):
         proc = self._tmp_path / "proc"
         (proc / "1234").mkdir(parents=True)
         (proc / "1234" / "cwd").symlink_to(cwd_target)
+        (proc / "1234" / "exe").symlink_to(cwd_target / "bin" / "process")
+        this_process_in(proc)
         return proc
 
     def _worktree(self, wt: Path, slug: str) -> Worktree:
@@ -380,3 +385,64 @@ class TestBlindGuardIsUnverifiableNotSettled(TestCase):
         answer = cl._git_lock_present(wt)
         assert answer.fired is False
         assert answer.unanswered is False
+
+
+def _pth(venv: Path, line: Path, *, name: str = "wt_probe.pth") -> Path:
+    site = venv / "lib" / "python3.13" / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    pth = site / name
+    pth.write_text(f"{line}\n", encoding="utf-8")
+    return pth
+
+
+class TestAnEditablePthNamingTheCheckoutKeepsIt(TestCase):
+    """Reaping a checkout some venv still imports through breaks every import in that venv."""
+
+    @pytest.fixture(autouse=True)
+    def _clone_and_worktree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp = tmp_path
+        self.clone = tmp_path / "clone"
+        self.clone.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.clone)
+        _run_git("config", "user.email", "t@t", cwd=self.clone)
+        _run_git("config", "user.name", "t", cwd=self.clone)
+        (self.clone / "f.txt").write_text("x\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "init", cwd=self.clone)
+        self.wt_path = tmp_path / "wt"
+        _run_git("worktree", "add", "-q", "-b", "feat", str(self.wt_path), cwd=self.clone)
+        monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+
+    def _liveness(self, wt_path: Path) -> cl.LivenessVerdict:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2", state=Ticket.State.MERGED)
+        worktree = Worktree.objects.create(
+            overlay="test", ticket=ticket, repo_path="repo", branch="feat", extra={"worktree_path": str(wt_path)}
+        )
+        return worktree_liveness(worktree, wt_path=wt_path, fsm_terminal=True)
+
+    def test_a_pth_in_the_source_clone_venv_keeps_the_checkout_and_names_it(self) -> None:
+        pth = _pth(self.clone / ".venv", self.wt_path / "src")
+        verdict = self._liveness(self.wt_path)
+        assert verdict.active is True
+        assert str(pth) in verdict.reason
+
+    def test_a_pth_in_the_uv_tool_venv_keeps_the_checkout(self) -> None:
+        pth = _pth(self.tmp / "tools" / "teatree", self.wt_path / "src", name="teatree.pth")
+        verdict = self._liveness(self.wt_path)
+        assert verdict.active is True
+        assert str(pth) in verdict.reason
+
+    def test_an_unreadable_pth_is_unverifiable_so_the_checkout_is_kept(self) -> None:
+        (self.clone / ".venv" / "lib" / "python3.13" / "site-packages" / "unreadable.pth").mkdir(parents=True)
+        assert cl.editable_pth_liveness(self.wt_path).unverifiable is True
+        verdict = self._liveness(self.wt_path)
+        assert verdict.unverifiable is True
+        assert "could not be read" in verdict.reason
+
+    def test_an_unreferenced_checkout_keeps_todays_verdict(self) -> None:
+        _pth(self.clone / ".venv", self.tmp / "elsewhere")
+        assert self._liveness(self.wt_path).active is False
+
+    def test_a_venv_inside_the_checkout_itself_does_not_keep_it(self) -> None:
+        _pth(self.clone / ".venv", self.clone / "src")
+        assert self._liveness(self.clone).active is False

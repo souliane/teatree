@@ -1,6 +1,6 @@
 ---
 name: sweeping-tickets
-description: Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism: a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "group tickets", "prune the tracker", or "clean up the issue tracker".
+description: Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "group tickets", "prune the tracker", or "clean up the issue tracker".
 eval_exempt: evidence-gated ticket-consolidation walkthrough — its one-decision-per-question discipline is pinned in scenarios under the rules skill, and its evidence-gated close/consolidate discipline is pinned by the stale_open_issue_gate scenarios; no standalone agent trajectory beyond those to grade
 compatibility: macOS/Linux, git, gh CLI.
 requires:
@@ -315,10 +315,10 @@ t3 loops enable backlog_sweep        # the row IS the switch
 t3 loops disable backlog_sweep
 ```
 
-The row is the single switch: `backlog_sweep_disabled` ships open, and the row
-seeds `enabled = false` so an operator turns it on deliberately. The scanner
-(`teatree.loop.scanners.backlog_sweep`) queues one `backlog_sweep` task per
-`backlog_sweep_cadence_hours` (default 24) and stamps two contracts onto it:
+The row plus the active preset are the single switch, and the row seeds
+`enabled = false` so an operator turns it on deliberately. The scanner
+(`teatree.loop.scanners.backlog_sweep`) queues one `backlog_sweep` task per fire of
+the daily `backlog_sweep` Loop row and stamps two contracts onto it:
 
 - **Group-first, close nothing for real.** Unconditional — the queued directive
   instructs aggressive grouping and zero real closures whether or not the

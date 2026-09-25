@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
@@ -36,6 +37,15 @@ def _completed(*, returncode: int, stdout: str = "", stderr: str = "") -> subpro
 
 class TestClassifierTransientVsVerdict:
     """F5.3: a failure to reach a verdict raises; a real "not merged" verdict does not."""
+
+    @pytest.fixture(autouse=True)
+    def _routed_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
+            lambda _url, *, credential: ForgeTokenResolution(
+                credential, "test", ForgeTokenState.TOKEN, token="routed-token"
+            ),
+        )
 
     def test_parseable_not_merged_stays_merged_false(self) -> None:
         classifier = GlabGhMrStateClassifier()

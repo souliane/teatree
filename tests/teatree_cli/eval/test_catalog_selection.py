@@ -56,3 +56,32 @@ def test_a_malformed_shard_exits_two_rather_than_grading_an_empty_subset() -> No
 def test_a_well_formed_shard_partitions_the_catalog() -> None:
     shards = [select_specs(_CATALOG, None, lane=None, surface=None, shard=f"{i}/3") for i in (1, 2, 3)]
     assert sorted(spec.name for shard in shards for spec in shard) == sorted(s.name for s in _CATALOG)
+
+
+def test_a_rotating_shard_reports_which_shard_it_resolved_and_why(capsys: pytest.CaptureFixture[str]) -> None:
+    select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/3")
+    reported = capsys.readouterr().out
+    assert "rotate/3" in reported
+    assert "/3 (UTC " in reported
+
+
+def test_a_rotating_shard_selects_exactly_the_subset_it_reported(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected = select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/3")
+    resolved = capsys.readouterr().out.split("->")[1].split("(")[0].strip()
+    assert [s.name for s in selected] == [
+        s.name for s in select_specs(_CATALOG, None, lane=None, surface=None, shard=resolved)
+    ]
+
+
+def test_a_fixed_shard_reports_nothing(capsys: pytest.CaptureFixture[str]) -> None:
+    select_specs(_CATALOG, None, lane=None, surface=None, shard="1/3")
+    assert capsys.readouterr().out == ""
+
+
+def test_a_malformed_rotating_total_exits_two(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(typer.Exit) as exc:
+        select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/0")
+    assert exc.value.exit_code == 2
+    assert "rotate" in capsys.readouterr().err

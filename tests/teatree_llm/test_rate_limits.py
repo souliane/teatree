@@ -19,6 +19,7 @@ import pytest
 
 from teatree.llm.rate_limits import (
     MeteredKeySnapshot,
+    OverageUsage,
     ProbeResponse,
     RateLimitProbeError,
     RateLimitReader,
@@ -29,12 +30,20 @@ from teatree.llm.rate_limits import (
 
 _ORG = "anthropic-organization-id"
 _RETRY_AFTER = "retry-after"
+_UNIFIED_STATUS = "anthropic-ratelimit-unified-status"
+_CLAIM = "anthropic-ratelimit-unified-representative-claim"
 _5H_STATUS = "anthropic-ratelimit-unified-5h-status"
 _5H_UTIL = "anthropic-ratelimit-unified-5h-utilization"
 _5H_RESET = "anthropic-ratelimit-unified-5h-reset"
 _7D_STATUS = "anthropic-ratelimit-unified-7d-status"
 _7D_UTIL = "anthropic-ratelimit-unified-7d-utilization"
 _7D_RESET = "anthropic-ratelimit-unified-7d-reset"
+
+_OVERAGE_STATUS = "anthropic-ratelimit-unified-overage-status"
+_OVERAGE_UTIL = "anthropic-ratelimit-unified-overage-utilization"
+_OVERAGE_RESET = "anthropic-ratelimit-unified-overage-reset"
+_OVERAGE_IN_USE = "anthropic-ratelimit-unified-overage-in-use"
+_OVERAGE_DISABLED_REASON = "anthropic-ratelimit-unified-overage-disabled-reason"
 
 _REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
 _REQUESTS_LIMIT = "anthropic-ratelimit-requests-limit"
@@ -45,12 +54,19 @@ _OUTPUT_TOKENS_REMAINING = "anthropic-ratelimit-output-tokens-remaining"
 _FULL_HEADERS = {
     _ORG: "org-abc123",
     _RETRY_AFTER: "42",
+    _UNIFIED_STATUS: "allowed_warning",
+    _CLAIM: "seven_day",
     _5H_STATUS: "allowed",
     _5H_UTIL: "0.30",
     _5H_RESET: "1782928800",  # Unix epoch seconds == 2026-07-01T18:00:00Z
     _7D_STATUS: "allowed_warning",
     _7D_UTIL: "0.80",
     _7D_RESET: "1783468800",  # Unix epoch seconds == 2026-07-08T00:00:00Z
+    _OVERAGE_STATUS: "allowed",
+    _OVERAGE_UTIL: "0.95",
+    _OVERAGE_RESET: "1783468800",
+    _OVERAGE_IN_USE: "true",
+    _OVERAGE_DISABLED_REASON: "",
 }
 
 _METERED_HEADERS = {
@@ -120,16 +136,27 @@ class TestHeaderParsing:
         assert snap.unified_7d_reset == dt.datetime(2026, 7, 8, 0, 0, tzinfo=dt.UTC)
 
     def test_429_carries_the_same_headers_as_200(self) -> None:
-        # A 429 STILL returns the rate-limit headers, so it parses identically to a 200.
-        assert _read(429, _FULL_HEADERS) == _read(200, _FULL_HEADERS)
+        # What makes re-probing a SPENT account sound: a throttled response reports the
+        # same windows + overage a healthy one does, so nothing has to be synthesized.
+        throttled = _read(429, _FULL_HEADERS)
+        assert throttled == _read(200, _FULL_HEADERS)
+        assert throttled.unified_5h_utilization == pytest.approx(0.30)
+        assert throttled.overage.utilization == pytest.approx(0.95)
 
     def test_missing_headers_default_to_empty_and_none(self) -> None:
         snap = _read(200, {})
         assert snap.organization_id == ""
         assert snap.unified_5h_status == ""
-        assert snap.unified_5h_utilization == pytest.approx(0.0)
         assert snap.unified_5h_reset is None
         assert snap.retry_after is None
+
+    def test_absent_utilization_is_unknown_not_zero(self) -> None:
+        # 0.0 reads as "measured, fully free" — the report then shows 0% headroom used
+        # for a window Anthropic never reported.
+        snap = _read(200, {})
+        assert snap.unified_5h_utilization is None
+        assert snap.unified_7d_utilization is None
+        assert snap.overage.utilization is None
 
     def test_case_insensitive_header_lookup(self) -> None:
         snap = _read(200, {_5H_UTIL.upper(): "0.5", "Anthropic-Organization-Id": "org-x"})
@@ -138,7 +165,7 @@ class TestHeaderParsing:
 
     def test_unparseable_numeric_and_reset_headers_degrade_not_crash(self) -> None:
         snap = _read(200, {_5H_UTIL: "n/a", _RETRY_AFTER: "soon", _5H_RESET: "not-a-date"})
-        assert snap.unified_5h_utilization == pytest.approx(0.0)
+        assert snap.unified_5h_utilization is None
         assert snap.retry_after is None
         assert snap.unified_5h_reset is None
 
@@ -146,6 +173,50 @@ class TestHeaderParsing:
         # Anthropic sends the reset instant as Unix epoch seconds, not an ISO timestamp.
         snap = _read(200, {_5H_RESET: "1784476200"})
         assert snap.unified_5h_reset == dt.datetime(2026, 7, 19, 15, 50, tzinfo=dt.UTC)
+
+
+class TestUnifiedVerdictHeaders:
+    """The account-wide verdict + the window it speaks for (``representative-claim``)."""
+
+    def test_unified_status_and_representative_claim_parse(self) -> None:
+        snap = _read(200, _FULL_HEADERS)
+        assert snap.unified_status == "allowed_warning"
+        assert snap.representative_claim == "seven_day"
+
+    @pytest.mark.parametrize("claim", ["five_hour", "seven_day"])
+    def test_each_claim_value_round_trips(self, claim: str) -> None:
+        assert _read(200, {_UNIFIED_STATUS: "rejected", _CLAIM: claim}).representative_claim == claim
+
+    def test_absent_verdict_headers_are_empty_strings(self) -> None:
+        snap = _read(200, {})
+        assert snap.unified_status == ""
+        assert snap.representative_claim == ""
+
+
+class TestOverageHeaders:
+    """Extra-usage (overage) balance — parsed from the same probe response as the windows."""
+
+    def test_every_overage_header_parses(self) -> None:
+        overage = _read(200, _FULL_HEADERS).overage
+        assert overage.status == "allowed"
+        assert overage.utilization == pytest.approx(0.95)
+        assert overage.reset == dt.datetime(2026, 7, 8, 0, 0, tzinfo=dt.UTC)
+        assert overage.in_use is True
+        assert overage.disabled_reason == ""
+        assert overage.is_available is True
+
+    @pytest.mark.parametrize("reason", ["org_level_disabled", "out_of_credits", "org_spend_cap_reached"])
+    def test_each_disabled_reason_is_carried_and_marks_overage_unavailable(self, reason: str) -> None:
+        overage = _read(200, {_OVERAGE_STATUS: "disabled", _OVERAGE_DISABLED_REASON: reason}).overage
+        assert overage.disabled_reason == reason
+        assert overage.is_available is False
+
+    @pytest.mark.parametrize(("raw", "in_use"), [("true", True), ("false", False), ("TRUE", True), ("", False)])
+    def test_in_use_flag_parses_case_insensitively(self, raw: str, *, in_use: bool) -> None:
+        assert _read(200, {_OVERAGE_IN_USE: raw}).overage.in_use is in_use
+
+    def test_absent_overage_headers_yield_the_empty_state(self) -> None:
+        assert _read(200, {}).overage == OverageUsage()
 
 
 class TestDefaultTransport:

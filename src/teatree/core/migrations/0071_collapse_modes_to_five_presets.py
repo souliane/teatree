@@ -18,13 +18,6 @@ is reconstructible from no shipped table. Migrating back to ``0070`` restores th
 columns at their field defaults (``False``/``False``/``True``) — the correct posture for
 ``off`` — so the pre-collapse resolver reads a coherent table. Recovery is forward:
 ``t3 loop preset use <name>`` plus the idempotent seed.
-
-One behaviour change the mask does not capture: old ``offline`` set
-``presence_sensitive=False``, so a SCHEDULE- or DEFAULT-sourced holiday was never
-presence-upgraded by a keystroke. With the column deleted a schedule/default ``off`` IS
-upgradable (:func:`teatree.core.mode_resolution._apply_presence_upgrade`). A manual
-``--hold`` override is source ``override`` and is still never upgraded, so an operator's
-explicit hold is unaffected.
 """
 
 from django.db import migrations

@@ -123,11 +123,22 @@ def _words(text: str) -> set[str]:
 #: the fail-open contract's words, and ordinary connectives. Nothing here names
 #: what a directive SAYS. Widening this set is a deliberate review decision —
 #: that is the whole point of deriving the denylist rather than hand-picking it.
+#: Widened for the DRAIN half (#4166 follow-up): "already", "drain" and "false"
+#: are locked into the todo-consolidate text by ``test_todo_directive_carries_the_
+#: drain_half`` (``already satisfies it`` / ``DRAIN`` / ``FALSE OPEN``), and each
+#: collides with the adapter for a reason that has nothing to do with what the
+#: directive says — ordinary "already registered" prose, the unrelated
+#: ``drain-queue`` reactive-loop name, and the Python ``False`` boolean literal.
+#: The controls below (``_LEAKING_SOURCES``) still catch a real leak with this
+#: widened set, which is the check that makes the widening safe.
 _ADAPTER_PLUMBING = frozenset(
     {
+        "already",
         "cannot",
         "cold",
+        "drain",
         "every",
+        "false",
         "first",
         "from",
         "list",
@@ -152,10 +163,20 @@ _ADAPTER_PLUMBING = frozenset(
 )
 
 
+def _without_imports(source: str) -> str:
+    """*source* with its import lines dropped — a module path is plumbing, never policy.
+
+    `teatree.loops.enable_verdict` reads as the layer-1 word "verdict" to a tokeniser,
+    so an ordinary import charged the adapter with carrying a directive's wording. Kept
+    out of `_ADAPTER_PLUMBING`: excusing the WORD would let prose using it through too.
+    """
+    return "\n".join(line for line in source.splitlines() if not re.match(r"\s*(from|import)\s+[\w.]", line))
+
+
 def policy_leaks(source: str, texts: Iterable[str]) -> list[str]:
     """Distinctive layer-1 policy words that appear in *source* — empty means pure."""
     distinctive = {word for text in texts for word in _words(text)} - _ADAPTER_PLUMBING
-    return sorted(distinctive & _words(source))
+    return sorted(distinctive & _words(_without_imports(source)))
 
 
 _LEAKING_SOURCES = {

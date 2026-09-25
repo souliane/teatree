@@ -11,6 +11,7 @@ for every open MR it ingests, so both paths feed the same nag pipeline.
 """
 
 import datetime as dt
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
@@ -19,9 +20,11 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.config import OnBehalfPostMode, TeaTreeConfig, UserSettings
+from teatree.config import TeaTreeConfig, UserSettings, cold_reader
 from teatree.core.backend_protocols import DraftState, PrOpenState
+from teatree.core.gates.review_request_guard import GuardTarget, ReconcileResult, ReconcileStatus
 from teatree.core.models import ReviewRequestPost
+from teatree.core.review.review_candidate import is_self_authored
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
@@ -38,7 +41,21 @@ CHANNEL = "C0DEMOCHAN1"
 BOT_THREAD_TS = "1700000000.001"
 MANUAL_TS = "1700000099.999"
 MR_BOT = "https://gitlab.example.com/team/project/-/merge_requests/7400"
-MR_MANUAL = "https://gitlab.example.com/team/project/-/merge_requests/7437"
+MR_MANUAL_OWNER = "https://gitlab.example.com/team/project/-/merge_requests/7437"
+MR_MANUAL_COLLEAGUE = "https://gitlab.example.com/team/project/-/merge_requests/7438"
+
+
+@pytest.fixture(autouse=True)
+def _guard_confirms_absence() -> Iterator[None]:
+    target = GuardTarget(channel_id=CHANNEL, channel_name="review", token="xoxb-test")
+    with (
+        patch("teatree.core.gates.review_request_guard.resolve_guard_target", return_value=target),
+        patch(
+            "teatree.core.gates.review_request_guard.reconcile_out_of_band",
+            return_value=ReconcileResult(ReconcileStatus.ABSENT),
+        ),
+    ):
+        yield
 
 
 @dataclass
@@ -125,6 +142,17 @@ class FakeHost:
         _ = (repo, pr_iid)
         return {"approvals_left": 1, "approved_by": [], "unresolved_resolvable": 0}
 
+    user: str = "owner"
+    author: str = "owner"
+
+    def current_user(self) -> str:
+        return self.user
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        if self.author != "owner":
+            return self.author
+        return "colleague" if pr_url == MR_MANUAL_COLLEAGUE else "owner"
+
 
 def _fetcher(messages: dict[str, list[RawAPIDict]]):
     def fetch(*, channel: str) -> list[RawAPIDict]:
@@ -145,19 +173,18 @@ class TestReviewNagCoversBothPaths(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        enabled = TeaTreeConfig(
-            user=UserSettings(review_nag_enabled=True, on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE),
-        )
+        enabled = TeaTreeConfig(user=UserSettings())
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_nag_fires_on_bot_tracked_and_manually_broadcast_mr(self) -> None:
+    def test_nag_tracks_only_owner_authored_manual_broadcasts(self) -> None:
         # --- 1. Bot-created row (the existing path) ---
         record_review_request_post(
             mr_url=MR_BOT,
             slack_channel_id=CHANNEL,
             slack_thread_ts=BOT_THREAD_TS,
+            overlay="",
         )
 
         # --- 2. Manually-posted row (the gap #1256 closes) ---
@@ -167,34 +194,117 @@ class TestReviewNagCoversBothPaths(TestCase):
         # row so the nag scanner can find it.
         backend = FakeSlack()
         history = {
-            CHANNEL: [{"text": f"please review {MR_MANUAL}", "ts": MANUAL_TS, "user": "USRG", "type": "message"}]
+            CHANNEL: [
+                {
+                    "text": f"please review {MR_MANUAL_OWNER} and {MR_MANUAL_COLLEAGUE}",
+                    "ts": MANUAL_TS,
+                    "user": "U_COLLEAGUE_POSTER",
+                    "type": "message",
+                }
+            ]
         }
-        states = {MR_MANUAL: MrState(url=MR_MANUAL, merged=False, approved=False)}
+        states = {
+            MR_MANUAL_OWNER: MrState(url=MR_MANUAL_OWNER, merged=False, approved=False, author_username="owner"),
+            MR_MANUAL_COLLEAGUE: MrState(
+                url=MR_MANUAL_COLLEAGUE, merged=False, approved=False, author_username="colleague"
+            ),
+        }
         SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
             fetch_channel_history=_fetcher(history),
             classify_mrs=_classifier(states),
+            owner_identities=("owner", "owner-alias"),
         ).scan()
 
         # The broadcast scanner must have seeded a ReviewRequestPost for
         # the manually-posted MR.
-        assert ReviewRequestPost.objects.filter(mr_url=MR_MANUAL).exists(), (
+        assert ReviewRequestPost.objects.filter(mr_url=MR_MANUAL_OWNER).exists(), (
             "SlackBroadcastsScanner did not seed a ReviewRequestPost for the "
             "manually-broadcast MR — the nag scanner is blind to it (#1256)."
         )
+        assert not ReviewRequestPost.objects.filter(mr_url=MR_MANUAL_COLLEAGUE).exists()
 
         # --- 3. Both rows are now idle for > 2 days ---
         old = timezone.now() - dt.timedelta(days=3)
-        ReviewRequestPost.objects.filter(mr_url__in=[MR_BOT, MR_MANUAL]).update(created_at=old)
+        ReviewRequestPost.objects.filter(mr_url__in=[MR_BOT, MR_MANUAL_OWNER]).update(created_at=old)
 
         # --- 4. The nag scanner must fire on BOTH threads ---
         nag_slack = FakeSlack()
-        signals = ReviewNagScanner(messaging=nag_slack, host=FakeHost()).scan()
+        signals = ReviewNagScanner(messaging=nag_slack, host=FakeHost(), identities=("owner",)).scan()
 
         pinged_threads = {p["thread_ts"] for p in nag_slack.posts}
         assert BOT_THREAD_TS in pinged_threads, "ReviewNagScanner did not nag the bot-tracked MR thread"
-        assert MANUAL_TS in pinged_threads, "ReviewNagScanner did not nag the manually-broadcast MR thread (#1256)"
+        assert MANUAL_TS in pinged_threads, "ReviewNagScanner did not nag the owner's manually-broadcast MR thread"
         assert all(p["text"].endswith(":pray:") for p in nag_slack.posts)
         kinds = [s.kind for s in signals]
         assert kinds.count("review_nag.ping") == 2, f"expected two pings, got {kinds}"
+
+    def test_declared_bot_manual_broadcast_is_tracked_with_no_aliases(self) -> None:
+        history = {
+            CHANNEL: [
+                {
+                    "text": f"please review {MR_MANUAL_OWNER}",
+                    "ts": MANUAL_TS,
+                    "user": "U_COLLEAGUE_POSTER",
+                    "type": "message",
+                }
+            ]
+        }
+        states = {
+            MR_MANUAL_OWNER: MrState(
+                url=MR_MANUAL_OWNER,
+                merged=False,
+                approved=False,
+                author_username="factory-bot",
+            )
+        }
+
+        with patch.object(
+            cold_reader,
+            "mapping_setting",
+            return_value={"gitlab.example.com": ["factory-bot"]},
+        ):
+            SlackBroadcastsScanner(
+                backend=FakeSlack(),
+                channels=[CHANNEL],
+                fetch_channel_history=_fetcher(history),
+                classify_mrs=_classifier(states),
+                owner_identities=(),
+            ).scan()
+
+        assert ReviewRequestPost.objects.filter(mr_url=MR_MANUAL_OWNER).exists()
+
+    def test_empty_aliases_dispatch_undeclared_author_without_tracking_a_nag(self) -> None:
+        history = {
+            CHANNEL: [
+                {
+                    "text": f"please review {MR_MANUAL_COLLEAGUE}",
+                    "ts": MANUAL_TS,
+                    "user": "U_COLLEAGUE_POSTER",
+                    "type": "message",
+                }
+            ]
+        }
+        states = {
+            MR_MANUAL_COLLEAGUE: MrState(
+                url=MR_MANUAL_COLLEAGUE,
+                merged=False,
+                approved=False,
+                author_username="undeclared-credential",
+            )
+        }
+
+        credential_host = FakeHost(user="undeclared-credential", author="undeclared-credential")
+        with patch.object(cold_reader, "mapping_setting", return_value={}):
+            assert is_self_authored(MR_MANUAL_COLLEAGUE, credential_host, ()) is False
+            signals = SlackBroadcastsScanner(
+                backend=FakeSlack(),
+                channels=[CHANNEL],
+                fetch_channel_history=_fetcher(history),
+                classify_mrs=_classifier(states),
+                owner_identities=(),
+            ).scan()
+
+        assert [signal.kind for signal in signals] == ["slack.review_intent"]
+        assert not ReviewRequestPost.objects.filter(mr_url=MR_MANUAL_COLLEAGUE).exists()

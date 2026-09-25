@@ -61,12 +61,12 @@ class TestExportDbToToml(TestCase):
 
     def test_native_scalar_types_round_trip(self) -> None:
         # Each JSON-stored value decodes to its native TOML scalar, not a string.
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 5)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready")
         ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
         teatree = _teatree(tomllib.loads(export_db_to_toml(scan_terms=()).toml))
-        assert teatree["issue_implementer_enabled"] is True
+        assert teatree["adaptive_intake_concurrency_enabled"] is True
         assert teatree["issue_implementer_max_concurrent"] == 5
         assert isinstance(teatree["issue_implementer_max_concurrent"], int)
         assert teatree["issue_implementer_label"] == "ready"
@@ -185,6 +185,19 @@ class TestExportSecretGuard(TestCase):
         assert teatree["banned_brands"] == ["acmebrand"]
         assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
         assert result.redacted == ()
+
+    def test_known_pass_key_rows_are_withheld_from_shared_export_and_kept_in_private_backup(self) -> None:
+        ConfigSetting.objects.set_value("gitlab_token_pass_key", "venue/gitlab", scope="acme")
+
+        shared = export_db_to_toml(scan_terms=())
+        private = export_db_to_toml(include_private=True, scan_terms=())
+
+        assert "venue/gitlab" not in shared.toml
+        assert [(row.scope, row.key, row.reason) for row in shared.redacted] == [
+            ("acme", "gitlab_token_pass_key", "credential-coordinate")
+        ]
+        assert tomllib.loads(private.toml)["overlays"]["acme"]["gitlab_token_pass_key"] == "venue/gitlab"
+        assert private.omitted == ()
 
     def test_clean_rows_are_untouched_by_the_scan(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -321,6 +334,27 @@ class TestImportTomlToDb(TestCase):
         assert "synthetic-user-ref" not in rendered["slack_user_id"]
         assert rendered["merge_wip"] == "4"
 
+    def test_private_backup_restores_a_known_overlay_pass_key_row(self) -> None:
+        text = '[backup]\ninclude_private = true\n[overlays.acme]\ngitlab_token_pass_key = "venue/gitlab"\n'
+
+        result = import_toml_to_db(text, scan_terms=(), restore_private=True)
+
+        assert result.rejected == ()
+        assert [(row.scope, row.key, row.is_private) for row in result.written] == [
+            ("acme", "gitlab_token_pass_key", True)
+        ]
+        assert ConfigSetting.objects.get_effective("gitlab_token_pass_key", scope="acme") == "venue/gitlab"
+
+    def test_private_backup_rejects_an_invalid_known_pass_key_entry(self) -> None:
+        text = '[backup]\ninclude_private = true\n[overlays.acme]\ngitlab_token_pass_key = "not a pass entry"\n'
+
+        result = import_toml_to_db(text, scan_terms=(), restore_private=True)
+
+        assert len(result.rejected) == 1
+        assert result.rejected[0].key == "gitlab_token_pass_key"
+        assert result.rejected[0].reason.startswith("invalid:")
+        assert ConfigSetting.objects.get_effective("gitlab_token_pass_key", scope="acme") is None
+
     def test_a_row_private_only_by_its_value_is_flagged_too(self) -> None:
         # The fourth withhold class: no key rule catches it, so `is_private` must be asked of
         # `redaction_reason` and not of `_unstorable_reason` (which returns None under the flag).
@@ -365,18 +399,18 @@ class TestImportTomlToDb(TestCase):
 
     def test_invalid_value_is_rejected(self) -> None:
         # A quoted "false" for a bool-typed setting fails the strict parser (#258).
-        result = import_toml_to_db('[teatree]\nissue_implementer_enabled = "false"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nadaptive_intake_concurrency_enabled = "false"\n', scan_terms=())
         assert len(result.rejected) == 1
         assert result.rejected[0].reason.startswith("invalid")
         assert ConfigSetting.objects.count() == 0
 
     def test_value_equal_to_effective_default_writes_no_row(self) -> None:
-        # issue_implementer_enabled's effective default is True (#3895), so a row
+        # adaptive_intake_concurrency_enabled's effective default is True (#3895), so a row
         # equal to it is redundant and skipped.
-        result = import_toml_to_db("[teatree]\nissue_implementer_enabled = true\n", scan_terms=())
+        result = import_toml_to_db("[teatree]\nadaptive_intake_concurrency_enabled = true\n", scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
-        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "issue_implementer_enabled")]
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "adaptive_intake_concurrency_enabled")]
         assert ConfigSetting.objects.count() == 0
 
     def test_import_of_the_shipped_default_value_writes_no_row(self) -> None:
@@ -447,7 +481,7 @@ class TestExportImportRoundTripIsByteStable(TestCase):
     """
 
     def _seed_representative_store(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 9)
         ConfigSetting.objects.set_value("excluded_skills", ["zzz"])
         ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # Personal — included in a shared export
@@ -501,10 +535,12 @@ class TestSeedTableExport(_SeedRowsTestCase):
         doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
         assert doc["loops"] == {"inbox": {"delay_seconds": 90}}
 
-    def test_a_disabled_loop_exports_its_default_enabled_flag(self) -> None:
+    def test_a_manual_override_is_an_incident_state_and_never_exports(self) -> None:
+        # `Loop.enabled` is the manual override layer, not the shipped posture: carrying one
+        # box's incident hold into another box's config would silently disable a loop there.
         Loop.objects.filter(name="inbox").update(enabled=False)
         doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
-        assert doc["loops"] == {"inbox": {"default_enabled": False}}
+        assert "loops" not in doc
 
     def test_a_retuned_mode_and_schedule_export_their_diverging_fields(self) -> None:
         Mode.objects.filter(name="off").update(description="my own words")
@@ -634,7 +670,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
 
     def _dump(self) -> str:
         ConfigSetting.objects.set_value("require_merge_evidence", value=True)
-        ConfigSetting.objects.set_value("architectural_review_cadence_hours", value=99)
+        ConfigSetting.objects.set_value("architectural_review_skill", value="custom-review-skill")
         ConfigSetting.objects.set_value("autoload", value=True)
         return export_db_to_toml(include_private=True).toml
 
@@ -652,9 +688,9 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
 
     def test_keys_are_ordered_by_the_hierarchy_not_alphabetically(self) -> None:
         dump = self._dump()
-        # ``autoload`` sorts first alphabetically but its group renders before the gates,
-        # so hierarchy order and alphabetical order are distinguishable here.
-        assert dump.index("autoload") < dump.index("architectural_review_cadence_hours")
+        # ``autoload`` sorts LAST of the two alphabetically but its group renders before the
+        # gates, so hierarchy order and alphabetical order are distinguishable here.
+        assert dump.index("autoload") < dump.index("architectural_review_skill")
 
     def test_the_grouped_dump_still_re_imports_exactly(self) -> None:
         dump = self._dump()
@@ -662,7 +698,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
         result = import_toml_to_db(dump, allow_safety_posture=True)
         assert not result.rejected, result.rejected
         assert ConfigSetting.objects.get_effective("require_merge_evidence", scope="") is True
-        assert ConfigSetting.objects.get_effective("architectural_review_cadence_hours", scope="") == 99
+        assert ConfigSetting.objects.get_effective("architectural_review_skill", scope="") == "custom-review-skill"
 
     def test_the_dump_is_a_deterministic_function_of_the_store(self) -> None:
         assert self._dump() == export_db_to_toml(include_private=True).toml

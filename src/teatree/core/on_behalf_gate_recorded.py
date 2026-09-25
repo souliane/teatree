@@ -12,25 +12,19 @@ exactly as #953 split ``teatree.utils.approval`` (pure) from
 
 :func:`require_on_behalf_approval` is the single chokepoint helper every
 on-behalf publish path calls *before* it publishes. Its outcome depends
-on the tri-state :class:`~teatree.config.OnBehalfPostMode`:
+on the active posture:
 
-*   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.PROCEED` (mode
-    :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`) → return, the post
-    proceeds;
+*   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.PROCEED` (a permitting
+    posture) → return, the post proceeds;
 *   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.AUTO_DRAFT`
     (action is a colleague-invisible draft-form post like
-    ``post_draft_note`` under either
-    :attr:`~teatree.config.OnBehalfPostMode.ASK` or
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` — drafts are
-    exempt from the gate under every blocking mode) → emit a
+    ``post_draft_note`` — drafts are exempt under BOTH postures) → emit a
     fire-and-forget bot→user DM and return; the post proceeds without
     consuming any recorded approval. The audit lives on the ``BotPing``
     ledger (``notify_user``); no ``OnBehalfAudit`` row is written because
     no approval was needed;
 *   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.BLOCK`
-    (a colleague-VISIBLE action under
-    :attr:`~teatree.config.OnBehalfPostMode.ASK` or
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`) + a recorded,
+    (a colleague-VISIBLE action under a forbidding posture) + a recorded,
     unconsumed, exactly-scoped
     :class:`OnBehalfApproval` → inside ONE ``transaction.atomic`` block:
     consume it single-use, run the caller's ``publish`` side-effect, write
@@ -62,9 +56,9 @@ refusal before doing expensive prep, then publish through
 :func:`require_on_behalf_approval`. The consuming path is exactly
 :func:`require_on_behalf_approval`; the peek can never burn an approval.
 
-Drafts are the ungated safe-by-default: every mode publishes draft-form
+Drafts are the ungated safe-by-default: every posture publishes draft-form
 notes autonomously (drafts are colleague-invisible and revocable, so they
-need no approval) while ASK / DRAFT_OR_ASK block every colleague-VISIBLE
+need no approval) while a forbidding posture blocks every colleague-VISIBLE
 mutation until the user records an approval. The user satisfies the gate
 for a visible post **without a TTY** via ``t3 review approve-on-behalf
 <target> <action> --approver <id>`` (the #777/#953 interactive-TTY-only
@@ -79,10 +73,54 @@ eager ORM import here would defeat the lazy chain and crash the CLI with
 ``ImproperlyConfigured`` (see souliane/teatree#1003).
 """
 
+import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
+from teatree.core.mode_resolution import owner_voice_forbidden, resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import (
+    OnBehalfContext,
+    OnBehalfVerdict,
+    on_behalf_authorship_refusal,
+    resolve_on_behalf_verdict,
+)
+
+if TYPE_CHECKING:
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval
+
+logger = logging.getLogger(__name__)
+
+
+def resolve_posture_verdict(action: str, context: OnBehalfContext | None = None) -> OnBehalfVerdict:
+    """The on-behalf verdict WITH the active posture's egress opinion applied.
+
+    The one verdict every real caller asks. :func:`~teatree.on_behalf_gate.resolve_on_behalf_verdict`
+    is the pure settings half and cannot read the ``Mode`` row without inverting the
+    dependency that keeps it importable from the CLI and the hooks.
+
+    The preset table decides what RUNS; this gate decides what SPEAKS. A refusal here is the
+    posture's ordinary per-action AFK line, so it is quiet.
+    """
+    return resolve_on_behalf_verdict(action, context, egress_forbidden=owner_voice_forbidden())
+
+
+def owner_voice_permitted() -> bool:
+    """Whether the active posture lets the owner's voice out — the owner's global opt-in.
+
+    The one thing a PROCEED verdict does not tell its caller: PROCEED is also reached
+    through the ``on_behalf_auto_actions`` allowlist and the author-side own-MR reply,
+    and only the posture is the global statement the #1207 live-post token defers to.
+    Reads the same fail-closed seam as :func:`resolve_posture_verdict`, so the two can
+    never disagree about the same post.
+    """
+    return not owner_voice_forbidden()
+
+
+def posture_refusal_cause() -> str:
+    """Which posture refuses the owner's voice, and the layer that selected it (a manual override, a schedule slot)."""
+    active = resolve_active_mode()
+    return f"the active posture {active.name!r} forbids acting on the owner's behalf ({active.reason})"
 
 
 def format_on_behalf_block_message(target: str, action: str) -> str:
@@ -90,12 +128,12 @@ def format_on_behalf_block_message(target: str, action: str) -> str:
 
     Pure, ORM-free, side-effect-free — the SINGLE SOURCE OF TRUTH for both
     :class:`OnBehalfPostBlockedError`'s message and the eval harness's gate-aware
-    ``t3@on_behalf_ask`` CLI stub, so the stub's refusal text can never drift from
+    ``t3@on_behalf_forbidden`` CLI stub, so the stub's refusal text can never drift from
     the production block message (vendored-by-derivation + a parity test, per
     ``/t3:rules`` § "Read the Canonical Source Before Fixing a Conformance Bug").
 
-    The message names BOTH **solution-oriented** ways to clear the gate — enable
-    the setting durably, or approve just this once — and never the wrong
+    The message names BOTH **solution-oriented** ways to clear the gate — select a
+    permitting posture durably, or approve just this once — and never the wrong
     "bypass the gate or do it yourself" pair (``/t3:rules`` § "Anticipate a
     Predictable Gate"). Best used *proactively*: a caller that can foresee the
     block via :func:`teatree.on_behalf_gate.on_behalf_post_will_block` surfaces
@@ -103,11 +141,47 @@ def format_on_behalf_block_message(target: str, action: str) -> str:
     rarely reached.
     """
     return (
-        f"on-behalf post blocked by on_behalf_post_mode (#960): "
+        f"on-behalf post blocked by the active posture: "
         f"{action} on {target!r} needs explicit user approval first. "
         f"Offer the owner the solution-oriented choice — never bypass-or-DIY:\n"
-        f"  1. Enable the setting durably: "
-        f"t3 <overlay> config_setting set on_behalf_post_mode immediate\n"
+        f"  1. Select a posture that permits it durably: "
+        f"t3 loop preset use present --reason <why>\n"
+        f"  2. Approve just this once (no terminal required): "
+        f"t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
+        f"then the agent re-runs this post. Never publish unattended."
+    )
+
+
+class OnBehalfPartialPublishError(RuntimeError):
+    """A publish that FAILED after some of its colleague-visible posts already landed.
+
+    Forge posts are not transactional, so a batch that fails on its third comment
+    leaves the first two permanently readable under the user's identity. Both halves
+    of the enclosing block would otherwise be undone together, and only one of them
+    should be: the approval consume rolls back (the authorization did not fully
+    deliver, so it survives the retry) while the audit for what DID publish must
+    persist — an on-behalf post a colleague can read with no audit row is exactly
+    what the audit exists to make impossible.
+
+    Carries the body's own ``(message, code)`` so
+    :func:`~teatree.cli.review.on_behalf._surface` re-emits it verbatim once the
+    rollback has happened.
+    """
+
+    def __init__(self, result: tuple[str, int]) -> None:
+        super().__init__(result[0])
+        self.result = result
+
+
+def format_posture_block_message(target: str, action: str, cause: str) -> str:
+    """The BLOCK message naming the posture that refused and the layer that selected it."""
+    return (
+        f"on-behalf post blocked by the active posture: "
+        f"{action} on {target!r} needs explicit user approval first — {cause}. "
+        f"Offer the owner the solution-oriented choice — never bypass-or-DIY:\n"
+        f"  1. Select a posture that permits it durably: "
+        f"t3 loop preset use present --reason <why> "
+        f"(t3 loop preset auto lifts a manual override; t3 loop preset show names the layer in force)\n"
         f"  2. Approve just this once (no terminal required): "
         f"t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
         f"then the agent re-runs this post. Never publish unattended."
@@ -119,13 +193,42 @@ class OnBehalfPostBlockedError(RuntimeError):
 
     Carries ``target``/``action`` plus a user-facing message that names the
     exact ``t3 review approve-on-behalf`` invocation that satisfies the
-    gate, so the blocked post can be surfaced to the user verbatim.
+    gate, so the blocked post can be surfaced to the user verbatim. *cause* is
+    :func:`posture_refusal_cause`'s answer, naming the posture and the layer that
+    selected it; empty keeps the generic message.
     """
+
+    def __init__(self, target: str, action: str, cause: str = "") -> None:
+        self.target = target
+        self.action = action
+        self.cause = cause
+        super().__init__(
+            format_posture_block_message(target, action, cause)
+            if cause
+            else format_on_behalf_block_message(target, action)
+        )
+
+
+class OnBehalfAuthorshipRefusedError(OnBehalfPostBlockedError):
+    """An intrinsic refusal that no approval, dial, mode, or allowlist can override."""
 
     def __init__(self, target: str, action: str) -> None:
         self.target = target
         self.action = action
-        super().__init__(format_on_behalf_block_message(target, action))
+        RuntimeError.__init__(self, format_on_behalf_authorship_refusal(target, action))
+
+
+def format_on_behalf_authorship_refusal(target: str, action: str) -> str:
+    """User-facing refusal without misleading approval instructions."""
+    return (
+        f"on-behalf post intrinsically refused: {action} on {target!r} requires "
+        "fresh forge proof that the owner authored the merge request; authorship is unproved."
+    )
+
+
+def _require_owner_authorship(*, target: str, action: str, context: OnBehalfContext | None) -> None:
+    if on_behalf_authorship_refusal(action, context):
+        raise OnBehalfAuthorshipRefusedError(target, action)
 
 
 def require_on_behalf_approval[PublishResult](
@@ -136,19 +239,18 @@ def require_on_behalf_approval[PublishResult](
     taint: str | None = None,
     context: OnBehalfContext | None = None,
 ) -> PublishResult:
-    """Gate one on-behalf post against the tri-state mode and run it atomically.
+    """Gate one on-behalf post against the active posture and run it atomically.
 
     See the module docstring for the four-outcome table. ``publish`` performs
     the colleague-visible side-effect and returns its result (the posted
-    artifact ref). Fail-closed: an unresolved (default) setting maps to
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`. Under both
-    blocking modes (ASK and DRAFT_OR_ASK) a colleague-VISIBLE action — any
-    action NOT in :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` —
-    BLOCKs when no recorded approval matches; a draft-form action is exempt
-    and AUTO_DRAFTs. *context* is what the caller knows about the post's
-    destination (:class:`~teatree.on_behalf_gate.OnBehalfContext`): the overlay
-    whose mode governs, and the PROVED owner-authorship that exempts an
-    author-side reply. Omitted, both resolve as they did before it existed.
+    artifact ref). Fail-closed: a posture that cannot be READ forbids the owner's
+    voice. Under a forbidding posture a colleague-VISIBLE action — any action
+    NOT in :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` — BLOCKs when no
+    recorded approval matches; a draft-form action is exempt and AUTO_DRAFTs.
+    *context* is what the caller knows about the post's destination
+    (:class:`~teatree.on_behalf_gate.OnBehalfContext`): the overlay whose allowlist
+    governs, and the PROVED owner-authorship that exempts an author-side reply.
+    Omitted, both resolve as they did before it existed.
 
     *   PROCEED / AUTO_DRAFT → run ``publish`` and return its result (no
         consume, no audit; AUTO_DRAFT also emits the autodraft DM first).
@@ -165,9 +267,10 @@ def require_on_behalf_approval[PublishResult](
     *   BLOCK + no approval + no graduation → raise
         :class:`OnBehalfPostBlockedError` before ``publish`` runs.
     """
+    _require_owner_authorship(target=target, action=action, context=context)
     if taint is None:
         taint = _default_owner_taint()
-    verdict = resolve_on_behalf_verdict(action, context)
+    verdict = resolve_posture_verdict(action, context)
     if verdict is OnBehalfVerdict.PROCEED:
         return publish()
     if verdict is OnBehalfVerdict.AUTO_DRAFT:
@@ -176,23 +279,80 @@ def require_on_behalf_approval[PublishResult](
 
     from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415 — lazy ORM
+    from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: the ORM model package eager-loads every model, so an import-scope import drags the app registry in pre-``django.setup()`` and crashes the CLI bootstrap (souliane/teatree#1003)
+        OnBehalfApproval,
+        OnBehalfAudit,
+    )
+
+    spent: OnBehalfApproval | None = None
+    try:
+        with transaction.atomic():
+            consumed = OnBehalfApproval.consume(target, action)
+            if consumed is None and _policy_grants_on_behalf(taint):
+                OnBehalfApproval.record(target, action, _POLICY_APPROVER)
+                consumed = OnBehalfApproval.consume(target, action)
+            if consumed is None:
+                raise OnBehalfPostBlockedError(target, action, posture_refusal_cause())
+            spent = consumed
+            result = publish()
+            OnBehalfAudit.objects.create(
+                approval=consumed,
+                target=consumed.target,
+                action=consumed.action,
+                approver_id=consumed.approver_id,
+            )
+            return result
+    except OnBehalfPartialPublishError as partial:
+        # The block has already rolled back here, so the consume is undone and the
+        # approval survives for the retry — right, since it did not fully deliver.
+        # What did deliver is colleague-visible for good, so it is audited outside
+        # the rollback rather than erased with it.
+        if spent is not None:
+            # An audit failure must not REPLACE the partial-publish signal: the caller's
+            # `_surface` maps four exception types, so any other one reaches it as an
+            # unmapped crash — losing both the report of what landed and the audit.
+            try:
+                _audit_the_posts_that_landed(spent)
+            except Exception:
+                logger.exception("on-behalf: could not audit the posts that landed for %s/%s", target, action)
+        cause = partial.__cause__
+        # `_surface` maps this error to `(message, 1)`, so a wrapped interrupt would vanish
+        # into a report; `from None` because `cause` already IS this error's own cause.
+        if cause is not None and not isinstance(cause, Exception):
+            raise cause from None
+        raise
+
+
+def _audit_the_posts_that_landed(spent: "OnBehalfApproval") -> None:
+    """Audit a partial publish AFTER its consume rolled back, in a transaction of its own.
+
+    *spent* is the in-memory row the rolled-back block consumed. Its DB row normally
+    survives (only the ``consumed_at`` stamp was undone), so the audit points at it as
+    usual. The one case it does not is the #119 policy graduation, which RECORDED its
+    approval inside the block that just rolled back — the audit's subject went with it,
+    so it is re-recorded, spent, since the posts did land under it and the retry
+    graduates a fresh grant of its own.
+    """
+    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: the ORM model package eager-loads every model, so an import-scope import drags the app registry in pre-``django.setup()`` and crashes the CLI bootstrap (souliane/teatree#1003)
+        OnBehalfApproval,
+        OnBehalfAudit,
+    )
 
     with transaction.atomic():
-        consumed = OnBehalfApproval.consume(target, action)
-        if consumed is None and _policy_grants_on_behalf(taint):
-            OnBehalfApproval.record(target, action, _POLICY_APPROVER)
-            consumed = OnBehalfApproval.consume(target, action)
-        if consumed is None:
-            raise OnBehalfPostBlockedError(target, action)
-        result = publish()
+        approval = OnBehalfApproval.objects.filter(pk=spent.pk).first()
+        if approval is None:
+            approval = OnBehalfApproval.record(spent.target, spent.action, spent.approver_id)
+            approval.consumed_at = timezone.now()
+            approval.save(update_fields=["consumed_at"])
         OnBehalfAudit.objects.create(
-            approval=consumed,
-            target=consumed.target,
-            action=consumed.action,
-            approver_id=consumed.approver_id,
+            approval=approval,
+            target=approval.target,
+            action=approval.action,
+            approver_id=approval.approver_id,
         )
-        return result
 
 
 def on_behalf_block_message(
@@ -215,9 +375,11 @@ def on_behalf_block_message(
     :class:`OnBehalfPostBlockedError` message. *context* must be the one the
     publish will pass, or the peek and the publish disagree about the same post.
     """
+    if on_behalf_authorship_refusal(action, context):
+        return format_on_behalf_authorship_refusal(target, action)
     if taint is None:
         taint = _default_owner_taint()
-    verdict = resolve_on_behalf_verdict(action, context)
+    verdict = resolve_posture_verdict(action, context)
     if verdict is not OnBehalfVerdict.BLOCK:
         return ""
 
@@ -225,7 +387,7 @@ def on_behalf_block_message(
 
     if OnBehalfApproval.has_unconsumed(target, action) or _policy_grants_on_behalf(taint):
         return ""
-    return str(OnBehalfPostBlockedError(target, action))
+    return str(OnBehalfPostBlockedError(target, action, posture_refusal_cause()))
 
 
 #: The approver id an on-behalf post graduated by the #119 dial is recorded under —

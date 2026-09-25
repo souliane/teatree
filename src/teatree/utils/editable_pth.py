@@ -62,22 +62,56 @@ def teatree_pth_path() -> Path | None:
 
 
 def pth_source_dirs(pth: Path) -> list[Path]:
-    """Return the directory paths a ``.pth`` file adds to ``sys.path``.
+    """Return the directory paths a ``.pth`` file adds to ``sys.path``; an unreadable file yields none."""
+    try:
+        return _read_pth_source_dirs(pth)
+    except OSError:
+        return []
+
+
+def _read_pth_source_dirs(pth: Path) -> list[Path]:
+    """Return the directory paths a ``.pth`` file adds to ``sys.path``; an unreadable file RAISES ``OSError``.
 
     A ``.pth`` line that is blank, a comment (``#``), or an ``import`` directive
     is not a path entry and is skipped, matching the ``site`` module's own rules.
     """
-    dirs: list[Path] = []
-    try:
-        lines = pth.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return dirs
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith(("#", "import ", "import\t")):
-            continue
-        dirs.append(Path(line))
-    return dirs
+    lines = pth.read_text(encoding="utf-8").splitlines()
+    return [Path(line) for raw in lines if (line := raw.strip()) and not line.startswith(("#", "import ", "import\t"))]
+
+
+@dataclass(frozen=True, slots=True)
+class SitePackages:
+    """One venv's site-packages directory, read for the ``.pth`` links it holds."""
+
+    path: Path
+
+    @classmethod
+    def of_project(cls, root: Path) -> "SitePackages | None":
+        """``<root>/.venv``'s site-packages, or ``None`` when *root* has no venv."""
+        found = next(iter(sorted((root / ".venv" / "lib").glob("python*/site-packages"))), None)
+        return cls(found) if found is not None else None
+
+    def _entries(self) -> list[tuple[Path, Path]]:
+        # A relative line resolves against the site directory, as the ``site`` module reads it. Strict:
+        # a reference that cannot be read must stop a reaper, never read as no reference at all.
+        return [
+            (pth, self.path / entry) for pth in sorted(self.path.glob("*.pth")) for entry in _read_pth_source_dirs(pth)
+        ]
+
+    def dangling_entries(self) -> tuple[tuple[Path, Path], ...]:
+        """``(pth, missing_dir)`` for every ``.pth`` line naming a directory that is gone."""
+        return tuple((pth, entry) for pth, entry in self._entries() if not entry.is_dir())
+
+    def referrers(self, checkout: Path) -> tuple[Path, ...]:
+        """The ``.pth`` files with a line naming a path inside *checkout*."""
+        roots = (checkout, checkout.resolve())
+        return tuple(
+            dict.fromkeys(
+                pth
+                for pth, entry in self._entries()
+                if any(entry.is_relative_to(root) or entry.resolve().is_relative_to(root) for root in roots)
+            )
+        )
 
 
 def receipt_editable_sources() -> dict[str, Path]:
@@ -226,12 +260,13 @@ class EditableInstall:
     host: Path | None
 
     def install_argv(self, uv: str) -> list[str]:
+        from teatree.utils.uv_constraints import uv_constraints_args  # noqa: PLC0415 — deferred with the repair path
         from teatree.utils.uv_overrides import uv_overrides_args  # noqa: PLC0415 — deferred with the repair path
 
         argv = [uv, "tool", "install", "--editable", str(self.checkout)]
         if self.host is not None:
             argv += ["--with-editable", str(self.host)]
-        return [*argv, *uv_overrides_args(self.checkout), "--force"]
+        return [*argv, *uv_overrides_args(self.checkout), *uv_constraints_args(self.checkout), "--force"]
 
     @property
     def install_command(self) -> str:

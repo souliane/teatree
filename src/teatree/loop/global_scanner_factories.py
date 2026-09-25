@@ -10,12 +10,14 @@ of the loop tick fan-out to stay under the module-health LOC cap.
 import os
 from pathlib import Path
 
-from teatree.config import discover_active_overlay, discover_overlays, load_config
+from teatree.config import discover_active_overlay, discover_overlays, get_effective_settings
+from teatree.config.settings import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
-from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
+from teatree.loop.job_identity import CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
+    ArtifactEvictionScanner,
     BacklogSweepScanner,
     CiEvalHealScanner,
     DbBackupScanner,
@@ -34,8 +36,9 @@ from teatree.loop.scanners import (
     SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
+from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.self_update import CORE_REPO_LABEL
-from teatree.loop.scanners.self_update_ci import GhMainCiStatus
+from teatree.loop.scanners.self_update_ci import ForgeMainCiStatus
 
 
 def _active_overlay_anchor() -> str:
@@ -54,8 +57,8 @@ def _active_overlay_anchor() -> str:
     from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — tick-time import
 
     active = discover_active_overlay()
-    raw = active.name if active is not None else _CANONICAL_CORE_OVERLAY
-    return resolve_overlay_name(raw) or _CANONICAL_CORE_OVERLAY
+    raw = active.name if active is not None else CANONICAL_CORE_OVERLAY
+    return resolve_overlay_name(raw) or CANONICAL_CORE_OVERLAY
 
 
 def _dogfood_smoke_scanner() -> Scanner | None:
@@ -63,9 +66,9 @@ def _dogfood_smoke_scanner() -> Scanner | None:
     from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415 — tick-time import
 
     return build_provision_smoke_scanner(
-        load_config=load_config,
+        resolve_settings=get_effective_settings,
         discover_active_overlay=discover_active_overlay,
-        canonical_fallback=_CANONICAL_CORE_OVERLAY,
+        canonical_fallback=CANONICAL_CORE_OVERLAY,
     )
 
 
@@ -145,21 +148,21 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     Returns ``None`` when ``self_update_disabled = true`` (the escape
     hatch) OR when there are no editable clones to walk (a non-editable
     install with no registered overlay project paths — nothing to pull).
-    Otherwise builds a single global :class:`SelfUpdateScanner` whose
-    cadence honours the ``self_update_cadence_hours`` setting (default
-    1 hour). The scanner is wired as a global job (``overlay=""``)
+    Otherwise builds a single global :class:`SelfUpdateScanner`, whose cadence
+    is the hourly ``housekeeping`` ``Loop`` row that fires it. It is wired as a
+    global job (``overlay=""``)
     because it concerns the editable installs themselves, not any one
     overlay's tracked work.
 
     #1760 wires the CI-green fail-closed gate and the deferred-reinstall
     queue: ``auto_update_require_green_main`` (default ON) refuses a
     ff-pull unless the default branch's CI is explicitly green — the
-    verdict comes from :class:`GhMainCiStatus`, the same ``gh
-    check-runs`` source the PR sweep uses. ``auto_update_reinstall``
-    (default OFF, ``T3_LOOP_AUTO_UPDATE`` env wins) opts into queuing a
-    deferred reinstall on an actual update.
+    verdict comes from :class:`ForgeMainCiStatus`, which routes each clone
+    to the arm its own ``origin`` speaks — ``gh`` check-runs on GitHub, the
+    commit's gating pipeline on GitLab. An actual update always queues the
+    deferred reinstall behind it.
     """
-    settings = load_config().user
+    settings = get_effective_settings()
     if settings.self_update_disabled:
         return None
     repos = _collect_self_update_repos()
@@ -167,40 +170,38 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
         return None
     return SelfUpdateScanner(
         repos=tuple(repos),
-        cadence_hours=settings.self_update_cadence_hours,
-        ci_status=GhMainCiStatus(),
+        ci_status=ForgeMainCiStatus(),
         require_green_main=settings.auto_update_require_green_main,
-        auto_update_reinstall=settings.auto_update_reinstall,
     )
 
 
 def _resource_pressure_scanner() -> ResourcePressureScanner | None:
     """Build the global resource-pressure scanner from teatree-core config (#128).
 
-    Returns ``None`` when ``resource_pressure_disabled = true`` (the durable
-    kill-switch, mirroring ``self_update_disabled``) so the job is never wired.
-    Otherwise builds a single global :class:`ResourcePressureScanner`
-    (``overlay=""``) — disk/RAM pressure is a host-level concern, not any one
-    overlay's tracked work. All thresholds, cadence, allow-lists, and
-    destructive opt-in flags come straight from ``UserSettings``; the
-    destructive levers default OFF.
+    A single global :class:`ResourcePressureScanner` (``overlay=""``) — disk/RAM
+    pressure is a host-level concern, not any one overlay's tracked work. All
+    thresholds, cadence and allow-lists come from the RESOLVED settings. Whether the loop
+    runs at all is the ``resource_pressure`` ``Loop`` row's preset opinion.
+
+    The two destructive levers are the exception, and deliberately so. Every read in this
+    module used to be ``load_config().user`` — the dataclass DEFAULTS, as that function's
+    own docstring says — so no stored row has ever reached this scanner. Resolving these
+    two along with the rest would therefore not be a repair but an ACTIVATION: a box that
+    set either flag at any point would begin deleting on the next tick having never done
+    so. That is the owner's call, so they stay at their shipped value and say why here,
+    rather than being armed as a side effect of fixing an unrelated bug.
     """
-    settings = load_config().user
-    if settings.resource_pressure_disabled:
-        return None
+    settings = get_effective_settings()
+    shipped = UserSettings()
     return ResourcePressureScanner(
         disk_warn_free_gb=settings.disk_warn_free_gb,
         disk_crit_free_gb=settings.disk_crit_free_gb,
         ram_warn_avail_gb=settings.ram_warn_avail_gb,
         ram_crit_avail_gb=settings.ram_crit_avail_gb,
-        cadence_minutes=settings.resource_pressure_cadence_minutes,
-        min_free_interval_minutes=settings.resource_pressure_min_free_interval_minutes,
         disk_cache_allowlist=tuple(settings.disk_cache_allowlist),
-        allow_destructive_disk=settings.allow_destructive_disk,
-        venv_idle_days=settings.venv_idle_days,
+        allow_destructive_disk=shipped.allow_destructive_disk,
         worktree_stale_days=settings.worktree_stale_days,
-        max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
-        allow_destructive_ram=settings.allow_destructive_ram,
+        allow_destructive_ram=shipped.allow_destructive_ram,
         ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
         scratch_retention_days=settings.scratch_retention_days,
         scratch_sweep_root=settings.scratch_sweep_root,
@@ -210,56 +211,65 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
 def _intake_concurrency_scanner() -> IntakeConcurrencyScanner | None:
     """Wire the global adaptive-intake-concurrency scanner (#3992).
 
-    Returns ``None`` under either kill-switch — its own
-    ``adaptive_intake_concurrency_enabled``, or ``resource_pressure_disabled``, which
-    stands the whole resource loop down. Global (``overlay=""``) for the same reason the
-    pressure scanner is: RAM is a property of the box, not of any one overlay's work.
+    Returns ``None`` under its own ``adaptive_intake_concurrency_enabled`` toggle, which
+    names this JOB rather than the loop — the preset admits the loop or it does not, and
+    cannot address one of its two scanners. Global (``overlay=""``) for the same reason
+    the pressure scanner is: RAM is a property of the box, not of any one overlay's work.
     """
-    settings = load_config().user
-    if settings.resource_pressure_disabled or not settings.adaptive_intake_concurrency_enabled:
+    settings = get_effective_settings()
+    if not settings.adaptive_intake_concurrency_enabled:
         return None
     return IntakeConcurrencyScanner(
         static_ceiling=settings.issue_implementer_max_concurrent,
         reserve_gb=settings.intake_ram_reserve_gb,
         per_agent_gb=settings.intake_ram_per_agent_gb,
-        cadence_minutes=settings.resource_pressure_cadence_minutes,
+    )
+
+
+def _artifact_eviction_scanner() -> ArtifactEvictionScanner:
+    """Wire the global dormant-artifact sweep (#4244).
+
+    Unconditional, and that is the design rather than an omission: a candidate is deleted
+    only once it is PROVED reconstructible — rebuild inputs present, no live process in
+    the checkout, no symlink resolving at it, and the population complete enough to say so
+    — and anything unprovable is kept silently. A switch in front of that adds no safety a
+    proof does not already give, and an off-by-default one only guarantees the reclaim
+    never happens.
+    """
+    settings = get_effective_settings()
+    return ArtifactEvictionScanner(
+        artifact_idle_days=settings.artifact_idle_days,
+        disk_warn_free_gb=settings.disk_warn_free_gb,
+        disk_crit_free_gb=settings.disk_crit_free_gb,
     )
 
 
 def _idle_stack_reaper_scanner() -> IdleStackReaperScanner | None:
     """Build the global idle-stack reaper scanner from teatree-core config (#2190).
 
-    Returns ``None`` when ``idle_stack_reaper_disabled = true`` (the durable
-    kill-switch, mirroring ``resource_pressure_disabled``). The reaper is
-    per-overlay scoped — it stops idle stacks of the active overlay — so the
-    overlay anchor is resolved via :func:`discover_active_overlay`, falling
-    back to the canonical core overlay when none is registered (mirrors
+    The reaper is per-overlay scoped — it stops idle stacks of the active overlay — so
+    the overlay anchor is resolved via :func:`discover_active_overlay`, falling back to
+    the canonical core overlay when none is registered (mirrors
     :func:`_scanning_news_scanner`).
     """
-    settings = load_config().user
-    if settings.idle_stack_reaper_disabled:
-        return None
+    settings = get_effective_settings()
     overlay_name = _active_overlay_anchor()
     return IdleStackReaperScanner(
         overlay=overlay_name,
         idle_minutes=settings.idle_stack_idle_minutes,
-        cadence_minutes=settings.idle_stack_reaper_cadence_minutes,
     )
 
 
 def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
     """Build the global snapshot-warmer scanner from teatree-core config (souliane/teatree#2949).
 
-    Returns ``None`` when ``snapshot_warmer_disabled = true`` (the durable
-    kill-switch) OR when the active overlay declares no DSLR-backed configs
+    Returns ``None`` when the active overlay declares no DSLR-backed configs
     (:meth:`OverlayProvisioning.snapshot_warmer_configs` default empty — nothing
     to warm). Per-overlay scoped like the reaper: the overlay anchor is
     resolved via :func:`discover_active_overlay`, falling back to the
     canonical core overlay when none is registered.
     """
-    settings = load_config().user
-    if settings.snapshot_warmer_disabled:
-        return None
+    settings = get_effective_settings()
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     overlay_name = _active_overlay_anchor()
@@ -276,21 +286,14 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
 def _db_backup_scanner() -> DbBackupScanner | None:
     """Build the global control-DB backup scanner from teatree-core config (directive #2).
 
-    Returns ``None`` when ``db_backup_disabled = true`` (the escape-hatch
-    kill-switch). The cadence + retention are teatree-platform config (the
-    ``[teatree]`` table, per-overlay overridable): a non-positive cadence /
-    retention already fails SAFE to the default at read time (the registry
-    parsers), so "keep at least a week of backups" cannot be mistyped away to 0.
-    The backup targets teatree's OWN control DB (resolved from the live Django
-    connection), so — unlike the snapshot warmer — it carries no overlay anchor.
+    The retention is teatree-platform config (the ``[teatree]`` table, per-overlay
+    overridable): a non-positive retention already fails SAFE to the default at read
+    time (the registry parsers), so "keep at least a week of backups" cannot be mistyped
+    away to 0. The backup targets teatree's OWN control DB (resolved from the live
+    Django connection), so — unlike the snapshot warmer — it carries no overlay anchor.
     """
-    settings = load_config().user
-    if settings.db_backup_disabled:
-        return None
-    return DbBackupScanner(
-        retention_days=settings.db_backup_retention_days,
-        cadence_hours=settings.db_backup_cadence_hours,
-    )
+    settings = get_effective_settings()
+    return DbBackupScanner(retention_days=settings.db_backup_retention_days)
 
 
 def _ci_eval_heal_scanner() -> CiEvalHealScanner | None:
@@ -325,13 +328,9 @@ def _ratchet_staleness_scanner() -> RatchetStalenessScanner | None:
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:
     """Build the global acquisition-queue drainer scanner from config (#2190, #44).
 
-    Returns ``None`` when ``local_stack_queue_disabled = true`` (the durable
-    kill-switch). Per-overlay scoped like the reaper; the per-item Fibonacci
-    backoff IS the cadence (carried on the row), so no marker is wired.
+    Per-overlay scoped like the reaper; the per-item Fibonacci backoff IS the cadence
+    (carried on the row), so no marker is wired.
     """
-    settings = load_config().user
-    if settings.local_stack_queue_disabled:
-        return None
     overlay_name = _active_overlay_anchor()
     return LocalStackQueueDrainerScanner(overlay=overlay_name)
 
@@ -343,8 +342,7 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     that runs once per day regardless of which overlays are registered.
     The settings live on :class:`teatree.config.UserSettings` (DB-home in
     the ``ConfigSetting`` store, with optional per-overlay
-    overrides). Returns ``None`` when ``scanning_news_disabled = true``
-    (the escape hatch).
+    overrides).
 
     #1267: the overlay-anchor identity is resolved via
     :func:`teatree.config.discover_active_overlay` rather than baked
@@ -356,9 +354,7 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     the skill to record candidates for approval instead of auto-filing
     issues.
     """
-    settings = load_config().user
-    if settings.scanning_news_disabled:
-        return None
+    settings = get_effective_settings()
     overlay_name = _active_overlay_anchor()
     return ScanningNewsScanner(
         overlay_name=overlay_name,
@@ -376,32 +372,22 @@ def _eval_local_scanner() -> EvalLocalScanner | None:
     ``.github/workflows/ci.yml`` (``eval-weekly``); this is the local
     half. The cadence is a teatree-core platform behaviour (weekly by
     default), so the settings live on :class:`teatree.config.UserSettings`
-    (the ``[teatree]`` table, per-overlay overridable). Returns ``None``
-    when ``eval_local_disabled = true`` (the escape hatch).
+    (the ``[teatree]`` table, per-overlay overridable).
 
     The overlay-anchor identity is resolved via
     :func:`teatree.config.discover_active_overlay`, falling back to the
     canonical post-0027 overlay name (``t3-teatree``) when no overlay is
     registered — mirroring :func:`_scanning_news_scanner`.
     """
-    settings = load_config().user
-    if settings.eval_local_disabled:
-        return None
+    settings = get_effective_settings()
     overlay_name = _active_overlay_anchor()
-    return EvalLocalScanner(
-        overlay_name=overlay_name,
-        skill=settings.eval_local_skill,
-        cadence_hours=settings.eval_local_cadence_hours,
-    )
+    return EvalLocalScanner(overlay_name=overlay_name, skill=settings.eval_local_skill)
 
 
 def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
     """Build a global backlog-sweep scanner from teatree-core config (#2419, #4344).
 
-    ``backlog_sweep_disabled`` ships *open*, so the ``backlog_sweep``
-    ``Loop`` row is the single switch the operator flips — the shape
-    ``issue_implementer`` / ``triage_assessor`` / ``directive_loop`` already
-    use. Setting it stops scheduling sweeps without touching the row.
+    The ``backlog_sweep`` ``Loop`` row and the active preset are the single switch.
 
     The overlay-anchor identity is resolved via
     :func:`teatree.config.discover_active_overlay`, falling back to the
@@ -412,14 +398,11 @@ def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
     flag threaded into the scanner so the queued task instructs the
     skill to record fold proposals for approval instead of mass-closing.
     """
-    settings = load_config().user
-    if settings.backlog_sweep_disabled:
-        return None
+    settings = get_effective_settings()
     overlay_name = _active_overlay_anchor()
     return BacklogSweepScanner(
         overlay_name=overlay_name,
         skill=settings.backlog_sweep_skill,
-        cadence_hours=settings.backlog_sweep_cadence_hours,
         require_approval=settings.ask_before_backlog_sweep_closes,
     )
 
@@ -481,7 +464,7 @@ def build_default_jobs(
         if host is not None:
             jobs.extend(
                 [
-                    _ScannerJob(scanner=MyPrsScanner(host=host), overlay=""),
+                    _ScannerJob(scanner=MyPrsScanner(host=host, verdict_reader=RecordedVerdictReader()), overlay=""),
                     _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
                 ],
             )

@@ -35,8 +35,9 @@ _UPDATE_IN_PROGRESS_EXIT = 75
 _DISPATCHED_ONE_OFF = "DISPATCHED-RUN"
 
 # `STUB_RUNNING_SERVICES` is the space-separated set the stub reports as running, so a
-# test can model any stage of a staged swap. `compose ps --status running --quiet
-# <svc>` answers with an id only for a member of that set.
+# test can model any stage of a staged swap. `docker ps` answers with one
+# `<id> <service> <oneoff>` row per member — the label columns the wrapper's own
+# `--format` asks for, in ONE call for every route rather than a call per service.
 #
 # `STUB_RUNNING_AT` (epoch seconds) additionally withholds every answer until that
 # instant, modelling a route that is genuinely absent for the first seconds of a swap
@@ -47,22 +48,21 @@ _DOCKER_STUB = f"""#!/usr/bin/env bash
 case "$1" in
 version) exit "${{STUB_DAEMON_EXIT:-0}}" ;;
 image) exit "${{STUB_IMAGE_EXIT:-0}}" ;;
+ps)
+    if [ -n "${{STUB_RUNNING_AT:-}}" ] && [ "$(date +%s)" -lt "${{STUB_RUNNING_AT}}" ]; then
+        exit 0
+    fi
+    for svc in ${{STUB_RUNNING_SERVICES:-}}; do
+        printf '%s %s False\\n' "cid-$svc" "$svc"
+    done
+    exit 0
+    ;;
 esac
 shift
 while [ "${{1:-}}" = -f ] || [ "${{1:-}}" = -p ]; do shift 2; done
 sub="${{1:-}}"
 shift || true
 case "$sub" in
-ps)
-    svc="${{@: -1}}"
-    if [ -n "${{STUB_RUNNING_AT:-}}" ] && [ "$(date +%s)" -lt "${{STUB_RUNNING_AT}}" ]; then
-        exit 0
-    fi
-    case " ${{STUB_RUNNING_SERVICES:-}} " in
-    *" $svc "*) printf '%s\\n' "cid-$svc" ;;
-    esac
-    exit 0
-    ;;
 config) printf '%s\\n' "teatree-worker:local" ; exit 0 ;;
 exec)
     while :; do

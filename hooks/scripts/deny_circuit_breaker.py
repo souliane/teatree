@@ -1,11 +1,10 @@
-"""Repeated-denial circuit breaker — stop runaway loops burning tokens (#2384 PR3).
+"""Repeated-denial circuit breaker — stop runaway loops burning tokens.
 
-A stuck session can hit the SAME gate denial over and over: a real session hit
-one skill-loading denial 16 times consecutively across ~683 model turns, burning
-~2M output / ~190M total tokens (cache re-reads dominate a runaway loop). The
-model cannot satisfy a false/unsatisfiable demand by retrying, so it retries
-forever. This breaker trips at the K-th CONSECUTIVE identical denial and breaks
-the loop, tiered by gate class:
+A stuck session hits the SAME gate denial over and over: the model cannot
+satisfy a false or unsatisfiable demand by retrying, so it retries forever, and
+cache re-reads make a runaway loop cost hundreds of millions of tokens. This
+breaker trips at the K-th CONSECUTIVE identical denial and breaks the loop,
+tiered by gate class:
 
 * UX / non-safety gates (allow-list — the skill-loading gate id at minimum):
     FAIL OPEN this one call so the loop can make progress, on the theory that K
@@ -28,16 +27,14 @@ is crash-proof and fast: on ANY internal error it falls back to the gate's
 ORIGINAL decision — a breaker bug must never itself block a call nor wrongly
 allow one.
 
-Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR3) so the
-dispatcher shrinks; ``emit_pretooluse_deny`` keeps calling
-:func:`apply_deny_circuit_breaker` and ``main`` keeps calling
-:func:`reset_deny_streak`, both re-exported into the router unchanged.
+``emit_pretooluse_deny`` calls :func:`apply_deny_circuit_breaker` and ``main``
+calls :func:`reset_deny_streak`; both are re-exported into the router.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
 the already-extracted ``state_files`` sibling — never Django / ``teatree.core``.
 The shared spine helpers (``_state_file`` / ``_ensure_state_dir`` /
-``_teatree_bool_setting`` / ``_teatree_int_setting``) and the per-process hook
+``_teatree_bool_setting``) and the per-process hook
 context (``_current_hook_context``) stay in the router and are back-imported
 lazily inside the function bodies — the ``hooks/scripts`` sibling back-import the
 import-direction fitness test permits (it governs only the ``src/teatree/hooks``
@@ -62,7 +59,10 @@ sys.modules.setdefault("hooks.scripts.deny_circuit_breaker", sys.modules[__name_
 _DENY_STREAK_SUFFIX = "deny-streak"
 _CIRCUIT_BROKEN_SUFFIX = "circuit-broken"
 _FP_GRANT_SUFFIX = "fp-grants"
-_DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
+# Consecutive identical denials at which the breaker trips. Breaker protocol, not
+# operator policy: a lower K breaks a legitimate retry, a higher one burns the tokens
+# the breaker exists to save. `deny_circuit_breaker_enabled` is the lever that relaxes it.
+_DENY_CIRCUIT_BREAKER_THRESHOLD = 3
 
 # ``[fp-confirmed: <non-empty-reason>]`` in the CURRENT tool call is the agent's
 # confirmation that a repeated deny is a false positive (#3252). It suppresses
@@ -80,8 +80,11 @@ _FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
 # Canonical catalog of every escape marker + kill-switch: hooks/CLAUDE.md
 # § "Escape markers & kill-switches".
 _SIGNATURE_STRIP_RE = re.compile(
-    r"\[(?:fp-confirmed|fg-ok|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok"
-    r"|brief-anchor-ok):[^\]]*\]"
+    r"\[(?:add-all-ok|admission-ok|brief-anchor-ok|config-overwrite-ok|cron-loop-ok|delegate-ok|fg-ok|fp-confirmed"
+    r"|general-purpose-ok|glab-base-ok|headless-authoring-ok|main-clone-ok|merge-detect-ok"
+    r"|orchestration-ok|quote-ok|reviewer-ok|scope-push-ok|single-branch-ok|skill-load-ok"
+    r"|skip-answer-gate|skip-completion-gate|skip-evidence-gate|skip-plan-gate|slack-mcp-ok"
+    r"|standing-goal-hold|visible-plan-ok):[^\]]*\]"
     r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
 )
 
@@ -100,6 +103,21 @@ _LEAK_GATE_MARKERS: tuple[str, ...] = (
     "credential",
 )
 
+# The same family keyed on the gate's declared IDENTITY, which every public-egress
+# leak gate stamps on its deny. The vocabulary above classifies only what a message
+# happens to SAY — neither AI-signature reason says any of it, so both were grantable
+# against the contract. It stays as a net BELOW the id check, where it can only widen
+# the family, never narrow it.
+LEAK_GATE_IDS: frozenset[str] = frozenset(
+    {
+        "ai_signature",
+        "banned_terms",
+        "dispatch_quote_scanner",
+        "quote_scanner",
+        "verbatim_operator_paste",
+    }
+)
+
 # Tool-input fields a call may carry the ``[fp-confirmed:]`` token in, mirroring
 # the skill-loading gate's per-call token surface (command for Bash;
 # new_string / content / file_path for Edit / Write). Each is capped so a huge
@@ -111,7 +129,11 @@ _TOKEN_SCAN_CAP = 512
 # when looped. Conservative allow-list: a deny whose reason does not start with
 # one of these is treated as a SAFETY gate and NEVER auto-opens. The
 # skill-loading gate is the documented minimum.
-_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = ("SKILL LOADING ENFORCEMENT", "LOOP REGISTRATION")
+_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = (
+    "SKILL LOADING ENFORCEMENT",
+    "LOOP REGISTRATION",
+    "TEATREE PLAN-FIRST GATE",
+)
 
 # Volatile substrings stripped from a deny reason before fingerprinting so "the
 # same denial" matches across retries even when the reason embeds a changing
@@ -148,22 +170,6 @@ def deny_circuit_breaker_enabled() -> bool:
     from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("deny_circuit_breaker_enabled", default=True)
-
-
-def deny_circuit_breaker_threshold() -> int:
-    """Consecutive-denial count K at which the breaker trips (default 3).
-
-    DB-first read of ``[teatree] deny_circuit_breaker_threshold`` via the router's
-    shared ``_teatree_int_setting`` adapter, TOML as never-lockout fallback.
-    ``minimum=1`` keeps a non-positive / non-int value falling to the default so a
-    malformed config can never disable the breaker by setting an impossible
-    threshold.
-    """
-    from hooks.scripts.hook_router import _teatree_int_setting  # noqa: PLC0415 deferred back-import
-
-    return _teatree_int_setting(
-        "deny_circuit_breaker_threshold", default=_DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD, minimum=1
-    )
 
 
 def _deny_gate_id(reason: str) -> str:
@@ -245,14 +251,16 @@ def _deny_fingerprint(gate_id: str, reason: str, signature: str) -> str:
     return digest[:16]
 
 
-def _deny_is_leak_gate(reason: str) -> bool:
-    """True iff *reason* is a PUBLIC-egress leak deny (never grantable, #3252).
+def _deny_is_leak_gate(reason: str, gate_id: str | None = None) -> bool:
+    """True iff this deny is a PUBLIC-egress leak block (never grantable, #3252).
 
-    The banned-terms / quote-scanner / high-confidence-secret path is fail-CLOSED
-    always; a confirmed-FP grant must never suppress it. Membership is read off
-    the reason because that is the only thing this seam receives — the gate's own
-    identity does not reach the breaker (see the ``_LEAK_GATE_MARKERS`` note).
+    The banned-terms / quote-scanner / verbatim-paste / AI-signature path is
+    fail-CLOSED always; a confirmed-FP grant must never suppress it. *gate_id* is
+    the gate's own identity and settles membership on its own; the reason
+    vocabulary is the fallback for a deny that reaches the breaker unstamped.
     """
+    if gate_id in LEAK_GATE_IDS:
+        return True
     low = reason.lower()
     return any(marker in low for marker in _LEAK_GATE_MARKERS)
 
@@ -367,7 +375,9 @@ def _record_circuit_broken_signal(session_id: str, gate_id: str, fingerprint: st
         _append_line(path, f"{fingerprint}\t{gate_id}\t{count}")
 
 
-def _confirmed_fp_decision(data: dict, reason: str, session_id: str, fingerprint: str) -> _BreakerDecision | None:
+def _confirmed_fp_decision(
+    data: dict, reason: str, session_id: str, fingerprint: str, gate_id: str | None
+) -> _BreakerDecision | None:
     """Suppress a deny when *fingerprint* is a confirmed false positive, else ``None``.
 
     A previously-granted identical FP is suppressed WITHOUT re-prompting; a fresh
@@ -376,7 +386,7 @@ def _confirmed_fp_decision(data: dict, reason: str, session_id: str, fingerprint
     the breaker keeps denying it. ``None`` means "no grant applies" and the caller
     proceeds to normal streak accounting.
     """
-    if _deny_is_leak_gate(reason):
+    if _deny_is_leak_gate(reason, gate_id):
         return None
     if _fp_grant_exists(session_id, fingerprint):
         return _BreakerDecision(allow=True, reason=reason)
@@ -390,7 +400,7 @@ def _confirmed_fp_decision(data: dict, reason: str, session_id: str, fingerprint
     return None
 
 
-def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
+def apply_deny_circuit_breaker(reason: str, *, gate_id: str | None = None) -> _BreakerDecision:
     """Route one PreToolUse deny through the repeated-denial circuit breaker.
 
     Returns a :class:`_BreakerDecision`: ``allow=True`` means SUPPRESS the deny
@@ -403,8 +413,12 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
     denied self-bypass cannot poison unrelated later commands. A session-scoped
     confirmed-FP grant (a ``[fp-confirmed:]`` token, or a UX gate the breaker
     concluded is an unsatisfiable false positive) suppresses the IDENTICAL FP
-    thereafter without re-prompting; the PUBLIC-egress leak gate is never
-    grantable (fail-closed always).
+    thereafter without re-prompting; a gate that stamps a *gate_id* in
+    :data:`LEAK_GATE_IDS` is never grantable (fail-closed always).
+
+    *gate_id* is the emitting gate's declared identity, distinct from the
+    ``reason_gate_id`` bucket derived from the reason's leading marker for
+    fingerprinting.
 
     Crash-proof: on a disabled breaker, a non-PreToolUse invocation, or ANY
     internal error, the original deny is preserved unchanged (fall back to the
@@ -418,16 +432,16 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
         if event != "PreToolUse" or not deny_circuit_breaker_enabled():
             return _BreakerDecision(allow=False, reason=reason)
         session_id = data.get("session_id", "") if isinstance(data, dict) else ""
-        threshold = deny_circuit_breaker_threshold()
-        gate_id = _deny_gate_id(reason)
+        threshold = _DENY_CIRCUIT_BREAKER_THRESHOLD
+        reason_gate_id = _deny_gate_id(reason)
         signature = _call_signature(data) if isinstance(data, dict) else ""
-        fingerprint = _deny_fingerprint(gate_id, reason, signature)
+        fingerprint = _deny_fingerprint(reason_gate_id, reason, signature)
 
         # Confirmed false-positive grant (session-scoped, per-fingerprint, #3252)
         # — a previously-confirmed or freshly-``[fp-confirmed:]``-tokened identical
         # FP is suppressed without re-prompting; never a leak deny.
         if isinstance(data, dict):
-            granted = _confirmed_fp_decision(data, reason, session_id, fingerprint)
+            granted = _confirmed_fp_decision(data, reason, session_id, fingerprint, gate_id)
             if granted is not None:
                 return granted
 
@@ -435,10 +449,10 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
         if count < threshold:
             return _BreakerDecision(allow=False, reason=reason)
 
-        _record_circuit_broken_signal(session_id, gate_id, fingerprint, count)
+        _record_circuit_broken_signal(session_id, reason_gate_id, fingerprint, count)
         if deny_is_ux_gate(reason):
             sys.stderr.write(
-                f"CIRCUIT BREAKER: gate '{gate_id}' denied {count} times consecutively "
+                f"CIRCUIT BREAKER: gate '{reason_gate_id}' denied {count} times consecutively "
                 "— auto-relaxing this call to break the loop; root cause is likely a "
                 "false or unsatisfiable demand. Investigate the gate, do not just retry.\n"
             )
@@ -450,7 +464,7 @@ def apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
             return _BreakerDecision(allow=True, reason=reason)
 
         sys.stderr.write(
-            f"CIRCUIT BREAKER: safety gate '{gate_id}' denied {count} times consecutively "
+            f"CIRCUIT BREAKER: safety gate '{reason_gate_id}' denied {count} times consecutively "
             "— NOT auto-relaxing a safety gate; escalating to break the loop.\n"
         )
         escalation = (

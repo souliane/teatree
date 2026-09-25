@@ -13,7 +13,7 @@ import pytest
 
 from teatree.eval.coverage import SkillCatalogError, render_text, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
-from teatree.eval.models import Matcher
+from teatree.eval.models import Matcher, SuccessfulToolCallMatcher
 
 _POSITIVE = (Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),)
 
@@ -36,6 +36,28 @@ def _skill(skills_dir: Path, name: str, *, exempt: str | None = None) -> None:
 
 
 class TestSkillEvalCoverage:
+    def test_successful_call_matcher_counts_as_coverage(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        _skill(skills, "ship")
+        spec = dataclasses.replace(
+            _spec("success", "skills/ship/SKILL.md"),
+            matchers=(
+                SuccessfulToolCallMatcher(
+                    tool="Bash",
+                    arg_path="command",
+                    operator="~",
+                    value="make test",
+                    result_operator="~",
+                    result_value="passed",
+                    before_tool="Bash",
+                    before_arg_path="command",
+                    before_operator="~",
+                    before_value="git push",
+                ),
+            ),
+        )
+        assert skill_eval_coverage(skills, [spec]).by_skill["ship"].covered
+
     def test_covered_skill_is_not_a_gap(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         _skill(skills, "ship")

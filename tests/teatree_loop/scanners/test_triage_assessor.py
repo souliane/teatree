@@ -144,24 +144,15 @@ class TriageAssessorScanTests(TestCase):
         assert _scanner(host).scan() == []
         assert _last_task().pk == prior.pk
 
-    def test_cadence_not_elapsed_blocks_new_queueing(self) -> None:
-        host = _Host(issues=[_issue(self.URL)])
-        _scanner(host, cadence_hours=24).scan()
-        prior = _last_task()
-        assert prior is not None
-        Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate(prior, hours=1)
-        assert _scanner(host, cadence_hours=24).scan() == []
-
     def test_cadence_elapsed_queues_new_task(self) -> None:
         host = _Host(issues=[_issue(self.URL)])
-        _scanner(host, cadence_hours=24).scan()
+        _scanner(host).scan()
         prior = _last_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
         _backdate(prior, hours=25)
         # A survivor still exists (no recommendation recorded yet), so cadence re-queues.
-        second = _scanner(host, cadence_hours=24).scan()
+        second = _scanner(host).scan()
         assert len(second) == 1
         assert second[0].payload["trigger"] == "cadence"
         assert _last_task().pk != prior.pk

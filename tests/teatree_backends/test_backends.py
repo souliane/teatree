@@ -188,9 +188,15 @@ def test_gitlab_api_put_json(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_gitlab_api_put_json_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
+    monkeypatch.setattr(gitlab_http, "overlay_pass_key", lambda _credential: "")
     api = GitLabAPI(token="", base_url="https://gl.test/api/v4")
-    with pytest.raises(BackendResolutionError):
+    with pytest.raises(BackendResolutionError) as exc_info:
         api.put_json("endpoint")
+
+    remedy = str(exc_info.value)
+    assert "gitlab_token_pass_key" in remedy
+    assert "config_setting set gitlab_token_pass_key" in remedy
+    assert "--overlay" in remedy
 
 
 def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:

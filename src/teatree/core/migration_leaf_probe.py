@@ -25,6 +25,8 @@ and the post-merge ``migrate`` still backstop correctness.
 import ast
 from dataclasses import dataclass
 
+from django.apps import apps
+
 from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import run_allowed_to_fail
 
@@ -33,6 +35,8 @@ _MIGRATIONS_SEGMENT = "/migrations/"
 #: that layout for pytest modules (souliane/teatree#3862) and must never be read as one.
 _REAL_MIGRATIONS_ROOT = "src/"
 _DEPENDENCIES_FIELD = "dependencies"
+_APPS_MODULE_SUFFIX = "/apps.py"
+_LABEL_FIELD = "label"
 _DEPENDENCY_PAIR_LEN = 2
 _LS_TREE_MIN_FIELDS = 3
 _CLEAN_AND_CONFLICT_CODES = frozenset({0, 1})
@@ -94,34 +98,73 @@ def _merged_tree_oid(repo: str, reviewed_sha: str, target: str) -> str | None:
 
 
 def _migration_blobs(repo: str, tree_oid: str) -> dict[str, str]:
-    """Map ``"<app>/<name>"`` → blob oid for every REAL migration file in ``tree_oid``.
+    """Map ``"<app label>/<name>"`` → blob oid for every REAL migration file in ``tree_oid``.
 
     Recursively lists the tree; a ``src/``-rooted path under a ``…/migrations/``
     directory ending in ``.py`` (excluding ``__init__.py``) is a migration. Scoping to
     ``src/`` excludes ``tests/**/migrations/`` — pytest modules mirroring the src
-    layout (souliane/teatree#3862), never Django migrations. The app label is the
-    directory immediately above ``migrations``.
+    layout (souliane/teatree#3862), never Django migrations. The app is keyed by its
+    Django label (:func:`_app_label`), the name every ``dependencies`` tuple uses.
     """
     rc, out = _git(repo, "ls-tree", "-r", tree_oid)
     if rc != 0:
         return {}
-    blobs: dict[str, str] = {}
+    migrations_by_app_dir: dict[str, dict[str, str]] = {}
+    apps_modules: dict[str, str] = {}
     for line in out.splitlines():
         meta, _, path = line.partition("\t")
-        if not path or not path.startswith(_REAL_MIGRATIONS_ROOT) or not path.endswith(".py"):
+        parts = meta.split()
+        if not path.startswith(_REAL_MIGRATIONS_ROOT) or not path.endswith(".py") or len(parts) < _LS_TREE_MIN_FIELDS:
             continue
         if _MIGRATIONS_SEGMENT not in path:
+            if path.endswith(_APPS_MODULE_SUFFIX):
+                apps_modules[path.removesuffix(_APPS_MODULE_SUFFIX)] = parts[2]
             continue
         name = path.rsplit("/", 1)[-1].removesuffix(".py")
         if name == "__init__":
             continue
         app_dir, _, _ = path.partition(_MIGRATIONS_SEGMENT)
-        app_label = app_dir.rsplit("/", 1)[-1]
-        parts = meta.split()
-        if len(parts) < _LS_TREE_MIN_FIELDS:
-            continue
-        blobs[f"{app_label}/{name}"] = parts[2]
+        migrations_by_app_dir.setdefault(app_dir, {})[name] = parts[2]
+    blobs: dict[str, str] = {}
+    for app_dir, names in migrations_by_app_dir.items():
+        label = _app_label(repo, app_dir, apps_modules.get(app_dir))
+        blobs.update({f"{label}/{name}": oid for name, oid in names.items()})
     return blobs
+
+
+def _app_label(repo: str, app_dir: str, apps_module_oid: str | None) -> str:
+    """Registry label for apps this process runs (the tree is never imported), else ``apps.py``'s, else the folder."""
+    module = app_dir.removeprefix(_REAL_MIGRATIONS_ROOT).replace("/", ".")
+    installed = next((config.label for config in apps.get_app_configs() if config.name == module), None)
+    if installed is not None:
+        return installed
+    if apps_module_oid is not None:
+        rc, source = _git(repo, "cat-file", "-p", apps_module_oid)
+        declared = _declared_label(source) if rc == 0 else None
+        if declared is not None:
+            return declared
+    return module.rpartition(".")[2]
+
+
+def _declared_label(source: str) -> str | None:
+    """The one string ``label`` the classes in an ``apps.py`` assign; ``None`` when absent or ambiguous."""
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    labels: set[str] = set()
+    for node in module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Constant)):
+                continue
+            value = statement.value.value
+            if isinstance(value, str) and any(
+                isinstance(target, ast.Name) and target.id == _LABEL_FIELD for target in statement.targets
+            ):
+                labels.add(value)
+    return labels.pop() if len(labels) == 1 else None
 
 
 def _parse_dependencies(source: str) -> list[tuple[str, str]]:

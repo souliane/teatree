@@ -11,14 +11,46 @@ A dir this venue merely cannot resolve is neither: it WARNs as unverified and
 names no destructive remedy, because the same evidence is produced by a healthy
 checkout whose admin dir was recorded in another execution context.
 
-Neither finding names a remedy that cannot run: the split-namespace WARN asks the
+A third decay is the largest and was reported by nothing: a row whose directory is
+GONE. Both checks above filter to rows whose dir EXISTS — right for the verdicts
+they render, and it left the bulk of the registry invisible, measured at 114 of 137
+rows on a live box. The ledger stops being an inventory and nothing says so, which
+is what :func:`_check_registered_worktrees_have_a_checkout` reports.
+
+No finding names a remedy that cannot run: the split-namespace WARN asks the
 relocate policy which rows ``workspace relocate`` would actually move, and
-prescribes it only for those (#4368).
+prescribes it only for those (#4368); the vanished-checkout WARN names only the
+read-only disposition report, because absence is never proof of deadness.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from teatree.core.models import Worktree
+    from teatree.core.worktree.venue import VenueObservation
+
+#: How many rows a finding names before it trails off — enough to act on, short enough to read.
+_PREVIEW_ROWS = 5
+
+
+def _registered_path_observation(path: Path, canonical_root: Path) -> "VenueObservation | None":
+    from teatree.core.worktree.venue import (  # noqa: PLC0415 — keeps the pre-Django doctor import lightweight
+        VenueObservation,
+        observe,
+    )
+
+    path = path.expanduser()
+    canonical_root = canonical_root.expanduser()
+    if path.is_dir():
+        return VenueObservation.PRESENT
+    if path.exists() or path.is_symlink():
+        return None
+    if canonical_root.is_dir() and path.is_relative_to(canonical_root):
+        return VenueObservation.ABSENT
+    return observe(path)
 
 
 def _check_registered_worktrees_are_checkouts() -> bool:
@@ -67,9 +99,75 @@ def _check_registered_worktrees_are_checkouts() -> bool:
         typer.echo(
             f"WARN  Registered worktree {worktree.pk} at {worktree.worktree_path} UNVERIFIED: "
             f"{unresolved_checkout_reason(Path(worktree.worktree_path))}. Nothing reaps it — deletion needs "
-            "positive proof of deadness and this is not it. Recover work with t3 <overlay> workspace salvage."
+            "positive proof of deadness and this is not it. Judge it from the venue that owns the path."
         )
     return not broken
+
+
+def _check_registered_worktrees_have_a_checkout() -> bool:
+    """WARN on registered rows whose directory is GONE — reporting only, never a gate.
+
+    Split by what this venue is entitled to conclude, because one lump is how a
+    container-only checkout came to read as lost work. ``ABSENT`` is absence this
+    process READ: either the immediate neighbourhood or the canonical worktree
+    root is readable and the checkout is not in it. The latter keeps a checkout
+    absent after cleanup also prunes its empty ticket directory. ``UNOBSERVABLE``
+    is a subtree outside that owned root that was never mounted here, which a
+    perfectly healthy checkout in another execution context produces identically.
+
+    Neither authorises anything. The only command named is the read-only
+    ``release-dead-rows`` disposition report, which KEEPS each row. Absence is
+    not proof of deadness — that is the same standard the reapers hold, stated on
+    the surface an operator reads.
+    """
+    from teatree.core.models import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.worktree.venue import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        VenueObservation,
+    )
+    from teatree.core.worktree.worktree_roots import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        canonical_worktree_root,
+    )
+
+    canonical_root = canonical_worktree_root()
+    seen = [
+        (
+            worktree,
+            _registered_path_observation(Path(worktree.worktree_path), canonical_root),
+        )
+        for worktree in Worktree.objects.all()
+        if worktree.worktree_path
+    ]
+    absent = [worktree for worktree, state in seen if state is VenueObservation.ABSENT]
+    unobservable = [worktree for worktree, state in seen if state is VenueObservation.UNOBSERVABLE]
+    wrong_kind = [worktree for worktree, state in seen if state is None]
+    if absent:
+        typer.echo(
+            f"WARN  {len(absent)} of {len(seen)} registered worktree row(s) point at a directory this venue "
+            f"READ as absent — the ledger is that far from being an inventory: {_row_preview(absent)}. Nothing "
+            "reaps them: absence is not proof of deadness, and the branch each names may still hold work. Read "
+            "the per-row dispositions with t3 <overlay> workspace release-dead-rows (it keeps every one of "
+            "them)."
+        )
+    if unobservable:
+        typer.echo(
+            f"WARN  {len(unobservable)} registered worktree row(s) name a subtree this venue never mounted, so "
+            f"whether their checkout exists is UNKNOWN here: {_row_preview(unobservable)}. A live checkout in "
+            "another execution context reads exactly like this, so it is missing evidence rather than drift — "
+            "judge them from the venue that owns those paths."
+        )
+    if wrong_kind:
+        typer.echo(
+            f"WARN  {len(wrong_kind)} registered worktree row(s) point at a path that exists here but is not "
+            f"a directory: {_row_preview(wrong_kind)}. This is neither a vanished checkout nor an unmounted "
+            "subtree; repair the recorded path from the venue that owns it."
+        )
+    return True
+
+
+def _row_preview(worktrees: list["Worktree"]) -> str:
+    """The first few rows as ``<pk>:<branch>``, so a reader can act without a DB query."""
+    shown = ", ".join(f"{worktree.pk}:{worktree.branch or '<no branch>'}" for worktree in worktrees[:_PREVIEW_ROWS])
+    return f"{shown}, …" if len(worktrees) > _PREVIEW_ROWS else shown
 
 
 def _check_one_worktree_root() -> bool:
@@ -152,7 +250,12 @@ def check_worktree_health() -> bool:
     """
     try:
         return all(
-            (_check_registered_worktrees_are_checkouts(), _check_one_worktree_root(), _check_occupied_checkouts())
+            (
+                _check_registered_worktrees_are_checkouts(),
+                _check_registered_worktrees_have_a_checkout(),
+                _check_one_worktree_root(),
+                _check_occupied_checkouts(),
+            )
         )
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(f"WARN  Worktree health UNVERIFIED: the worktree registry could not be read ({exc}).")

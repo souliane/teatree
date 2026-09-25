@@ -77,10 +77,8 @@ class LoopDriver(models.TextChoices):
     driver on an owned slot is DRIVERLESS, warned about loudly at claim
     time and on the statusline).
 
-    Substrate-agnostic: detection reads the LIVE ``loop_runner_enabled``
-    setting and the LIVE worker flock, so the same code is correct before
-    and after the loop-runner default flip — only the observed distribution
-    of values changes. ``EXTERNAL`` is never auto-detected (a foreign
+    Substrate-agnostic: detection reads the LIVE fleet-admission verdict and
+    the LIVE worker flock. ``EXTERNAL`` is never auto-detected (a foreign
     scheduler is invisible to teatree); it is set only via an explicit
     ``--driver external`` override.
     """
@@ -108,6 +106,14 @@ class LoopLease(models.Model):
     # path a stale process omits.
     owner_pid_namespace = models.CharField(max_length=128, blank=True, default="", db_default="")
     acquired_at = models.DateTimeField(null=True, blank=True)
+    # When this slot was last TAKEN — the durable fire anchor, distinct from the live
+    # claim above. ``acquired_at`` is the claim itself and every release nulls
+    # it, so it answers "is someone holding this?" and CANNOT answer "when did this
+    # slot last run?". Reading it as the latter made every cleanly-released infra slot
+    # report `last: — next: —` forever: the reactive Slack-answer cycle had just
+    # reacted and dispatched on the owner's DM while `t3 loop list` showed it as having
+    # never fired. Stamped at every acquisition, never cleared by a release.
+    last_acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     # The tick driver for this owned slot (PR-26 / M9). Blank = DRIVERLESS: an
     # owned slot with no recorded driver looks healthy but never ticks, so the

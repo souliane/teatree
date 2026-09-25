@@ -71,3 +71,11 @@ PERSONAL_IDENTIFIERS: frozenset[str] = frozenset(
 def is_credential_reference(name: str) -> bool:
     """Whether *name* is a credential-coordinate setting (it names where a secret lives)."""
     return bool(CREDENTIAL_REFERENCE_RE.search(name))
+
+
+#: ``<credential>_pass_key`` — the per-venue ``pass`` entry name one credential reads.
+CREDENTIAL_ENTRY_SUFFIX = "_pass_key"
+
+
+def is_pass_key_setting(name: str) -> bool:
+    return len(name) > len(CREDENTIAL_ENTRY_SUFFIX) and name.endswith(CREDENTIAL_ENTRY_SUFFIX)

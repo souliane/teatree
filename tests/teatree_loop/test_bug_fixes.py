@@ -236,11 +236,10 @@ class TestM6DecodePrMissingNumber:
 # ---------------------------------------------------------------------------
 
 
-def _scanner_l1(*, cadence_hours: int = 168, retry_backoff_hours: int = 12) -> ArchitecturalReviewScanner:
+def _scanner_l1(*, cadence_hours: int = 168) -> ArchitecturalReviewScanner:
     return ArchitecturalReviewScanner(
         overlay_name=OVERLAY_A,
         cadence_hours=cadence_hours,
-        retry_backoff_hours=retry_backoff_hours,
         after_merge_count=999,
     )
 
@@ -261,35 +260,30 @@ def _seed_review_task(*, status: Task.Status, hours_ago: float, overlay: str = O
     )
 
 
-class TestL1BoundedPostFailureBackoff(TestCase):
-    """The architectural-review cadence re-fires a FAILED review after a bounded backoff.
+class TestL1ReviewCadenceIsTheOnlyClock(TestCase):
+    """The architectural-review re-fire is decided by the last COMPLETED review alone.
 
-    The expensive full-codebase review mini-loop ticks hourly, but the internal
-    gate limits firing to two clocks: the last COMPLETED review drives the full
-    ``cadence_hours`` (168h) success gate, and the last terminal attempt of any
-    status drives a shorter ``retry_backoff_hours`` (12h) backoff gate. A review
-    fires only when BOTH have elapsed. So a transient failure retries in 12h (no
-    week-long blind spot), a persistently failing review backs off to every 12h
-    instead of storming hourly, and a completed review still suppresses for the
-    full week.
+    A failed review leaves that clock untouched, so it retries on the loop's own
+    cadence — the ``arch_review`` row checks daily, so the retry is the next day.
+    The retired ``retry_backoff_hours`` second clock could never bind against a
+    24h check, and a loop's cadence IS its retry interval.
     """
 
-    def test_recent_failure_within_backoff_is_suppressed(self) -> None:
-        """A FAILED review 30 min old must NOT re-dispatch — the backoff has not elapsed.
+    def test_a_recent_failure_does_not_suppress(self) -> None:
+        """A FAILED review 30 min old re-dispatches — no attempt-recency gate remains.
 
-        Anti-vacuous: if the backoff were ignored (hourly storm), the completed
-        clock would be None → bootstrap → a fresh expensive review every tick.
+        Anti-vacuous: the retired backoff returned [] here, so re-introducing any
+        attempt-recency condition turns this red.
         """
         _seed_review_task(status=Task.Status.FAILED, hours_ago=0.5)
 
-        assert _scanner_l1().scan() == []
+        assert len(_scanner_l1().scan()) == 1
 
-    def test_failure_past_backoff_redispatches(self) -> None:
-        """A FAILED review 13 h old (no completed review since) MUST re-dispatch.
+    def test_a_failure_leaves_the_cadence_clock_untouched(self) -> None:
+        """A FAILED review 13 h old re-dispatches: only a COMPLETED one moves the clock.
 
-        Anti-vacuous: if a failure suppressed for the full 168h week (the old
-        completed-only clock with no backoff bound, or treating a failure like a
-        completed review), this would return [] and leave a 7-day blind spot.
+        Anti-vacuous: if a failure were treated like a completed review, this
+        would return [] and leave a 7-day blind spot.
         """
         _seed_review_task(status=Task.Status.FAILED, hours_ago=13)
 
@@ -298,11 +292,7 @@ class TestL1BoundedPostFailureBackoff(TestCase):
         assert len(signals) == 1
 
     def test_completed_review_suppresses_for_full_week(self) -> None:
-        """A COMPLETED review 13 h old (past the 12h backoff) still suppresses.
-
-        Anti-vacuous: if the 12h backoff were the only gate, a completed review
-        older than 12h would wrongly re-fire long before its 168h cadence.
-        """
+        """A COMPLETED review 13 h old still suppresses — the 168h cadence governs."""
         _seed_review_task(status=Task.Status.COMPLETED, hours_ago=13)
 
         assert _scanner_l1().scan() == []

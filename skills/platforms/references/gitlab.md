@@ -145,6 +145,8 @@ glab mr update <IID> --description '<description>' -R <repo>
 
 When fixing descriptions, **preserve the full body** — read current description first with `glab mr view --output json`.
 
+**Pass the description as an inline literal — a `$(cat …)` substitution is BLOCKED.** The pre-publish quote-scanner classifies a command by its shell CONSTRUCTS, not by what the body says, so any substitution or redirection forces a conservative scan of the whole command and refuses it — `--description "$(cat body.md)"`, and equally a `"$MR_BODY"` that a substitution filled, are both blocked on an innocuous body. Write the description out as a substitution-free quoted literal in the command itself. Same rule as [`../../rules/SKILL.md`](../../rules/SKILL.md) § "Never Pipe, Redirect, or Chain a gh/glab Publish Command", seen from the argument side rather than the trailing-pipe side.
+
 ### MR Diff
 
 ```bash
@@ -214,7 +216,7 @@ Pair with `ScheduleWakeup` to poll at sensible intervals (5-10 min for multi-min
 
 **Always use the `t3 review` CLI.** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw `glab api` or `curl` for draft notes.
 
-For an MR-level (`--general`) draft, prefer the `mcp__teatree__review_post_draft_note` MCP tool — the same gated seam, colleague-invisible by design; fall back to `t3 review post-draft-note … --general` when the MCP server isn't connected. **Inline** drafts stay on the CLI: the MCP tool takes `(repo, mr, note)` and has no file/line anchor.
+Prefer the `mcp__teatree__review_post_draft_note` MCP tool for **both** inline and MR-level drafts — the same gated seam, colleague-invisible by design. It takes `(repo, mr, finding)`, and the finding carries the CLI's `--file`/`--line` as one `anchor="path/to/file.py:LINE"` value; omit the anchor for the MR-level note the CLI spells `--general`. Fall back to the CLI below when the MCP server is not connected, or the tool is not offered.
 
 ```bash
 # Inline comment on a specific file and line

@@ -12,6 +12,8 @@ from typing import Any
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, cold_reader, get_effective_settings
 from teatree.core.models import ConfigSetting, DeferredQuestion
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 from teatree.mcp import command_catalogue
 from teatree.mcp.search import _capped
 
@@ -64,11 +66,8 @@ _REVIEW_GATE_KEYS = (
 _DEEP_MERGE_GATE_KEYS = (
     "require_merge_quality_verdict",
     "require_integration_review",
-    "require_plan_adequacy",
     "require_executed_repro",
     "require_debt_delta",
-    "require_rubric_verification",
-    "require_spec_coverage",
 )
 # The raw/out-of-band merge gate is a cold-hook key (no ``UserSettings`` field),
 # resolved from the canonical config DB with its registered fail-open default.
@@ -114,6 +113,17 @@ def config_setting_get(*, key: str, overlay: str | None = None) -> dict[str, Any
     """
     scope = overlay or ""
     label = _scope_label(scope)
+    if (credential := known_pass_key_credential(key)) is not None:
+        resolution = get_overlay(overlay or None).config.resolve_pass_key(credential)
+        source = str(resolution.source)
+        return {
+            "key": key,
+            "known": True,
+            "value": resolution.value,
+            "source": source,
+            "scope": label,
+            "overlay": scope,
+        }
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return {"key": key, "known": False, "value": None, "source": None, "scope": label, "overlay": scope}
     stored = ConfigSetting.objects.get_effective(key, scope=scope)

@@ -40,12 +40,17 @@ class RouteAllToAlias:
         return self.alias
 
 
-def register_sqlite_alias(alias: str, db_file: Path) -> None:
+def register_sqlite_alias(
+    alias: str,
+    db_file: Path,
+    *,
+    options: dict[str, object] | None = None,
+) -> None:
     """Register a private, file-backed SQLite connection under ``alias``."""
     connections.databases[alias] = {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(db_file),
-        "OPTIONS": {},
+        "OPTIONS": dict(options or {}),
         "ATOMIC_REQUESTS": False,
         "AUTOCOMMIT": True,
         "CONN_MAX_AGE": 0,
