@@ -13,12 +13,19 @@ eighteen loops ran only while the owner was away. ``token-outage`` sits outside 
 is defined by a property (a loop needs no tokens), not by a position in it.
 
 ``off`` carried the token-budget table, not "off", so it is RENAMED
-``token-outage`` and ``low-token`` MERGES into it — the two shipped byte-identical masks,
-and a box where they diverge is refused rather than resolved by picking one. A real
-all-false ``off`` is created in its place. ``away`` becomes ``afk`` and gains the owner's
-posture: the daily job without a voice. ``maintenance`` becomes self-repair rather than
-drain-only. Both declare ``egress = "forbid"`` — the AFK line is per-action, read at the
-on-behalf chokepoint, so masking loops could never have expressed it.
+``token-outage`` and ``low-token`` MERGES into it — the two shipped byte-identical masks.
+Where a box let them diverge, each disputed loop takes the shipped ``token-outage`` value
+and the choice is logged: a migration that refuses leaves the whole upgrade half-applied,
+which is worse than the one loop it would have protected. A real all-false ``off`` is
+created in its place. ``away`` becomes ``afk`` and gains the owner's posture: the daily
+job without a voice. ``maintenance`` becomes self-repair rather than drain-only. Both
+declare ``egress = "forbid"`` — the AFK line is per-action, read at the on-behalf
+chokepoint, so masking loops could never have expressed it.
+
+A posture is only rewritten while it still holds what teatree last shipped. A row the
+operator edited keeps its entries and description: the new posture is a default, and
+landing it over a deliberate edit would change what the box runs overnight with nobody
+having decided that. The kept row is logged so the difference is visible.
 
 ``factory-solo`` was an early ``afk`` and goes; anything naming it is re-pointed at
 ``afk``. To rebuild it: ``t3 loop preset create factory-solo``, then edit it from ``afk``.
@@ -28,7 +35,11 @@ indistinguishable from one that was ``low-token``, so a reverse would fork one r
 two. Recovery is forward — the idempotent seed plus ``t3 loop preset use <name>``.
 """
 
+import logging
+
 from django.db import migrations, models
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_OUTAGE = "token-outage"  # noqa: S105 — a preset name, not a credential
 _MERGED_INTO_TOKEN_OUTAGE = ("off", "low-token")
@@ -58,6 +69,107 @@ _MAINTENANCE_ON = frozenset(
 )
 _AFK_OFF = frozenset({"directive_loop"})
 
+# What the last release shipped for each rewritten posture. A row still equal to it was
+# never edited, so landing the new posture over it overrides no one.
+_PREVIOUSLY_SHIPPED = {
+    "present": dict.fromkeys(
+        [
+            "inbox",
+            "dispatch",
+            "tickets",
+            "ship",
+            "review",
+            "followup",
+            "audit",
+            "news",
+            "arch_review",
+            "dream",
+            "eval_local",
+            "dogfood",
+            "snapshot_warmer",
+            "housekeeping",
+            "idle_stack_reaper",
+            "local_stack_queue",
+            "resource_pressure",
+        ],
+        True,
+    ),
+    _OLD_AFK: {
+        **dict.fromkeys(
+            [
+                "inbox",
+                "dispatch",
+                "tickets",
+                "ship",
+                "review",
+                "audit",
+                "news",
+                "arch_review",
+                "dream",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            ],
+            True,
+        ),
+        "followup": False,
+    },
+    "maintenance": {
+        **dict.fromkeys(
+            [
+                "inbox",
+                "dispatch",
+                "ship",
+                "review",
+                "dream",
+                "eval_local",
+                "dogfood",
+                "arch_review",
+                "news",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            ],
+            True,
+        ),
+        **dict.fromkeys(["tickets", "issue_implementer", "followup", "audit"], False),
+    },
+}
+
+_PREVIOUSLY_SHIPPED_DESCRIPTIONS = {
+    "present": {"Full working-hours mode: deliver, interact, keep improvement loops warm."},
+    _OLD_AFK: {
+        "The factory keeps producing while the human is unreachable; colleague-facing loops off.",
+        "The factory keeps taking new work while the owner is unreachable; the colleague-facing loop is off.",
+    },
+    "maintenance": {
+        "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work.",
+        "Drain-only: finish and merge what is in flight, run the consolidation loops, take no new intake.",
+    },
+}
+
+# The shipped ``token-outage`` opinion, the tie-break for a loop ``off`` and ``low-token``
+# disagree on. A loop it does not name stays off: the preset is a token guard.
+_SHIPPED_TOKEN_OUTAGE_ON = frozenset(
+    [
+        "idle_stack_reaper",
+        "local_stack_queue",
+        "resource_pressure",
+        "snapshot_warmer",
+        "issue_disposition",
+        "followup",
+        "dm_sweep",
+        "housekeeping",
+        "db_backup",
+        "ratchet_repair",
+        "memory_skim",
+    ]
+)
+
 
 _DESCRIPTIONS = {
     "present": "Do everything: every loop runs and the factory acts on the owner's behalf.",
@@ -80,7 +192,7 @@ _SCHEDULE_DESCRIPTION = "AFK all week: the factory keeps taking work and never p
 
 
 def _totalize(mode, loop_states: dict[str, bool]) -> None:
-    for preset in mode.objects.all():
+    for preset in mode.all():
         stored = preset.entries if isinstance(preset.entries, dict) else {}
         preset.entries = {
             name: stored[name] if isinstance(stored.get(name), bool) else enabled
@@ -89,76 +201,98 @@ def _totalize(mode, loop_states: dict[str, bool]) -> None:
         preset.save(update_fields=["entries"])
 
 
-def _repoint(apps, old: str, new: str) -> None:
-    apps.get_model("core", "ModeOverride").objects.filter(preset_name=old).update(preset_name=new)
-    apps.get_model("core", "ModeScheduleSlot").objects.filter(preset_name=old).update(preset_name=new)
-    config_setting = apps.get_model("core", "ConfigSetting")
+def _repoint(apps, db: str, old: str, new: str) -> None:
+    apps.get_model("core", "ModeOverride").objects.using(db).filter(preset_name=old).update(preset_name=new)
+    apps.get_model("core", "ModeScheduleSlot").objects.using(db).filter(preset_name=old).update(preset_name=new)
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(db)
     for key in _PRESET_VALUED_SETTINGS:
-        config_setting.objects.filter(key=key, value=old).update(value=new)
+        config_setting.filter(key=key, value=old).update(value=new)
 
 
-def _merge_into_token_outage(apps, mode) -> None:
-    rows = [row for name in _MERGED_INTO_TOKEN_OUTAGE if (row := mode.objects.filter(name=name).first())]
+def _merge_into_token_outage(apps, db: str, mode) -> None:
+    rows = [row for name in _MERGED_INTO_TOKEN_OUTAGE if (row := mode.filter(name=name).first())]
+    merged = dict(rows[0].entries) if rows else {}
     if len(rows) == len(_MERGED_INTO_TOKEN_OUTAGE) and rows[0].entries != rows[1].entries:
         loops = set(rows[0].entries) | set(rows[1].entries)
         divergent = sorted(loop for loop in loops if rows[0].entries.get(loop) != rows[1].entries.get(loop))
-        refusal = (
-            f"'{rows[0].name}' and '{rows[1].name}' disagree on {', '.join(divergent)}; they merge into "
-            f"'{_TOKEN_OUTAGE}', so reconcile them deliberately and re-run"
+        for loop in divergent:
+            merged[loop] = loop in _SHIPPED_TOKEN_OUTAGE_ON
+        logger.warning(
+            "'%s' and '%s' disagree on %s; '%s' takes the shipped value for each (%s)",
+            rows[0].name,
+            rows[1].name,
+            ", ".join(divergent),
+            _TOKEN_OUTAGE,
+            ", ".join(f"{loop}={merged[loop]}" for loop in divergent),
         )
-        raise RuntimeError(refusal)
     for name in _MERGED_INTO_TOKEN_OUTAGE:
-        _repoint(apps, name, _TOKEN_OUTAGE)
+        _repoint(apps, db, name, _TOKEN_OUTAGE)
     for row in rows[1:]:
-        mode.objects.filter(pk=row.pk).delete()
+        mode.filter(pk=row.pk).delete()
     if rows:
-        mode.objects.filter(pk=rows[0].pk).update(name=_TOKEN_OUTAGE, description=_DESCRIPTIONS[_TOKEN_OUTAGE])
+        mode.filter(pk=rows[0].pk).update(name=_TOKEN_OUTAGE, entries=merged, description=_DESCRIPTIONS[_TOKEN_OUTAGE])
 
 
-def _land_postures(apps, mode, loop_names: set[str]) -> None:
-    mode.objects.filter(name="present").update(
-        entries=dict.fromkeys(sorted(loop_names), True), description=_DESCRIPTIONS["present"]
-    )
-    _repoint(apps, _OLD_AFK, _AFK)
-    afk = mode.objects.filter(name__in=(_OLD_AFK, _AFK)).first()
-    if afk is not None:
-        mode.objects.filter(pk=afk.pk).update(
-            name=_AFK,
-            entries={name: name not in _AFK_OFF for name in sorted(loop_names)},
-            egress="forbid",
-            description=_DESCRIPTIONS[_AFK],
+def _edited_by_the_operator(name: str, stored: dict[str, tuple[dict, str]]) -> bool:
+    if name not in stored:
+        return False
+    entries, description = stored[name]
+    edited = entries != _PREVIOUSLY_SHIPPED[name] or description not in _PREVIOUSLY_SHIPPED_DESCRIPTIONS[name]
+    if edited:
+        logger.warning(
+            "preset '%s' differs from what teatree shipped; keeping the operator's entries and description", name
         )
-    mode.objects.filter(name="maintenance").update(
-        entries={name: name in _MAINTENANCE_ON for name in sorted(loop_names)},
-        egress="forbid",
-        description=_DESCRIPTIONS["maintenance"],
-    )
-    mode.objects.get_or_create(
+    return edited
+
+
+def _land_postures(apps, db: str, mode, loop_names: set[str], stored: dict[str, tuple[dict, str]]) -> None:
+    if not _edited_by_the_operator("present", stored):
+        mode.filter(name="present").update(
+            entries=dict.fromkeys(sorted(loop_names), True), description=_DESCRIPTIONS["present"]
+        )
+    _repoint(apps, db, _OLD_AFK, _AFK)
+    afk = mode.filter(name__in=(_OLD_AFK, _AFK)).first()
+    if afk is not None:
+        mode.filter(pk=afk.pk).update(name=_AFK, egress="forbid")
+        if not _edited_by_the_operator(_OLD_AFK, stored):
+            mode.filter(pk=afk.pk).update(
+                entries={name: name not in _AFK_OFF for name in sorted(loop_names)},
+                description=_DESCRIPTIONS[_AFK],
+            )
+    mode.filter(name="maintenance").update(egress="forbid")
+    if not _edited_by_the_operator("maintenance", stored):
+        mode.filter(name="maintenance").update(
+            entries={name: name in _MAINTENANCE_ON for name in sorted(loop_names)},
+            description=_DESCRIPTIONS["maintenance"],
+        )
+    mode.get_or_create(
         name="off",
         defaults={"entries": dict.fromkeys(sorted(loop_names), False), "description": _DESCRIPTIONS["off"]},
     )
 
 
 def _land(apps, schema_editor) -> None:
-    loop = apps.get_model("core", "Loop")
-    mode = apps.get_model("core", "Mode")
-    loop_states = dict(loop.objects.values_list("name", "enabled"))
+    db = schema_editor.connection.alias
+    loop = apps.get_model("core", "Loop").objects.using(db)
+    mode = apps.get_model("core", "Mode").objects.using(db)
+    loop_states = dict(loop.values_list("name", "enabled"))
+    stored = {row.name: (row.entries, row.description) for row in mode.filter(name__in=_PREVIOUSLY_SHIPPED)}
 
     _totalize(mode, loop_states)
-    _merge_into_token_outage(apps, mode)
-    _land_postures(apps, mode, set(loop_states))
+    _merge_into_token_outage(apps, db, mode)
+    _land_postures(apps, db, mode, set(loop_states), stored)
 
     for name, successor in _DELETED_PRESETS.items():
-        _repoint(apps, name, successor)
-        mode.objects.filter(name=name).delete()
+        _repoint(apps, db, name, successor)
+        mode.filter(name=name).delete()
 
-    apps.get_model("core", "ModeSchedule").objects.filter(name=_OLD_SCHEDULE).update(
+    apps.get_model("core", "ModeSchedule").objects.using(db).filter(name=_OLD_SCHEDULE).update(
         name=_SCHEDULE, description=_SCHEDULE_DESCRIPTION
     )
-    config_setting = apps.get_model("core", "ConfigSetting")
-    config_setting.objects.filter(key=_SCHEDULE_VALUED_SETTING, value=_OLD_SCHEDULE).update(value=_SCHEDULE)
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(db)
+    config_setting.filter(key=_SCHEDULE_VALUED_SETTING, value=_OLD_SCHEDULE).update(value=_SCHEDULE)
     for old_key, new_key in _SETTING_RENAMES.items():
-        config_setting.objects.filter(key=old_key).update(key=new_key)
+        config_setting.filter(key=old_key).update(key=new_key)
 
 
 class Migration(migrations.Migration):

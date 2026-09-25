@@ -9,23 +9,27 @@ the keys today.
 """
 
 import importlib
+from types import SimpleNamespace
 
 import pytest
 from django.apps import apps
+from django.db import connection
 from django.test import TestCase
 
-from teatree.core.migrations._cadence_fold import DivergentScopedRowsError, fold_cadence
+from teatree.core.migrations._cadence_fold import DivergentScopedRowsError, fold_cadence, fold_cadence_or_default
 from teatree.core.models import ConfigSetting, Loop
 
 _MIGRATION = importlib.import_module(
     "teatree.core.migrations.0096_the_sweep_dogfood_and_housekeeping_rows_are_the_cadence"
 )
+_EVAL_AND_TRIAGE = importlib.import_module("teatree.core.migrations.0092_the_eval_and_triage_rows_are_the_cadence")
+_EDITOR = SimpleNamespace(connection=connection)
 
 _HOUR = 3600
 
 
 def _fold() -> None:
-    fold_cadence(_MIGRATION.FOLDS)(apps, None)
+    fold_cadence(_MIGRATION.FOLDS)(apps, _EDITOR)
 
 
 def _stored(key: str, hours: int, scope: str = "") -> None:
@@ -74,3 +78,25 @@ class TestDisagreeingScopesAreRefused(TestCase):
             _fold()
 
         assert Loop.objects.get(name="dogfood").delay_seconds == 24 * _HOUR
+
+
+class TestAnUnsetKeyFoldsItsRetiredDefault(TestCase):
+    """A box that never stored the key ran on its retired default, not on the row."""
+
+    def test_the_eval_and_triage_rows_take_the_weekly_and_daily_defaults(self) -> None:
+        _loop("eval_local", 86400)
+        _loop("triage_assessor", _HOUR)
+
+        fold_cadence_or_default(_EVAL_AND_TRIAGE.FOLDS)(apps, _EDITOR)
+
+        assert Loop.objects.get(name="eval_local").delay_seconds == 168 * _HOUR
+        assert Loop.objects.get(name="triage_assessor").delay_seconds == 24 * _HOUR
+
+    def test_a_stored_value_still_wins_over_the_default(self) -> None:
+        _loop("eval_local", 86400)
+        _stored("eval_local_cadence_hours", 12)
+
+        fold_cadence_or_default(_EVAL_AND_TRIAGE.FOLDS)(apps, _EDITOR)
+
+        assert Loop.objects.get(name="eval_local").delay_seconds == 12 * _HOUR
+        assert not ConfigSetting.objects.filter(key="eval_local_cadence_hours").exists()

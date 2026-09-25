@@ -14,11 +14,11 @@ def _carry_configured_values(apps, schema_editor):
     scope, so global and per-overlay rows move independently, and a row already
     present under the new key WINS, which makes a re-run a no-op.
     """
-    ConfigSetting = apps.get_model("core", "ConfigSetting")
+    rows = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
     new_key = RENAMED_SETTING_KEYS[_OLD_KEY]
-    for row in ConfigSetting.objects.filter(key=_OLD_KEY):
-        if not ConfigSetting.objects.filter(scope=row.scope, key=new_key).exists():
-            ConfigSetting.objects.create(
+    for row in rows.filter(key=_OLD_KEY):
+        if not rows.filter(scope=row.scope, key=new_key).exists():
+            rows.create(
                 scope=row.scope,
                 key=new_key,
                 value=row.value,
@@ -29,8 +29,8 @@ def _carry_configured_values(apps, schema_editor):
 
 
 def _restore_qualified_key(apps, schema_editor):
-    ConfigSetting = apps.get_model("core", "ConfigSetting")
-    ConfigSetting.objects.filter(key=RENAMED_SETTING_KEYS[_OLD_KEY]).update(key=_OLD_KEY)
+    rows = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
+    rows.filter(key=RENAMED_SETTING_KEYS[_OLD_KEY]).update(key=_OLD_KEY)
 
 
 class Migration(migrations.Migration):

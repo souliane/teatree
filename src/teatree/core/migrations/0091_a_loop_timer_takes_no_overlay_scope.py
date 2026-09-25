@@ -30,8 +30,8 @@ class UnhonourableOverlayScopeError(RuntimeError):
 
 
 def _refuse_overlay_scoped_rows(apps, schema_editor) -> None:
-    config_setting = apps.get_model("core", "ConfigSetting")
-    scoped = config_setting.objects.filter(key__in=BOX_GLOBAL_SCALARS).exclude(scope="")
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
+    scoped = config_setting.filter(key__in=BOX_GLOBAL_SCALARS).exclude(scope="")
     rows = sorted((row.key, row.scope, row.value) for row in scoped)
     if rows:
         msg = (

@@ -15,9 +15,9 @@ class DivergentScopedRowsError(RuntimeError):
 
 
 def _fold_onto_the_preset(apps, schema_editor) -> None:
-    config_setting = apps.get_model("core", "ConfigSetting")
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
     for key in RETIRED_SCALARS:
-        values = set(config_setting.objects.filter(key=key).values_list("value", flat=True))
+        values = set(config_setting.filter(key=key).values_list("value", flat=True))
         if len(values) > 1:
             msg = (
                 f"{key!r} is stored with disagreeing values across scopes ({sorted(values)!r}). "
@@ -25,7 +25,7 @@ def _fold_onto_the_preset(apps, schema_editor) -> None:
                 "one answer, write it into the active preset, then re-run this migration."
             )
             raise DivergentScopedRowsError(msg)
-        config_setting.objects.filter(key=key).delete()
+        config_setting.filter(key=key).delete()
 
 
 class Migration(migrations.Migration):

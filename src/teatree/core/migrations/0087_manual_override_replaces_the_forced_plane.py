@@ -9,7 +9,12 @@ already passed is kept as the date the owner MEANT to lift by, and the watcher r
 
 The base tier is nulled first: a ``True`` there was the shipped opt-in posture, not a
 human's intervention, and the totalize pass in ``0086`` already copied it into every
-preset. Keeping it would turn every shipped default into a permanent override.
+preset. Keeping it would turn every shipped default into a permanent override. A ``False``
+on a box that has been running loops is different: it is a loop that box keeps off, and a
+total preset naming it ``True`` would start it on the next tick. It becomes an ``off``
+override carrying a reason, so the loop stays off until someone lifts it on purpose. A box
+that has never run a loop has no behaviour to keep, so a fresh install takes the shipped
+presets as they are.
 
 ``loop_runner_enabled = false`` maps onto the new stop mechanism — an ``off`` override
 carrying its own reason — so a box someone stopped stays stopped until it is lifted
@@ -25,24 +30,32 @@ would invent history. Recovery is forward — set the override again by hand.
 """
 
 from django.db import migrations, models
+from django.utils import timezone
 
 _RUNNER_SETTING = "loop_runner_enabled"
 _RETIRED_SETTINGS = ("presence_upgrade_mode",)
 _STOPPED_REASON = "migrated from loop_runner_enabled=false — lift deliberately"
 _FORCED_ON = "on"
+_DISABLED_REASON = "migrated from Loop.enabled=false: this loop was off before the upgrade — lift deliberately"
 
 
 def _fold(apps, schema_editor) -> None:
-    loop = apps.get_model("core", "Loop")
-    loop_state = apps.get_model("core", "LoopState")
-    config_setting = apps.get_model("core", "ConfigSetting")
+    db = schema_editor.connection.alias
+    loop = apps.get_model("core", "Loop").objects.using(db)
+    loop_state = apps.get_model("core", "LoopState").objects.using(db)
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(db)
 
-    mode_override = apps.get_model("core", "ModeOverride")
-    mode_override.objects.filter(reason="").update(reason="migrated from an override that recorded no reason")
+    mode_override = apps.get_model("core", "ModeOverride").objects.using(db)
+    mode_override.filter(reason="").update(reason="migrated from an override that recorded no reason")
 
-    loop.objects.update(enabled=None, override_reason="", override_set_at=None, override_expected_lift_at=None)
-    for row in loop_state.objects.exclude(forced__in=("", "neutral")):
-        loop.objects.filter(name=row.name).update(
+    has_run = loop.exclude(last_run_at=None).exists() or loop.exclude(last_attempt_at=None).exists()
+    disabled = list(loop.filter(enabled=False).values_list("name", flat=True)) if has_run else []
+    loop.update(enabled=None, override_reason="", override_set_at=None, override_expected_lift_at=None)
+    loop.filter(name__in=disabled).update(
+        enabled=False, override_reason=_DISABLED_REASON, override_set_at=timezone.now()
+    )
+    for row in loop_state.exclude(forced__in=("", "neutral")):
+        loop.filter(name=row.name).update(
             enabled=row.forced == _FORCED_ON,
             override_reason=row.forced_reason or f"migrated from a forced-{row.forced} LoopState override",
             override_set_at=row.updated_at,
@@ -50,16 +63,16 @@ def _fold(apps, schema_editor) -> None:
         )
 
     if _runner_stopped(config_setting):
-        mode_override.objects.all().delete()
-        mode_override.objects.create(preset_name="off", reason=_STOPPED_REASON)
-    config_setting.objects.filter(key__in=(_RUNNER_SETTING, *_RETIRED_SETTINGS)).delete()
+        mode_override.all().delete()
+        mode_override.create(preset_name="off", reason=_STOPPED_REASON)
+    config_setting.filter(key__in=(_RUNNER_SETTING, *_RETIRED_SETTINGS)).delete()
 
 
 def _runner_stopped(config_setting) -> bool:
     """Did this box carry an explicit ``loop_runner_enabled = false``, in any scope?"""
     return any(
         row.value is False or str(row.value).strip().lower() in {"false", "0", "no"}
-        for row in config_setting.objects.filter(key=_RUNNER_SETTING)
+        for row in config_setting.filter(key=_RUNNER_SETTING)
     )
 
 

@@ -3,6 +3,7 @@
 from importlib import import_module
 
 from django.apps import apps
+from django.db import connection
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
@@ -16,6 +17,6 @@ class TestClearTheRetiredDreamPromotionCapRows(TestCase):
         ConfigSetting.objects.create(scope="acme", key="dream_promotion_cap", value="0")
         ConfigSetting.objects.create(scope="", key="dream_memory_promote", value="false")
 
-        clear_rows(apps, None)
+        clear_rows(apps, connection.schema_editor())
 
         assert list(ConfigSetting.objects.values_list("key", flat=True)) == ["dream_memory_promote"]

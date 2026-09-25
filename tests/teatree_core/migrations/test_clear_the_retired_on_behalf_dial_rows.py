@@ -22,7 +22,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
 
 from teatree.config import get_effective_settings
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Mode
 
 _BEFORE = ("core", "0108_review_unrecordable_failure_kind")
 _AFTER = ("core", "0109_clear_the_retired_on_behalf_dial_rows")
@@ -108,3 +108,23 @@ class TestTheWarningIsWhatStops(TestCase):
 
         assert not ConfigSetting.objects.filter(key="on_behalf_post_mode").exists()
         assert self._warnings_over(3, "acme-overlay") == 0
+
+
+class TestAnImmediateDialOpensEveryPreset(TestCase):
+    """``immediate`` meant "post on my behalf at any hour", and egress is now its only home."""
+
+    @staticmethod
+    def _egress_after(scope: str) -> set[str]:
+        Mode.objects.update_or_create(name="afk", defaults={"entries": {}, "egress": "forbid"})
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {}, "egress": "forbid"})
+        ConfigSetting.objects.create(scope=scope, key="on_behalf_post_mode", value="immediate")
+
+        clear_rows(live_apps, connection.schema_editor())
+
+        return set(Mode.objects.filter(name__in=("afk", "maintenance")).values_list("egress", flat=True))
+
+    def test_a_global_immediate_allows_egress_in_every_preset(self) -> None:
+        assert self._egress_after("") == {"allow"}
+
+    def test_an_overlay_scoped_immediate_cannot_open_a_box_global_preset(self) -> None:
+        assert self._egress_after("acme-overlay") == {"forbid"}

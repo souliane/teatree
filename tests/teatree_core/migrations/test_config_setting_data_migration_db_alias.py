@@ -160,3 +160,27 @@ class TestConfigSettingDataMigrationUsesTheSchemaEditorConnection(TestCase):
         self._canonical().create(scope="global", key=_OLD_KEY, value="canonical-only")
 
         assert apps.get_model("core", "ConfigSetting").objects.get(key=_OLD_KEY).value == "canonical-only"
+
+
+def _unscoped_config_queries() -> list[str]:
+    """``module:function`` for every migration body that names ConfigSetting yet queries an unscoped manager."""
+    import ast  # noqa: PLC0415 — only this structural check parses source
+    import re  # noqa: PLC0415 — only this structural check parses source
+
+    migrations_dir = Path(importlib.import_module("teatree.core.migrations").__file__).parent
+    unscoped = re.compile(r"\.objects\.(?!using\()")
+    offenders = []
+    for path in sorted(migrations_dir.glob("*.py")):
+        source = path.read_text()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = ast.get_source_segment(source, node) or ""
+            if '"ConfigSetting"' in body and unscoped.search(body):
+                offenders.append(f"{path.stem}:{node.name}")
+    return offenders
+
+
+def test_every_config_setting_data_migration_names_its_connection() -> None:
+    """The structural half of the two-alias proof, covering migrations the upgrade test never replays."""
+    assert _unscoped_config_queries() == []

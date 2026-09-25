@@ -13,8 +13,8 @@ CLEARED_KEY = "dream_promotion_cap"
 
 
 def clear_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
-    config_setting = apps.get_model("core", "ConfigSetting")
-    config_setting.objects.filter(key=CLEARED_KEY).delete()
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
+    config_setting.filter(key=CLEARED_KEY).delete()
 
 
 class Migration(migrations.Migration):

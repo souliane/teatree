@@ -19,8 +19,8 @@ CLEARED_KEYS = ("limit_autorecovery_enabled", "loop_runner_enabled")
 
 
 def clear_rows(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
-    config_setting = apps.get_model("core", "ConfigSetting")
-    config_setting.objects.filter(key__in=CLEARED_KEYS).delete()
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias)
+    config_setting.filter(key__in=CLEARED_KEYS).delete()
 
 
 class Migration(migrations.Migration):

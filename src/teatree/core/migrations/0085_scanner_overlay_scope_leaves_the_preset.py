@@ -25,10 +25,11 @@ def _names(raw: object) -> tuple[str, ...]:
 
 
 def _relocate(apps, schema_editor) -> None:
-    mode = apps.get_model("core", "Mode")
-    config_setting = apps.get_model("core", "ConfigSetting")
+    db = schema_editor.connection.alias
+    mode = apps.get_model("core", "Mode").objects.using(db)
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(db)
 
-    scopes = {_names(row.overlay_scope) for row in mode.objects.all()}
+    scopes = {_names(row.overlay_scope) for row in mode.all()}
     held = {scope for scope in scopes if scope}
     if len(held) > 1:
         readable = " | ".join(",".join(scope) for scope in sorted(held))
@@ -39,19 +40,15 @@ def _relocate(apps, schema_editor) -> None:
         raise RuntimeError(refusal)
     if not held:
         return
-    config_setting.objects.update_or_create(
-        key=_SETTING, scope=_GLOBAL_SCOPE, defaults={"value": list(next(iter(held)))}
-    )
+    config_setting.update_or_create(key=_SETTING, scope=_GLOBAL_SCOPE, defaults={"value": list(next(iter(held)))})
 
 
 def _restore(apps, schema_editor) -> None:
     """Put the setting's value back on every preset, so the column reverses cleanly."""
-    mode = apps.get_model("core", "Mode")
-    config_setting = apps.get_model("core", "ConfigSetting")
-
-    row = config_setting.objects.filter(key=_SETTING, scope=_GLOBAL_SCOPE).first()
+    db = schema_editor.connection.alias
+    row = apps.get_model("core", "ConfigSetting").objects.using(db).filter(key=_SETTING, scope=_GLOBAL_SCOPE).first()
     scope = list(_names(row.value)) if row is not None else []
-    mode.objects.update(overlay_scope=scope)
+    apps.get_model("core", "Mode").objects.using(db).update(overlay_scope=scope)
 
 
 class Migration(migrations.Migration):

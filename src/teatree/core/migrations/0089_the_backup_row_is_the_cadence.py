@@ -10,7 +10,9 @@ RETIRED_KEY = "db_backup_cadence_hours"
 
 
 def _drop_the_inner_cadence(apps, schema_editor) -> None:
-    apps.get_model("core", "ConfigSetting").objects.filter(key=RETIRED_KEY).delete()
+    apps.get_model("core", "ConfigSetting").objects.using(schema_editor.connection.alias).filter(
+        key=RETIRED_KEY
+    ).delete()
 
 
 class Migration(migrations.Migration):
