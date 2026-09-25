@@ -34,7 +34,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|NotebookEdit|Grep|Glob|Read|TaskCreate|TaskUpdate",
+        "matcher": "Bash|Edit|Write|NotebookEdit|Grep|Glob|TaskCreate|TaskUpdate",
         "hooks": [
           {
             "type": "command",

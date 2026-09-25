@@ -284,8 +284,8 @@ def _enable_task_gate() -> None:
 class TestOnTaskCreateGate:
     """The TaskCreated quote arm (#171): scans the new task's subject/description.
 
-    The PreToolUse dispatch-quote gate keys on ``Agent``/``Task`` but the
-    task-LIST tools BYPASS ``PreToolUse`` — only ``TaskCreated`` reaches them,
+    The PreToolUse dispatch-quote gate keys on ``Agent``/``Task``; the task-LIST
+    tools reach ``PreToolUse`` only for the visible-plan gate, so ``TaskCreated`` judges them,
     and that event has one producer, so this arm never sees a sub-agent dispatch
     (#4216). It rides that event. It ships default-OFF (opt-in, a #1640-class
     gate whose live behavior is unvalidated) and emits the ``TaskCreated`` teammate-stop
@@ -330,11 +330,11 @@ class TestOnTaskCreateGate:
         assert ledger[-1]["decision"] == "allow-override"
         assert ledger[-1]["override"] is True
 
-    def test_default_on_denies_high_quote(self, tmp_path: Path) -> None:
+    def test_default_off_passes_through_even_on_high_quote(self, tmp_path: Path) -> None:
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
-        assert blocked is True
-        assert payload is not None
-        assert payload["continue"] is False
+        assert blocked is False
+        assert payload is None
+        assert _ledger_lines(tmp_path) == []
 
     def test_explicit_false_disables(self, tmp_path: Path) -> None:
         _seed_gate_flag(value=False)
@@ -342,13 +342,13 @@ class TestOnTaskCreateGate:
         assert blocked is False
         assert payload is None
 
-    def test_broken_config_preserves_protective_default(self, tmp_path: Path) -> None:
+    def test_broken_config_fails_disabled(self, tmp_path: Path) -> None:
         db = Path(os.environ["T3_CONFIG_DB"])
         db.parent.mkdir(parents=True, exist_ok=True)
         db.write_bytes(b"not a sqlite database at all")
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
-        assert blocked is True
-        assert payload is not None
+        assert blocked is False
+        assert payload is None
 
     def test_missing_session_id_passes_through(self, tmp_path: Path) -> None:
         _enable_task_gate()

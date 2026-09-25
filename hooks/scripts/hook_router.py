@@ -250,7 +250,7 @@ def _current_hook_context() -> tuple[str, dict]:
     return _CURRENT_EVENT, _CURRENT_DATA
 
 
-_FILE_PATH_TOOLS = {"Read", "Edit", "Write"}
+_FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
 
 # Patterns that indicate workspace/infrastructure operations where the agent
@@ -1222,7 +1222,7 @@ def handle_protect_default_branch(data: dict) -> bool:
     Scoped to the TARGET FILE's own repo, never to the cwd's branch and
     never to "any git repo" (#126). The block fires only when ALL hold:
 
-    1. the tool is ``Edit``/``Write``/``Read`` with a ``file_path``;
+    1. the tool is ``Edit``/``Write`` with a ``file_path``;
     2. the path is NOT agent-harness state (memory / todos / per-project
         state) — those are git-tracked scratch state, never protected
         source, so they are exempt even on ``main``;
@@ -1960,12 +1960,11 @@ def _dispatch_quote_gate_on_task_create_enabled() -> bool:
 
     The PreToolUse dispatch-quote gate (:func:`handle_dispatch_prompt_quote_scanner`)
     keys on ``Agent``/``Task`` and is the ONLY interception point a sub-agent
-    dispatch has (#4216). The task-LIST tools are a different family: they bypass
-    ``PreToolUse`` entirely, so a quote pasted into a task-list ENTRY is reachable
-    only on ``TaskCreated`` — the concern this arm covers. It ships enabled after
-    its live-event conformance coverage; an explicit false remains the escape hatch.
+    dispatch has (#4216). The task-LIST tools reach ``PreToolUse`` only for the
+    visible-plan gate, so a quote pasted into a task-list ENTRY is judged on
+    ``TaskCreated`` — the concern this arm covers. Opt-in: an explicit true enables it.
     """
-    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=True)
+    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
 
 
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
