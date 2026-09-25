@@ -395,7 +395,7 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
     NO-OP only when the CLEAR carries no ticket (the rubric is FK'd to the ticket) —
     a ticketless CLEAR is
     graded instead by PR identity in :func:`assert_ticket_scoped_gates` at the shared
-    merge chokepoint, which REFUSES when the ticket resolves nowhere. The
+    merge chokepoint, which skips (and logs) a PR whose ticket resolves nowhere. The
     :class:`RubricNotSatisfiedError` raised on a block is re-wrapped as a
     :class:`MergePreconditionError` so the merge command's single re-escalation
     path surfaces it (the loop never self-issues a replacement CLEAR). Sibling of

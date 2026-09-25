@@ -16,12 +16,16 @@ plan to grade and no ticket a bypass could be recorded on. The setting-scoped
 anti-vacuity refusal still fires there — that one has an operator remedy.
 """
 
+import logging
+
 from teatree.core.gates import anti_vacuity_gate, rubric_gate
 from teatree.core.gates.anti_vacuity_gate import AntiVacuityAttestationError
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
+
+logger = logging.getLogger(__name__)
 
 
 def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
@@ -37,11 +41,14 @@ def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
     did not author: ``pr create`` puts every factory PR on the ``PullRequest`` ledger
     with its ticket, and a keystone CLEAR carries one. Such a PR has no plan to grade
     and no ticket a bypass could be recorded on, so refusing it is a lockout with no
-    escape rather than a gate — the rubric gate SKIPS it. The anti-vacuity refusal is
+    escape rather than a gate — the rubric gate SKIPS it, loudly. The anti-vacuity refusal is
     setting-scoped and unchanged: in force means refuse.
     """
     ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
+        logger.warning(
+            "merge of %s#%s is outside the rubric gate: no owning ticket resolves, so nothing is graded", slug, pr_id
+        )
         overlay = resolve_overlay_by_repo_identity(slug, fallback="") or None
         if not anti_vacuity_gate.anti_vacuity_required(overlay):
             return

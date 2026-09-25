@@ -146,6 +146,19 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
         """
         assert_ticket_scoped_gates(slug=_REPO, pr_id=9001, head_sha=_SHA)
 
+    def test_an_ungraded_pr_outside_the_rubric_gate_is_logged(self) -> None:
+        with self.assertLogs("teatree.core.merge.ticket_gates", level="WARNING") as logs:
+            assert_ticket_scoped_gates(slug=_REPO, pr_id=9005, head_sha=_SHA)
+        assert any("9005" in line and "rubric" in line for line in logs.output)
+
+    def test_the_ledger_ticket_is_graded_when_the_clear_carries_none(self) -> None:
+        """A ticketless CLEAR is a no-op on the keystone path, so the chokepoint must grade by the ledger."""
+        ticket = TicketFactory()
+        PullRequestFactory(ticket=ticket, repo=_REPO, iid="9006")
+        MergeClearFactory(slug=_REPO, pr_id=9006, ticket=None)
+        with pytest.raises(MergePreconditionError, match=f"ticket {ticket.pk}"):
+            assert_ticket_scoped_gates(slug=_REPO, pr_id=9006, head_sha=_SHA)
+
     def test_unresolvable_ticket_refuses_while_a_setting_is_in_force(self) -> None:
         with (
             patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
