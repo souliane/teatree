@@ -101,6 +101,9 @@ _VERIFY_RE = re.compile(
     re.IGNORECASE,
 )
 _CLAUSE_BREAK_RE = re.compile(r"[.;\n]")
+# Skill bodies and slash-command expansions arrive as user entries; their
+# worked examples are documentation, never the user's binding request.
+_HARNESS_WRAPPER_MARKERS = ("<command-name>", "<skill-format>", "Base directory for this skill:")
 
 
 def _gate_enabled() -> bool:
@@ -136,13 +139,22 @@ def _latest_user_text(transcript_path: str) -> str:
         blocks = _entry_message_blocks(entry)
         if is_tool_result_only(blocks):
             continue
+        if entry.get("isMeta"):
+            continue
         message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, str):
-            return content
-        return "\n".join(
-            str(block.get("text", "")) for block in blocks if isinstance(block, dict) and block.get("type") == "text"
+        text = (
+            content
+            if isinstance(content, str)
+            else "\n".join(
+                str(block.get("text", ""))
+                for block in blocks
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
         )
+        if any(marker in text for marker in _HARNESS_WRAPPER_MARKERS):
+            continue
+        return text
     return ""
 
 

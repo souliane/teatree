@@ -148,6 +148,43 @@ def test_unrelated_contexts_are_allowed(tmp_path: Path, user: str, assistant: st
     assert _verdict(_event(_write_transcript(tmp_path, user=user, assistant_text=assistant), "Bash"))[0] is False
 
 
+class TestInjectedSkillBodiesNeverArmTheGate:
+    """A loaded skill body is harness text, not the user's binding request.
+
+    ``skills/code/SKILL.md`` carries a two-ticket, plan-before example, so every
+    session that loaded it armed the gate on its own documentation.
+    """
+
+    _EXAMPLE = "Two unrelated tickets, the user says fix PROJ-4521 and PROJ-4242 fast: plan first, before any edit."
+    _SKILL_BODY = f"Base directory for this skill: /plugins/t3/skills/code\n{_EXAMPLE}"
+
+    def _transcript(self, tmp_path: Path, entry: dict) -> Path:
+        path = tmp_path / "transcript.jsonl"
+        genuine = {"type": "user", "message": {"role": "user", "content": "Carry on with the refactor."}}
+        path.write_text("\n".join(json.dumps(item) for item in (genuine, entry)), encoding="utf-8")
+        return path
+
+    def test_a_meta_entry_is_skipped(self, tmp_path: Path) -> None:
+        entry = {"type": "user", "isMeta": True, "message": {"role": "user", "content": self._EXAMPLE}}
+        assert _verdict(_event(self._transcript(tmp_path, entry), "Bash"))[0] is False
+
+    @pytest.mark.parametrize("wrapper", ["<command-name>/t3:code</command-name>", "<skill-format>true</skill-format>"])
+    def test_a_command_or_skill_wrapper_is_skipped(self, tmp_path: Path, wrapper: str) -> None:
+        text = f"{wrapper}\n{self._SKILL_BODY}"
+        entry = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+        assert _verdict(_event(self._transcript(tmp_path, entry), "Bash"))[0] is False
+
+    def test_the_same_text_from_the_user_still_arms_the_gate(self, tmp_path: Path) -> None:
+        """Anti-vacuity: only the harness wrapper is exempt, not the words."""
+        entry = {"type": "user", "message": {"role": "user", "content": self._EXAMPLE}}
+        assert _verdict(_event(self._transcript(tmp_path, entry), "Bash"))[0] is True
+
+
+def test_a_plan_without_verification_does_not_unlock_the_gate(tmp_path: Path) -> None:
+    text = "Per-ticket plan: PROJ-4521: implement the literal-gate removal. PROJ-4242: implement the visibility filter."
+    assert _verdict(_event(_write_transcript(tmp_path, assistant_text=text), "Bash"))[0] is True
+
+
 def test_missing_transcript_fails_open(tmp_path: Path) -> None:
     assert _verdict(_event(tmp_path / "missing.jsonl", "Bash"))[0] is False
 
