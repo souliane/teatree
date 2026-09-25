@@ -53,8 +53,7 @@ HEALTH_TTL = dt.timedelta(minutes=5)
 def fingerprint_token(token: str) -> str:
     """The stored form of a probed token — a hash, so the cache never holds the secret.
 
-    ``""`` for an empty token is the UNKNOWN marker, which
-    :meth:`AnthropicTokenUsage.matches_credential` never matches.
+    ``""`` for an empty token is the UNKNOWN marker.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else ""
 
@@ -304,9 +303,8 @@ class AnthropicTokenUsage(models.Model):
     """One ``pass`` account's cached unified rate-limit health.
 
     Keyed by the unique :attr:`pass_path` (the credential's routed ``pass`` entry).
-    :attr:`is_exhausted` is the routing verdict; :meth:`is_fresh` gates whether the
-    cache may be trusted without a re-probe, and :meth:`matches_credential` gates whether
-    it describes the credential currently stored at that ``pass`` entry.
+    :attr:`is_exhausted` is the routing verdict, and :meth:`is_fresh` gates whether the
+    cache may be trusted without a re-probe.
     """
 
     pass_path = models.CharField(max_length=255, unique=True)
@@ -359,14 +357,6 @@ class AnthropicTokenUsage(models.Model):
     def is_fresh(self, now: dt.datetime | None = None) -> bool:
         """Whether the cached verdict is still trusted (``valid_until`` in the future)."""
         return self.valid_until > (now or timezone.now())
-
-    def matches_credential(self, fingerprint: str) -> bool:
-        """Whether this verdict was probed with the credential *fingerprint* names.
-
-        An unrecorded fingerprint never matches, so a row written before the credential was
-        tracked re-probes exactly once rather than being trusted for an unknown account.
-        """
-        return bool(self.token_fingerprint) and self.token_fingerprint == fingerprint
 
     @property
     def earliest_reset(self) -> dt.datetime | None:

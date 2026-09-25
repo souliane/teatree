@@ -417,24 +417,6 @@ class TestRecordCarriesTheProbedCredential(TestCase):
         assert row.token_fingerprint == ""
 
 
-class TestMatchesCredential(TestCase):
-    def test_matches_the_fingerprint_it_was_probed_with(self) -> None:
-        row = AnthropicTokenUsage.objects.record(
-            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
-        )
-        assert row.matches_credential(fingerprint_token("TOK-a")) is True
-
-    def test_does_not_match_a_rotated_credential(self) -> None:
-        row = AnthropicTokenUsage.objects.record(
-            "anthropic/acct", _reading(), now=_NOW, token_fingerprint=fingerprint_token("TOK-a")
-        )
-        assert row.matches_credential(fingerprint_token("TOK-b")) is False
-
-    def test_an_unknown_stored_fingerprint_never_matches(self) -> None:
-        row = AnthropicTokenUsage.objects.record("anthropic/acct", _reading(), now=_NOW)
-        assert row.matches_credential(fingerprint_token("TOK-a")) is False
-
-
 class TestExpireAll(TestCase):
     def test_expires_every_row_and_returns_the_count(self) -> None:
         AnthropicTokenUsage.objects.record("anthropic/a", _reading(), now=_NOW)

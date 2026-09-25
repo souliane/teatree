@@ -32,7 +32,9 @@ from teatree.config.setting_taxonomy import (
 _REGISTRY_BY_CLASS: dict[SettingClass, set[str]] = {
     SettingClass.FEATURE_FLAG: set(FEATURE_FLAGS),
     SettingClass.GATE: set(GATE_EVIDENCE),
-    SettingClass.GATE_SWITCH: {key for key in ALL_KNOWN_CONFIG_SETTINGS if is_gate_switch(key)},
+    SettingClass.GATE_SWITCH: {
+        key for key in {*ALL_KNOWN_CONFIG_SETTINGS, *(r.key for r in RETIRED_SETTINGS)} if is_gate_switch(key)
+    },
     SettingClass.SAFETY_POSTURE: set(SAFETY_POSTURE_KEYS),
     SettingClass.COLD: set(COLD_SETTINGS) | set(COLD_HOOK_SETTINGS),
     SettingClass.REGISTRY: set(REGISTRY_KEYS),
