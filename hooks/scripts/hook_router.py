@@ -170,6 +170,7 @@ from hooks.scripts.question_gates import (
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
+    session_is_unattended,
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
@@ -4318,15 +4319,15 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     human IS reading the prose, so the gate is pointless nagging. Two attended
     signals skip it (mirroring ``handle_mirror_question_to_slack``): a LIVE USER
     TURN — the user typed a prompt seconds ago in THIS session
-    (``_is_live_user_turn``), responding in real time, even when this session is
-    the SessionStart-designated tick-owner (``_session_drives_loop`` true); and a
-    NON-OWNER turn — a *different* live session owns the loop. It thus enforces
-    only on a genuine autonomous turn: a driver verdict AND no live user turn.
+    (``_is_live_user_turn``), responding in real time, even when this session
+    is unattended (``session_is_unattended``: loop tick-owner OR a positively
+    identified SDK worker, #4818); and a NON-OWNER turn — a *different* live
+    session owns the loop. It thus enforces only on a genuine autonomous turn.
     FAIL SAFE: unknown ownership or an ``_is_live_user_turn`` error keep it firing.
     """
     if data.get("stop_hook_active"):
         return None
-    if _is_live_user_turn(data) or not _session_drives_loop(data.get("session_id", "")):
+    if _is_live_user_turn(data) or not session_is_unattended(data.get("session_id", "")):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
@@ -4477,14 +4478,14 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
-    """Defer a loop-driven ``AskUserQuestion`` to Slack; let an attended one render (#1174, #4673).
+    """Defer an unattended ``AskUserQuestion`` to Slack; let an attended one render (#1174, #4673).
 
     Runs LAST in the PreToolUse chain. Two arms — live user turn / attended
     non-owner turn: nothing leaves the box, the question renders in-client
     (#2058 slides the live window forward on the live arm, the #189 escape) and
     any older pending row for this (session, run) is superseded so the owner is
-    not nagged for a decision they just made; loop-driven / autonomous turn:
-    capture a generation-stamped ``DeferredQuestion``, deduped against a harness
+    not nagged for a decision they just made; unattended turn (``session_is_unattended``,
+    #4818): capture a generation-stamped ``DeferredQuestion``, deduped against a harness
     retry of the SAME denied call, kick its delivery, then deny so the agent
     narrates the deferral and proceeds — the answer arrives later via
     ``additionalContext``.
@@ -4495,7 +4496,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     if data.get("tool_name") != "AskUserQuestion":
         return False
     live = _is_live_user_turn(data)
-    if live or not _session_drives_loop(str(data.get("session_id", ""))):
+    if live or not session_is_unattended(str(data.get("session_id", ""))):
         if live:
             # #2058: an already-live turn rendering in-client is fresh evidence the user
             # is still driving, so the NEXT question in the same walk-through stays live

@@ -3,7 +3,7 @@
 A bare sibling module (like ``unknown_repo_push_gate`` / ``mr_cli_fields``):
 ``hook_router`` is a god-module at its public-function / LOC cap, so the
 AskUserQuestion-decision logic lives here and is imported back into the router's
-chains rather than growing the router. Two cohesive concerns.
+chains rather than growing the router. Three cohesive concerns.
 
 ``is_user_directed_question`` is the #807 detection heuristic: does the final
 assistant prose pose a decision question directed at the user? Used by the Stop
@@ -23,6 +23,9 @@ session. The AI eval ``asks_decisions_one_at_a_time`` pins the behaviour.
 ``denied_question_dedupe_key`` / ``denied_question_row_marker`` restore the
 away-mode-only guard #4202's postureless merge dropped for every loop-driven
 deny (#1174): a denied call is the one a harness retry can replay verbatim.
+
+``session_is_unattended`` widens "is anyone watching this terminal" for the two
+question-routing gates only (#4818) — see its own docstring.
 """
 
 import hashlib
@@ -30,6 +33,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from hooks.scripts.session_lane import LANE_SDK, session_lane
 
 DENIED_QUESTION_MARKER_PREFIX = "denied-q-"
 
@@ -508,3 +513,25 @@ def denied_question_row_marker(session_id: str, key: str) -> str:
     """
     digest = hashlib.sha256(f"{session_id}\x00{key}".encode()).hexdigest()
     return f"{DENIED_QUESTION_MARKER_PREFIX}{digest}"[:64]
+
+
+def session_is_unattended(session_id: str) -> bool:
+    """Widen "drives the loop" with a positively-identified SDK worker (#4818).
+
+    ``_session_drives_loop`` (the tick-owner registry) answers "is this session
+    the loop's own driver" — the right question for the loop-turn-management
+    gates it also serves (completion-claim, standing-goal), which this helper
+    deliberately does NOT touch. But a dispatched per-task worker (this
+    factory's own ``t3:coder``/``t3:debugger``/etc. sub-agents) is almost never
+    the tick owner, so it fell into the "attended" branch of the two
+    question-routing gates: a Stop-807 prose question skipped enforcement
+    entirely, and a mirrored ``AskUserQuestion`` rendered/blocked with nobody
+    watching the terminal. A POSITIVE SDK-lane identification
+    (``session_lane() == LANE_SDK``) closes that gap. ``LANE_UNKNOWN`` and
+    ``LANE_INTERACTIVE_CLI`` keep today's tested attended behaviour — only a
+    positive SDK identification changes the outcome, matching this codebase's
+    precision-biased gate philosophy.
+    """
+    from hooks.scripts.hook_router import _session_drives_loop  # noqa: PLC0415 — call-time back-import
+
+    return _session_drives_loop(session_id) or session_lane() == LANE_SDK

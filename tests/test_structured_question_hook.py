@@ -837,10 +837,15 @@ class TestGateIsLoopDrivenContextAware:
         assert result is True
 
     def test_must_not_fire_for_non_owner_attended_session(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A DIFFERENT live session owns the loop; this is the attended,
-        # non-owner interactive session a human is reading — no block.
+        # non-owner interactive session a human is reading — no block. Pinned
+        # non-SDK: this merges into the real env, and a suite run under an SDK
+        # agent already carries CLAUDE_AGENT_SDK_VERSION, which would otherwise
+        # make this the SDK-lane must-fire case below (#4818).
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "")
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "")
         router._write_loop_registry(self._owner_record("owner-1", os.getpid()))
         transcript = self._inline_question_transcript(tmp_path)
 
@@ -848,6 +853,21 @@ class TestGateIsLoopDrivenContextAware:
 
         assert _decision(capsys) == {}
         assert result is not True
+
+    def test_must_fire_for_sdk_lane_non_owner_session(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #4818: a dispatched SDK worker is almost never the tick-owner, so it fell
+        # into the branch above and skipped enforcement with nobody watching. A
+        # positive SDK-lane identification must still fire the gate.
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "0.2.95")
+        router._write_loop_registry(self._owner_record("owner-1", os.getpid()))
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "sdk-worker"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
 
 
 class TestGateSkipsLiveUserTurn:

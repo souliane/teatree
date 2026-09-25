@@ -10,6 +10,7 @@ through the single ``drain_unmirrored_deferred_questions`` -> ``notify_user`` eg
 import contextlib
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -176,6 +177,10 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=False),
+            # Pinned non-SDK: merges into the real env, and a suite run under an SDK
+            # agent already carries CLAUDE_AGENT_SDK_VERSION, which would otherwise
+            # make this the SDK-lane defer case rather than attended (#4818).
+            patch.dict(os.environ, {"CLAUDE_AGENT_SDK_VERSION": "", "CLAUDE_CODE_ENTRYPOINT": ""}, clear=False),
             patch.object(router, "_kick_question_drain") as kick,
         ):
             verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-attended"))
@@ -290,6 +295,8 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
         with (
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=False),
+            # Pinned non-SDK — see test_attended_non_owner_turn_renders_without_deny_or_delivery (#4818).
+            patch.dict(os.environ, {"CLAUDE_AGENT_SDK_VERSION": "", "CLAUDE_CODE_ENTRYPOINT": ""}, clear=False),
             patch.object(router, "_kick_question_drain"),
         ):
             assert router.handle_mirror_question_to_slack(payload) is False

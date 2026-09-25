@@ -38,6 +38,15 @@ def _ask_payload(question: str, options: list[dict] | None = None, **extra: str)
     return payload
 
 
+#: These patches merge into the real environment, so a suite run under an SDK agent
+#: (this repo's own dogfooding sessions) already carries ``CLAUDE_AGENT_SDK_VERSION`` —
+#: pin it EMPTY rather than leaving it absent, or "attended non-owner" silently becomes
+#: the SDK-lane case ``session_is_unattended`` now defers (#4818).
+def _pin_non_sdk_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "")
+
+
 def _slack_backend() -> MagicMock:
     backend = MagicMock()
     backend.open_dm.return_value = "D1"
@@ -201,6 +210,7 @@ class TestAttendedTurnNeverReachesSlack:
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
+        _pin_non_sdk_lane(monkeypatch)
         with patch.object(router, "_kick_question_drain") as kick:
             verdict = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-20"))
             capsys.readouterr()
@@ -226,12 +236,53 @@ class TestAttendedTurnNeverReachesSlack:
         assert stranded.dismissed_at is None
 
         monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
+        _pin_non_sdk_lane(monkeypatch)
         handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-8", run_id="r-1", tool_use_id="t-22"))
         capsys.readouterr()
 
         stranded.refresh_from_db()
         assert stranded.dismissed_at is not None, "the superseded loop row still nags on Slack"
         assert DeferredQuestion.objects.count() == 1, "the attended re-ask must not record its own row"
+
+
+class TestSdkLaneNonOwnerTurnStillDefers:
+    """#4818: a dispatched SDK worker is almost never the loop tick-owner.
+
+    Before ``session_is_unattended`` widened the check, a ``_session_drives_loop``
+    false routed such a session into exactly the "attended, non-owner" branch
+    :class:`TestAttendedTurnNeverReachesSlack` pins for a genuinely-watched
+    interactive session sharing a box with the owner — so its questions rendered
+    (blocked) in-client with nobody there to answer them. A positive SDK-lane
+    identification must override that and still defer to Slack.
+    """
+
+    def test_sdk_lane_non_owner_turn_defers(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "0.2.95")
+        with patch.object(router, "_kick_question_drain") as kick:
+            result = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-sdk", tool_use_id="t-30"))
+            payload = _stdout(capsys)
+
+        assert result is True, "an SDK-lane worker must defer, not render in-client"
+        assert payload.get("permissionDecision") == "deny"
+        assert kick.call_count == 1
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_sdk_lane_signalled_only_by_the_cli_entrypoint_also_defers(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Control: the entrypoint-prefix half of ``session_lane`` also qualifies."""
+        monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "")
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-py")
+        with patch.object(router, "_kick_question_drain") as kick:
+            result = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-sdk2", tool_use_id="t-31"))
+            capsys.readouterr()
+
+        assert result is True
+        assert kick.call_count == 1
 
 
 class TestLoopDeniedRetryDoesNotDoubleDeliver:
