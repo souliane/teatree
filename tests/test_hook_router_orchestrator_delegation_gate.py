@@ -71,6 +71,8 @@ MUST_ALLOW = (
     pytest.param("rg 'def handle_' hooks/scripts | head -20", id="sweep_piped_into_head"),
     pytest.param("grep -n pattern one_file.py", id="non_recursive_grep"),
     pytest.param("rg -n pattern one_file.py", id="rg_over_one_named_file_is_bounded"),
+    pytest.param("rg -n pattern deploy/Dockerfile.worker", id="rg_over_a_named_file_of_any_extension"),
+    pytest.param("rg -n pattern src/app/view.vue", id="rg_over_a_frontend_file"),
     pytest.param("git grep -n pattern -- src/teatree/core/models.py", id="git_grep_over_one_named_file"),
     pytest.param("t3 teatree tasks list --json | jq '. | length'", id="queue_depth_reduced_by_jq"),
     pytest.param("find --help", id="find_help_is_not_a_walk"),
@@ -105,7 +107,7 @@ NATIVE_MUST_REFUSE = (
     ),
     pytest.param("Grep", {"pattern": "x", "path": "src/", "head_limit": 0}, id="grep_zero_head_limit_bounds_nothing"),
     pytest.param("Glob", {"pattern": "**/*.py"}, id="glob_every_file_of_a_kind"),
-    pytest.param("Glob", {"pattern": "src/teatree/config/*.py"}, id="glob_extension_only_under_a_dir"),
+    pytest.param("Glob", {"pattern": "src/**/*.py"}, id="glob_extension_only_under_a_recursive_dir"),
     pytest.param("Glob", {"pattern": "**/*"}, id="glob_everything"),
 )
 
@@ -118,9 +120,20 @@ NATIVE_MUST_ALLOW = (
     pytest.param("Glob", {"pattern": "**/settings_editor.py"}, id="glob_names_one_file"),
     pytest.param("Glob", {"pattern": "**/*_scanner.py"}, id="glob_names_a_file_family"),
     pytest.param("Glob", {"pattern": "docs/**/README.md"}, id="glob_names_a_file_under_a_tree"),
+    pytest.param("Glob", {"pattern": "src/teatree/config/*.py"}, id="glob_lists_one_directory"),
+    pytest.param(
+        "Grep", {"pattern": "x", "path": "deploy/Dockerfile.worker"}, id="grep_over_a_named_file_of_any_extension"
+    ),
     pytest.param("Grep", {}, id="a_malformed_grep_is_not_evidence_of_investigation"),
     pytest.param("Glob", {}, id="a_malformed_glob_is_not_evidence_of_investigation"),
 )
+
+
+@pytest.fixture(autouse=True)
+def _attended_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite itself may run inside an unattended child session; pin an attended one."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ATTENDED", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
 
 
 def _event(command: str) -> dict:
@@ -263,6 +276,21 @@ class TestScopeIsTheOrchestrator:
 
     def test_an_unreadable_lane_allows(self) -> None:
         assert _verdict(_event("rg pattern src/"), lane=LANE_UNKNOWN)[0] is False
+
+    @pytest.mark.parametrize(
+        ("variable", "value"),
+        [("CLAUDE_CODE_SESSION_ATTENDED", "0"), ("CLAUDE_CODE_CHILD_SESSION", "1")],
+        ids=["unattended", "child_session"],
+    )
+    def test_an_unattended_cli_session_has_no_orchestrator_to_protect(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+    ) -> None:
+        monkeypatch.setenv(variable, value)
+        assert _verdict(_event("rg pattern src/"))[0] is False
+
+    def test_an_attended_cli_session_is_still_governed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ATTENDED", "1")
+        assert _verdict(_event("rg pattern src/"))[0] is True
 
     def test_an_unengaged_session_is_not_governed(self) -> None:
         assert _verdict(_event("rg pattern src/"), engaged=False)[0] is False

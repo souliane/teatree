@@ -66,7 +66,7 @@ SCOPE: THE ORCHESTRATOR ONLY
 ----------------------------
 A sub-agent sweeping is doing its job, so the discriminators are the ones the
 sibling gates already share: ``call_is_from_subagent`` (the ``agent_id`` signal),
-``session_lane`` (only a positively-identified interactive CLI session), and
+``session_lane`` (only a positively-identified interactive CLI session someone attends), and
 ``_teatree_engaged``. No new context detection is invented here.
 
 Fails OPEN throughout: an unreadable lane, an unreadable posture, or any internal
@@ -76,6 +76,7 @@ Cold-import safe: stdlib only at module top plus the two dependency-free sibling
 leaves; every router helper is back-imported lazily.
 """
 
+import os
 import re
 import sys
 
@@ -104,7 +105,7 @@ _SWEEP_RE = re.compile(
 )
 
 #: The extensions a path operand must carry to read as a real file name.
-_FILE_EXTENSIONS = "py|pyi|md|toml|ya?ml|json|jsonl|sh|txt|log|ts|tsx|js|cfg|ini|lock|sql|html|css"
+_FILE_EXTENSIONS = "[A-Za-z][A-Za-z0-9]{0,9}"
 
 #: What turns a sweep back into a bounded read — the levers the refusal teaches. The
 #: third one is a NAMED FILE operand: a search over one file is bounded by that file, so
@@ -212,9 +213,9 @@ def _grep_shape(tool_input: dict) -> str | None:
 
 
 def _glob_shape(tool_input: dict) -> str | None:
-    """``Glob`` is the native ``find``; only a stem in its basename bounds the walk."""
+    """``Glob`` is the native ``find``; a stem in its basename, or no ``**``, bounds the walk."""
     pattern = tool_input.get("pattern")
-    if not isinstance(pattern, str) or not _STEMLESS_GLOB_RE.match(pattern.rsplit("/", 1)[-1]):
+    if not isinstance(pattern, str) or "**" not in pattern or not _STEMLESS_GLOB_RE.match(pattern.rsplit("/", 1)[-1]):
         return None
     return "an unbounded tree walk over every file of a kind"
 
@@ -244,6 +245,14 @@ def _scannable(tool_input: dict) -> str:
     return " ".join(value for value in tool_input.values() if isinstance(value, str))[:_TOKEN_SCAN_CHARS]
 
 
+def _unattended() -> bool:
+    """A CLI session nobody is watching has no orchestrator context to protect."""
+    return (
+        os.environ.get("CLAUDE_CODE_SESSION_ATTENDED", "").strip() == "0"
+        or os.environ.get("CLAUDE_CODE_CHILD_SESSION", "").strip() == "1"
+    )
+
+
 def _refusal_shape(data: dict) -> str | None:
     """The shape to refuse, or ``None``. Every check must answer positively.
 
@@ -257,7 +266,7 @@ def _refusal_shape(data: dict) -> str | None:
         shape = investigation_shape(command) if isinstance(command, str) else None
     else:
         shape = native_read_shape(tool_name, tool_input)
-    if shape is None or call_is_from_subagent(data) or session_lane() != LANE_INTERACTIVE_CLI:
+    if shape is None or call_is_from_subagent(data) or session_lane() != LANE_INTERACTIVE_CLI or _unattended():
         return None
     if not _gate_enabled() or not _engaged(str(data.get("session_id", ""))):
         return None
