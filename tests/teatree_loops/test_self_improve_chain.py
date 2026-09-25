@@ -10,7 +10,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.schedule import TierResult
-from teatree.loops import timer_reconciler
+from teatree.loops import self_improve_cycle, timer_reconciler
 from teatree.loops.timer_reconciler import ensure_maintenance_chains
 from tests._t3_master_env import worker_owns_t3_master
 
@@ -34,7 +34,7 @@ class TestSelfImproveChain(TestCase):
         def emit_result(*_args: object, **kwargs: object) -> None:
             cast("TextIO", kwargs["stdout"]).write('{"skipped": false}')
 
-        with mock.patch.object(timer_reconciler, "call_command", side_effect=emit_result) as command:
+        with mock.patch.object(self_improve_cycle, "call_command", side_effect=emit_result) as command:
             result = timer_reconciler.run_self_improve.func()
         assert result == {"ran": 1}
         command.assert_called_once()
@@ -55,8 +55,8 @@ class TestSelfImproveChain(TestCase):
             )
 
         with (
-            mock.patch.object(timer_reconciler, "call_command", side_effect=emit_result),
-            mock.patch.object(timer_reconciler.logger, "warning") as warning,
+            mock.patch.object(self_improve_cycle, "call_command", side_effect=emit_result),
+            mock.patch.object(self_improve_cycle.logger, "warning") as warning,
         ):
             result = timer_reconciler.run_self_improve.func()
 
@@ -67,7 +67,7 @@ class TestSelfImproveChain(TestCase):
 
     def test_cycle_dedups_pending_successor(self) -> None:
         timer_reconciler.run_self_improve.enqueue()
-        with mock.patch.object(timer_reconciler, "call_command") as command:
+        with mock.patch.object(self_improve_cycle, "call_command") as command:
             assert timer_reconciler.run_self_improve.func() == {"deduped": 1}
         command.assert_not_called()
 
@@ -86,10 +86,10 @@ class TestSelfImproveChain(TestCase):
         def emit_result(*_args: object, **kwargs: object) -> None:
             cast("TextIO", kwargs["stdout"]).write('{"skipped": true, "budget_reason": "quota"}')
 
-        with mock.patch.object(timer_reconciler, "call_command", side_effect=emit_result):
+        with mock.patch.object(self_improve_cycle, "call_command", side_effect=emit_result):
             assert timer_reconciler.run_self_improve.func() == {"skipped": 1}
 
     def test_failed_cycle_keeps_its_successor(self) -> None:
-        with mock.patch.object(timer_reconciler, "call_command", side_effect=RuntimeError("probe failed")):
+        with mock.patch.object(self_improve_cycle, "call_command", side_effect=RuntimeError("probe failed")):
             assert timer_reconciler.run_self_improve.func() == {"error": 1}
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_self_improve.module_path).count() == 1

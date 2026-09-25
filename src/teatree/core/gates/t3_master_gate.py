@@ -89,12 +89,15 @@ def t3_master_verdict(caller_session: str | None = None) -> T3MasterVerdict:
     principal a claim binds is exactly the one this gate matches.
     """
     status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
-    session = loop_principal()[0] if caller_session is None else caller_session
-    if is_loop_runner_session(session):
-        return T3MasterVerdict(outcome=T3MasterGate.RUN, owner_session=status.owner_session if status.is_live else "")
     if not status.is_live:
         return T3MasterVerdict(outcome=T3MasterGate.UNCLAIMED, owner_session="")
-    if is_loop_runner_session(status.owner_session) or status.owner_session == session:
+    session = loop_principal()[0] if caller_session is None else caller_session
+    # The worker is the machine-wide driver, never a rival: its own caller runs too.
+    if (
+        status.owner_session == session
+        or is_loop_runner_session(session)
+        or is_loop_runner_session(status.owner_session)
+    ):
         return T3MasterVerdict(outcome=T3MasterGate.RUN, owner_session=status.owner_session)
     return T3MasterVerdict(outcome=T3MasterGate.FOREIGN_OWNER, owner_session=status.owner_session)
 
