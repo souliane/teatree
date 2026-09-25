@@ -121,11 +121,21 @@ config)
 build) exit "${{STUB_BUILD_EXIT:-0}}" ;;
 stop)
     printf '%s' "${{STUB_STOP_STATE:-exited}}" >|"${{STUB_WORKER_STATE_FILE}}"
+    if [ -n "${{STUB_ORPHAN_STOP:-}}" ]; then
+        echo "Error response from daemon: No such container: deadbeef1234" >&2
+        exit 1
+    fi
     exit "${{STUB_STOP_EXIT:-0}}"
     ;;
 up)
     case " $* " in
     *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
+    esac
+    case " $* " in
+    *" ${{STUB_ORPHAN_UP:-<>}} "*)
+        echo "Error response from daemon: No such container: deadbeef1234" >&2
+        exit 1
+        ;;
     esac
     exit "${{STUB_UP_EXIT:-0}}"
     ;;
@@ -487,6 +497,81 @@ class TestInFlightWorkSurvivesTheSwap:
         assert proc.returncode != 0
         assert init_at == -1, "an unreadable old worker must not be mistaken for an absent worker"
         assert "could not determine teatree-worker state" in proc.stderr
+
+
+class TestAnUnremovableOrphanIsToleratedButOtherFailuresStillAbort:
+    """#4822: a Dead orphan the daemon denies exists must not block convergence.
+
+    A container docker ps -a still lists as Dead but the daemon answers
+    "No such container" for on inspect/stop/rm — surviving a daemon restart and
+    a container prune — makes compose report an error while trying to
+    reconcile it as part of a service's up/stop, before the actually-requested
+    service is touched. Only that specific daemon response is tolerated; any
+    other compose failure still aborts immediately, unchanged.
+    """
+
+    def test_an_orphan_on_teatree_init_up_is_ignored_and_the_stack_still_converges(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_ORPHAN_UP="teatree-init")
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert init_at != -1, "the tolerated orphan must not stop teatree-init from ever being brought up"
+        assert "unremovable orphan" in proc.stderr
+        assert "admin + worker are up; stack converged" in proc.stdout
+
+    def test_a_non_orphan_error_on_teatree_init_up_still_aborts_immediately(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        # Control: a generic compose failure with none of the orphan wording
+        # must still fail loud — the tolerance is scoped to the one daemon
+        # response, not a blanket swallow of every `up` failure.
+        proc, calls = _run(checkout, tmp_path, STUB_UP_EXIT="1")
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert init_at != -1, "the call must still be attempted"
+        assert "unremovable orphan" not in proc.stderr
+        assert "FATAL" in proc.stderr
+
+    def test_an_orphan_on_the_worker_stop_is_ignored_when_the_worker_ends_up_contained(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_DRAIN_EXIT="1",
+            STUB_ORPHAN_STOP="1",
+            STUB_STOP_STATE="absent",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert stop_at != -1
+        assert stop_at < init_at, "the tolerated orphan must not stop containment from proceeding to init"
+        assert "unremovable orphan" in proc.stderr
+        _assert_fresh_worker_route_precedes_admin_swap(calls, after=init_at)
+
+    def test_a_non_orphan_stop_error_still_aborts_even_when_the_worker_looks_stopped(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        # Same shape as the orphan case above, minus the orphan wording — must
+        # still hit the pre-existing FATAL, proving the tolerance is scoped.
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_DRAIN_EXIT="1",
+            STUB_STOP_EXIT="1",
+            STUB_STOP_STATE="absent",
+        )
+
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode != 0
+        assert init_at == -1
+        assert "unremovable orphan" not in proc.stderr
+        assert "compose could not stop teatree-worker" in proc.stderr
 
 
 class TestLogsSurviveTheRecreate:

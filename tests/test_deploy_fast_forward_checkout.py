@@ -177,6 +177,63 @@ class TestControl:
         assert (clone / "uv.lock").read_text(encoding="utf-8") == 'version = "0.4.11"\n'
 
 
+class TestDetachedHeadNamesTheWorktreeHoldingMain:
+    """#4822: a detached checkout must not read as diverged history / an index lock.
+
+    `git pull --ff-only` on a detached HEAD fails with git's own "You are not
+    currently on a branch" — a different failure than the dirt this script
+    otherwise guards, and the generic fallback below is actively misleading
+    for it. The real, recoverable cause on this box is always the same: a
+    sibling `git worktree` already holds `main`.
+    """
+
+    def test_detached_head_with_a_sibling_worktree_holding_main_is_diagnosed(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        _git(clone, "checkout", "-q", "--detach", "HEAD")
+        sibling = clone.parent / "sibling-main"
+        _git(clone, "worktree", "add", "-q", str(sibling), "main")
+
+        result = _run_script(clone)
+
+        assert result.returncode == 1
+        assert "detached HEAD" in result.stderr
+        assert str(sibling) in result.stderr, "the diagnostic must NAME the sibling holding main"
+        assert "switch -c" in result.stderr, "and give the non-destructive recovery command"
+        assert "checkout main" in result.stderr
+        assert "diverged history" not in result.stderr, "must not reuse the generic dirt-fallback message"
+
+    def test_detached_head_with_no_sibling_holding_main_gives_the_fallback_message(
+        self, repos: tuple[Path, Path]
+    ) -> None:
+        clone, _ = repos
+        _git(clone, "checkout", "-q", "--detach", "HEAD")
+
+        result = _run_script(clone)
+
+        assert result.returncode == 1
+        assert "detached HEAD" in result.stderr
+        assert "no sibling worktree holds" in result.stderr.lower()
+
+    def test_a_bare_ff_pull_really_does_give_the_misleading_generic_error_on_detached_head(
+        self, repos: tuple[Path, Path]
+    ) -> None:
+        # Control: prove the pre-fix failure mode is real, so a passing test
+        # above is the new diagnostic working, not a pull that never fails.
+        clone, _ = repos
+        _git(clone, "checkout", "-q", "--detach", "HEAD")
+
+        pull = subprocess.run(
+            [_GIT, "-C", str(clone), "pull", "--ff-only"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert pull.returncode != 0
+        assert "not currently on a branch" in pull.stderr
+
+
 class TestDeployScriptUsesTheGuard:
     def test_deploy_sh_delegates_the_fast_forward_to_the_helper(self) -> None:
         body = (_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")

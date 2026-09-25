@@ -46,6 +46,30 @@ compose() {
     fi
 }
 
+# A compose mutation (`up`/`stop`) tolerating ONE daemon response that can never
+# resolve within a convergence: "No such container" on an orphan `docker ps -a`
+# still lists Dead but the daemon denies exists to inspect/rm/prune, and which
+# survives a daemon restart and container prune (#4822). Compose still tries to
+# stop/reconcile it as part of a service's up or stop, and errors before the
+# service actually requested is touched. Only that specific daemon response is
+# swallowed — any other failure still fails this call immediately — and this
+# never blindly trusts the swallowed error: every call site relies on its own
+# downstream state check (wait_for_init, worker_state_after_stop, the final
+# admin/worker poll) to prove the real outcome.
+compose_tolerating_orphan() {
+    local err
+    if err="$(compose "$@" 2>&1 >/dev/null)"; then
+        return 0
+    fi
+    if printf '%s\n' "$err" | grep -qi 'no such container'; then
+        echo "deploy: 'compose $*' hit an unremovable orphan the daemon denies exists — ignoring; the real state is verified separately." >&2
+        printf '%s\n' "$err" >&2
+        return 0
+    fi
+    printf '%s\n' "$err" >&2
+    return 1
+}
+
 # Single-convergence invariant (host flock). GitHub's `concurrency: deploy` group
 # serializes the WORKFLOW, but a remote deploy.sh can outlive its GitHub job — an
 # SSH drop does not kill the remote process, and the drain can run longer than the
@@ -495,7 +519,7 @@ contain_worker_for_deploy() {
         return 1
     fi
     echo "deploy: stopping the old teatree-worker because it could not be proven quiescent ..." >&2
-    if ! compose stop teatree-worker >/dev/null 2>&1; then
+    if ! compose_tolerating_orphan stop teatree-worker; then
         echo "deploy: FATAL — compose could not stop teatree-worker; refusing to run init/swap." >&2
         return 1
     fi
@@ -554,7 +578,7 @@ drain_worker() {
 start_contained_worker_route() {
     local deadline
     archive_service_logs teatree-worker teatree-slack-listener
-    compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+    compose_tolerating_orphan up -d --no-deps teatree-worker teatree-slack-listener || return 1
     _WORKER_SWAPPED=true
     deadline=$((SECONDS + RESUME_TIMEOUT))
     while :; do
@@ -594,7 +618,7 @@ swap_admin() {
     if admin_answers; then was_up=true; fi
     archive_service_logs teatree-admin
     started=$SECONDS
-    compose up -d --no-deps teatree-admin || return 1
+    compose_tolerating_orphan up -d --no-deps teatree-admin || return 1
     if [ "$was_up" != true ]; then
         echo "deploy: no dashboard was answering before the swap — nothing to keep continuous."
         return 0
@@ -636,7 +660,7 @@ staged_swap() {
     drain_worker || return 1
 
     archive_service_logs teatree-init
-    compose up -d --no-deps teatree-init || return 1
+    compose_tolerating_orphan up -d --no-deps teatree-init || return 1
     wait_for_init || return 1
     _INIT_RAN=true
 
@@ -653,7 +677,7 @@ staged_swap() {
 
     if [ "$_WORKER_CONTAINED" != true ]; then
         archive_service_logs teatree-worker teatree-slack-listener
-        compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+        compose_tolerating_orphan up -d --no-deps teatree-worker teatree-slack-listener || return 1
         _WORKER_SWAPPED=true
     fi
     resume_admission
@@ -664,7 +688,7 @@ staged_swap() {
     # shellcheck disable=SC2086 # a service list has to word-split into separate args
     archive_service_logs $rest
     # shellcheck disable=SC2086 # same
-    compose up -d --no-deps $rest || return 1
+    compose_tolerating_orphan up -d --no-deps $rest || return 1
 }
 
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before

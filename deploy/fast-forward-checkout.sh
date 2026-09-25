@@ -32,6 +32,32 @@ REPO_ROOT="${1:?usage: fast-forward-checkout.sh <repo-root>}"
 
 git -C "$REPO_ROOT" fetch --prune origin
 
+# A detached HEAD gives `git pull --ff-only` no branch to merge into — it fails
+# with git's own "not currently on a branch", a different failure than the dirt
+# this script otherwise guards, so diagnose it explicitly rather than falling
+# through to the generic "diverged history" fallback below, which is actively
+# misleading here (#4822). The recorded cause on this box is always the same: a
+# sibling `git worktree` already holds `main`, which `git worktree list` names.
+if ! git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null; then
+    holder="" path=""
+    while IFS= read -r line; do
+        case "$line" in
+        "worktree "*) path="${line#worktree }" ;;
+        "branch refs/heads/main") holder="$path" ;;
+        esac
+    done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+
+    echo "deploy: FATAL — $REPO_ROOT is on a detached HEAD, so 'git pull --ff-only' has no branch to fast-forward." >&2
+    if [ -n "$holder" ] && [ "$holder" != "$REPO_ROOT" ]; then
+        echo "deploy: 'main' is checked out in a sibling worktree: $holder" >&2
+        echo "deploy: recover with: git -C '$holder' switch -c NAME   (non-destructive, carries uncommitted changes over)" >&2
+        echo "deploy:          then: git -C '$REPO_ROOT' checkout main" >&2
+    else
+        echo "deploy: no sibling worktree holds 'main' — checkout main manually in $REPO_ROOT." >&2
+    fi
+    exit 1
+fi
+
 # The exact ref `git pull --ff-only` would merge. Without an upstream there is
 # nothing to compare against, so no dirt is provably lossless and none is touched.
 FF_TARGET="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
