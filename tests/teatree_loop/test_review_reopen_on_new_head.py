@@ -59,6 +59,7 @@ from teatree.loop.persistence import _already_reviewed_at_head, persist_agent_ac
 from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._pr_open_state_stub import pr_open_state
 
 OLD_SHA = "a" * 40
 NEW_SHA = "b" * 40
@@ -162,6 +163,9 @@ def _seed_open_reviewing_task(ticket: Ticket) -> Task:
 class TestGap1BroadcastCarriesHeadSha(TestCase):
     """The Slack-broadcast review path records the head SHA it dispatched at."""
 
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
+
     def test_review_intent_signal_carries_the_head_sha(self) -> None:
         """RED before the fix: the ``slack.review_intent`` payload has no ``head_sha``.
 
@@ -262,6 +266,9 @@ class TestGap2ReviewedPrHeadScanner(TestCase):
 
 class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
     """The second review of the same MR must be able to finish — else it loops forever."""
+
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
 
     def test_re_review_re_arms_the_at_head_dedup(self) -> None:
         """RED before the fix: ``last_review_state`` is never re-stamped.

@@ -6,6 +6,7 @@ from django.test import TestCase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_external_review import schedule_external_review
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 class TestTicketRoleField(TestCase):
@@ -30,7 +31,7 @@ class TestScheduleExternalReview(TestCase):
             role=Ticket.Role.REVIEWER,
         )
 
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         assert task.phase == "reviewing"
         # (reviewer, reviewing) → t3:reviewer is loop-dispatched → in-session.
@@ -51,8 +52,8 @@ class TestScheduleExternalReview(TestCase):
             role=Ticket.Role.REVIEWER,
         )
 
-        first = schedule_external_review(ticket)
-        second = schedule_external_review(ticket)
+        first = mint_open_pr_review(ticket)
+        second = mint_open_pr_review(ticket)
 
         assert second.pk == first.pk
         assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 1
@@ -64,60 +65,12 @@ class TestScheduleExternalReview(TestCase):
             issue_url="https://example.com/pr/8",
             role=Ticket.Role.REVIEWER,
         )
-        first = schedule_external_review(ticket)
+        first = mint_open_pr_review(ticket)
         first.fail(reason="the reviewer sub-agent crashed")
 
-        second = schedule_external_review(ticket)
+        second = mint_open_pr_review(ticket)
 
         assert second.pk != first.pk
-
-    def test_settled_pr_mints_no_task_and_retires_the_ticket(self) -> None:
-        """#4847: a merged/closed PR must retire the ticket rather than mint a task."""
-        ticket = Ticket.objects.create(
-            overlay="acme",
-            issue_url="https://example.com/pr/9",
-            role=Ticket.Role.REVIEWER,
-        )
-
-        task = schedule_external_review(ticket, pr_settled=True)
-
-        assert task is None
-        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 0
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
-
-    def test_settled_pr_on_an_already_retired_ticket_is_a_silent_no_op(self) -> None:
-        """The ``can_proceed`` guard: a ticket retired some other way is untouched, not raised into.
-
-        IGNORED is not a ``mark_review_no_action`` source state — without the guard this
-        call raises ``TransitionNotAllowed`` instead of leaving the ticket as it was.
-        """
-        ticket = Ticket.objects.create(
-            overlay="acme",
-            issue_url="https://example.com/pr/11",
-            role=Ticket.Role.REVIEWER,
-            state=Ticket.State.IGNORED,
-        )
-
-        task = schedule_external_review(ticket, pr_settled=True)
-
-        assert task is None
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IGNORED
-
-    def test_pr_not_settled_still_mints_the_reviewing_task(self) -> None:
-        ticket = Ticket.objects.create(
-            overlay="acme",
-            issue_url="https://example.com/pr/12",
-            role=Ticket.Role.REVIEWER,
-        )
-
-        task = schedule_external_review(ticket, pr_settled=False)
-
-        assert task is not None
-        assert task.phase == "reviewing"
-        ticket.refresh_from_db()
-        assert ticket.state != Ticket.State.REVIEW_POSTED
 
 
 class TestScheduleCodingRefusesReviewer(TestCase):
@@ -139,7 +92,7 @@ class TestMarkReviewedExternally(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "deadbeef"},
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         task.complete()
 
@@ -182,7 +135,7 @@ class TestMarkReviewNoAction(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "sha1"},
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         assert task.status == Task.Status.PENDING
 
         ticket.mark_review_no_action()
@@ -214,7 +167,7 @@ class TestMarkReviewNoAction(TestCase):
             issue_url="https://gitlab/x/-/merge_requests/1078",
             role=Ticket.Role.REVIEWER,
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         ticket.mark_review_no_action()
         ticket.save()

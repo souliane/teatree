@@ -14,6 +14,8 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 ``call_command``) is a no-op, not a duplicate-key error.
 """
 
+from teatree.core.review.pr_open_state import read_pr_open_state
+
 
 def _infer_overlay_for_url(url: str) -> str:
     # Re-read the module attribute at call time so a test patching
@@ -52,4 +54,5 @@ def populate_model_registries() -> None:
 
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
+    register_resolver("pr_open_state", read_pr_open_state)
     register_cost_factories()

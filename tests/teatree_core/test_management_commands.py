@@ -20,7 +20,6 @@ from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
-from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
@@ -31,6 +30,7 @@ from teatree.core.overlay import (
 )
 from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
 from tests._ansi import strip_ansi as _strip_ansi
+from tests._pr_open_state_stub import mint_open_pr_review
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
@@ -1045,7 +1045,7 @@ class TestTicketCommand(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "sha1"},
         )
-        schedule_external_review(ticket)
+        mint_open_pr_review(ticket)
         result = cast(
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "mark_review_no_action"),

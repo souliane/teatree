@@ -32,7 +32,7 @@ from django.test import TestCase
 
 from teatree.agents.prompt import build_system_context
 from teatree.core.models import Task, Ticket
-from teatree.core.models.ticket_external_review import schedule_external_review
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 def _config(fanout: dict[str, bool | int]) -> Path:
@@ -66,9 +66,7 @@ class _FanoutDispatchTest(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "x"},
         )
-        task = schedule_external_review(ticket)
-        assert task is not None  # pr_settled defaults False — a fresh ticket always mints
-        return task
+        return mint_open_pr_review(ticket)
 
     def _planning_task(self, *, url: str = "https://example.com/issues/9") -> Task:
         ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)

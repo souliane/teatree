@@ -4,22 +4,18 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.backend_protocols import ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import BroadcastObservation, ImplementedIssueMarker, ScannedBroadcast, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
+from tests._pr_open_state_stub import pr_open_state
 from tests.factories import ImplementedIssueMarkerFactory
 
 
 class TestPersistReviewer(TestCase):
     def setUp(self) -> None:
-        # #4847: every reviewing-phase dispatch checks the PR's live forge state before
-        # minting. Default to "not settled" (today's mint-a-task behaviour) so the
-        # pre-existing tests below need no change; the new test flips this True.
-        patcher = patch("teatree.loop.persistence.pr_is_merged_or_closed", return_value=False)
-        self.pr_is_merged_or_closed = patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
 
     def _action(
         self,
@@ -260,16 +256,34 @@ class TestPersistReviewer(TestCase):
         assert len(created) == 1
         assert created[0].phase == "reviewing"
 
-    def test_settled_pr_mints_no_task_and_retires_the_ticket(self) -> None:
-        """#4847: a merged/closed PR must retire the reviewer ticket, never mint a task."""
-        self.pr_is_merged_or_closed.return_value = True
 
-        result = persist_agent_actions([self._action()])
+class TestPersistReviewerOnAnUnopenPr(TestCase):
+    _URL = "https://example.com/owner/repo/pull/4847"
 
-        assert result == []
-        ticket = Ticket.objects.get(issue_url="https://example.com/owner/repo/pull/42")
-        assert ticket.state == Ticket.State.REVIEW_POSTED
-        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 0
+    def _action(self) -> DispatchAction:
+        return DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail=f"Review needed: {self._URL}",
+            payload={"url": self._URL, "head_sha": "abc123", "previous_sha": "", "overlay": "acme"},
+        )
+
+    def test_an_unreadable_pr_state_mints_nothing_and_unrecords_the_head(self) -> None:
+        with pr_open_state(PrOpenState.UNKNOWN):
+            assert persist_agent_actions([self._action()]) == []
+
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert not Task.objects.filter(ticket=ticket).exists()
+        assert "reviewed_sha" not in (ticket.extra or {})
+
+    def test_a_merged_pr_mints_nothing_keeps_the_head_and_retires_the_ticket(self) -> None:
+        with pr_open_state(PrOpenState.MERGED):
+            assert persist_agent_actions([self._action()]) == []
+
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert not Task.objects.filter(ticket=ticket).exists()
+        assert ticket.extra["reviewed_sha"] == "abc123"
+        assert ticket.state == Ticket.State.IGNORED
 
 
 class TestPersistOrchestrator(TestCase):
@@ -394,6 +408,9 @@ class TestPersistIgnoredKinds(TestCase):
 
 class TestReviewerCacheUpdate(TestCase):
     """Completing the reviewing task on a reviewer ticket records the reviewed SHA + state on the ticket."""
+
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
 
     def test_mark_reviewed_externally_writes_scanner_cache(self) -> None:
         action = DispatchAction(
