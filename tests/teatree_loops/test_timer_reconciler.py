@@ -311,6 +311,15 @@ class TestMaintenanceChains(django.test.TestCase):
 
         assert timer_reconciler.run_self_improve.func() == {"skipped": 1}
 
+    def test_run_self_improve_runs_while_an_interactive_session_owns_t3_master(self) -> None:
+        """The worker is the machine-wide driver, never a competitor for its own chain."""
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: pulls in django.db
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="interactive-session", owner_pid=os.getpid())
+
+        assert "skipped" not in timer_reconciler.run_self_improve.func()
+
     def test_run_self_improve_survives_a_body_fault(self) -> None:
         # Successor-first: a raising body must never orphan the chain.
         with mock.patch.object(timer_reconciler, "_run_self_improve_cycle_via_command", side_effect=RuntimeError("x")):

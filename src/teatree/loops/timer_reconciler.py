@@ -37,19 +37,16 @@ restart re-arms them.
 """
 
 import datetime as dt
-import io
-import json
 import logging
 import os
-import re
 
-from django.core.management import call_command
 from django.db import transaction
 from django.tasks import task
 from django.utils import timezone
 
 from teatree.core.claim_liveness import ClaimOwner, owner_is_executing
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
+from teatree.loops.self_improve_cycle import run_self_improve_cycle_via_command as _run_self_improve_cycle_via_command
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
@@ -86,8 +83,6 @@ SLACK_ANSWER_LEASE = "loop-slack-answer"
 #: worker chain and an owner session can never run two cycles at once.
 SELF_IMPROVE_LEASE = "loop-self-improve"
 #: The only tier with detectors wired; the mgmt command refuses the rest.
-SELF_IMPROVE_TIER = "cheap"
-_SAFE_SCAN_LABEL = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 def ensure_loop_timers() -> dict[str, int]:
@@ -483,33 +478,6 @@ def run_slack_answer() -> dict[str, int]:
     except Exception:
         logger.exception("run_slack_answer body failed; successor already queued, the chain survives")
         return {"error": 1}
-
-
-def _scan_label(value: object) -> str:
-    return value if isinstance(value, str) and _SAFE_SCAN_LABEL.fullmatch(value) else "unknown"
-
-
-def _run_self_improve_cycle_via_command() -> dict[str, int]:
-    """Use the command's t3-master gate, lease, owner delivery, and scan report."""
-    output = io.StringIO()
-    call_command("loop_self_improve", tier=SELF_IMPROVE_TIER, json_output=True, stdout=output, stderr=io.StringIO())
-    payload = json.loads(output.getvalue())
-    if not isinstance(payload, dict):
-        msg = "self-improve command did not return a JSON object"
-        raise TypeError(msg)
-    degraded = payload.get("degraded_scans")
-    if isinstance(degraded, list) and degraded:
-        summary = ",".join(
-            f"{_scan_label(row.get('detector'))}:{_scan_label(row.get('reason'))}"
-            for row in degraded[:5]
-            if isinstance(row, dict)
-        )
-        logger.warning("unattended self-improve scan degraded (%d sources): %s", len(degraded), summary)
-        return {"ran": 1, "degraded": len(degraded)}
-    if payload.get("skipped") or payload.get("skipped_reason"):
-        logger.warning("unattended self-improve cycle skipped")
-        return {"skipped": 1}
-    return {"ran": 1}
 
 
 @task(queue_name=LOOPS_QUEUE)

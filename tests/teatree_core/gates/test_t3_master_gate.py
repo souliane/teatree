@@ -47,6 +47,11 @@ class TestVerdict:
         assert verdict.may_run is True
         assert verdict.owner_session == LOOP_RUNNER_SESSION_ID
 
+    def test_the_loop_runner_caller_runs_under_a_foreign_owner(self) -> None:
+        _claim("sess-other", owner_pid=os.getpid())
+
+        assert t3_master_verdict(caller_session=LOOP_RUNNER_SESSION_ID).outcome is T3MasterGate.RUN
+
     def test_own_session_owner_runs(self) -> None:
         _claim("sess-1", owner_pid=os.getpid())
 
