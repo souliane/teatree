@@ -119,7 +119,8 @@ class PromotionBatch:
         already-present line is harmless — :func:`promote_batch` dedupes by marker.
         """
         safe_title = neutralize_bare_references(gap.title.strip())
-        reason = _withholding_reason(safe_title)
+        safe_detail = neutralize_bare_references(gap.detail.strip())
+        reason = _withholding_reason(f"{safe_title}\n{safe_detail}")
         if reason:
             self.withheld += 1
             # The banned-terms ruleset is versioned: a title promoted last night can be
@@ -143,7 +144,9 @@ class PromotionBatch:
             return ConsiderOutcome(
                 gap_key=gap.gap_key, queued=False, already_covered=True, reason="already covered by an in-flight batch"
             )
-        self.pending.append(GapSpec(gap_key=gap.gap_key, title=safe_title, cluster_key=gap.cluster_key))
+        self.pending.append(
+            GapSpec(gap_key=gap.gap_key, title=safe_title, cluster_key=gap.cluster_key, detail=safe_detail)
+        )
         return ConsiderOutcome(gap_key=gap.gap_key, queued=True, reason="queued for this pass's batch")
 
     @property
@@ -213,6 +216,23 @@ def _batch_short_description(gaps: "list[GapSpec]") -> str:
     return f"Dream batch: {len(gaps)} gap(s) — {lead}"[:80]
 
 
+def _gap_manifest_lines(gap: GapSpec) -> "list[str]":
+    """One gap's manifest entry: its elided title, plus the full rule when title cut it.
+
+    ``title`` may be elided to a checkbox-sized snippet (:func:`elided_snippet`) or
+    cut to its first sentence, dropping the actionable half of a long/multi-sentence
+    rule — the coder fixing this gap needs the whole thing, not the fragment a public
+    checkbox can afford to show. A substring check (not equality) against the WRAPPED
+    title, since ``title`` always carries a label prefix ``detail`` never does.
+    """
+    title = gap.title.strip()
+    lines = [f"- [{gap.gap_key}] {title}"]
+    full = gap.detail.strip()
+    if full and full not in title:
+        lines.append(f"  Full: {full}")
+    return lines
+
+
 def _batch_context(umbrella_url: str, gaps: "list[GapSpec]") -> str:
     """The manifest the dispatched coder reads — every gap, and the delivery contract."""
     lines = [
@@ -225,7 +245,8 @@ def _batch_context(umbrella_url: str, gaps: "list[GapSpec]") -> str:
         "",
         "Gaps in this batch:",
     ]
-    lines.extend(f"- [{gap.gap_key}] {gap.title.strip()}" for gap in gaps)
+    for gap in gaps:
+        lines.extend(_gap_manifest_lines(gap))
     lines.extend(
         [
             "",

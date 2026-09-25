@@ -208,6 +208,46 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert len(outcomes) == 1
 
 
+class TicketTitleFullTextTestCase(TestCase):
+    """A gap's title may be elided, but the batch manifest must carry the full rule.
+
+    Before this, ``_ticket_title`` cut the rule to a bare 60-char slice with no
+    ellipsis — a fragment indistinguishable from a complete short rule, and the ONLY
+    text a dispatched coder or the umbrella checkbox ever saw.
+    """
+
+    _LONG_RULE = (
+        "Ablate matchers one at a time to prove each is load-bearing; dropping all "
+        "matchers only shows the fixture is rejected by something."
+    )
+
+    def test_long_rule_title_is_elided_with_an_ellipsis_and_detail_is_full(self) -> None:
+        ConsolidatedMemory.objects.create(
+            cluster_key="k-long",
+            rule=self._LONG_RULE,
+            source_files=["feedback_ablate.md"],
+            durable_destination="skills/ship/SKILL.md",
+            member_count=1,
+            max_member_weight=90,
+            verified_citation="dropped all matchers at once and mis-blamed the fixture",
+        )
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        assert len(batch.pending) == 1
+        gap = batch.pending[0]
+        assert gap.title.endswith("…")
+        assert len(gap.title) < len(self._LONG_RULE)
+        assert gap.detail == self._LONG_RULE
+
+    def test_short_rule_title_has_no_ellipsis_and_detail_matches_the_rule(self) -> None:
+        row = _row(destination="skills/ship/SKILL.md")  # rule is well under the 60-char snippet limit
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        gap = batch.pending[0]
+        assert not gap.title.endswith("…")
+        assert gap.detail == row.rule.strip()
+
+
 def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:
     return BindingConflict(
         survivor_name=survivor,

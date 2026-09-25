@@ -59,6 +59,17 @@ _RECONCILED_KEY = "dream_gap_reconciled_at"
 _FOLDED_INTO_KEY = "dream_gap_folded_into"
 
 
+def elided_snippet(text: str, limit: int) -> str:
+    """*text* rstripped to *limit* chars, plus an ellipsis iff that cut something.
+
+    A bare ``text[:limit]`` reads identically whether *text* was exactly *limit*
+    chars or ten times that — the reader cannot tell a title is a fragment. The
+    ellipsis is the honest signal that more text exists beyond the snippet.
+    """
+    trimmed = text[:limit].rstrip()
+    return trimmed if len(text) <= limit else f"{trimmed}…"
+
+
 @dataclass(frozen=True, slots=True)
 class GapSpec:
     """One grounded gap's identity for promotion to a fix-and-merge.
@@ -67,12 +78,17 @@ class GapSpec:
     the rendered checkbox label (scanned for banned terms / bare refs before any
     write); ``cluster_key`` links the gap-fix Ticket back to the ``ConsolidatedMemory``
     row to retire on merge (equal to ``gap_key`` for a core gap; the
-    ``compliance-recurrence-<rule_identity>`` key for a recurrence).
+    ``compliance-recurrence-<rule_identity>`` key for a recurrence). ``detail`` is the
+    full, untruncated rule text for the coder-facing batch manifest
+    (:func:`~teatree.loops.dream.batch_promote._batch_context`) — ``title`` is
+    elided to a checkbox-sized snippet, so the manifest renders ``detail`` in full.
+    Empty when ``title`` is already complete (e.g. a compliance-recurrence template).
     """
 
     gap_key: str
     title: str
     cluster_key: str
+    detail: str = ""
 
 
 def _marker(gap_key: str) -> str:

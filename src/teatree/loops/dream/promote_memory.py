@@ -208,7 +208,9 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
         )
 
     outcome = batch.consider(
-        gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
+        gap=GapSpec(
+            gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key, detail=row.rule.strip()
+        )
     )
     return TicketOutcome(
         cluster_key=row.cluster_key,
@@ -305,7 +307,12 @@ def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str
 
 
 def _ticket_title(row: ConsolidatedMemory) -> str:
-    snippet = neutralize_bare_references(row.rule.strip().split(". ")[0][:60].rstrip())
+    from teatree.loops.dream.umbrella_ledger import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        elided_snippet,
+    )
+
+    first_sentence = row.rule.strip().split(". ")[0]
+    snippet = neutralize_bare_references(elided_snippet(first_sentence, 60))
     return f"Workflow gap (dreaming Pass 2): {snippet}"
 
 

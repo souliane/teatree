@@ -184,6 +184,25 @@ class PromoteAutomatableAsksTestCase(TestCase):
         assert outcomes == []
         assert batch.pending == []
 
+    def test_a_long_rule_title_is_elided_and_detail_carries_the_full_rule(self) -> None:
+        # _NEW_WORKFLOW_RULE's first sentence is ~97 chars — over the 80-char snippet
+        # limit, so the title must say so and the manifest must still carry it whole.
+        batch = PromotionBatch()
+        promote_automatable_asks([_cluster()], self._grounded_extract(), umbrella_url=UMBRELLA, batch=batch)
+        gap = batch.pending[0]
+        assert "…" in gap.title
+        assert gap.detail == _NEW_WORKFLOW_RULE
+
+    def test_a_short_rule_title_has_no_ellipsis(self) -> None:
+        short_rule = "Automate the thing."
+        extract = _extract(_ask_snippet("s1.jsonl", "please automate the thing"))
+        cluster = _cluster(rule=short_rule, citation="please automate the thing")
+        batch = PromotionBatch()
+        promote_automatable_asks([cluster], extract, umbrella_url=UMBRELLA, batch=batch)
+        gap = batch.pending[0]
+        assert "…" not in gap.title
+        assert gap.detail == short_rule
+
 
 class RowLooksLikeAskTestCase(TestCase):
     """A persisted ConsolidatedMemory row is an ask cluster when its rule reads as one."""

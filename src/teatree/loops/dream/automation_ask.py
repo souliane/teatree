@@ -197,7 +197,11 @@ def detect_automatable_asks(
 
 def _ask_title(finding: AutomationAskFinding) -> str:
     """Render the umbrella checkbox title carrying the Bucket-A/B framing + the label."""
-    snippet = finding.rule.strip().split(". ")[0][:80].rstrip()
+    from teatree.loops.dream.umbrella_ledger import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        elided_snippet,
+    )
+
+    snippet = elided_snippet(finding.rule.strip().split(". ")[0], 80)
     if finding.bucket is AskBucket.EXISTING_GAP:
         framing = f"existing gap (`{finding.mechanism}`) — fix its trigger/coverage/surfacing"
     else:
@@ -250,7 +254,12 @@ def promote_ask_findings(
         if dry_run:
             continue
         gap_outcome = batch.consider(
-            gap=GapSpec(gap_key=finding.cluster_key, title=_ask_title(finding), cluster_key=finding.cluster_key)
+            gap=GapSpec(
+                gap_key=finding.cluster_key,
+                title=_ask_title(finding),
+                cluster_key=finding.cluster_key,
+                detail=finding.rule.strip(),
+            )
         )
         outcomes.append(
             AutomationAskOutcome(

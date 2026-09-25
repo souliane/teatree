@@ -150,6 +150,28 @@ class ConsiderTestCase(TestCase):
     def test_no_collection_reports_an_empty_summary(self) -> None:
         assert bp.PromotionBatch().summary == ""
 
+    def test_a_banned_term_only_in_detail_is_still_withheld(self) -> None:
+        # The title alone is clean — proving the scan reads `detail` too, not just
+        # `title`, or a leak hiding in the full rule text would ship unscanned.
+        gap = GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1", detail="mentions a-banned-term here")
+        batch = bp.PromotionBatch()
+
+        def _scan(text: str) -> str | None:
+            return "a-banned-term" if "a-banned-term" in text else None
+
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", side_effect=_scan):
+            outcome = batch.consider(gap=gap)
+        assert outcome.withheld is True
+        assert outcome.queued is False
+        assert batch.pending == []
+
+    def test_a_gap_with_no_detail_is_queued_with_an_empty_detail(self) -> None:
+        # A compliance-recurrence gap's title is a fixed template, never truncated —
+        # detail stays empty rather than duplicating the title.
+        batch = bp.PromotionBatch()
+        batch.consider(gap=_gap("gap-1"))
+        assert batch.pending[0].detail == ""
+
 
 class PromoteBatchTestCase(TestCase):
     """The required negative control: zero pending gaps mints zero tickets."""
@@ -159,6 +181,46 @@ class PromoteBatchTestCase(TestCase):
         assert outcome.scheduled is False
         assert outcome.gap_count == 0
         assert Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).count() == 0
+
+    def test_the_scheduled_ticket_manifest_carries_the_full_detail_not_just_the_title(self) -> None:
+        long_detail = (
+            "Ablate matchers one at a time to prove each is load-bearing; dropping all "
+            "matchers only shows the fixture is rejected by something."
+        )
+        gap = GapSpec(
+            gap_key="gap-1",
+            title="Workflow gap (dreaming Pass 2): Ablate matchers…",
+            cluster_key="gap-1",
+            detail=long_detail,
+        )
+        batch = bp.PromotionBatch()
+        batch.consider(gap=gap)
+        bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        assert long_detail in ticket.context
+
+    def test_the_manifest_never_duplicates_a_line_when_the_title_already_carries_it_whole(self) -> None:
+        # The rule is short enough that the title's snippet IS the whole rule (just
+        # wrapped in the "Workflow gap ..." label) — a second "Full:" line would add
+        # nothing but noise.
+        gap = GapSpec(
+            gap_key="gap-1",
+            title="Workflow gap (dreaming Pass 2): Run the tree-wide health gate before any push.",
+            cluster_key="gap-1",
+            detail="Run the tree-wide health gate before any push.",
+        )
+        batch = bp.PromotionBatch()
+        batch.consider(gap=gap)
+        bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        assert "Full:" not in ticket.context
+
+    def test_an_empty_detail_never_renders_a_full_line(self) -> None:
+        batch = bp.PromotionBatch()
+        batch.consider(gap=_gap("gap-1", title="Short title"))
+        bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        assert "Full:" not in ticket.context
 
     def test_dry_run_writes_and_schedules_nothing(self) -> None:
         batch = bp.PromotionBatch(pending=[_gap("gap-1")])

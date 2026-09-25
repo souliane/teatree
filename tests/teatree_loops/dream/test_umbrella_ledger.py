@@ -67,6 +67,29 @@ class RenderCheckboxLineTestCase(TestCase):
         assert "https://example.com/pr/1" in line
 
 
+class ElidedSnippetTestCase(TestCase):
+    """A truncated snippet says so — a bare slice is indistinguishable from a complete rule."""
+
+    def test_text_under_the_limit_is_returned_unchanged(self) -> None:
+        assert ul.elided_snippet("short rule", 60) == "short rule"
+
+    def test_text_exactly_at_the_limit_is_not_marked_truncated(self) -> None:
+        text = "x" * 60
+        assert ul.elided_snippet(text, 60) == text
+
+    def test_text_over_the_limit_is_cut_and_marked_with_an_ellipsis(self) -> None:
+        text = "x" * 70
+        result = ul.elided_snippet(text, 60)
+        assert result == "x" * 60 + "…"
+
+    def test_never_silently_drops_text_with_no_truncation_signal(self) -> None:
+        # The historical bug: a bare `text[:60]` reads identically whether the rule
+        # was exactly 60 chars or 600 — the coder cannot tell truncation happened.
+        result = ul.elided_snippet("a" * 100, 60)
+        assert result.endswith("…")
+        assert len(result) < 100
+
+
 class UpsertGapCheckboxTestCase(TestCase):
     """A gap checkbox is added once and never double-added (deduped by gap key)."""
 
