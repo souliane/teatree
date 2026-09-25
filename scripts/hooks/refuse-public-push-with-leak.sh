@@ -138,7 +138,9 @@ case "${visibility}" in
     exit 0  # KNOWN non-public remote — nothing reaches public history
     ;;
   PUBLIC)
-    : ;;  # confirmed public — scan
+    target="PUBLIC repo '${slug}'"
+    confirm_hint=""
+    ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
     # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. The
@@ -146,6 +148,8 @@ case "${visibility}" in
     # finding, so a clean push on a tool-less machine still passes — only an
     # actual leak is stopped. Warn loudly so the undetermined path shows.
     echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning anyway (fail closed, §3f #14)." >&2
+    target="repo '${slug:-<remote>}' (visibility could not be confirmed — treated as public)"
+    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${slug:-<owner>/<repo>}\"]'"
     ;;
 esac
 
@@ -241,10 +245,11 @@ _scan_ref_name() {
   name_report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-ref.XXXXXX")
   printf '%s\n' "${published}" | ${scan_cmd} - >"${name_report}" 2>&1 || name_rc=$?
   if [ "${name_rc}" -eq "${findings_code}" ]; then
-    echo "✗ refuse: push to PUBLIC repo '${slug}' publishes the ref name '${published}', which carries privacy findings."
+    echo "✗ refuse: push to ${target} publishes the ref name '${published}', which carries privacy findings."
     sed 's/^/    /' "${name_report}" 2>/dev/null || true
     echo "  A pushed ref name is permanent: the forge keeps it under refs/pull/* even after the branch is deleted."
     echo "  Push under a clean remote name instead: git push <remote> HEAD:refs/heads/<clean-name>"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     rm -f "${name_report}"
     return 1
   elif [ "${name_rc}" -ne 0 ]; then
@@ -326,7 +331,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
     | grep -v -E "${noreply_re}" | sort -u || true)
   if [ -n "${bad_idents}" ]; then
-    echo "✗ refuse: push to PUBLIC repo '${slug}' has a non-noreply commit identity on '${local_ref}'."
+    echo "✗ refuse: push to ${target} has a non-noreply commit identity on '${local_ref}'."
     echo "  A real/deliverable email in public git history is a permanent PII leak."
     echo "  Offending author/committer email(s):"
     printf '%s\n' "${bad_idents}" | sed 's/^/    /'
@@ -334,6 +339,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  Nothing was published. Cut a new branch from the remote's tip, re-create these commits on it"
     echo "  under the repo's GitHub noreply identity, and push that new branch for review."
     echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1
   fi
 
@@ -347,7 +353,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   scan_rc=0
   printf '%s\n' "${content}" | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
   if [ "${scan_rc}" -eq "${findings_code}" ]; then
-    echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
+    echo "✗ refuse: push to ${target} carries privacy findings on '${local_ref}'."
     echo "  Findings by commit + file (locate each in the pushed history and scrub it):"
     # Attribute each finding to its commit + file so the operator can find it.
     # Fall back to the whole-range report (a deterministic per-line summary the
@@ -359,6 +365,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
     echo "  Scrub the diff (generic placeholders) before pushing to a public repo."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1
   elif [ "${scan_rc}" -ne 0 ]; then
     # Any other non-zero is a scanner failure (crash, missing script,

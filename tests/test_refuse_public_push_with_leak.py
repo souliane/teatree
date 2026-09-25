@@ -1306,21 +1306,13 @@ def _commit_as(work: Path, name: str, email: str, filename: str, body: str) -> N
 _REWRITE_VERBS = ("filter-branch", "filter-repo", "rebase", "--force", "-f ", "amend", "reset --hard")
 
 
-class TestUnconfirmedVisibilityIsNotAPublicFinding:
-    """An unresolvable probe is an absence of evidence, never evidence of publicness.
+class TestUnconfirmedVisibilityKeepsTheIdentityGuard:
+    """Unknown visibility is treated as public: the #730 identity guard still refuses.
 
-    The #730 author-identity guard exists because a real, deliverable email in
-    PUBLIC history is a permanent leak. On a private remote the same email is
-    the correct, ordinary state — which is why private remotes are exempt. So
-    the guard needs POSITIVE evidence that the remote is public; firing it on
-    an UNKNOWN verdict converts "could not ask" into "confirmed public", and
-    that is what refused a push to a private GitLab repo and told the operator
-    to rewrite the branch behind an open merge request.
-
-    The CONTENT scan keeps the opposite polarity and is unchanged: a planted
-    secret is a leak wherever it lands, so an undetermined verdict still scans
-    and still blocks (``TestProbeErrorVisibilityFailsClosed`` and
-    ``test_failed_probe_surfaces_its_error_and_still_fails_closed`` pin it).
+    An UNKNOWN verdict is "could not confirm private", so a real email bound for
+    a remote nobody could classify is refused exactly as on a confirmed-public
+    one. The refusal must not claim the repo IS public, and it must name how to
+    confirm the visibility so a genuinely private remote can be unblocked.
     """
 
     def _unconfirmed(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -1328,22 +1320,28 @@ class TestUnconfirmedVisibilityIsNotAPublicFinding:
         env["T3_REPO_VISIBILITY_CMD"] = str(_make_visibility_shim(tmp_path / "visbin", "UNKNOWN"))
         return work, env
 
-    def test_unconfirmed_visibility_does_not_refuse_an_internal_commit_identity(self, tmp_path: Path) -> None:
+    def test_unconfirmed_visibility_refuses_an_internal_commit_identity(self, tmp_path: Path) -> None:
         work, env = self._unconfirmed(tmp_path)
         _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
 
         result = _run_hook(work, env, _push_stdin(work))
 
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert _REAL_EMAIL in result.stdout
+        assert "noreply" in result.stdout
 
-    def test_unconfirmed_visibility_never_asserts_the_repo_is_public(self, tmp_path: Path) -> None:
+    def test_unconfirmed_refusal_says_how_to_confirm_visibility(self, tmp_path: Path) -> None:
         work, env = self._unconfirmed(tmp_path)
         _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
 
-        combined = _run_hook(work, env, _push_stdin(work))
-        text = (combined.stdout + combined.stderr).lower()
+        result = _run_hook(work, env, _push_stdin(work))
+        text = result.stdout.lower()
 
-        assert "public repo" not in text, combined.stdout + combined.stderr
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "public repo" not in text, result.stdout
+        assert "visibility could not be confirmed" in text, result.stdout
+        assert "private_repos" in result.stdout, result.stdout
+        assert "auth login" in result.stdout, result.stdout
 
     def test_confirmed_public_still_refuses_the_same_commit_identity(self, tmp_path: Path) -> None:
         """Anti-vacuity: the guard is intact — only its premise now has to be proven."""
