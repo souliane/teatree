@@ -1,11 +1,14 @@
-"""Stop self-pump gate for the durable DB ``LoopState`` 'pause everything' (#1913).
+"""Stop self-pump helpers for :mod:`hook_router` (over the module-health LOC cap).
 
-Extracted from :mod:`hook_router` (it is over the module-health LOC cap and may
-only shrink): the in-session Stop self-pump must honour a durable DB pause of
-the core ``dispatch`` loop. This DB ``LoopState`` tier is the SINGLE control
-plane the self-pump consults (loop control is ``/loops`` + the DB only; there is
-no env kill-switch). Keeping it in a sibling helper means the Stop hook gains the
-behaviour without growing the god-module.
+Two cohesive concerns, both feeding ``handle_loop_self_pump``. The durable
+``LoopState`` 'pause everything' check (#1913): the in-session Stop self-pump
+must honour a durable DB pause of the core ``dispatch`` loop. This DB
+``LoopState`` tier is the SINGLE control plane the self-pump consults (loop
+control is ``/loops`` + the DB only; there is no env kill-switch). ``actor_key``
+/ ``format_pending_summary`` are the pure formatting/identity helpers the same
+handler uses to dedupe and to render its pending-work summary. Keeping all
+three in a sibling module means the Stop hook gains the behaviour without
+growing the god-module.
 
 The read is a DIRECT stdlib ``sqlite3`` read of the PRIMARY teatree DB via the
 Django-free :func:`teatree.config.cold_reader.loop_status` — NO ``t3`` subprocess
@@ -33,6 +36,10 @@ _DISPATCH_LOOP_NAME = "dispatch"
 # without importing teatree). Any other resolved status — ``paused`` /
 # ``disabled`` — is a durable hold that suppresses the self-pump.
 _RUNNABLE_STATUS = "enabled"
+
+# How many pending-work rows the Stop message quotes before collapsing the rest
+# into a "…and N more" tail.
+_PENDING_PREVIEW = 5
 
 
 def db_loop_state_suppresses_self_pump() -> bool:
@@ -76,4 +83,29 @@ def _dispatch_loop_status() -> str:
         return _RUNNABLE_STATUS
 
 
-__all__ = ["db_loop_state_suppresses_self_pump"]
+def format_pending_summary(pending: list[dict]) -> str:
+    """Render up to :data:`_PENDING_PREVIEW` pending-work rows for a Stop message."""
+    preview = pending[:_PENDING_PREVIEW]
+    lines = [
+        f"  - task {p.get('task_id', '?')} → {p.get('subagent', '?')} "
+        f"({p.get('phase', '?')}) {p.get('issue_url', '')}".rstrip()
+        for p in preview
+    ]
+    if len(pending) > _PENDING_PREVIEW:
+        lines.append(f"  - …and {len(pending) - _PENDING_PREVIEW} more")
+    return "\n".join(lines)
+
+
+def actor_key(data: dict) -> str:
+    """The identity the consolidation loop is deduped by (#786 invariant 3).
+
+    The Stop payload's ``agent_id`` when present (the per-actor key —
+    stable for one agent across sessions, distinct across agents);
+    otherwise the ``session_id`` (a session with no separate agent
+    identity is its own actor — the degenerate-but-correct case of "one
+    loop per agent identity").
+    """
+    return data.get("agent_id") or data.get("session_id", "")
+
+
+__all__ = ["actor_key", "db_loop_state_suppresses_self_pump", "format_pending_summary"]

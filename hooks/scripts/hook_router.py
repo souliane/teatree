@@ -129,7 +129,9 @@ from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa:
 from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
 from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
 from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
+from hooks.scripts.loop_state_self_pump_gate import actor_key as _actor_key
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+from hooks.scripts.loop_state_self_pump_gate import format_pending_summary as _format_pending_summary
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
 from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
@@ -151,6 +153,7 @@ from hooks.scripts.mr_cli_fields import (
 )
 from hooks.scripts.mr_validator import mr_validate_argv, run_mr_validator
 from hooks.scripts.no_self_reviewer_assign import handle_block_self_reviewer_assign
+from hooks.scripts.notification_dm_gate import handle_notify_stalled_ask
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
@@ -3950,7 +3953,6 @@ def handle_session_end_loop_registry(data: dict) -> None:
 
 _SELF_PUMP_MIN_INTERVAL = 60
 _SELF_PUMP_PENDING_TIMEOUT = 5
-_SELF_PUMP_PREVIEW = 5
 
 
 def _consolidated_pending_work() -> list[dict]:
@@ -4020,30 +4022,6 @@ def _self_pump_recently_armed(marker: Path) -> bool:
     if not marker.is_file():
         return False
     return int(time.time()) - int(marker.stat().st_mtime) < _SELF_PUMP_MIN_INTERVAL
-
-
-def _format_pending_summary(pending: list[dict]) -> str:
-    preview = pending[:_SELF_PUMP_PREVIEW]
-    lines = [
-        f"  - task {p.get('task_id', '?')} → {p.get('subagent', '?')} "
-        f"({p.get('phase', '?')}) {p.get('issue_url', '')}".rstrip()
-        for p in preview
-    ]
-    if len(pending) > _SELF_PUMP_PREVIEW:
-        lines.append(f"  - …and {len(pending) - _SELF_PUMP_PREVIEW} more")
-    return "\n".join(lines)
-
-
-def _actor_key(data: dict) -> str:
-    """The identity the consolidation loop is deduped by (#786 invariant 3).
-
-    The Stop payload's ``agent_id`` when present (the per-actor key —
-    stable for one agent across sessions, distinct across agents);
-    otherwise the ``session_id`` (a session with no separate agent
-    identity is its own actor — the degenerate-but-correct case of "one
-    loop per agent identity").
-    """
-    return data.get("agent_id") or data.get("session_id", "")
 
 
 def handle_loop_self_pump(data: dict) -> bool | None:
@@ -5209,6 +5187,7 @@ _HANDLERS: dict[str, list] = {
     # dispatch prompt it demands actually exists and a deny is non-destructive.
     "TaskCreated": [handle_dispatch_prompt_quote_scanner_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
+    "Notification": [handle_notify_stalled_ask],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
     # #845: PostCompact deliberately NOT registered — the harness has no
