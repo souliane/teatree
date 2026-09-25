@@ -1,4 +1,4 @@
-"""The three dream phases that drive a gap to a scheduled fix (#2663, #4176).
+"""The three dream phases that drive a gap into this pass's promotion batch (#2663, #4176).
 
 Compliance escalation (3c), the automatable-ask promoter (3d), and Pass-2 core-gap
 memory promotion share one shape: gate on the phase's own config toggle, resolve the
@@ -12,16 +12,19 @@ wiring layer.
 ``tick`` cannot set it, so no gate here ANDs on it — a phase gated that way is dead on
 the cron path however its own toggle is configured (#4176). Each gate is its own toggle
 alone, or the ``not force_all_phases and not <toggle>()`` OR-idiom.
+
+Each phase COLLECTS its gaps into the pass's shared
+:class:`~teatree.loops.dream.batch_promote.PromotionBatch` rather than scheduling its
+own ticket — #4776 batches every promoting phase's output into ONE ticket per pass.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.loops.dream.pass_config import PromotionBudget
-
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.loops.dream.batch_promote import PromotionBatch
     from teatree.loops.dream.replay import ConsolidationExtract
 
 BacklogHostResolver = Callable[[], "tuple[CodeHostBackend | None, str]"]
@@ -33,9 +36,7 @@ class GapPromotionPhases:
 
     backlog_host_resolver: BacklogHostResolver
 
-    def run_compliance(
-        self, *, extract: "ConsolidationExtract | None", dry_run: bool, budget: PromotionBudget | None = None
-    ) -> str:
+    def run_compliance(self, *, extract: "ConsolidationExtract | None", dry_run: bool, batch: "PromotionBatch") -> str:
         """Phase 3c — MEASURE compliance every pass, ESCALATE on the escalate toggle (never raises).
 
         Measurement is the root KPI: it runs on EVERY pass when the default-ON
@@ -66,7 +67,7 @@ class GapPromotionPhases:
                     findings=measurement.findings,
                     host=host,
                     dry_run=dry_run,
-                    budget=budget,
+                    batch=batch,
                 )
         except Exception as exc:  # noqa: BLE001 — a compliance-phase failure degrades to a WARN clause, never aborts the dream
             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
@@ -78,7 +79,7 @@ class GapPromotionPhases:
         extract: "ConsolidationExtract | None",
         dry_run: bool,
         force_all_phases: bool,
-        budget: PromotionBudget | None = None,
+        batch: "PromotionBatch",
     ) -> str:
         """Phase 3d — promote recurring automatable user asks to a fix-and-merge (#2663; never raises).
 
@@ -103,24 +104,22 @@ class GapPromotionPhases:
             if host is None:
                 return "; WARN automatable-ask promotion skipped — no teatree code host resolved"
             return automation_ask.run_automation_asks_phase(
-                extract, host, umbrella_url=_umbrella_url(), dry_run=dry_run, budget=budget
+                extract, umbrella_url=_umbrella_url(), dry_run=dry_run, batch=batch
             )
         except Exception as exc:  # noqa: BLE001 — an automatable-ask-phase failure degrades to a WARN clause
             return f"; WARN automatable-ask phase raised: {type(exc).__name__}: {exc}"
 
-    def run_memory_promotion(
-        self, *, dry_run: bool, force_all_phases: bool = False, budget: PromotionBudget | None = None
-    ) -> str:
-        """Pass 2 — drive each core gap to a fix-and-merge under the umbrella (#2663).
+    def run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool, batch: "PromotionBatch") -> str:
+        """Pass 2 — collect each core gap into this pass's promotion batch (#2663, #4776).
 
-        Runs only when the default-OFF ``memory_promote`` toggle is on, because it
-        schedules fixes. Resolves the teatree backlog code host, triages every
-        untriaged ``ConsolidatedMemory`` row, and PROMOTES each core-generic gap to a
-        fix: a checkbox is upserted under the standing umbrella issue and a coding task
-        is scheduled (instead of a fresh ``needs-triage`` issue that piles up). Then it
-        RECONCILES — every gap whose fix Ticket merged has its umbrella checkbox checked
-        and its memory retired. A failure is reported in the summary line, never
-        crashing the pass.
+        Runs only when the default-ON ``memory_promote`` toggle admits it (#4685, #4776).
+        Resolves the teatree backlog code host, triages
+        every untriaged ``ConsolidatedMemory`` row, and COLLECTS each core-generic gap
+        into *batch* (the checkbox + coding task is minted once, after every promoting
+        phase has run — see ``batch_promote.promote_batch``). Then it RECONCILES gap-fix
+        tickets scheduled under the OLD per-gap scheme (legacy in-flight tickets only —
+        the batch reconcile is a separate pass-level step). A failure is reported in the
+        summary line, never crashing the pass.
         """
         from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415 — deferred: lazy command import
 
@@ -133,7 +132,7 @@ class GapPromotionPhases:
             if host is None:
                 return "; WARN memory promotion skipped — no teatree code host resolved"
             umbrella = promote_memory.UMBRELLA_ISSUE_URL
-            promoted = promote_memory.file_core_gap_tickets(host, umbrella_url=umbrella, dry_run=dry_run, budget=budget)
+            promoted = promote_memory.file_core_gap_tickets(umbrella_url=umbrella, dry_run=dry_run, batch=batch)
             reconciled = [] if dry_run else umbrella_ledger.reconcile_merged_gaps(host, umbrella_url=umbrella)
         except Exception as exc:  # noqa: BLE001 — a memory-promotion failure degrades to a WARN clause
             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"

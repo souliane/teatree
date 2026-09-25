@@ -116,6 +116,59 @@ class TestContainment:
         assert points_at_core_fix("escape/leak.py", root=core_tree) is False
 
 
+class TestGroundableIncludesMemoryReferences:
+    """A memory-shaped destination promotes rather than being withheld as ungrounded (#4776).
+
+    Before #4776 every ``memory/<slug>.md`` destination was treated as ungrounded and
+    kept as memory forever — 49 of 49 gaps measured on one pass were withheld this
+    exact way. ``groundable`` (``in_core_tree`` OR ``is_memory_reference``) is the
+    promotable test; ``in_core_tree`` itself is UNCHANGED (still False for a memory
+    path — the compliance recurrence-redirect needs that narrower question).
+    """
+
+    def test_a_memory_reference_is_groundable(self, core_tree: Path) -> None:
+        verdict = classify_destination("memory/topic.md", root=core_tree)
+        assert verdict.is_memory_reference is True
+        assert verdict.groundable is True
+
+    def test_a_memory_reference_is_still_not_in_core_tree(self, core_tree: Path) -> None:
+        # Unchanged behavior preservation: compliance's recurrence-redirect asks
+        # in_core_tree alone and must keep treating a memory destination as
+        # MEMORY_ONLY, or a recurring rule stops escalating to a structural fix.
+        verdict = classify_destination("memory/topic.md", root=core_tree)
+        assert verdict.in_core_tree is False
+
+    def test_memory_reference_detection_is_case_insensitive(self, core_tree: Path) -> None:
+        assert classify_destination("Memory/Topic.MD", root=core_tree).groundable is True
+
+    def test_an_absolute_memory_path_is_groundable(self, core_tree: Path, tmp_path: Path) -> None:
+        outside = tmp_path.parent / "claude-home" / "memory" / "topic.md"
+        assert classify_destination(str(outside), root=core_tree).groundable is True
+
+    def test_a_bare_memory_filename_with_no_parent_dir_is_not_groundable(self, core_tree: Path) -> None:
+        # "memory.md" names no such per-project memory file — only the
+        # parent-directory-qualified shape is recognised.
+        verdict = classify_destination("memory.md", root=core_tree)
+        assert verdict.is_memory_reference is False
+        assert verdict.groundable is False
+
+    def test_a_genuinely_unresolvable_destination_stays_withheld(self, core_tree: Path) -> None:
+        # The required negative control: not every ungrounded destination is
+        # rescued by the memory-reference carve-out.
+        verdict = classify_destination("some/nonsense/path.md", root=core_tree)
+        assert verdict.is_memory_reference is False
+        assert verdict.groundable is False
+
+    def test_a_real_core_tree_path_is_also_groundable(self, core_tree: Path) -> None:
+        verdict = classify_destination("src/teatree/loops/dream/promote_memory.py", root=core_tree)
+        assert verdict.in_core_tree is True
+        assert verdict.groundable is True
+
+    def test_a_memory_shaped_path_traversal_is_not_groundable(self, core_tree: Path) -> None:
+        verdict = classify_destination("memory/../../etc/passwd.md", root=core_tree)
+        assert verdict.is_memory_reference is False
+
+
 class TestUnverifiableCheckoutFallsBackLoudly:
     """A site-packages install has no tree to read.
 

@@ -4,8 +4,9 @@ The structural sibling of the compliance accountant: dreaming detects recurring
 MANUAL user asks t3 could automate and promotes each as a fix-and-merge gap under
 the standing umbrella, so the user "gets out of the loop". Each ask-cluster is
 classified Bucket A (EXISTING_GAP — an existing loop/skill should have handled it)
-or Bucket B (NEW_WORKFLOW — no automation exists, e.g. a hotfix lane), then routed
-through ``umbrella_ledger.promote_gap``.
+or Bucket B (NEW_WORKFLOW — no automation exists, e.g. a hotfix lane), then queued
+into the pass's shared ``batch_promote.PromotionBatch`` (#4776) — the checkbox +
+coding task are minted once, for the whole pass, not per ask.
 
 These tests drive the classify + promote flow with an INJECTED fake code host and
 real ``ConsolidatedMemory`` rows / ``DistilledCluster`` values, so the whole flow
@@ -19,6 +20,7 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.automation_ask import (
     AUTOMATION_CATALOG,
     AskBucket,
@@ -30,6 +32,7 @@ from teatree.loops.dream.automation_ask import (
     row_looks_like_ask,
     run_automation_asks_phase,
 )
+from teatree.loops.dream.batch_promote import PromotionBatch
 from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
@@ -123,33 +126,31 @@ class DetectAutomatableAsksTestCase(TestCase):
 
 
 class PromoteAutomatableAsksTestCase(TestCase):
-    """Each grounded ask gap routes through the umbrella ledger as a fix-and-merge."""
+    """Each grounded ask gap is queued into the pass's shared promotion batch (#4776)."""
 
     def _grounded_extract(self) -> ConsolidationExtract:
         return _extract(_ask_snippet("s1.jsonl", "please set up a hotfix lane for urgent rollbacks"))
 
-    def test_a_new_workflow_ask_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
-        host = _fake_host()
-        outcomes = promote_automatable_asks([_cluster()], self._grounded_extract(), host, umbrella_url=UMBRELLA)
+    def test_a_new_workflow_ask_is_queued_with_the_bucket_b_framing(self) -> None:
+        batch = PromotionBatch()
+        outcomes = promote_automatable_asks([_cluster()], self._grounded_extract(), umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        host.update_issue.assert_called_once()
-        _, kwargs = host.update_issue.call_args
-        # The Bucket-B framing rides into the umbrella checkbox title.
-        assert "new workflow" in kwargs["body"].lower()
+        assert len(batch.pending) == 1
+        # The Bucket-B framing rides into the queued gap's title.
+        assert "new workflow" in batch.pending[0].title.lower()
 
     def test_a_bucket_a_title_names_the_existing_mechanism(self) -> None:
-        host = _fake_host()
+        batch = PromotionBatch()
         extract = _extract(_ask_snippet("s1.jsonl", "automate the daily follow-up nag for stale open review"))
         cluster = _cluster(rule=_EXISTING_GAP_RULE, citation="automate the daily follow-up nag for stale open review")
-        promote_automatable_asks([cluster], extract, host, umbrella_url=UMBRELLA)
-        _, kwargs = host.update_issue.call_args
-        assert "existing gap" in kwargs["body"].lower()
+        promote_automatable_asks([cluster], extract, umbrella_url=UMBRELLA, batch=batch)
+        assert "existing gap" in batch.pending[0].title.lower()
 
     def test_the_scheduled_fix_ticket_links_the_ask_memory_for_retirement(self) -> None:
-        # The ask cluster is persisted as a ConsolidatedMemory row; promotion
-        # schedules a gap-fix Ticket linked by cluster_key so reconcile-on-merge
-        # retires the ask memory when the fix merges (Part C retire path).
+        # The ask cluster is persisted as a ConsolidatedMemory row; the batch ticket's
+        # manifest links back by cluster_key so reconcile-on-merge retires the ask
+        # memory when the fix merges (Part C retire path).
         ConsolidatedMemory.objects.create(
             cluster_key="ask-1",
             rule=_NEW_WORKFLOW_RULE,
@@ -159,26 +160,29 @@ class PromoteAutomatableAsksTestCase(TestCase):
             verified_citation="please set up a hotfix lane",
         )
         host = _fake_host()
-        promote_automatable_asks([_cluster()], self._grounded_extract(), host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        promote_automatable_asks([_cluster()], self._grounded_extract(), umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.get(extra__dream_gap_key="ask-1")
-        assert ticket.extra["dream_memory_cluster_key"] == "ask-1"
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        manifest = ticket.extra["dream_gap_batch"]
+        assert manifest[0]["cluster_key"] == "ask-1"
 
-    def test_dry_run_writes_nothing_and_schedules_nothing(self) -> None:
-        host = _fake_host()
+    def test_dry_run_queues_nothing(self) -> None:
+        batch = PromotionBatch()
         outcomes = promote_automatable_asks(
-            [_cluster()], self._grounded_extract(), host, umbrella_url=UMBRELLA, dry_run=True
+            [_cluster()], self._grounded_extract(), umbrella_url=UMBRELLA, batch=batch, dry_run=True
         )
         assert outcomes == []
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
 
     def test_an_ungrounded_ask_is_never_promoted(self) -> None:
-        host = _fake_host()
+        batch = PromotionBatch()
         extract = _extract(_ask_snippet("s1.jsonl", "an unrelated line with no cited quote"))
-        outcomes = promote_automatable_asks([_cluster()], extract, host, umbrella_url=UMBRELLA)
+        outcomes = promote_automatable_asks([_cluster()], extract, umbrella_url=UMBRELLA, batch=batch)
         assert outcomes == []
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
 
 
 class RowLooksLikeAskTestCase(TestCase):
@@ -224,9 +228,11 @@ class RunAutomationAsksPhaseTestCase(TestCase):
             verified_citation="please set up a hotfix lane",
         )
         extract = _extract(_ask_snippet("s1.jsonl", "please set up a hotfix lane for urgent rollbacks"))
-        host = _fake_host()
-        summary = run_automation_asks_phase(extract, host, umbrella_url=UMBRELLA, dry_run=False)
+        batch = PromotionBatch()
+        summary = run_automation_asks_phase(extract, umbrella_url=UMBRELLA, dry_run=False, batch=batch)
         assert "1" in summary
+        host = _fake_host()
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         host.update_issue.assert_called_once()
 
     def test_a_neutral_row_is_not_promoted(self) -> None:
@@ -239,10 +245,10 @@ class RunAutomationAsksPhaseTestCase(TestCase):
             verified_citation="rounded to two decimals",
         )
         extract = _extract(_ask_snippet("s1.jsonl", "the figure was rounded to two decimals as expected"))
-        host = _fake_host()
-        summary = run_automation_asks_phase(extract, host, umbrella_url=UMBRELLA, dry_run=False)
+        batch = PromotionBatch()
+        summary = run_automation_asks_phase(extract, umbrella_url=UMBRELLA, dry_run=False, batch=batch)
         assert summary == ""
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
 
     def test_dry_run_promotes_nothing(self) -> None:
         ConsolidatedMemory.objects.create(
@@ -254,7 +260,7 @@ class RunAutomationAsksPhaseTestCase(TestCase):
             verified_citation="please set up a hotfix lane",
         )
         extract = _extract(_ask_snippet("s1.jsonl", "please set up a hotfix lane now"))
-        host = _fake_host()
-        summary = run_automation_asks_phase(extract, host, umbrella_url=UMBRELLA, dry_run=True)
+        batch = PromotionBatch()
+        summary = run_automation_asks_phase(extract, umbrella_url=UMBRELLA, dry_run=True, batch=batch)
         assert summary == ""
-        host.update_issue.assert_not_called()
+        assert batch.pending == []

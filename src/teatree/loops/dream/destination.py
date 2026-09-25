@@ -18,6 +18,16 @@ destinations and the pre-#2663 predicate lowercased the whole string.
 The prefix tuple survives ONLY for the case where there is no tree to read (a
 non-editable install): degrading to "nothing is a core fix" would silently kill the
 whole core-gap pipeline, so an unverifiable checkout keeps the old answer and says so.
+
+A curated Claude memory file (``memory/<slug>.md``) is a THIRD kind of home, grounded
+by neither branch above: it lives outside the core checkout entirely
+(``~/.claude/projects/*/memory/``), so tree-containment can never confirm it, yet it is
+not "nowhere" either — 49 of 49 gaps measured on 2026-09 were withheld as ungrounded
+specifically because their distiller-suggested destination was memory-shaped (#4776).
+``DestinationVerdict.groundable`` (``in_core_tree`` OR ``is_memory_reference``) is the
+promotable predicate a caller wanting "does this destination anchor a promotable gap at
+all" should read; ``in_core_tree`` alone stays the narrower "does this point at
+teatree's OWN code" question the compliance recurrence-redirect still needs.
 """
 
 import logging
@@ -32,6 +42,9 @@ logger = logging.getLogger(__name__)
 #: The pre-#2663 predicate, kept as the answer for a checkout that cannot be read.
 _CORE_DESTINATION_PREFIXES = ("skills/", "src/teatree", "teatree/", "scripts/", "blueprint", "agents/")
 
+#: A memory reference is ``.../memory/<slug>.md`` — parent dir + leaf, hence 2 parts.
+_MEMORY_REFERENCE_MIN_PARTS = 2
+
 
 @dataclass(frozen=True, slots=True)
 class DestinationVerdict:
@@ -40,13 +53,29 @@ class DestinationVerdict:
     ``rel_path`` is the destination canonicalised to the tree's own spelling (so a
     mis-cased or absolute-but-inside form reads the same downstream). ``verifiable``
     is False when no core checkout resolved, in which case ``in_core_tree`` carries
-    the legacy prefix answer rather than a grounded one.
+    the legacy prefix answer rather than a grounded one. ``is_memory_reference`` is
+    True for a ``memory/<slug>.md``-shaped destination — never tree-grounded, since it
+    names a file outside the checkout entirely (#4776).
     """
 
     rel_path: str
     in_core_tree: bool
     verifiable: bool
     reason: str
+    is_memory_reference: bool = False
+
+    @property
+    def groundable(self) -> bool:
+        """Whether this destination anchors a PROMOTABLE gap — core code OR a memory file.
+
+        The Pass-2 promotion chokepoint reads this (not ``in_core_tree`` alone) so a
+        memory-destined gap is promoted rather than silently kept as memory forever
+        (#4776); the compliance recurrence-redirect keeps asking ``in_core_tree`` alone,
+        because IT needs the narrower "does this already point at teatree's own code"
+        question — redirecting a recurring MEMORY_ONLY cluster to a memory file would
+        undo the very escalation that check exists to force.
+        """
+        return self.in_core_tree or self.is_memory_reference
 
 
 def points_at_core_fix(destination: str, *, root: Path | None = None) -> bool:
@@ -65,6 +94,10 @@ def classify_destination(destination: str, *, root: Path | None = None) -> Desti
     home = destination.strip()
     if not home:
         return DestinationVerdict(rel_path="", in_core_tree=False, verifiable=True, reason="it names no destination")
+    if _is_memory_reference(home):
+        return DestinationVerdict(
+            rel_path=home, in_core_tree=False, verifiable=True, reason="", is_memory_reference=True
+        )
 
     tree = root if root is not None else PathHelpers.core_repo_root()
     if tree is None:
@@ -82,6 +115,24 @@ def classify_destination(destination: str, *, root: Path | None = None) -> Desti
             rel_path=home, in_core_tree=False, verifiable=True, reason=f"{home!r} lies outside the core tree"
         )
     return _resolve_in_tree(relative, tree)
+
+
+def _is_memory_reference(home: str) -> bool:
+    """Whether *home* names a curated Claude memory file (``.../memory/<slug>.md``).
+
+    Syntactic, not tree-grounded — the file lives under ``~/.claude/projects/*/memory/``,
+    never inside the core checkout. Keyed on the SECOND-TO-LAST path component being
+    ``memory`` (case-insensitive) so both the bare ``memory/<slug>.md`` shape the
+    distiller emits and an absolute variant match, while a bare ``memory.md`` (no parent
+    directory — names no such file) does not.
+    """
+    normalized = home.replace(os.sep, "/").strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or ".." in parts:
+        return False
+    if len(parts) < _MEMORY_REFERENCE_MIN_PARTS:
+        return False
+    return parts[-2].lower() == "memory" and parts[-1].lower().endswith(".md")
 
 
 def _repo_relative(home: str, tree: Path) -> PurePosixPath | None:

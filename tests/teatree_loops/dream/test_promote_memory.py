@@ -11,16 +11,20 @@ classifier and a fake code host, so Pass 2 is fully testable without an LLM and
 without a live forge.
 """
 
+import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.loops.dream import batch_promote as bp_module
+from teatree.loops.dream.batch_promote import PromotionBatch
 from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
     MemoryDisposition,
+    delete_source_memory_files,
     file_binding_reconciliation_tickets,
     file_core_gap_tickets,
     retire_resolved_memories,
@@ -30,21 +34,21 @@ from teatree.loops.dream.promote_memory import (
 
 def _row(
     *,
-    key: str = "k1",
-    rule: str = "Run the tree-wide health gate before any push.",
     destination: str = "skills/ship/SKILL.md",
     binding: bool = False,
-    citation: str = "pushed without running the gate, CI went red",
+    source_files: list | None = None,
 ) -> ConsolidatedMemory:
+    # No caller ever overrides these — kept fixed so the fixture stays under the
+    # 5-kwarg complexity cap without a suppression (ac-django-no-complexity-suppressions).
     return ConsolidatedMemory.objects.create(
-        cluster_key=key,
-        rule=rule,
-        source_files=["feedback_run_gate.md"],
+        cluster_key="k1",
+        rule="Run the tree-wide health gate before any push.",
+        source_files=source_files if source_files is not None else ["feedback_run_gate.md"],
         durable_destination=destination,
         is_binding=binding,
         member_count=1,
         max_member_weight=90,
-        verified_citation=citation,
+        verified_citation="pushed without running the gate, CI went red",
     )
 
 
@@ -83,9 +87,17 @@ class TriageDispositionTestCase(TestCase):
         row = _row(destination="")
         assert triage_disposition(row) is MemoryDisposition.USER_SPECIFIC
 
+    def test_memory_shaped_destination_is_now_a_core_gap(self) -> None:
+        # #4776: before this, EVERY memory/<slug>.md destination was ungrounded and
+        # kept as memory forever — 49 of 49 gaps measured on one pass were withheld
+        # this exact way, so batching had nothing to batch. A memory-shaped
+        # destination now promotes.
+        row = _row(destination="memory/push-success-must-be-verified-by-ls-remote.md")
+        assert triage_disposition(row) is MemoryDisposition.CORE_GAP
+
 
 class FileCoreGapTicketsTestCase(TestCase):
-    """Core-gap rows upsert an umbrella checkbox + schedule a fix — never a triage issue."""
+    """Core-gap rows queue into the pass's batch — never a triage issue, never alone (#4776)."""
 
     def test_core_gap_row_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
         from teatree.core.models.task import Task  # noqa: PLC0415
@@ -93,30 +105,37 @@ class FileCoreGapTicketsTestCase(TestCase):
 
         row = _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        # Nothing is written/scheduled until the pass mints its single batch ticket.
+        host.create_issue.assert_not_called()
+        host.update_issue.assert_not_called()
+
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         # No fresh needs-triage issue is filed — the gap rides the umbrella + a coding task.
         host.create_issue.assert_not_called()
         host.update_issue.assert_called_once()
-        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
         assert Task.objects.filter(phase="coding").exists()
-        row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
 
     def test_user_specific_row_is_classified_and_files_nothing(self) -> None:
         row = _row(destination="feedback/tone.md")
-        host = _fake_host()
-        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
-        host.create_issue.assert_not_called()
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
 
     def test_checkbox_carries_the_gap_marker(self) -> None:
         _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         _, kwargs = host.update_issue.call_args
         assert "<!-- dream-gap k1 -->" in kwargs["body"]
 
@@ -124,8 +143,11 @@ class FileCoreGapTicketsTestCase(TestCase):
         existing = "## Open gaps\n- [ ] Workflow gap (dreaming Pass 2): Run the tree-wide ... <!-- dream-gap k1 -->\n"
         _row(destination="skills/ship/SKILL.md")
         host = _fake_host(body=existing)
-        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         # The checkbox is already present — no rewrite.
+        assert outcome.checkboxes_added == 0
         host.update_issue.assert_not_called()
 
     def test_banned_term_title_is_withheld_not_promoted(self) -> None:
@@ -134,12 +156,12 @@ class FileCoreGapTicketsTestCase(TestCase):
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         _row(destination="skills/ship/SKILL.md")
-        host = _fake_host()
+        batch = PromotionBatch()
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
-            outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+            outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert outcomes[0].filed is False
         assert outcomes[0].withheld is True
-        host.update_issue.assert_not_called()
+        assert batch.pending == []
         assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
 
     def test_dry_run_writes_nothing_and_never_strands_the_gap(self) -> None:
@@ -147,17 +169,14 @@ class FileCoreGapTicketsTestCase(TestCase):
         # dry-run guard moved the row out of untriaged() while its promotion was
         # skipped, so the gap sat in CORE_GAP_NEEDS_TICKET with no drain — detected but
         # never fixed. A dry run now leaves the row UNTRIAGED so the next real pass
-        # drains it faithfully, and writes no umbrella edit / task.
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-
+        # drains it faithfully, and queues no gap.
         row = _row(destination="skills/ship/SKILL.md")
-        host = _fake_host()
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA, dry_run=True)
+        batch = PromotionBatch()
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch, dry_run=True)
         row.refresh_from_db()
         assert outcomes == []
         assert row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert batch.pending == []
 
     def test_stranded_core_gap_row_is_drained_and_promoted(self) -> None:
         # F6.1(b): a row a PRIOR pass classified CORE_GAP_NEEDS_TICKET but never
@@ -170,11 +189,13 @@ class FileCoreGapTicketsTestCase(TestCase):
         row.classify_core_gap()  # prior pass left it here with no ticket + no promotion
         assert not ConsolidatedMemory.objects.untriaged().exists()  # not in the untriaged queue
         host = _fake_host()
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         host.update_issue.assert_called_once()
-        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
         assert Task.objects.filter(phase="coding").exists()
 
     def test_a_new_core_gap_is_not_double_promoted_in_one_pass(self) -> None:
@@ -182,8 +203,8 @@ class FileCoreGapTicketsTestCase(TestCase):
         # a new core gap, so a row classified this pass is promoted exactly once, never
         # re-drained into a second outcome.
         _row(destination="skills/ship/SKILL.md")
-        host = _fake_host()
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        batch = PromotionBatch()
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
 
 
@@ -341,6 +362,118 @@ class RetireResolvedMemoriesTestCase(TestCase):
         assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 
 
+class DeleteSourceMemoryFilesTestCase(TestCase):
+    """Retirement DELETES a promoted gap's source memory file(s) — 'memory tends to zero' (#4776)."""
+
+    def test_a_memory_dir_source_file_is_deleted_and_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            source = memory_dir / "feedback_run_gate.md"
+            source.write_text("the lesson")
+            row = _row(source_files=[str(source)])
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                assert delete_source_memory_files(row) is True
+            assert not source.exists()
+
+    def test_a_non_memory_source_is_never_touched(self) -> None:
+        # A row's source_files may carry a non-memory reference (e.g. a transcript
+        # path) — only a memory-dir .md candidate is ever a delete target.
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            outside = Path(tmp) / "sessions" / "session-a.jsonl"
+            outside.parent.mkdir(parents=True)
+            outside.write_text("transcript")
+            row = _row(source_files=[str(outside)])
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                assert delete_source_memory_files(row) is True
+            assert outside.exists()
+
+    def test_no_discovered_memory_dirs_is_vacuously_confirmed(self) -> None:
+        row = _row(source_files=["feedback_run_gate.md"])
+        with patch("teatree.memory_audit.discover_memory_dirs", return_value=[]):
+            assert delete_source_memory_files(row) is True
+
+    def test_an_unconfirmable_delete_is_reported_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            source = memory_dir / "feedback_run_gate.md"
+            source.write_text("the lesson")
+            row = _row(source_files=[str(source)])
+            with (
+                patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]),
+                patch("pathlib.Path.unlink", side_effect=OSError("permission denied")),
+            ):
+                assert delete_source_memory_files(row) is False
+            assert source.exists()
+
+    def test_retire_deletes_the_file_before_retiring_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            source = memory_dir / "feedback_run_gate.md"
+            source.write_text("the lesson")
+            row = _row(source_files=[str(source)])
+            row.classify_core_gap()
+            row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+            host = MagicMock(spec=CodeHostBackend)
+            host.get_issue.return_value = {"state": "closed"}
+
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                retired = retire_resolved_memories(host)
+
+            assert len(retired) == 1
+            assert not source.exists()
+            row.refresh_from_db()
+            assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+
+    def test_retire_defers_the_row_when_the_file_cannot_be_confirmed_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            source = memory_dir / "feedback_run_gate.md"
+            source.write_text("the lesson")
+            row = _row(source_files=[str(source)])
+            row.classify_core_gap()
+            row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+            host = MagicMock(spec=CodeHostBackend)
+            host.get_issue.return_value = {"state": "closed"}
+
+            with (
+                patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]),
+                patch("pathlib.Path.unlink", side_effect=OSError("permission denied")),
+            ):
+                retired = retire_resolved_memories(host)
+
+            assert retired == []
+            row.refresh_from_db()
+            assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+
+    def test_binding_row_source_file_is_never_deleted(self) -> None:
+        # BINDING is filtered out before delete_source_memory_files is ever reached —
+        # the exemption is permanent, hand-flagged doctrine.
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "project" / "memory"
+            memory_dir.mkdir(parents=True)
+            source = memory_dir / "feedback_binding.md"
+            source.write_text("binding doctrine")
+            row = _row(source_files=[str(source)], binding=True)
+            row.classify_core_gap()
+            row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+            host = MagicMock(spec=CodeHostBackend)
+            host.get_issue.return_value = {"state": "closed"}
+
+            with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+                retired = retire_resolved_memories(host)
+
+            assert retired == []
+            assert source.exists()
+            row.refresh_from_db()
+            assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+
+
 class UngroundedDestinationTestCase(TestCase):
     """A destination naming no place in the core tree is never promoted to a fix (#2663).
 
@@ -351,18 +484,13 @@ class UngroundedDestinationTestCase(TestCase):
     GHOST = "src/teatree/ghost_pkg/ghost.py"
 
     def test_a_ghost_destination_is_kept_as_memory_not_ticketed(self) -> None:
-        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: keeps this module's import ORM-free
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: keeps this module's import ORM-free
-
         row = _row(destination=self.GHOST)
-        host = _fake_host()
+        batch = PromotionBatch()
 
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
 
         assert outcomes == []
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key=row.cluster_key).exists()
-        assert not Task.objects.filter(phase="coding").exists()
+        assert batch.pending == []
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
 
@@ -370,31 +498,24 @@ class UngroundedDestinationTestCase(TestCase):
         # The needs_ticket() drain promotes rows a PRIOR pass classified WITHOUT
         # re-running the classifier, so triage alone would let already-recorded ghosts
         # through and the fix would never reach the live backlog.
-        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: keeps this module's import ORM-free
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: keeps this module's import ORM-free
-
         row = _row(destination=self.GHOST)
         row.classify_core_gap()
-        host = _fake_host()
+        batch = PromotionBatch()
 
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
 
         assert len(outcomes) == 1
         assert outcomes[0].filed is False
         assert outcomes[0].withheld is True
         assert "ghost_pkg" in outcomes[0].reason
-        host.update_issue.assert_not_called()
-        assert not Ticket.objects.filter(extra__dream_gap_key=row.cluster_key).exists()
-        assert not Task.objects.filter(phase="coding").exists()
+        assert batch.pending == []
 
     def test_a_grounded_destination_outside_the_legacy_prefixes_is_still_promoted(self) -> None:
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: keeps this module's import ORM-free
+        _row(destination="evals/scenarios/rules.yaml")
+        batch = PromotionBatch()
 
-        row = _row(destination="evals/scenarios/rules.yaml")
-        host = _fake_host()
-
-        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
 
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        assert Ticket.objects.filter(extra__dream_gap_key=row.cluster_key).exists()
+        assert len(batch.pending) == 1

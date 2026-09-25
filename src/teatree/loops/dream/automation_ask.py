@@ -19,28 +19,33 @@ Bucket A (``EXISTING_GAP`` — an existing loop/skill SHOULD have handled this;
 prescribe a new loop/skill/gate, canonical example a hotfix lane). PROMOTE routes each
 GROUNDED automatable-ask gap (the verbatim cited snippet must appear in the transcript
 — :func:`teatree.loops.dream.engine.check_grounding`, mirroring the cluster
-grounding) through :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a deduped
-umbrella checkbox under the standing umbrella issue + a scheduled coding fix, carrying
-the Bucket-A/B framing in the title. RETIRE reuses Part C's
-:func:`~teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps` — when the ask's
-automation fix merges, the ask memory is retired off the gap-fix Ticket's MERGED state.
+grounding) into the pass's shared
+:class:`~teatree.loops.dream.batch_promote.PromotionBatch` (#4776): a deduped umbrella
+checkbox, carrying the Bucket-A/B framing in the title, queued alongside every other
+promoting phase's gaps for the ONE coding fix the whole pass mints. RETIRE reuses
+:func:`~teatree.loops.dream.batch_promote.reconcile_batches` — when the batch's fix
+merges, the ask memory is retired off the batch Ticket's MERGED state, for the gaps
+recorded delivered.
 
 PURE w.r.t. the forge and the LLM: the classifier is an INJECTED seam (default the
-deterministic catalog-keyword classifier) and the forge writes go through a passed-in
-:class:`~teatree.core.backend_protocols.CodeHostBackend`, so the whole phase is
-testable without an LLM and without a live forge.
+deterministic catalog-keyword classifier) and this phase itself does no forge I/O —
+it only QUEUES into the pass's shared batch; the forge writes happen once, in
+:mod:`teatree.loops.dream.batch_promote`, so the whole phase is testable without an
+LLM and without a live forge.
 """
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
-from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.loops.dream.engine import DistilledCluster, check_grounding, normalize_ws
-from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract
 from teatree.loops.dream.transcript_extract import _ASK_CUES
+
+if TYPE_CHECKING:
+    from teatree.loops.dream.batch_promote import PromotionBatch
 
 #: The dream-automation-gap label carried in a promoted ask gap's brief — the lineage
 #: tag distinguishing an automatable-ask gap from a compliance recurrence or core gap.
@@ -203,9 +208,9 @@ def _ask_title(finding: AutomationAskFinding) -> str:
 def promote_automatable_asks(
     clusters: Sequence[DistilledCluster],
     extract: ConsolidationExtract,
-    host: CodeHostBackend,
     *,
     umbrella_url: str,
+    batch: "PromotionBatch",
     dry_run: bool = False,
 ) -> list[AutomationAskOutcome]:
     """Detect the grounded automatable-ask gaps in *clusters*, then promote each.
@@ -217,49 +222,41 @@ def promote_automatable_asks(
     clusters yield no outcome).
     """
     return promote_ask_findings(
-        detect_automatable_asks(clusters, extract), host, umbrella_url=umbrella_url, dry_run=dry_run
+        detect_automatable_asks(clusters, extract), umbrella_url=umbrella_url, batch=batch, dry_run=dry_run
     )
 
 
 def promote_ask_findings(
     findings: Iterable[AutomationAskFinding],
-    host: CodeHostBackend,
     *,
     umbrella_url: str,
+    batch: "PromotionBatch",
     dry_run: bool = False,
-    budget: PromotionBudget | None = None,
 ) -> list[AutomationAskOutcome]:
-    """Drive each detected automatable-ask gap to a fix-and-merge under the umbrella.
+    """Queue each detected automatable-ask gap into this pass's promotion batch (#4776).
 
     Routes each finding through
-    :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is upserted
-    under the standing umbrella (deduped by ``cluster_key``) carrying the Bucket-A/B
-    framing in its title, and a coding task is scheduled for the fix (linked back to
-    the ask ``ConsolidatedMemory`` by ``cluster_key`` so reconcile-on-merge retires it).
-    The banned-term / bare-reference withholding is enforced inside ``promote_gap``.
-    Under *dry_run* nothing is written or scheduled. *budget* bounds how many gaps THIS
-    pass promotes (``None`` ⇒ unbounded, #4176); a deferred ask stays in the ledger and
-    the next pass reaches it.
+    :meth:`~teatree.loops.dream.batch_promote.PromotionBatch.consider`: the gap is
+    deduped (by ``cluster_key``) against every in-flight/delivered batch and queued
+    for the SINGLE ticket the pass mints once every promoting phase has run, its title
+    carrying the Bucket-A/B framing (linked back to the ask ``ConsolidatedMemory`` by
+    ``cluster_key`` so reconcile-on-merge retires it). The banned-term / bare-reference
+    withholding is enforced inside ``consider``. Under *dry_run* nothing is queued.
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     outcomes: list[AutomationAskOutcome] = []
     for finding in findings:
         if dry_run:
             continue
-        gap_outcome = umbrella_ledger.promote_gap(
-            host,
-            umbrella_url=umbrella_url,
-            gap=umbrella_ledger.GapSpec(
-                gap_key=finding.cluster_key, title=_ask_title(finding), cluster_key=finding.cluster_key
-            ),
-            budget=budget,
+        gap_outcome = batch.consider(
+            gap=GapSpec(gap_key=finding.cluster_key, title=_ask_title(finding), cluster_key=finding.cluster_key)
         )
         outcomes.append(
             AutomationAskOutcome(
                 cluster_key=finding.cluster_key,
                 bucket=finding.bucket,
-                filed=gap_outcome.scheduled or gap_outcome.checkbox_added,
+                filed=gap_outcome.queued or gap_outcome.already_covered,
                 ticket_url=umbrella_url,
                 withheld=gap_outcome.withheld,
                 reason=gap_outcome.reason,
@@ -300,27 +297,27 @@ def cluster_for_row(row: ConsolidatedMemory) -> DistilledCluster:
 
 def run_automation_asks_phase(
     extract: ConsolidationExtract,
-    host: CodeHostBackend,
     *,
     umbrella_url: str,
     dry_run: bool,
-    budget: PromotionBudget | None = None,
+    batch: "PromotionBatch",
 ) -> str:
-    """Promote every grounded persisted ask-cluster to a fix-and-merge (#2663).
+    """Queue every grounded persisted ask-cluster into this pass's promotion batch (#2663, #4776).
 
     Reads the consolidated ask rows (those whose rule reads like a recurring ask,
     :func:`row_looks_like_ask`), reconstructs each into a :class:`DistilledCluster`,
     and routes the grounded ones (cited snippet present in *extract*) through
-    :func:`promote_automatable_asks` — a deduped umbrella checkbox + a scheduled coding
-    fix per ask, carrying the Bucket-A/B framing. Under *dry_run* nothing is promoted.
-    Returns the dream-command summary clause (empty when no ask was promoted).
+    :func:`promote_automatable_asks` — queued into *batch*, carrying the Bucket-A/B
+    framing; the checkbox + coding task are minted once for the whole pass. Under
+    *dry_run* nothing is queued. Returns the dream-command summary clause (empty when
+    no ask was queued).
     """
     rows = [row for row in ConsolidatedMemory.objects.all() if row_looks_like_ask(row)]
     if not rows:
         return ""
     clusters = [cluster_for_row(row) for row in rows]
     outcomes = promote_ask_findings(
-        detect_automatable_asks(clusters, extract), host, umbrella_url=umbrella_url, dry_run=dry_run, budget=budget
+        detect_automatable_asks(clusters, extract), umbrella_url=umbrella_url, batch=batch, dry_run=dry_run
     )
     filed = sum(1 for outcome in outcomes if outcome.filed)
     if not outcomes:
