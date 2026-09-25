@@ -21,7 +21,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
-from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER, _record_stuck_outcome
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
@@ -89,7 +89,7 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         attempt = _outcome_failure(task, _interrupted(""), phase="reviewing")
 
         assert attempt is not None
-        assert str(attempt.result["summary"]) == f"the row had already completed — {_ROW_COMPLETED}"
+        assert str(attempt.result["summary"]) == f"{NOOP_OVER_COMPLETED_MARKER}{_ROW_COMPLETED}"
 
     def test_the_completed_row_is_still_left_alone(self) -> None:
         task = self._completed_reviewing_task()

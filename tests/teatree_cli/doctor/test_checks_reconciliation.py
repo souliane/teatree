@@ -16,6 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER
 from teatree.cli.doctor import checks_external_outcomes as external
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
@@ -463,6 +464,31 @@ class DuplicateExecutionTestCase(TestCase):
         TaskAttempt.objects.create(task=task, exit_code=0)
         TaskAttempt.objects.create(task=task, exit_code=1, error="boom")
         assert recon._check_duplicate_execution().level == "ok"
+
+    def test_a_noop_recovery_over_an_already_completed_row_is_not_a_duplicate(self) -> None:
+        # A rival's interrupted run finding the row already COMPLETED (#4100) is proof
+        # the claim CAS held, not a second success — it must not alarm.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(task=task, exit_code=0, result={"summary": "cold review complete: merge_safe"})
+        TaskAttempt.objects.create(
+            task=task,
+            exit_code=0,
+            result={"summary": f"{NOOP_OVER_COMPLETED_MARKER}lease lost for task {task.pk}: already completed"},
+        )
+        assert recon._check_duplicate_execution().level == "ok"
+
+    def test_two_genuine_successes_still_alarm_even_with_result_payloads(self) -> None:
+        # The exclusion is scoped to the marker, not to "has a result" in general.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(task=task, exit_code=0, result={"summary": "cold review complete: merge_safe"})
+        TaskAttempt.objects.create(task=task, exit_code=0, result={"summary": "cold review complete: merge_safe"})
+        finding = recon._check_duplicate_execution()
+        assert finding.is_alarm
+        assert "`1`" in finding.message
 
 
 class NotifyWiringTestCase(TestCase):
