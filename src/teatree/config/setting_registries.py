@@ -192,6 +192,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "idle_stack_reaper_cadence_minutes": _parse_strict_int,
     "idle_stack_e2e_recent_minutes": _parse_strict_int,
     "stale_stack_min_age_minutes": _parse_strict_int,
+    "stalled_ask_minutes": _parse_strict_int,
     "local_stack_queue_disabled": _parse_strict_bool,
     "local_stack_queue_max_attempts": _parse_strict_int,
     "clean_ignore": _parse_str_list,

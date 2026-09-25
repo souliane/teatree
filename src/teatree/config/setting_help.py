@@ -279,6 +279,7 @@ SETTING_HELP: dict[str, str] = {
     "solo_repo_url_pattern": "regex matching repos the operator works on alone",
     "speak": "text-to-speech delivery, and which surfaces are spoken",
     "stale_stack_min_age_minutes": "minutes a stack must exist before staleness is judged",
+    "stalled_ask_minutes": "minutes a still-blocking AskUserQuestion may sit before doctor surfaces it",
     "standing_goal_stop_gate_enabled": "refuse ending a turn as done while a standing goal is unmet",
     "statusline_chain": "which statusline segments render, in order",
     "statusline_engaged_render": "render the statusline only while the session is engaged",

@@ -216,6 +216,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "solo_repo_url_pattern",
         "speak",
         "stale_stack_min_age_minutes",
+        "stalled_ask_minutes",
         "statusline_chain",
         "statusline_engaged_render",
         "subagent_spawn_ceiling",

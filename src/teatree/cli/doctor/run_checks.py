@@ -108,6 +108,7 @@ from teatree.cli.doctor.checks_session import (
     _check_agent_session_pins,
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
+    _check_stalled_ask,
 )
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
@@ -516,7 +517,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # different faults with different remedies, and reporting one must not hide the rest.
     ok = all([_check_stale_uv_venv(), _check_venv_interpreter_is_this_host(), _check_interpreter_plane(), ok])
     ok = all([_check_stale_path_t3(), _check_t3_launcher_managed(), _check_control_db_reachable()]) and ok
-    ok = _check_agent_session_pins() and ok
+    ok = all([_check_agent_session_pins(), _check_stalled_ask()]) and ok
     # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
     # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
     # ensure_django() above: it compares the hook's answer against the Django-side one.

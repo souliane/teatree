@@ -1223,6 +1223,11 @@ class _ProvisioningSettings:
     # default-on sweep would let unit tests of start/provision reach the
     # developer's real docker daemon. Per-overlay overridable.
     stale_stack_min_age_minutes: int = 0
+    # #4818: how long a transcript's trailing, still-blocking AskUserQuestion may sit
+    # before `t3 doctor check` surfaces it as a stalled ask. 20 minutes matches the
+    # issue's own measured threshold (15 of 82 asks waited past it, ~51h total idle).
+    # Per-overlay overridable.
+    stalled_ask_minutes: int = 20
     # #2190/#44 Acquisition queue — when ``worktree start`` / ``workspace
     # start`` hits the cap, it reaps idle, retries, then ENQUEUES (no
     # SystemExit). A loop scanner drains the queue each tick with a

@@ -92,6 +92,7 @@ from teatree.cli.doctor.checks_session import (
     _check_agent_session_pins,
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
+    _check_stalled_ask,
 )
 from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
@@ -191,6 +192,7 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_stalled_ask",
     "_check_starved_intake_candidates",
     "_check_t3_launcher_managed",
     "_check_t3_master_unheld_while_loops_tick",

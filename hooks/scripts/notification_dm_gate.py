@@ -13,13 +13,18 @@ sub-type) is precise without depending on a payload field outside this repo's co
 
 A bare sibling module (``hook_router`` is a shrink-only god-module at its LOC cap):
 this concern lives here and is imported back into the router's ``_HANDLERS`` chain.
+The transcript-shape detection itself lives in the ``teatree.hooks.stalled_ask_detect``
+leaf (lazily imported inside the ``managed_repo.teatree_src_on_path`` ``src/``
+bootstrap, #1314) — shared with the ``t3 doctor check`` stalled-ask finding, so the
+Notification DM and the doctor finding can never disagree about what "still pending"
+means.
 """
 
 import contextlib
 import hashlib
 import os
 
-from hooks.scripts.question_gates import read_transcript_entries
+from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv
 
 _STALLED_ASK_REASON = "stalled-ask"
@@ -28,27 +33,17 @@ _STALLED_ASK_REASON = "stalled-ask"
 def _pending_ask_text(transcript_path: str) -> str | None:
     """The question text of a trailing, still-blocking ``AskUserQuestion`` call.
 
-    "Trailing" means the transcript's LAST entry is the assistant's own ``tool_use``
-    block, with nothing after it — exactly the shape while the call genuinely blocks
-    on the owner (a ``tool_result`` lands only once it returns). Fail-safe: any other
-    shape (already answered, no ask posed, an unreadable/empty transcript) is ``None``.
+    Delegates to :func:`teatree.hooks.stalled_ask_detect.pending_ask_text`. Fail-safe:
+    an unimportable ``teatree`` or any internal error is ``None`` here too, same as
+    every other shape that predicate already treats as "not pending".
     """
-    entries = read_transcript_entries(transcript_path)
-    if not entries:
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks.stalled_ask_detect import pending_ask_text  # noqa: PLC0415 — deferred: cold-hook import
+
+            return pending_ask_text(transcript_path)
+    except Exception:  # noqa: BLE001 — crash-proof hook: an unreadable transcript is not pending
         return None
-    last = entries[-1]
-    message = last.get("message") if isinstance(last, dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, list) or not content:
-        return None
-    block = content[-1]
-    if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "AskUserQuestion":
-        return None
-    tool_input = block.get("input")
-    questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
-    first = questions[0] if isinstance(questions, list) and questions else {}
-    text = str(first.get("question", "")).strip() if isinstance(first, dict) else ""
-    return text or None
 
 
 def _stalled_ask_idempotency_key(session_id: str, question_text: str) -> str:

@@ -192,3 +192,58 @@ def _check_interactive_permission_mode() -> bool:
             f"changes your permissions posture for you.",
         )
     return True
+
+
+def _check_stalled_ask() -> bool:
+    """Warn on a transcript parked on an unanswered ``AskUserQuestion`` (#4818).
+
+    Scans every session AND sub-agent transcript under ``~/.claude/projects`` for one
+    whose file has sat untouched (no new JSONL line appended — a live blocking call
+    writes nothing further until it returns) past ``stalled_ask_minutes``, AND whose
+    trailing entry is genuinely still blocking (``teatree.hooks.stalled_ask_detect`` —
+    the SAME shape the Notification-hook DM keys on, so the two can never disagree).
+    The age filter runs BEFORE the transcript read, so an old, already-resolved
+    session never pays for a JSON parse.
+
+    Reports a STANDING count in ONE line rather than one per session: the existing
+    doctor-finding digest (``teatree.cli.doctor.finding_digest``) normalizes the
+    volatile age/count, so an unchanged condition does not re-page the owner on the
+    next pass — the same mechanism every other doctor WARN already relies on, not a
+    bespoke streak this check tracks itself. Crash-proof: any error degrades to OK.
+    """
+    import time  # noqa: PLC0415 — deferred: keep the module's import-time cost light
+
+    from teatree.config.resolution import get_effective_settings  # noqa: PLC0415 — deferred: keep import light
+    from teatree.hooks.stalled_ask_detect import pending_ask_text  # noqa: PLC0415 — deferred: keep import light
+    from teatree.loops.dream.replay import default_projects_dir  # noqa: PLC0415 — deferred: keep import light
+
+    try:
+        threshold_minutes = int(get_effective_settings().stalled_ask_minutes)
+        if threshold_minutes <= 0:
+            return True
+        root = default_projects_dir()
+        if not root.is_dir():
+            return True
+        now = time.time()
+        stalled: list[tuple[str, int]] = []
+        for path in (*root.glob("*/*.jsonl"), *root.glob("*/*/subagents/agent-*.jsonl")):
+            age_minutes = int((now - path.stat().st_mtime) / 60)
+            if age_minutes < threshold_minutes:
+                continue
+            if pending_ask_text(str(path)) is not None:
+                stalled.append((path.stem, age_minutes))
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Stalled-ask check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not stalled:
+        return True
+    preview_limit = 5
+    stalled.sort(key=lambda row: -row[1])
+    named = ", ".join(f"{session[:12]} ({age}m)" for session, age in stalled[:preview_limit])
+    more = f", and {len(stalled) - preview_limit} more" if len(stalled) > preview_limit else ""
+    typer.echo(
+        f"WARN  {len(stalled)} session(s) parked on an unanswered AskUserQuestion past "
+        f"{threshold_minutes}m: {named}{more}. Attach to the terminal to answer it, or the "
+        "Notification-hook DM (#4818) already covers new stalls going forward."
+    )
+    return False

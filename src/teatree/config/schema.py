@@ -326,6 +326,7 @@ class TeatreeSettingsSchema(BaseSettings):
     solo_repo_url_pattern: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     speak: Annotated[dict[str, Any], BeforeValidator(parse_speak_setting), _DEFAULT_OVERLAY]
     stale_stack_min_age_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    stalled_ask_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     statusline_chain: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     statusline_engaged_render: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     substrate_auto_merge_authorized_by: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
