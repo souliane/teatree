@@ -311,7 +311,7 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
             merged_memory_urls.add(merged_url)
         _stamp_ticket_reconciled(ticket)
         reconciled.append(ticket)
-    retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
+    retire_resolved_memories(host, is_resolved=lambda row: row.ticket_url in merged_memory_urls)
     return reconciled
 
 

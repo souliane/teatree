@@ -371,11 +371,16 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
     permanently unconfirmed. A gap the coder dropped keeps its unchecked checkbox, and
     its memory returns to ``needs_ticket()`` while it still points at THIS ticket, so
     the next pass re-offers it; a row a newer batch re-stamped is left alone.
+
+    Retirement is keyed on each confirmed gap's cluster key, never on a url alone: with
+    no merged PR row the evidence url is the ticket's own anchor, which every row
+    stamped on the batch shares, dropped gaps included. On that anchor a partially
+    confirmed ticket retires nothing until the whole ticket reconciles.
     """
     from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415 — tick-time import
 
     reconciled: list[Ticket] = []
-    merged_memory_urls: set[str] = set()
+    retirable: set[tuple[str, str]] = set()
     for ticket in _pending_reconcile_batch_tickets():
         if ticket.state != Ticket.State.MERGED:
             continue
@@ -388,6 +393,7 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
         delivered_keys = set(extra.get(_CLAIMED_DELIVERED_KEY) or []) & manifest.keys()
         merged_url = _merge_evidence_url(ticket)
         all_confirmed = True
+        confirmed: set[tuple[str, str]] = set()
         for gap_key in delivered_keys:
             if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
                 all_confirmed = False
@@ -396,16 +402,18 @@ def reconcile_batches(host: CodeHostBackend, *, umbrella_url: str) -> "list[Tick
                 )
                 continue
             cluster_key = str(manifest[gap_key].get("cluster_key") or gap_key)
-            if _stamp_memory_merged(cluster_key, merged_url=merged_url):
-                merged_memory_urls.add(merged_url)
+            _stamp_memory_merged(cluster_key, merged_url=merged_url)
+            confirmed.add((cluster_key, merged_url))
+        if all_confirmed or merged_url != ticket.issue_url:
+            retirable |= confirmed
         if not all_confirmed:
             continue
         for gap_key in manifest.keys() - delivered_keys:
             _reopen_dropped_gap(str(manifest[gap_key].get("cluster_key") or gap_key), ticket=ticket)
         _stamp_ticket_reconciled(ticket)
         reconciled.append(ticket)
-    if merged_memory_urls:
-        retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
+    if retirable:
+        retire_resolved_memories(host, is_resolved=lambda row: (row.cluster_key, row.ticket_url) in retirable)
     return reconciled
 
 

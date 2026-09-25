@@ -319,13 +319,13 @@ def _ticket_title(row: ConsolidatedMemory) -> str:
 
 
 def retire_resolved_memories(
-    host: CodeHostBackend, *, is_resolved: "Callable[[str], bool] | None" = None
+    host: CodeHostBackend, *, is_resolved: "Callable[[ConsolidatedMemory], bool] | None" = None
 ) -> list[ConsolidatedMemory]:
     """Retire each TICKETED memory whose linked teatree ticket is now resolved.
 
     For every row awaiting ticket-close, the linked ticket's resolved state is read
-    via *is_resolved* (default: the linked issue's closed/merged state read from
-    *host*); a resolved ticket first has its source memory FILE(s) deleted
+    via *is_resolved*, a predicate over the row (default: the linked issue's
+    closed/merged state read from *host*); a resolved ticket first has its source memory FILE(s) deleted
     (:func:`delete_source_memory_files` — "memory tends to zero": a promoted gap whose
     fix merged has nothing left to remember once its source is gone) and only THEN
     retires the DB row (the prose is archived, the gap it confessed is fixed in code).
@@ -343,12 +343,12 @@ def retire_resolved_memories(
     (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows retired
     this pass.
     """
-    resolved = is_resolved or (lambda url: _issue_is_closed(host, url))
+    resolved = is_resolved or (lambda row: _issue_is_closed(host, row.ticket_url))
     retired: list[ConsolidatedMemory] = []
     for row in ConsolidatedMemory.objects.awaiting_ticket_close():
         if row.is_binding:
             continue
-        if not resolved(row.ticket_url):
+        if not resolved(row):
             continue
         if not delete_source_memory_files(row):
             logger.warning(

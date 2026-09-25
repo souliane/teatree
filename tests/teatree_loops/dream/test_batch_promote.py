@@ -7,6 +7,8 @@ drive that flow with a STATEFUL fake code host and real ``Ticket`` / ``Consolida
 rows, mirroring ``test_umbrella_ledger.py``'s fixtures.
 """
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -496,3 +498,39 @@ class StampedBatchReconcileTestCase(TestCase):
             bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
         assert not Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exists()
         assert not Task.objects.filter(phase="coding").exists()
+
+    def _partially_confirmed_reconcile(self, memory_dir: Path, *, with_pr: bool) -> dict[str, Path]:
+        keys = ("gap-a", "gap-b", "gap-c")
+        sources = {key: memory_dir / f"feedback_{key}.md" for key in keys}
+        for key, source in sources.items():
+            source.write_text("the lesson")
+            _memory(key=key, source_files=[str(source)]).classify_core_gap()
+        bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=bp.PromotionBatch(pending=[_gap(k) for k in keys]))
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        if with_pr:
+            ticket.pull_requests.create(url=self.PR_URL, repo=REPO, iid="9100", state="merged")
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a", "gap-c"]})
+        with patch("teatree.memory_audit.discover_memory_dirs", return_value=[memory_dir]):
+            bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+        return sources
+
+    def test_a_dropped_gap_survives_a_partial_reconcile_on_the_ticket_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "memory").mkdir()
+            sources = self._partially_confirmed_reconcile(Path(tmp) / "memory", with_pr=False)
+
+            for key in ("gap-b", "gap-a"):
+                row = ConsolidatedMemory.objects.get(cluster_key=key)
+                assert (key, row.disposition) == (key, ConsolidatedMemory.Disposition.TICKETED)
+                assert sources[key].exists()
+
+    def test_a_dropped_gap_survives_a_partial_reconcile_on_a_merged_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "memory").mkdir()
+            sources = self._partially_confirmed_reconcile(Path(tmp) / "memory", with_pr=True)
+
+            row = ConsolidatedMemory.objects.get(cluster_key="gap-b")
+            assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+            assert sources["gap-b"].exists()

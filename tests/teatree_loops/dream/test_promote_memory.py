@@ -458,7 +458,7 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row.mark_ticketed("https://github.com/souliane/teatree/pull/9100")
         host = MagicMock(spec=CodeHostBackend)
         host.get_issue.side_effect = AssertionError("the injected predicate must not round-trip the forge")
-        retired = retire_resolved_memories(host, is_resolved=lambda _url: True)
+        retired = retire_resolved_memories(host, is_resolved=lambda _row: True)
         assert len(retired) == 1
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
