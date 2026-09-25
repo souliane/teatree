@@ -127,8 +127,8 @@ class GitHubSyncBackend(SyncBackend):
         from teatree.core.intake.ticket_kind_classification import classify_ticket_kind  # noqa: PLC0415 — lazy: cycle
         from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        created = Ticket.objects.create(
-            issue_url=board.item.url,
+        ticket, created = Ticket.objects.get_or_create_by_issue(
+            board.item.url,
             repos=[board.repo_short],
             # A brand-new ticket has no local state to preserve, so an unmapped
             # column starts it at the bottom of the ladder.
@@ -137,9 +137,10 @@ class GitHubSyncBackend(SyncBackend):
             overlay=overlay_name,
             kind=classify_ticket_kind(labels=board.item.labels, title=board.item.title),
         )
-        result.tickets_created += 1
+        if created:
+            result.tickets_created += 1
         if board.state == Ticket.State.DELIVERED:
-            cls._record_delivered_dod_violation(created)
+            cls._record_delivered_dod_violation(ticket)
 
     @classmethod
     def _update_ticket_from_board(cls, ticket: "Ticket", board: _BoardItem, result: SyncResult) -> None:

@@ -20,7 +20,7 @@ from teatree.core.loop_lease_manager import (
     per_loop_owner_slot,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
-from teatree.core.managers_issue_match import matching_issue_q
+from teatree.core.managers_issue_match import get_or_create_ticket_by_issue, matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
@@ -180,6 +180,11 @@ class TicketQuerySet(models.QuerySet):
         # Tickets that ARE the given issue — the issue-URL alias-collapse predicate
         # (#2293) lives in :func:`~teatree.core.managers_issue_match.matching_issue_q`.
         return self.filter(matching_issue_q(issue_url))
+
+    def get_or_create_by_issue(self, issue_url: str, **defaults: object) -> tuple["Ticket", bool]:
+        # Atomic alias-aware get-or-create (dream-gap #1644241) — body lives in
+        # managers_issue_match so this hub stays under the module-health cap.
+        return get_or_create_ticket_by_issue(self, issue_url, **defaults)
 
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))

@@ -1,7 +1,8 @@
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -59,6 +60,64 @@ class TestTicketQuerySet(TestCase):
 
         assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
         assert handled not in Ticket.objects.unfindable()
+
+
+class TestGetOrCreateByIssue(TestCase):
+    def test_creates_when_no_match_exists(self) -> None:
+        issue_url = "https://github.com/acme/widgets/issues/42"
+        ticket, created = Ticket.objects.get_or_create_by_issue(issue_url, overlay="test")
+        assert created is True
+        assert ticket.issue_url == issue_url
+        assert ticket.overlay == "test"
+        assert Ticket.objects.filter(issue_url=issue_url).count() == 1
+
+    def test_returns_existing_ticket_without_creating_a_duplicate(self) -> None:
+        issue_url = "https://github.com/acme/widgets/issues/43"
+        existing = Ticket.objects.create(overlay="test", issue_url=issue_url)
+        ticket, created = Ticket.objects.get_or_create_by_issue(issue_url, overlay="other")
+        assert created is False
+        assert ticket.pk == existing.pk
+        assert Ticket.objects.filter(issue_url=issue_url).count() == 1
+
+    def test_finds_a_sibling_alias_instead_of_colliding_on_the_unique_constraint(self) -> None:
+        existing = Ticket.objects.create(
+            overlay="test", issue_url="https://gitlab.com/acme-org/backend/-/work_items/1701"
+        )
+        alias = "https://gitlab.com/acme-org/backend/-/issues/1701"
+        ticket, created = Ticket.objects.get_or_create_by_issue(alias, overlay="test")
+        assert created is False
+        assert ticket.pk == existing.pk
+        assert Ticket.objects.filter(issue_url=alias).count() == 0
+
+    def test_absorbs_a_concurrent_create_race_instead_of_raising(self) -> None:
+        """A writer that already inserted between our check and our create() is found, not crashed on (#1644241)."""
+        issue_url = "https://github.com/acme/widgets/issues/44"
+        racer = Ticket.objects.create(overlay="racer", issue_url="https://github.com/acme/widgets/issues/999")
+        # A bound instance method call (self.matching_issue(...)/self.create(...) from
+        # inside get_or_create_by_issue) resolves via the instance, not the manager
+        # proxy — patch a real queryset instance directly so the interleaving lands.
+        queryset = Ticket.objects.all()
+
+        with (
+            patch.object(queryset, "filter") as filter_mock,
+            patch.object(queryset, "create", side_effect=IntegrityError("unique_nonempty_repo_namespaced_key")),
+        ):
+            filter_mock.return_value.first = Mock(side_effect=[None, racer])
+            ticket, created = queryset.get_or_create_by_issue(issue_url, overlay="test")
+
+        assert created is False
+        assert ticket.pk == racer.pk
+
+    def test_reraises_when_the_integrity_error_is_unrelated_to_the_issue_anchor(self) -> None:
+        """A real bug (a different constraint) must not be swallowed as a false 'someone else made it'."""
+        issue_url = "https://github.com/acme/widgets/issues/45"
+        queryset = Ticket.objects.all()
+
+        with (
+            patch.object(queryset, "create", side_effect=IntegrityError("some_other_constraint")),
+            pytest.raises(IntegrityError),
+        ):
+            queryset.get_or_create_by_issue(issue_url, overlay="test")
 
 
 class TestWorktreeQuerySet(TestCase):

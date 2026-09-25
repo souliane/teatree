@@ -76,15 +76,16 @@ def fetch_assigned_issues(
         if not policy.admits(labels):
             continue
         issue_title = str(issue.get("title", ""))
-        Ticket.objects.create(
-            issue_url=issue_url,
+        _, created = Ticket.objects.get_or_create_by_issue(
+            issue_url,
             repos=[repo_short] if repo_short else [],
             extra={"issue_title": issue_title},
             state=Ticket.State.NOT_STARTED,
             overlay=overlay_name,
             kind=classify_ticket_kind(labels=labels, title=issue_title),
         )
-        result.tickets_created += 1
+        if created:
+            result.tickets_created += 1
 
 
 def reconcile_tracked_issue(ticket: Ticket, issue: dict, repo_short: str) -> bool:

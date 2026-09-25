@@ -1,13 +1,21 @@
 """Issue-URL alias matching for the ticket QuerySet.
 
 Carved out of ``managers.py`` (mirroring managers_overlay.py / managers_task_claim.py)
-to hold that flat-root queryset hub under the 500-LOC module-health cap. A pure
-``Q``-builder leaf with no ORM/app-registry dependency.
+to hold that flat-root queryset hub under the 500-LOC module-health cap. Takes a
+queryset as its first argument rather than importing ``Ticket`` (mirrors
+``managers_overlay.for_overlay``), so it stays a leaf with no ORM/app-registry
+import edge for tach to flag.
 """
 
+from typing import TYPE_CHECKING
+
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 
 from teatree.utils.url_slug import repo_namespaced_key
+
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
 
 
 def matching_issue_q(issue_url: str) -> Q:
@@ -30,3 +38,32 @@ def matching_issue_q(issue_url: str) -> Q:
     if ns_key:
         predicate |= Q(repo_namespaced_key=ns_key)
     return predicate
+
+
+def get_or_create_ticket_by_issue(
+    queryset: models.QuerySet, issue_url: str, **defaults: object
+) -> tuple["Ticket", bool]:
+    """Atomically get-or-create the one ticket for *issue_url* (dream-gap #1644241).
+
+    Every ``Ticket.objects.create()`` anchored on a forge issue must be
+    idempotent under concurrent syncs (an overlapping GitHub board sync and
+    GitLab issue sync, or two overlapping intake ticks) — a bare
+    ``matching_issue().first()`` check followed by a separate ``.create()``
+    leaves a TOCTOU window where a racing writer inserts first and this call
+    trips ``unique_nonempty_repo_namespaced_key`` instead of finding the row.
+    Mirrors :meth:`~django.db.models.QuerySet.get_or_create`, but keyed on the
+    alias-aware :func:`matching_issue_q` predicate rather than exact-kwarg
+    equality, so a GitLab ``/-/work_items/<n>`` alias of an already-tracked
+    ``/-/issues/<n>`` row is found rather than blindly re-inserted (#2293).
+    """
+    existing = queryset.filter(matching_issue_q(issue_url)).first()
+    if existing is not None:
+        return existing, False
+    try:
+        with transaction.atomic():
+            return queryset.create(issue_url=issue_url, **defaults), True
+    except IntegrityError:
+        existing = queryset.filter(matching_issue_q(issue_url)).first()
+        if existing is None:
+            raise
+        return existing, False
