@@ -9,8 +9,11 @@ graph TD
     teatree.account_headroom --> teatree.llm
     teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models
+    teatree.credential_config --> teatree.credential_readings
     teatree.credential_config --> teatree.llm
     teatree.credential_config --> teatree.utils
+    teatree.credential_readings --> teatree.core.models
+    teatree.credential_readings --> teatree.llm
     teatree.token_report --> teatree.core.models
     teatree.token_report --> teatree.credential_config
     teatree.token_report --> teatree.llm
