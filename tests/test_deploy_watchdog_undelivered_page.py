@@ -53,7 +53,7 @@ def _write_docker_stub(bin_dir: Path) -> None:
         "    shift || true\n"
         '    case "$*" in\n'
         "      true) exit 0 ;;\n"
-        '      *"pgrep -f t3 doctor check"*) exit 1 ;;\n'
+        '      *"pgrep -f [t]3 doctor check"*) exit 1 ;;\n'
         '      *"doctor check --json"*) printf "%s\\n" "$STUB_DOCTOR_JSON"; exit 1 ;;\n'
         '      *"notify send"*)\n'
         '        if [ "${STUB_NOTIFY_RC:-0}" != 0 ]; then exit "$STUB_NOTIFY_RC"; fi\n'

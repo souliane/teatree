@@ -565,6 +565,14 @@ already-provisioned box keeps its populated volumes (the bake is shadowed) and
 converges via the runtime clone's origin fast-forward — so the bake changes only
 **fresh-box** first boot; existing boxes are unaffected.
 
+**Which entrypoint runs.** Compose runs `deploy/entrypoint.sh` from the deploy
+checkout, so a fast-forward reaches it before the next image build. The script
+declares the image contract it needs (`ENTRYPOINT_IMAGE_CONTRACT`) and the image bakes
+the one it provides (`/usr/local/share/teatree/entrypoint-contract`); an image older
+than the script runs its own baked `/usr/local/bin/entrypoint.sh` instead, which
+matches it, until `deploy.sh` rebuilds. Bump both numbers together whenever the script
+starts needing something only a newer image carries.
+
 **Boot mode — online vs. offline (`deploy/entrypoint.sh`).** The entrypoint picks
 its mode from a bare origin reachability probe (`network_up`):
 
@@ -717,14 +725,17 @@ verify the fingerprint out of band).
 No plaintext GitHub token or admin password ever lands on the box disk. Both live
 in the box's gpg-encrypted [`pass`](https://www.passwordstore.org/) store — the same
 credential plane (`~/.password-store` + `~/.gnupg`, bind-mounted into every app
-service) that holds the Anthropic OAuth tokens. `deploy/entrypoint.sh` sources the
-GitHub token only when `TEATREE_GH_TOKEN_PASS_PATH` explicitly names its bootstrap
-entry; the admin password keeps its deployment-level default. Both reads happen
-before the token preflight and `t3 setup`.
+service) that holds the Anthropic OAuth tokens. `deploy/entrypoint.sh` resolves the
+GitHub token from the first of: an exported `TEATREE_GH_TOKEN`, the entry
+`TEATREE_GH_TOKEN_PASS_PATH` names, or the entry the deploy repo's owning overlay routes
+through `github_token_pass_key` — read read-only from the control DB, so it works before
+`init` migrates and survives the deploy workflow rewriting `teatree.env`. The admin
+password keeps its deployment-level default. Both reads happen before the token
+preflight and `t3 setup`.
 
 | Boot env var | Default `pass` path | Override |
 | --- | --- | --- |
-| `TEATREE_GH_TOKEN` | none — read only when named | `TEATREE_GH_TOKEN_PASS_PATH` |
+| `TEATREE_GH_TOKEN` | the owning overlay's `github_token_pass_key` route | `TEATREE_GH_TOKEN_PASS_PATH` |
 | `T3_ADMIN_PASSWORD` | `teatree/admin-password` | `T3_ADMIN_PASSWORD_PASS_PATH` |
 | `GITLAB_TOKEN` | none — read only when named | `TEATREE_GITLAB_TOKEN_PASS_PATH` |
 | `NOTION_TOKEN` | none — exported only when named | `NOTION_TOKEN_PASS_PATH` |
@@ -782,8 +793,11 @@ EOF
 pass init teatree@localhost
 printf '%s' "<github-pat>"      | pass insert -m -f github/souliane/pat
 printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
-# Explicitly name the chosen GitHub bootstrap entry in teatree.env:
+# A fresh box has no control DB yet, so name the GitHub entry for the FIRST boot
+# (the deploy workflow rewrites teatree.env, so this line does not outlive it):
 printf '%s\n' 'TEATREE_GH_TOKEN_PASS_PATH=github/souliane/pat' >> deploy/teatree.env
+# ...and route it durably once init has run, which every later boot reads:
+#   deploy/t3 teatree config_setting set github_token_pass_key github/souliane/pat --overlay t3-teatree
 # Anthropic tokens follow the same store, one per account:
 printf '%s' "<oauth-token>"     | pass insert -m -f anthropic/<account>/oauth-token
 ```

@@ -5,8 +5,9 @@
 #     pass show   -> gpg: decryption failed: No secret key
 #     t3 <write>  -> no GitLab token (its `pass` read is the one above)
 #
-# All three are gnupg blocking on `public-keys.d/pubring.db.lock`. The lock
-# records `<pid>\n<node>\n`, and gnupg reclaims a stale one ONLY when <node> is
+# All three are gnupg blocking on a dotlock: keyboxd's `public-keys.d/pubring.db.lock`,
+# or on a host without keyboxd the `pubring.kbx.lock` / `trustdb.gpg.lock` beside the
+# keyring. Every dotlock records `<pid>\n<node>\n`, and gnupg reclaims a stale one ONLY when <node> is
 # the local node — across a pid namespace it cannot `kill(pid, 0)`, so it waits
 # forever instead. A lock written inside a container therefore records the
 # CONTAINER ID and is unreclaimable by the host BY DESIGN, whether or not the
@@ -27,18 +28,9 @@
 set -u
 
 gnupg_home="${GNUPGHOME:-$HOME/.gnupg}"
-lock="$gnupg_home/public-keys.d/pubring.db.lock"
-
-[ -f "$lock" ] || exit 0
-
-lock_pid="$(sed -n 1p "$lock" 2>/dev/null | tr -dc '0-9')"
-lock_node="$(sed -n 2p "$lock" 2>/dev/null | tr -d '\r')"
 local_node="$(hostname 2>/dev/null || echo unknown)"
 
-# Same node: an ordinary local holder. gnupg breaks it itself once the pid dies,
-# so there is nothing to report and nothing to do.
-[ -n "$lock_node" ] && [ "$lock_node" != "$local_node" ] || exit 0
-
+report() {
 cat >&2 <<EOF
 gnupg: the host GPG keybox is locked by a process OUTSIDE this host's namespace.
 
@@ -75,4 +67,17 @@ NO image rebuild:
 
 \`t3 doctor check\` reports any running container still carrying the host home.
 EOF
-exit 1
+}
+
+found=0
+for lock in "$gnupg_home"/public-keys.d/*.lock "$gnupg_home"/*.lock; do
+    [ -f "$lock" ] || continue
+    lock_pid="$(sed -n 1p "$lock" 2>/dev/null | tr -dc '0-9')"
+    lock_node="$(sed -n 2p "$lock" 2>/dev/null | tr -d '\r')"
+    # Same node: an ordinary local holder. gnupg breaks it itself once the pid dies,
+    # so there is nothing to report and nothing to do.
+    [ -n "$lock_node" ] && [ "$lock_node" != "$local_node" ] || continue
+    report
+    found=1
+done
+exit "$found"

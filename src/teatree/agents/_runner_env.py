@@ -15,6 +15,7 @@ from teatree.agents.credential_policy import resolve_credential_provider
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
+from teatree.forge_credentials import ForgeTokenState, resolve_named_overlay_token
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
 from teatree.utils.env import patched_environ
 from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
@@ -169,6 +170,25 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
         per_worker_gb=get_effective_settings().test_worker_ram_gb,
     )
     return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
+
+
+def with_routed_github_token(env: dict[str, str] | None, *, overlay: str) -> dict[str, str] | None:
+    """Give the agent's own ``gh`` and ``git`` the GitHub token its overlay routes.
+
+    The long-running roles hold no ambient GitHub token (the entrypoint unsets it so the
+    owning overlay's route is the only authority), so an agent's raw ``gh`` call would
+    otherwise run unauthenticated. An unset or unreadable route leaves *env* as it was.
+    """
+    try:
+        resolution = resolve_named_overlay_token(overlay, credential="github_token")
+    except Exception:
+        logger.warning(
+            "github_token route for overlay %r unreadable; the agent gets no GH_TOKEN", overlay, exc_info=True
+        )
+        return env
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return env
+    return {**(env or {}), "GH_TOKEN": resolution.token}
 
 
 def system_child_env() -> dict[str, str] | None:

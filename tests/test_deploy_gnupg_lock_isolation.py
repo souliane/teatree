@@ -62,7 +62,7 @@ _BASH = shutil.which("bash") or "bash"
 
 CONTAINER_HOME = "/home/teatree"
 HOST_GNUPG_TARGET = f"{CONTAINER_HOME}/.gnupg"
-HISTORICAL_ENTRYPOINT_COMMIT = "e130133337b4d1bceb47ff92a3edb621a4430685"
+HISTORICAL_ENTRYPOINT_COMMIT = "4f7312cada759338356e2eddcce175b06a0b5378"
 
 #: Per-venue GPG-home repairs this branch retired. Naming one anywhere under `deploy/` —
 #: code OR runbook — points the next operator at a mechanism that no longer exists.
@@ -134,16 +134,16 @@ def _shell_function(source: str, name: str) -> str:
 
 
 def _historical_entrypoint() -> str:
-    outer_root = DEPLOY.parents[2]
+    repo_root = DEPLOY.parent
     git = shutil.which("git")
     assert git is not None
     return subprocess.run(
         [
             git,
             "show",
-            f"{HISTORICAL_ENTRYPOINT_COMMIT}:vendor/teatree/deploy/entrypoint.sh",
+            f"{HISTORICAL_ENTRYPOINT_COMMIT}:deploy/entrypoint.sh",
         ],
-        cwd=outer_root,
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=True,
@@ -352,6 +352,8 @@ class TestOnASharingTransportNoContainerProcessTouchesTheHostKeybox:
     _FUNCTIONS = (
         "path_fstype",
         "fstype_hosts_unix_sockets",
+        "same_directory",
+        "clear_container_gnupg_home",
         "derive_container_gnupg_home",
         "seed_container_gnupg_home",
     )

@@ -642,6 +642,8 @@ warn_source_mount_drift() {
     echo "               docker compose ${COMPOSE_ARGS[*]} up -d" >&2
     echo "           To run THIS checkout for one invocation without touching the stack:" >&2
     echo "             TEATREE_FORCE_ONE_OFF=1 $0 <command>" >&2
+    echo "           That one-off runs this checkout's code against the SHARED control DB: never" >&2
+    echo "           use it for 'db migrate' or for code carrying migrations the stack has not applied." >&2
     return 0
 }
 

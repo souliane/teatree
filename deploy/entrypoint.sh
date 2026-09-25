@@ -17,6 +17,28 @@
 #                    crash for it.
 set -euo pipefail
 
+# Compose runs this script from the deploy checkout, so a fast-forward reaches it before
+# the image it needs is rebuilt. This script needs the image contract below: the system
+# gh credential helper and the image-baked skills its strict setup installs. An image
+# that predates the contract runs its OWN baked entrypoint instead, which matches it,
+# until the next build — never a new script on an old image. Bump both this number and
+# the Dockerfile's /usr/local/share/teatree/entrypoint-contract together.
+ENTRYPOINT_IMAGE_CONTRACT=1
+BAKED_ENTRYPOINT="${TEATREE_BAKED_ENTRYPOINT:-/usr/local/bin/entrypoint.sh}"
+image_contract() {
+    local baked
+    baked="$(cat "${TEATREE_ENTRYPOINT_CONTRACT_FILE:-/usr/local/share/teatree/entrypoint-contract}" 2>/dev/null || true)"
+    case "$baked" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$baked" ;;
+    esac
+}
+if [ "$(readlink -f "$0")" != "$BAKED_ENTRYPOINT" ] && [ -x "$BAKED_ENTRYPOINT" ] &&
+    [ "$(image_contract)" -lt "$ENTRYPOINT_IMAGE_CONTRACT" ]; then
+    echo "entrypoint: this image predates entrypoint contract $ENTRYPOINT_IMAGE_CONTRACT - running the image's own $BAKED_ENTRYPOINT until the next image build" >&2
+    exec "$BAKED_ENTRYPOINT" "$@"
+fi
+
 ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, watchdog}"
 
 # Dispatch the watchdog role FIRST — before the credential/git preamble that the
@@ -136,9 +158,29 @@ fstype_hosts_unix_sockets() {
 # dirmngr.conf — host DAEMON configs that routinely name host-only binaries
 # (`pinentry-program /opt/homebrew/bin/pinentry-mac`) which do not exist in this
 # image; the container's own defaults are the headless-correct ones.
+same_directory() {
+    [ "$(readlink -f "$1" 2>/dev/null)" = "$(readlink -f "$2" 2>/dev/null)" ]
+}
+
+# Clear the container home before it is re-seeded: a link is unlinked, never followed, and
+# a home that resolves to the host GPG directory itself is refused, because clearing it
+# would delete the operator's keys.
+clear_container_gnupg_home() {
+    local home="$1" source="$2"
+    if [ -L "$home" ]; then
+        rm -f "$home"
+    elif [ -e "$home" ]; then
+        if same_directory "$home" "$source"; then
+            echo "entrypoint: WARN the container GPG home $home is the host GPG home $source - refusing to clear it" >&2
+            return 1
+        fi
+        rm -rf "$home"
+    fi
+}
+
 derive_container_gnupg_home() {
     local source="$1" derived="$2" name
-    rm -rf "$derived"
+    clear_container_gnupg_home "$derived" "$source" || return 1
     mkdir -p "$derived" || return 1
     chmod 700 "$derived"
     for name in common.conf gpg.conf pubring.kbx pubring.gpg trustdb.gpg; do
@@ -195,7 +237,7 @@ seed_container_gnupg_home() {
             echo "entrypoint: WARN could not create $(dirname "$CONTAINER_GNUPG_HOME") - gpg reads will fail" >&2
             return 0
         fi
-        rm -rf "$CONTAINER_GNUPG_HOME"
+        clear_container_gnupg_home "$CONTAINER_GNUPG_HOME" "$source" || return 0
         ln -s "$source" "$CONTAINER_GNUPG_HOME"
         echo "entrypoint: GNUPGHOME $CONTAINER_GNUPG_HOME adopts the host GPG home $source in place (on '$fstype', which hosts the gpg-agent/keyboxd sockets)"
         return 0
@@ -214,10 +256,15 @@ seed_container_gnupg_home
 # the boot-time `pass show` reads below can decrypt — only when the mount is
 # writable (a hardened read-only mount would EROFS here under -e) AND the mode is
 # not already right, so the common case writes NOTHING to the host's GPG home.
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ] &&
-    [ "$(stat -c %a "$GNUPGHOME" 2>/dev/null || echo 700)" != 700 ]; then
-    chmod 700 "$GNUPGHOME"
-fi
+# `-L`: an adopted home is a symlink, whose own mode always reads 777, so without it
+# every boot would chmod the host's home through the link.
+normalise_gnupg_home_mode() {
+    if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ] &&
+        [ "$(stat -L -c %a "$GNUPGHOME" 2>/dev/null || echo 700)" != 700 ]; then
+        chmod 700 "$GNUPGHOME"
+    fi
+}
+normalise_gnupg_home_mode
 
 # Route ALL runtime temp to DISK, never the box's small RAM-backed tmpfs. The
 # host /tmp is a ~16G tmpfs; the spawned headless `claude` sessions, `pytest`, and
@@ -255,8 +302,9 @@ source_secret_from_pass() {
     return 0
 }
 
-# A GitHub bootstrap read is opt-in. Runtime routing belongs to the owning overlay's
-# ``github_token_pass_key`` DB setting, and a guessed pass path would shadow it.
+# An explicit bootstrap entry wins; otherwise init_preflight reads the entry the owning
+# overlay's ``github_token_pass_key`` routes (db_routed_github_pass_key). A guessed
+# default pass path would shadow that route, so there is none.
 if [ -n "${TEATREE_GH_TOKEN_PASS_PATH:-}" ]; then
     source_secret_from_pass TEATREE_GH_TOKEN "$TEATREE_GH_TOKEN_PASS_PATH"
 fi
@@ -371,6 +419,42 @@ gh_repo_slug() {
     if [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$url" ]; then
         printf '%s/%s' "$owner" "$repo"
     fi
+}
+
+# The pass entry the deploy repo's owning overlay routes for its GitHub token: the
+# overlay's own ``github_token_pass_key`` row, or the registry entry 0104 moves it out of
+# on a DB still waiting to be migrated. Read with sqlite3 and read-only, because init
+# needs the token before it migrates, and a boot must never write the control DB this
+# early. Empty when there is no DB yet (a fresh box) or no overlay routes one.
+db_routed_github_pass_key() {
+    local db="${T3_CONTROL_DB_DIR:-/var/lib/teatree/control-db}/db.sqlite3" slug
+    [ -f "$db" ] || return 0
+    slug="$(gh_repo_slug)"
+    [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || slug=""
+    sqlite3 -readonly "$db" "
+        WITH registry AS (
+            SELECT entry.key AS overlay, entry.value AS spec
+            FROM teatree_config_setting AS setting, json_each(setting.value) AS entry
+            WHERE setting.scope = '' AND setting.key = 'overlays'
+        ),
+        scoped AS (
+            SELECT scope AS overlay, json_extract(value, '\$') AS pass_key
+            FROM teatree_config_setting
+            WHERE key = 'github_token_pass_key' AND scope <> ''
+        ),
+        candidates AS (
+            SELECT overlay, pass_key FROM scoped
+            UNION ALL
+            SELECT overlay, json_extract(spec, '\$.github_token_pass_key') FROM registry
+            WHERE overlay NOT IN (SELECT overlay FROM scoped)
+        )
+        SELECT candidates.pass_key
+        FROM candidates LEFT JOIN registry ON registry.overlay = candidates.overlay
+        WHERE candidates.pass_key IS NOT NULL AND candidates.pass_key <> ''
+        ORDER BY EXISTS (
+            SELECT 1 FROM json_each(registry.spec, '\$.workspace_repos') AS repo WHERE repo.value = '$slug'
+        ) DESC, candidates.overlay
+        LIMIT 1;" 2>/dev/null | head -n1 || true
 }
 
 # True (0) on a genuine token-DENIAL signal (vs a transient fault) — mirrors the Python gate's _DENIED_SIGNALS.
@@ -492,7 +576,15 @@ init_preflight() {
             exit 1
         fi
     fi
-    : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - set the repo secret and re-run Deploy}"
+    if [ -z "${TEATREE_GH_TOKEN:-}" ]; then
+        local routed
+        routed="$(db_routed_github_pass_key)"
+        if [ -n "$routed" ]; then
+            source_secret_from_pass TEATREE_GH_TOKEN "$routed"
+        fi
+    fi
+    : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - no explicit value, no TEATREE_GH_TOKEN_PASS_PATH, and no github_token_pass_key route that decrypts. Set one and re-run Deploy}"
+    export GH_TOKEN="$TEATREE_GH_TOKEN"
     : "${GIT_AUTHOR_NAME:?MISSING GIT_AUTHOR_NAME - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_EMAIL:?MISSING GIT_AUTHOR_EMAIL - set the repo secret and re-run Deploy}"
     if ! gh auth status >/dev/null 2>&1; then
@@ -563,10 +655,18 @@ seed_claude_settings() {
 # mounts all three as named volumes shared by init and runtime roles, so init is
 # the one writer and `t3 setup` is the sole source of installed factory skills.
 # Runtime roles consume the completed state after depends_on(init) and never race
-# each other by running setup concurrently.
+# each other by running setup concurrently. A skill source that is briefly
+# unreachable must not take the whole stack down, so setup is retried and then
+# left to the worker's own verify_agent_skills gate.
 prepare_agent_homes() {
+    local attempt
     seed_claude_settings
-    t3 setup --strict-agent-skills
+    for attempt in 1 2 3; do
+        t3 setup --strict-agent-skills && return 0
+        echo "teatree-init: WARNING strict agent-skill setup failed (attempt $attempt/3)" >&2
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 15))
+    done
+    echo "teatree-init: WARNING strict agent-skill setup still failing - continuing so admin and slack-listener come up; the worker starts only if a previous setup's skills are intact (verify_agent_skills)" >&2
 }
 
 # VERIFY the agent's skills are actually available after `prepare_agent_homes`:

@@ -438,7 +438,8 @@ _doctor_attempt() {
     probe_err="$(compose exec -T "$svc" true 2>&1 >/dev/null)" && {
       # A previous client timeout can leave an orphaned in-container doctor.
       # Skip loudly and never reclassify this deliberate skip as a no-JSON RED.
-      if compose exec -T "$svc" pgrep -f 't3 doctor check' >/dev/null 2>&1; then
+      # The bracket keeps the pattern from matching a wrapper whose own argv carries it.
+      if compose exec -T "$svc" pgrep -f '[t]3 doctor check' >/dev/null 2>&1; then
         log "doctor already running in $svc — skipping this pass to preserve singleton"
         rm -f "$err_file"
         return 127

@@ -191,6 +191,9 @@ RUN mkdir -p \
 RUN install -d -o teatree -g teatree /home/teatree/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+# What deploy/entrypoint.sh's ENTRYPOINT_IMAGE_CONTRACT checks before running from the
+# checkout: an older image lacks this file and runs the entrypoint baked above instead.
+RUN install -d /usr/local/share/teatree && echo 1 > /usr/local/share/teatree/entrypoint-contract
 
 # Align the runtime user to the HOST deploy user's UID (the TEATREE_UID build
 # arg). Every host bind mount is at path identity (see deploy/README.md § UID
@@ -236,6 +239,15 @@ COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settin
 # fall-through here to rely on.
 RUN git config --system --replace-all "credential.https://gitlab.com.helper" \
     '!f() { test "$1" = get && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
+
+# The GitHub helper, at the same SYSTEM level and for the same reason: every role and
+# every one-off container must authenticate a `git push` / private clone, and `t3 push`
+# hands git the routed token as GH_TOKEN only. `gh auth git-credential` reads it from
+# there; `gh auth setup-git` would write the same two lines into one container's HOME.
+RUN git config --system --replace-all "credential.https://github.com.helper" "" && \
+    git config --system --add "credential.https://github.com.helper" "!gh auth git-credential" && \
+    git config --system --replace-all "credential.https://gist.github.com.helper" "" && \
+    git config --system --add "credential.https://gist.github.com.helper" "!gh auth git-credential"
 
 # Both SSH spellings of a gitlab.com remote resolved onto the https transport the
 # helper above authenticates. The image ships NO ssh client on purpose — an ssh

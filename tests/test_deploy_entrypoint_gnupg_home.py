@@ -39,7 +39,14 @@ _BASH = shutil.which("bash") or "bash"
 SHARING_TRANSPORTS = ["fakeowner", "virtiofs", "9p", "fuse.grpcfuse", "osxfs", "nfs", "cifs", "vboxsf", "sshfs"]
 LOCAL_FILESYSTEMS = ["ext4", "xfs", "btrfs", "zfs", "overlay", "tmpfs"]
 
-_FUNCTIONS = ("path_fstype", "fstype_hosts_unix_sockets", "derive_container_gnupg_home", "seed_container_gnupg_home")
+_FUNCTIONS = (
+    "path_fstype",
+    "fstype_hosts_unix_sockets",
+    "same_directory",
+    "clear_container_gnupg_home",
+    "derive_container_gnupg_home",
+    "seed_container_gnupg_home",
+)
 
 #: The entrypoint sets this at TOP level, outside any function, so the harness has to
 #: carry it too — extracted verbatim rather than restated, since a test that spells the

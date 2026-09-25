@@ -95,6 +95,15 @@ class TestLockDoctor:
         assert "TEATREE_HOST_GNUPG_DIR" in stderr
         assert "/home/teatree/.gnupg-run/gnupg" in stderr
 
+    def test_a_foreign_lock_on_a_host_without_keyboxd_is_reported(self, tmp_path: Path) -> None:
+        (tmp_path / "trustdb.gpg.lock").write_text(f"{LOCK_PID}\n{FOREIGN_NODE}\n", encoding="utf-8")
+
+        result = self._run(tmp_path)
+
+        assert result.returncode == 1
+        assert "trustdb.gpg.lock" in result.stderr
+        assert FOREIGN_NODE in result.stderr
+
     def test_the_lock_is_never_removed(self, tmp_path: Path) -> None:
         lock = self._lock(tmp_path, FOREIGN_NODE)
         before = lock.read_text(encoding="utf-8")

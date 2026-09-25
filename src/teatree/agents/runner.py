@@ -29,6 +29,7 @@ from teatree.agents._runner_env import (
     _overlay_scope,
     _provider_child_env,
     agent_spawn_env,
+    with_routed_github_token,
     with_test_worker_cap,
 )
 from teatree.agents._runner_options import _build_options, _turn_ceiling  # noqa: F401 — compatibility re-exports
@@ -556,7 +557,8 @@ def _resolve_child_env_or_failure(
         # present, everything else dropped).
         ambient = resolved.env if resolved.env is not None else dict(os.environ)
         return replace(resolved, env=reader_child_env(ambient))
-    return replace(resolved, env=with_test_worker_cap(resolved.env, active_agents=_active_agent_count()))
+    capped = with_test_worker_cap(resolved.env, active_agents=_active_agent_count())
+    return replace(resolved, env=with_routed_github_token(capped, overlay=_overlay_scope(task)))
 
 
 def _active_agent_count() -> int:
