@@ -57,7 +57,10 @@ class DispatchGapDetector:
 
     def detect(self) -> list[DetectorReport]:
         task_model = apps.get_model("core", "Task")
-        pending_count = task_model.objects.filter(status=Task.Status.PENDING).count()
+        # claimable() excludes a future not_before (Directive #3 window-park) and every
+        # claim_admission_block_reason() case — a parked/blocked PENDING task is expected
+        # to sit undispatched, so it must not inflate the "nothing is picking this up" count.
+        pending_count = task_model.objects.claimable().filter(status=Task.Status.PENDING).count()
         if pending_count == 0:
             return []
         holders = _consolidation_registry_holders()
