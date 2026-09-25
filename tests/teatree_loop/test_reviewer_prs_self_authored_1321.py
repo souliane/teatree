@@ -141,6 +141,7 @@ class TestReconcileExistingSelfAuthoredReviewingTask(TestCase):
     def _seed_open_reviewing_task(self, url: str, overlay: str = "") -> tuple[Ticket, Task]:
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, overlay=overlay)
         task = schedule_external_review(ticket)
+        assert task is not None  # pr_settled defaults False — a fresh ticket always mints
         assert task.status == Task.Status.PENDING
         return ticket, task
 
@@ -283,6 +284,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
     def _armed(self, url: str, state: str) -> tuple[Ticket, Task]:
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=state)
         task = schedule_external_review(ticket)
+        assert task is not None  # pr_settled defaults False — a fresh ticket always mints
         AutoReviewDispatch.objects.create(slug="x", pr_id=400, head_sha="abc", pr_url=url, task=task)
         return ticket, task
 

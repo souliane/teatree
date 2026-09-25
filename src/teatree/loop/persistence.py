@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.backends.loader import pr_is_merged_or_closed
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, RedMrFixAttempt, Task, Ticket
 from teatree.core.models.auto_implement import mark_auto_implement
@@ -190,7 +191,7 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         # above, so a genuinely new revision is still reviewed.
         logger.debug("PR %s already approved at head %s — not re-enqueuing review", pr_url, head_sha)
         return None
-    task = schedule_external_review(ticket)
+    task = schedule_external_review(ticket, pr_settled=pr_is_merged_or_closed(pr_url))
     _link_broadcast_reviewer_task(payload, task)
     return task
 

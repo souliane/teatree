@@ -13,6 +13,14 @@ from tests.factories import ImplementedIssueMarkerFactory
 
 
 class TestPersistReviewer(TestCase):
+    def setUp(self) -> None:
+        # #4847: every reviewing-phase dispatch checks the PR's live forge state before
+        # minting. Default to "not settled" (today's mint-a-task behaviour) so the
+        # pre-existing tests below need no change; the new test flips this True.
+        patcher = patch("teatree.loop.persistence.pr_is_merged_or_closed", return_value=False)
+        self.pr_is_merged_or_closed = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _action(
         self,
         *,
@@ -251,6 +259,17 @@ class TestPersistReviewer(TestCase):
 
         assert len(created) == 1
         assert created[0].phase == "reviewing"
+
+    def test_settled_pr_mints_no_task_and_retires_the_ticket(self) -> None:
+        """#4847: a merged/closed PR must retire the reviewer ticket, never mint a task."""
+        self.pr_is_merged_or_closed.return_value = True
+
+        result = persist_agent_actions([self._action()])
+
+        assert result == []
+        ticket = Ticket.objects.get(issue_url="https://example.com/owner/repo/pull/42")
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 0
 
 
 class TestPersistOrchestrator(TestCase):

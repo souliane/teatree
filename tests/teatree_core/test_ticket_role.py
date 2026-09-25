@@ -71,6 +71,54 @@ class TestScheduleExternalReview(TestCase):
 
         assert second.pk != first.pk
 
+    def test_settled_pr_mints_no_task_and_retires_the_ticket(self) -> None:
+        """#4847: a merged/closed PR must retire the ticket rather than mint a task."""
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/pr/9",
+            role=Ticket.Role.REVIEWER,
+        )
+
+        task = schedule_external_review(ticket, pr_settled=True)
+
+        assert task is None
+        assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 0
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+
+    def test_settled_pr_on_an_already_retired_ticket_is_a_silent_no_op(self) -> None:
+        """The ``can_proceed`` guard: a ticket retired some other way is untouched, not raised into.
+
+        IGNORED is not a ``mark_review_no_action`` source state — without the guard this
+        call raises ``TransitionNotAllowed`` instead of leaving the ticket as it was.
+        """
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/pr/11",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.IGNORED,
+        )
+
+        task = schedule_external_review(ticket, pr_settled=True)
+
+        assert task is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+
+    def test_pr_not_settled_still_mints_the_reviewing_task(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/pr/12",
+            role=Ticket.Role.REVIEWER,
+        )
+
+        task = schedule_external_review(ticket, pr_settled=False)
+
+        assert task is not None
+        assert task.phase == "reviewing"
+        ticket.refresh_from_db()
+        assert ticket.state != Ticket.State.REVIEW_POSTED
+
 
 class TestScheduleCodingRefusesReviewer(TestCase):
     def test_schedule_coding_blocks_reviewer_role(self) -> None:

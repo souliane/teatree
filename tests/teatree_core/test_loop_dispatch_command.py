@@ -53,7 +53,9 @@ class _LoopDispatchTest(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": head_sha},
         )
-        return schedule_external_review(ticket)
+        task = schedule_external_review(ticket)
+        assert task is not None  # pr_settled defaults False — a fresh ticket always mints
+        return task
 
     def _author_task(self, *, url: str = "https://example.com/issues/9") -> Task:
         ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)

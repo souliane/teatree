@@ -257,6 +257,14 @@ class TestStuckTicketRedispatch(TestCase):
 class TestReviewerRoleCandidates(TestCase):
     """#3958 gap 1: reviewer-role tickets were excluded outright by a ``role=author`` filter."""
 
+    def setUp(self) -> None:
+        # #4847: every reviewing-phase re-dispatch checks the PR's live forge state
+        # before minting. Default to "not settled" (today's mint-a-task behaviour) so
+        # the pre-existing tests below need no change; the new tests flip this True.
+        patcher = patch("teatree.loop.stuck_ticket_redispatch.pr_is_merged_or_closed", return_value=False)
+        self.pr_is_merged_or_closed = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _reviewer_ticket(self) -> Ticket:
         # A reviewer ticket is minted at NOT_STARTED and stays there until REVIEW_POSTED,
         # so no author state→phase mapping can name its implied phase.
@@ -389,6 +397,66 @@ class TestReviewerRoleCandidates(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_a_merged_pr_reviewer_ticket_mints_no_task_and_retires(self) -> None:
+        """#4847: a merged PR must retire the ticket instead of minting another reviewer."""
+        ticket = self._reviewer_ticket()
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="result_error: no verdict")
+        self.pr_is_merged_or_closed.return_value = True
+
+        assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_closed_pr_reviewer_ticket_mints_no_task_and_retires(self) -> None:
+        """#4847: same as the merged case — ``pr_is_merged_or_closed`` folds both to True."""
+        ticket = self._reviewer_ticket()
+        _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED, hours_ago=48)
+        self.pr_is_merged_or_closed.return_value = True
+
+        assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+
+    def test_a_still_open_pr_reviewer_ticket_is_still_redispatched(self) -> None:
+        """The control for the two tests above: an open PR still gets its review."""
+        ticket = self._reviewer_ticket()
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="result_error: no verdict")
+
+        assert redispatch_stuck_tickets() == 1
+
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
+
+    def test_a_reviewer_ticket_in_an_unrecognized_state_is_not_a_candidate(self) -> None:
+        """#4847: an unknown/renamed state value must never be admitted as live.
+
+        Before the fix, the reviewer clause was an EXCLUSION of known-done states, so
+        any state it did not recognise (a stale row after an enum rename) read as live
+        and was re-dispatched forever. The inclusion-list fix (``Ticket.pre_ship_states()``)
+        excludes it by construction — and never even reaches the PR-state forge check.
+        """
+        ticket = self._reviewer_ticket()
+        ticket.state = "review_delivered"
+        ticket.save(update_fields=["state"])
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="stale", hours_ago=48)
+
+        assert redispatch_stuck_tickets() == 0
+
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        self.pr_is_merged_or_closed.assert_not_called()
+
+    def test_unrecognized_reviewer_state_is_logged(self) -> None:
+        ticket = self._reviewer_ticket()
+        ticket.state = "review_delivered"
+        ticket.save(update_fields=["state"])
+
+        with self.assertLogs("teatree.loop.stuck_ticket_redispatch", level="WARNING") as logs:
+            redispatch_stuck_tickets()
+
+        assert any(str(ticket.pk) in message and "review_delivered" in message for message in logs.output)
 
 
 class TestFailingCandidates(TestCase):

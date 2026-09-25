@@ -45,6 +45,7 @@ from django.conf import settings
 from django.db.models import Max, Q
 from django.utils import timezone
 
+from teatree.backends.loader import pr_is_merged_or_closed
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
@@ -168,16 +169,42 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     is in flight, whereas a reviewer ticket's PR IS its subject — every reviewer ticket
     has one open by definition, so excluding on it would silently re-narrow the sweep
     back to author-only.
+
+    Both role clauses are INCLUSION lists of KNOWN unfinished states, never exclusions
+    of known-done ones (#4847): a state value the sweep does not recognise — after an
+    enum rename or a migration that didn't backfill every row — must never read as
+    "live" by default. ``Ticket.pre_ship_states()`` is the reviewer clause's list: every
+    state ``mark_review_no_action``/``mark_reviewed_externally`` accept as a source
+    (minus their own REVIEW_POSTED self-transition, which is done, not live).
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
-    reviewer = Q(role=Ticket.Role.REVIEWER) & ~Q(state__in=tuple(_REVIEWER_DONE_STATES))
+    reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
     open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    _warn_reviewer_tickets_in_unrecognized_states()
     return list(
         Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
         .exclude(open_pr)
         .distinct()
     )
+
+
+def _warn_reviewer_tickets_in_unrecognized_states() -> None:
+    """Log a REVIEWER ticket whose state is neither a known-live nor a known-done value.
+
+    Admission is already an inclusion list (:func:`_live_tickets_with_nothing_in_flight`
+    skips an unrecognized state by construction), so this changes nothing about which
+    tickets are dispatched — it only surfaces the drift (a renamed/removed ``State``
+    value left on old rows) that would otherwise silently stop advancing those tickets.
+    """
+    known = tuple(Ticket.pre_ship_states() | _REVIEWER_DONE_STATES)
+    unrecognized = Ticket.objects.filter(role=Ticket.Role.REVIEWER).exclude(state__in=known).values_list("pk", "state")
+    for pk, state in unrecognized:
+        logger.warning(
+            "stuck-redispatch: reviewer ticket %s has an unrecognized state %r — treated as done, not live",
+            pk,
+            state,
+        )
 
 
 def _implied_phase(ticket: Ticket) -> str | None:
@@ -253,18 +280,23 @@ def _last_activity(ticket: Ticket) -> datetime | None:
 
 
 def _redispatch(candidate: _Candidate) -> int:
-    """Schedule the candidate's phase task; escalate on a scheduling refusal. Returns 0/1."""
+    """Schedule the candidate's phase task; escalate on a scheduling refusal. Returns 0/1.
+
+    A ``None`` from :func:`_schedule_for_candidate` is not a refusal — it is a reviewer
+    ticket :func:`schedule_external_review` retired instead of dispatching (its PR
+    already merged or closed, #4847) — so it counts as 0 scheduled, not an escalation.
+    """
     ticket = candidate.ticket
     try:
-        _schedule_for_candidate(candidate)
+        task = _schedule_for_candidate(candidate)
     except InvalidTransitionError as exc:
         _escalate_once(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
         return 0
-    return 1
+    return 1 if task is not None else 0
 
 
-def _schedule_for_candidate(candidate: _Candidate) -> Task:
-    """Mint the candidate's phase task through the seam that owns that phase.
+def _schedule_for_candidate(candidate: _Candidate) -> Task | None:
+    """Mint the candidate's phase task through the seam that owns that phase, or ``None``.
 
     Every seam here — the author FSM mints, :func:`create_phase_task` and
     :func:`schedule_external_review` — is CAS-guarded and returns an in-flight sibling
@@ -275,7 +307,7 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task:
     if ticket.role != Ticket.Role.REVIEWER:
         return _schedule_for_state(ticket)
     if normalize_phase(phase) == "reviewing":
-        return schedule_external_review(ticket)
+        return schedule_external_review(ticket, pr_settled=pr_is_merged_or_closed(ticket.issue_url))
     return create_phase_task(
         ticket,
         phase=phase,
