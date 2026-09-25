@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from teatree.agents.result_schema import AgentResultBlob
 from teatree.core.claim_liveness import RELEASED_CLAIM
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
 
@@ -45,6 +46,9 @@ def _record_stuck_outcome(
         return _record_noop_over_completed_row(
             task, interruption=stuck_reason, produced=_produced_result(outcome), usage=usage
         )
+    cancelled = Task.objects.filter(pk=task.pk, status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED).first()
+    if cancelled is not None:
+        return _record_noop_over_cancelled_row(cancelled, interruption=stuck_reason, usage=usage)
     evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason, usage=usage)
@@ -77,6 +81,27 @@ def _record_noop_over_completed_row(
     logger.info("Task %s was interrupted after its row completed: %s", task.pk, interruption)
     return _record_interrupted_attempt(
         task, summary=f"the row had already completed — {interruption}", produced=produced, usage=usage
+    )
+
+
+def _record_noop_over_cancelled_row(
+    task: Task, *, interruption: str, usage: "AttemptUsage | None" = None
+) -> TaskAttempt:
+    """Record the interruption of a run an operator had already cancelled, leaving the cancel standing.
+
+    Re-failing the row would reclassify it ``lease_lost``, which the stuck-ticket sweep reads
+    as a genuine failure and re-dispatches (#4834).
+    """
+    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
+
+    logger.info("Task %s was interrupted after an operator cancelled it: %s", task.pk, interruption)
+    return TaskAttempt.objects.create(
+        task=task,
+        ended_at=timezone.now(),
+        exit_code=1,
+        error=f"{task.failure_reason} (run interrupted: {interruption})",
+        result={},
+        **usage_fields(usage),
     )
 
 

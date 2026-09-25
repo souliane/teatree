@@ -314,7 +314,9 @@ SETTING_HELP: dict[str, str] = {
     "wip": "how much work may be in progress at once",
     "work_group_generic_scopes": "commit scopes too generic to group merge requests on",
     "work_group_max_members": "members above which a work group is surfaced as a question rather than held",
-    "worker_quiescing": "stop claiming new work and let the running units finish",
+    "worker_quiescing": (
+        "deploy drain gate — cleared on a fresh init; freeze the factory with `t3 loop preset use off --hold`"
+    ),
     "workspace_dir": "directory new worktrees are created under",
     "worktree_occupancy_gate_enabled": "refuse a second agent the checkout another agent already holds",
     "worktree_occupancy_lease_seconds": "how long an agent's claim on a checkout stands without a heartbeat",
