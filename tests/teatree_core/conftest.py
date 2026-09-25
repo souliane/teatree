@@ -17,6 +17,7 @@ from teatree.core.models import Worktree
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.overlay import OverlayBase, OverlayE2E, OverlayReview, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from tests.db_alias import RouteAllToAlias, register_sqlite_alias, teardown_sqlite_alias
 
 
@@ -128,6 +129,17 @@ def _clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
     yield
     reset_overlay_cache()
+
+
+@pytest.fixture(autouse=True)
+def _routed_merge_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the merge transport off the host's ``pass`` store: every test stubs the gh runner anyway."""
+    monkeypatch.setattr(
+        "teatree.core.merge.ci_rollup.resolve_slug_token",
+        lambda *_args, **_kwargs: ForgeTokenResolution(
+            "github_token", "t3-teatree", ForgeTokenState.TOKEN, token="routed-test-token"
+        ),
+    )
 
 
 @pytest.fixture
