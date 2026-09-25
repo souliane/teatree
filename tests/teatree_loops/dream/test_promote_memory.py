@@ -102,7 +102,22 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
         assert Task.objects.filter(phase="coding").exists()
         row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == f"{UMBRELLA}#dream-gap=k1"
+
+    def test_a_promoted_gap_leaves_needs_ticket_and_is_never_reprocessed(self) -> None:
+        # #2663 dream-gap 2aea8328: an un-stamped promotion re-entered needs_ticket()
+        # forever, re-reading the forge every pass for a gap already fully promoted.
+        row = _row(destination="skills/ship/SKILL.md")
+        host = _fake_host()
+        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        assert not ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
+
+        host2 = _fake_host()
+        outcomes = file_core_gap_tickets(host2, umbrella_url=UMBRELLA)
+        assert outcomes == []
+        host2.get_issue.assert_not_called()
+        host2.update_issue.assert_not_called()
 
     def test_user_specific_row_is_classified_and_files_nothing(self) -> None:
         row = _row(destination="feedback/tone.md")
@@ -133,7 +148,7 @@ class FileCoreGapTicketsTestCase(TestCase):
 
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
-        _row(destination="skills/ship/SKILL.md")
+        row = _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
             outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
@@ -141,6 +156,9 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert outcomes[0].withheld is True
         host.update_issue.assert_not_called()
         assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
 
     def test_dry_run_writes_nothing_and_never_strands_the_gap(self) -> None:
         # F6.1: a preview must NOT advance the disposition. Advancing it before the
@@ -176,6 +194,9 @@ class FileCoreGapTicketsTestCase(TestCase):
         host.update_issue.assert_called_once()
         assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
         assert Task.objects.filter(phase="coding").exists()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == f"{UMBRELLA}#dream-gap=k1"
 
     def test_a_new_core_gap_is_not_double_promoted_in_one_pass(self) -> None:
         # The needs_ticket() drain reads the queue BEFORE the untriaged loop classifies
@@ -386,6 +407,9 @@ class UngroundedDestinationTestCase(TestCase):
         host.update_issue.assert_not_called()
         assert not Ticket.objects.filter(extra__dream_gap_key=row.cluster_key).exists()
         assert not Task.objects.filter(phase="coding").exists()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
 
     def test_a_grounded_destination_outside_the_legacy_prefixes_is_still_promoted(self) -> None:
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: keeps this module's import ORM-free

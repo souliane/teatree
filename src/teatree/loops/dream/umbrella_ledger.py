@@ -245,12 +245,14 @@ def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str
     return _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key) is _GapCheckState.NEWLY_CHECKED
 
 
-def _gap_issue_url(umbrella_url: str, gap_key: str) -> str:
+def gap_anchor_url(umbrella_url: str, gap_key: str) -> str:
     """A unique, valid synthetic issue URL anchoring this gap's fix Ticket.
 
     The umbrella URL with a ``#dream-gap=<key>`` fragment is unique per gap (so the
     Ticket's non-empty-``issue_url`` unique constraint dedups re-runs) and still
-    resolves the ``souliane/teatree`` overlay via ``infer_overlay_for_url``.
+    resolves the ``souliane/teatree`` overlay via ``infer_overlay_for_url``. Also used
+    by :func:`~teatree.loops.dream.promote_memory._promote_one_gap` to stamp a
+    promoted row's ``ticket_url`` before its fix ever merges (#2663).
     """
     return f"{umbrella_url}#{_GAP_MARKER_PREFIX}={gap_key}"
 
@@ -265,7 +267,7 @@ def schedule_gap_fix(*, umbrella_url: str, gap_key: str, title: str, cluster_key
     flow gated by the overlay's autonomy setting. Returns the scheduled ``Task``, or
     ``None`` when this gap already has an open/scheduled coding task.
     """
-    issue_url = _gap_issue_url(umbrella_url, gap_key)
+    issue_url = gap_anchor_url(umbrella_url, gap_key)
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,
         defaults={"role": Ticket.Role.AUTHOR, "short_description": title.strip()[:80]},
@@ -459,8 +461,11 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
 
     The memory is advanced to TICKETED with the merged PR as its ``ticket_url`` (the
     reconcile then drives ``retire_resolved_memories`` off the authoritative MERGED
-    signal). A row already TICKETED/retired or with no merged URL is left untouched.
-    Returns True iff this stamped a row TICKETED with *merged_url*.
+    signal). A row already TICKETED — stamped with the per-gap anchor URL at
+    promotion time (:func:`gap_anchor_url`) — is RE-stamped here with the real merged
+    URL, so that promotion-time stamp never strands the row short of retirement. A
+    row already RESOLVED_RETIRED or USER_SPECIFIC_KEEP, or with no merged URL, is left
+    untouched. Returns True iff this stamped a row TICKETED with *merged_url*.
     """
     if not cluster_key or not merged_url:
         return False
@@ -470,6 +475,7 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
     if row.disposition not in {
         ConsolidatedMemory.Disposition.UNTRIAGED,
         ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
+        ConsolidatedMemory.Disposition.TICKETED,
     }:
         return False
     if row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED:
@@ -482,6 +488,7 @@ __all__ = [
     "GapSpec",
     "PromoteGapOutcome",
     "check_gap_checkbox",
+    "gap_anchor_url",
     "gap_present",
     "promote_gap",
     "reconcile_merged_gaps",

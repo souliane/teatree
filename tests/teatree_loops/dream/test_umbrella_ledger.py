@@ -303,6 +303,34 @@ class ReconcileMergedGapsTestCase(TestCase):
         memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
         assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 
+    def test_a_row_already_ticketed_with_the_anchor_url_is_re_stamped_on_merge(self) -> None:
+        # Simulates promote_memory._promote_one_gap's promotion-time stamp (#2663
+        # dream-gap 2aea8328): the row is TICKETED with the per-gap anchor URL before
+        # its fix ever merges. Reconcile must still re-stamp it with the real merged
+        # PR URL and retire it — the anchor URL alone never satisfies is_resolved.
+        key = "gap-1"
+        memory = _memory(key=key)
+        memory.classify_core_gap()
+        memory.mark_ticketed(ul.gap_anchor_url(UMBRELLA, key))
+        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key=key, title="Fix the gate", cluster_key=key)
+        assert task is not None
+        ticket = task.ticket
+        ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
+        )
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
+        host = _fake_host(body=existing)
+        host.get_issue.return_value = {"body": existing, "state": "merged"}
+
+        reconciled = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
+
+        assert len(reconciled) == 1
+        memory.refresh_from_db()
+        assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert memory.ticket_url == "https://github.com/souliane/teatree/pull/9100"
+
     def test_reconciled_gap_is_stamped_and_not_re_read_next_pass(self) -> None:
         # F6.9: once a merged gap is reconciled (checkbox checked, memory retired) the
         # gap-fix ticket is STAMPED reconciled, so the next reconcile pass skips it

@@ -194,12 +194,14 @@ class CoreGapPromotionIsCappedTestCase(TestCase):
 
     def test_deferred_core_gap_stays_in_the_needs_ticket_queue(self) -> None:
         # A deferred gap must be picked up by the NEXT pass, not stranded: the cap
-        # spreads the backlog over nights, it does not drop any of it.
+        # spreads the backlog over nights, it does not drop any of it. The gap the
+        # budget let through is stamped TICKETED (#2663) and leaves the queue — only
+        # the two the cap deferred remain.
         host = _fake_host()
         for i in range(3):
             _memory(f"gap-{i}")
         promote_memory.file_core_gap_tickets(host, umbrella_url=UMBRELLA, budget=PromotionBudget(remaining=1))
-        assert ConsolidatedMemory.objects.needs_ticket().count() == 3
+        assert ConsolidatedMemory.objects.needs_ticket().count() == 2
         promote_memory.file_core_gap_tickets(host, umbrella_url=UMBRELLA, budget=PromotionBudget(remaining=1))
         assert Ticket.objects.exclude(extra__dream_gap_key__isnull=True).count() == 2
 

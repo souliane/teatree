@@ -189,6 +189,13 @@ def _promote_one_gap(
     The destination is re-grounded HERE and not only at triage, because the
     ``needs_ticket()`` drain promotes rows a PRIOR pass classified without re-running
     the classifier — so this is the one chokepoint every promoted gap passes through.
+
+    A durable promotion (fresh, already riding the umbrella, or already-present under
+    a spent budget) stamps the row TICKETED with a per-gap anchor URL, so it leaves
+    ``needs_ticket()`` for good instead of being re-classified and re-promoted every
+    pass forever. A withheld or budget-deferred gap is left unstamped so it is
+    retried. The anchor URL is a placeholder :func:`~umbrella_ledger._stamp_memory_merged`
+    replaces with the real merged PR URL once the fix lands.
     """
     from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
@@ -213,6 +220,8 @@ def _promote_one_gap(
         gap=umbrella_ledger.GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key),
         budget=budget,
     )
+    if not outcome.withheld and not outcome.deferred:
+        row.mark_ticketed(umbrella_ledger.gap_anchor_url(umbrella_url, row.cluster_key))
     return TicketOutcome(
         cluster_key=row.cluster_key,
         filed=outcome.scheduled or outcome.checkbox_added,
