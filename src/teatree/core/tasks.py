@@ -6,7 +6,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
-from teatree.core.admission.headless import headless_admission_block_reason
+from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings

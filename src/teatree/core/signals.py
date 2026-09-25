@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
-from teatree.core.admission.headless import headless_admission_block_reason
+from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest

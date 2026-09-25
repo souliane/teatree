@@ -10,7 +10,7 @@ layer up instead. This is the coverage for that composition: it inherits every
 
 import django.test
 
-from teatree.core.admission.headless import headless_admission_block_reason
+from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models import ConfigSetting, LoopState, Mode
 
