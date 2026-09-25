@@ -77,7 +77,8 @@ class WriteGuard:
     def _parent(self, node: str, target: str) -> str | None:
         now = self._clock()
         cached = self._parents.get(_canonical(node))
-        if cached is not None and now - cached[1] < _ANCESTOR_LIFETIME_SECONDS:
+        # A page moved under a denied root must be refused on its next write, not a lifetime later.
+        if node != target and cached is not None and now - cached[1] < _ANCESTOR_LIFETIME_SECONDS:
             return cached[0]
         try:
             parent = self._parent_of(node)

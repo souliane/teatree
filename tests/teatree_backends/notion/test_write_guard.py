@@ -106,7 +106,26 @@ class TestAncestorsAreCachedWithABoundedLifetime:
         first = len(tree.lookups)
         guard.check(_SECTION)
 
-        assert len(tree.lookups) == first
+        assert tree.lookups[first:] == [_SECTION]
+
+    def test_the_targets_own_parent_is_read_on_every_write(self) -> None:
+        tree = _Tree(_CHAIN)
+        guard = _guard(tree, allowed=[_INTERNAL])
+
+        guard.check(_SECTION)
+        guard.check(_SECTION)
+
+        assert tree.lookups.count(_SECTION) == 2
+
+    def test_a_target_moved_under_a_denied_root_is_refused_at_once(self) -> None:
+        tree = _Tree({**_CHAIN, _CUSTOMER: _INTERNAL})
+        guard = _guard(tree, allowed=[_INTERNAL], denied=[_CUSTOMER])
+        guard.check(_SECTION)
+
+        tree._parents[_SECTION] = _dashed(_CUSTOMER)
+
+        with pytest.raises(NotionWriteRefusedError, match="write-denied root"):
+            guard.check(_SECTION)
 
     def test_a_parent_is_read_again_once_its_lifetime_lapses(self) -> None:
         tree = _Tree(_CHAIN)

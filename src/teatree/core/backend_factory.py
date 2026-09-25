@@ -388,7 +388,7 @@ def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageCl
     token = overlay.config.get_notion_token()
     if not token:
         return None
-    return get_backend_provider().build_notion_client(token=token)
+    return get_backend_provider().build_notion_client(token=token, overlay=key or None)
 
 
 def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadClient | None":

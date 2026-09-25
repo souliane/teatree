@@ -83,8 +83,8 @@ class ConcreteBackendProvider:
     def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return [github_sync.GitHubSyncBackend(), gitlab_sync.GitLabSyncBackend()]
 
-    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: PLR6301 — BackendProvider protocol method
-        return NotionClient(token=token)
+    def build_notion_client(self, *, token: str, overlay: str | None = None) -> "NotionPageClient | None":  # noqa: PLR6301 — BackendProvider protocol method
+        return NotionClient(token=token, overlay=overlay)
 
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: PLR6301 — BackendProvider protocol method
         return SentryClient(token=token, org=org, base_url=base_url)

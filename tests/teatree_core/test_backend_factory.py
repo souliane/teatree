@@ -16,6 +16,7 @@ from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.notion import NotionClient
+from teatree.backends.notion import write_guard as notion_write_guard
 from teatree.backends.sentry import SentryClient
 from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack.bot import SlackBotBackend
@@ -163,6 +164,21 @@ def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -
 def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
     with _patch_overlay(_NotionOverlay):
         assert isinstance(notion_client_from_overlay(), NotionClient)
+
+
+def test_the_notion_client_guards_writes_with_its_own_overlays_roots() -> None:
+    asked: list[str | None] = []
+
+    def roots(overlay: str | None) -> tuple[list[str], list[str]]:
+        asked.append(overlay)
+        return [], []
+
+    with _patch_overlay(_NotionOverlay), patch.object(notion_write_guard, "notion_write_roots", roots):
+        client = notion_client_from_overlay("test")
+        assert isinstance(client, NotionClient)
+        client._write_guard._scope()
+
+    assert asked == ["test"]
 
 
 class _SentryOverlay(OverlayBase):

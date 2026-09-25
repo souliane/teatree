@@ -214,7 +214,9 @@ class BackendProvider(Protocol):
 
     def build_sync_backends(self) -> "list[SyncBackend]": ...  # pragma: no branch
 
-    def build_notion_client(self, *, token: str) -> "NotionPageClient | None": ...  # pragma: no branch
+    def build_notion_client(
+        self, *, token: str, overlay: str | None = None
+    ) -> "NotionPageClient | None": ...  # pragma: no branch
 
     def build_sentry_client(
         self, *, token: str, org: str, base_url: str
@@ -268,7 +270,7 @@ class _UnconfiguredProvider:
     def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301 — fail-safe provider seam: instance method by Protocol contract
         return []
 
-    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
+    def build_notion_client(self, *, token: str, overlay: str | None = None) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301 — fail-safe provider seam: instance method by Protocol contract; args used by real overrides
         return None
 
     def build_sentry_client(self, *, token: str, org: str, base_url: str) -> "SentryReadClient | None":  # noqa: ARG002, PLR6301 — fail-safe protocol stub; args unused, returns None with no backends app
