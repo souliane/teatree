@@ -244,7 +244,7 @@ class TestStaleTickExclusions:
 
 class TestFailedTaskCollector:
     def _ticket_session(self, issue_url: str) -> tuple[Ticket, Session]:
-        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.WORK_STARTED)
         return ticket, Session.objects.create(overlay="test", ticket=ticket)
 
     def test_failed_task_in_window_yields_signal(self) -> None:

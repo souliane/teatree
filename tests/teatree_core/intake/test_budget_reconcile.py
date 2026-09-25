@@ -29,7 +29,7 @@ _NO_SETTLE = dt.timedelta(0)
 def _held_slot(issue_number: int, *, overlay: str = OVERLAY) -> tuple[ImplementedIssueMarker, PullRequest]:
     issue_url = f"https://github.com/{SLUG}/issues/{issue_number}"
     marker = ImplementedIssueMarker.objects.create(issue_url=issue_url, overlay=overlay)
-    ticket = Ticket.objects.create(overlay=overlay, state=Ticket.State.IN_REVIEW, issue_url=issue_url)
+    ticket = Ticket.objects.create(overlay=overlay, state=Ticket.State.REVIEW_REQUESTED, issue_url=issue_url)
     row = PullRequest.objects.create(
         ticket=ticket,
         overlay=overlay,

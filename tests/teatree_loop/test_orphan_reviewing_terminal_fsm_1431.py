@@ -3,7 +3,7 @@
 The wedge (#1431): an *orphan reviewing task* is a
 ``Task(phase="reviewing", status in {PENDING, CLAIMED})`` on a
 ``Ticket(role=reviewer)`` whose ``state`` is already terminal
-(``REVIEW_POSTED``/``DELIVERED``/``SHIPPED``/``MERGED``/``IGNORED``). It has no legal FSM
+(``REVIEW_DELIVERED``/``DELIVERED``/``PR_OPENED``/``MERGED``/``IGNORED``). It has no legal FSM
 transition left: ``reclaim_orphaned_claims`` flips it back to PENDING, the
 loop re-dispatches it, and the reviewer sub-agent's "nothing to post" path
 ``mark_review_no_action`` raises ``TransitionNotAllowed`` (a terminal state
@@ -141,7 +141,7 @@ class TestGapAMarkReviewNoActionIdempotentOnTerminal(TestCase):
         ticket = Ticket.objects.create(
             issue_url="https://gitlab/x/-/merge_requests/400",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         orphan = _seed_open_reviewing_task(ticket)
 
@@ -151,7 +151,7 @@ class TestGapAMarkReviewNoActionIdempotentOnTerminal(TestCase):
         ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED, "the no-action path must keep a terminal ticket terminal"
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED, "the no-action path must keep a terminal ticket terminal"
         orphan.refresh_from_db()
         assert orphan.status in {
             Task.Status.COMPLETED,
@@ -159,17 +159,17 @@ class TestGapAMarkReviewNoActionIdempotentOnTerminal(TestCase):
         }, "the no-action path must consume the lingering reviewing task"
 
     def test_mark_review_no_action_still_posts_a_non_terminal_ticket(self) -> None:
-        """must-preserve: the original non-terminal disposition still drives the ticket to REVIEW_POSTED.
+        """must-preserve: the original non-terminal disposition still drives the ticket to REVIEW_DELIVERED.
 
         Guards against over-broadening the transition: a fresh reviewer ticket
-        (non-terminal) concluding no-action must still transition to REVIEW_POSTED
+        (non-terminal) concluding no-action must still transition to REVIEW_DELIVERED
         and stamp ``REVIEWED_NO_ACTION`` (the #1077 behaviour).
         """
         url = "https://gitlab/x/-/merge_requests/401"
         ticket = Ticket.objects.create(
             issue_url=url,
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={"reviewed_sha": "sha1"},
         )
         _seed_open_reviewing_task(ticket)
@@ -178,7 +178,7 @@ class TestGapAMarkReviewNoActionIdempotentOnTerminal(TestCase):
         ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert ticket.extra.get("last_review_state") == ReviewState.REVIEWED_NO_ACTION.value
 
 
@@ -189,7 +189,7 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
         """A terminal reviewer ticket with an open reviewing task is reaped even when the MR is OPEN.
 
         The MR is OPEN and absent from the scanned set (self-authored, no
-        review owed). The local FSM is terminal (REVIEW_POSTED), so the sweep
+        review owed). The local FSM is terminal (REVIEW_DELIVERED), so the sweep
         emits ``reviewer_pr.task_orphaned`` despite the OPEN forge state.
 
         RED on origin/main: OPEN is filtered out (``state not in
@@ -199,7 +199,7 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
         ticket = Ticket.objects.create(
             issue_url=url,
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         _seed_open_reviewing_task(ticket)
         host = FakeCodeHost(pr_open_state_by_url={url: PrOpenState.OPEN})
@@ -221,7 +221,7 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
         ticket = Ticket.objects.create(
             issue_url=url,
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         _seed_open_reviewing_task(ticket)
         host = FakeCodeHost(pr_open_state_by_url={url: PrOpenState.OPEN})
@@ -240,7 +240,7 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
         ticket = Ticket.objects.create(
             issue_url=url,
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         _seed_open_reviewing_task(ticket)
         host = FakeCodeHost(pr_open_state_by_url={url: PrOpenState.UNKNOWN})
@@ -254,9 +254,9 @@ class TestWedgeIntegrationSingleTick(TestCase):
     """Integration — one scan→dispatch→persist/handle tick reaps the orphan and creates no new one."""
 
     def _review_posted_reviewer_ticket_with_orphan(self, url: str) -> tuple[Ticket, Task]:
-        """Reviewer ticket driven to REVIEW_POSTED carrying a live PENDING orphan task.
+        """Reviewer ticket driven to REVIEW_DELIVERED carrying a live PENDING orphan task.
 
-        REVIEW_POSTED is reached the real way: a first reviewing task completes
+        REVIEW_DELIVERED is reached the real way: a first reviewing task completes
         and fires ``mark_reviewed_externally``. A second reviewing task (the
         orphan) is then seeded PENDING on the now-terminal ticket — exactly
         the #1000/#1431 shape: a reviewing task surviving on a ticket that
@@ -267,7 +267,7 @@ class TestWedgeIntegrationSingleTick(TestCase):
         assert first is not None
         first.complete()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         orphan = _seed_open_reviewing_task(ticket)
         return ticket, orphan
 
@@ -318,4 +318,4 @@ class TestWedgeIntegrationSingleTick(TestCase):
         orphan.refresh_from_db()
         assert orphan.status == Task.Status.COMPLETED, "the existing orphan must be reaped in one tick"
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED, "the ticket must stay terminal after reaping"
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED, "the ticket must stay terminal after reaping"

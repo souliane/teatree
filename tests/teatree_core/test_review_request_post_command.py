@@ -165,7 +165,7 @@ class TestReviewExemptRepoIsRefusedFirst(_DataDirMixin, TestCase):
 
     def test_refuses_ahead_of_the_anti_vacuity_gate_and_the_channel_resolve(self) -> None:
         ConfigSetting.objects.set_value("review_exempt_repos", ["org/repo"])
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
         with (
             _gate_required(required=True),
@@ -201,7 +201,7 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
 
     def test_refused_without_attestation_and_takes_no_claim(self) -> None:
         backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with (
             _gate_required(required=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
@@ -227,7 +227,7 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
     def test_allows_with_bound_attestation(self) -> None:
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_SHA, "AC1-3 mapped", ["tests/x.py::test_y"])
         with (
             _gate_required(required=True),
@@ -262,7 +262,7 @@ def _reviewed_gate(*, required: bool) -> AbstractContextManager[object]:
 
 
 class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
-    """PR-08: with the gate on, a broadcast refuses unless the ticket is REVIEWED + has evidence."""
+    """PR-08: with the gate on, a broadcast refuses unless the ticket is SELF_REVIEWED + has evidence."""
 
     def test_refused_when_ticket_not_reviewed_and_takes_no_claim(self) -> None:
         backend = _FakeBackend()
@@ -290,7 +290,7 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
     def test_allows_reviewed_ticket_with_evidence(self) -> None:
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,
@@ -311,13 +311,13 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
 
     def test_allows_in_review_ticket_with_evidence(self) -> None:
         # PR-08b wave-2 audit: the ENABLED gate exercised end-to-end with the
-        # REALISTIC broadcast-time state (IN_REVIEW — the FSM advanced
+        # REALISTIC broadcast-time state (REVIEW_REQUESTED — the FSM advanced
         # review → ship → request_review before the request broadcast fires).
-        # RED on the pre-fix strict ``state == REVIEWED`` gate: the command
+        # RED on the pre-fix strict ``state == SELF_REVIEWED`` gate: the command
         # refused with reason ``ticket_not_reviewed`` and posted nothing.
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,

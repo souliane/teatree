@@ -47,7 +47,7 @@ class CheckingTestBase(TestCase):
         self.now = timezone.now()
         self.since = self.now - timedelta(hours=24)
 
-    def _ticket(self, *, number: int = 42, state: str = Ticket.State.IN_REVIEW, **extra: object) -> Ticket:
+    def _ticket(self, *, number: int = 42, state: str = Ticket.State.REVIEW_REQUESTED, **extra: object) -> Ticket:
         ticket = Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url=f"https://github.com/acme/widgets/issues/{number}",
@@ -109,7 +109,7 @@ class TestMergedGroup(CheckingTestBase):
         other = Ticket.objects.create(
             overlay="other",
             issue_url="https://github.com/other/x/issues/2",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         self._merge(other, pr_id=11, slug="other/x", hours_ago=2)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
@@ -141,7 +141,7 @@ class TestMergedGroup(CheckingTestBase):
         ticket = Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url="https://example.invalid/not-an-issue",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             short_description="ticket work",
         )
         self._merge(ticket, pr_id=7, slug="some-workstream-name", hours_ago=2)
@@ -230,8 +230,8 @@ class TestMergedGroupNullTicketRepoScope(CheckingTestBase):
 class TestInFlightGroup(CheckingTestBase):
     def test_latest_transition_per_ticket(self) -> None:
         ticket = self._ticket(state=Ticket.State.CODED)
-        self._transition(ticket, frm=Ticket.State.SCOPED, to=Ticket.State.STARTED, hours_ago=6)
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        self._transition(ticket, frm=Ticket.State.SCOPED, to=Ticket.State.WORK_STARTED, hours_ago=6)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.in_flight.total == 1
         item = report.in_flight.items[0]
@@ -240,7 +240,7 @@ class TestInFlightGroup(CheckingTestBase):
 
     def test_issue_url_is_used(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.in_flight.items[0].url == ticket.issue_url
 
@@ -249,7 +249,7 @@ class TestInFlightGroup(CheckingTestBase):
         # bare/link-only ``#N``. Asserting the rendered line contains the title
         # text goes RED on the pre-fix code (which only renders ``#N → state``).
         ticket = self._ticket(state=Ticket.State.CODED)
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         item = report.in_flight.items[0]
         assert item.title == "ticket 42 work"
@@ -257,7 +257,7 @@ class TestInFlightGroup(CheckingTestBase):
 
     def test_transition_outside_window_excluded(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=48)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=48)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.in_flight.total == 0
 
@@ -267,10 +267,10 @@ class TestInFlightGroup(CheckingTestBase):
         ticket = Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url="",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"pr_urls": ["https://github.com/acme/widgets/pull/55"]},
         )
-        self._transition(ticket, frm=Ticket.State.SHIPPED, to=Ticket.State.IN_REVIEW, hours_ago=1)
+        self._transition(ticket, frm=Ticket.State.PR_OPENED, to=Ticket.State.REVIEW_REQUESTED, hours_ago=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.in_flight.items[0].url == "https://github.com/acme/widgets/pull/55"
 
@@ -293,7 +293,7 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert f"questions answer {question.pk}" in item.detail
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
-        ticket = self._ticket(state=Ticket.State.STARTED)
+        ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.needs_you.total == 1
@@ -305,7 +305,7 @@ class TestNeedsYouGroup(CheckingTestBase):
     def test_failed_attempt_renders_title_inline(self) -> None:
         # #2092: the needs-you row must carry the ticket title inline. The
         # rendered line includes the title text next to the id.
-        ticket = self._ticket(state=Ticket.State.STARTED)
+        ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=1)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         item = report.needs_you.items[0]
@@ -313,7 +313,7 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert "ticket 42 work" in item.render()
 
     def test_successful_attempt_does_not_block(self) -> None:
-        ticket = self._ticket(state=Ticket.State.STARTED)
+        ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=0)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.needs_you.total == 0
@@ -322,7 +322,7 @@ class TestNeedsYouGroup(CheckingTestBase):
         # Six distinct blocked tickets exceed the cap; the group reports the
         # full total and renders only the cap.
         for n in range(6):
-            blocked = self._ticket(number=300 + n, state=Ticket.State.STARTED)
+            blocked = self._ticket(number=300 + n, state=Ticket.State.WORK_STARTED)
             self._attempt(blocked, hours_ago=1, exit_code=1)
         # A second failed run on one ticket must not double-count it.
         self._attempt(Ticket.objects.get(issue_url__endswith="/300"), hours_ago=0.5, exit_code=1)
@@ -374,7 +374,7 @@ class TestTerseFormatting(CheckingTestBase):
         merged_ticket = self._ticket(number=42)
         self._merge(merged_ticket, pr_id=7, slug="acme/widgets", hours_ago=2)
         inflight_ticket = self._ticket(number=43, state=Ticket.State.CODED)
-        self._transition(inflight_ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        self._transition(inflight_ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         DeferredQuestion.record("Should I ship the widget rename?")
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="github")
         terse = report.to_terse(overlay_name=self.OVERLAY)
@@ -451,7 +451,7 @@ class TestPrUrlForPathSegmentMatch(TestCase):
         t = Ticket.objects.create(
             overlay="acme",
             issue_url="https://github.com/synthetic-owner/synthetic-repo/issues/1",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         t.extra = {"pr_urls": list(urls)}
         t.save(update_fields=["extra"])
@@ -493,7 +493,7 @@ class TestAllOverlaysAggregation(CheckingTestBase):
 
     OVERLAY_B = "beta"
 
-    def _ticket_b(self, *, number: int = 99, state: str = Ticket.State.IN_REVIEW) -> Ticket:
+    def _ticket_b(self, *, number: int = 99, state: str = Ticket.State.REVIEW_REQUESTED) -> Ticket:
         return Ticket.objects.create(
             overlay=self.OVERLAY_B,
             issue_url=f"https://github.com/beta/core/issues/{number}",
@@ -623,8 +623,8 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         # #2092: the multi-overlay in-flight and needs-you rows carry the ticket
         # title inline next to the id — never a bare/link-only ``#N``.
         moving = self._ticket(number=1, state=Ticket.State.CODED)
-        self._transition(moving, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
-        blocked = self._ticket_b(number=2, state=Ticket.State.STARTED)
+        self._transition(moving, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
+        blocked = self._ticket_b(number=2, state=Ticket.State.WORK_STARTED)
         self._attempt(blocked, hours_ago=1, exit_code=1)
 
         overlay_windows = {

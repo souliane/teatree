@@ -216,7 +216,7 @@ class TicketExtra(TypedDict, total=False):
     # Lightweight audited plan-gate carve-out: a per-ticket marker that this is a
     # trivial mechanical edit whose planning phase is skipped. Stamped via
     # ``trivial_plan_skip.mark_trivial_plan_skip`` with a MANDATORY reason; read
-    # by ``check_plan_artifact`` (lets STARTED→PLANNED advance with no
+    # by ``check_plan_artifact`` (lets WORK_STARTED→PLAN_RECORDED advance with no
     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
     # ``TrivialPlanSkip``.
     trivial_plan_skip: "TrivialPlanSkip"
@@ -580,7 +580,7 @@ class TrivialPlanSkip(TypedDict, total=False):
 
     The marker is read at the two seams the external-delivery predicate also
     uses: ``check_plan_artifact`` accepts it as a satisfying signal (the ticket
-    advances STARTED→PLANNED with no ``PlanArtifact`` and no ``--human-authorize``),
+    advances WORK_STARTED→PLAN_RECORDED with no ``PlanArtifact`` and no ``--human-authorize``),
     and ``execute_provision`` skips ``schedule_planning`` so the auto-planner is
     never scheduled. ``by`` and ``at`` are the audit trail (who recorded the skip
     and when, a UTC ISO timestamp).

@@ -75,9 +75,9 @@ class TicketIntrospectionModel(TicketFacet):
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
 
     @property
-    def is_terminal(self) -> bool:
-        """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
-        return self.state in self._TERMINAL_STATES
+    def is_settled(self) -> bool:
+        """True when the ticket is in a genuinely terminal/abandoned state (PR_OPENED/MERGED/DELIVERED/IGNORED)."""
+        return self.state in self._SETTLED_STATES
 
     @classmethod
     def phase_producing_state(cls, state: str) -> str:
@@ -98,7 +98,7 @@ class TicketIntrospectionModel(TicketFacet):
         queue with a question that is already answered by the ticket's state. The
         transient-requeue sweep retires such tasks silently instead of asking the
         owner. An unknown phase, or a state off the linear work ladder
-        (IN_REVIEW/RETROSPECTED/…), is conservatively treated as NOT completed —
+        (REVIEW_REQUESTED/RETRO_RECORDED/…), is conservatively treated as NOT completed —
         the safe default that escalates rather than silently drops a live task.
         """
         produces = self._PHASE_PRODUCES_STATE.get(normalize_phase(phase))

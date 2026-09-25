@@ -177,7 +177,7 @@ def replay_orphaned_transitions(qs: "models.QuerySet") -> int:
     # A terminal ticket is excluded (#3879): no branch of the shared path
     # advances one, so a crash can have dropped nothing. Every branch guards
     # on a source that is not its own target EXCEPT ``mark_reviewed_externally``,
-    # which accepts REVIEW_POSTED so a re-review at a moved head SHA can
+    # which accepts REVIEW_DELIVERED so a re-review at a moved head SHA can
     # re-stamp — leaning on the guard therefore re-fired that self-loop for
     # every closed review on every tick, minting a teardown job each time.
     from django_fsm import TransitionNotAllowed  # noqa: PLC0415 — deferred: heavy/optional dep at call site

@@ -6,7 +6,7 @@ bypass), ``skip-planning`` (lightweight trivial-work carve-out), and
 ``plan-reconcile-inflight`` (retroactive one-time advance). They share one shape:
 validate input, then in a single ``transaction.atomic`` block produce a
 satisfying signal (a ``PlanArtifact`` or a ``trivial_plan_skip`` marker), drive
-``ticket.plan()`` STARTED → PLANNED, and ``save()``.
+``ticket.plan()`` WORK_STARTED → PLAN_RECORDED, and ``save()``.
 
 This module owns that shared shape so the command methods in ``ticket.py`` stay
 thin delegators (one cohesive concern, one home — and ``ticket.py`` stays under
@@ -94,23 +94,23 @@ def record_bypass_and_advance(*, ticket: Ticket, plan_text: str, recorded_by: st
 def _advance_with(ticket: Ticket, make_artifact: "Callable[[], PlanArtifact]") -> "PlanArtifact":
     """Create an artifact via *make_artifact*, then drive ``ticket.plan()`` ONLY when it can apply.
 
-    ``ticket.plan()``'s FSM source is exclusively ``Ticket.State.STARTED``; the
+    ``ticket.plan()``'s FSM source is exclusively ``Ticket.State.WORK_STARTED``; the
     plan-dispatch gate's satisfying signal
     (``plan_dispatch_gate.unplanned_dispatch_refusal``) is the *existence* of a
     ``PlanArtifact``/trivial-skip marker, never the transition itself. Most
     dispatch targets this command actually runs against are already past
-    STARTED (coded/tested/reviewed/etc. — the #4449 class), so unconditionally
+    WORK_STARTED (coded/tested/reviewed/etc. — the #4449 class), so unconditionally
     attempting the transition inside this same atomic block would raise
     ``TransitionNotAllowed`` and roll the artifact write back too, leaving the
     gate's own named remedy unusable for the overwhelming majority of
     already-in-flight tickets (#4409). Recording the artifact is
-    therefore unconditional; the STARTED → PLANNED advance is attempted only
-    when the ticket is actually STARTED.
+    therefore unconditional; the WORK_STARTED → PLAN_RECORDED advance is attempted only
+    when the ticket is actually WORK_STARTED.
     """
     try:
         with transaction.atomic():
             artifact = make_artifact()
-            if ticket.state == Ticket.State.STARTED:
+            if ticket.state == Ticket.State.WORK_STARTED:
                 ticket.plan()
                 ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
@@ -123,8 +123,8 @@ def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> 
 
     The lightweight sibling of :func:`record_artifact_and_advance` — no
     ``PlanArtifact`` is written; the marker is the satisfying signal. Marker
-    recording is unconditional; the STARTED → PLANNED advance is attempted
-    only when ``ticket.state == Ticket.State.STARTED`` (see
+    recording is unconditional; the WORK_STARTED → PLAN_RECORDED advance is attempted
+    only when ``ticket.state == Ticket.State.WORK_STARTED`` (see
     :func:`_advance_with` for why — the #4449 class, #4409). Raises
     :class:`PlanAdvanceError` on a rejected marker (the atomic block rolls the
     marker write back).
@@ -132,7 +132,7 @@ def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> 
     try:
         with transaction.atomic():
             mark_trivial_plan_skip(ticket, reason=reason, by=by)
-            if ticket.state == Ticket.State.STARTED:
+            if ticket.state == Ticket.State.WORK_STARTED:
                 ticket.plan()
                 ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
@@ -140,18 +140,18 @@ def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> 
 
 
 def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tuple[PlanReconcileResult, list[str]]:
-    """Retroactively advance every STARTED ticket to PLANNED via an audited bypass.
+    """Retroactively advance every WORK_STARTED ticket to PLAN_RECORDED via an audited bypass.
 
     Returns the tally plus a list of human-readable log lines for the caller to
     emit. A per-ticket transition refusal is recorded as skipped, never raised,
     so one stuck ticket does not abort the sweep.
     """
-    started = list(Ticket.objects.filter(state=Ticket.State.STARTED))
-    log: list[str] = [f"  found {len(started)} STARTED ticket(s)"]
+    started = list(Ticket.objects.filter(state=Ticket.State.WORK_STARTED))
+    log: list[str] = [f"  found {len(started)} WORK_STARTED ticket(s)"]
     bypassed = 0
     skipped = 0
     for ticket in started:
-        reason = "retroactive — PLANNED state added mid-flight" + (f" ({issue_ref})" if issue_ref else "")
+        reason = "retroactive — PLAN_RECORDED state added mid-flight" + (f" ({issue_ref})" if issue_ref else "")
         if dry_run:
             log.append(f"  [dry-run] would bypass ticket {ticket.pk}: {reason}")
             skipped += 1
@@ -165,7 +165,7 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
                 )
                 ticket.plan()
                 ticket.save()
-            log.append(f"  ticket {ticket.pk}: STARTED → PLANNED (bypass recorded)")
+            log.append(f"  ticket {ticket.pk}: WORK_STARTED → PLAN_RECORDED (bypass recorded)")
             bypassed += 1
         except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
             log.append(f"  ticket {ticket.pk}: skipped — {exc}")

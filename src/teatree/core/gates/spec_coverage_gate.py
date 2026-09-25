@@ -31,10 +31,10 @@ Escape hatch
     refactor, a docs-only change) the heuristic should not hard-trap.
 
 The gate is invoked from the ``Ticket.mark_delivered()`` transition body — the
-single chokepoint a ticket funnels through on its way from RETROSPECTED to
+single chokepoint a ticket funnels through on its way from RETRO_RECORDED to
 DELIVERED, beside ``check_fix_record_dod``. On a block it raises
 :class:`SpecCoverageDodError` (an :class:`InvalidTransitionError` subclass) so the
-loop's outer atomic rolls the advance back and the ticket stays RETROSPECTED —
+loop's outer atomic rolls the advance back and the ticket stays RETRO_RECORDED —
 merged on the forge, not yet *done*.
 
 Producer
@@ -70,7 +70,7 @@ class SpecCoverageDodError(InvalidTransitionError):
     A subclass of :class:`InvalidTransitionError` (sibling of
     :class:`~teatree.core.gates.fix_dod_gate.FixRecordDodError`) so the loop's
     ``Task.complete()`` outer atomic rolls the delivery advance back and the FSM
-    stays at RETROSPECTED. The message names the uncovered ACs plus the override
+    stays at RETRO_RECORDED. The message names the uncovered ACs plus the override
     escape hatch so the operator can unblock a genuinely AC-less ticket.
     """
 

@@ -1,7 +1,7 @@
 """Tests for teatree.core.gates.spec_coverage_gate — the per-ticket spec-coverage DoD gate.
 
 The gate forecloses declaring a ticket *done* on a partial subset of its spec:
-when ``require_spec_coverage`` is on, ``mark_delivered`` (RETROSPECTED →
+when ``require_spec_coverage`` is on, ``mark_delivered`` (RETRO_RECORDED →
 DELIVERED) is refused unless every acceptance criterion the ticket carries in
 ``extra['spec_coverage']`` has at least one backing test. The pure helpers
 (``spec_coverage_required``, ``acceptance_criteria``, ``uncovered_acs``,
@@ -171,7 +171,7 @@ class TestMarkDeliveredFsmGate(TestCase):
     def _retrospected(self, **extra: object) -> Ticket:
         return Ticket.objects.create(
             overlay="acme",
-            state=Ticket.State.RETROSPECTED,
+            state=Ticket.State.RETRO_RECORDED,
             extra=dict(extra),
         )
 
@@ -193,7 +193,7 @@ class TestMarkDeliveredFsmGate(TestCase):
             with pytest.raises(SpecCoverageDodError):
                 ticket.mark_delivered()
             ticket.refresh_from_db()
-            assert ticket.state == Ticket.State.RETROSPECTED
+            assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_override_delivers(self) -> None:
         with _gate(required=True):

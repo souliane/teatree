@@ -68,7 +68,7 @@ class IssueDispositionAlreadyShippedTests(TestCase):
 
     def test_live_in_flight_ticket_yields_no_candidate(self) -> None:
         """Anti-vacuity (a): a live ticket on the URL FALSIFIES already-shipped."""
-        Ticket.objects.create(issue_url=self.URL, state=Ticket.State.STARTED)
+        Ticket.objects.create(issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         assert self._scanner(_Host(issues=[_issue(self.URL)])).scan() == []
 
     def test_no_ticket_at_all_yields_no_candidate(self) -> None:

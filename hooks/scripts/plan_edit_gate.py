@@ -1,7 +1,7 @@
 """PreToolUse: plan-before-code gate, with the Bash write arm (#4091).
 
 The gate denies a file write while the cwd's worktree ticket is still in
-``STARTED`` — the deterministic half of "a plan is recorded before coding
+``WORK_STARTED`` — the deterministic half of "a plan is recorded before coding
 begins". It keyed on the ``Edit``/``Write`` TOOL NAMES, so a file written
 through the shell reached it as nothing at all: a measured full day of
 implementation, every source file written by a ``python3 - <<PY`` heredoc or
@@ -116,9 +116,9 @@ def classify_bash_write(command: str, cwd: str) -> BashWriteVerdict:
 
 
 def handle_block_edit_before_planned(data: dict) -> bool:
-    """Deny a file write when the worktree's ticket is still in STARTED state.
+    """Deny a file write when the worktree's ticket is still in WORK_STARTED state.
 
-    The FSM already prevents ``code()`` from STARTED (TransitionNotAllowed), so
+    The FSM already prevents ``code()`` from WORK_STARTED (TransitionNotAllowed), so
     this gate provides an earlier, clearer DX signal: write attempts while the
     ticket has not yet been planned are denied with an actionable message. It
     covers ``Edit``/``Write`` and — since #4091 — a ``Bash`` command that writes
@@ -158,11 +158,11 @@ def handle_block_edit_before_planned(data: dict) -> bool:
 
 
 def _ticket_is_unplanned(cwd: str) -> bool:
-    """True iff *cwd*'s worktree ticket is STARTED; any resolver failure is False (allow)."""
+    """True iff *cwd*'s worktree ticket is WORK_STARTED; any resolver failure is False (allow)."""
     from hooks.scripts.hook_router import _ticket_state_for_cwd  # noqa: PLC0415 deferred back-import
 
     try:
-        return _ticket_state_for_cwd(cwd) == "started"
+        return _ticket_state_for_cwd(cwd) == "work_started"
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
@@ -179,7 +179,7 @@ def _call_is_excused(data: dict, verdict: BashWriteVerdict | None) -> bool:
     if verdict is not None and not verdict.gated_paths:
         sys.stderr.write(
             "NOTE: plan-gate could not pin this command's write target — the ticket is still "
-            "STARTED, so record a plan before it writes source.\n"
+            "WORK_STARTED, so record a plan before it writes source.\n"
         )
         return True
     return False
@@ -190,9 +190,9 @@ def _deny_reason(tool_name: str, verdict: BashWriteVerdict | None) -> str:
         f"Bash denied: this command writes `{verdict.gated_paths[0]}`, and " if verdict else f"{tool_name} denied: "
     )
     return (
-        f"{subject}the worktree's ticket is still in STARTED state — "
+        f"{subject}the worktree's ticket is still in WORK_STARTED state — "
         "a plan must be recorded before coding can begin. "
-        "Run the planning phase first so the ticket advances to PLANNED. "
+        "Run the planning phase first so the ticket advances to PLAN_RECORDED. "
         "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
     )
 

@@ -298,7 +298,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
         rare one and this is the shape the factory actually deadlocked in.
         """
         url = "https://github.com/souliane/teatree/pull/402"
-        ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        ticket, task = self._armed(url, Ticket.State.REVIEW_DELIVERED)
         schedule_external_review(ticket)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
@@ -314,7 +314,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
 
     def test_armed_review_on_a_terminal_ticket_survives_while_the_pr_is_open(self) -> None:
         url = "https://github.com/souliane/teatree/pull/400"
-        _ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        _ticket, task = self._armed(url, Ticket.State.REVIEW_DELIVERED)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
 
@@ -330,7 +330,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
     def test_forge_truth_still_reaps_an_armed_review_on_a_merged_pr(self) -> None:
         """The control: forge state remains authoritative, so real orphans still die."""
         url = "https://github.com/souliane/teatree/pull/401"
-        ticket, _task = self._armed(url, Ticket.State.STARTED)
+        ticket, _task = self._armed(url, Ticket.State.WORK_STARTED)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.MERGED})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
 

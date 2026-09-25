@@ -1,6 +1,6 @@
 """The §17.4 keystone: preconditions orchestration, bound merge, post hook, merge_ticket_pr.
 
-The only sanctioned path from ``IN_REVIEW`` → ``MERGED`` (BLUEPRINT §17.4 holds
+The only sanctioned path from ``REVIEW_REQUESTED`` → ``MERGED`` (BLUEPRINT §17.4 holds
 the full spec). Raw ``gh pr merge`` / ``glab mr merge`` is mechanically refused
 (``hook_router._BLOCKED_COMMANDS``); it would bypass the ledger update, the
 HEAD/workstream attestation binding, the privacy scan, and ``mark_merged()``.

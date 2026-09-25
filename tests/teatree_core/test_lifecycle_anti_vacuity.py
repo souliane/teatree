@@ -22,7 +22,7 @@ _SHA = "a" * 40
 
 class TestRecordAntiVacuityCommand(TestCase):
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
 
     def test_records_attestation_with_proven_tests(self) -> None:
         ticket = self._ticket()

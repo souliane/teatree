@@ -13,21 +13,21 @@ from teatree.core.models import DeferredQuestion, IncomingEvent, ReplyDispatch, 
 
 class TestTicketQuerySet(TestCase):
     def test_in_flight_excludes_delivered_items(self) -> None:
-        active = Ticket.objects.create(state=Ticket.State.STARTED)
+        active = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         Ticket.objects.create(state=Ticket.State.DELIVERED)
 
         assert list(Ticket.objects.in_flight()) == [active]
 
     def test_in_flight_excludes_done_tracker_status(self) -> None:
-        active = Ticket.objects.create(state=Ticket.State.STARTED, extra={"tracker_status": "In progress"})
-        Ticket.objects.create(state=Ticket.State.STARTED, extra={"tracker_status": "Done"})
+        active = Ticket.objects.create(state=Ticket.State.WORK_STARTED, extra={"tracker_status": "In progress"})
+        Ticket.objects.create(state=Ticket.State.WORK_STARTED, extra={"tracker_status": "Done"})
 
         assert list(Ticket.objects.in_flight()) == [active]
 
     def test_unfindable_returns_only_rows_intake_can_never_reach(self) -> None:
-        unreachable = Ticket.objects.create(state=Ticket.State.STARTED, short_description="a lost request")
+        unreachable = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="a lost request")
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             issue_url="https://github.com/souliane/teatree/issues/4527",
             short_description="a real backlog item",
         )
@@ -36,8 +36,8 @@ class TestTicketQuerySet(TestCase):
 
     def test_unfindable_sorts_the_row_with_no_task_at_all_first(self) -> None:
         """No task is the most provably dead shape, so it must not sort last by accident."""
-        never_dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="never ran")
-        dispatched = Ticket.objects.create(state=Ticket.State.STARTED, short_description="ran once")
+        never_dispatched = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="never ran")
+        dispatched = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="ran once")
         session = Session.objects.create(ticket=dispatched, agent_id="answering")
         Task.objects.create(ticket=dispatched, session=session, phase="answering", subject="s")
 
@@ -51,11 +51,11 @@ class TestTicketQuerySet(TestCase):
         genuinely dead rows are buried in it.
         """
         handled = Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="answered and filed",
             extra={"slack_answer": {"work_issue_url": "https://github.com/souliane/teatree/issues/7100"}},
         )
-        dropped = Ticket.objects.create(state=Ticket.State.STARTED, short_description="answered, filed nothing")
+        dropped = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="answered, filed nothing")
 
         assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
         assert handled not in Ticket.objects.unfindable()
@@ -65,13 +65,13 @@ class TestWorktreeQuerySet(TestCase):
     def test_active_excludes_delivered_and_ignored_tickets(self) -> None:
         """Matches the worktrees panel filter so KPI count and table size agree."""
         active = Worktree.objects.create(
-            ticket=Ticket.objects.create(state=Ticket.State.STARTED),
+            ticket=Ticket.objects.create(state=Ticket.State.WORK_STARTED),
             repo_path="/tmp/backend",
             branch="active",
             state=Worktree.State.READY,
         )
         also_active = Worktree.objects.create(
-            ticket=Ticket.objects.create(state=Ticket.State.STARTED),
+            ticket=Ticket.objects.create(state=Ticket.State.WORK_STARTED),
             repo_path="/tmp/frontend",
             branch="just-created",
             state=Worktree.State.CREATED,
@@ -92,8 +92,8 @@ class TestWorktreeQuerySet(TestCase):
         assert list(Worktree.objects.active()) == [active, also_active]
 
     def test_for_ticket_scopes_to_the_given_ticket(self) -> None:
-        wanted_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
-        other_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        wanted_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        other_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/be", branch="mine")
         also_mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/fe", branch="also")
         Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
@@ -1066,9 +1066,9 @@ class TestReplayOrphanedTransitions(TestCase):
 
     def test_completed_task_with_unapplied_phase_transition_is_replayed(self) -> None:
         # Simulate the half-advanced state a mid-transition crash leaves:
-        # the coding task is COMPLETED but the ticket is still PLANNED
+        # the coding task is COMPLETED but the ticket is still PLAN_RECORDED
         # (the FSM ``code()`` transition never landed).
-        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(
             ticket=ticket,
@@ -1106,11 +1106,11 @@ class TestReplayOrphanedTransitions(TestCase):
     def test_replay_preserves_state_preconditions_no_gate_skip(self) -> None:
         # GATE-INTEGRITY (#883): replay must never let a ticket reach a
         # state it didn't earn. A COMPLETED *shipping* task whose ticket
-        # is only STARTED (it never went through code→test→review) must
-        # NOT be teleported to SHIPPED — the same phase+state guard that
+        # is only WORK_STARTED (it never went through code→test→review) must
+        # NOT be teleported to PR_OPENED — the same phase+state guard that
         # protects the live ``complete()`` path protects replay, because
         # replay reuses that exact path.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(
             ticket=ticket,
@@ -1123,7 +1123,7 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 0
-        assert ticket.state == Ticket.State.STARTED, (
+        assert ticket.state == Ticket.State.WORK_STARTED, (
             f"replay skipped the lifecycle gate — ticket reached {ticket.state!r} it never earned"
         )
 
@@ -1138,19 +1138,19 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_replays_shipping_transition_only_from_reviewed(self) -> None:
-        # The shipping→ship branch: only fires from REVIEWED (the earned
-        # state). A REVIEWED ticket whose completed shipping task's
-        # ship() was lost to a crash is recovered to SHIPPED.
+        # The shipping→ship branch: only fires from SELF_REVIEWED (the earned
+        # state). A SELF_REVIEWED ticket whose completed shipping task's
+        # ship() was lost to a crash is recovered to PR_OPENED.
         #
         # #1284 (codex #1282-2): the replay sweep goes through the same
         # ``_apply_phase_transition`` path the live ``complete()`` chain
         # uses, so the visited-phases gate applies here too. Record
         # ``testing``/``reviewing`` to satisfy the gate — a ticket that
-        # legitimately reached REVIEWED would have those attested.
-        ticket = Ticket.objects.create(state=Ticket.State.REVIEWED)
+        # legitimately reached SELF_REVIEWED would have those attested.
+        ticket = Ticket.objects.create(state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         session.visit_phase("testing", agent_id="a")
         session.visit_phase("reviewing", agent_id="a")
@@ -1160,7 +1160,7 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_replays_testing_and_reviewing_transitions(self) -> None:
         # The testing→test and reviewing→review branches of the shared
@@ -1174,7 +1174,7 @@ class TestReplayOrphanedTransitions(TestCase):
         s2 = Session.objects.create(ticket=tested, agent_id="b")
         Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
 
-        # Shippable so `tested`'s replayed review lands REVIEWED (not
+        # Shippable so `tested`'s replayed review lands SELF_REVIEWED (not
         # auto-ignored) — this test pins the replay branch, not the #3313
         # unshippable-review disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
@@ -1184,13 +1184,13 @@ class TestReplayOrphanedTransitions(TestCase):
         tested.refresh_from_db()
         assert replayed == 2
         assert coded.state == Ticket.State.TESTED
-        assert tested.state == Ticket.State.REVIEWED
+        assert tested.state == Ticket.State.SELF_REVIEWED
 
     def test_replays_reviewer_role_external_review(self) -> None:
         # The reviewing+REVIEWER branch (mark_reviewed_externally): a
         # reviewer-role ticket whose completed reviewing task's external
-        # review transition was lost is recovered to REVIEW_POSTED.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED, role=Ticket.Role.REVIEWER)
+        # review transition was lost is recovered to REVIEW_DELIVERED.
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED, role=Ticket.Role.REVIEWER)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -1198,7 +1198,7 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
         # A ticket accrues one COMPLETED task per phase. The sweep must
@@ -1207,10 +1207,10 @@ class TestReplayOrphanedTransitions(TestCase):
         # would all no-op on the guards anyway, but the dedup keeps the
         # sweep O(tickets) not O(all completed tasks) and proves the
         # latest-per-ticket selection is exercised.
-        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         # Older completed coding task, then the latest is also coding
-        # (e.g. a re-run). Both COMPLETED on the same PLANNED ticket.
+        # (e.g. a re-run). Both COMPLETED on the same PLAN_RECORDED ticket.
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
 
@@ -1225,7 +1225,7 @@ class TestReplayOrphanedTransitions(TestCase):
         # Only COMPLETED tasks represent finished work whose transition
         # may have been lost; PENDING/FAILED tasks are handled by the
         # claim/reap sweeps and must not be force-advanced here.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
@@ -1234,19 +1234,19 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 0
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_needs_user_input_held_task_is_not_force_advanced(self) -> None:
         # #927 BLOCKER — a coding task that returned
         # ``{"needs_user_input": True}`` is correctly *held* by
-        # ``_advance_ticket`` (ticket stays STARTED, a durable question is
+        # ``_advance_ticket`` (ticket stays WORK_STARTED, a durable question is
         # recorded, the task ends COMPLETED). The replay
         # sweep then finds that COMPLETED task as latest-per-ticket and
         # must NOT force-advance the ticket past the phase the agent
         # said it could not finish. The needs-user-input suppression
         # is part of the shared transition path, not only the live
         # ``complete()`` chain.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.complete_with_attempt(
@@ -1256,14 +1256,14 @@ class TestReplayOrphanedTransitions(TestCase):
         # Precondition: the live path held the ticket and recorded the
         # question — this is the state the sweep then sees.
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert DeferredQuestion.objects.filter(parked_task=task).exists()
 
         replayed = Task.objects.replay_orphaned_transitions()
 
         ticket.refresh_from_db()
         assert replayed == 0
-        assert ticket.state == Ticket.State.STARTED, (
+        assert ticket.state == Ticket.State.WORK_STARTED, (
             f"replay force-advanced a needs-user-input-held ticket to {ticket.state!r} — "
             "the agent said it could not finish coding; the recorded question is orphaned"
         )
@@ -1276,13 +1276,13 @@ class TestReplayOrphanedTransitions(TestCase):
         # task (last attempt did NOT request user input) must still be
         # replay-advanced, exactly as before — the recovery sweep is
         # not over-blocked into uselessness.
-        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.complete_with_attempt(exit_code=0, result={"summary": "done"})
         # Simulate the half-advanced orphan: complete() advanced the
-        # ticket; reset it to PLANNED so the sweep has work to replay.
-        ticket.state = Ticket.State.PLANNED
+        # ticket; reset it to PLAN_RECORDED so the sweep has work to replay.
+        ticket.state = Ticket.State.PLAN_RECORDED
         ticket.save(update_fields=["state"])
 
         replayed = Task.objects.replay_orphaned_transitions()
@@ -1297,7 +1297,7 @@ class TestReplayLeavesTerminalTicketsAlone(TestCase):
 
     ``_apply_phase_transition``'s branches each require a source state that is not
     the transition's own target, so an applied transition no-ops on replay — except
-    ``mark_reviewed_externally``, which lists ``REVIEW_POSTED`` (its own target) as
+    ``mark_reviewed_externally``, which lists ``REVIEW_DELIVERED`` (its own target) as
     a source so a re-review at a moved head SHA can re-stamp. The sweep takes each
     ticket's newest COMPLETED task every tick, so every reviewer ticket ever closed
     re-fired that self-loop forever: a locked read-modify-write plus a ``save`` plus
@@ -1314,7 +1314,7 @@ class TestReplayLeavesTerminalTicketsAlone(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
@@ -1336,7 +1336,7 @@ class TestReplayLeavesTerminalTicketsAlone(TestCase):
         replayed, enqueued = self._sweep(times=5)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert enqueued == 0, (
             f"{enqueued} teardown job(s) minted for a ticket that reached its terminal state long ago — "
             "the enqueue rate must be bounded by real work, not by tick cadence"
@@ -1355,7 +1355,7 @@ class TestReplayLeavesTerminalTicketsAlone(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
 
 class TestCompleteIsAtomic(TestCase):
@@ -1380,7 +1380,7 @@ class TestCompleteIsAtomic(TestCase):
 
         import pytest  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(
             ticket=ticket,
@@ -1401,8 +1401,8 @@ class TestCompleteIsAtomic(TestCase):
         # Atomic: the task save is rolled back together with the failed
         # FSM transition. Pre-fix the task was COMPLETED here (its save
         # had committed on a separate boundary) while the ticket stayed
-        # PLANNED — the unrecoverable half-advance #883 is about.
+        # PLAN_RECORDED — the unrecoverable half-advance #883 is about.
         assert task.status == Task.Status.CLAIMED, (
             f"task.complete() was not atomic — task is {task.status!r} but the FSM transition failed"
         )
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED

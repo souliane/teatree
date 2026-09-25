@@ -150,7 +150,7 @@ class TestLandedMergeIsReconciledNotEscalated(TestCase):
             assert _reconcile_slug() == _SLUG
 
     def test_step_two_returns_a_reconcile_instead_of_refusing(self) -> None:
-        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW))
+        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED))
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_Gh()):
             precheck = assert_merge_preconditions(
@@ -163,7 +163,7 @@ class TestLandedMergeIsReconciledNotEscalated(TestCase):
         assert precheck.already_merged_sha == _MERGE_COMMIT
 
     def test_keystone_reports_merged_and_advances_the_fsm(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         with (
@@ -184,7 +184,7 @@ class TestLandedMergeIsReconciledNotEscalated(TestCase):
 
     def test_keystone_issues_no_second_merge_rpc(self) -> None:
         """The forge would 405 a second merge — the reconcile records, never re-merges."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         gh = _Gh()
 
         with (
@@ -224,7 +224,7 @@ class TestOnlyALandedMergeTakesTheReconcilePath(TestCase):
         assert "PR head moved" in str(exc.value)
 
     def test_step_two_still_refuses_an_unreadable_head_on_an_open_pr(self) -> None:
-        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW))
+        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED))
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_Gh(state="OPEN", merge_commit="")),

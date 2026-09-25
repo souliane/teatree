@@ -3,7 +3,7 @@
 The heavyweight ``plan-bypass`` (``--human-authorize``) records a fabricated
 ``PlanArtifact``; ``skip-planning`` is its lightweight sibling for a trivial
 mechanical edit — it records a durable, audited ``trivial_plan_skip`` marker
-(MANDATORY ``--reason``) and advances STARTED → PLANNED with no PlanArtifact and
+(MANDATORY ``--reason``) and advances WORK_STARTED → PLAN_RECORDED with no PlanArtifact and
 no human-authorize. A blank reason is refused.
 """
 
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def _started_ticket() -> Ticket:
-    return Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+    return Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
 
 
 class TicketSkipPlanningCommandTest(TestCase):
@@ -34,18 +34,18 @@ class TicketSkipPlanningCommandTest(TestCase):
             call_command("ticket", "skip-planning", str(ticket.pk), "--reason", "one-line typo fix"),
         )
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert not PlanArtifact.objects.filter(ticket=ticket).exists()
         assert is_trivial_plan_skip(ticket) is True
         assert trivial_plan_skip_reason(ticket) == "one-line typo fix"
-        assert result["state"] == Ticket.State.PLANNED
+        assert result["state"] == Ticket.State.PLAN_RECORDED
 
     def test_skip_planning_with_blank_reason_is_refused_and_records_nothing(self) -> None:
         ticket = _started_ticket()
         with pytest.raises(SystemExit):
             call_command("ticket", "skip-planning", str(ticket.pk), "--reason", "   ")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert is_trivial_plan_skip(ticket) is False
 
     def test_skip_planning_records_who_decided(self) -> None:
@@ -59,7 +59,7 @@ class TicketSkipPlanningCommandTest(TestCase):
             call_command("ticket", "skip-planning", "999999", "--reason", "trivial")
 
     def test_skip_planning_on_non_started_ticket_still_records_the_signal(self) -> None:
-        # plan() (STARTED -> PLANNED) is sourced only from STARTED; for an
+        # plan() (WORK_STARTED -> PLAN_RECORDED) is sourced only from WORK_STARTED; for an
         # already-in-flight ticket (#4449 class), the gate's satisfying signal
         # is the trivial-skip marker's EXISTENCE, not the transition -- so the
         # marker is still recorded, with no transition attempted and no error

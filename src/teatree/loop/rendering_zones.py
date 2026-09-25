@@ -30,7 +30,7 @@ _DISPOSITION_LABELS: dict[str, str] = {
 }
 
 # States that should not surface as anchors. Terminal post-PR states never
-# surface; ``not_started`` and ``in_review`` are also filtered (#1377) — the
+# surface; ``not_started`` and ``review_requested`` are also filtered (#1377) — the
 # anchor row is for "what am I working on right now". In-review work
 # already surfaces via PR/MR chips in the in-flight zone, and the
 # ``not_started`` backlog is not user-actionable from the statusline.
@@ -39,11 +39,11 @@ _NOISE_STATES = frozenset(
     {
         "merged",
         "delivered",
-        "shipped",
-        "retrospected",
+        "pr_opened",
+        "retro_recorded",
         "closed",
         "not_started",
-        "in_review",
+        "review_requested",
     },
 )
 _MAX_PER_STATE = 5
@@ -55,14 +55,14 @@ _MAX_PER_STATE = 5
 
 # Anchor-line state-group rendering order. Actively-shipping work comes
 # first; states not listed here render in their original insertion order
-# after the listed ones. With ``not_started`` and ``in_review`` filtered
+# after the listed ones. With ``not_started`` and ``review_requested`` filtered
 # (#1377) the surviving anchor states are the actively-shipping ones.
 _STATE_PRIORITY: tuple[str, ...] = (
-    "started",
+    "work_started",
     "coded",
     "tested",
     "ready",
-    "reviewed",
+    "self_reviewed",
     "scoped",
 )
 

@@ -125,7 +125,7 @@ class TicketFixRecordOverrideTest(TestCase):
 
     def test_the_override_unblocks_delivery(self) -> None:
         """The whole point: the gate passes on a fix-ticket carrying no FixRecord."""
-        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX, state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX, state=Ticket.State.RETRO_RECORDED)
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()
         call_command("ticket", "fix-record-override", str(ticket.pk), "--reason", "mis-classified: pure docs change")

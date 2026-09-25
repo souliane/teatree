@@ -1,4 +1,4 @@
-"""Review-request REVIEWED-state + evidence gate (PR-08, item 1).
+"""Review-request SELF_REVIEWED-state + evidence gate (PR-08, item 1).
 
 ``require_reviewed_state_for_review_request`` is pinned per test by patching the
 gate's ``get_effective_settings`` (the spec-coverage gate pattern) so the suite
@@ -32,7 +32,7 @@ def _ticket(state: str) -> Ticket:
 
 
 def _reviewed(db) -> Ticket:
-    return _ticket(Ticket.State.REVIEWED)
+    return _ticket(Ticket.State.SELF_REVIEWED)
 
 
 def _cold_evidence(ticket: Ticket) -> ReviewEvidence:
@@ -57,7 +57,7 @@ class TestGateOn:
         t = _ticket(Ticket.State.CODED)
         with _gate(required=True):
             refusal = check_reviewed_state(t)
-        assert "before the REVIEWED milestone" in refusal
+        assert "before the SELF_REVIEWED milestone" in refusal
 
     def test_refuses_reviewed_ticket_without_evidence(self, db) -> None:
         t = _reviewed(db)
@@ -92,21 +92,21 @@ class TestGateOnPostReviewProgression:
     """PR-08b wave-2 audit: exercise the ENABLED gate with the realistic broadcast state.
 
     The FSM advances review → ship → request_review BEFORE the review-request
-    broadcast fires, so a canonically-progressed ticket sits in SHIPPED/IN_REVIEW
+    broadcast fires, so a canonically-progressed ticket sits in PR_OPENED/REVIEW_REQUESTED
     (the sibling ``TestReviewRequestPostAntiVacuityGate`` already models the
-    broadcast-time state as IN_REVIEW). The old strict ``state == REVIEWED``
+    broadcast-time state as REVIEW_REQUESTED). The old strict ``state == SELF_REVIEWED``
     check refused every such ticket when the gate was ENABLED — the gate was
     unusable-when-enabled, and the prior tests never caught it because they
-    froze the ticket at the momentary REVIEWED. These tests turn the gate ON and
+    froze the ticket at the momentary SELF_REVIEWED. These tests turn the gate ON and
     exercise the live progressed states.
     """
 
     def test_allows_in_review_ticket_with_evidence(self, db) -> None:
-        # RED against the pre-PR-08b strict ``state == REVIEWED`` gate: a ticket
-        # whose FSM already reached IN_REVIEW (the real broadcast-time state)
-        # WITH a recorded review-evidence artifact was refused ("not REVIEWED"),
+        # RED against the pre-PR-08b strict ``state == SELF_REVIEWED`` gate: a ticket
+        # whose FSM already reached REVIEW_REQUESTED (the real broadcast-time state)
+        # WITH a recorded review-evidence artifact was refused ("not SELF_REVIEWED"),
         # so the enabled gate blocked every progressed ticket. It must ALLOW.
-        t = _ticket(Ticket.State.IN_REVIEW)
+        t = _ticket(Ticket.State.REVIEW_REQUESTED)
         _cold_evidence(t)
         with _gate(required=True):
             assert check_reviewed_state(t) == ""
@@ -119,16 +119,16 @@ class TestGateOnPostReviewProgression:
         _cold_evidence(t)
         with _gate(required=True):
             refusal = check_reviewed_state(t)
-        assert "before the REVIEWED milestone" in refusal
+        assert "before the SELF_REVIEWED milestone" in refusal
 
     @pytest.mark.parametrize(
         "state",
         [
-            Ticket.State.REVIEWED,
-            Ticket.State.SHIPPED,
-            Ticket.State.IN_REVIEW,
+            Ticket.State.SELF_REVIEWED,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
             Ticket.State.MERGED,
-            Ticket.State.RETROSPECTED,
+            Ticket.State.RETRO_RECORDED,
             Ticket.State.DELIVERED,
         ],
     )
@@ -143,8 +143,8 @@ class TestGateOnPostReviewProgression:
         [
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
-            Ticket.State.STARTED,
-            Ticket.State.PLANNED,
+            Ticket.State.WORK_STARTED,
+            Ticket.State.PLAN_RECORDED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
             # IGNORED is reachable from any state (incl. pre-review), so it is
@@ -157,4 +157,4 @@ class TestGateOnPostReviewProgression:
         _cold_evidence(t)
         with _gate(required=True):
             refusal = check_reviewed_state(t)
-        assert "before the REVIEWED milestone" in refusal, f"{state} was allowed but is not post-review"
+        assert "before the SELF_REVIEWED milestone" in refusal, f"{state} was allowed but is not post-review"

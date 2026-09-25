@@ -1,7 +1,7 @@
 """How much admitted work has been left with no execution path (souliane/teatree#4704).
 
 A dispatch that dies BEFORE the claim leaves no trace on any surface an operator reads:
-the ticket sits in STARTED looking freshly admitted, intake reports the issue as already
+the ticket sits in WORK_STARTED looking freshly admitted, intake reports the issue as already
 picked up, and the loop keeps ticking and stamping its last run. Fifteen tickets stalled
 that way for a day behind a Claude CLI pin the API had stopped accepting, and the only
 signal anywhere was a line in the worker log.
@@ -38,7 +38,7 @@ STALLED_BACKLOG_THRESHOLD = 3
 
 
 def stranded_ticket_count() -> int:
-    """Tickets in STARTED whose newest task FAILED outside the window, with none in flight."""
+    """Tickets in WORK_STARTED whose newest task FAILED outside the window, with none in flight."""
     from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
     from django.db.models import Exists, Max, OuterRef, Subquery  # noqa: PLC0415 — deferred with the app registry above
 
@@ -46,7 +46,7 @@ def stranded_ticket_count() -> int:
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
     own_tasks = task_model.objects.filter(ticket=OuterRef("pk"))
     return (
-        ticket_model.objects.filter(state=ticket_model.State.STARTED)
+        ticket_model.objects.filter(state=ticket_model.State.WORK_STARTED)
         .annotate(
             newest_task_at=Max("tasks__created_at"),
             # The NEWEST status, not "has a failed task": a later completion retires the failure.

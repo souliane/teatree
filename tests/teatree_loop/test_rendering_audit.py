@@ -93,7 +93,7 @@ class TestActiveTicketAnchors:
 
     def test_renders_active_tickets_in_terse_format(self) -> None:
         zones = zones_for(
-            [_active("10", "coded"), _active("11", "coded"), _active("12", "started")],
+            [_active("10", "coded"), _active("11", "coded"), _active("12", "work_started")],
             colorize=False,
         )
         text = _blob(zones.anchors)
@@ -106,13 +106,13 @@ class TestActiveTicketAnchors:
         # #130 restores the FSM ``state:`` group label (#1377 had dropped
         # it); tickets group by status, ordered by state priority.
         assert "coded:" in text
-        assert "started:" in text
-        assert text.index("started:") < text.index("coded:"), text
+        assert "work_started:" in text
+        assert text.index("work_started:") < text.index("coded:"), text
         # One line per overlay.
         assert text.count("[teatree]") == 1
 
     def test_anchor_skips_noise_states(self) -> None:
-        """``merged``/``shipped``/``retrospected`` are post-PR; never anchor.
+        """``merged``/``pr_opened``/``retro_recorded`` are post-PR; never anchor.
 
         The active scanner doesn't filter them — the renderer does. If a
         future refactor moves ``_NOISE_STATES`` filtering somewhere these
@@ -120,15 +120,15 @@ class TestActiveTicketAnchors:
         forever.
 
         #1163 refinement 2 narrowed the noise set to TRULY-terminal states
-        only — ``in_review`` and ``not_started`` are rich work states that
+        only — ``review_requested`` and ``not_started`` are rich work states that
         the statusline now surfaces, so they are covered by the sibling
         ``test_statusline_refinements_1163`` cases instead.
         """
         zones = zones_for(
             [
                 _active("1", "merged"),
-                _active("2", "shipped"),
-                _active("3", "retrospected"),
+                _active("2", "pr_opened"),
+                _active("3", "retro_recorded"),
             ],
             colorize=False,
         )
@@ -401,7 +401,7 @@ class TestNoRunningTasksLine(django.test.TestCase):
     def test_claimed_task_renders_no_agents_row(self) -> None:
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/2", state="started")
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/2", state="work_started")
         session = Session.objects.create(ticket=ticket, agent_id="a", overlay="acme")
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
 

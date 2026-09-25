@@ -73,7 +73,7 @@ def _sketch() -> MechanismSketch:
 
 def _directive_ticket(*, with_sketch: bool = True, link: str = "fk") -> Ticket:
     """A ticket implementing a directive — linked by the reverse FK or ``extra['directive_id']``."""
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     directive = Directive.objects.capture("max 1 open PR per repo per ticket", source=Directive.Source.CLI)
     if with_sketch:
         directive.mechanism_sketch = _sketch().to_dict()
@@ -88,7 +88,7 @@ def _directive_ticket(*, with_sketch: bool = True, link: str = "fk") -> Ticket:
 
 
 def _ordinary_ticket() -> Ticket:
-    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
 
 def _record_merge_verdict(ticket: Ticket, *, items: list[dict], head_sha: str = _FORTY_HEX) -> CriticVerdict:
@@ -373,7 +373,7 @@ class TestKeystoneWiring(TestCase):
             self._merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
         # satisfiable, not suppression: the async merge critic was armed at the head.

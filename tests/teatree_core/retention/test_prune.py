@@ -50,7 +50,7 @@ def _park(
     started_at: dt.datetime | None = None,
     reason: str = "admission: all_accounts_exhausted window on lane 'subscription' active",
     task_status: str = Task.Status.PENDING,
-    ticket_state: str = Ticket.State.STARTED,
+    ticket_state: str = Ticket.State.WORK_STARTED,
     **telemetry: object,
 ) -> TaskAttempt:
     """A park-audit row in the shape ``usage_window._record_park`` writes.
@@ -98,7 +98,7 @@ class TaskAttemptPrunableGuardTestCase(TestCase):
     def test_never_prunes_attempt_of_non_terminal_ticket(self) -> None:
         # The critical guard: a live ticket's attempt must survive even when old
         # and its task is terminal — deleting it drops history a live ticket needs.
-        _attempt(ticket_state=Ticket.State.STARTED, task_status=Task.Status.COMPLETED)
+        _attempt(ticket_state=Ticket.State.WORK_STARTED, task_status=Task.Status.COMPLETED)
         prunable = TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert prunable.count() == 0
 
@@ -113,8 +113,8 @@ class TaskAttemptPrunableGuardTestCase(TestCase):
         assert prunable.count() == 0
 
     def test_shipped_ticket_is_not_prunable(self) -> None:
-        # SHIPPED is excluded on purpose — its PR is still open and may re-work.
-        _attempt(ticket_state=Ticket.State.SHIPPED)
+        # PR_OPENED is excluded on purpose — its PR is still open and may re-work.
+        _attempt(ticket_state=Ticket.State.PR_OPENED)
         assert TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 
 
@@ -169,7 +169,7 @@ class PlanRetentionTestCase(TestCase):
 class ApplyRetentionTestCase(TestCase):
     def test_apply_deletes_only_prunable_rows(self) -> None:
         old = _attempt()
-        live = _attempt(ticket_state=Ticket.State.STARTED)
+        live = _attempt(ticket_state=Ticket.State.WORK_STARTED)
         recent = _attempt(started_at=_RECENT)
         old_event = _event(idempotency_key="k-old")
         inflight = _event(idempotency_key="k-inflight", processed=False)
@@ -309,7 +309,7 @@ class ParkRetentionApplyTestCase(TestCase):
         assert TaskAttempt.objects.count() == 0
 
 
-_NOOP = (Ticket.State.REVIEW_POSTED, Ticket.State.REVIEW_POSTED, "mark_reviewed_externally")
+_NOOP = (Ticket.State.REVIEW_DELIVERED, Ticket.State.REVIEW_DELIVERED, "mark_reviewed_externally")
 
 
 def _ticket_with_transitions(*, state: str, count: int, move: tuple[str, str, str] = _NOOP) -> Ticket:
@@ -330,7 +330,7 @@ class TicketTransitionLaneTestCase(TestCase):
     """The transition lane, as ``plan_retention`` / ``apply_retention`` wire it."""
 
     def test_plan_reports_the_lane_without_a_window(self) -> None:
-        _ticket_with_transitions(state=Ticket.State.REVIEW_POSTED, count=4)
+        _ticket_with_transitions(state=Ticket.State.REVIEW_DELIVERED, count=4)
         (lane,) = (t for t in plan_retention().tables if t.table == "TicketTransition")
         assert lane.rows == 2
         assert lane.aged is False
@@ -380,16 +380,16 @@ class ReopenAfterPruneTestCase(TestCase):
         edges = [
             TicketTransition.objects.create(ticket=ticket, from_state=src, to_state=dst, triggered_by=name)
             for src, dst, name in (
-                (Ticket.State.NOT_STARTED, Ticket.State.STARTED, "start"),
-                (Ticket.State.STARTED, Ticket.State.CODED, "code"),
+                (Ticket.State.NOT_STARTED, Ticket.State.WORK_STARTED, "start"),
+                (Ticket.State.WORK_STARTED, Ticket.State.CODED, "code"),
                 (Ticket.State.CODED, Ticket.State.MERGED, "reconcile_merged"),
             )
         ]
         for n in range(6):
             row = TicketTransition.objects.create(
                 ticket=ticket,
-                from_state=Ticket.State.REVIEW_POSTED,
-                to_state=Ticket.State.REVIEW_POSTED,
+                from_state=Ticket.State.REVIEW_DELIVERED,
+                to_state=Ticket.State.REVIEW_DELIVERED,
                 triggered_by="mark_reviewed_externally",
             )
             TicketTransition.objects.filter(pk=row.pk).update(created_at=_ANCIENT + dt.timedelta(minutes=n))
@@ -400,7 +400,7 @@ class ReopenAfterPruneTestCase(TestCase):
         ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         surviving_edges = set(ticket.transitions.state_edges().values_list("pk", flat=True))
         assert {edge.pk for edge in edges} <= surviving_edges
 

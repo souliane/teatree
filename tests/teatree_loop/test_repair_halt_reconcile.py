@@ -27,7 +27,7 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker, requeue_transient_failed
 
 
-def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) -> Task:
+def _failed_task(*, phase: str = "coding", state: str = Ticket.State.WORK_STARTED) -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
@@ -69,7 +69,7 @@ class TestRepairHaltReconcile(TestCase):
         assert question.dismissed_reason
 
     def test_live_subject_question_is_never_touched(self) -> None:
-        # The over-resolve guard: the subject ticket is still STARTED — the halt is a
+        # The over-resolve guard: the subject ticket is still WORK_STARTED — the halt is a
         # genuine live question, so the reconcile must leave it pending untouched.
         _escalated_halt_task()
 
@@ -93,10 +93,10 @@ class TestRepairHaltReconcile(TestCase):
 
         resolved = drain_pending_questions().drained
 
-        assert resolved == 0  # `live`'s ticket is still STARTED
+        assert resolved == 0  # `live`'s ticket is still WORK_STARTED
         question = DeferredQuestion.objects.get(dedupe_marker__startswith="repair-halt:")
         assert question.status == DeferredQuestion.STATUS_PENDING
-        assert live.ticket.state == Ticket.State.STARTED
+        assert live.ticket.state == Ticket.State.WORK_STARTED
 
     def test_all_subjects_merged_drains_the_shared_question(self) -> None:
         first = _escalated_halt_task()
@@ -128,7 +128,7 @@ class TestRepairHaltReconcile(TestCase):
         )
 
     def test_ticket_keyed_cap_marker_kept_on_live_subject(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         DeferredQuestion.record(
             "Repair-loop cap on ticket (phase 'coding'): iteration cap hit.",
             dedupe_marker=f"repair-cap:{ticket.pk}:coding",

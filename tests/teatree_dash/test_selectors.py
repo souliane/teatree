@@ -34,14 +34,14 @@ def _find_card(board: KanbanBoard, ticket_id: int) -> KanbanCard | None:
 
 class BuildKanbanColumnsTestCase(TestCase):
     def test_tickets_land_in_their_state_column(self) -> None:
-        started = TicketFactory(state=State.STARTED)
+        started = TicketFactory(state=State.WORK_STARTED)
         merged = TicketFactory(state=State.MERGED)
         by_state = _cards_by_state(build_kanban_columns())
-        assert [c.ticket_id for c in by_state[State.STARTED]] == [started.pk]
+        assert [c.ticket_id for c in by_state[State.WORK_STARTED]] == [started.pk]
         assert [c.ticket_id for c in by_state[State.MERGED]] == [merged.pk]
 
     def test_card_carries_clickable_issue_link_for_forge_url(self) -> None:
-        ticket = TicketFactory(state=State.STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
+        ticket = TicketFactory(state=State.WORK_STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
         card = _find_card(build_kanban_columns(), ticket.pk)
         assert card is not None
         assert card.issue_href == "https://github.com/souliane/teatree/issues/3205"
@@ -61,7 +61,7 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert _find_card(shown, ignored.pk) is not None
 
     def test_review_posted_hidden_by_default_and_shown_on_toggle(self) -> None:
-        posted = TicketFactory(state=State.REVIEW_POSTED)
+        posted = TicketFactory(state=State.REVIEW_DELIVERED)
         assert _find_card(build_kanban_columns(), posted.pk) is None
         shown = build_kanban_columns(BoardFilters(include_ignored=True))
         assert _find_card(shown, posted.pk) is not None
@@ -126,16 +126,16 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert card.last_error == "boom: it failed"
 
     def test_dwell_from_latest_transition(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         TicketTransition.objects.create(
-            ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start"
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
         )
         card = _find_card(build_kanban_columns(), ticket.pk)
         assert card is not None
         assert card.dwell != ""
 
     def test_pr_chips(self) -> None:
-        ticket = TicketFactory(state=State.SHIPPED)
+        ticket = TicketFactory(state=State.PR_OPENED)
         PullRequestFactory(ticket=ticket, repo="souliane/teatree", iid="42")
         card = _find_card(build_kanban_columns(), ticket.pk)
         assert card is not None
@@ -143,15 +143,15 @@ class BuildKanbanColumnsTestCase(TestCase):
         assert card.pr_chips[0].iid == "42"
 
     def test_overlay_and_kind_filters(self) -> None:
-        keep = TicketFactory(state=State.STARTED, overlay="ovX", kind="fix")
-        TicketFactory(state=State.STARTED, overlay="ovY", kind="feature")
+        keep = TicketFactory(state=State.WORK_STARTED, overlay="ovX", kind="fix")
+        TicketFactory(state=State.WORK_STARTED, overlay="ovY", kind="feature")
         board = build_kanban_columns(BoardFilters(overlay="ovX", kind="fix"))
         ids = [c.ticket_id for cards in _cards_by_state(board).values() for c in cards]
         assert ids == [keep.pk]
 
     def test_text_filter_matches_description(self) -> None:
-        keep = TicketFactory(state=State.STARTED, short_description="fix the widget resizer")
-        TicketFactory(state=State.STARTED, short_description="unrelated")
+        keep = TicketFactory(state=State.WORK_STARTED, short_description="fix the widget resizer")
+        TicketFactory(state=State.WORK_STARTED, short_description="unrelated")
         board = build_kanban_columns(BoardFilters(text="widget"))
         ids = [c.ticket_id for cards in _cards_by_state(board).values() for c in cards]
         assert ids == [keep.pk]

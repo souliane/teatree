@@ -134,7 +134,7 @@ class TestMergeUnknownRepoScope(TestCase):
         assert result["escalated"] is True
 
     def test_unresolvable_host_fails_open(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, "souliane/teatree")
         with patch(_GET_ALL_OVERLAYS, _opted_in), patch(_MERGE_TICKET_PR) as merge_pr:
             _merge(clear.pk)

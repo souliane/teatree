@@ -278,7 +278,7 @@ class TestPersistOrchestrator(TestCase):
         ticket = task.ticket
         assert ticket.role == Ticket.Role.AUTHOR
         assert ticket.issue_url == "https://example.com/owner/repo/issues/99"
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_the_scheduled_task_is_not_refused_by_the_plan_gate(self) -> None:
         """The acceptance criterion, stated as the gate itself rather than as the phase name."""

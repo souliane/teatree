@@ -131,7 +131,7 @@ class TestAgentCommand:
             patch.object(overlay_loader_mod, "get_overlay", return_value=overlay_obj),
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
-            patch.object(cli_agent_mod, "_detect_agent_ticket_status", return_value="started"),
+            patch.object(cli_agent_mod, "_detect_agent_ticket_status", return_value="work_started"),
             patch.object(
                 SkillLoadingPolicy,
                 "select_for_agent_launch",
@@ -724,13 +724,13 @@ class TestDetectAgentTicketStatus:
     def test_returns_ticket_state(self, tmp_path):
         (tmp_path / "manage.py").write_text("# stub\n", encoding="utf-8")
         mock_wt = MagicMock()
-        mock_wt.ticket.state = "started"
+        mock_wt.ticket.state = "work_started"
 
         with (
             patch("django.setup"),
             patch.object(resolve_mod, "resolve_worktree", return_value=mock_wt),
         ):
-            assert _detect_agent_ticket_status(tmp_path) == "started"
+            assert _detect_agent_ticket_status(tmp_path) == "work_started"
 
 
 class TestCheckUpdateCommand:

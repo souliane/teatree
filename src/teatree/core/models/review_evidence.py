@@ -3,7 +3,7 @@
 Two artifact kinds share one append-only table (PR-08 / migration M3):
 
 * ``COLD_REVIEW`` — the review-evidence artifact the review-request broadcast
-    is gated on. A broadcast is refused unless the ticket is ``REVIEWED`` *and*
+    is gated on. A broadcast is refused unless the ticket is ``SELF_REVIEWED`` *and*
     a cold-review evidence row exists (reviewer identity, verdict, head SHA,
     timestamp). The gate also accepts an existing
     :class:`~teatree.core.models.review_verdict.ReviewVerdict` as equivalent

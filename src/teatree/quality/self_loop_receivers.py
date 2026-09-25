@@ -2,7 +2,7 @@
 
 Several FSM transitions list their own target among their sources so a re-run is
 safe — ``Ticket.mark_reviewed_externally`` re-stamps a moved head SHA and stays at
-``REVIEW_POSTED``. Such a transition is idempotent in STATE but not in SIDE
+``REVIEW_DELIVERED``. Such a transition is idempotent in STATE but not in SIDE
 EFFECTS: the replay still fires ``post_transition``, so a receiver that mints work
 for ENTERING a state mints it again for a state entered long ago. Every occurrence
 so far was one receiver keyed on the ``target`` alone, and each cost a row/job/post

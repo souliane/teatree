@@ -241,7 +241,7 @@ class TestShipTransitionDodGate(TestCase):
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         return wt
 
     def test_ship_refused_for_ui_visible_ticket_without_local_e2e(self) -> None:
@@ -251,7 +251,7 @@ class TestShipTransitionDodGate(TestCase):
             ticket.ship()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # ship did NOT advance
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # ship did NOT advance
         assert "local-stack E2E" in str(exc.value)
 
     def test_ship_proceeds_with_green_local_e2e(self) -> None:
@@ -263,7 +263,7 @@ class TestShipTransitionDodGate(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_ship_proceeds_for_backend_only_ticket(self) -> None:
         wt = self._reviewed_ui_ticket()
@@ -275,7 +275,7 @@ class TestShipTransitionDodGate(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_ship_proceeds_with_recorded_override(self) -> None:
         wt = self._reviewed_ui_ticket()
@@ -286,7 +286,7 @@ class TestShipTransitionDodGate(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_gate_is_load_bearing_for_ship(self) -> None:
         """Anti-vacuity: with the gate neutralised, the blocked ship advances.
@@ -311,4 +311,4 @@ class TestShipTransitionDodGate(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED

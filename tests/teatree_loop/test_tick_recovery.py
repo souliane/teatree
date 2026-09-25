@@ -73,7 +73,7 @@ class TestReapStaleTaskClaims(TestCase):
         assert stuck.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
 
     def _transient_failed_task(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
         TaskAttempt.objects.create(
@@ -85,7 +85,7 @@ class TestReapStaleTaskClaims(TestCase):
         return task
 
     def _stuck_started_ticket(self) -> Ticket:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
-        transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="work_started")
         TicketTransition.objects.filter(pk=transition.pk).update(created_at=timezone.now() - timedelta(hours=48))
         return ticket

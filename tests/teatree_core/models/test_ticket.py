@@ -18,6 +18,7 @@ from teatree.core.models import (
     DeferredQuestion,
     E2eMandatoryRun,
     PlanArtifact,
+    PullRequest,
     Session,
     Task,
     TaskAttempt,
@@ -27,8 +28,8 @@ from teatree.core.models import (
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from tests.teatree_core.models._shared import (
-    _advance_started_to_planned,
     _advance_ticket_to_tested,
+    _advance_work_started_to_plan_recorded,
     _attach_shippable_worktree,
     _complete_phase_task,
     _init_repo_with_branch,
@@ -246,12 +247,12 @@ class TestTicketTransitions(TestCase):
         # test() auto-scheduled a reviewing task — complete it to unlock review()
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
         # review() auto-scheduled a shipping task — complete it to unlock ship()
         _complete_phase_task(ticket, "shipping")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
         ticket.request_review()
         ticket.save()
@@ -277,7 +278,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         ticket.code()
         ticket.save()
         ticket.test()
@@ -306,7 +307,7 @@ class TestTicketTransitions(TestCase):
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         # review() also auto-scheduled a shipping task
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).exists()
 
@@ -353,7 +354,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         ticket.code()
         ticket.save()
         ticket.test(passed=True)
@@ -363,7 +364,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert "tests_passed" not in ticket.extra
 
     def test_ignore_hides_ticket_from_in_flight(self) -> None:
@@ -380,7 +381,7 @@ class TestTicketTransitions(TestCase):
         ticket.refresh_from_db()
 
         assert ticket.state == Ticket.State.IGNORED
-        assert ticket.extra["ignored_from"] == "started"
+        assert ticket.extra["ignored_from"] == "work_started"
         assert ticket not in Ticket.objects.in_flight()
 
     def test_unignore_restores_previous_state(self) -> None:
@@ -389,7 +390,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         ticket.code()
         ticket.save()
 
@@ -451,7 +452,7 @@ class TestHasShippableDiff(TestCase):
         ticket.refresh_from_db()
 
         assert ticket.state == Ticket.State.IGNORED
-        assert ticket.extra.get("ignored_from") == Ticket.State.REVIEWED
+        assert ticket.extra.get("ignored_from") == Ticket.State.SELF_REVIEWED
         assert not ticket.tasks.filter(phase="shipping").exists()
         assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
 
@@ -462,7 +463,7 @@ class TestHasShippableDiff(TestCase):
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).exists()
         assert "shipping_skipped" not in ticket.extra
 
@@ -664,7 +665,7 @@ class TestHasCompletedPhase(TestCase):
     def test_phase_beyond_state_is_not_completed(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.TESTED)
 
-        # reviewing produces REVIEWED (> state): the ticket has NOT reached it.
+        # reviewing produces SELF_REVIEWED (> state): the ticket has NOT reached it.
         assert ticket.has_completed_phase("reviewing") is False
         assert ticket.has_completed_phase("shipping") is False
 
@@ -672,7 +673,7 @@ class TestHasCompletedPhase(TestCase):
         # An unknown phase and an off-ladder state both default to NOT completed —
         # the safe answer that escalates rather than silently retiring a live task.
         assert Ticket.objects.create(state=Ticket.State.TESTED).has_completed_phase("bughunt") is False
-        assert Ticket.objects.create(state=Ticket.State.IN_REVIEW).has_completed_phase("coding") is False
+        assert Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED).has_completed_phase("coding") is False
 
 
 class TestTicketStateSets(TestCase):
@@ -692,12 +693,12 @@ class TestTicketStateSets(TestCase):
 
     def test_marker_release_states_membership(self) -> None:
         assert Ticket.marker_release_states() == frozenset(
-            {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+            {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},
         )
 
     def test_in_flight_excluded_states_membership(self) -> None:
         assert Ticket.in_flight_excluded_states() == frozenset(
-            {Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+            {Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},
         )
 
     def test_in_flight_excluded_is_marker_release_minus_merged(self) -> None:
@@ -707,12 +708,12 @@ class TestTicketStateSets(TestCase):
 
     def test_completable_states_membership(self) -> None:
         assert Ticket.completable_states() == frozenset(
-            {Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED},
+            {Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED, Ticket.State.MERGED},
         )
 
     def test_merged_states_membership(self) -> None:
         assert Ticket.merged_states() == frozenset(
-            {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED},
+            {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED},
         )
 
     def test_issue_owning_states_is_every_state_but_ignored(self) -> None:
@@ -725,11 +726,11 @@ class TestTicketStateSets(TestCase):
             {
                 Ticket.State.NOT_STARTED,
                 Ticket.State.SCOPED,
-                Ticket.State.STARTED,
-                Ticket.State.PLANNED,
+                Ticket.State.WORK_STARTED,
+                Ticket.State.PLAN_RECORDED,
                 Ticket.State.CODED,
                 Ticket.State.TESTED,
-                Ticket.State.REVIEWED,
+                Ticket.State.SELF_REVIEWED,
             },
         )
 
@@ -737,16 +738,16 @@ class TestTicketStateSets(TestCase):
         # Derived, not enumerated (#4711): a State added later must land in exactly one
         # of the two sets, so it cannot escape BOTH the completion rule and rule F.
         post_ship = Ticket.completable_states() | Ticket.merged_states()
-        terminals = {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+        terminals = {Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED}
         assert Ticket.pre_ship_states() & post_ship == frozenset()
         assert Ticket.pre_ship_states() & terminals == frozenset()
         assert Ticket.pre_ship_states() | post_ship | terminals == frozenset(Ticket.State.values)
 
     def test_pre_ship_states_includes_planned(self) -> None:
-        # The #2663 defect: the disposition scanner's hand-listed set skipped PLANNED,
+        # The #2663 defect: the disposition scanner's hand-listed set skipped PLAN_RECORDED,
         # so twelve tickets whose issue the owner closed NOT_PLANNED were never
         # auto-ignored.
-        assert Ticket.State.PLANNED in Ticket.pre_ship_states()
+        assert Ticket.State.PLAN_RECORDED in Ticket.pre_ship_states()
 
     def test_every_pre_ship_state_can_be_ignored(self) -> None:
         # The disposition scanner's auto-ignore only pays off if it is a legal FSM
@@ -769,3 +770,49 @@ class TestTicketStateSets(TestCase):
             states = getattr(Ticket, name)()
             assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"
             assert states <= valid, f"{name} has non-State members: {states - valid}"
+
+
+class TestSettledStateEnumIndependence(TestCase):
+    """``Ticket.State`` shares a member name+value with ``PullRequest.State`` twice.
+
+    ``MERGED`` always has (pre-existing); the #4779 rename's ``in_review`` ->
+    ``review_requested`` mapping newly collides with ``PullRequest.State.REVIEW_REQUESTED``.
+    Both enums must stay independent — writing one never reads back as the other.
+    """
+
+    def test_merged_is_independent_across_the_two_enums(self) -> None:
+        assert Ticket.State.MERGED == PullRequest.State.MERGED
+        assert Ticket.State.MERGED is not PullRequest.State.MERGED
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        assert ticket.state == PullRequest.State.MERGED
+        assert Ticket.objects.filter(state=PullRequest.State.CLOSED).count() == 0
+
+    def test_review_requested_is_independent_across_the_two_enums(self) -> None:
+        assert Ticket.State.REVIEW_REQUESTED == PullRequest.State.REVIEW_REQUESTED
+        assert Ticket.State.REVIEW_REQUESTED is not PullRequest.State.REVIEW_REQUESTED
+        ticket = Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED)
+        assert ticket.state == PullRequest.State.REVIEW_REQUESTED
+        assert Ticket.objects.filter(state=PullRequest.State.OPEN).count() == 0
+
+
+class TestIsSettled(TestCase):
+    """``is_terminal`` -> ``is_settled`` is a rename, not a semantic change (#4779)."""
+
+    def test_membership_matches_the_settled_states_set(self) -> None:
+        for state in Ticket.State.values:
+            ticket = Ticket.objects.create(state=state)
+            assert ticket.is_settled == (state in Ticket._SETTLED_STATES)
+
+    def test_settled_states_unchanged_by_the_rename(self) -> None:
+        assert (
+            frozenset(
+                {
+                    Ticket.State.PR_OPENED,
+                    Ticket.State.MERGED,
+                    Ticket.State.DELIVERED,
+                    Ticket.State.REVIEW_DELIVERED,
+                    Ticket.State.IGNORED,
+                },
+            )
+            == Ticket._SETTLED_STATES
+        )

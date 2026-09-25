@@ -376,7 +376,7 @@ class TestExecuteRetrospect(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_merged_ticket_to_delivered(self) -> None:
         ticket = self._ticket_in_merged()
-        ticket.state = Ticket.State.RETROSPECTED
+        ticket.state = Ticket.State.RETRO_RECORDED
         ticket.save(update_fields=["state"])
 
         result = execute_retrospect.enqueue(ticket.pk)
@@ -430,18 +430,18 @@ class TestExecuteTeardown(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_is_not_terminal(self) -> None:
-        # A non-terminal ticket (IN_REVIEW — PR still open) is never torn down:
-        # the guard is the done set (MERGED/DELIVERED/IGNORED), SHIPPED excluded.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        # A non-terminal ticket (REVIEW_REQUESTED — PR still open) is never torn down:
+        # the guard is the done set (MERGED/DELIVERED/IGNORED), PR_OPENED excluded.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
 
         result = execute_teardown.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "skipped": True,
-            "state": "in_review",
+            "state": "review_requested",
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
@@ -624,7 +624,7 @@ class TestExecuteTeardownTerminalPurge(TestCase):
 class TestExecuteProvision(TestCase):
     def _ticket_in_started(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", repos=["repo-a"], extra={"branch": "ac-repo-a-1-x"})
-        ticket.state = Ticket.State.STARTED
+        ticket.state = Ticket.State.WORK_STARTED
         ticket.save(update_fields=["state"])
         return ticket
 
@@ -639,7 +639,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.tasks.filter(phase="planning").exists()
         assert not ticket.tasks.filter(phase="coding").exists()
         assert result.return_value == {
@@ -692,7 +692,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not LandscapeArtifact.objects.filter(ticket=ticket).exists()
         assert ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {
@@ -720,7 +720,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {
             "ticket_id": ticket.pk,
@@ -745,7 +745,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {
             "ticket_id": ticket.pk,
@@ -770,7 +770,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
         assert attachment in result.return_value["detail"]
         assert "--fetch" in result.return_value["detail"]
@@ -847,7 +847,7 @@ class TestExecuteProvision(TestCase):
             result = execute_provision.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
 
@@ -855,7 +855,7 @@ class TestExecuteProvision(TestCase):
 class TestExecuteShip(TestCase):
     def _ticket_in_shipped(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test")
-        ticket.state = Ticket.State.SHIPPED
+        ticket.state = Ticket.State.PR_OPENED
         ticket.save(update_fields=["state"])
         return ticket
 
@@ -870,7 +870,7 @@ class TestExecuteShip(TestCase):
             result = execute_ship.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "ok": True,
@@ -902,7 +902,7 @@ class TestExecuteShip(TestCase):
             result = execute_ship.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
 
 
@@ -913,7 +913,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
     undo. If the PR-url marker is committed only when the FSM-advance
     transaction commits, a failure after ``create_pr`` (e.g. the
     ``request_review`` guard raising) rolls back the marker but leaves the
-    forge PR live — the ticket is stuck SHIPPED with an orphan PR, and a
+    forge PR live — the ticket is stuck PR_OPENED with an orphan PR, and a
     retry re-calls ``create_pr`` and hits a 409.
     """
 
@@ -928,7 +928,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
             branch="feat-x",
             extra={"worktree_path": "/tmp/repo"},
         )
-        ticket.state = Ticket.State.SHIPPED
+        ticket.state = Ticket.State.PR_OPENED
         ticket.save(update_fields=["state"])
         return ticket
 
@@ -985,7 +985,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
 
         ticket.refresh_from_db()
         assert host.create_pr.call_count == 1
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 class TestExecuteHeadlessTask(TestCase):
@@ -1078,14 +1078,14 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
         )
         task = Task.objects.create(ticket=ticket, session=session, phase="review")
 
-        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test isolates the #750 short-verb normalization, not the #3313
         # unshippable-review disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
             task._advance_ticket()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED, (
+        assert ticket.state == Ticket.State.SELF_REVIEWED, (
             f"short-verb 'review' task did not advance FSM (state={ticket.state}); "
             "_advance_ticket compared raw self.phase instead of normalize_phase()"
         )
@@ -1093,7 +1093,7 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
         assert "reviewing" in (session.visited_phases or [])
 
     def test_short_verb_code_advances_planned_to_coded(self) -> None:
-        ticket, session = self._ticket_with_session(Ticket.State.PLANNED)
+        ticket, session = self._ticket_with_session(Ticket.State.PLAN_RECORDED)
         task = Task.objects.create(ticket=ticket, session=session, phase="code")
 
         task._advance_ticket()
@@ -1131,14 +1131,14 @@ class TestReviewConditionNormalizesPhase(TestCase):
         # condition `tasks.filter(phase="reviewing")` misses it.
         task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
 
-        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test isolates the #757 condition-normalization scope, not the
         # #3313 unshippable-review disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
             task._advance_ticket()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED, (
+        assert ticket.state == Ticket.State.SELF_REVIEWED, (
             f"short-verb 'review' task did not satisfy review()'s condition "
             f"(state={ticket.state}); the FSM condition compared raw phase"
         )
@@ -1162,14 +1162,14 @@ class TestReviewConditionNormalizesPhase(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
-        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test pins the canonical-spelling regression guard, not the #3313
         # unshippable-review disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
             task._advance_ticket()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
 
 class TestTaskCompletedInPhase(TestCase):

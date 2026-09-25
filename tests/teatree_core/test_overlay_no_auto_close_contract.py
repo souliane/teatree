@@ -134,7 +134,7 @@ class TestShipPathSanitize:
     def _ship_spec(self, *, mr_close_ticket: bool) -> PullRequestSpec:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://example.com/test-org/test-repo/issues/777",
         )
         Worktree.objects.create(
@@ -177,7 +177,7 @@ class TestForbidCloseKeywordsGate(TestCase):
     def _worktree(self) -> tuple[Ticket, Worktree]:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://example.com/test-org/test-repo/issues/777",
         )
         session = Session.objects.create(overlay="test", ticket=ticket)

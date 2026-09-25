@@ -51,7 +51,7 @@ def _attested_ticket(
     proven_tests: list[str] | None = None,
     no_new_tests: bool = False,
 ) -> Ticket:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
     ticket.record_anti_vacuity_attestation(
         head_sha,
         ac_coverage,
@@ -79,14 +79,14 @@ class TestGateAllows(TestCase):
             check_anti_vacuity_attestation(ticket, _SHA.upper(), transition="merge")
 
     def test_noop_when_gate_off_even_without_attestation(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         with _gate(required=False):
             check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
 
 class TestGateDenies(TestCase):
     def test_no_attestation_is_blocked(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         with _gate(required=True), pytest.raises(AntiVacuityAttestationError, match="no anti-vacuity attestation"):
             check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
@@ -121,7 +121,7 @@ class TestPredicates(TestCase):
         assert not is_bound_to({"head_sha": _SHA}, "")
 
     def test_recorded_attestation_empty_without_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         assert recorded_attestation(ticket) == {}
 
     def test_anti_vacuity_required_reads_effective_settings(self) -> None:
@@ -134,7 +134,7 @@ class TestPredicates(TestCase):
 
 class TestRecordAttestation(TestCase):
     def test_stores_normalized_sha_and_fields_on_extra(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         ticket.record_anti_vacuity_attestation(_SHA.upper(), "AC mapped", ["tests/x.py::test_y"], no_new_tests=False)
         ticket.refresh_from_db()
         att = ticket.extra["anti_vacuity_attestation"]

@@ -2,7 +2,7 @@
 
 Split out of ``task.py`` (the Task-model lifecycle module): these helpers decide
 a completed phase task's FSM disposition — derive a transition's declared source
-states, auto-ignore an unshippable REVIEWED ticket, and escalate a genuine FSM
+states, auto-ignore an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
 wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 (claim / lease / complete / route), so it lives in its own concern module.
 """
@@ -23,28 +23,28 @@ logger = logging.getLogger(__name__)
 #: guard is a genuine wedge (escalate); at-or-past is an idempotent replay
 #: (no-op). A phase absent here is free-form work with no FSM transition.
 _PHASE_TARGET_STATE: dict[str, str] = {
-    "scoping": Ticket.State.STARTED,
-    "planning": Ticket.State.PLANNED,
+    "scoping": Ticket.State.WORK_STARTED,
+    "planning": Ticket.State.PLAN_RECORDED,
     "coding": Ticket.State.CODED,
     "testing": Ticket.State.TESTED,
-    "reviewing": Ticket.State.REVIEWED,
-    "shipping": Ticket.State.SHIPPED,
+    "reviewing": Ticket.State.SELF_REVIEWED,
+    "shipping": Ticket.State.PR_OPENED,
 }
 #: Lifecycle order used to compare a ticket's position to a phase's target.
-#: The off-ladder terminals IGNORED and REVIEW_POSTED are intentionally absent —
-#: a terminal ticket is never a wedge (guarded via ``is_terminal`` before the lookup).
+#: The off-ladder terminals IGNORED and REVIEW_DELIVERED are intentionally absent —
+#: a settled ticket is never a wedge (guarded via ``is_settled`` before the lookup).
 _STATE_ORDER: list[str] = [
     Ticket.State.NOT_STARTED,
     Ticket.State.SCOPED,
-    Ticket.State.STARTED,
-    Ticket.State.PLANNED,
+    Ticket.State.WORK_STARTED,
+    Ticket.State.PLAN_RECORDED,
     Ticket.State.CODED,
     Ticket.State.TESTED,
-    Ticket.State.REVIEWED,
-    Ticket.State.SHIPPED,
-    Ticket.State.IN_REVIEW,
+    Ticket.State.SELF_REVIEWED,
+    Ticket.State.PR_OPENED,
+    Ticket.State.REVIEW_REQUESTED,
     Ticket.State.MERGED,
-    Ticket.State.RETROSPECTED,
+    Ticket.State.RETRO_RECORDED,
     Ticket.State.DELIVERED,
 ]
 
@@ -63,11 +63,11 @@ def transition_source_states(name: str) -> set[str]:
 
 
 def dispose_unshippable_review(ticket: Ticket) -> None:
-    """Auto-ignore a REVIEWED ticket ``review()`` found had no shippable diff.
+    """Auto-ignore a SELF_REVIEWED ticket ``review()`` found had no shippable diff.
 
-    ``review()`` lands REVIEWED and stamps ``extra["shipping_skipped"]`` when
+    ``review()`` lands SELF_REVIEWED and stamps ``extra["shipping_skipped"]`` when
     there is no shippable diff (meta / already-shipped work). Without a
-    disposition that ticket rests at REVIEWED forever — nothing consumes the
+    disposition that ticket rests at SELF_REVIEWED forever — nothing consumes the
     marker, it never reaches a terminal state, and it holds its
     issue-implementer budget marker and its in-flight WIP slot indefinitely.
     Ignoring it is the explicit disposition: IGNORED is terminal (releasing
@@ -75,7 +75,7 @@ def dispose_unshippable_review(ticket: Ticket) -> None:
     ``shipping_skipped`` reason stays recorded in ``extra`` alongside
     ``ignored_from``.
     """
-    if ticket.state != Ticket.State.REVIEWED:
+    if ticket.state != Ticket.State.SELF_REVIEWED:
         return
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
     if not extra.get("shipping_skipped"):
@@ -88,10 +88,10 @@ def dispose_unshippable_review(ticket: Ticket) -> None:
 def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     """Whether *ticket* sits at or past the state *phase*'s completion targets.
 
-    The full author ladder, IN_REVIEW through DELIVERED included — which is what
-    ``Ticket.has_completed_phase`` deliberately does NOT answer (it stops at SHIPPED, so
+    The full author ladder, REVIEW_REQUESTED through DELIVERED included — which is what
+    ``Ticket.has_completed_phase`` deliberately does NOT answer (it stops at PR_OPENED, so
     a shipped ticket in peer review reads as though shipping never happened). An
-    off-ladder state (REVIEW_POSTED / IGNORED) and a free-form phase both hold no
+    off-ladder state (REVIEW_DELIVERED / IGNORED) and a free-form phase both hold no
     position to compare, so both answer ``False``.
     """
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
@@ -118,10 +118,10 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     target is a wedge. A free-form (non-lifecycle) phase has no target and
     is expected to no-op. A terminal/abandoned ticket is never a wedge.
     """
-    # A terminal ticket is never a wedge. REVIEW_POSTED/IGNORED are off the
+    # A terminal ticket is never a wedge. REVIEW_DELIVERED/IGNORED are off the
     # author ladder, where :func:`phase_output_reached` answers False, so the
-    # is_terminal short-circuit is what keeps them out of the escalation.
-    if _PHASE_TARGET_STATE.get(phase) is None or ticket.is_terminal:
+    # is_settled short-circuit is what keeps them out of the escalation.
+    if _PHASE_TARGET_STATE.get(phase) is None or ticket.is_settled:
         return
     if phase_output_reached(ticket, phase):
         return  # idempotent replay — the ticket already advanced past this phase's target

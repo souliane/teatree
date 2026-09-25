@@ -35,7 +35,7 @@ class TicketGroupWiringTest(SimpleTestCase):
 
 class NoPlanArtifactMessageResolvesTest(TestCase):
     def test_error_message_names_a_wired_ticket_subcommand(self) -> None:
-        ticket = Ticket.objects.create(pk=123, overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(pk=123, overlay="test", state=Ticket.State.WORK_STARTED)
         with pytest.raises(Exception) as exc:  # noqa: PT011 - assert on message
             check_plan_artifact(ticket)
         msg = str(exc.value)

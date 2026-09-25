@@ -1,7 +1,7 @@
 """critic_gate: the autonomous user-proxy critic on ``mark_delivered`` (SELFCATCH-5).
 
 The unifying runtime of the self-catching layer — the single chokepoint where, at
-the FSM's FINAL done-claim (RETROSPECTED→DELIVERED), the critic re-asks the
+the FSM's FINAL done-claim (RETRO_RECORDED→DELIVERED), the critic re-asks the
 adversarial questions the human had to ask all session. Two halves:
 
 Deterministic blocking teeth (no LLM in the blocking path)

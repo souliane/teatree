@@ -122,7 +122,7 @@ class TestRegisteredHome:
 class TestEveryGateToggleIsClassified:
     """No ``require_*`` toggle ships unclassified — the hole ``require_spec_coverage`` fell through.
 
-    Its ON state refused every RETROSPECTED→DELIVERED advance (a missing manifest
+    Its ON state refused every RETRO_RECORDED→DELIVERED advance (a missing manifest
     is itself a block) while no command could write the manifest, and nothing
     reviewed that because the flag was in no registry at all. Classification is
     now mandatory: a new gate toggle is a dying ``FEATURE_FLAGS`` entry or a

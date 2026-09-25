@@ -31,10 +31,10 @@ class TestPrCreateThinWrapper(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         # Default (async) path: queued, with an explicit no-worker warning (#708).
         assert result["ticket_id"] == ticket.pk
-        assert result["state"] == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
         assert "QUEUED, not performed" in result["warning"]
         assert "--sync" in result["warning"]
@@ -58,21 +58,21 @@ class TestPrCreateThinWrapper(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra["pr_title_override"] == "My Custom PR Title"
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_retrospected_with_satisfying_phases_reconciles_and_ships(self) -> None:
-        """#808: RETROSPECTED with a satisfying phase ledger must ship, not deny.
+        """#808: RETRO_RECORDED with a satisfying phase ledger must ship, not deny.
 
         A non-terminal state with satisfying aggregated phase records must
         NOT return {'allowed': False, 'missing': []}.
 
-        The recurring enumerated-source bug: #799 added IN_REVIEW; a ticket
+        The recurring enumerated-source bug: #799 added REVIEW_REQUESTED; a ticket
         re-provisioned for a new workstream whose FSM lingered at
-        RETROSPECTED was still denied with the contradictory empty-missing
+        RETRO_RECORDED was still denied with the contradictory empty-missing
         gate failure. Phase-driven reconcile makes any non-terminal state
         with satisfying records ship.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -95,23 +95,23 @@ class TestPrCreateThinWrapper(TestCase):
         ticket.refresh_from_db()
         # The exact recurring contradiction must NOT occur.
         assert result.get("missing") != [] or result.get("allowed") is not False, (
-            f"reconcile still enumerated — denied from RETROSPECTED with empty missing: {result}"
+            f"reconcile still enumerated — denied from RETRO_RECORDED with empty missing: {result}"
         )
-        assert ticket.state == Ticket.State.SHIPPED
-        assert result["state"] == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
 
     def test_in_review_with_phases_split_across_three_sessions_reconciles_and_ships(self) -> None:
-        """3-session-split + IN_REVIEW must ship, not deadlock (#798).
+        """3-session-split + REVIEW_REQUESTED must ship, not deadlock (#798).
 
         The required chain split across 3 sessions (the maker!=checker +
-        fresh-session norm) with the ticket stuck at IN_REVIEW (a failed /
+        fresh-session norm) with the ticket stuck at REVIEW_REQUESTED (a failed /
         incomplete prior ship) must NOT return {'allowed': False, 'missing':
         []}. The gate aggregates phases across all sessions (so missing is
-        empty); the FSM reconcile must likewise recover IN_REVIEW -> REVIEWED
+        empty); the FSM reconcile must likewise recover REVIEW_REQUESTED -> SELF_REVIEWED
         so ship() is legal and the ticket ships.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         # Three distinct sessions, one phase each, distinct agent identities —
         # exactly how maker!=checker + fresh-session scheduling scatters the
         # required chain across the ticket lifecycle.
@@ -140,12 +140,12 @@ class TestPrCreateThinWrapper(TestCase):
         # Must NOT be the {'allowed': False, 'missing': []} deadlock.
         assert result.get("missing") != [] or result.get("allowed") is not False
         assert "error" not in result, result
-        assert ticket.state == Ticket.State.SHIPPED
-        assert result["state"] == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
 
     def test_returns_error_when_no_worktree(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
         assert "error" in result
@@ -162,7 +162,7 @@ class TestPrCreateThinWrapper(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id), dry_run=True))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # unchanged
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # unchanged
         assert result["dry_run"] is True
         assert result["title"] == "feat: x"
         assert result["branch"] == "feature-branch"
@@ -186,7 +186,7 @@ class TestPrCreateThinWrapper(TestCase):
             )
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert result["ticket_id"] == ticket.pk
 
     def test_blocked_when_visual_qa_fails(self) -> None:
@@ -206,7 +206,7 @@ class TestPrCreateThinWrapper(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # not advanced
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # not advanced
         assert result["allowed"] is False
 
 
@@ -362,7 +362,7 @@ class TestPrCreateNoCommitsAheadGuard(TestCase):
 
         with tempfile.TemporaryDirectory() as root:
             branch = self._repo_at_parity_with_base(root)
-            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
             session = Session.objects.create(ticket=ticket, overlay="test")
             session.visit_phase("testing")
             session.visit_phase("reviewing")
@@ -385,8 +385,8 @@ class TestPrCreateNoCommitsAheadGuard(TestCase):
 
             ticket.refresh_from_db()
             # No hollow success, no FSM transition.
-            assert ticket.state == Ticket.State.REVIEWED, f"hollow shipped: state={ticket.state}"
-            assert result.get("state") != Ticket.State.SHIPPED
+            assert ticket.state == Ticket.State.SELF_REVIEWED, f"hollow shipped: state={ticket.state}"
+            assert result.get("state") != Ticket.State.PR_OPENED
             # Structured no-commits error naming branch + base.
             assert "error" in result
             assert branch in str(result.get("error", "")) or branch in str(result.get("branch", ""))

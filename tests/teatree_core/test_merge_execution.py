@@ -1,4 +1,4 @@
-"""The IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
+"""The REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4).
 
 These tests exercise the missing FSM transition, its §17.4.3 pre-condition
 hook, the ``expected_head_oid`` SHA-binding (TOCTOU/replay defence), and the
@@ -192,7 +192,7 @@ def _run(clear: MergeClear, stub: _GhStub, identity: str = "merge-loop") -> Merg
 
 class TestMergeKeystoneHappyPath(TestCase):
     def test_merge_advances_fsm_and_writes_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         outcome = _run(clear, _GhStub())
 
@@ -208,7 +208,7 @@ class TestMergeKeystoneHappyPath(TestCase):
         assert "merged" in session.visited_phases
 
     def test_expected_head_oid_is_bound_to_verified_sha(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         stub = _GhStub()
         _run(clear, stub)
@@ -219,15 +219,15 @@ class TestMergeKeystoneHappyPath(TestCase):
 
 class TestMergeKeystonePreconditions(TestCase):
     def test_substrate_blast_class_is_never_auto_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, blast_class=MergeClear.BlastClass.SUBSTRATE)
         with pytest.raises(MergePreconditionError, match="substrate"):
             _run(clear, _GhStub())
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_self_issued_clear_is_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, reviewer_identity="merge-loop")
         with pytest.raises(MergePreconditionError, match="independent"):
             _run(clear, _GhStub(), identity="merge-loop")
@@ -239,13 +239,13 @@ class TestMergeKeystonePreconditions(TestCase):
         # ORM bypass) skips that guard. ``_assert_clear_authorized`` must
         # therefore re-check the same role classification at merge time —
         # an equality check against the executing loop alone is not enough.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, reviewer_identity="coding-agent")
         with pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"):
             _run(clear, _GhStub(), identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_every_non_reviewer_role_prefix_is_refused_at_merge_time(self) -> None:
@@ -263,7 +263,7 @@ class TestMergeKeystonePreconditions(TestCase):
             "loop-merge",
         ]
         for identity in non_reviewer_identities:
-            ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+            ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
             clear = _clear(ticket, reviewer_identity=identity)
             with pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"):
                 _run(clear, _GhStub(), identity="merge-loop")
@@ -274,7 +274,7 @@ class TestMergeKeystonePreconditions(TestCase):
         # The recorded-human-approval path is substrate-only — presenting
         # --human-authorized against a logic/docs CLEAR is refused so it
         # can never bypass independent loop review (invariant 8).
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, blast_class=MergeClear.BlastClass.LOGIC)
         stub = _GhStub()
         with (
@@ -287,15 +287,15 @@ class TestMergeKeystonePreconditions(TestCase):
                 human_authorized="owner-123",
             )
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_stale_sha_is_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="head moved"):
             _run(clear, _GhStub(head=_MOVED))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_sha_bind_precondition_runs_the_named_registry_gate(self) -> None:
         # The named ``sha_bind`` gate (``merge.sha_bind.verify_sha_bound``) IS the
@@ -303,7 +303,7 @@ class TestMergeKeystonePreconditions(TestCase):
         # an inline ``!=`` twin. Force the gate to report "not bound" while the live
         # head equals the reviewed SHA: the merge is refused, so the gate's verdict —
         # not a parallel copy — drives the SHA-bind check.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with (
             patch("teatree.core.merge.execution.verify_sha_bound", return_value=False) as gate,
@@ -312,35 +312,35 @@ class TestMergeKeystonePreconditions(TestCase):
             _run(clear, _GhStub())  # head == reviewed_sha — the inline twin would PASS
         gate.assert_called_once_with(cleared_sha=_SHA, live_sha=_SHA)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_expedite_flag_does_not_bypass_sha_bind(self) -> None:
         # PR-07: the expedite/release-blocker flag relaxes only the pre-CI push
         # posture — it grants NO merge bypass. An expedited ticket whose head
         # moved off the reviewed SHA is refused exactly like a non-expedited one.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, expedited=True)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="head moved"):
             _run(clear, _GhStub(head=_MOVED))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_draft_pr_is_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="draft"):
             _run(clear, _GhStub(draft="true"))
 
     def test_non_green_required_check_refused(self) -> None:
         # A branch-protection-REQUIRED context that concluded FAILURE refuses the merge.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         failing = '[{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks=failing, required=["lint"]))
 
     def test_consumed_clear_not_actionable(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         clear.consumed_at = timezone.now()
         clear.save(update_fields=["consumed_at"])
@@ -348,26 +348,26 @@ class TestMergeKeystonePreconditions(TestCase):
             _run(clear, _GhStub())
 
     def test_head_moved_during_merge_is_fail_closed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergeHeadMovedError):
             _run(clear, _GhStub(merge_rc=1))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not (MergeAudit.objects.filter(clear=clear).exists())
 
 
 class TestMergeClearActionable(TestCase):
     def test_missing_field_is_treated_as_absent(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         assert not (_clear(ticket, reviewer_identity="").is_actionable())
 
     def test_fully_populated_unconsumed_is_actionable(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         assert _clear(ticket).is_actionable()
 
     def test_str_renders_slug_pr_and_sha(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         assert "souliane/teatree#859" in str(clear)
         audit = MergeAudit.objects.create(clear=clear, merged_sha="d" * 40, required_checks_status="green")
@@ -381,7 +381,7 @@ class TestMergeExecutionEdgeCases(TestCase):
 
     def test_missing_live_head_sha_is_refused(self) -> None:
         """An unreadable head is refused as unreadable, never reported as moved (#4239)."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _no_head(argv: list[str]) -> tuple[int, str, str]:
@@ -399,7 +399,7 @@ class TestMergeExecutionEdgeCases(TestCase):
         assert "PR head moved" not in str(exc.value)
 
     def test_generic_merge_failure_is_refused_not_head_moved(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _merge_500(argv: list[str]) -> tuple[int, str, str]:
@@ -417,34 +417,34 @@ class TestMergeExecutionEdgeCases(TestCase):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
     def test_malformed_rollup_json_is_failed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks="{not json"))
 
     def test_non_list_rollup_is_failed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks='{"a": 1}'))
 
     def test_pending_required_check_is_not_green(self) -> None:
         # A branch-protection-REQUIRED context still running refuses the merge.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         pending = '[{"name": "lint", "status": "IN_PROGRESS"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks=pending, required=["lint"]))
 
     def test_legacy_status_context_pending_state_is_not_green(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         legacy_pending = '[{"context": "legacy-ci", "state": "PENDING"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks=legacy_pending, required=["legacy-ci"]))
 
     def test_non_dict_rollup_entry_is_ignored(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         # A non-dict entry is skipped; the dict success entry decides green.
         mixed = '["junk", {"status": "COMPLETED", "conclusion": "SUCCESS"}]'
@@ -490,7 +490,7 @@ class TestMergeExecutionEdgeCases(TestCase):
         # build_* raise RuntimeError), never silently no-op or shell out.
         from teatree.core import backend_registry  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         real = backend_registry.get_backend_provider()
         backend_registry.register_backend_provider(backend_registry._UNCONFIGURED)
@@ -501,7 +501,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             backend_registry.register_backend_provider(real)
 
     def test_status_rollup_query_failure_is_not_green(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _rollup_rc1(argv: list[str]) -> tuple[int, str, str]:
@@ -521,27 +521,27 @@ class TestMergeExecutionEdgeCases(TestCase):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
     def test_record_advance_skips_mark_merged_when_state_not_in_review(self) -> None:
-        # A clear whose ticket is already past MERGED (e.g. RETROSPECTED):
+        # A clear whose ticket is already past MERGED (e.g. RETRO_RECORDED):
         # the post hook still consumes + audits but does not force a
         # backward FSM move.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         clear = _clear(ticket)
         outcome = _run(clear, _GhStub())
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
-        assert outcome.ticket_state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+        assert outcome.ticket_state == Ticket.State.RETRO_RECORDED
         assert MergeAudit.objects.filter(clear=clear).exists()
 
     def test_record_advance_promotes_started_ticket_to_merged(self) -> None:
-        """#1343: PR-merge keystone advances a ``STARTED`` ticket to ``MERGED``.
+        """#1343: PR-merge keystone advances a ``WORK_STARTED`` ticket to ``MERGED``.
 
         The original guard only fired ``mark_merged()`` when the ticket was
-        already at ``IN_REVIEW``/``MERGED``, so tickets whose PR landed
-        while the FSM still read ``STARTED`` stayed visibly stuck at
+        already at ``REVIEW_REQUESTED``/``MERGED``, so tickets whose PR landed
+        while the FSM still read ``WORK_STARTED`` stayed visibly stuck at
         ``started`` on the statusline. The post hook must reconcile any
         pre-MERGED non-terminal state to ``MERGED``.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         clear = _clear(ticket)
         outcome = _run(clear, _GhStub())
         ticket.refresh_from_db()
@@ -553,19 +553,19 @@ class TestMergeExecutionEdgeCases(TestCase):
         """State-complete: PR-merge keystone advances EVERY pre-merged state to MERGED.
 
         Pins the contract so a future-added pre-merged state can't silently
-        re-introduce the ``stale-started`` class. ``RETROSPECTED`` /
+        re-introduce the ``stale-started`` class. ``RETRO_RECORDED`` /
         ``DELIVERED`` / ``IGNORED`` stay where they are (covered by sibling
         skip-test).
         """
         pre_merged = [
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
-            Ticket.State.STARTED,
+            Ticket.State.WORK_STARTED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
-            Ticket.State.REVIEWED,
-            Ticket.State.SHIPPED,
-            Ticket.State.IN_REVIEW,
+            Ticket.State.SELF_REVIEWED,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
         ]
         for idx, start_state in enumerate(pre_merged):
             ticket = Ticket.objects.create(overlay="t3-teatree", state=start_state)
@@ -576,7 +576,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             assert outcome.ticket_state == Ticket.State.MERGED
 
     def test_merge_response_non_json_falls_back_to_expected_head(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _bad_merge_json(argv: list[str]) -> tuple[int, str, str]:
@@ -668,7 +668,7 @@ class TestLostPostHookRecoverable(TestCase):
     """
 
     def test_lost_post_hook_then_retry_reconciles_fsm(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         stub = _LostPostHookGhStub()
 
@@ -688,7 +688,7 @@ class TestLostPostHookRecoverable(TestCase):
         ticket.refresh_from_db()
         clear.refresh_from_db()
         assert stub.merged is True
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
@@ -712,7 +712,7 @@ class TestLostPostHookRecoverable(TestCase):
         # Defence: a PR merged with a DIFFERENT head (force-push then a
         # third party merged a different tree) must NOT reconcile our
         # stale CLEAR — the SHA-bind guarantee still holds.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _merged_other_head(argv: list[str]) -> tuple[int, str, str]:
@@ -734,14 +734,14 @@ class TestLostPostHookRecoverable(TestCase):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_reconcile_falls_back_to_reviewed_sha_when_no_merge_commit(self) -> None:
         # GitHub reports the PR MERGED but exposes no mergeCommit oid
         # (rare API shape): reconciliation still completes, recording the
         # bound reviewed_sha as the merged sha.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         def _merged_no_commit(argv: list[str]) -> tuple[int, str, str]:
@@ -764,7 +764,7 @@ class TestLostPostHookRecoverable(TestCase):
         # Guarantee preserved: single-use survives the reconcile path. A
         # second reconcile tick on the now-consumed CLEAR is refused (the
         # CLEAR is no longer actionable) — no double audit, no replay.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         stub = _LostPostHookGhStub()
         stub.merged = True  # PR already merged by us (lost post-hook earlier)
@@ -788,7 +788,7 @@ class TestLostPostHookRecoverable(TestCase):
         # BEFORE the §928 reconciliation, so a lost post-hook on a
         # substrate PR cannot be silently reconciled by the loop — it
         # still requires the recorded human approval.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, blast_class=MergeClear.BlastClass.SUBSTRATE)
         stub = _LostPostHookGhStub()
         stub.merged = True
@@ -800,13 +800,13 @@ class TestLostPostHookRecoverable(TestCase):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_self_issued_clear_is_not_reconciled(self) -> None:
         # Guarantee preserved: maker≠checker runs before reconciliation —
         # a lost post-hook does not let a self-issued CLEAR slip through.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket, reviewer_identity="merge-loop")
         stub = _LostPostHookGhStub()
         stub.merged = True
@@ -867,7 +867,7 @@ class TestConcurrentConsumptionReplayDefence(TestCase):
     """
 
     def test_double_post_hook_consumes_once_and_second_raises(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         # Executor A reaches the post hook first and wins.
@@ -894,7 +894,7 @@ class TestConcurrentConsumptionReplayDefence(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_full_keystone_twice_same_clear_second_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         first = _run(clear, _GhStub())
@@ -909,7 +909,7 @@ class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
     """§15 sibling-CLEAR supersede + #19 ``MergeAudit.repo_slug`` stamp in the post hook."""
 
     def test_post_hook_stamps_the_reconciled_repo_slug_on_the_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         record_merge_and_advance(
             clear=clear,
@@ -929,7 +929,7 @@ class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
         # clone's origin, so the issue_url is what keeps this hermetic in any clone.
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url="https://github.com/souliane/teatree/pull/555",
         )
         older = MergeClear.objects.create(
@@ -975,7 +975,7 @@ class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
         assert MergeAudit.objects.count() == 1
 
     def test_full_keystone_stamps_the_repo_slug_it_merged_against(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         _run(clear, _GhStub())
         audit = MergeAudit.objects.get(clear=clear)
@@ -1016,7 +1016,7 @@ class TestMergeKeystoneTransientLockResilience(TestCase):
     """
 
     def test_transient_lock_in_post_hook_is_retried_not_crashed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
 
         lock_once = _LockOnce(MergeClear.objects.select_for_update)
@@ -1037,7 +1037,7 @@ class TestMergeKeystoneTransientLockResilience(TestCase):
         assert outcome.ticket_state == Ticket.State.MERGED
 
     def test_clear_issue_survives_a_transient_lock(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         request = ClearRequest(
             pr_id=4242,
             slug="souliane/teatree",
@@ -1158,7 +1158,7 @@ class TestTransientMergeRetry(TestCase):
     """
 
     def test_truncated_json_merge_response_is_retried_then_succeeds(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         stub = _TransientThenSuccessGhStub(fail_times=2)
 
@@ -1177,7 +1177,7 @@ class TestTransientMergeRetry(TestCase):
         assert outcome.merged_sha == "merged0deadbeef"
 
     def test_transient_failure_until_exhausted_escalates_without_consuming_clear(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         # Never succeeds — every merge attempt is a truncated-JSON transient.
         stub = _TransientThenSuccessGhStub(fail_times=99)
@@ -1194,12 +1194,12 @@ class TestTransientMergeRetry(TestCase):
         clear.refresh_from_db()
         # The CLEAR is idempotently reusable: a transient failure never
         # consumes it, so a manual / loop retry of the SAME CLEAR can merge.
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_policy_refusal_is_not_retried_and_escalates(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         attempts = {"merge": 0}
 
@@ -1226,7 +1226,7 @@ class TestTransientMergeRetry(TestCase):
         assert clear.consumed_at is None
 
     def test_head_moved_is_not_retried(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         attempts = {"merge": 0}
 
@@ -1252,7 +1252,7 @@ class TestTransientMergeRetry(TestCase):
         # The forge returned a truncated body but the merge DID land. The
         # retry's pre-attempt merge-state probe sees MERGED at reviewed_sha
         # and reconciles instead of re-issuing the (now 405-bricking) merge.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         state = {"merged": False, "merge_calls": 0}
 
@@ -1389,7 +1389,7 @@ class TestExecuteBoundMergeRecordsTheLanding(TestCase):
     """
 
     def _row(self, pr_id: int = 859) -> PullRequest:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         return PullRequest.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
@@ -1492,7 +1492,7 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/859",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(
             ticket=ticket,

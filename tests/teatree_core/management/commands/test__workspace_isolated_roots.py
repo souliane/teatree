@@ -64,7 +64,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/291",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         return Worktree.objects.create(
             ticket=ticket,

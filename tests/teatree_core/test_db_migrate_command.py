@@ -44,10 +44,10 @@ class DbMigrateCommandTest(TransactionTestCase):
     def test_migrate_preserves_existing_rows(self) -> None:
         # Non-destructive: a row written before migrate survives it. On a
         # head DB this is a no-op migrate, but it still must not drop data.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         call_command("db", "migrate", stdout=StringIO())
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert connection.vendor == "sqlite"
 
     def test_migrate_fails_closed_when_underlying_migrate_errors(self) -> None:

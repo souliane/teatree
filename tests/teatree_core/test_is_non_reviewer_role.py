@@ -156,7 +156,7 @@ class TestMergeTimeMergeLoopBlockedIntegration(TestCase):
     """
 
     def test_merge_with_merge_loop_reviewer_raises(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1601,
@@ -173,7 +173,7 @@ class TestMergeTimeMergeLoopBlockedIntegration(TestCase):
             merge_ticket_pr(clear=clear, executing_loop_identity="other-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
 
@@ -181,7 +181,7 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
     """Positive control: a legitimate ``reviewer:claude-cold-review`` CLEAR issues and merges."""
 
     def test_cold_review_identity_issues_and_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.issue(
             ClearRequest(
                 pr_id=1602,

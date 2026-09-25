@@ -29,10 +29,10 @@ from tests._git_repo import make_git_repo, run_git
 
 
 def _started_worktree(path: Path) -> str:
-    """A real git repo registered as the worktree of a STARTED (unplanned) ticket."""
+    """A real git repo registered as the worktree of a WORK_STARTED (unplanned) ticket."""
     make_git_repo(path, initial_commit=False)
     toplevel = run_git(path, "rev-parse", "--show-toplevel")
-    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
     Worktree.objects.create(
         overlay="test",
         ticket=ticket,
@@ -91,11 +91,11 @@ class TestBashMediatedWritesAreGated(TestCase):
         assert payload is not None
 
     def test_planned_ticket_allows_the_same_bash_write(self) -> None:
-        # The anti-vacuous companion: the deny is keyed on the STARTED state,
+        # The anti-vacuous companion: the deny is keyed on the WORK_STARTED state,
         # not on the command shape, so a planned ticket is untouched.
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _started_worktree(Path(tmp))
-            Ticket.objects.update(state=Ticket.State.PLANNED)
+            Ticket.objects.update(state=Ticket.State.PLAN_RECORDED)
             blocked, _, _ = _run(_bash_event(toplevel, "sed -i 's/old/new/' src/app/x.py"))
         assert blocked is False
 

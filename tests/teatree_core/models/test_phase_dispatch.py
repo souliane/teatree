@@ -8,8 +8,8 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from tests.teatree_core.models._shared import (
-    _advance_started_to_planned,
     _advance_ticket_to_tested,
+    _advance_work_started_to_plan_recorded,
     _attach_shippable_worktree,
     _complete_phase_task,
     _start_with_provision,
@@ -41,7 +41,7 @@ class TestPhaseAutoDispatch(TestCase):
         # runs as an in-session sub-agent (subscription-covered), not a metered
         # detached claude -p.
         assert task.session.agent_id == "planning"
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_code_auto_schedules_testing_task(self) -> None:
         ticket = Ticket.objects.create()
@@ -49,7 +49,7 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         ticket.code()
         ticket.save()
 
@@ -65,7 +65,7 @@ class TestPhaseAutoDispatch(TestCase):
 
         def fake_enqueue(ticket_id: int) -> None:
             target = Ticket.objects.get(pk=ticket_id)
-            if target.state == Ticket.State.STARTED:
+            if target.state == Ticket.State.WORK_STARTED:
                 target.schedule_planning()
 
         ticket = Ticket.objects.create()
@@ -84,7 +84,7 @@ class TestPhaseAutoDispatch(TestCase):
             task.complete()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         # execute_provision (worker side effect of start()) scheduled the planning task
         assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).exists()
 
@@ -99,7 +99,7 @@ class TestPhaseAutoDispatch(TestCase):
         PlanArtifact.record(ticket=ticket, plan_text="Plan: implement", recorded_by="t3:planner")
         _complete_phase_task(ticket, "planning")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
         _complete_phase_task(ticket, "coding")
 
@@ -113,7 +113,7 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.scope()
         ticket.save()
         _start_with_provision(self, ticket)
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         ticket.code()
         ticket.save()
 
@@ -208,12 +208,12 @@ class TestPhaseAutoDispatch(TestCase):
         testing_session = Session.objects.create(ticket=ticket, agent_id="testing")
         testing_session.visit_phase("testing", agent_id="testing")
         _complete_phase_task(ticket, "reviewing")
-        # reviewing completion → REVIEWED + shipping task (interactive by default)
+        # reviewing completion → SELF_REVIEWED + shipping task (interactive by default)
 
         _complete_phase_task(ticket, "shipping")
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_direct_ship_consumes_pending_shipping_task(self) -> None:
         """Regression #471: direct ship() must consume the pending shipping task.
@@ -309,7 +309,7 @@ class TestPhaseAutoDispatch(TestCase):
         _complete_phase_task(ticket, "reviewing")
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         shipping_tasks = list(ticket.tasks.filter(phase="shipping"))
         assert len(shipping_tasks) == 1
         assert shipping_tasks[0].status == Task.Status.PENDING
@@ -333,7 +333,7 @@ class TestPhaseAutoDispatch(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         fake_task.enqueue.assert_called_once_with(ticket.pk)
 
     def test_mark_merged_enqueues_execute_teardown_after_commit(self) -> None:
@@ -343,7 +343,7 @@ class TestPhaseAutoDispatch(TestCase):
         from teatree.core import tasks as tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
-        ticket.state = Ticket.State.IN_REVIEW
+        ticket.state = Ticket.State.REVIEW_REQUESTED
         ticket.save(update_fields=["state"])
 
         fake_task = MagicMock()
@@ -370,7 +370,7 @@ class TestPhaseAutoDispatch(TestCase):
         _complete_phase_task(ticket, "reviewing")
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
         fake_task = MagicMock()
         with (
@@ -381,7 +381,7 @@ class TestPhaseAutoDispatch(TestCase):
             ticket.save()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         fake_task.enqueue.assert_called_once_with(ticket.pk)
 
     def test_child_task_of_already_advanced_ticket_is_noop(self) -> None:
@@ -394,12 +394,12 @@ class TestPhaseAutoDispatch(TestCase):
 
         first.claim(claimed_by="worker-1")
         first.complete()
-        # First completion advanced SCOPED → STARTED
+        # First completion advanced SCOPED → WORK_STARTED
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
         second.claim(claimed_by="worker-2")
         second.complete()
         # Second completion no-ops because state is no longer SCOPED
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED

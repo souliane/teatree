@@ -93,7 +93,7 @@ class _OrphanRefWorktreeFixture(TestCase):
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/2707",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -185,7 +185,7 @@ class TestRaiseOrReapOrphanRef:
     """Unit coverage for the rc=128 verdict — accurate messages per branch."""
 
     def _worktree(self) -> Worktree:
-        ticket = Ticket(issue_url="https://example.com/issues/1", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket(issue_url="https://example.com/issues/1", state=Ticket.State.REVIEW_REQUESTED)
         return Worktree(overlay="test", ticket=ticket, repo_path="myrepo", branch="feat-x")
 
     def _exc(self) -> CommandFailedError:

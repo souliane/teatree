@@ -92,7 +92,7 @@ class TestReviewTransitionConditionIsMechanical(TestCase):
     """The constraint lives on the FSM transition, not only the CLI wrapper.
 
     ``review_context_satisfied`` is wired as a ``django_fsm`` condition on
-    ``review()``, so the ``TESTED -> REVIEWED`` transition is mechanically
+    ``review()``, so the ``TESTED -> SELF_REVIEWED`` transition is mechanically
     refused (``TransitionNotAllowed``) when the gate is required and no context
     is recorded — regardless of the entry path. Exercised here at the
     predicate level (the CLI-path block is covered above): the condition is the
@@ -159,13 +159,13 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             execution_reason="cold review",
         )
         ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")
-        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test pins "review allowed with context", not the #3313
         # unshippable-review disposition.
         with _gate(required=True), patch.object(Ticket, "has_shippable_diff", return_value=True):
             task.complete()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_direct_cli_transition_review_exits_nonzero_with_an_actionable_refusal(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)

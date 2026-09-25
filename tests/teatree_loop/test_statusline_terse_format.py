@@ -1,13 +1,13 @@
 """Statusline terse-format anchor row (#1377 item shape, #130 state labels).
 
 The anchor "what am I working on" line for an overlay stays terse:
-``not_started`` and ``in_review`` are filtered out — the in-flight zone
+``not_started`` and ``review_requested`` are filtered out — the in-flight zone
 surfaces in-review work via PR/MR chips, and the not_started backlog is
 not user-actionable from the statusline.
 
 The per-item shape is the terse #1377 form ``#N (2-3 word topic !MR1
 !MR2 …)``. #130 restores the FSM ``state:`` group label that #1377 had
-dropped, so the line reads ``[overlay] started: #N (topic !chips)`` —
+dropped, so the line reads ``[overlay] work_started: #N (topic !chips)`` —
 grouping tickets by status was the user's explicit, latest requirement.
 """
 
@@ -59,42 +59,42 @@ class TestNotStartedDroppedFromAnchor:
         assert "not_started" in _NOISE_STATES
 
 
-class TestInReviewDroppedFromAnchor:
-    """``in_review`` work surfaces via PR/MR chips, not the anchor row."""
+class TestReviewRequestedDroppedFromAnchor:
+    """``review_requested`` work surfaces via PR/MR chips, not the anchor row."""
 
-    def test_in_review_state_filtered_out_of_anchor(self, tmp_path: Path) -> None:
+    def test_review_requested_state_filtered_out_of_anchor(self, tmp_path: Path) -> None:
         zones = zones_for(
-            [_ticket_action("100", "in_review", overlay="ov", title="some review")],
+            [_ticket_action("100", "review_requested", overlay="ov", title="some review")],
             colorize=False,
         )
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
         assert "#100" not in body, repr(body)
-        assert "in_review" not in body, repr(body)
+        assert "review_requested" not in body, repr(body)
 
-    def test_in_review_in_noise_states(self) -> None:
-        assert "in_review" in _NOISE_STATES
+    def test_review_requested_in_noise_states(self) -> None:
+        assert "review_requested" in _NOISE_STATES
 
 
-class TestStartedStateRendersStateLabelledCanonicalShape:
+class TestWorkStartedStateRendersStateLabelledCanonicalShape:
     """The FSM ``state:`` group label prefixes the terse canonical item (#130)."""
 
     def test_started_anchor_has_state_prefix(self, tmp_path: Path) -> None:
         zones = zones_for(
-            [_ticket_action("8495", "started", overlay="acme", title="widget margin")],
+            [_ticket_action("8495", "work_started", overlay="acme", title="widget margin")],
             colorize=False,
         )
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "started:" in body, repr(body)
+        assert "work_started:" in body, repr(body)
         assert "#8495" in body, repr(body)
         assert "(widget margin)" in body, repr(body)
 
     def test_anchor_line_matches_state_labelled_format_regex(self, tmp_path: Path) -> None:
         zones = zones_for(
-            [_ticket_action("8495", "started", overlay="acme", title="widget margin")],
+            [_ticket_action("8495", "work_started", overlay="acme", title="widget margin")],
             colorize=True,
         )
         target = tmp_path / "statusline.txt"
@@ -106,19 +106,19 @@ class TestStartedStateRendersStateLabelledCanonicalShape:
         visible = re.sub(r"\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)", "", visible)
         anchor_lines = [line for line in visible.splitlines() if line.startswith("[acme]") and "#" in line]
         assert anchor_lines, repr(visible)
-        pattern = re.compile(r"^\[[^\]]+\] started: #\d+ \(.+\)$")
+        pattern = re.compile(r"^\[[^\]]+\] work_started: #\d+ \(.+\)$")
         for line in anchor_lines:
             assert pattern.match(line), f"line {line!r} does not match state-labelled terse format"
 
 
 class TestOnlyOneAnchorLinePerOverlay:
-    """Multiple ``started`` tickets in one overlay still collapse to one line."""
+    """Multiple ``work_started`` tickets in one overlay still collapse to one line."""
 
     def test_multiple_started_tickets_render_one_line_per_overlay(self, tmp_path: Path) -> None:
         zones = zones_for(
             [
-                _ticket_action("100", "started", overlay="acme", title="alpha"),
-                _ticket_action("200", "started", overlay="acme", title="beta"),
+                _ticket_action("100", "work_started", overlay="acme", title="alpha"),
+                _ticket_action("200", "work_started", overlay="acme", title="beta"),
             ],
             colorize=False,
         )

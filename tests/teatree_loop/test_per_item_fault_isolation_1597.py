@@ -265,7 +265,7 @@ class TestActiveTicketsIsolation(TestCase):
         # row another test leaves visible in the DB under a shared overlay name
         # (the order-dependent isolation flake #1924/#1961).
         overlay = "fault-iso-active-tickets"
-        ticket_a = Ticket.objects.create(overlay=overlay, issue_url="https://x/1", state="started")
+        ticket_a = Ticket.objects.create(overlay=overlay, issue_url="https://x/1", state="work_started")
         Ticket.objects.create(overlay=overlay, issue_url="https://x/2", state="coded")
 
         # Drive the failure on ticket_a deterministically: give it a cached title
@@ -409,8 +409,8 @@ class TestTicketCompletionIsolation(TestCase):
         self._monkeypatch = monkeypatch
 
     def test_failing_first_ticket_does_not_suppress_second_ticket_completion(self) -> None:
-        Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/1", state="shipped")
-        Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/2", state="shipped")
+        Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/1", state="pr_opened")
+        Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/2", state="pr_opened")
 
         call_count = [0]
 

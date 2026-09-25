@@ -26,7 +26,7 @@ class TestReconcileManualPrsFromFooter(TestCase):
         return Ticket.objects.create(
             overlay="t3-teatree",
             issue_url=f"https://github.com/souliane/teatree/issues/{number}",
-            state="started",
+            state="work_started",
         )
 
     def test_manual_mr_with_closes_footer_gains_linked_row(self) -> None:
@@ -80,7 +80,7 @@ class TestReconcileManualPrsFromFooter(TestCase):
         Ticket.objects.create(
             overlay="other",
             issue_url="https://github.com/other/project/issues/855",
-            state="started",
+            state="work_started",
         )
         created = reconcile_manual_prs([_signal(description="Closes #855")])
 
@@ -92,7 +92,7 @@ class TestReconcileManualPrsFromExtraPrs(TestCase):
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/900",
-            state="started",
+            state="work_started",
             extra={"prs": {_PR_URL: {"iid": 370}}},
         )
 
@@ -107,7 +107,7 @@ class TestReconcileManualPrsMerged(TestCase):
         return Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/855",
-            state="started",
+            state="work_started",
         )
 
     def test_open_row_transitions_to_merged_on_live_merge(self) -> None:
@@ -145,7 +145,7 @@ class TestReconcileManualPrsSignalFilter(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/855",
-            state="started",
+            state="work_started",
         )
         other = ScanSignal(
             kind="reviewer_pr.new_sha",
@@ -183,5 +183,5 @@ class TestReconcileManualPrsSignalFilter(TestCase):
         return Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/855",
-            state="started",
+            state="work_started",
         )

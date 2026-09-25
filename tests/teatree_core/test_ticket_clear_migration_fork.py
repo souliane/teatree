@@ -123,7 +123,7 @@ class TestTicketClearMigrationFork(TestCase):
         monkeypatch.setattr("teatree.core.gates.e2e_mandatory_gate.get_overlay", lambda *_a, **_k: _SafeOverlay())
 
     def _attach_ticket(self, clone: Path, branch: str) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -192,7 +192,7 @@ class TestTicketClearMigrationFork(TestCase):
 
     def test_no_worktree_skips_migration_fork_check(self) -> None:
         """Without a worktree to verify against, the probe is skipped (do-not-block)."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
 
         result = cast(
             "dict[str, object]",
@@ -220,18 +220,18 @@ class TestCheckClearMigrationForkResolution(TestCase):
         assert check_clear_migration_fork("a" * 40, None) is None
 
     def test_no_worktree_skips(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         assert check_clear_migration_fork("a" * 40, ticket) is None
 
     def test_worktree_without_repo_path_skips(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="", branch="feat/x", extra={})
         assert check_clear_migration_fork("a" * 40, ticket) is None
 
     def test_prefers_ship_invoking_branch_worktree(self) -> None:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"ship_invoking_branch": "feat/invoking", "target_branch": "develop"},
         )
         Worktree.objects.create(
@@ -257,7 +257,7 @@ class TestCheckClearMigrationForkResolution(TestCase):
         assert seen["target"] == "origin/develop"
 
     def test_renders_actionable_reason_on_fork(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="/repo", branch="feat/x", extra={"worktree_path": "/repo"}
         )
@@ -282,7 +282,7 @@ class TestCheckClearMigrationForkTargetResolution(TestCase):
     _INTEGRATION = "chore/long-lived-integration"
 
     def _ticket_with_worktree(self, **extra: object) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=dict(extra))
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED, extra=dict(extra))
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",

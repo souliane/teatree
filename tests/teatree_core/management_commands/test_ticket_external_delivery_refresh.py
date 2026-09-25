@@ -31,21 +31,21 @@ def _expires_at(ticket: Ticket) -> datetime:
 
 class TicketPlanRefreshesLeaseTest(TestCase):
     def test_plan_refreshes_a_live_external_delivery_lease(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         mark_external_delivery(ticket, lease_seconds=10)
         before = _expires_at(ticket)
 
         call_command("ticket", "plan", str(ticket.pk), "implement the fix")
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert _expires_at(ticket) > before
         assert under_external_delivery(ticket) is True
 
 
 class TicketTransitionRefreshesLeaseTest(TestCase):
     def _planned_ticket_under_delivery(self) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="operator")
         ticket.plan()
         ticket.save()
@@ -66,7 +66,7 @@ class TicketTransitionRefreshesLeaseTest(TestCase):
     def test_transition_does_not_stamp_a_lease_on_a_loop_driven_ticket(self) -> None:
         # No lease present: a loop-driven transition must not create one, or the
         # dispatch chokepoint would wrongly skip the unit.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="operator")
         ticket.plan()
         ticket.save()

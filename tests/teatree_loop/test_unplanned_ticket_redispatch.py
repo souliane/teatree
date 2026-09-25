@@ -54,17 +54,17 @@ class TestTheStrandDrains(TestCase):
         assert redispatch_unplanned_tickets() == 1
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert len(_planning_tasks(ticket)) == 1
 
     def test_a_scoped_ticket_is_reached_too(self) -> None:
-        """SCOPED is the other rung intake could leave a ticket on below STARTED."""
+        """SCOPED is the other rung intake could leave a ticket on below WORK_STARTED."""
         ticket = _refused_ticket(state=Ticket.State.SCOPED)
 
         assert redispatch_unplanned_tickets() == 1
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_a_second_pass_mints_nothing(self) -> None:
         ticket = _refused_ticket()
@@ -87,7 +87,7 @@ class TestTheStrandDrains(TestCase):
         _reap_stale_task_claims({})
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
 
 class TestTheAlreadyStrandedTicketsAreReached(TestCase):
@@ -114,7 +114,7 @@ class TestTheAlreadyStrandedTicketsAreReached(TestCase):
 
         assert redispatch_unplanned_tickets() == 1
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_the_migration_leaves_an_unrelated_unclassified_row_alone(self) -> None:
         ticket = _refused_ticket()

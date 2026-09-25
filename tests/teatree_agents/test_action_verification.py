@@ -140,7 +140,7 @@ class TestToollessCodingAttemptIsNotASuccess(TestCase):
         self._tmp_path = tmp_path
 
     def _task(self, *, phase: str = "coding") -> Task:
-        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 

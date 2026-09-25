@@ -123,7 +123,7 @@ def _merged_ticket(*, number: int = 42, pr_id: int = 7) -> Ticket:
     ticket = Ticket.objects.create(
         overlay="acme",
         issue_url=f"https://github.com/acme/widgets/issues/{number}",
-        state=Ticket.State.IN_REVIEW,
+        state=Ticket.State.REVIEW_REQUESTED,
         short_description="widget work",
     )
     clear = MergeClear.issue(
@@ -194,7 +194,7 @@ class TestCheckingShow:
         other = Ticket.objects.create(
             overlay="other",
             issue_url="https://github.com/other/x/issues/2",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = MergeClear.issue(
             ClearRequest(
@@ -340,7 +340,7 @@ class TestCheckingShowAllOverlays:
         ticket = Ticket.objects.create(
             overlay=overlay,
             issue_url=f"https://github.com/{slug}/issues/{number}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             short_description=f"{overlay} work",
         )
         clear = MergeClear.issue(

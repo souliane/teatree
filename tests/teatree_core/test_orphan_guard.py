@@ -369,7 +369,7 @@ class TestFindOrphansInWorkspace(TestCase):
     def _make_worktree(self, repo_path: str, branch: str) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url=f"https://gitlab.com/org/{repo_path}/-/issues/{branch}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -434,7 +434,7 @@ class TestFindOrphansInWorkspace(TestCase):
         # Same repo+branch across tickets
         ticket2 = Ticket.objects.create(
             issue_url="https://gitlab.com/org/alpha/-/issues/200",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(
             overlay="test",

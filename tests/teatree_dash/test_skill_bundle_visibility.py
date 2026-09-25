@@ -27,7 +27,7 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
 
 def _attempt(**kwargs: object) -> TaskAttempt:
-    ticket = TicketFactory(state=State.STARTED)
+    ticket = TicketFactory(state=State.WORK_STARTED)
     task = TaskFactory(ticket=ticket, phase="coding")
     defaults = {"agent_session_id": "sess-skills"}
     return TaskAttempt.objects.create(task=task, **{**defaults, **kwargs})

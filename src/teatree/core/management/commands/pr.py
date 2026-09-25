@@ -2,7 +2,7 @@
 
 The actual push + PR creation lives in ``ShipExecutor`` (BLUEPRINT §4) and runs
 inside the ``execute_ship`` task. This command is a deterministic CLI wrapper:
-it runs the deterministic gates, calls ``ticket.ship()`` to enter SHIPPED, and
+it runs the deterministic gates, calls ``ticket.ship()`` to enter PR_OPENED, and
 returns the PR URL once the worker completes.
 """
 
@@ -213,7 +213,7 @@ def _run_skip_validation_path(
 
     ``--skip-validation`` is the user-authorized attestation substitute (the
     gate-fixer bootstrap, /t3:ship §5 #2): the FSM must follow the authorization
-    or ``ship()`` is structurally impossible from a non-REVIEWED state (#748). It
+    or ``ship()`` is structurally impossible from a non-SELF_REVIEWED state (#748). It
     skips the HEAVY gates (visual QA, branch currency, FSM phase check) but NOT
     the cheap, deterministic MR title/description format check — a non-compliant
     title must not slip onto GitLab via the bypass; only the explicit
@@ -380,7 +380,7 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         # actually push (the #776/#800 canonical resolver, so the check
         # matches what is shipped) must have ≥1 commit ahead of base.
         # Placed before BOTH the gate and the --skip-validation
-        # reconcile so no path can advance the FSM to a hollow SHIPPED.
+        # reconcile so no path can advance the FSM to a hollow PR_OPENED.
         no_commits = _assert_commits_ahead_of_base(ship_worktree)
         if no_commits is not None:
             return no_commits

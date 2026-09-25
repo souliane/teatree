@@ -416,7 +416,7 @@ class TestDispatchExcludesLiveExternalDelivery(django.test.TestCase):
     """A unit under a live #2104 delivery lease must never be dispatched (#2217).
 
     Reproduces the double-dispatch incident: a hand-delivery owner advanced a
-    ticket STARTED -> PLANNED with the lease still live, the loop scheduled a
+    ticket WORK_STARTED -> PLAN_RECORDED with the lease still live, the loop scheduled a
     ``coding`` Task, and the dispatch chokepoint admitted it -> two coders on
     one ticket. The chokepoint must exclude any phase on a hand-delivered ticket.
     """

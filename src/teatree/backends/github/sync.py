@@ -43,7 +43,7 @@ class _BoardItem:
 
         status_map = {
             "Todo": Ticket.State.NOT_STARTED,
-            "In Progress": Ticket.State.STARTED,
+            "In Progress": Ticket.State.WORK_STARTED,
             "Done": Ticket.State.DELIVERED,
         }
         state = status_map.get(item.status)

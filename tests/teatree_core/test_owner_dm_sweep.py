@@ -57,7 +57,7 @@ class TestSubjectClosed(TestCase):
         assert row.dismissed_reason == "the thread's subject is closed"
 
     def test_a_thread_about_an_open_pull_request_is_left_alone(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED)
         PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
         _thread(f"Should I rebase {_PR_URL}?")
 
@@ -93,7 +93,7 @@ class TestSubjectClosedLocally(TestCase):
         assert subject_closed_locally(f"rebase {_PR_URL}") is False
 
     def test_a_still_open_reference_keeps_the_thread_live(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED)
         PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid="1234")
         assert subject_closed_locally(f"Should I rebase {_PR_URL}?") is False
 

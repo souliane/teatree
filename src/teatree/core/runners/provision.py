@@ -236,7 +236,7 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
 
 
 class WorktreeProvisioner(RunnerBase):
-    """Create the per-repo git worktrees for a STARTED ticket.
+    """Create the per-repo git worktrees for a WORK_STARTED ticket.
 
     Reads ``ticket.repos`` and ``ticket.extra['branch']`` (set by the CLI at
     scope time) and materialises one ``Worktree`` row + on-disk git worktree

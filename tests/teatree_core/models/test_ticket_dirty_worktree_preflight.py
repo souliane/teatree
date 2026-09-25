@@ -27,8 +27,8 @@ from django.utils import timezone
 
 from teatree.core.models import DirtyWorktreeError, Task, Ticket, Worktree
 from tests.teatree_core.models._shared import (
-    _advance_started_to_planned,
     _advance_ticket_to_tested,
+    _advance_work_started_to_plan_recorded,
     _complete_phase_task,
     _init_repo_with_branch,
 )
@@ -58,16 +58,16 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         # Modify a TRACKED file — the dirty state a transition must refuse.
         (repo_dir / "f0.txt").write_text("uncommitted tracked change\n")
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
         with pytest.raises(DirtyWorktreeError) as exc:
             ticket.code()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED  # FSM did NOT advance
+        assert ticket.state == Ticket.State.PLAN_RECORDED  # FSM did NOT advance
         assert str(repo_dir) in str(exc.value)  # message names the dirty worktree
 
     def test_ship_transition_refused_when_worktree_tracked_dirty(self) -> None:
@@ -79,7 +79,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         # auto-schedules the shipping task.
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         # Dirty the worktree after review, before ship.
         (repo_dir / "f0.txt").write_text("dirty before ship\n")
 
@@ -87,7 +87,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
             ticket.ship()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # ship did NOT advance
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # ship did NOT advance
         assert str(repo_dir) in str(exc.value)
 
     def test_refusal_through_real_loop_path_rolls_back_and_task_is_reclaimable(self) -> None:
@@ -115,7 +115,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         coding_task = Task.objects.create(
             ticket=ticket,
             session=ticket.sessions.create(agent_id="coding"),
@@ -134,7 +134,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.refresh_from_db()
         coding_task.refresh_from_db()
         # FSM did NOT advance — the outer atomic rolled the code() advance back.
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         # The task reverted to its pre-complete() state: CLAIMED (the outer
         # atomic rolled back the status=COMPLETED + _clear_claim writes too).
         assert coding_task.status == Task.Status.CLAIMED
@@ -155,7 +155,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
 
         ticket.code()
         ticket.save()
@@ -170,7 +170,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
 
         ticket.code()
         ticket.save()
@@ -186,7 +186,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
-        _advance_started_to_planned(ticket)
+        _advance_work_started_to_plan_recorded(ticket)
         # A brand-new untracked file only — no tracked modification.
         (repo_dir / "scratch_note.txt").write_text("untracked scratch\n")
 

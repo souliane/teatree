@@ -532,7 +532,7 @@ class TestAnchorStatePriorityOrder:
         # actively-shipping states: ``started`` before ``coded``.
         actions = [
             _active_ticket("100", "coded", overlay="ov"),
-            _active_ticket("200", "started", overlay="ov"),
+            _active_ticket("200", "work_started", overlay="ov"),
         ]
         with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
@@ -549,7 +549,7 @@ class TestActiveStateOverflowCap:
     """Active-state items cap at 5 with ``(+N more)`` overflow phrasing."""
 
     def test_started_caps_at_five(self, tmp_path: Path) -> None:
-        actions = [_active_ticket(str(i), "started", overlay="ov") for i in range(1, 11)]
+        actions = [_active_ticket(str(i), "work_started", overlay="ov") for i in range(1, 11)]
         with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"

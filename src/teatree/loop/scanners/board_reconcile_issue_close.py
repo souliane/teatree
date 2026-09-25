@@ -52,7 +52,7 @@ def closed_issue_transitions(
     which rules B/C own.
 
     *already_moved* holds the rows an earlier rule moved in THIS run. Rule F runs last
-    and reads live state, so without it a ticket rule E had just revived to STARTED —
+    and reads live state, so without it a ticket rule E had just revived to WORK_STARTED —
     a pre-ship state — would be re-probed and could be retired in the same tick that
     resurrected it. One rule per row per run.
     """

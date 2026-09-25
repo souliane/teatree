@@ -1,7 +1,7 @@
 """Statusline refinements per #1163.
 
 Five refinements covered: dedup user identities across overlays, rich
-state coverage (in_review / not_started surface), item format ``#N
+state coverage (review_requested / not_started surface), item format ``#N
 (desc) (!MR)``, no 404 links, and multi-loop anchors (one line per
 live LoopLease row).
 """
@@ -43,10 +43,10 @@ def _statusline_action(spec: dict[str, str | bool]) -> DispatchAction:
 
 
 class TestRichStateCoverage:
-    """Refinement 2 (pre-#1377): rich state coverage included ``in_review`` and ``not_started``.
+    """Refinement 2 (pre-#1377): rich state coverage included ``review_requested`` and ``not_started``.
 
     #1377 reverses that decision — the anchor row is now strictly the
-    actively-shipping slice (``not_started`` and ``in_review`` moved into
+    actively-shipping slice (``not_started`` and ``review_requested`` moved into
     ``_NOISE_STATES``). The new contract is pinned in
     ``test_statusline_terse_format``; this class now pins the inverse.
     """
@@ -56,7 +56,7 @@ class TestRichStateCoverage:
             {
                 "overlay": "overlay-a",
                 "ticket_number": "100",
-                "state": "in_review",
+                "state": "review_requested",
                 "issue_url": "https://example.com/tracker/100",
                 "title": "review me",
             },
@@ -65,7 +65,7 @@ class TestRichStateCoverage:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "in_review" not in body
+        assert "review_requested" not in body
         assert "#100" not in body
 
     def test_not_started_state_filtered_out(self, tmp_path: Path) -> None:
@@ -85,7 +85,7 @@ class TestRichStateCoverage:
         assert "#200" not in body
 
     def test_terminal_states_still_filtered(self, tmp_path: Path) -> None:
-        # ``delivered`` / ``merged`` / ``shipped`` / ``retrospected`` /
+        # ``delivered`` / ``merged`` / ``pr_opened`` / ``retro_recorded`` /
         # ``closed`` remain noise — nothing actionable to show.
         actions = [
             _statusline_action(
@@ -97,7 +97,7 @@ class TestRichStateCoverage:
                     "title": f"terminal {state}",
                 },
             )
-            for idx, state in enumerate(["delivered", "merged", "shipped", "retrospected", "closed"])
+            for idx, state in enumerate(["delivered", "merged", "pr_opened", "retro_recorded", "closed"])
         ]
         zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
@@ -106,10 +106,10 @@ class TestRichStateCoverage:
         for n in range(300, 305):
             assert f"#{n}" not in body
 
-    def test_noise_states_includes_in_review_and_not_started(self) -> None:
+    def test_noise_states_includes_review_requested_and_not_started(self) -> None:
         # #1377 moved both states into the noise set so the anchor row stays
         # the actively-shipping slice. Inverse of the pre-#1377 contract.
-        assert "in_review" in _NOISE_STATES
+        assert "review_requested" in _NOISE_STATES
         assert "not_started" in _NOISE_STATES
 
 
@@ -121,7 +121,7 @@ class TestItemFormatDescriptionAlwaysShown:
             {
                 "overlay": "overlay-a",
                 "ticket_number": "500",
-                "state": "started",
+                "state": "work_started",
                 "issue_url": "https://example.com/tracker/500",
                 "title": "add new scanner guard",
             },
@@ -143,7 +143,7 @@ class TestNo404Links:
             {
                 "overlay": "overlay-a",
                 "ticket_number": "214",
-                "state": "started",
+                "state": "work_started",
                 "issue_url": "https://example.com/tracker/214",
                 "title": "deleted ticket",
                 "tracker_404": True,
@@ -163,7 +163,7 @@ class TestNo404Links:
             {
                 "overlay": "overlay-a",
                 "ticket_number": "214",
-                "state": "started",
+                "state": "work_started",
                 "issue_url": "https://example.com/tracker/214",
                 "title": "deleted",
                 "tracker_404": True,
@@ -187,7 +187,7 @@ class TestDedupAcrossOverlays:
             {
                 "overlay": "overlay-a",
                 "ticket_number": "8446",
-                "state": "started",
+                "state": "work_started",
                 "issue_url": shared_url,
                 "title": "shared ticket",
             },
@@ -196,7 +196,7 @@ class TestDedupAcrossOverlays:
             {
                 "overlay": "overlay-b",
                 "ticket_number": "8446",
-                "state": "started",
+                "state": "work_started",
                 "issue_url": shared_url,
                 "title": "shared ticket",
             },

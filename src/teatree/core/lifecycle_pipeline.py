@@ -35,23 +35,23 @@ from teatree.core.models import Ticket
 _STATE_ORDER: dict[str, int] = {
     Ticket.State.NOT_STARTED: 0,
     Ticket.State.SCOPED: 1,
-    Ticket.State.STARTED: 2,
-    Ticket.State.PLANNED: 3,
+    Ticket.State.WORK_STARTED: 2,
+    Ticket.State.PLAN_RECORDED: 3,
     Ticket.State.CODED: 4,
     Ticket.State.TESTED: 5,
-    Ticket.State.REVIEWED: 6,
-    Ticket.State.SHIPPED: 7,
-    Ticket.State.IN_REVIEW: 8,
+    Ticket.State.SELF_REVIEWED: 6,
+    Ticket.State.PR_OPENED: 7,
+    Ticket.State.REVIEW_REQUESTED: 8,
     Ticket.State.MERGED: 9,
-    Ticket.State.RETROSPECTED: 10,
+    Ticket.State.RETRO_RECORDED: 10,
     Ticket.State.DELIVERED: 11,
 }
 _ABSENT_ORDER = -1  # the ticket does not exist yet (intake has not run)
-_STARTED_ORDER = _STATE_ORDER[Ticket.State.STARTED]
+_STARTED_ORDER = _STATE_ORDER[Ticket.State.WORK_STARTED]
 
-#: The two steps that share the STARTED target, so neither is scored off state alone.
+#: The two steps that share the WORK_STARTED target, so neither is scored off state alone.
 #: An intake ticket carries no repos, so ``execute_provision`` returns "no repos on
-#: ticket" and leaves it STARTED with nothing provisioned — a state ``order`` cannot
+#: ticket" and leaves it WORK_STARTED with nothing provisioned — a state ``order`` cannot
 #: tell from a finished intake. Scoring intake DONE there skipped ``workspace ticket
 #: <ref>``, the only automated step that populates repos and the branch, and with it
 #: the operator's whole repair path (souliane/teatree#4578).
@@ -86,17 +86,17 @@ class LifecycleStep:
 
 
 #: The golden path — the single source of truth for the step order and each
-#: step's target state. intake and provision both land at ``STARTED`` (``workspace
+#: step's target state. intake and provision both land at ``WORK_STARTED`` (``workspace
 #: ticket`` provisions synchronously); provision earns its own step because a
 #: failed provision leaves worktrees ``CREATED`` and is separately retriable.
 PIPELINE: tuple[LifecycleStep, ...] = (
-    LifecycleStep("intake", StepKind.AUTO, Ticket.State.STARTED, "workspace ticket <ref>"),
-    LifecycleStep("provision", StepKind.AUTO, Ticket.State.STARTED, "workspace provision"),
-    LifecycleStep("plan", StepKind.AGENT, Ticket.State.PLANNED, "planner agent", needs="planning"),
+    LifecycleStep("intake", StepKind.AUTO, Ticket.State.WORK_STARTED, "workspace ticket <ref>"),
+    LifecycleStep("provision", StepKind.AUTO, Ticket.State.WORK_STARTED, "workspace provision"),
+    LifecycleStep("plan", StepKind.AGENT, Ticket.State.PLAN_RECORDED, "planner agent", needs="planning"),
     LifecycleStep("code", StepKind.AGENT, Ticket.State.CODED, "coder agent", needs="coding"),
     LifecycleStep("test", StepKind.AGENT, Ticket.State.TESTED, "tester agent", needs="testing"),
-    LifecycleStep("review", StepKind.AGENT, Ticket.State.REVIEWED, "reviewer agent", needs="reviewing"),
-    LifecycleStep("ship", StepKind.AUTO, Ticket.State.SHIPPED, "pr create <id>"),
+    LifecycleStep("review", StepKind.AGENT, Ticket.State.SELF_REVIEWED, "reviewer agent", needs="reviewing"),
+    LifecycleStep("ship", StepKind.AUTO, Ticket.State.PR_OPENED, "pr create <id>"),
 )
 
 
@@ -120,7 +120,7 @@ class TicketSnapshot:
         """An EXISTING ticket whose state is not on the golden path.
 
         IGNORED plus every non-golden-path terminal a non-coder role reaches
-        (``REVIEW_POSTED``). They must be reported as off-path, never scored
+        (``REVIEW_DELIVERED``). They must be reported as off-path, never scored
         through :attr:`order`: an unranked state falls through to
         ``_ABSENT_ORDER``, so a finished reviewer ticket read as "intake has not
         run yet" and the plan named intake as its current step.

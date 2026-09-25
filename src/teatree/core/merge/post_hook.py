@@ -177,10 +177,10 @@ def record_merge_and_advance(
             session.visit_phase("merged", agent_id=f"merge-loop@{merged_sha[:12]}")
             # #1343: state-complete reconcile. An authorised, audited PR-merge
             # is the authority — every pre-merged state (NOT_STARTED through
-            # IN_REVIEW, plus SHIPPED) must advance to MERGED. RETROSPECTED/
+            # REVIEW_REQUESTED, plus PR_OPENED) must advance to MERGED. RETRO_RECORDED/
             # DELIVERED are past MERGED and stay where they are; IGNORED is
             # abandoned. The original ``state in {in_review, merged}`` guard
-            # left STARTED tickets visibly stuck on the statusline after their
+            # left WORK_STARTED tickets visibly stuck on the statusline after their
             # PR merged (#1324 follow-up). The FSM source-set on
             # ``reconcile_merged`` is the single source of truth — catching
             # ``TransitionNotAllowed`` lets the source list evolve in one

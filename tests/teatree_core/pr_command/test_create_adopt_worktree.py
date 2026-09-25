@@ -84,8 +84,8 @@ class TestAdoptWorktreeFlow(TestCase):
         adopt.assert_called_once()
         assert result.get("queued") is True
         ticket.refresh_from_db()
-        # MERGED → (reopen_for_followup) REVIEWED → (ship) SHIPPED.
-        assert ticket.state == Ticket.State.SHIPPED
+        # MERGED → (reopen_for_followup) SELF_REVIEWED → (ship) PR_OPENED.
+        assert ticket.state == Ticket.State.PR_OPENED
         assert ticket.worktrees.count() == 1
 
     def test_adopt_guardrail_failure_surfaces_as_worktree_missing(self) -> None:

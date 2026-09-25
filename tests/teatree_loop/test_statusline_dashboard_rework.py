@@ -176,7 +176,7 @@ class TestFsmStateGroupingLabels:
                 _active_ticket(number="1", state="coded"),
                 _active_ticket(number="2", state="tested"),
                 _active_ticket(number="3", state="scoped"),
-                _active_ticket(number="4", state="started"),
+                _active_ticket(number="4", state="work_started"),
             ],
             tmp_path,
         )

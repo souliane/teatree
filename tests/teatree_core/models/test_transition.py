@@ -23,9 +23,9 @@ _RECENT = timezone.now() - dt.timedelta(days=2)
 #: ``(from_state, to_state, triggered_by)``. ``_NOOP`` is the state-preserving
 #: self-transition ``mark_reviewed_externally`` re-fires; #3876 stopped writing it, and
 #: this lane is the standing backstop for the residue.
-_MOVE = (Ticket.State.STARTED, Ticket.State.CODED, "code")
-_ENTER_REVIEW_POSTED = (Ticket.State.STARTED, Ticket.State.REVIEW_POSTED, "mark_reviewed_externally")
-_NOOP = (Ticket.State.REVIEW_POSTED, Ticket.State.REVIEW_POSTED, "mark_reviewed_externally")
+_MOVE = (Ticket.State.WORK_STARTED, Ticket.State.CODED, "code")
+_ENTER_REVIEW_POSTED = (Ticket.State.WORK_STARTED, Ticket.State.REVIEW_DELIVERED, "mark_reviewed_externally")
+_NOOP = (Ticket.State.REVIEW_DELIVERED, Ticket.State.REVIEW_DELIVERED, "mark_reviewed_externally")
 
 
 def _transition(
@@ -65,7 +65,7 @@ class StateEdgesTestCase(TestCase):
 
 class TicketTransitionPrunableGuardTestCase(TestCase):
     def _closed_ticket_with_three_noops(self) -> tuple[Ticket, list[TicketTransition]]:
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_POSTED)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_DELIVERED)
         rows = [_noop(ticket, created_at=_OLD + dt.timedelta(minutes=n)) for n in range(3)]
         return ticket, rows
 
@@ -86,8 +86,8 @@ class TicketTransitionPrunableGuardTestCase(TestCase):
         assert TicketTransition.objects.prunable().count() == 0
 
     def test_a_shipped_tickets_noop_is_never_prunable(self) -> None:
-        """SHIPPED is not closed — its PR is still open, so the ticket may take rework."""
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.SHIPPED)
+        """PR_OPENED is not closed — its PR is still open, so the ticket may take rework."""
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.PR_OPENED)
         for n in range(3):
             _noop(ticket, created_at=_OLD + dt.timedelta(minutes=n))
         assert TicketTransition.objects.prunable().count() == 0
@@ -101,12 +101,12 @@ class TicketTransitionPrunableGuardTestCase(TestCase):
         assert rows[-1].pk not in set(TicketTransition.objects.prunable().values_list("pk", flat=True))
 
     def test_a_sole_noop_is_never_prunable(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_POSTED)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_DELIVERED)
         _noop(ticket)
         assert TicketTransition.objects.prunable().count() == 0
 
     def test_a_same_timestamp_burst_still_keeps_both_boundaries(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_POSTED)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_DELIVERED)
         stamp = timezone.now()
         rows = [_noop(ticket, created_at=stamp) for _ in range(4)]
         assert set(TicketTransition.objects.prunable().values_list("pk", flat=True)) == {rows[1].pk, rows[2].pk}
@@ -114,7 +114,7 @@ class TicketTransitionPrunableGuardTestCase(TestCase):
     def test_another_tickets_rows_do_not_supply_the_boundary(self) -> None:
         """The boundary is per TICKET — a sibling's rows must not make these prunable."""
         _, rows = self._closed_ticket_with_three_noops()
-        other = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_POSTED)
+        other = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEW_DELIVERED)
         for n in range(3):
             _noop(other, created_at=_RECENT + dt.timedelta(minutes=n))
         prunable = set(TicketTransition.objects.prunable().values_list("pk", flat=True))

@@ -95,7 +95,7 @@ class TestBuildTicketIndexFromDB(TestCase):
     """DB-backed path — ``PullRequest.ticket`` FK is the authoritative source."""
 
     def test_uses_pull_request_ticket_fk(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="started")
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="work_started")
         url = "https://gitlab.com/x/y/-/merge_requests/370"
         PullRequest.objects.create(
             ticket=ticket,
@@ -115,7 +115,7 @@ class TestBuildTicketIndexFromDB(TestCase):
         assert build_ticket_index(actions) == {url: "855"}
 
     def test_fk_takes_precedence_over_footer_parse(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="started")
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="work_started")
         url = "https://gitlab.com/x/y/-/merge_requests/370"
         PullRequest.objects.create(
             ticket=ticket,
@@ -140,7 +140,7 @@ class TestBuildTicketIndexFromDB(TestCase):
         assert build_ticket_index(actions) == {url: "855"}
 
     def test_mixes_fk_and_footer_per_url(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="started")
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="work_started")
         url_db = "https://gitlab.com/x/y/-/merge_requests/370"
         url_parse = "https://gitlab.com/x/y/-/merge_requests/371"
         PullRequest.objects.create(
@@ -196,18 +196,18 @@ class TestBuildTicketIndexFromTicketExtraPrs(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/142",
-            state="started",
+            state="work_started",
             extra={"prs": {self.URL: {"iid": 145}}},
         )
         assert build_ticket_index(self._actions()) == {self.URL: "142"}
 
     def test_fk_takes_precedence_over_ticket_extra_prs(self) -> None:
-        fk_ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://x/issues/855", state="started")
+        fk_ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://x/issues/855", state="work_started")
         PullRequest.objects.create(ticket=fk_ticket, overlay="t3-teatree", url=self.URL, repo="x/y", iid="145")
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/142",
-            state="started",
+            state="work_started",
             extra={"prs": {self.URL: {"iid": 145}}},
         )
         # FK (855) outranks the extra["prs"] mapping (142).
@@ -217,7 +217,7 @@ class TestBuildTicketIndexFromTicketExtraPrs(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/142",
-            state="started",
+            state="work_started",
             extra={"prs": {self.URL: {"iid": 145}}},
         )
         actions = [
@@ -242,7 +242,7 @@ class TestBuildTicketIndexFromTicketExtraPrs(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/200",
-            state="started",
+            state="work_started",
             extra={"prs": "not-a-dict"},
         )
         assert build_ticket_index(self._actions()) == {}
@@ -258,7 +258,7 @@ class TestBuildTicketIndexFromTicketExtraPrs(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="",
-            state="started",
+            state="work_started",
             extra={"prs": {"https://other/mr/1": {"iid": 1}}},
         )
         assert build_ticket_index(self._actions()) == {}
@@ -313,7 +313,7 @@ class TestZonesForGroupsByParentTicket(TestCase):
     def test_in_flight_prs_grouped_under_parent_via_db(self) -> None:
         from teatree.loop.rendering import zones_for  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="started")
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/issues/855", state="work_started")
         url_a = "https://gitlab.com/x/y/-/merge_requests/370"
         url_b = "https://gitlab.com/x/y/-/merge_requests/399"
         for iid, url in [("370", url_a), ("399", url_b)]:

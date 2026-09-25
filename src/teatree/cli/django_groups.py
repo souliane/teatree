@@ -352,10 +352,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Ticket state management.",
         [
             ("transition", "Transition a ticket to a new state."),
-            ("plan", 'Record a PlanArtifact and advance STARTED → PLANNED (`plan <id> "<text>"`).'),
-            ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLANNED (--human-authorize)."),
-            ("skip-planning", "Mark a trivial ticket to skip planning and advance to PLANNED (--reason, no artifact)."),
-            ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
+            ("plan", 'Record a PlanArtifact and advance WORK_STARTED → PLAN_RECORDED (`plan <id> "<text>"`).'),
+            ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLAN_RECORDED (--human-authorize)."),
+            (
+                "skip-planning",
+                "Mark a trivial ticket to skip planning and advance to PLAN_RECORDED (--reason, no artifact).",
+            ),
+            (
+                "plan-reconcile-inflight",
+                "Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added.",
+            ),
             ("plan-reaffirm", "Re-bind a plan to a new base — the plan-currency gate's never-lockout escape."),
             ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
             (
@@ -368,7 +374,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
             ("list-clears", "List every unconsumed merge authorisation, tagged live / superseded / incomplete."),
             ("reconcile-clears", "Consume every standing merge authorisation whose PR already merged or closed."),
-            ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
+            ("merge", "Execute the REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("dead-rows", "List every non-terminal ticket intake can never find (#4527)."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),

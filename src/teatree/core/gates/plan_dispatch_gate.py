@@ -3,7 +3,7 @@
 Planning was documented as mandatory, re-delivered to every attended session on a
 cadence, and enforced at no seam a dispatch passes through.
 :func:`~teatree.core.gates.plan_gate.check_plan_artifact` guards exactly one FSM
-edge (``STARTED → PLANNED``), and every synthetic corrective re-entry mints a
+edge (``WORK_STARTED → PLAN_RECORDED``), and every synthetic corrective re-entry mints a
 coding / testing / debugging ``Task`` directly — so that edge is never taken and
 the absence is never seen. The currency sibling declines the case by name:
 :func:`~teatree.core.gates.plan_currency_gate.check_plan_current` returns True on

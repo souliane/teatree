@@ -582,13 +582,13 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 
 | Subcommand | Description |
 | --- | --- |
-| `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
+| `merge` | Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4) |
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
 | `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
-| `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
+| `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
 | `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
@@ -603,9 +603,9 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
-| `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
-| `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
-| `plan-reconcile-inflight` | Retroactively advance STARTED tickets to PLANNED after the gate was added |
+| `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED |
+| `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
+| `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |

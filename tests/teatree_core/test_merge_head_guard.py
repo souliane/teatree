@@ -86,7 +86,7 @@ def _make_clone(tmp_path: Path) -> Path:
 
 
 def _ticket() -> Ticket:
-    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
 
 def _clear(ticket: Ticket) -> MergeClear:

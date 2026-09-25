@@ -42,7 +42,7 @@ def serialize_ticket(ticket: "Ticket") -> dict[str, Any]:
         "variant": ticket.variant,
         "repos": list(ticket.repos or []),
         "short_description": ticket.short_description,
-        "is_terminal": ticket.is_terminal,
+        "is_settled": ticket.is_settled,
         "remote_missing": ticket.remote_missing,
     }
 

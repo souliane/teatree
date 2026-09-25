@@ -490,7 +490,7 @@ class IssueIntakeScanner:
 
         Ownership is :meth:`Ticket.issue_owning_states` (every state but IGNORED), the
         SSOT rather than a second hand-maintained list — the list this replaced omitted
-        PLANNED and DELIVERED, so a parked ticket's issue was re-admitted every tick
+        PLAN_RECORDED and DELIVERED, so a parked ticket's issue was re-admitted every tick
         (#4133).
 
         Fails SAFE to empty: a DB-blocked harness degrades to "no local work known",

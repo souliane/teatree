@@ -135,7 +135,7 @@ class TestNonGreenVerdictNeverMerges(TestCase):
                 ):
                     merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
                 ticket.refresh_from_db()
-                assert ticket.state == MergeClear.objects.get(pk=clear.pk).ticket.State.IN_REVIEW
+                assert ticket.state == MergeClear.objects.get(pk=clear.pk).ticket.State.REVIEW_REQUESTED
                 assert not MergeAudit.objects.filter(clear=clear).exists()
                 clear.refresh_from_db()
                 assert clear.consumed_at is None

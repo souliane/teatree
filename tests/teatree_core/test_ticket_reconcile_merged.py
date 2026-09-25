@@ -3,8 +3,8 @@
 When the keystone merges a PR (``merge.execution.record_merge_and_advance``),
 the linked ticket's FSM must advance to ``MERGED`` regardless of which
 pre-merge state it sat in. The original guard only fired ``mark_merged()``
-when the ticket was already at ``IN_REVIEW``/``MERGED``, so a ticket whose
-PR landed while the FSM still read ``STARTED`` (a common shape when the
+when the ticket was already at ``REVIEW_REQUESTED``/``MERGED``, so a ticket whose
+PR landed while the FSM still read ``WORK_STARTED`` (a common shape when the
 coding agent's session ended before the FSM advanced past coding) stayed
 visibly stuck at ``started`` on the statusline forever.
 
@@ -21,7 +21,7 @@ from teatree.core.models import Ticket
 
 class TestReconcileMerged(TestCase):
     def test_started_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
@@ -51,19 +51,19 @@ class TestReconcileMerged(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_reviewed_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_shipped_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_in_review_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
@@ -75,13 +75,13 @@ class TestReconcileMerged(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_retrospected_cannot_reconcile_backwards(self) -> None:
-        """A ticket past MERGED (RETROSPECTED) stays where it is.
+        """A ticket past MERGED (RETRO_RECORDED) stays where it is.
 
         Mirrors the existing ``record_advance_skips_mark_merged`` invariant —
         the post-merge hook must never drag a ticket BACK from a post-MERGED
         state to MERGED.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
         with pytest.raises(TransitionNotAllowed):
             ticket.reconcile_merged()
 
@@ -105,9 +105,9 @@ class TestReconcileMerged(TestCase):
         all_states = set(Ticket.State)
         merge_source = set(Ticket._MERGED_RECONCILE_SOURCE_STATES)
         refused = {
-            Ticket.State.RETROSPECTED,
+            Ticket.State.RETRO_RECORDED,
             Ticket.State.DELIVERED,
-            Ticket.State.REVIEW_POSTED,
+            Ticket.State.REVIEW_DELIVERED,
             Ticket.State.IGNORED,
         }
         assert merge_source.isdisjoint(refused), "a state is both reconcile-merged and refused"

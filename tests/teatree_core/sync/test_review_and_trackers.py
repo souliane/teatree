@@ -60,7 +60,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/500",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/50": {
@@ -83,7 +83,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/501",
             repos=["repo"],
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/51": {
@@ -112,7 +112,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/502",
             repos=["repo"],
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/52": {
@@ -142,7 +142,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/503",
             repos=["repo"],
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             extra={"prs": {mr_url: {"draft": False}}},
         )
 
@@ -173,7 +173,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/801",
             repos=["repo"],
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             extra={"prs": "not-a-dict"},
         )
         self._monkeypatch.setattr("teatree.backends.slack.review_sync.search_review_permalinks", lambda _request: [])
@@ -189,7 +189,7 @@ class TestFetchReviewPermalinks(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/802",
             repos=["repo"],
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             extra={"prs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
         self._monkeypatch.setattr("teatree.backends.slack.review_sync.search_review_permalinks", lambda _request: [])

@@ -46,8 +46,8 @@ def ticket_taking(
     left = timezone.now() - timedelta(hours=ago_hours)
     entered = left - timedelta(minutes=minutes)
     for source, target, stamp in (
-        (State.STARTED, State.PLANNED, entered),
-        (State.PLANNED, State.CODED, left),
+        (State.WORK_STARTED, State.PLAN_RECORDED, entered),
+        (State.PLAN_RECORDED, State.CODED, left),
     ):
         row = TicketTransition.objects.create(ticket=ticket, from_state=source, to_state=target)
         TicketTransition.objects.filter(pk=row.pk).update(created_at=stamp)
@@ -165,7 +165,7 @@ class CycleTimeViewTestCase(TestCase):
 
     def test_the_aggregate_leads_with_the_slowest_edge(self) -> None:
         view = build_cycle_time_view(window_days=7)
-        assert (view.edges[0].from_state, view.edges[0].to_state) == (State.PLANNED, State.CODED)
+        assert (view.edges[0].from_state, view.edges[0].to_state) == (State.PLAN_RECORDED, State.CODED)
         assert view.edges[0].samples == 3
 
     def test_each_edge_carries_a_median_and_a_p90(self) -> None:
@@ -233,7 +233,7 @@ class CycleTimePageTestCase(TestCase):
     def test_the_page_renders_the_transition_the_data_contains(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK)
         assert response.status_code == 200
-        assert f"{State.PLANNED} → {State.CODED}" in response.content.decode()
+        assert f"{State.PLAN_RECORDED} → {State.CODED}" in response.content.decode()
 
     def test_the_page_draws_charts_rather_than_only_tabulating(self) -> None:
         body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()

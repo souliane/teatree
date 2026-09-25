@@ -54,30 +54,30 @@ def _status_by_name(payload: dict[str, object]) -> dict[str, str]:
 
 class DoPlanDryRunTest(TestCase):
     def test_plan_lists_all_seven_steps_without_side_effects(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         payload = _run(str(ticket.pk), "--plan")
         assert payload["plan_only"] is True
         names = [s["name"] for s in _steps(payload)]
         assert names == ["intake", "provision", "plan", "code", "test", "review", "ship"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not Worktree.objects.filter(ticket=ticket).exists()
 
     def test_plan_reports_runnable_current_step_for_reviewed_ticket(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
         payload = _run(str(ticket.pk), "--plan")
         assert payload["stopped_at"] == "ship"
         assert payload["stopped_reason"] == "runnable"
         assert _status_by_name(payload)["ship"] == "run"
 
     def test_plan_reports_pending_when_next_step_is_an_agent_phase(self) -> None:
-        ticket = _ticket(Ticket.State.PLANNED)
+        ticket = _ticket(Ticket.State.PLAN_RECORDED)
         payload = _run(str(ticket.pk), "--plan")
         assert payload["stopped_at"] == "code"
         assert payload["stopped_reason"] == "pending"
 
     def test_plan_json_is_pure_on_stdout(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         out, err = io.StringIO(), io.StringIO()
         call_command("do", str(ticket.pk), "--plan", "--json", stdout=out, stderr=err)
         json.loads(out.getvalue())  # stdout is exactly one parseable document
@@ -85,7 +85,7 @@ class DoPlanDryRunTest(TestCase):
         assert err.getvalue() == ""  # --json emits no human bytes anywhere
 
     def test_plan_never_invokes_a_chokepoint(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
         with mock.patch(_SEAM) as seam:
             _run(str(ticket.pk), "--plan")
         seam.assert_not_called()
@@ -119,15 +119,15 @@ def _advancing_seam(target_state: str, *, provision: bool = False) -> Callable[.
 
 class DoRealRunTest(TestCase):
     def test_reviewed_ticket_ships_and_completes(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
-        with mock.patch(_SEAM, _advancing_seam(Ticket.State.IN_REVIEW)):
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
+        with mock.patch(_SEAM, _advancing_seam(Ticket.State.REVIEW_REQUESTED)):
             payload = _run(str(ticket.pk))
         assert _status_by_name(payload)["ship"] == "ran"
         assert payload["stopped_reason"] == "completed"
-        assert payload["final_state"] == Ticket.State.IN_REVIEW
+        assert payload["final_state"] == Ticket.State.REVIEW_REQUESTED
 
     def test_started_provisioned_stops_pending_on_plan_agent(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
@@ -154,7 +154,7 @@ class DoRealRunTest(TestCase):
         assert payload["stopped_at"] == "test"
 
     def test_absent_ref_runs_intake_then_stops_pending(self) -> None:
-        with mock.patch(_SEAM, _advancing_seam(Ticket.State.STARTED, provision=True)):
+        with mock.patch(_SEAM, _advancing_seam(Ticket.State.WORK_STARTED, provision=True)):
             payload = _run("https://github.com/souliane/teatree/issues/9999")
         statuses = _status_by_name(payload)
         assert statuses["intake"] == "ran"
@@ -164,7 +164,7 @@ class DoRealRunTest(TestCase):
 
 class DoBlockedAndTerminalTest(TestCase):
     def test_blocked_ship_exits_nonzero_and_surfaces_the_blocker(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
 
         def _refusing_seam(step: LifecycleStep, **_: object) -> str:
             return "Refusing the 'shipping' transition — uncommitted tracked changes"
@@ -178,7 +178,7 @@ class DoBlockedAndTerminalTest(TestCase):
         assert ship["status"] == "blocked"
         assert "uncommitted tracked changes" in ship["blocker"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_ignored_ticket_exits_nonzero(self) -> None:
         ticket = _ticket(Ticket.State.IGNORED)
@@ -198,14 +198,14 @@ class DoBlockedAndTerminalTest(TestCase):
         assert payload["stopped_reason"] == "completed"
 
     def test_human_mode_keeps_stdout_clean(self) -> None:
-        ticket = _ticket(Ticket.State.PLANNED)
+        ticket = _ticket(Ticket.State.PLAN_RECORDED)
         out, err = io.StringIO(), io.StringIO()
         call_command("do", str(ticket.pk), stdout=out, stderr=err)
         assert out.getvalue() == ""  # no --json: nothing on stdout
         assert "plan" in err.getvalue().lower()
 
     def test_human_mode_renders_the_blocker_line(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
 
         def _refusing_seam(step: LifecycleStep, **_: object) -> str:
             return "dirty worktree — commit first"

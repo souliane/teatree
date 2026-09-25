@@ -217,7 +217,7 @@ class TicketQuerySet(models.QuerySet):
 
         rows = (
             self.for_overlay(overlay)
-            .exclude(state__in=ticket_model._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
+            .exclude(state__in=ticket_model._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
             .annotate(oldest_task=Min("tasks__created_at"))
             .order_by("pk")
         )

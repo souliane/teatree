@@ -378,7 +378,7 @@ class TestEnsurePr(TestCase):
 
     def test_refuses_when_ticket_is_at_its_open_pr_budget(self) -> None:
         """North-star PR-2: the orphan path refuses before creating when at budget."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-q")
         PullRequest.objects.create(
             ticket=ticket,
@@ -415,7 +415,7 @@ class TestEnsurePr(TestCase):
 
     def test_refuses_when_branch_introduces_net_new_debt(self) -> None:
         """North-star PR-3: the orphan path refuses before creating on unwaived debt."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-d")
         host = MagicMock()
         host.current_user.return_value = "souliane"
@@ -600,7 +600,7 @@ class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
     def test_why_section_tracks_the_branch_owning_ticket_without_closing_it(self) -> None:
         """#4424: the branch's ``Worktree`` row names the ticket — a reference, never a closing keyword."""
         issue_url = "https://github.com/souliane/teatree/issues/1534"
-        ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="1534-fix-the-real-work")
 
         spec = cast("PullRequestSpec", self._created_spec())

@@ -45,7 +45,17 @@ logger = logging.getLogger(__name__)
 CLOSE_CANDIDATE_KIND = "issue_disposition.close_candidate"
 
 _LIVE_TICKET_STATES: frozenset[str] = frozenset(
-    {"not_started", "scoped", "started", "planned", "coded", "tested", "reviewed", "in_review", "shipped"}
+    {
+        "not_started",
+        "scoped",
+        "work_started",
+        "plan_recorded",
+        "coded",
+        "tested",
+        "self_reviewed",
+        "review_requested",
+        "pr_opened",
+    }
 )
 
 _WHITESPACE_RE = re.compile(r"\s+")

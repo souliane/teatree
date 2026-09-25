@@ -70,26 +70,26 @@ def _merge(clear: MergeClear) -> object:
 
 class TestMergeAntiVacuityGate(TestCase):
     def test_merge_refused_without_attestation_when_gate_on(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with _gate(required=True), pytest.raises(MergePreconditionError, match="anti-vacuity"):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_merge_refused_with_stale_sha_attestation(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_OTHER_SHA, "AC mapped", ["tests/x.py::test_y"])
         clear = _clear(ticket)
         with _gate(required=True), pytest.raises(MergePreconditionError, match="stale"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_merge_allowed_with_bound_complete_attestation(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_SHA, "AC1-3 mapped", ["tests/x.py::test_y"])
         clear = _clear(ticket)
         with _gate(required=True):
@@ -98,7 +98,7 @@ class TestMergeAntiVacuityGate(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_merge_unaffected_when_gate_off(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with _gate(required=False):
             _merge(clear)

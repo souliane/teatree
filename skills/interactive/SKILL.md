@@ -66,7 +66,7 @@ The emergency path is unreviewed by construction, so the plan is the only checkp
 left. An emergency is not an exception to this.
 
 ```bash
-t3 <overlay> ticket plan <ticket-id> "<the plan>"   # PlanArtifact; STARTED → PLANNED
+t3 <overlay> ticket plan <ticket-id> "<the plan>"   # PlanArtifact; WORK_STARTED → PLAN_RECORDED
 ```
 
 Scope: this governs CODE CHANGES, not diagnosis. Reading, grepping, probing, running tests

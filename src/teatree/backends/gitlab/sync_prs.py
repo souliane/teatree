@@ -234,7 +234,7 @@ def update_ticket(
         repos = [*repos, repo_short]
     # The DoD gate's UI-visibility check reads ``ticket.repos``; reflect the
     # synced repo set in-memory first so a newly-scoped frontend repo cannot
-    # let a SHIPPED write slip past the gate on the stale (smaller) set.
+    # let a PR_OPENED write slip past the gate on the stale (smaller) set.
     ticket.repos = repos
 
     # #800 N3: canonical locked RMW; narrow set_keys to the only top-level
@@ -258,12 +258,12 @@ def infer_state_from_prs(prs_data: dict[str, PREntryDict]) -> str:
             continue
         is_draft = pr.get("draft", True)
         if is_draft:
-            candidate = Ticket.State.STARTED
+            candidate = Ticket.State.WORK_STARTED
         else:
             approvals = pr.get("approvals")
             has_approvals = isinstance(approvals, dict) and int(approvals.get("count", 0)) > 0
             review_requested = bool(pr.get("review_requested"))
-            candidate = Ticket.State.IN_REVIEW if (has_approvals or review_requested) else Ticket.State.SHIPPED
+            candidate = Ticket.State.REVIEW_REQUESTED if (has_approvals or review_requested) else Ticket.State.PR_OPENED
         if Ticket.state_advances(best, candidate):
             best = candidate
     return best

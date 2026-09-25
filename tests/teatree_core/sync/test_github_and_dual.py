@@ -249,7 +249,7 @@ class TestSyncGitHub(TestCase):
         assert result.tickets_created == 1
         assert result.prs_found == 1
         ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/42")
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.extra["issue_title"] == "Test issue"
 
     def test_updates_existing_ticket(self) -> None:
@@ -294,7 +294,7 @@ class TestSyncGitHub(TestCase):
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(
             issue_url="https://github.com/souliane/teatree/issues/44",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(
             overlay="test",
@@ -359,7 +359,7 @@ class TestSyncGitHub(TestCase):
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(
             issue_url="https://github.com/souliane/teatree/issues/46",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(
             overlay="test",
@@ -405,7 +405,7 @@ class TestSyncGitHub(TestCase):
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(
             issue_url="https://github.com/souliane/teatree/issues/47",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(
             overlay="test",
@@ -450,7 +450,7 @@ class TestSyncGitHub(TestCase):
         overlay = self._make_overlay()
         Ticket.objects.create(
             issue_url="https://github.com/souliane/teatree/issues/48",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             repos=["teatree"],
         )
         item = ProjectItem(
@@ -482,7 +482,7 @@ class TestSyncGitHub(TestCase):
         overlay = self._make_overlay()
         Ticket.objects.create(
             issue_url="https://github.com/souliane/teatree/issues/49",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             repos=["teatree"],
         )
         item = ProjectItem(

@@ -21,10 +21,10 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def _shippable_ticket(*, repo: str = "/tmp/wt", branch: str = "feature-x") -> Ticket:
-    """Build a ticket pre-advanced to REVIEWED with the shipping gate satisfied."""
+    """Build a ticket pre-advanced to SELF_REVIEWED with the shipping gate satisfied."""
     ticket = Ticket.objects.create(
         overlay="test",
-        state=Ticket.State.REVIEWED,
+        state=Ticket.State.SELF_REVIEWED,
         issue_url="https://example.com/issues/70",
     )
     session = Session.objects.create(overlay="test", ticket=ticket)
@@ -46,7 +46,7 @@ class TestPrCreate(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_returns_error_when_no_worktree(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         assert "error" in result
 
@@ -62,10 +62,10 @@ class TestPrCreate(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         # Default (async) path is queued with an explicit no-worker warning (#708).
         assert result["ticket_id"] == ticket.pk
-        assert result["state"] == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
         assert "QUEUED, not performed" in result["warning"]
 
@@ -85,7 +85,7 @@ class TestPrCreate(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         assert result["error"] == "MR validation failed"
 
     @_patch_overlays(FULL_OVERLAY)
@@ -104,7 +104,7 @@ class TestPrCreate(TestCase):
             )
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # not advanced
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # not advanced
         assert result["dry_run"] is True
         assert result["title"] == "Dry MR"
 
@@ -119,7 +119,7 @@ class TestPrCreate(TestCase):
         )
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
 

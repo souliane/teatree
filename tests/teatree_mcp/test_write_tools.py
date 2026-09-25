@@ -120,7 +120,7 @@ class TestQuestionAnswer(TestCase):
 
 class TestLifecycleTools(TestCase):
     def test_visit_phase_records_on_the_session(self) -> None:
-        ticket = TicketFactory(state=Ticket.State.STARTED)
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
 
         _call("ticket_visit_phase", {"ticket": str(ticket.pk), "phase": "testing"})
 
@@ -128,7 +128,7 @@ class TestLifecycleTools(TestCase):
         assert "testing" in visited
 
     def test_record_e2e_run_writes_the_attestation(self) -> None:
-        ticket = TicketFactory(state=Ticket.State.STARTED)
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
 
         _call(
             "record_e2e_run",
@@ -173,7 +173,7 @@ class TestShipAndMergeGatePreservation(TestCase):
         # The shipping gate must fire identically over MCP: a worktree'd ticket
         # with no testing/reviewing phases visited ⇒ structured gate failure,
         # no state change.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         Session.objects.create(ticket=ticket, overlay="test")
         Worktree.objects.create(
             ticket=ticket,
@@ -189,7 +189,7 @@ class TestShipAndMergeGatePreservation(TestCase):
         ticket.refresh_from_db()
         assert result["allowed"] is False
         assert "missing" in result
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_pr_merge_unknown_clear_is_refused(self) -> None:
         result = _call("pr_merge", {"clear_id": 999999})
@@ -200,7 +200,7 @@ class TestShipAndMergeGatePreservation(TestCase):
     def test_pr_merge_substrate_clear_without_human_authorization_escalates(self) -> None:
         # §17.8: a substrate-class CLEAR is never auto-merged — the hold must
         # fire identically over MCP.
-        clear = MergeClearFactory(substrate=True, ticket__state=Ticket.State.IN_REVIEW)
+        clear = MergeClearFactory(substrate=True, ticket__state=Ticket.State.REVIEW_REQUESTED)
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub(clear.reviewed_sha)):
             result = _call("pr_merge", {"clear_id": clear.pk})

@@ -35,7 +35,7 @@ class StandupCommandTests(TestCase):
         )
         tr = TicketTransition.objects.create(
             ticket=ticket,
-            from_state=Ticket.State.STARTED,
+            from_state=Ticket.State.WORK_STARTED,
             to_state=Ticket.State.CODED,
         )
         TicketTransition.objects.filter(pk=tr.pk).update(
@@ -74,7 +74,7 @@ class StandupCommandTests(TestCase):
         )
         tr = TicketTransition.objects.create(
             ticket=ticket,
-            from_state=Ticket.State.STARTED,
+            from_state=Ticket.State.WORK_STARTED,
             to_state=Ticket.State.CODED,
         )
         TicketTransition.objects.filter(pk=tr.pk).update(
@@ -89,7 +89,7 @@ class StandupCommandTests(TestCase):
         ticket = Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url="https://example.com/issues/99",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session)
@@ -110,7 +110,7 @@ class StandupCommandTests(TestCase):
         ticket = Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url="https://example.com/issues/55",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session)

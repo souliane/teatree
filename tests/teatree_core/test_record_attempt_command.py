@@ -24,7 +24,7 @@ from teatree.core.models.task_claim import claim_generation
 
 class TestRecordAttemptCommand(TestCase):
     def _claimed_task(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
@@ -67,7 +67,7 @@ class TestRecordAttemptCommand(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
         assert task.attempts.latest("pk").error.startswith("outage_death:")
 
     def test_missing_phase_evidence_fails_task(self) -> None:
@@ -159,7 +159,7 @@ class TestLateRecordCannotFinishAnotherGeneration(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.claim(claimed_by="tick-1")
@@ -184,7 +184,7 @@ class TestLateRecordCannotFinishAnotherGeneration(TestCase):
         assert task.status == Task.Status.CLAIMED
         assert task.claimed_by == "tick-2"
         assert not task.attempts.exists()
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_late_failure_does_not_fail_the_generation_tick_two_owns(self) -> None:
         task = self._claimed_task()

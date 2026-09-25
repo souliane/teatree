@@ -348,7 +348,7 @@ class TestHalfMoveReconcile(_RelocateCase):
 
         result = run_relocate("test", self.new_ws, _io(), dry_run=True)
 
-        assert result.moved  # the reconcile is PLANNED (not skipped as a stale row)
+        assert result.moved  # the reconcile is PLAN_RECORDED (not skipped as a stale row)
         assert not result.skipped
         wt.refresh_from_db()
         assert wt.worktree_path == str(self.old_wt)  # nothing written under dry-run

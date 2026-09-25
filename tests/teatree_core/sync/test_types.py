@@ -208,35 +208,35 @@ class TestInferStateFromPrs:
 
     def test_draft_mr(self) -> None:
         mrs = {"url1": {"draft": True}}
-        assert infer_state_from_prs(mrs) == Ticket.State.STARTED
+        assert infer_state_from_prs(mrs) == Ticket.State.WORK_STARTED
 
     def test_non_draft_mr(self) -> None:
         mrs = {"url1": {"draft": False}}
-        assert infer_state_from_prs(mrs) == Ticket.State.SHIPPED
+        assert infer_state_from_prs(mrs) == Ticket.State.PR_OPENED
 
     def test_mr_with_approvals(self) -> None:
         mrs = {"url1": {"draft": False, "approvals": {"count": 1, "required": 1}}}
-        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.REVIEW_REQUESTED
 
     def test_mr_with_review_requested(self) -> None:
         mrs = {"url1": {"draft": False, "review_requested": True}}
-        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.REVIEW_REQUESTED
 
     def test_picks_highest_across_mrs(self) -> None:
         mrs = {
-            "url1": {"draft": True},  # STARTED
-            "url2": {"draft": False, "approvals": {"count": 1, "required": 1}},  # IN_REVIEW
+            "url1": {"draft": True},  # WORK_STARTED
+            "url2": {"draft": False, "approvals": {"count": 1, "required": 1}},  # REVIEW_REQUESTED
         }
-        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        assert infer_state_from_prs(mrs) == Ticket.State.REVIEW_REQUESTED
 
     def test_second_mr_does_not_advance_when_lower(self) -> None:
         """When second MR infers a lower state than the first, best stays unchanged."""
         mrs = {
-            "url1": {"draft": False, "approvals": {"count": 1, "required": 1}},  # IN_REVIEW
-            "url2": {"draft": True},  # STARTED (lower)
+            "url1": {"draft": False, "approvals": {"count": 1, "required": 1}},  # REVIEW_REQUESTED
+            "url2": {"draft": True},  # WORK_STARTED (lower)
         }
-        # Should pick the highest: IN_REVIEW
-        assert infer_state_from_prs(mrs) == Ticket.State.IN_REVIEW
+        # Should pick the highest: REVIEW_REQUESTED
+        assert infer_state_from_prs(mrs) == Ticket.State.REVIEW_REQUESTED
 
 
 class TestClassifyDiscussions:

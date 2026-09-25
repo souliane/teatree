@@ -70,7 +70,7 @@ class TestReviewingRequiresExplicitReviewer(TestCase):
 
 class TestClearLedger(TestCase):
     def test_clear_ledger_requires_confirm(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="maker")
         session.visit_phase("coding", agent_id="maker")
         result = call_command("lifecycle", "clear-ledger", str(ticket.pk))
@@ -79,7 +79,7 @@ class TestClearLedger(TestCase):
         assert "--confirm" in str(result)
 
     def test_clear_ledger_wipes_every_session_phase_ledger(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("coding", agent_id="maker")
         s1.visit_phase("testing", agent_id="maker")
@@ -110,7 +110,7 @@ class TestTicketMergeKeystoneCli(TestCase):
         return (0, changed_files_stdout(joined), "")
 
     def test_ticket_merge_advances_in_review_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=859,
@@ -135,7 +135,7 @@ class TestTicketMergeKeystoneCli(TestCase):
         assert "not found" in result["error"]
 
     def test_ticket_merge_substrate_clear_re_escalates_without_fsm_change(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=860,
@@ -148,6 +148,6 @@ class TestTicketMergeKeystoneCli(TestCase):
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_stub):
             result = cast("dict[str, object]", call_command("ticket", "merge", str(clear.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert result["escalated"]
         assert not (result["merged"])

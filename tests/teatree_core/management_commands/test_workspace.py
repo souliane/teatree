@@ -547,7 +547,7 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.issue_url == "https://example.com/issues/42"
         # Stage 3 of #140: workspace ticket advances scope() then start() so the
         # provisioning runner can materialise the worktrees in the same call.
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.worktrees.count() == 2
 

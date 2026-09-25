@@ -113,6 +113,7 @@ from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_stale_retro_recorded import check_stale_retro_recorded
 from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
 from teatree.cli.doctor.checks_sweep_forge import _check_sweep_repos_resolve_a_forge
 from teatree.cli.doctor.checks_test_durations import (
@@ -488,8 +489,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # stale row, not a stale artifact, but untracked content sitting IN the checkout itself —
     # a repo-root-scanning gate (`ty-check`) still reads it and can fail on stale code inside,
     # found when a periodic review's own leftover snapshot broke `t3 tool verify-gates` weeks
-    # after it was written with nothing surfacing it in between. The tuple calls all eleven
-    # before ``all`` short-circuits, so no finding masks another.
+    # after it was written with nothing surfacing it in between. A twelfth watches the one
+    # non-terminal state `_SETTLED_STATES` excludes on purpose: RETRO_RECORDED is in flight,
+    # not settled, but a failed/never-dispatched retro worker leaves it there with nothing
+    # else flagging the stall (#4779). The tuple calls all twelve before ``all`` short-circuits,
+    # so no finding masks another.
     ok = (
         all(
             (
@@ -499,6 +503,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_dead_ticket_rows(),
+                check_stale_retro_recorded(),
                 check_stranded_prek_patches(),
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),

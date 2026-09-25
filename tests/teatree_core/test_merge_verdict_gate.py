@@ -15,7 +15,7 @@ through ``scan()`` so the companion ``has_independent_cold_review`` predicate
 
 Every "refuse" scenario merges on the pre-#2829 code (no gate) — they are the
 RED-before-fix anti-vacuity proof: each asserts the PR is NOT merged AND the
-ticket stays IN_REVIEW.
+ticket stays REVIEW_REQUESTED.
 """
 
 import datetime as dt
@@ -114,25 +114,25 @@ class TestKeystoneMergeVerdictGate(TestCase):
 
     def test_1_no_verdict_at_head_refuses(self) -> None:
         # RED before #2829: with no recorded verdict the keystone merged today.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         with pytest.raises(MergePreconditionError, match="no recorded merge_safe ReviewVerdict at the live head"):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_2_hold_only_at_head_refuses(self) -> None:
         # RED before #2829: a recorded HOLD did not stop the merge path.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("hold", at=_T0)
         with pytest.raises(MergePreconditionError, match="no recorded merge_safe ReviewVerdict at the live head"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_3_hold_then_later_merge_safe_allows(self) -> None:
@@ -140,7 +140,7 @@ class TestKeystoneMergeVerdictGate(TestCase):
         # reviewers, because ``record`` is an update_or_create keyed on the normalised
         # identity — one reviewer re-recording overwrites their own row, so the default
         # name would collapse the two verdicts into one and pin nothing about newest-wins.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("hold", reviewer="reviewer-a", at=_T0)
         _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
@@ -154,42 +154,42 @@ class TestKeystoneMergeVerdictGate(TestCase):
 
     def test_4_merge_safe_then_later_hold_refuses(self) -> None:
         # RED before #2829: an even-later HOLD re-blocks; the newest verdict wins.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("merge_safe", reviewer="reviewer-a", at=_T0)
         _record("hold", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         with pytest.raises(MergePreconditionError, match="an independent reviewer recorded a HOLD at this head"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_4b_same_timestamp_hold_and_merge_safe_refuses(self) -> None:
         # Low finding: a HOLD recorded in the SAME instant as a PASS resolves to
         # HOLD (the safe direction), never silently overridden to merge-safe.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("merge_safe", reviewer="reviewer-a", at=_T0)
         _record("hold", reviewer="reviewer-b", at=_T0)
         with pytest.raises(MergePreconditionError, match="an independent reviewer recorded a HOLD at this head"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_5_stale_merge_safe_refuses(self) -> None:
         # SHA binding: a merge_safe reviewed against a different tree is stale at the
         # live head, so it cannot vouch for it. RED before #2829.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("merge_safe", sha=_OTHER, at=_T0)
         with pytest.raises(MergePreconditionError, match="no recorded merge_safe ReviewVerdict at the live head"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_6_happy_path_non_stale_merge_safe_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _record("merge_safe", at=_T0)
         outcome = _merge(clear)
@@ -203,7 +203,7 @@ class TestKeystoneMergeVerdictGate(TestCase):
     def test_self_attested_verdict_can_never_satisfy_the_gate(self) -> None:
         # Anti-vacuity: ``ReviewVerdict.record`` refuses a maker/loop reviewer, so a
         # maker can never seed a row that satisfies the gate — the merge stays refused.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         from teatree.core.models.review_verdict import ReviewVerdictError  # noqa: PLC0415
 
@@ -212,7 +212,7 @@ class TestKeystoneMergeVerdictGate(TestCase):
         with pytest.raises(MergePreconditionError, match="no recorded merge_safe ReviewVerdict at the live head"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 def _solo_scanner(prs: list[PrSummary]) -> tuple[PrSweepScanner, FakePrApiClient, FakeKeystone]:

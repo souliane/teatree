@@ -13,7 +13,7 @@ _SHA = "a" * 40
 
 class ReviewRecordEvidenceTest(TestCase):
     def test_records_cold_review_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         result = cast(
             "dict[str, object]",
             call_command(
@@ -57,7 +57,7 @@ class ReviewRecordEvidenceTest(TestCase):
         assert ReviewEvidence.objects.has_integration_review_covering(ticket, ["org/a", "org/b"]) is True
 
     def test_maker_reviewer_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         result = cast(
             "dict[str, object]",
             call_command(

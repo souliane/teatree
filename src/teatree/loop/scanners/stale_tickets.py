@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # the ticket has not yet reached a terminal state. ``not_started`` is
 # excluded (no work scheduled yet); the terminal set has nothing left to do.
 _STALE_CANDIDATE_STATES: frozenset[str] = frozenset(
-    {"scoped", "started", "coded", "tested", "reviewed", "in_review"},
+    {"scoped", "work_started", "coded", "tested", "self_reviewed", "review_requested"},
 )
 
 DEFAULT_STALE_THRESHOLD_DAYS = 3

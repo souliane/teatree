@@ -54,11 +54,11 @@ class TicketStateSetsModel(TicketFacet):
         abstract = True
 
     # The post-ship walk as ``(guard_state, transition_name)`` steps.
-    # request_review: SHIPPED → IN_REVIEW; mark_merged: IN_REVIEW → MERGED;
-    # retrospect: MERGED → RETROSPECTED (the retro worker then drives mark_delivered).
+    # request_review: PR_OPENED → REVIEW_REQUESTED; mark_merged: REVIEW_REQUESTED → MERGED;
+    # retrospect: MERGED → RETRO_RECORDED (the retro worker then drives mark_delivered).
     _ADVANCE_STEPS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("shipped", "request_review"),
-        ("in_review", "mark_merged"),
+        ("pr_opened", "request_review"),
+        ("review_requested", "mark_merged"),
         ("merged", "retrospect"),
     )
 
@@ -106,11 +106,11 @@ class TicketStateSetsModel(TicketFacet):
     def marker_release_states(cls) -> frozenset[str]:
         """Terminal-done states that free markers and trigger worktree teardown.
 
-        ``_TERMINAL_STATES`` minus SHIPPED (its PR is still open). Shared by the
-        teardown/marker signal and the #3275 reconciler; REVIEW_POSTED is the
+        ``_SETTLED_STATES`` minus PR_OPENED (its PR is still open). Shared by the
+        teardown/marker signal and the #3275 reconciler; REVIEW_DELIVERED is the
         reviewer terminal (marker release is a no-op for reviewer tickets).
         """
-        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_POSTED, cls.State.IGNORED})
+        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
 
     @classmethod
     def in_flight_excluded_states(cls) -> frozenset[str]:
@@ -122,17 +122,17 @@ class TicketStateSetsModel(TicketFacet):
         worktrees panel, and both active-ticket scanners (primary ORM + external
         SQLite) ``exclude(state__in=...)`` on exactly this set.
         """
-        return frozenset({cls.State.DELIVERED, cls.State.REVIEW_POSTED, cls.State.IGNORED})
+        return frozenset({cls.State.DELIVERED, cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
 
     @classmethod
     def completable_states(cls) -> frozenset[str]:
         """Post-ship states a completion sweep may advance toward DELIVERED.
 
-        SHIPPED (PR open), IN_REVIEW (review requested), MERGED (PR landed) — the
+        PR_OPENED (PR open), REVIEW_REQUESTED (review requested), MERGED (PR landed) — the
         states worth polling ``is_issue_done()`` on before driving the ticket to
         delivered. Read by the completion scanner and the ``sync-completions`` sweep.
         """
-        return frozenset({cls.State.SHIPPED, cls.State.IN_REVIEW, cls.State.MERGED})
+        return frozenset({cls.State.PR_OPENED, cls.State.REVIEW_REQUESTED, cls.State.MERGED})
 
     @classmethod
     def pre_ship_states(cls) -> frozenset[str]:
@@ -147,14 +147,14 @@ class TicketStateSetsModel(TicketFacet):
 
         The disposition scanner (#2663) reads it too, under its own name no longer:
         every state here is exactly what a hand-written list previously enumerated as
-        "dispositionable" and separately omitted PLANNED from — deriving both callers off
+        "dispositionable" and separately omitted PLAN_RECORDED from — deriving both callers off
         one method means a state added later can't drift the two out of sync again.
         """
         return (
             frozenset(cls.State.values)
             - cls.completable_states()
             - cls.merged_states()
-            - {cls.State.REVIEW_POSTED, cls.State.IGNORED}
+            - {cls.State.REVIEW_DELIVERED, cls.State.IGNORED}
         )
 
     @classmethod
@@ -162,7 +162,7 @@ class TicketStateSetsModel(TicketFacet):
         """States in which a ticket OWNS its issue URL, so intake must not re-admit it.
 
         Derived as the complement of IGNORED rather than enumerated: the hand-written
-        list this replaces silently omitted PLANNED and DELIVERED, and the persistence
+        list this replaces silently omitted PLAN_RECORDED and DELIVERED, and the persistence
         handler reuses the existing row and returns early for anything past
         NOT_STARTED — so each re-admission scheduled no work, claimed an
         ``ImplementedIssueMarker``, held an intake budget slot until the dead grace
@@ -177,10 +177,10 @@ class TicketStateSetsModel(TicketFacet):
     def merged_states(cls) -> frozenset[str]:
         """States that mean the ticket's PR has landed (merged-or-past).
 
-        MERGED (just landed) plus the RETROSPECTED/DELIVERED post-merge lifecycle.
+        MERGED (just landed) plus the RETRO_RECORDED/DELIVERED post-merge lifecycle.
         The outer- and directive-loop liveness guards and the issue-disposition
         dedup read this to tell a landed ticket from one whose PR is still open.
-        Narrower than an "after-merge trigger" set that excludes RETROSPECTED —
+        Narrower than an "after-merge trigger" set that excludes RETRO_RECORDED —
         that lives at its own call site on purpose.
         """
-        return frozenset({cls.State.MERGED, cls.State.RETROSPECTED, cls.State.DELIVERED})
+        return frozenset({cls.State.MERGED, cls.State.RETRO_RECORDED, cls.State.DELIVERED})

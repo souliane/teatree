@@ -272,7 +272,7 @@ def _add_bare_origin(repo: Path, cleanup: "list[Path]", *, push_main: bool) -> N
 
 
 def _clear_with_verdict(repo: Path, feature_tip: str) -> MergeClear:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     clear = MergeClear.issue(
         ClearRequest(
             pr_id=42,
@@ -301,7 +301,7 @@ def _expedited_pending_clear_with_verdict(feature_tip: str) -> MergeClear:
     attestation bound to the reviewed tree, and the verdict snapshots ``pending``
     checks under ``expedited=True``.
     """
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, expedited=True)
     clear = MergeClear.issue(
         ClearRequest(
             pr_id=42,
@@ -500,7 +500,7 @@ class TestRebindClearance(TestCase):
         repo = Path(self._repo())
         _diverge(repo, "feature")
         feature_tip = _git(repo, "rev-parse", "feature")
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         # A CLEAR with NO recorded verdict at the reviewed tree.
         clear = MergeClear.issue(
             ClearRequest(

@@ -60,7 +60,7 @@ class TestCleanupWorktree(TestCase):
     def _make_worktree(self, *, wt_path: str = "", db_name: str = "") -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/99",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         extra = {"worktree_path": wt_path} if wt_path else {}
         return Worktree.objects.create(
@@ -727,7 +727,7 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
     def _make_worktree(self, *, db_name: str = "wt_2664") -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/2664",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -793,7 +793,7 @@ class TestCleanupWorktreeSurvivesVanishedHookPath(TestCase):
     def _make_worktree(self, *, db_name: str = "wt_2692") -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/2692",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -858,7 +858,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
     def _make_worktree(self, *, db_name: str = "wt_99") -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/99",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -1056,7 +1056,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         ticket = Ticket.objects.create(
             overlay=overlay,
             issue_url=f"https://example.com/issues/295-{overlay}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             ticket=ticket,

@@ -30,7 +30,9 @@ def _gate(*, required: bool) -> Iterator[None]:
 
 
 def _ticket(db, repos: list[str], **extra: object) -> Ticket:
-    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED, repos=repos, extra=dict(extra))
+    return Ticket.objects.create(
+        overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED, repos=repos, extra=dict(extra)
+    )
 
 
 def _integration_evidence(ticket: Ticket, repos: list[str]) -> ReviewEvidence:
@@ -101,7 +103,7 @@ class TestFsmWiring:
         with _gate(required=True), pytest.raises(IntegrationReviewError):
             t.mark_delivered()
         t.refresh_from_db()
-        assert t.state == Ticket.State.RETROSPECTED
+        assert t.state == Ticket.State.RETRO_RECORDED
 
     def test_two_repo_ticket_delivers_with_review(self, db) -> None:
         t = _ticket(db, ["org/a", "org/b"])

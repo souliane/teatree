@@ -29,7 +29,7 @@ def _ticketless_clear(*, slug: str = "acme/widget", pr_id: int = 42, consumed: b
 
 
 def _merged_pr(*, slug: str = "acme/widget", pr_id: int = 42) -> PullRequest:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     return PullRequest.objects.create(
         ticket=ticket,
         overlay=ticket.overlay,
@@ -70,7 +70,7 @@ class TestBackfillClears(TestCase):
         rows = _backfill()
 
         pr.ticket.refresh_from_db()
-        assert pr.ticket.state == Ticket.State.IN_REVIEW
+        assert pr.ticket.state == Ticket.State.REVIEW_REQUESTED
         assert rows[0].advanced_to == ""
         assert "no merge audit" in rows[0].detail
 
@@ -83,7 +83,7 @@ class TestBackfillClears(TestCase):
         """
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"prs": {"https://github.com/acme/widget/pull/42": {}}},
         )
         clear = _ticketless_clear()

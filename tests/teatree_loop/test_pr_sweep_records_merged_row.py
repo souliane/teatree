@@ -147,7 +147,7 @@ class _GhStub:
 
 
 def _seed_ledger() -> tuple[Ticket, PullRequest]:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=ISSUE_URL)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=ISSUE_URL)
     row = PullRequest.objects.create(
         ticket=ticket,
         overlay="t3-teatree",

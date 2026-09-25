@@ -142,7 +142,7 @@ class UnpushedWork:
 class DoneButUnmerged:
     """A ticket in a done-claiming terminal state whose branch never merged.
 
-    The ticket reads MERGED/RETROSPECTED/DELIVERED, yet no ``MergeAudit`` row
+    The ticket reads MERGED/RETRO_RECORDED/DELIVERED, yet no ``MergeAudit`` row
     records a merged SHA AND its branch is not provably upstream — the
     believe-done-what-isn't class (a ticket committed, tested, marked done, but
     left unpushed/unmerged).
@@ -357,7 +357,7 @@ def _collect_stale_worktree_dirs(
 # is DoneButUnmerged drift. IGNORED is abandoned (its branch legitimately never
 # merges), so it is excluded — flagging it would be a false positive.
 _DONE_CLAIMING_STATES = frozenset(
-    {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED},
+    {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED},
 )
 _FALLBACK_TARGET = "origin/main"
 

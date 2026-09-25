@@ -20,7 +20,7 @@ _OTHER_SHA = "b" * 40
 
 
 def _ticket() -> Ticket:
-    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
 
 class TestRubricPopulation(TestCase):

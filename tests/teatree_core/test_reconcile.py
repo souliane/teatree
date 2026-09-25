@@ -560,7 +560,9 @@ class TestDoneButUnmergedFinding(TestCase):
     def test_non_done_ticket_not_flagged(self) -> None:
         work = _init_repo(self.tmp)
         _branch_with_unpushed_commit(work, "feature", "ahead.txt", "feat: in progress")
-        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/8", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/org/repo/issues/8", state=Ticket.State.WORK_STARTED
+        )
         wt = Worktree.objects.create(ticket=ticket, repo_path="repo", branch="feature", extra={"clone_path": str(work)})
         with _no_forge():
             assert (

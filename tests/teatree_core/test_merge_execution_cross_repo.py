@@ -371,7 +371,7 @@ class TestUrlFormCrossRepoClearVerdictStaysConsistent(TestCase):
     def test_recorded_verdict_slug_equals_merge_time_reconciled_lookup_slug(self) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url=f"https://github.com/{_OVERLAY_REPO}/issues/159",
         )
         # The CLEAR slug is a bare workstream name; the real repo (Y) is resolved

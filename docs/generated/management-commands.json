@@ -1139,7 +1139,7 @@
       "name": "ticket",
       "subcommands": [
         {
-          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
+          "help": "Execute the missing REVIEW_REQUESTED \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
           "name": "merge"
         },
         {
@@ -1163,7 +1163,7 @@
           "name": "expedite"
         },
         {
-          "help": "Record a PlanArtifact and advance the ticket STARTED \u2192 PLANNED",
+          "help": "Record a PlanArtifact and advance the ticket WORK_STARTED \u2192 PLAN_RECORDED",
           "name": "plan"
         },
         {
@@ -1223,15 +1223,15 @@
           "name": "dead-rows"
         },
         {
-          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
+          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED",
           "name": "plan-bypass"
         },
         {
-          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
+          "help": "Mark a trivial ticket to skip planning and advance WORK_STARTED \u2192 PLAN_RECORDED",
           "name": "skip-planning"
         },
         {
-          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
+          "help": "Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added",
           "name": "plan-reconcile-inflight"
         },
         {

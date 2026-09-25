@@ -54,7 +54,7 @@ class TestRunReadOnlyVendorFallback(TestCase):
 
         from teatree.core.management.commands import db as db_cmd  # noqa: PLC0415
 
-        Ticket.objects.create(overlay="novendor", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="novendor", state=Ticket.State.WORK_STARTED)
         # An unknown vendor yields (None, None): the enter/exit guard
         # statements are skipped (the `is not None` False branches) and the
         # SELECT still runs on the underlying SQLite connection.
@@ -72,13 +72,13 @@ class TestDbQuery(TestCase):
         return out.getvalue()
 
     def test_select_emits_rows_as_json(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         Session.objects.create(ticket=ticket, overlay="test")
 
         raw = self._run_query("SELECT id, state, overlay FROM teatree_ticket")
         payload = json.loads(raw)
 
-        assert payload == [{"id": ticket.pk, "state": "reviewed", "overlay": "test"}]
+        assert payload == [{"id": ticket.pk, "state": "self_reviewed", "overlay": "test"}]
 
     def test_empty_result_is_empty_json_array(self) -> None:
         raw = self._run_query("SELECT id FROM teatree_ticket WHERE id = -1")
@@ -91,7 +91,7 @@ class TestDbQuery(TestCase):
             call_command(
                 "db",
                 "query",
-                "UPDATE teatree_ticket SET state = 'shipped'",
+                "UPDATE teatree_ticket SET state = 'pr_opened'",
                 stdout=StringIO(),
             )
 
@@ -173,8 +173,8 @@ class TestDbQuery(TestCase):
         query — proving it uses the same connection the gate reads, not a
         separately-resolved sqlite file (the #774 asymmetry).
         """
-        Ticket.objects.create(overlay="alpha", state=Ticket.State.STARTED)
-        Ticket.objects.create(overlay="beta", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="alpha", state=Ticket.State.WORK_STARTED)
+        Ticket.objects.create(overlay="beta", state=Ticket.State.WORK_STARTED)
 
         raw = self._run_query("SELECT COUNT(*) AS n FROM teatree_ticket")
         assert json.loads(raw) == [{"n": 2}]

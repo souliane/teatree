@@ -25,7 +25,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.transient_requeue import requeue_transient_failed
 
 
-def _failed_task(*, phase: str, state: str = Ticket.State.STARTED) -> Task:
+def _failed_task(*, phase: str, state: str = Ticket.State.WORK_STARTED) -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)

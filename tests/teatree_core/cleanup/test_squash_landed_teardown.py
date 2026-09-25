@@ -67,7 +67,7 @@ class _SquashLandedFixture(TestCase):
         _run_git("worktree", "add", "-q", "-b", branch, str(wt_path), cwd=self.repo_main)
         ticket = Ticket.objects.create(
             issue_url=f"https://example.com/issues/4423-{branch}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         worktree = Worktree.objects.create(
             overlay="test",

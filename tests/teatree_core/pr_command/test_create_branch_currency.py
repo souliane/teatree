@@ -87,7 +87,7 @@ class TestPrCreateBranchCurrency(TestCase):
 
     def test_auto_merges_stale_base_before_visual_qa(self) -> None:
         clone, _bare, branch_name = _make_stale_feature_worktree(self.tmp_path)
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -132,7 +132,7 @@ class TestPrCreateBranchCurrency(TestCase):
         _git(overlap, "commit", "-m", "remote: change a.txt")
         _git(overlap, "push", "origin", "main")
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -159,7 +159,7 @@ class TestPrCreateBranchCurrency(TestCase):
         # Refusal: no merge landed, ticket NOT shipped.
         assert _git(clone, "rev-parse", "HEAD") == pre_sha
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED  # not shipped
+        assert ticket.state == Ticket.State.SELF_REVIEWED  # not shipped
         assert result.get("allowed") is False
         assert "conflict" in str(result.get("error", "")).lower()
         assert result.get("branch") == branch_name
@@ -188,7 +188,7 @@ class TestPrCreateBranchCurrency(TestCase):
         _git(clone, "commit", "-m", "feature")
         pre_sha = _git(clone, "rev-parse", "HEAD")
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -238,7 +238,7 @@ class TestPrCreateGatesReconcileRenamedBranch(TestCase):
         _git(clone, "branch", "-m", real_branch, renamed)
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://github.com/souliane/teatree/issues/4242",
         )
         session = Session.objects.create(ticket=ticket, overlay="test")

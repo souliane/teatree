@@ -35,13 +35,13 @@ State = Ticket.State
 # group; the grouping is purely visual.
 COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Backlog", (State.NOT_STARTED, State.SCOPED)),
-    ("Building", (State.STARTED, State.PLANNED, State.CODED, State.TESTED)),
-    ("Reviewing", (State.REVIEWED, State.SHIPPED, State.IN_REVIEW)),
-    ("Landed", (State.MERGED, State.RETROSPECTED, State.DELIVERED)),
+    ("Building", (State.WORK_STARTED, State.PLAN_RECORDED, State.CODED, State.TESTED)),
+    ("Reviewing", (State.SELF_REVIEWED, State.PR_OPENED, State.REVIEW_REQUESTED)),
+    ("Landed", (State.MERGED, State.RETRO_RECORDED, State.DELIVERED)),
 )
 # Terminal, non-actionable states hidden by default behind the board's toggle:
-# IGNORED (abandoned) and REVIEW_POSTED (reviewer finished cold-reviewing a PR).
-HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_POSTED)
+# IGNORED (abandoned) and REVIEW_DELIVERED (reviewer finished cold-reviewing a PR).
+HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
 
 # How long a task failure stays CURRENT STATE for card-rendering purposes (#3841).
 # Cards were rendering tracebacks whose file paths no longer exist on this box —
@@ -132,22 +132,22 @@ class KanbanCard:
 STATE_MEANINGS: dict[str, str] = {
     State.NOT_STARTED: "Admitted to the board. Nothing claimed it yet.",
     State.SCOPED: "Scope agreed — what is in and out is settled.",
-    State.STARTED: (
+    State.WORK_STARTED: (
         "Someone picked it up and a worktree exists. Comes BEFORE the plan: "
         "the plan is recorded from the work, not ahead of it."
     ),
-    State.PLANNED: "A PlanArtifact is recorded. The plan() transition refuses without one.",
+    State.PLAN_RECORDED: "A PlanArtifact is recorded. The plan() transition refuses without one.",
     State.CODED: "The change is written and committed on its branch.",
     State.TESTED: "Its tests pass — the broader CI/QA run, not just the author's own.",
-    State.REVIEWED: (
+    State.SELF_REVIEWED: (
         "The AUTHOR's own pre-ship review is done. This is not peer review; that is 'In peer review', after shipping."
     ),
-    State.SHIPPED: "A pull/merge request exists on the target branch.",
-    State.IN_REVIEW: "Review was REQUESTED from someone else and is outstanding.",
+    State.PR_OPENED: "A pull/merge request exists on the target branch.",
+    State.REVIEW_REQUESTED: "Review was REQUESTED from someone else and is outstanding.",
     State.MERGED: "The PR is merged into its target branch.",
-    State.RETROSPECTED: "A retro extracted the lessons and turned them into enforcement.",
+    State.RETRO_RECORDED: "A retro extracted the lessons and turned them into enforcement.",
     State.DELIVERED: "Done and confirmed on the surface that matters.",
-    State.REVIEW_POSTED: (
+    State.REVIEW_DELIVERED: (
         "A review this factory performed on someone else's PR has been posted. Terminal for a reviewer ticket."
     ),
     State.IGNORED: "Abandoned on purpose. Kept for the audit trail, never worked.",

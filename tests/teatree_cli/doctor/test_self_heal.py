@@ -437,7 +437,7 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         # souliane/teatree#3492: a bare-number `issue_url` is malformed debris from
         # a write path closed by #3289. `derive_issue_number` still renders it as a
         # forge-looking `#3274`, which is what made it read as frozen issue work.
-        ticket = TicketFactory(state=Ticket.State.STARTED, issue_url="3274", overlay="")
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED, issue_url="3274", overlay="")
         TaskFactory(ticket=ticket, status="failed")
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True

@@ -95,7 +95,7 @@ class TicketDispositionIdentityGroupTests(TestCase):
         )
 
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        return Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
 
     def _issue(self, *, assignees: list[dict[str, str]]) -> RawAPIDict:
         return {"state": "opened", "assignees": assignees, "labels": [{"name": "ready"}]}

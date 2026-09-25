@@ -42,7 +42,7 @@ _STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
 
 def _running(**kwargs: object) -> TaskAttempt:
     """An attempt that has started and not ended — the definition of 'running'."""
-    ticket = TicketFactory(state=State.STARTED, short_description="live subject")
+    ticket = TicketFactory(state=State.WORK_STARTED, short_description="live subject")
     task = TaskFactory(ticket=ticket, phase="coding")
     defaults = {"ended_at": None}
     return TaskAttempt.objects.create(task=task, **{**defaults, **kwargs})
@@ -73,7 +73,7 @@ class RunningWorkIsVisibleTestCase(TestCase):
 
 class QueueDepthIsVisibleTestCase(TestCase):
     def test_pending_and_claimed_are_counted_apart(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         TaskFactory(ticket=ticket, phase="coding", status=Task.Status.PENDING)
         TaskFactory(ticket=ticket, phase="testing", status=Task.Status.PENDING)
         TaskFactory(ticket=ticket, phase="reviewing", status=Task.Status.CLAIMED)
@@ -82,12 +82,12 @@ class QueueDepthIsVisibleTestCase(TestCase):
         assert view.claimed_count == 1
 
     def test_a_terminal_task_is_in_neither_count(self) -> None:
-        TaskFactory(ticket=TicketFactory(state=State.STARTED), phase="coding", status=Task.Status.COMPLETED)
+        TaskFactory(ticket=TicketFactory(state=State.WORK_STARTED), phase="coding", status=Task.Status.COMPLETED)
         view = build_live_view()
         assert (view.pending_count, view.claimed_count) == (0, 0)
 
     def test_the_queue_names_what_is_next(self) -> None:
-        TaskFactory(ticket=TicketFactory(state=State.STARTED), phase="shipping", status=Task.Status.PENDING)
+        TaskFactory(ticket=TicketFactory(state=State.WORK_STARTED), phase="shipping", status=Task.Status.PENDING)
         assert [row.phase for row in build_live_view().queued] == ["shipping"]
 
 
@@ -121,7 +121,7 @@ class RecentOutcomesTailTestCase(TestCase):
         assert [row.outcome for row in build_live_view().outcomes] == ["Success"]
 
     def test_the_tail_is_bounded(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         now = timezone.now()
         TaskAttempt.objects.bulk_create(

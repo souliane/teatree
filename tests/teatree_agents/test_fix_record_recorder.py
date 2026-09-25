@@ -28,7 +28,7 @@ _COMPLETE_RECORD = {
 
 
 def _coding_task(*, kind: Ticket.Kind = Ticket.Kind.FIX) -> Task:
-    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, kind=kind)
+    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     task = Task.objects.create(ticket=ticket, session=session, phase="coding")
     task.claim(claimed_by="loop-slot")
@@ -40,7 +40,7 @@ def _coding_envelope(**extra: object) -> dict[str, object]:
 
 
 def _at_retrospected(ticket: Ticket) -> Ticket:
-    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETROSPECTED)
+    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED)
     ticket.refresh_from_db()
     return ticket
 

@@ -44,8 +44,8 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
 # the issue-implementer marker AND purging the ticket's worktrees. Sourced from
 # ``Ticket.marker_release_states()`` so the on-transition signals and the
 # retroactive reconciler (#3275) can never diverge on which states are terminal;
-# mirrors ``worktree_done._DONE_TICKET_STATES`` — SHIPPED is excluded (its PR is
-# still open, so the work is not finished), i.e. ``Ticket`` terminal states minus SHIPPED.
+# mirrors ``worktree_done._DONE_TICKET_STATES`` — PR_OPENED is excluded (its PR is
+# still open, so the work is not finished), i.e. ``Ticket`` terminal states minus PR_OPENED.
 _TERMINAL_TARGET_STATES: frozenset[str] = Ticket.marker_release_states()
 
 
@@ -62,7 +62,7 @@ def _log_ticket_transition(
     if source == target:
         # A state-preserving transition is not an audit event. Several transitions
         # list their own target in ``source`` so a re-run is safe (``mark_reviewed_externally``
-        # re-stamps a moved head SHA and stays at REVIEW_POSTED), which makes them
+        # re-stamps a moved head SHA and stays at REVIEW_DELIVERED), which makes them
         # idempotent in STATE but not in side effects — every re-run still fired this
         # receiver. A caller re-running one per pass therefore wrote one row per ticket
         # per pass forever: 3,240,987 of 3,241,397 rows on the live box were
@@ -341,7 +341,7 @@ def _enqueue_ticket_transition_task(
     (#808 derive-don't-enumerate): every transition landing in a terminal state
     purges the ticket's worktrees the instant it is done — ``ignore``→IGNORED,
     ``mark_delivered``→DELIVERED,
-    ``mark_review_no_action``/``mark_reviewed_externally``→REVIEW_POSTED,
+    ``mark_review_no_action``/``mark_reviewed_externally``→REVIEW_DELIVERED,
     and the ``mark_merged``/``reconcile_merged``→MERGED merge paths — so a
     frozen/closed ticket's worktrees are reaped rather than piling up. The reaper's
     own analyze-before-wipe (#706) keeps any unsynced work regardless.
@@ -417,7 +417,7 @@ def _release_issue_markers_on_completion(
     """Free the issue-implementer marker(s) when the ticket completes.
 
     Keyed on the ticket REACHING a terminal-done state (MERGED / DELIVERED /
-    REVIEW_POSTED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
+    REVIEW_DELIVERED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
     whole life, so without this the first claim locked the single-ticket budget
     permanently. The RELINQUISHED states are left untouched — ABANDONED (give-up /
     fleet-claim-steal) and DECLINED (an operator cancelled it, #4105) are already

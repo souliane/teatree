@@ -93,15 +93,15 @@ class TestPrCreateSyncShip(TestCase):
         ``--skip-validation`` is the user-authorized attestation
         substitute, so the FSM must follow the authorization.
         Pre-fix, ``--skip-validation`` skipped the phase check AND the FSM
-        reconcile, so ``ship()`` failed from a non-REVIEWED state — the
+        reconcile, so ``ship()`` failed from a non-SELF_REVIEWED state — the
         gate-fixer bootstrap exception was structurally broken (it could
         never actually ship the very tickets it exists for). The skip
-        path now walks the FSM to REVIEWED via ``reconcile_reviewed`` so
+        path now walks the FSM to SELF_REVIEWED via ``reconcile_reviewed`` so
         ``ship()`` is legal. RED on the pre-fix body (returns the
         "Cannot ship from state" gate failure); GREEN once the skip path
         reconciles.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -121,12 +121,12 @@ class TestPrCreateSyncShip(TestCase):
                 call_command("pr", "create", str(ticket.id), sync=True, skip_validation=True),
             )
 
-        # The authorized bypass now ships: FSM reconciled to REVIEWED,
+        # The authorized bypass now ships: FSM reconciled to SELF_REVIEWED,
         # ship() legal, no "Cannot ship from state" failure.
         assert result.get("allowed") is not False, result
         assert result["ok"] is True
         ticket.refresh_from_db()
-        assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
+        assert ticket.state in {Ticket.State.PR_OPENED, Ticket.State.SELF_REVIEWED}
 
     def test_skip_validation_still_enforces_mr_format_check(self) -> None:
         """Skip the heavy gates, still enforce the MR format check.
@@ -136,7 +136,7 @@ class TestPrCreateSyncShip(TestCase):
         title must not slip onto GitLab via the bypass. Only the explicit
         ``--skip-mr-format-check`` opt-in disables the format check too.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -161,7 +161,7 @@ class TestPrCreateSyncShip(TestCase):
         ship_mock.call.assert_not_called()
 
     def test_skip_mr_format_check_disables_the_format_check_too(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -188,7 +188,7 @@ class TestPrCreateSyncShip(TestCase):
     def test_sync_illegal_transition_without_skip_is_structured_failure(self) -> None:
         # Validation NOT skipped, no attested session -> the gate blocks
         # with a structured failure, never a raw TransitionNotAllowed (#694).
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -214,8 +214,8 @@ class TestPrCreateSyncShip(TestCase):
 
         The resulting FSM state depends on the start state: ``MERGED`` is a
         genuine terminal (no reconcile source) so it stays unchanged;
-        ``IN_REVIEW`` is now a recoverable source (#798) so a gate/auth-
-        passing ticket reconciles ``IN_REVIEW → REVIEWED`` and re-ships
+        ``REVIEW_REQUESTED`` is now a recoverable source (#798) so a gate/auth-
+        passing ticket reconciles ``REVIEW_REQUESTED → SELF_REVIEWED`` and re-ships
         (``execute_ship`` is state-guarded/idempotent). The safety
         invariant (no raw raise) holds for both.
         """
@@ -245,9 +245,9 @@ class TestPrCreateSyncShip(TestCase):
         assert ticket.state == expected_state
 
     def test_skip_validation_from_in_review_recovers_and_ships(self) -> None:
-        # #798: IN_REVIEW is now a recoverable reconcile source — a stranded
+        # #798: REVIEW_REQUESTED is now a recoverable reconcile source — a stranded
         # ticket re-ships instead of dead-ending. Still no raw transition.
-        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.IN_REVIEW, Ticket.State.SHIPPED)
+        self._assert_skip_validation_post_ship_no_raw_transition(Ticket.State.REVIEW_REQUESTED, Ticket.State.PR_OPENED)
 
     def test_skip_validation_from_merged_never_raises_raw_transition(self) -> None:
         # MERGED is a genuine terminal (not a reconcile source) — unchanged.
@@ -261,11 +261,11 @@ class TestPrCreateSyncShipAtomic(TestCase):
     transition committed, then ``ShipExecutor.run()`` raised inside
     ``execute_ship`` (a ``git push`` precondition failure surfaces as
     ``CommandFailedError``). Pre-fix this left ``Ticket.state ==
-    SHIPPED`` with no push and no PR, and the real error was swallowed —
+    PR_OPENED`` with no push and no PR, and the real error was swallowed —
     the CLI only saw a bare ``rc=1`` from the manage.py-wrapper
     recursion. The regression asserts both halves:
 
-    Atomicity: the FSM is NOT left in ``SHIPPED`` (no partial state) —
+    Atomicity: the FSM is NOT left in ``PR_OPENED`` (no partial state) —
     reverting the atomicity fix turns that assertion RED.
 
     Surfacing: the real underlying git error is visible in the
@@ -308,12 +308,12 @@ class TestPrCreateSyncShipAtomic(TestCase):
             )
 
         # (a) Atomicity: the ship FSM advance must NOT have been
-        #     committed — no push happened, so no partial SHIPPED state.
+        #     committed — no push happened, so no partial PR_OPENED state.
         ticket.refresh_from_db()
-        assert ticket.state != Ticket.State.SHIPPED, (
-            f"FSM left in partial SHIPPED state with no push/PR: {ticket.state}"
+        assert ticket.state != Ticket.State.PR_OPENED, (
+            f"FSM left in partial PR_OPENED state with no push/PR: {ticket.state}"
         )
-        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+        assert ticket.state == Ticket.State.SELF_REVIEWED, ticket.state
 
         # (b) Surfacing: the real git error is in the structured result,
         #     not masked as a bare ``rc=1``.
@@ -334,9 +334,9 @@ class TestPrCreateSyncShipAtomic(TestCase):
         then returns a normal ``{"ok": False}`` dict, its
         ``transaction.atomic()`` commits, and pre-fix the outer
         ``_ship_sync`` transaction committed too — leaving the FSM in a
-        partial ``SHIPPED`` with no push and no PR. This regression drives
+        partial ``PR_OPENED`` with no push and no PR. This regression drives
         the structured-failure path through the real (un-mocked)
-        ``execute_ship`` and asserts the FSM is NOT left at ``SHIPPED``.
+        ``execute_ship`` and asserts the FSM is NOT left at ``PR_OPENED``.
         """
         ticket = _shippable_ticket()
 
@@ -354,12 +354,12 @@ class TestPrCreateSyncShipAtomic(TestCase):
             )
 
         # (a) Atomicity: a structured ship failure must roll the ``ship()``
-        #     advance back — no partial SHIPPED with no push/PR.
+        #     advance back — no partial PR_OPENED with no push/PR.
         ticket.refresh_from_db()
-        assert ticket.state != Ticket.State.SHIPPED, (
-            f"FSM left in partial SHIPPED state with no push/PR: {ticket.state}"
+        assert ticket.state != Ticket.State.PR_OPENED, (
+            f"FSM left in partial PR_OPENED state with no push/PR: {ticket.state}"
         )
-        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+        assert ticket.state == Ticket.State.SELF_REVIEWED, ticket.state
 
         # (b) Surfacing: the real precondition cause is visible.
         assert result.get("ok") is False, result
@@ -367,7 +367,7 @@ class TestPrCreateSyncShipAtomic(TestCase):
 
 
 def _dirty_git_worktree_ticket(tmp_path: Path) -> tuple[Ticket, Path]:
-    """A REVIEWED ticket whose worktree is a real, tracked-dirty git repo.
+    """A SELF_REVIEWED ticket whose worktree is a real, tracked-dirty git repo.
 
     ``_shippable_ticket`` points the worktree at a non-git ``/tmp`` path so
     the #884 preflight fails open (returns None). To exercise the refusal we
@@ -389,7 +389,7 @@ def _dirty_git_worktree_ticket(tmp_path: Path) -> tuple[Ticket, Path]:
     git("add", "code.py")
     git("commit", "-m", "add code")
 
-    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
     session = Session.objects.create(ticket=ticket, overlay="test")
     session.visit_phase("testing")
     session.visit_phase("reviewing")
@@ -441,7 +441,7 @@ class TestPrCreateDirtyWorktreeStructuredFailure(TestCase):
         assert "uncommitted tracked" in str(result.get("error", "")), result
         # FSM did NOT advance — the refusal rolled the ship() advance back.
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+        assert ticket.state == Ticket.State.SELF_REVIEWED, ticket.state
 
     @override_settings(**_SHIP_BACKEND)
     def test_sync_path_returns_structured_failure_not_exception(self) -> None:
@@ -461,4 +461,4 @@ class TestPrCreateDirtyWorktreeStructuredFailure(TestCase):
         assert result.get("allowed") is False, result
         assert "uncommitted tracked" in str(result.get("error", "")), result
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED, ticket.state
+        assert ticket.state == Ticket.State.SELF_REVIEWED, ticket.state

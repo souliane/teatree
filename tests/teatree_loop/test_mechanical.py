@@ -77,12 +77,12 @@ class TestCompleteTicket(TestCase):
     def test_advances_from_shipped_to_in_review(self) -> None:
         # Direct state injection bypasses the full FSM setup chain.
         Ticket.objects.filter().delete()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/1", state="shipped")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/1", state="pr_opened")
         complete_ticket(_payload(ticket_id=ticket.pk))
         ticket.refresh_from_db()
         # The three sequential `if` blocks cascade through review_request → mark_merged
         # → retrospect on the same call.
-        assert ticket.state in {"in_review", "merged", "delivered", "retrospected"}
+        assert ticket.state in {"review_requested", "merged", "delivered", "retro_recorded"}
 
     def test_no_op_when_ticket_not_in_completable_state(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/2", state="scoped")
@@ -113,7 +113,7 @@ class TestCompleteTicketMidChainRefusal(TestCase):
         ConfigSetting.objects.set_value("require_merge_evidence", value=True)
 
     def test_mid_chain_gate_refusal_does_not_escape_the_tick(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/9", state="shipped")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/9", state="pr_opened")
 
         with self.assertNoLogs("teatree.loop.tick_recovery", level="ERROR"):
             report = _run_mechanical("ticket_completion", ticket_id=ticket.pk)
@@ -122,34 +122,34 @@ class TestCompleteTicketMidChainRefusal(TestCase):
         ticket.refresh_from_db()
         # request_review committed its own atomic step (partial progress);
         # mark_merged was gate-refused and rolled back — the walk stopped clean.
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 class TestReopenTicket(TestCase):
     def test_transitions_shipped_ticket_back_to_started(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/1", state="shipped")
-        reopen_ticket(_payload(ticket_id=ticket.pk, ticket_state="shipped"))
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/1", state="pr_opened")
+        reopen_ticket(_payload(ticket_id=ticket.pk, ticket_state="pr_opened"))
         ticket.refresh_from_db()
-        assert ticket.state == "started"
+        assert ticket.state == "work_started"
 
     def test_no_op_when_ticket_id_missing(self) -> None:
         reopen_ticket(_payload(ticket_state="?"))
 
     def test_idempotent_when_already_started(self) -> None:
-        """#1087: a re-emitted reopen signal on an already-STARTED ticket no-ops.
+        """#1087: a re-emitted reopen signal on an already-WORK_STARTED ticket no-ops.
 
         ``reopen`` targets ``started`` but ``started`` is not one of its
         source states, so re-driving it on an already-reopened ticket raised
         the same ``TransitionNotAllowed`` every-tick noise as the ignore path.
         """
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", state="started")
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", state="work_started")
 
         with self.assertNoLogs("teatree.loop.tick_recovery", level="ERROR"):
-            report = _run_mechanical("ticket_reopen", ticket_id=ticket.pk, ticket_state="started")
+            report = _run_mechanical("ticket_reopen", ticket_id=ticket.pk, ticket_state="work_started")
 
         assert report.errors == {}
         ticket.refresh_from_db()
-        assert ticket.state == "started"
+        assert ticket.state == "work_started"
 
 
 class TestReviewerTaskOrphaned(TestCase):

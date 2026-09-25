@@ -16,7 +16,7 @@ from teatree.core.models.types import FIX_RECORD_FIELDS
 
 
 def _task(phase: str, *, kind: Ticket.Kind = Ticket.Kind.FEATURE) -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, kind=kind)
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
@@ -183,7 +183,7 @@ class TestAnsweringWorkItemBlock(TestCase):
     def _answering_task(self, *, implies_work: bool) -> Task:
         ticket = Ticket.objects.create(
             role=Ticket.Role.AUTHOR,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={"slack_answer": {"slack_ts": "1.0", "question": "q", "implies_work": implies_work}},
         )
         session = Session.objects.create(ticket=ticket, agent_id="answering")
@@ -208,7 +208,7 @@ class TestReviewingBriefAssignsTheIdentity(TestCase):
     _PR_ID = 4658
 
     def _reviewing_brief(self, *, issue_url: str) -> str:
-        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         return "\n".join(phase_specific_lines(task, []))
@@ -236,7 +236,7 @@ class TestReviewingGreenProofBinding(TestCase):
     def _reviewer_task(self, *, issue_url: str, reviewed_sha: str) -> Task:
         ticket = Ticket.objects.create(
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             issue_url=issue_url,
             extra={"reviewed_sha": reviewed_sha} if reviewed_sha else {},
         )

@@ -25,7 +25,7 @@ class TestRefusalExitCode:
         assert refusal_exit_code({"error": "nothing shipped", "hint": "run it in the container"}) == REFUSAL_EXIT_CODE
 
     def test_a_result_with_no_error_key_is_success(self) -> None:
-        assert refusal_exit_code({"ticket_id": 4210, "state": "shipped", "queued": True}) == 0
+        assert refusal_exit_code({"ticket_id": 4210, "state": "pr_opened", "queued": True}) == 0
 
     def test_a_blank_error_is_success(self) -> None:
         """``EnsurePrResult`` is ``total=False``: an unset/blank ``error`` is not a refusal."""
@@ -46,7 +46,7 @@ class _StubCommand(RefusalExitTyperCommand):
 
     @command(name="succeed")
     def succeed(self) -> dict[str, object]:
-        return {"ticket_id": 4210, "state": "shipped"}
+        return {"ticket_id": 4210, "state": "pr_opened"}
 
 
 class TestRefusalExitTyperCommand(TestCase):

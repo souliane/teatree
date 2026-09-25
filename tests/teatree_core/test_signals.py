@@ -172,7 +172,7 @@ class TestSlackReactionsOnTransition(TestCase):
 
     def _ticket(self) -> Ticket:
         # No PR data: the handler targets ``instance.pk`` and the publisher is faked.
-        return Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        return Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
 
     def test_mark_merged_invokes_reactions(self) -> None:
         ticket = self._ticket()
@@ -204,7 +204,7 @@ class TestSlackReactionsOnTransition(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_different_transitions_forward_their_name(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         names: list[str] = []
 
         def _record(_ticket: object, name: str) -> int:
@@ -223,19 +223,19 @@ class TestSlackReactionsOnTransition(TestCase):
         # replay sweep re-fires such a self-loop per reviewer ticket per tick — each
         # re-firing spent a single-use OnBehalfApproval, re-DM'd the user a receipt,
         # and re-ran the post + verify-by-reread round trip for an emoji already there.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_POSTED, role=Ticket.Role.REVIEWER)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_DELIVERED, role=Ticket.Role.REVIEWER)
         names: list[str] = []
 
         with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
             ticket.mark_review_no_action()
             ticket.save()
 
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert names == [], f"reaction re-posted for a state the ticket never left: {names}"
 
     def test_entering_the_same_state_from_elsewhere_still_reacts(self) -> None:
         # Anti-vacuity: the guard suppresses the self-loop only, never a real entry.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, role=Ticket.Role.REVIEWER)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED, role=Ticket.Role.REVIEWER)
         names: list[str] = []
 
         with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
@@ -292,7 +292,7 @@ class TestSlackReactionsReadPrExtra(TestCase):
             recorded.append((channel, ts, emoji))
             return True
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=extra)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED, extra=extra)
         with (
             mode_immediate_cm(),
             patch.object(slack_reactions, "get_overlay", return_value=_Overlay()),
@@ -495,7 +495,7 @@ class TestTransitionReactionGated(TestCase):
 
     def _ticket(self) -> Ticket:
         # No PR data: the gate keys on ``ticket:<pk>`` and the publisher is faked.
-        return Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        return Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
 
     def test_transition_reaction_blocked_when_gate_on_no_approval(self) -> None:
         ticket = self._ticket()
@@ -591,7 +591,7 @@ class TestTeardownThreadedByTransition(TestCase):
     def _enqueue_kwargs_for(self, transition_name: str) -> dict[str, object]:
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         with (
             patch.object(tasks_mod, "execute_teardown") as teardown,
             self.captureOnCommitCallbacks(execute=True),
@@ -614,7 +614,7 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
     The target-state enqueue (#808 derive-don't-enumerate) fires
     ``execute_teardown`` for EVERY transition landing in a terminal state:
     ``ignore``→IGNORED, ``mark_delivered``→DELIVERED,
-    ``mark_review_no_action``→REVIEW_POSTED, and the
+    ``mark_review_no_action``→REVIEW_DELIVERED, and the
     ``mark_merged``/``reconcile_merged``→MERGED merge paths (regression). A frozen
     or abandoned ticket's worktrees are reaped the instant it is done, not only on
     merge, so worktrees stop piling up on closed tickets.
@@ -632,23 +632,23 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
         teardown.enqueue.assert_called_once_with(ticket.pk)
 
     def test_ignore_from_started_enqueues_teardown(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         self._assert_enqueues_teardown_once(ticket, "ignore")
 
     def test_mark_delivered_from_retrospected_enqueues_teardown(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
         self._assert_enqueues_teardown_once(ticket, "mark_delivered")
 
     def test_mark_merged_enqueues_teardown(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         self._assert_enqueues_teardown_once(ticket, "mark_merged")
 
     def test_reconcile_merged_enqueues_teardown(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         self._assert_enqueues_teardown_once(ticket, "reconcile_merged")
 
     def test_mark_review_no_action_enqueues_teardown(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, role=Ticket.Role.REVIEWER)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED, role=Ticket.Role.REVIEWER)
         self._assert_enqueues_teardown_once(ticket, "mark_review_no_action")
 
     def test_non_terminal_transition_does_not_enqueue_teardown(self) -> None:
@@ -669,26 +669,26 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
         # #3879: teardown is the side effect of a ticket BECOMING terminal. Several
         # transitions list their own target as a source so a re-run is safe
         # (``mark_reviewed_externally`` re-stamps a moved head SHA and stays at
-        # REVIEW_POSTED) — idempotent in STATE but not in side effects, so every
+        # REVIEW_DELIVERED) — idempotent in STATE but not in side effects, so every
         # re-run minted another teardown job for worktrees the first one already
         # reaped. Sibling of the audit-row suppression in ``_log_ticket_transition``.
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: the module object the receiver patches
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_POSTED, role=Ticket.Role.REVIEWER)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_DELIVERED, role=Ticket.Role.REVIEWER)
         with (
             patch.object(tasks_mod, "execute_teardown") as teardown,
             self.captureOnCommitCallbacks(execute=True),
         ):
             ticket.mark_review_no_action()
             ticket.save()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         teardown.enqueue.assert_not_called()
 
     def test_teardown_target_states_are_ticket_terminal_minus_shipped(self) -> None:
         # Completeness: the teardown target set is exactly the Ticket terminal
-        # states minus SHIPPED, so a future terminal state cannot silently skip
-        # purge (SHIPPED stays excluded — its PR is still open).
-        assert set(Ticket._TERMINAL_STATES) - {Ticket.State.SHIPPED} == signals_mod._TERMINAL_TARGET_STATES
+        # states minus PR_OPENED, so a future terminal state cannot silently skip
+        # purge (PR_OPENED stays excluded — its PR is still open).
+        assert set(Ticket._SETTLED_STATES) - {Ticket.State.PR_OPENED} == signals_mod._TERMINAL_TARGET_STATES
 
 
 class TestSessionClosedOnTerminalTask(TestCase):

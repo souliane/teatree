@@ -16,7 +16,7 @@ SLUG = "souliane/teatree"
 
 
 def _row(pr_id: int, *, state: str = PullRequest.State.OPEN) -> PullRequest:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     return PullRequest.objects.create(
         ticket=ticket,
         overlay="t3-teatree",

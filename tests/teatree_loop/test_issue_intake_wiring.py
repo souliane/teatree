@@ -223,7 +223,7 @@ class IssueIntakeGateTests(TestCase):
         slot AND silencing the alarm about it.
         """
         url = "https://github.com/souliane/teatree/issues/3978"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.REVIEW_REQUESTED)
         ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
         row = PullRequest.objects.create(
             ticket=ticket,
@@ -245,7 +245,7 @@ class IssueIntakeGateTests(TestCase):
 
     def test_an_unreadable_forge_never_blocks_the_tick(self) -> None:
         url = "https://github.com/souliane/teatree/issues/3979"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.REVIEW_REQUESTED)
         ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
         PullRequest.objects.create(
             ticket=ticket,
@@ -298,7 +298,7 @@ class IntakeDeadlockIsBrokenTests(TestCase):
     def _stuck(self, number: int, *, hours: float) -> ImplementedIssueMarker:
         """A holder past the settle window but still inside its own release grace."""
         url = f"https://github.com/o/r/issues/{number}"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
         ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
             dispatched_at=timezone.now() - timedelta(hours=hours)

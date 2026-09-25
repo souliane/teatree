@@ -95,9 +95,9 @@ class AttachmentCommands(TyperCommand):
 
         # A successful ``--fetch`` that leaves nothing missing releases the intake
         # attachment-gate hold: re-enqueue ``execute_provision`` so a ticket parked
-        # at STARTED behind the gate re-checks and hands off to planning. Without
+        # at WORK_STARTED behind the gate re-checks and hands off to planning. Without
         # this the fetched ticket stays frozen — the gate never re-fires on its own.
-        if fetch and not missing and ticket.state == Ticket.State.STARTED:
+        if fetch and not missing and ticket.state == Ticket.State.WORK_STARTED:
             self._reenqueue_provision(ticket)
 
         return {"ticket_id": int(ticket.pk), "entries": rows, "missing": len(missing)}

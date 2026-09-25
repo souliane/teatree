@@ -109,7 +109,7 @@ class TestRenderFsmMermaid:
 
     def test_ticket_wildcard_ignore_edge_expands_to_every_state(self) -> None:
         rendered = render_fsm_mermaid(Ticket)
-        for source in ("not_started", "scoped", "started", "planned", "coded", "tested", "reviewed"):
+        for source in ("not_started", "scoped", "work_started", "plan_recorded", "coded", "tested", "self_reviewed"):
             assert f"{source} --> ignored : ignore" in rendered
 
     def test_task_fsm_has_no_transitions_so_is_not_single_sourceable(self) -> None:

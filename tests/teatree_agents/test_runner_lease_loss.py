@@ -30,7 +30,7 @@ def _watchdog_breach() -> HarnessOutcome:
 
 
 class _Dispatch(TestCase):
-    def _task(self, *, phase: str = "shipping", state: str = Ticket.State.IN_REVIEW) -> Task:
+    def _task(self, *, phase: str = "shipping", state: str = Ticket.State.REVIEW_REQUESTED) -> Task:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
         return self._claimed_task(ticket, phase=phase)
 
@@ -73,7 +73,7 @@ class TestLandedWorkIsNotRecordedFailed(_Dispatch):
 
         assert attempt is not None
         summary = str(attempt.result["summary"])
-        assert "in_review" in summary
+        assert "review_requested" in summary
         assert "lease" in summary
 
     def test_an_unowned_row_lands_completed_so_nothing_re_dispatches_it(self) -> None:
@@ -100,7 +100,7 @@ class TestLandedWorkIsNotRecordedFailed(_Dispatch):
         assert task.claimed_by == "worker-B"
 
     def test_an_open_pull_request_is_evidence_even_when_the_state_lagged(self) -> None:
-        task = self._task(state=Ticket.State.REVIEWED)
+        task = self._task(state=Ticket.State.SELF_REVIEWED)
         PullRequest.objects.create(
             ticket=task.ticket,
             url="https://github.com/o/r/pull/7",
@@ -192,7 +192,7 @@ class TestAReviewThatRecordedItsVerdictIsNotFailed(_Dispatch):
 
 class TestALeaseLossWithoutEvidenceStillFails(_Dispatch):
     def test_a_shipping_task_that_landed_nothing_is_recorded_failed(self) -> None:
-        task = self._task(state=Ticket.State.REVIEWED)
+        task = self._task(state=Ticket.State.SELF_REVIEWED)
 
         attempt = _outcome_failure(task, _lease_lost(), phase="shipping")
 

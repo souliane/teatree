@@ -78,7 +78,7 @@ class TestRenderPhaseReconcilesManualPrs(TestCase):
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/855",
-            state="started",
+            state="work_started",
         )
         url = "https://github.com/souliane/teatree/pull/370"
         report = TickReport(

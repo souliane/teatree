@@ -74,11 +74,11 @@ STUCK_HALT_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
 #: terminal states have nothing left to do. A reviewer ticket has no equivalent map
 #: — see :func:`_implied_phase`.
 _STATE_PHASE: dict[str, str] = {
-    Ticket.State.STARTED: "planning",
-    Ticket.State.PLANNED: "coding",
+    Ticket.State.WORK_STARTED: "planning",
+    Ticket.State.PLAN_RECORDED: "coding",
     Ticket.State.CODED: "testing",
     Ticket.State.TESTED: "reviewing",
-    Ticket.State.REVIEWED: "shipping",
+    Ticket.State.SELF_REVIEWED: "shipping",
 }
 
 #: Attempt outcomes that mean the phase's last run did not succeed (#16's explicit
@@ -184,7 +184,7 @@ def _implied_phase(ticket: Ticket) -> str | None:
     """The phase this ticket's next re-dispatch should schedule, or ``None`` to skip it.
 
     An author ticket's phase follows its FSM state. A reviewer ticket has no such map —
-    it is minted at NOT_STARTED and stays there until REVIEW_POSTED — so its phase is
+    it is minted at NOT_STARTED and stays there until REVIEW_DELIVERED — so its phase is
     the one its own most recent task ran, which also preserves the codex review variants
     (``codex_reviewing`` / ``codex_adversarial_reviewing``) a plain ``reviewing`` would
     collapse. A reviewer ticket that never ran a task has no phase to imply and no
@@ -225,9 +225,9 @@ _OPEN_PR_STATES = frozenset(
 )
 
 #: States a REVIEWER ticket has nothing left to do in. ``marker_release_states()``
-#: carries the reviewer terminal (REVIEW_POSTED); RETROSPECTED is added for the same
+#: carries the reviewer terminal (REVIEW_DELIVERED); RETRO_RECORDED is added for the same
 #: reason the failed-task doctor probe adds it — a retrospected ticket is finished.
-_REVIEWER_DONE_STATES = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+_REVIEWER_DONE_STATES = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
@@ -286,9 +286,9 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task:
 
 def _schedule_for_state(ticket: Ticket) -> Task:
     state = ticket.state
-    if state == Ticket.State.STARTED:
+    if state == Ticket.State.WORK_STARTED:
         return ticket.schedule_planning()
-    if state == Ticket.State.PLANNED:
+    if state == Ticket.State.PLAN_RECORDED:
         return ticket.schedule_coding()
     if state == Ticket.State.CODED:
         return ticket.schedule_testing()

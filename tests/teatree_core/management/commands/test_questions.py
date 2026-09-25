@@ -17,7 +17,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 
 class TestQuestionsReachability(TestCase):
     def test_json_reports_the_resolver_per_pending_row(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
         parked = DeferredQuestion.record("How should this park proceed?", parked_task=task)

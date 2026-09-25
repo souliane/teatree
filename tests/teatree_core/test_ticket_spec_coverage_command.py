@@ -153,14 +153,14 @@ class TestFlagIsSatisfiableEndToEnd(TestCase):
     """With the flag ON, delivery is blocked without a manifest and passes with one."""
 
     def _retrospected(self) -> Ticket:
-        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETROSPECTED)
+        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED)
 
     def test_no_manifest_blocks_delivery(self) -> None:
         ticket = self._retrospected()
         with _gate(required=True), pytest.raises(SpecCoverageDodError):
             ticket.mark_delivered()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_recorded_coverage_delivers(self) -> None:
         ticket = self._retrospected()
@@ -178,7 +178,7 @@ class TestFlagIsSatisfiableEndToEnd(TestCase):
             ticket.mark_delivered()
         assert "AC2" in str(exc.value)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_recorded_override_delivers(self) -> None:
         ticket = self._retrospected()

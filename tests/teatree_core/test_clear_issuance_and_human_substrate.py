@@ -143,7 +143,7 @@ class TestClearIssuanceSeam(TestCase):
     """``t3 ... ticket clear`` records the orchestrator's per-diff CLEAR."""
 
     def test_clear_creates_actionable_mergeclear_row(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",
             call_command(
@@ -217,7 +217,7 @@ class TestClearIssuanceSeam(TestCase):
     def test_clear_without_ticket_id_adopts_the_prs_owning_ticket(self) -> None:
         # ``--ticket-id`` is optional and no caller passes it, so a CLEAR was born
         # with no FSM for the keystone to advance. The PR knows its own ticket.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         PullRequest.objects.create(
             ticket=ticket,
             overlay=ticket.overlay,
@@ -260,7 +260,7 @@ class TestClearIssuanceSeam(TestCase):
 
     def test_clear_then_merge_round_trip(self) -> None:
         """The seam closes the loop: issue a CLEAR, the loop merges by its id."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         issued = cast(
             "dict[str, object]",
             call_command(
@@ -293,7 +293,7 @@ class TestClearIssuanceSeam(TestCase):
         status`` would later read as merge-safe). Now both run inside one
         ``transaction.atomic``, so the CLEAR is rolled back with the verdict.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with patch.object(ReviewVerdict, "record", side_effect=ClearIssuanceError("verdict store unavailable")):
             refusal = _refused_clear(
                 "864",
@@ -406,7 +406,7 @@ class TestClearIssuanceSeam(TestCase):
         — persisting the mixed-case input verbatim would produce the same
         silent-failure mode this issue closes for truncated SHAs.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         mixed_case = "ABCDEF1234567890abcdef1234567890ABCDEF12"
         result = cast(
             "dict[str, object]",
@@ -459,7 +459,7 @@ class TestClearIssuanceSeam(TestCase):
         sessions. The named form makes every CLEAR field a named flag,
         consistent with the rest of the surface.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",
             call_command(
@@ -507,7 +507,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
     """The loop never auto-merges substrate; an un-authorised substrate CLEAR holds."""
 
     def test_substrate_clear_without_human_authorizer_is_held(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=870,
@@ -523,7 +523,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_clear_command_can_record_human_authorizer_for_substrate(self) -> None:
@@ -564,7 +564,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
     """A human-authorised substrate CLEAR merges through the SAME t3 transition."""
 
     def test_human_authorized_substrate_merges_and_records_authorizer(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=873,
@@ -597,7 +597,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
 
     def test_substrate_merge_without_human_authorized_flag_is_held(self) -> None:
         """Even an authorised CLEAR will not auto-merge: the human flag is mandatory at execute time."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=874,
@@ -613,11 +613,11 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
         ticket.refresh_from_db()
         assert result["escalated"]
         assert not result["merged"]
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_human_authorized_flag_must_match_recorded_authorizer(self) -> None:
         """The execute-time human flag must match the CLEAR's recorded authoriser."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=875,
@@ -641,11 +641,11 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
         ticket.refresh_from_db()
         assert result["escalated"]
         assert not result["merged"]
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_human_authorized_flag_on_non_substrate_clear_is_refused(self) -> None:
         """The human-substrate escape hatch must not be usable to bypass loop review of logic PRs."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=876,
@@ -668,7 +668,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
         ticket.refresh_from_db()
         assert result["escalated"]
         assert not result["merged"]
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 class TestAgentExecutesApprovedSubstrateMerge(TestCase):
@@ -686,7 +686,7 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
 
     def test_agent_cli_invocation_executes_the_approved_substrate_merge(self) -> None:
         """The merge runs through the ordinary agent CLI path — no human actor step."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=877,
@@ -790,7 +790,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
 
     def test_full_autonomy_substrate_is_held_without_human_authorizer(self) -> None:
         """MUST-DENY: full + substrate + no authorizer is HELD (the standing grant excludes substrate)."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket)
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -803,7 +803,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         no ping). Now it is held (``merged`` False, escalated) so the loop edge can
         ping the owner.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1731)
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -818,12 +818,12 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         assert result["merged"] is False
         assert result["escalated"] is True
         assert result["escalation_kind"] == "substrate"
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_full_autonomy_substrate_with_human_authorizer_still_merges(self) -> None:
         """MUST-ALLOW: a per-CLEAR ``human_authorizer`` re-presented at merge is the unchanged substrate path."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1730, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-teatree", "full"):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
@@ -831,25 +831,25 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
 
     def test_notify_autonomy_substrate_without_authorizer_still_refused(self) -> None:
         """MUST-DENY: notify (not full) keeps the per-PR human authorizer mandatory."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1732)
         with _overlay_autonomy("t3-teatree", "notify"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_babysit_autonomy_substrate_without_authorizer_still_refused(self) -> None:
         """MUST-DENY: babysit (the default) keeps the per-PR human authorizer mandatory."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1733)
         with _overlay_autonomy("t3-teatree", "babysit"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_full_autonomy_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY: full + reviewer==maker still refuses — the maker≠checker floor is intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1734, reviewer_identity="coding-agent")
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -864,14 +864,14 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         with the per-CLEAR human authoriser present (the only substrate-merge
         path); the bind still fails closed on a moved head.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="head moved"):
             _assert_preconditions(clear, human_authorized="owner:adrien")
 
     def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
         """MUST-DENY: full + FAILED recorded verdict still refuses — the CI floor is intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1736, gh_verify_result=MergeClear.VerifyResult.FAILED)
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -881,7 +881,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
 
     def test_full_autonomy_does_not_relax_not_draft_floor(self) -> None:
         """MUST-DENY: full + draft PR still refuses — the not-draft floor is intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1737)
 
         def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
@@ -911,14 +911,14 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         carve-out — so this uses a foreign slug, not merely a foreign token on a
         t3-teatree-owned repo.)
         """
-        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1738, slug="other-owner/other-repo")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear, slug="other-owner/other-repo")
 
     def test_per_clear_human_authorizer_still_works_under_babysit(self) -> None:
         """A matching per-CLEAR ``human_authorizer`` is the unchanged path for non-full overlays."""
-        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1739, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-client", "babysit"):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
@@ -932,7 +932,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
 
     def test_full_autonomy_substrate_is_held_when_ticket_overlay_is_canonical_alias(self) -> None:
         """MUST-DENY: a ``ticket.overlay`` alias resolving to the full overlay is STILL held (substrate)."""
-        ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=1741)
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -1052,7 +1052,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",  # mis-stamped: not the repo's owner
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/5",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=5, slug=_OWNED_TOOLING_REPO)
         with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO):
@@ -1070,7 +1070,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1091,7 +1091,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO, blast_class=MergeClear.BlastClass.LOGIC)
         with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
@@ -1110,7 +1110,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
         with (
@@ -1132,7 +1132,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/8",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         logic = _substrate_clear(ticket, pr_id=8, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
         substrate = _substrate_clear(ticket, pr_id=9, slug=_FOREIGN_REPO)
@@ -1145,7 +1145,7 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/8",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=8, slug=_OWNED_TOOLING_REPO)
         with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
@@ -1170,7 +1170,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32230",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=32230, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1185,7 +1185,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32231",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=32231, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1200,7 +1200,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32232",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=32232, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1215,7 +1215,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32233",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=32233, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1230,7 +1230,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32234",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = _substrate_clear(ticket, pr_id=32234, slug=_OWNED_TOOLING_REPO)
         with (
@@ -1240,7 +1240,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
         ):
             _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
@@ -1264,7 +1264,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         ``autonomy = full``, so an explicit ``require_human_approval_to_merge =
         false`` at the default ``babysit`` tier was ignored.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2660, blast_class=MergeClear.BlastClass.LOGIC)
         with _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False):
             precheck = _assert_preconditions(clear)
@@ -1272,7 +1272,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
 
     def test_explicit_require_false_at_babysit_merges_non_substrate_end_to_end(self) -> None:
         """MUST-ALLOW end-to-end: the keystone merge advances the FSM for a NON-substrate CLEAR."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2661, blast_class=MergeClear.BlastClass.LOGIC)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1295,7 +1295,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         owner's explicit ``require_human_approval_to_merge = false`` it is held for
         the owner (ping-and-hold).
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2666)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1303,7 +1303,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         ):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_default_require_true_at_babysit_still_refused(self) -> None:
         """MUST-DENY: babysit + require_human_approval_to_merge=true keeps the per-PR sign-off.
@@ -1312,7 +1312,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         the substrate sign-off mandatory — the anti-vacuity twin of the
         must-ALLOW above.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2662)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=True),
@@ -1320,7 +1320,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         ):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_notify_tier_with_require_false_still_refused(self) -> None:
         """MUST-DENY: the notify collaborative tier keeps the per-PR human authoriser mandatory.
@@ -1332,7 +1332,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         ``require_human_approval_to_merge = false`` as an owner statement when it
         is merely a tier side effect of the collaborative tier.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2663)
         with (
             _overlay_autonomy("t3-teatree", "notify"),
@@ -1340,11 +1340,11 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         ):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_require_false_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY: require=false + reviewer==maker still refuses — the maker≠checker floor holds."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2664, reviewer_identity="coding-agent")
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1359,7 +1359,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         with the per-CLEAR human authoriser present (substrate holds first
         otherwise); the bind still fails closed on a moved head.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1382,7 +1382,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
         """
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url="https://github.com/souliane/teatree/issues/859",
         )
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
@@ -1414,7 +1414,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
 
     def test_qualified_slug_clear_records_verdict_unchanged(self) -> None:
         """An already-qualified ``owner/repo`` clear keys the verdict identically — no behaviour change."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",
             call_command(
@@ -1449,7 +1449,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
         """
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url="https://github.com/souliane/teatree/issues/859",
         )
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
@@ -1480,7 +1480,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
 
     def test_whitespace_padded_qualified_slug_records_verdict_unchanged(self) -> None:
         """An already-qualified slug with surrounding whitespace records identically — no behaviour change."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",
             call_command(
@@ -1598,12 +1598,12 @@ class TestSubstrateStandingDelegationConfig(TestCase):
 
     def test_config_empty_substrate_still_held(self) -> None:
         """MUST-DENY (a): with the delegation UNSET, a loop substrate merge is held — byte-identical."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34130)
         with pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_config_empty_presented_id_still_held(self) -> None:
         """MUST-DENY (a): the presented ``--human-authorized`` id alone can never unlock substrate.
@@ -1613,16 +1613,16 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         it is empty. This pins that the standing-delegation code path adds NO CLI
         bypass when the config is unset.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34131)
         with pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear, human_authorized=_DELEGATE)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_config_set_delegation_passes_preconditions(self) -> None:
         """MUST-ALLOW (b): config set + the matching id presented passes the substrate gate."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34132)
         with _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE):
             precheck = _assert_preconditions(clear, human_authorized=_DELEGATE)
@@ -1637,7 +1637,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         merge is distinguishable from an interactive human approval (which would
         stamp ``human_authorizer`` on the CLEAR instead).
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34133,
@@ -1670,7 +1670,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
 
     def test_config_set_but_presented_id_mismatch_still_held(self) -> None:
         """MUST-DENY: a presented id that does NOT equal the configured value is held (scoped to the id)."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34134)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1678,7 +1678,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         ):
             _assert_preconditions(clear, human_authorized="someone-else")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_config_set_no_merge_safe_verdict_refused_end_to_end(self) -> None:
         """MUST-DENY (d): the delegation NEVER waives the recorded merge_safe verdict gate.
@@ -1687,7 +1687,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         refused end-to-end even with the config delegation set and presented — the
         #2829 verdict gate fires in ``execute_bound_merge`` regardless.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34135,
@@ -1709,13 +1709,13 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         clear.refresh_from_db()
         assert result["merged"] is False
         assert result["escalated"] is True
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_config_set_does_not_relax_ci_green_floor(self) -> None:
         """MUST-DENY (c): a FAILED recorded verdict still refuses under the delegation — CI floor intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34136, gh_verify_result=MergeClear.VerifyResult.FAILED)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1725,7 +1725,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
 
     def test_config_set_does_not_relax_sha_bind_floor(self) -> None:
         """MUST-DENY (c): a head moved off ``reviewed_sha`` still refuses under the delegation — SHA bind intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34137, reviewed_sha="d" * 40)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1735,7 +1735,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
 
     def test_config_set_does_not_relax_not_draft_floor(self) -> None:
         """MUST-DENY (c): a draft PR still refuses under the delegation — the not-draft floor is intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34138)
 
         def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
@@ -1758,7 +1758,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
 
     def test_config_set_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY (c): reviewer==maker still refuses under the delegation — maker≠checker intact."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34139, reviewer_identity="coding-agent")
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1772,7 +1772,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         The config is read against the CLEAR's OWNING overlay (repo identity), so a
         ``t3-teatree`` delegation never leaks onto a repo it does not own.
         """
-        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.REVIEW_REQUESTED)
         clear = _substrate_clear(ticket, pr_id=34140, slug="other-owner/other-repo")
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1788,7 +1788,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         per-PR path — ``standing_delegation_by`` stays empty so the two remain
         distinguishable on the audit.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34141,

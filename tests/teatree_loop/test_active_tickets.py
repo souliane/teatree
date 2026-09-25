@@ -13,7 +13,7 @@ def _describable_ticket(number: str = "1", *, short_description: str = "") -> Ti
     return Ticket.objects.create(
         overlay="acme",
         issue_url=f"https://x/{number}",
-        state="started",
+        state="work_started",
         short_description=short_description,
         extra={"issue_title": "Cached tracker title"},
     )
@@ -35,12 +35,12 @@ def _short_describe_tasks(ticket: Ticket) -> int:
 
 class TestActiveTicketsScanner(TestCase):
     def test_emits_signal_for_non_terminal_tickets(self) -> None:
-        Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="started")
+        Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="work_started")
         Ticket.objects.create(overlay="acme", issue_url="https://x/2", state="delivered")
         signals = ActiveTicketsScanner().scan()
         assert len(signals) == 1
         assert signals[0].kind == "ticket.active"
-        assert signals[0].payload["state"] == "started"
+        assert signals[0].payload["state"] == "work_started"
 
     def test_filters_by_overlay_name(self) -> None:
         Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="coded")

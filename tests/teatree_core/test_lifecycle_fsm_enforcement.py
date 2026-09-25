@@ -75,12 +75,12 @@ class TestVisitPhaseVocabulary(TestCase):
     def test_free_form_phase_recorded_without_fsm_advance(self) -> None:
         # A phase with no associated FSM transition still records (so the
         # session stays the single source of truth) and reports state.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "brainstorm"))
         ticket.refresh_from_db()
         session = ticket.sessions.first()
         assert "brainstorm" in session.visited_phases
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert "started" in result
 
 
@@ -116,7 +116,7 @@ class TestVisitPhaseDodRefusalIsGraceful(TestCase):
     def _assert_graceful(self, exc: Exception) -> None:
         from teatree.core.models import Ticket as TicketModel  # noqa: PLC0415
 
-        ticket = _ticket(state=Ticket.State.REVIEWED)
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
         with (
             patch.object(TicketModel, "ship", side_effect=exc),
             self.assertLogs("teatree.core.management.commands.lifecycle", level="WARNING") as cm,
@@ -125,7 +125,7 @@ class TestVisitPhaseDodRefusalIsGraceful(TestCase):
 
         ticket.refresh_from_db()
         # FSM did NOT advance — the DoD gate keeps blocking.
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         # The phase is still recorded (single source of truth).
         session = ticket.sessions.first()
         assert "shipping" in session.visited_phases
@@ -147,9 +147,9 @@ class TestVisitPhaseDodRefusalIsGraceful(TestCase):
 
 class TestShippingGateReconciliation(TestCase):
     def test_gate_auto_walks_fsm_to_reviewed_when_phases_present(self) -> None:
-        # The loop path advanced phases but the FSM is still STARTED
+        # The loop path advanced phases but the FSM is still WORK_STARTED
         # (the dual-source-of-truth bug). The gate must reconcile.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -157,10 +157,10 @@ class TestShippingGateReconciliation(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_gate_blocks_with_missing_list_when_phases_absent(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")  # reviewing missing (#837: retro not gated)
 
@@ -170,10 +170,10 @@ class TestShippingGateReconciliation(TestCase):
         assert "reviewing" in result["missing"]
         assert "retro" not in result["missing"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED  # not advanced
+        assert ticket.state == Ticket.State.WORK_STARTED  # not advanced
 
     def test_gate_already_reviewed_is_noop(self) -> None:
-        ticket = _ticket(state=Ticket.State.REVIEWED)
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -191,7 +191,7 @@ class TestShippingGateCrossSessionUnion(TestCase):
     """
 
     def test_gate_passes_when_required_phases_scattered_across_sessions(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("testing", agent_id="maker")
         s2 = Session.objects.create(ticket=ticket, agent_id="checker")
@@ -202,10 +202,10 @@ class TestShippingGateCrossSessionUnion(TestCase):
         # No single session has all three, but the union does.
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_gate_still_blocks_when_a_required_phase_is_genuinely_missing(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("testing", agent_id="maker")
         # `reviewing` never recorded on ANY session (#837: retro not gated).
@@ -215,13 +215,13 @@ class TestShippingGateCrossSessionUnion(TestCase):
         assert result["allowed"] is False
         assert result["missing"] == ["reviewing"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_same_agent_across_sessions_no_longer_blocks(self) -> None:
         # #833: the conflicting pair recorded by the SAME agent_id on
         # DIFFERENT sessions no longer trips a gate failure — there is no
         # agent_id inference. Phases present ⇒ pass.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="same-agent")
         s1.visit_phase("coding", agent_id="same-agent")
         s1.visit_phase("testing", agent_id="same-agent")
@@ -231,10 +231,10 @@ class TestShippingGateCrossSessionUnion(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_gate_passes_distinct_agents_across_sessions(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="maker")
         s1.visit_phase("coding", agent_id="maker")
         s1.visit_phase("testing", agent_id="maker")
@@ -244,14 +244,14 @@ class TestShippingGateCrossSessionUnion(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
 
 class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
     def test_pr_create_blocks_instead_of_raising_when_fsm_behind(self) -> None:
-        # FSM stuck at STARTED, no phases visited — pr create must return a
+        # FSM stuck at WORK_STARTED, no phases visited — pr create must return a
         # structured gate failure, NOT raise TransitionNotAllowed.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         Session.objects.create(ticket=ticket)
         Worktree.objects.create(
             ticket=ticket,
@@ -264,15 +264,15 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
         assert result["allowed"] is False
         assert "missing" in result
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_pr_create_reconciles_then_ships_when_fsm_behind_but_phases_present(self) -> None:
         # The acceptance criterion: the loop advanced phases but the FSM is
-        # still STARTED. `pr create` must reconcile to REVIEWED and ship —
+        # still WORK_STARTED. `pr create` must reconcile to SELF_REVIEWED and ship —
         # NOT raise a raw TransitionNotAllowed.
         reset_overlay_cache()
         self.addCleanup(reset_overlay_cache)
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -295,9 +295,9 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert result["ticket_id"] == ticket.pk
-        assert result["state"] == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
         assert "QUEUED, not performed" in result["warning"]
 
@@ -306,7 +306,7 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
         # pr_title_override on ticket.extra so the ship worker reads it.
         reset_overlay_cache()
         self.addCleanup(reset_overlay_cache)
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -332,9 +332,9 @@ class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
             )
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert result["ticket_id"] == ticket.pk
-        assert result["state"] == Ticket.State.SHIPPED
+        assert result["state"] == Ticket.State.PR_OPENED
         assert result["queued"] is True
         assert "QUEUED, not performed" in result["warning"]
         assert ticket.extra["pr_title_override"] == "Custom PR title"
@@ -344,8 +344,8 @@ class TestShippingGateNoSession(TestCase):
     def test_gate_blocks_with_structured_failure_when_no_session(self) -> None:
         # No session => no attested work; the gate must return a structured
         # failure, NOT None (which would let `ship()` raise a raw
-        # TransitionNotAllowed from a non-REVIEWED state).
-        ticket = _ticket(state=Ticket.State.STARTED)
+        # TransitionNotAllowed from a non-SELF_REVIEWED state).
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         assert ticket.sessions.count() == 0
 
         result = _check_shipping_gate(ticket)
@@ -353,7 +353,7 @@ class TestShippingGateNoSession(TestCase):
         assert result["allowed"] is False
         assert result["missing"] == ["testing", "reviewing"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED  # not advanced
+        assert ticket.state == Ticket.State.WORK_STARTED  # not advanced
 
 
 class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
@@ -367,24 +367,24 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         )
 
     def test_pr_create_no_session_returns_structured_failure_not_raise(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         self._worktree(ticket)
         result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         assert result["allowed"] is False
         assert "missing" in result
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_pr_create_skip_validation_from_non_reviewed_reconciles_then_ships(self) -> None:
         # #748: --skip-validation is the user-authorized attestation
         # substitute, so the FSM follows the authorization: it walks
-        # STARTED -> REVIEWED via reconcile_reviewed and ship() becomes
+        # WORK_STARTED -> SELF_REVIEWED via reconcile_reviewed and ship() becomes
         # legal (never a raw TransitionNotAllowed; never a structurally
         # impossible ship). Async default => queued, no structured gate
         # failure.
         reset_overlay_cache()
         self.addCleanup(reset_overlay_cache)
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         self._worktree(ticket)
         # --skip-validation still runs the deterministic MR format check
         # (#1540); supply a conforming commit so this test exercises the
@@ -408,14 +408,14 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         assert result.get("allowed") is not False, result
         assert "error" not in result
         ticket.refresh_from_db()
-        assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
+        assert ticket.state in {Ticket.State.PR_OPENED, Ticket.State.SELF_REVIEWED}
 
 
 class TestCliVisitPhaseRecordsAuditTrail(TestCase):
     def test_cli_visit_phase_records_into_phase_visits_keyed_by_session_identity(self) -> None:
         # CLI `visit-phase` threads the session identity into the
         # phase_visits audit trail (symmetric with the loop path).
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "review", agent_id="cold-reviewer")
 
@@ -431,7 +431,7 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         # requires the `reviewing` visit to name an explicit independent
         # reviewer — the maker phases keep the session identity, reviewing
         # carries the distinct reviewer id.
-        ticket = _ticket(state=Ticket.State.REVIEWED)  # no FSM auto-scheduling
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)  # no FSM auto-scheduling
         session = Session.objects.create(ticket=ticket, agent_id="same-agent")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "code")
         call_command("lifecycle", "visit-phase", str(ticket.pk), "test")
@@ -443,7 +443,7 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         session.check_gate("reviewing")  # no raise
 
     def test_cli_distinct_agents_also_pass(self) -> None:
-        ticket = _ticket(state=Ticket.State.REVIEWED)
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="checker")
         session.visit_phase("coding", agent_id="maker")
         session.visit_phase("testing", agent_id="maker")
@@ -482,7 +482,7 @@ class TestLoopPathRecordsVisitedPhase(TestCase):
         # the session's visited_phases.
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,
@@ -500,7 +500,7 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
     """#1118: ``visited_phases`` containing reviewing must NOT yield ``missing: [reviewing]``."""
 
     def test_visited_phases_present_out_of_canonical_order_gate_passes(self) -> None:
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
         session.visited_phases = ["reviewing", "testing"]
         session.phase_visits = {
@@ -511,13 +511,13 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_legacy_raw_spellings_satisfy_gate_and_error_report_is_canonical(self) -> None:
         # Legacy rows from pre-#782 paths (or any path that bypassed
         # visit_phase) store raw short verbs. _check_phases normalizes
         # so the gate passes when reviewing is present in legacy form.
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket, agent_id="legacy")
         session.visited_phases = ["review", "test"]  # raw, non-canonical
         session.phase_visits = {}
@@ -525,7 +525,7 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_legacy_raw_testing_only_error_names_canonical_reviewing(self) -> None:
         # ONLY raw 'test' present — reviewing is genuinely missing.
@@ -533,7 +533,7 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
         # otherwise an empty visited (after raw comparison) would report
         # BOTH testing AND reviewing as missing, contradicting the gate
         # check (which normalizes and only flags reviewing).
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket, agent_id="legacy")
         session.visited_phases = ["test"]  # raw spelling, canonical = testing
         session.phase_visits = {}
@@ -555,8 +555,8 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
         # The production repro: an earliest blank session (the loop's
         # canonical phase-visit session) + later sessions with the
         # attestations recorded by lifecycle visit-phase. State sat at
-        # IN_REVIEW (auto-transition cascade rolled back the FSM).
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        # REVIEW_REQUESTED (auto-transition cascade rolled back the FSM).
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         Session.objects.create(ticket=ticket, agent_id="loop")
         s_maker = Session.objects.create(ticket=ticket, agent_id="maker")
         s_maker.visit_phase("testing", agent_id="maker")
@@ -565,7 +565,7 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
 
         assert _check_shipping_gate(ticket) is None
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
 
 class TestReconcileReviewedExposedViaCli(TestCase):
@@ -573,7 +573,7 @@ class TestReconcileReviewedExposedViaCli(TestCase):
 
     def test_reconcile_reviewed_is_an_allowed_cli_transition(self) -> None:
         # Use an in_review ticket so the transition would actually fire.
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         result = cast(
             "dict[str, object]",
             call_command("ticket", "transition", str(ticket.pk), "reconcile_reviewed"),
@@ -582,7 +582,7 @@ class TestReconcileReviewedExposedViaCli(TestCase):
             f"reconcile_reviewed must be exposed via the CLI (was: {result})"
         )
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
 
 class TestShippingGateConsumesPendingReviewingTasks(TestCase):
@@ -599,7 +599,7 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
     def test_gate_verified_path_completes_pending_reviewing_task(self) -> None:
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -619,7 +619,7 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
         # Direct call bypasses the gate — the task ledger must NOT be drained.
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,
@@ -640,14 +640,14 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
 
     def test_already_reviewed_state_still_drains_pending_task_on_gate_verified_path(self) -> None:
         # The composite scenario: prior ungated path (direct CLI call,
-        # --skip-validation) leaves state=REVIEWED with the reviewing task
+        # --skip-validation) leaves state=SELF_REVIEWED with the reviewing task
         # still PENDING. A subsequent `pr create` passes the gate but the
-        # FSM walk is a no-op (already at REVIEWED). The task drain MUST
+        # FSM walk is a no-op (already at SELF_REVIEWED). The task drain MUST
         # still fire — otherwise the loop's orphan sweep re-spawns the
         # task after the ship.
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        ticket = _ticket(state=Ticket.State.REVIEWED)
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
         session.visit_phase("reviewing")
@@ -662,7 +662,7 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED, (
             "Gate-verified ship MUST drain the reviewing task even when "
-            "the FSM is already at REVIEWED — a prior ungated reconcile "
+            "the FSM is already at SELF_REVIEWED — a prior ungated reconcile "
             "could have left the task pending."
         )
 
@@ -681,7 +681,7 @@ class TestCheckGatesUsesCrossSessionAggregation(TestCase):
     """
 
     def test_check_gates_passes_when_phases_scattered_across_sessions(self) -> None:
-        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         # Earliest session — blank (the canonical phase-visit session for
         # the read-only gate). The phases are on later sessions.
         Session.objects.create(ticket=ticket, agent_id="loop")

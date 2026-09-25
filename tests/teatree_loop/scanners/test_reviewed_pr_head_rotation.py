@@ -53,7 +53,7 @@ def _seed(pr_id: int) -> Ticket:
         role=Ticket.Role.REVIEWER,
         extra={"reviewed_sha": OLD_SHA, "last_review_state": ReviewState.APPROVED.value},
     )
-    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_POSTED)
+    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_DELIVERED)
     return ticket
 
 

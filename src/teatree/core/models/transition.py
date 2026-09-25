@@ -43,14 +43,14 @@ class TicketTransitionQuerySet(models.QuerySet):
         The trigger is the ticket CLOSING, not a row aging: a closed ticket's
         operational residue is dead weight the moment it closes, and waiting out a
         window is arbitrary. Terminal is ``Ticket.marker_release_states()`` plus
-        RETROSPECTED — the same set the sibling ``TaskAttempt`` lane resolves through,
+        RETRO_RECORDED — the same set the sibling ``TaskAttempt`` lane resolves through,
         never a second hand-rolled list. An open ticket's rows are never touched.
 
         ``django.core.signals`` stopped writing these rows at the source (#3876), so
         this lane is the standing backstop for the residue and for any writer that
         guard does not cover — not the primary remedy.
         """
-        finished = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        finished = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         return self.filter(
             ticket__state__in=finished, from_state=models.F("to_state")
         ).excluding_each_tickets_boundary()

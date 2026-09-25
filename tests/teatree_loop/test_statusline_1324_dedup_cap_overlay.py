@@ -59,7 +59,7 @@ def _ready(num: str, *, url: str, overlay: str = "ov") -> DispatchAction:
 class TestStaleDropsWhenAlsoActive:
     def test_stale_for_active_ticket_does_not_render(self) -> None:
         url = "https://example.com/issues/42"
-        actions = [_active_ticket("42", "started", url=url), _stale("42", url=url)]
+        actions = [_active_ticket("42", "work_started", url=url), _stale("42", url=url)]
         blob = _blob(actions)
         assert "#42" in blob
         assert "stale" not in blob
@@ -67,7 +67,7 @@ class TestStaleDropsWhenAlsoActive:
     def test_stale_for_unrelated_ticket_still_renders(self) -> None:
         url = "https://example.com/issues/99"
         actions = [
-            _active_ticket("42", "started", url="https://example.com/issues/42"),
+            _active_ticket("42", "work_started", url="https://example.com/issues/42"),
             _stale("99", url=url),
         ]
         blob = _blob(actions)
@@ -75,7 +75,7 @@ class TestStaleDropsWhenAlsoActive:
 
     def test_per_overlay_isolation_preserves_stale_in_other_overlay(self) -> None:
         actions = [
-            _active_ticket("42", "started", url="https://example.com/issues/42", overlay="a"),
+            _active_ticket("42", "work_started", url="https://example.com/issues/42", overlay="a"),
             _stale("42", url="https://example.com/issues/42", overlay="b"),
         ]
         c = _classify_actions(actions)

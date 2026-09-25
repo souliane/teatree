@@ -197,7 +197,7 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
         head = _git_out("rev-parse", "HEAD", cwd=wt_path)
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/2609",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         worktree = Worktree.objects.create(
             overlay="test",

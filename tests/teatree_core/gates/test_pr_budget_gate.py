@@ -68,19 +68,19 @@ def _pr(ticket: Ticket, *, repo: str, iid: str, state: str = PullRequest.State.O
 
 class TestCountOpenPrsForRepo(TestCase):
     def test_counts_open_rows_scoped_to_ticket_and_repo(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         _pr(ticket, repo=_REPO_A, iid="2")
         assert count_open_prs_for_repo(ticket, _REPO_A) == 2
 
     def test_excludes_merged_rows(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1", state=PullRequest.State.MERGED)
         assert count_open_prs_for_repo(ticket, _REPO_A) == 0
 
     def test_excludes_other_repo_and_other_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_B, iid="1")
         _pr(other, repo=_REPO_A, iid="2")
         assert count_open_prs_for_repo(ticket, _REPO_A) == 0
@@ -91,7 +91,7 @@ class TestCountOpenPrsForRepo(TestCase):
         # ship executor) — so the union counts it.
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"pr_url_by_branch": {"feat/x": f"https://github.com/{_REPO_A}/pull/9"}},
         )
         assert count_open_prs_for_repo(ticket, _REPO_A) == 1
@@ -99,7 +99,7 @@ class TestCountOpenPrsForRepo(TestCase):
     def test_pr_url_by_branch_for_other_repo_does_not_count(self) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"pr_url_by_branch": {"feat/x": f"https://github.com/{_REPO_B}/pull/9"}},
         )
         assert count_open_prs_for_repo(ticket, _REPO_A) == 0
@@ -108,7 +108,7 @@ class TestCountOpenPrsForRepo(TestCase):
         url = f"https://github.com/{_REPO_A}/pull/1"
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"pr_url_by_branch": {"feat/x": url}},
         )
         _pr(ticket, repo=_REPO_A, iid="1")  # same url as the extra entry
@@ -120,46 +120,46 @@ class TestUnlimitedOptOut(TestCase):
         # ``0`` = the unlimited opt-out: two open PRs for the same (repo, ticket)
         # do NOT trip the gate. Anti-vacuous: without the ``limit <= 0``
         # short-circuit, ``count (2) >= 0`` would raise.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         _pr(ticket, repo=_REPO_A, iid="2")
         check_pr_budget(ticket, _REPO_A, limit=0)  # no raise
 
     def test_negative_limit_is_also_inert(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         check_pr_budget(ticket, _REPO_A, limit=-1)  # no raise
 
 
 class TestPerTicketPerRepoScope(TestCase):
     def test_second_open_pr_for_same_repo_ticket_is_refused_at_limit_one(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         with pytest.raises(PrBudgetExceededError):
             check_pr_budget(ticket, _REPO_A, limit=1)
 
     def test_first_open_pr_is_allowed_at_limit_one(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         check_pr_budget(ticket, _REPO_A, limit=1)  # count 0 < 1 -> allowed
 
     def test_different_ticket_same_repo_is_allowed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         check_pr_budget(other, _REPO_A, limit=1)  # other ticket has 0 -> allowed
 
     def test_same_ticket_different_repo_is_allowed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         check_pr_budget(ticket, _REPO_B, limit=1)  # repo B has 0 -> allowed
 
     def test_merged_pr_does_not_consume_the_budget(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1", state=PullRequest.State.MERGED)
         check_pr_budget(ticket, _REPO_A, limit=1)  # merged excluded -> allowed
 
     def test_refusal_message_names_the_offending_url_repo_and_escape(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pr(ticket, repo=_REPO_A, iid="1")
         with pytest.raises(PrBudgetExceededError) as excinfo:
             check_pr_budget(ticket, _REPO_A, limit=1)
@@ -174,7 +174,7 @@ class TestOpenPrUrlsForRepo(TestCase):
         url = f"https://github.com/{_REPO_A}/pull/1"
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"pr_url_by_branch": {"feat/x": url, "feat/y": f"https://github.com/{_REPO_A}/pull/2"}},
         )
         _pr(ticket, repo=_REPO_A, iid="1")  # same url as feat/x
@@ -197,7 +197,7 @@ class TestForgeAuthoritativeBackstop(TestCase):
     def _ticket(self, number: int = 123, *, repo: str = _REPO_A) -> Ticket:
         return Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url=f"https://github.com/{repo}/issues/{number}",
         )
 
@@ -310,7 +310,7 @@ class TestShippedDefault(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_second_open_pr_is_refused_at_the_resolved_default(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         limit = resolve_pr_budget(None)
         assert limit == 1
@@ -318,7 +318,7 @@ class TestShippedDefault(TestCase):
             check_pr_budget(ticket, _REPO_A, limit=limit)
 
     def test_zero_row_restores_unlimited(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr(ticket, repo=_REPO_A, iid="1")
         _pr(ticket, repo=_REPO_A, iid="2")
         ConfigSetting.objects.set_value("max_open_prs_per_repo_per_ticket", value=0)

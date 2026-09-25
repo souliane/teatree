@@ -8,11 +8,12 @@ prefixed by its FSM ``state:`` group label (#130):
     per-MR title chunk, no annotation chunk, no review-permalink suffix.
 - No empty ``()`` when both topic and chips are absent — the parens
     are suppressed entirely.
-- The line is grouped by FSM state, so a single ``started`` ticket reads
-    ``[overlay] started: #N (topic !chips)``.
+- The line is grouped by FSM state, so a single ``work_started`` ticket reads
+    ``[overlay] work_started: #N (topic !chips)``.
 
 Example shape (overlay name sanitised for this public repo):
-``[acme-fleet] started: #8495 (widget margin !6264 !7491 !7490 !7487)``
+``[acme-fleet] work_started: #8495
+    (widget margin !6264 !7491 !7490 !7487)``
 """
 
 import re
@@ -32,7 +33,7 @@ def _active(num: str, *, title: str, overlay: str, issue_url: str) -> DispatchAc
         detail=f"#{num} started",
         payload={
             "ticket_number": num,
-            "state": "started",
+            "state": "work_started",
             "overlay": overlay,
             "issue_url": issue_url,
             "title": title,
@@ -86,7 +87,8 @@ class TestAnchorWithFourGitlabMrsMatchesShape:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        assert anchor_line == "[acme-fleet] started: #8495 (widget margin !6264 !7491 !7490 !7487)", repr(anchor_line)
+        expected = "[acme-fleet] work_started: #8495 (widget margin !6264 !7491 !7490 !7487)"  # privacy-scan:allow
+        assert anchor_line == expected, repr(anchor_line)
 
 
 class TestGithubChipsUseHash:
@@ -117,7 +119,7 @@ class TestGithubChipsUseHash:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[teatree]")), "")
-        assert anchor_line == "[teatree] started: #97 (terse chips spec #1377 #1399)", repr(anchor_line)
+        assert anchor_line == "[teatree] work_started: #97 (terse chips spec #1377 #1399)", repr(anchor_line)
 
 
 class TestNoMrsNoEmptyParens:
@@ -135,7 +137,7 @@ class TestNoMrsNoEmptyParens:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        assert anchor_line == "[acme-fleet] started: #100 (some topic)", repr(anchor_line)
+        assert anchor_line == "[acme-fleet] work_started: #100 (some topic)", repr(anchor_line)
 
     def test_ticket_with_no_topic_and_no_mrs_has_no_parens_at_all(self) -> None:
         actions = [
@@ -149,6 +151,6 @@ class TestNoMrsNoEmptyParens:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        # ``[acme-fleet] started: #100`` — state label, then the bare ``#100``
+        # ``[acme-fleet] work_started: #100`` — state label, then the bare ``#100``
         # (no parens, no trailing space when topic and chips are both absent).
-        assert anchor_line == "[acme-fleet] started: #100", repr(anchor_line)
+        assert anchor_line == "[acme-fleet] work_started: #100", repr(anchor_line)

@@ -16,7 +16,7 @@ class TestCheckShippingGate(TestCase):
     def test_returns_structured_failure_when_no_session(self) -> None:
         # #694 nit 1: no session => no attested work. The gate must return a
         # structured failure (not None), otherwise ``ship()`` raises a raw
-        # TransitionNotAllowed from a non-REVIEWED state.
+        # TransitionNotAllowed from a non-SELF_REVIEWED state.
         ticket = Ticket.objects.create()
         result = _check_shipping_gate(ticket)
         assert result is not None
@@ -312,7 +312,7 @@ class TestAssertCommitsAheadOfBase(TestCase):
 
         A git-introspection failure looks exactly like a clean pass on the CLI;
         keeping #788's fail-open posture is right, but it must now log a warning
-        naming the branch/repo so a mistaken SHIPPED whose hollowness could not
+        naming the branch/repo so a mistaken PR_OPENED whose hollowness could not
         be confirmed is traceable.
         """
         import tempfile  # noqa: PLC0415

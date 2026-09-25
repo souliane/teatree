@@ -93,11 +93,11 @@ class TicketShowTest(TestCase):
     def test_show_includes_ticket_state(self) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/3",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         result = cast(
             "dict[str, object]",
             call_command("ticket", "show", str(ticket.pk)),
         )
         assert result["ticket_id"] == int(ticket.pk)
-        assert result["state"] == Ticket.State.STARTED
+        assert result["state"] == Ticket.State.WORK_STARTED

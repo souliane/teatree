@@ -365,7 +365,7 @@ class TestStaleTicketsConciseAndLinked:
     def test_multiple_stale_tickets_collapse_to_one_line(self) -> None:
         actions = [
             _stale_action(number="58", state="coded", age=4),
-            _stale_action(number="724", state="started", age=6),
+            _stale_action(number="724", state="work_started", age=6),
             _stale_action(number="878", state="tested", age=9),
         ]
         zones = zones_for(actions, colorize=False)
@@ -639,7 +639,7 @@ class TestTicketExtraPrsResolvesMrToTicket:
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/142",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={"prs": {self.URL: {"iid": 145, "state": "opened"}}},
         )
 
@@ -688,7 +688,7 @@ class TestPostedReviewRequestPermalinkNotInChip:
         Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/142",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={"prs": {self.URL: {"iid": 145, "state": "opened"}}},
         )
         ReviewRequestPost.objects.create(
@@ -734,7 +734,7 @@ class TestNoAgentsLineInInFlight:
         ticket = Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/777",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(

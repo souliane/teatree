@@ -76,17 +76,17 @@ class PhaseDurationsComeFromTransitionDeltasTestCase(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(state=State.TESTED)
-        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.STARTED, minutes=0)
-        record_transition(cls.ticket, source=State.STARTED, target=State.PLANNED, minutes=5)
-        record_transition(cls.ticket, source=State.PLANNED, target=State.CODED, minutes=90)
+        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.WORK_STARTED, minutes=0)
+        record_transition(cls.ticket, source=State.WORK_STARTED, target=State.PLAN_RECORDED, minutes=5)
+        record_transition(cls.ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=90)
         record_transition(cls.ticket, source=State.CODED, target=State.TESTED, minutes=110)
 
     def test_each_segment_measures_the_time_spent_in_its_from_state(self) -> None:
         timeline = build_ticket_timeline(self.ticket.pk)
         measured = [(segment.from_state, segment.to_state, segment.seconds) for segment in timeline.segments]
         assert measured == [
-            (State.STARTED, State.PLANNED, 5 * MINUTE),
-            (State.PLANNED, State.CODED, 85 * MINUTE),
+            (State.WORK_STARTED, State.PLAN_RECORDED, 5 * MINUTE),
+            (State.PLAN_RECORDED, State.CODED, 85 * MINUTE),
             (State.CODED, State.TESTED, 20 * MINUTE),
         ]
 
@@ -105,7 +105,7 @@ class PhaseDurationsComeFromTransitionDeltasTestCase(TestCase):
 
     def test_each_segment_names_the_phase_that_produces_its_target_state(self) -> None:
         by_edge = {(s.from_state, s.to_state): s.phase for s in build_ticket_timeline(self.ticket.pk).segments}
-        assert by_edge[State.PLANNED, State.CODED] == "coding"
+        assert by_edge[State.PLAN_RECORDED, State.CODED] == "coding"
         assert by_edge[State.CODED, State.TESTED] == "testing"
 
     def test_a_ticket_with_no_transitions_has_an_empty_timeline_rather_than_raising(self) -> None:
@@ -120,9 +120,9 @@ class WorkTimeIsDistinguishedFromQueueWaitTestCase(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(state=State.CODED)
-        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.STARTED, minutes=0)
-        record_transition(cls.ticket, source=State.STARTED, target=State.PLANNED, minutes=5)
-        record_transition(cls.ticket, source=State.PLANNED, target=State.CODED, minutes=90)
+        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.WORK_STARTED, minutes=0)
+        record_transition(cls.ticket, source=State.WORK_STARTED, target=State.PLAN_RECORDED, minutes=5)
+        record_transition(cls.ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=90)
         cls.task = record_task(cls.ticket, phase="coding", queued=5, admitted=25)
         cls.attempt = record_attempt(cls.task, ended=85)
 
@@ -153,7 +153,7 @@ class WorkTimeIsDistinguishedFromQueueWaitTestCase(TestCase):
 
     def test_a_phase_nothing_was_dispatched_to_is_all_queue_wait(self) -> None:
         segments = build_ticket_timeline(self.ticket.pk).segments
-        planning = next(s for s in segments if s.to_state == State.PLANNED)
+        planning = next(s for s in segments if s.to_state == State.PLAN_RECORDED)
         assert planning.work_measured
         assert planning.work_seconds == pytest.approx(0.0)
         assert planning.queue_seconds == planning.seconds
@@ -170,8 +170,8 @@ class OverlappingAndUnfinishedAttemptsTestCase(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(state=State.CODED)
-        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.PLANNED, minutes=0)
-        record_transition(cls.ticket, source=State.PLANNED, target=State.CODED, minutes=100)
+        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
+        record_transition(cls.ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
 
     def _coding(self) -> PhaseSegment:
         segments = build_ticket_timeline(self.ticket.pk).segments
@@ -219,8 +219,8 @@ class CostRidesAlongsideTimeTestCase(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create(state=State.CODED)
-        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.PLANNED, minutes=0)
-        record_transition(cls.ticket, source=State.PLANNED, target=State.CODED, minutes=100)
+        record_transition(cls.ticket, source=State.NOT_STARTED, target=State.PLAN_RECORDED, minutes=0)
+        record_transition(cls.ticket, source=State.PLAN_RECORDED, target=State.CODED, minutes=100)
         task = record_task(cls.ticket, phase="coding", queued=0, admitted=10)
         record_attempt(task, ended=50, cost_usd=1.25, cost_is_estimated=False)
         record_attempt(task, ended=60, cost_usd=0.75, cost_is_estimated=True)

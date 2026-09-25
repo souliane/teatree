@@ -172,7 +172,7 @@ def _orphaned_task_signals(
 
     **The local FSM is authoritative for the user's own decision (#1431).**
     A reviewer ticket whose ``state`` is already terminal
-    (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
+    (REVIEW_DELIVERED/DELIVERED/PR_OPENED/MERGED/IGNORED) has no legal FSM transition left for
     its reviewing task: a re-dispatched orphan's "nothing to post"
     disposition (``mark_review_no_action``) raises ``TransitionNotAllowed``
     (no terminal state in its ``source=[...]``) and the task re-dispatches
@@ -238,7 +238,7 @@ def _orphaned_task_signals(
     for ticket in candidates:
         # #1431: the LOCAL FSM is authoritative for the user's own
         # decision. A reviewer ticket whose state is already terminal
-        # (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
+        # (REVIEW_DELIVERED/DELIVERED/PR_OPENED/MERGED/IGNORED) has no legal transition left
         # for its reviewing task — re-dispatch wedges the loop. Reap it
         # regardless of forge state (a self-authored MR with no review owed
         # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
@@ -253,7 +253,7 @@ def _orphaned_task_signals(
         # a genuinely merged/closed PR still reaps (an armed review on dead work
         # is still dead work) and only STALE LOCAL state stops killing a
         # deliberately-scheduled review.
-        if ticket.is_terminal and ticket.pk not in armed_ticket_ids:
+        if ticket.is_settled and ticket.pk not in armed_ticket_ids:
             signals.append(_orphan_signal(ticket, f"ticket terminal: {ticket.state}"))
             continue
         try:

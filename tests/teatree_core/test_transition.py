@@ -44,9 +44,9 @@ class TestTicketTransitionAudit(TestCase):
 
         assert states == [
             ("not_started", "scoped"),
-            ("scoped", "started"),
-            ("started", "planned"),
-            ("planned", "coded"),
+            ("scoped", "work_started"),
+            ("work_started", "plan_recorded"),
+            ("plan_recorded", "coded"),
             ("coded", "tested"),
         ]
 
@@ -77,7 +77,7 @@ class TestTicketTransitionAudit(TestCase):
 
         last = TicketTransition.objects.filter(ticket=ticket).order_by("created_at").last()
         assert last.from_state == "tested"
-        assert last.to_state == "started"
+        assert last.to_state == "work_started"
         assert last.triggered_by == "rework"
 
     def test_review_transition_recorded(self) -> None:
@@ -88,7 +88,7 @@ class TestTicketTransitionAudit(TestCase):
 
         task = ticket.tasks.get(phase="reviewing", status=Task.Status.PENDING)
         task.claim(claimed_by="test-worker")
-        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test pins the review audit row, not the #3313 unshippable-review
         # disposition.
         with patch.object(Ticket, "has_shippable_diff", return_value=True):
@@ -97,11 +97,11 @@ class TestTicketTransitionAudit(TestCase):
         ticket.refresh_from_db()
         last = TicketTransition.objects.filter(ticket=ticket).order_by("created_at").last()
         assert last.from_state == "tested"
-        assert last.to_state == "reviewed"
+        assert last.to_state == "self_reviewed"
         assert last.triggered_by == "review"
 
     def test_review_transition_with_no_shippable_diff_records_auto_ignore(self) -> None:
-        # #3313: a REVIEWED ticket with no shippable diff is auto-disposed to
+        # #3313: a SELF_REVIEWED ticket with no shippable diff is auto-disposed to
         # IGNORED right after review() lands, so the audit trail's last row
         # is the auto-ignore, not the review itself.
         ticket = Ticket.objects.create()
@@ -115,10 +115,10 @@ class TestTicketTransitionAudit(TestCase):
         assert ticket.state == Ticket.State.IGNORED
         transitions = list(TicketTransition.objects.filter(ticket=ticket).order_by("created_at"))
         assert transitions[-2].from_state == "tested"
-        assert transitions[-2].to_state == "reviewed"
+        assert transitions[-2].to_state == "self_reviewed"
         assert transitions[-2].triggered_by == "review"
         last = transitions[-1]
-        assert last.from_state == "reviewed"
+        assert last.from_state == "self_reviewed"
         assert last.to_state == "ignored"
         assert last.triggered_by == "ignore"
 
@@ -140,9 +140,9 @@ class TestTicketLifecycleMermaid(TestCase):
 
         assert "stateDiagram-v2" in mermaid
         assert "not_started --> scoped: scope()" in mermaid
-        assert "scoped --> started: start()" in mermaid
-        assert "started --> planned: plan()" in mermaid
-        assert "planned --> coded: code()" in mermaid
+        assert "scoped --> work_started: start()" in mermaid
+        assert "work_started --> plan_recorded: plan()" in mermaid
+        assert "plan_recorded --> coded: code()" in mermaid
         assert "coded --> tested: test()" in mermaid
 
     def test_mermaid_includes_session_id(self) -> None:
@@ -176,11 +176,11 @@ class TestTicketLifecycleMermaid(TestCase):
         The ``note right of <state>`` reference is backed by an explicit edge
         from ``not_started``.
         """
-        ticket = Ticket.objects.create(state="started")
+        ticket = Ticket.objects.create(state="work_started")
 
         mermaid = build_ticket_lifecycle_mermaid(ticket.pk)
-        assert "not_started --> started" in mermaid
-        assert "note right of started: current" in mermaid
+        assert "not_started --> work_started" in mermaid
+        assert "note right of work_started: current" in mermaid
 
 
 class TestLifecycleDiagramTicketFlag(TestCase):
@@ -261,9 +261,9 @@ class TestTicketLifecycleMermaidIsBounded(TestCase):
     def test_repeated_transitions_collapse_to_one_edge(self) -> None:
         ticket = Ticket.objects.create()
         TicketTransition.objects.bulk_create(
-            TicketTransition(ticket=ticket, from_state="scoped", to_state="started", triggered_by="start")
+            TicketTransition(ticket=ticket, from_state="scoped", to_state="work_started", triggered_by="start")
             for _ in range(500)
         )
         mermaid = build_ticket_lifecycle_mermaid(ticket.pk)
-        assert mermaid.count("scoped --> started: start()") == 1
+        assert mermaid.count("scoped --> work_started: start()") == 1
         assert len(mermaid.splitlines()) < 10

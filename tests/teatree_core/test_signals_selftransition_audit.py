@@ -26,11 +26,11 @@ class SelfTransitionIsNotAnAuditEvent(TestCase):
     """The audit table records state EDGES; a self-transition has none."""
 
     def _reviewed_ticket(self) -> Ticket:
-        """A reviewer ticket already at REVIEW_POSTED, as the scanner finds it each pass."""
+        """A reviewer ticket already at REVIEW_DELIVERED, as the scanner finds it each pass."""
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         Task.objects.create(
@@ -63,7 +63,7 @@ class SelfTransitionIsNotAnAuditEvent(TestCase):
         """
         ticket = self._reviewed_ticket()
         ticket.mark_reviewed_externally()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_no_audit_row_anywhere_has_equal_from_and_to(self) -> None:
         """Stated as the invariant, so a future self-transition is covered without edits."""

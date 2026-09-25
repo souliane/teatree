@@ -252,7 +252,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         intent=ActivationIntent.UNDECIDED,
         rationale=f"{_REFUSAL_ONLY} — the FSM state itself is the satisfier",
         satisfier=(
-            "the ticket has passed REVIEWED and carries a cold-review artifact: a ReviewEvidence row, or a "
+            "the ticket has passed SELF_REVIEWED and carries a cold-review artifact: a ReviewEvidence row, or a "
             "ReviewVerdict bound to it by `t3 <overlay> review record --ticket-id` (a verdict recorded "
             "without --ticket-id does NOT satisfy it)"
         ),

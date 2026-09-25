@@ -3,7 +3,7 @@
 The spec-coverage DoD gate (:mod:`teatree.core.gates.spec_coverage_gate`) shipped
 read-only: it treats a MISSING ``ticket.extra['spec_coverage']`` as a hard block,
 and nothing wrote one. Turning ``require_spec_coverage`` on therefore refused
-every RETROSPECTED→DELIVERED advance — the ON state was "delivery bricked", not
+every RETRO_RECORDED→DELIVERED advance — the ON state was "delivery bricked", not
 "coverage enforced". This command is the producer that makes the flag
 satisfiable, mirroring ``lifecycle record-anti-vacuity`` / ``repro record-red``.
 
@@ -81,7 +81,7 @@ class SpecCoverageCommands(TyperCommand):
         """Record the spec-coverage manifest the delivery DoD gate reads (#2232).
 
         Each ``--ac`` maps one acceptance criterion to the test(s) that prove it,
-        so ``require_spec_coverage`` can refuse a RETROSPECTED→DELIVERED advance
+        so ``require_spec_coverage`` can refuse a RETRO_RECORDED→DELIVERED advance
         that would declare done on a partial subset of the spec.
 
         ACs are upserted by label; ``--replace`` records exactly the given set.

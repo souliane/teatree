@@ -33,7 +33,7 @@ def _attempt(task, **kwargs) -> TaskAttempt:
 
 class ProvenanceReadModelTestCase(TestCase):
     def test_attempt_provenance_fields_are_exposed(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(
             task,
@@ -67,7 +67,7 @@ class ProvenanceReadModelTestCase(TestCase):
         assert row.artifact_path == "/tmp/artifact.json"
 
     def test_tier3_effort_and_skills_are_exposed(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(task, model="m", reasoning_effort="xhigh", skills_loaded=["t3:code", "t3:rules"])
         row = build_ticket_detail(ticket.pk).tasks[0].attempts[0]
@@ -75,7 +75,7 @@ class ProvenanceReadModelTestCase(TestCase):
         assert row.skills_loaded == ("t3:code", "t3:rules")
 
     def test_tier3_fields_default_empty_for_a_legacy_attempt(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(task, model="m")  # no effort/skills recorded (a pre-#3673 row)
         row = build_ticket_detail(ticket.pk).tasks[0].attempts[0]
@@ -85,7 +85,7 @@ class ProvenanceReadModelTestCase(TestCase):
     def test_running_attempt_has_blank_duration(self) -> None:
         # A still-running attempt has no ended_at, so its duration renders blank
         # (the elapsed span is not derivable yet) rather than crashing the drawer.
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         running = cast("TaskAttempt", TaskAttemptFactory(task=task, model="m"))
         assert running.ended_at is None  # the factory leaves a live attempt open
@@ -93,13 +93,13 @@ class ProvenanceReadModelTestCase(TestCase):
         assert detail.tasks[0].attempts[0].duration == ""
 
     def test_query_count_does_not_scale_with_attempt_count(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         one_task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(one_task, model="m")
         with CaptureQueriesContext(connection) as small:
             build_ticket_detail(ticket.pk)
 
-        big = TicketFactory(state=State.STARTED)
+        big = TicketFactory(state=State.WORK_STARTED)
         for _ in range(6):
             tk = TaskFactory(ticket=big, phase="coding")
             for _ in range(5):
@@ -113,7 +113,7 @@ class ProvenanceReadModelTestCase(TestCase):
 
 class ProvenanceDrawerRenderTestCase(TestCase):
     def test_drawer_renders_provenance_and_marks_estimated_cost(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(task, model="claude-sonnet", cost_usd=0.12, cost_is_estimated=True, num_turns=3)
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
@@ -122,14 +122,14 @@ class ProvenanceDrawerRenderTestCase(TestCase):
         assert "est" in body.lower()
 
     def test_reported_cost_is_marked_reported_not_estimated(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(task, model="claude-sonnet", cost_usd=0.9, cost_is_estimated=False)
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
         assert "reported" in body.lower()
 
     def test_drawer_renders_effort_and_skill_chips(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         _attempt(task, model="m", reasoning_effort="xhigh", skills_loaded=["t3:code", "t3:rules"])
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()

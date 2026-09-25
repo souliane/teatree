@@ -7,7 +7,7 @@ comparison and left raw at the other, so two spellings of the SAME identity
 compare unequal and the branch silently mis-fires. ``normalize_phase("plan") ==
 "planning"`` is ``True``; the raw ``"plan" == "planning"`` is ``False`` — and
 that ``False`` silently skipped the ``PlanArtifact`` record, wedging the ticket
-at ``STARTED`` with coding edits denied (audit #20).
+at ``WORK_STARTED`` with coding edits denied (audit #20).
 
 This module walks the ``src/teatree`` AST and reports a raw equality/identity
 comparison (``==`` / ``!=`` / ``is`` / ``is not``) against a registered family's

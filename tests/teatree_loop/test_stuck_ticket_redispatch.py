@@ -36,7 +36,7 @@ from teatree.loop.tick_recovery import _reap_stale_task_claims
 _REVIEWED_HEAD = "a1b2c3d4" * 5
 
 
-def _stuck_ticket(*, state: str = Ticket.State.STARTED, idle_hours: int = 48) -> Ticket:
+def _stuck_ticket(*, state: str = Ticket.State.WORK_STARTED, idle_hours: int = 48) -> Ticket:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
     transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state=state)
     TicketTransition.objects.filter(pk=transition.pk).update(
@@ -69,7 +69,7 @@ def _finished_task(
 
 class TestStuckTicketRedispatch(TestCase):
     def test_stuck_started_ticket_schedules_planning(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
 
         scheduled = redispatch_stuck_tickets()
 
@@ -78,7 +78,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert planning.count() == 1
 
     def test_stuck_planned_ticket_schedules_coding(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.PLANNED)
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED)
 
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
@@ -96,7 +96,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
 
     def test_stuck_reviewed_ticket_schedules_shipping(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.REVIEWED)
+        ticket = _stuck_ticket(state=Ticket.State.SELF_REVIEWED)
 
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
@@ -104,13 +104,13 @@ class TestStuckTicketRedispatch(TestCase):
     def test_ticket_with_no_activity_record_is_left_alone(self) -> None:
         # No transition and no task means idleness cannot be measured; the sweep
         # must not re-dispatch a ticket it cannot prove is stale.
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.count() == 0
 
     def test_scheduling_refusal_is_escalated(self) -> None:
-        _stuck_ticket(state=Ticket.State.STARTED)
+        _stuck_ticket(state=Ticket.State.WORK_STARTED)
 
         with patch.object(Ticket, "schedule_planning", side_effect=InvalidTransitionError("gate refused")):
             scheduled = redispatch_stuck_tickets()
@@ -122,8 +122,8 @@ class TestStuckTicketRedispatch(TestCase):
         # #3441: one stuck ticket whose per-item processing raises an unexpected
         # exception must NOT abort the sweep and strand every OTHER stuck ticket. The
         # poison ticket is skipped (logged, left as-is), the healthy one still schedules.
-        poison = _stuck_ticket(state=Ticket.State.STARTED)  # created first ⇒ processed first
-        healthy = _stuck_ticket(state=Ticket.State.STARTED)
+        poison = _stuck_ticket(state=Ticket.State.WORK_STARTED)  # created first ⇒ processed first
+        healthy = _stuck_ticket(state=Ticket.State.WORK_STARTED)
 
         def _raise_on_poison(ticket: Ticket, *, phase: str) -> str | None:
             if ticket.pk == poison.pk:
@@ -173,7 +173,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert ticket.tasks.count() == 0
 
     def test_budget_exhausted_ticket_is_escalated_not_scheduled(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
         cap = max_phase_iterations()
         # A run of prior distinct planning-phase failures burns the repair budget.
         for i in range(cap):
@@ -202,7 +202,7 @@ class TestStuckTicketRedispatch(TestCase):
         # NOT be treated as a stalled/doomed phase: usage-limit failures are capacity
         # dips, not defects, so they must not burn the repair budget nor trip the
         # identical-failure stall. The ticket is re-dispatched, never escalated.
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
         err = LimitMatch(phrase="5-hour limit", cause=LimitCause.SUBSCRIPTION_SESSION).as_reason()
         for _ in range(2):
             session = Session.objects.create(ticket=ticket, agent_id="planning")
@@ -236,7 +236,7 @@ class TestStuckTicketRedispatch(TestCase):
     def test_answered_escalation_does_not_re_escalate(self) -> None:
         # #6: an escalated stuck ticket is parked. Answering the question must NOT spawn
         # a fresh escalation on the next tick (the old open-only dedup re-fired here).
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
         self._burn_planning_budget(ticket)
         assert redispatch_stuck_tickets() == 0
         question = DeferredQuestion.objects.get()
@@ -247,7 +247,7 @@ class TestStuckTicketRedispatch(TestCase):
         assert DeferredQuestion.objects.count() == 1  # no re-escalation after the answer
 
     def test_wired_into_tick_recovery(self) -> None:
-        ticket = _stuck_ticket(state=Ticket.State.STARTED)
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
 
         _reap_stale_task_claims()
 
@@ -258,7 +258,7 @@ class TestReviewerRoleCandidates(TestCase):
     """#3958 gap 1: reviewer-role tickets were excluded outright by a ``role=author`` filter."""
 
     def _reviewer_ticket(self) -> Ticket:
-        # A reviewer ticket is minted at NOT_STARTED and stays there until REVIEW_POSTED,
+        # A reviewer ticket is minted at NOT_STARTED and stays there until REVIEW_DELIVERED,
         # so no author state→phase mapping can name its implied phase.
         return Ticket.objects.create(
             role=Ticket.Role.REVIEWER,
@@ -320,7 +320,7 @@ class TestReviewerRoleCandidates(TestCase):
 
     def test_reviewer_ticket_whose_review_completed_but_never_landed_is_redispatched(self) -> None:
         # The frozen half of the widening: the review task finished cleanly yet the ticket
-        # never reached REVIEW_POSTED, and nothing is scheduled to advance it.
+        # never reached REVIEW_DELIVERED, and nothing is scheduled to advance it.
         ticket = self._reviewer_ticket()
         _finished_task(ticket, phase="reviewing", status=Task.Status.COMPLETED, hours_ago=48)
 
@@ -368,7 +368,7 @@ class TestReviewerRoleCandidates(TestCase):
 
     def test_review_posted_reviewer_ticket_is_left_alone(self) -> None:
         ticket = self._reviewer_ticket()
-        ticket.state = Ticket.State.REVIEW_POSTED
+        ticket.state = Ticket.State.REVIEW_DELIVERED
         ticket.save(update_fields=["state"])
         _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="stale failure", hours_ago=48)
 
@@ -579,7 +579,7 @@ class TestFailingCandidates(TestCase):
         # its lease AFTER opening the PR is a dead artifact, not a failing phase. The
         # frozen class had to wait out the idle threshold to reach it; the failing class
         # would fire on the very next tick, so the landing check has to sit here.
-        ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
+        ticket = _stuck_ticket(state=Ticket.State.SELF_REVIEWED, idle_hours=0)
         _finished_task(ticket, phase="shipping", status=Task.Status.FAILED, error="stuck_loop: lease lost")
         ticket.pull_requests.create(
             url="https://ex.com/o/a/pull/9", repo="o/a", iid="9", state=PullRequest.State.MERGED
@@ -591,7 +591,7 @@ class TestFailingCandidates(TestCase):
     def test_a_failed_phase_with_no_landing_evidence_is_still_a_candidate(self) -> None:
         # The control for the guard above: without it, a sweep that skipped every
         # shipping failure would pass that test for the wrong reason.
-        ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
+        ticket = _stuck_ticket(state=Ticket.State.SELF_REVIEWED, idle_hours=0)
         _finished_task(ticket, phase="shipping", status=Task.Status.FAILED, error="stuck_loop: lease lost")
 
         assert redispatch_stuck_tickets() == 1
@@ -601,7 +601,7 @@ class TestFailingCandidates(TestCase):
         # #3982's opposite direction: a landed PR proves SOME push succeeded, not that
         # THIS attempt's push gate refusal did. Only a LEASE_LOST failure may trust the
         # artifact half of the landing evidence; any other failure kind must still surface.
-        ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
+        ticket = _stuck_ticket(state=Ticket.State.SELF_REVIEWED, idle_hours=0)
         _finished_task(
             ticket, phase="shipping", status=Task.Status.FAILED, error="result_error: the push gate refused the branch"
         )
@@ -624,7 +624,7 @@ class TestEveryClassPassesTheBudget(TestCase):
     """
 
     def _candidates_of_every_class(self) -> None:
-        frozen_author = _stuck_ticket(state=Ticket.State.PLANNED)
+        frozen_author = _stuck_ticket(state=Ticket.State.PLAN_RECORDED)
         failing_author = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
         _finished_task(failing_author, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
         for phase in ("reviewing", "codex_reviewing"):

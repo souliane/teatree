@@ -139,7 +139,7 @@ def _make_merge_after(overlay: str, *, after_hours: int) -> Ticket:
     )
     transition = TicketTransition.objects.create(
         ticket=ticket,
-        from_state=Ticket.State.SHIPPED,
+        from_state=Ticket.State.PR_OPENED,
         to_state=Ticket.State.MERGED,
     )
     TicketTransition.objects.filter(pk=transition.pk).update(

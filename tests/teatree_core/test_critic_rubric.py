@@ -95,7 +95,7 @@ class TestRegistryConformance(TestCase):
     def test_every_llm_item_is_asked_by_the_dispatch_contract(self) -> None:
         # A LLM item the critic prompt forgets would never get judged — pin that the
         # contract asks for every LLM slug (production-shaped, over a real ticket).
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         contract = build_critic_contract(ticket, _FORTY_HEX)
         for item in llm_items():
             assert item.slug in contract, item.slug
@@ -126,27 +126,27 @@ class TestRegistryConformance(TestCase):
 
 class TestSpecNotPlanPredicate(TestCase):
     def test_caught_when_no_plan_artifact(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         assert spec_not_plan(ticket)
 
     def test_caught_when_plan_manifest_is_thin(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         _plan(ticket, adequacy={})
         assert spec_not_plan(ticket)
 
     def test_clean_with_an_adequate_manifest(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         _plan(ticket, adequacy=_adequate_manifest())
         assert spec_not_plan(ticket) is None
 
 
 class TestDoneNotDonePredicate(TestCase):
     def test_caught_when_no_merge_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         assert done_not_done(ticket)
 
     def test_clean_with_a_keystone_merge_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         _merge_audit(ticket)
         assert done_not_done(ticket) is None
 
@@ -154,11 +154,11 @@ class TestDoneNotDonePredicate(TestCase):
 class TestCompletenessPredicate(TestCase):
     def test_caught_when_no_spec_coverage_manifest(self) -> None:
         # The no-manifest hole fix: zero proven ACs is a FAIL (matches check_spec_coverage), not pass-clean.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         assert completeness(ticket)
 
     def test_caught_when_an_acceptance_criterion_is_unbacked(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         ticket.extra = {
             "spec_coverage": {
                 "acceptance_criteria": [
@@ -170,12 +170,12 @@ class TestCompletenessPredicate(TestCase):
         assert completeness(ticket)
 
     def test_clean_when_every_criterion_is_backed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         ticket.extra = {"spec_coverage": {"acceptance_criteria": [{"id": "AC-1", "tests": ["tests/test_a.py::t"]}]}}
         assert completeness(ticket) is None
 
     def test_clean_with_a_recorded_override(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         ticket.extra = {"spec_coverage_override": {"reason": "pure docs change, no ACs"}}
         assert completeness(ticket) is None
 
@@ -268,7 +268,7 @@ class TestMergeTransitionItems(TestCase):
     def test_every_merge_llm_item_is_asked_by_the_merge_contract(self) -> None:
         # A merge item the critic prompt forgets would never get judged — pin that the
         # merge contract asks for every merge slug (production-shaped, over a real ticket).
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         contract = build_merge_quality_contract(ticket, _FORTY_HEX)
         for item in llm_items("merge"):
             assert item.slug in contract, item.slug
@@ -296,7 +296,7 @@ class TestPlanTransitionItems(TestCase):
     def test_every_plan_llm_item_is_asked_by_the_design_contract(self) -> None:
         # A design item the critic prompt forgets would never get judged — pin that the
         # design contract asks for every plan slug (production-shaped, over a real ticket).
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED)
         contract = build_design_contract(ticket, _FORTY_HEX)
         for item in llm_items("plan"):
             assert item.slug in contract, item.slug

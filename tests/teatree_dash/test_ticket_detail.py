@@ -22,9 +22,11 @@ class DrawerHistoryIsCappedTestCase(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = TicketFactory(state=State.STARTED)
+        cls.ticket = TicketFactory(state=State.WORK_STARTED)
         TicketTransition.objects.bulk_create(
-            TicketTransition(ticket=cls.ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start")
+            TicketTransition(
+                ticket=cls.ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+            )
             for _ in range(TRANSITION_ROWS + cls.EXTRA)
         )
         cls.tasks = [TaskFactory(ticket=cls.ticket, phase="coding") for _ in range(TASK_ROWS + cls.EXTRA)]

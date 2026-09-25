@@ -62,7 +62,7 @@ def _workstream_clear(ticket: Ticket) -> MergeClear:
 
 class TestResolvePrRepoSlug(TestCase):
     def test_owner_repo_shaped_slug_passes_through(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1,
@@ -75,7 +75,7 @@ class TestResolvePrRepoSlug(TestCase):
         assert resolve_pr_repo_slug(clear) == "souliane/teatree"
 
     def test_workstream_slug_resolves_repo_from_clone_remote(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _workstream_clear(ticket)
 
         with patch(
@@ -85,7 +85,7 @@ class TestResolvePrRepoSlug(TestCase):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"
 
     def test_unresolvable_repo_fails_closed_with_actionable_message(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _workstream_clear(ticket)
 
         with (
@@ -97,7 +97,7 @@ class TestResolvePrRepoSlug(TestCase):
 
 class TestMergeUsesResolvedRepo(TestCase):
     def test_workstream_slug_merge_calls_gh_with_real_repo(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _workstream_clear(ticket)
         # The workstream slug resolves to the clone-origin repo; seed the verdict there.
         seed_merge_safe_verdict(slug="souliane/teatree", pr_id=clear.pr_id, sha=clear.reviewed_sha)
@@ -137,7 +137,7 @@ class TestMergeUsesResolvedRepo(TestCase):
         assert all(r == "souliane/teatree" for r in repo_args)
 
     def test_workstream_slug_unresolvable_repo_is_actionable_not_opaque(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _workstream_clear(ticket)
 
         with (
@@ -180,7 +180,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
         ticket = Ticket.objects.create(
             overlay="downstream",
             issue_url=f"https://github.com/{self._OVERLAY_REPO}/issues/139",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return MergeClear.objects.create(
             ticket=ticket,
@@ -263,7 +263,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
 
     def test_clear_with_blank_issue_url_falls_through_to_clone_origin(self) -> None:
         """A ticket with no issue_url keeps the #872 clone-origin behaviour."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=139,
@@ -282,7 +282,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://example.invalid/not-an-issue",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         clear = MergeClear.objects.create(
             ticket=ticket,
@@ -353,7 +353,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url=f"https://github.com/souliane/teatree/issues/{pr_id}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return MergeClear.objects.create(
             ticket=ticket,
@@ -434,7 +434,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         ``souliane/teatree`` is a real GitHub owner, not a branch prefix,
         so it must still short-circuit straight through ``_looks_like_owner_repo``.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1,

@@ -61,7 +61,7 @@ class TestWarnOrphansScopesTheScanToInFlightRows(TestCase):
         mock_clone_root.return_value = _fake_workspace()
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/alpha/-/issues/live",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         Worktree.objects.create(overlay="test", ticket=ticket, repo_path="org/alpha", branch="feat-live")
         mock_classify.return_value = BranchReport(

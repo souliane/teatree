@@ -55,7 +55,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     sweeps: tuple[tuple[str, Callable[[], object]], ...] = (
         ("recovery:boot_sweeps", run_boot_sweeps),
         ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
-        # Ordered BEFORE stuck_redispatch: it lifts a plan-gate-stranded ticket to STARTED,
+        # Ordered BEFORE stuck_redispatch: it lifts a plan-gate-stranded ticket to WORK_STARTED,
         # which is the rung stuck_redispatch picks tickets up at, so the two compose in one
         # tick rather than two.
         ("recovery:unplanned_redispatch", unplanned_ticket_redispatch.redispatch_unplanned_tickets),

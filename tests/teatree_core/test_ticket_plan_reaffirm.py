@@ -106,7 +106,7 @@ class TestPlanReaffirm(TestCase):
         self.bare = _make_remote(self._tmp)
         self.clone = _clone(self._tmp, self.bare)
         self.old_base = _git(self.clone, "rev-parse", "HEAD")
-        self.ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        self.ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         Worktree.objects.create(
             ticket=self.ticket, repo_path=str(self.clone), branch="feature", extra={"worktree_path": str(self.clone)}
         )
@@ -144,7 +144,7 @@ class TestPlanReaffirm(TestCase):
             assert check_plan_current(self.ticket) is True
 
     def test_reaffirm_refused_when_no_plan_exists(self) -> None:
-        fresh = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        fresh = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         with pytest.raises(ReaffirmError, match="no plan to reaffirm"):
             reaffirm_plan(ticket=fresh, new_base_sha="a" * 40, dispositions=["x"], by="op")
 
@@ -168,7 +168,7 @@ class TestPlanReaffirmUnderFlag(TestCase):
         self.new_base = _git(self.clone, "rev-parse", "origin/main")
 
     def _ticket_with_plan(self, *, base_sha: str, adequacy: dict) -> Ticket:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         Worktree.objects.create(
             ticket=ticket, repo_path=str(self.clone), branch="feature", extra={"worktree_path": str(self.clone)}
         )

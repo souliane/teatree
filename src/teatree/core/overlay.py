@@ -143,7 +143,7 @@ class OverlayConfig(BaseModel):
     identity_aliases: list[list[str]] = Field(default_factory=list)
     dev_env_url: str = ""
     # Retired (#plan-gate-fsm): no handler reads it anymore; enforcement lives in
-    # the Ticket state graph (STARTED → PLANNED → CODED) via ``PlanArtifact``.
+    # the Ticket state graph (WORK_STARTED → PLAN_RECORDED → CODED) via ``PlanArtifact``.
     plan_gate: bool = False
     # #1295 capability J: privacy-redaction patterns scanned by the pre-publish
     # privacy gate before every public-repo write; empty in core.

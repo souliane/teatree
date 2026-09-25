@@ -39,12 +39,12 @@ DEFAULT_SKILLS_DIR = _default_skills_dir()
 _STATUS_TO_SKILL: dict[str, str] = {
     "not_started": "ticket",
     "scoped": "ticket",
-    "started": "code",
+    "work_started": "code",
     "coded": "test",
     "tested": "review",
-    "reviewed": "ship",
-    "shipped": "debug",
-    "in_review": "debug",
+    "self_reviewed": "ship",
+    "pr_opened": "debug",
+    "review_requested": "debug",
     "merged": "debug",
     "delivered": "debug",
 }

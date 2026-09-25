@@ -16,7 +16,7 @@ from teatree.core.models.plan_artifact import PlanArtifact
 
 
 def _plan(ticket: Ticket) -> None:
-    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+    """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
     PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
@@ -52,7 +52,7 @@ class TestTicketLifecycle(TestCase):
         ticket.scope(issue_url="https://gitlab.com/org/repo/-/issues/42", variant="test", repos=["backend"])
         ticket.start()
         ticket.save()
-        assert ticket.state == "started"
+        assert ticket.state == "work_started"
 
         wt = Worktree.objects.create(ticket=ticket, repo_path="/tmp/wt/backend", branch="feat/42")
         wt.provision()
@@ -99,7 +99,7 @@ class TestTicketLifecycle(TestCase):
         review_task.complete_with_attempt(exit_code=0, result={"summary": "LGTM", "needs_user_input": False})
 
         ticket.refresh_from_db()
-        assert ticket.state == "reviewed"
+        assert ticket.state == "self_reviewed"
 
         ship_task = Task.objects.get(ticket=ticket, phase="shipping")
         ship_task.claim(claimed_by="headless-agent")
@@ -107,7 +107,7 @@ class TestTicketLifecycle(TestCase):
         ship_task.complete_with_attempt(exit_code=0, result={"summary": "MR created", "needs_user_input": False})
 
         ticket.refresh_from_db()
-        assert ticket.state == "shipped"
+        assert ticket.state == "pr_opened"
 
         ticket.request_review()
         ticket.mark_merged()
@@ -134,7 +134,7 @@ class TestReworkCycle(TestCase):
 
         ticket.rework()
         ticket.save()
-        assert ticket.state == "started"
+        assert ticket.state == "work_started"
         assert not Task.objects.filter(ticket=ticket, status="pending").exists()
 
 

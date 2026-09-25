@@ -31,7 +31,7 @@ _AXES = tuple(product(_MODELS, _LANES, _PHASES, (True, False), (True, False)))
 
 def _seed_corpus() -> None:
     """One attempt per costing-key combination, with null token fields interleaved."""
-    ticket = TicketFactory(state=Ticket.State.STARTED)
+    ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
     tasks = {phase: TaskFactory(ticket=ticket, phase=phase) for phase in _PHASES}
     for index, (model, lane, phase, reported, estimated) in enumerate(_AXES):
         TaskAttemptFactory(
@@ -83,7 +83,7 @@ class TestAggregationIsBoundedByDistinctKeys(TestCase):
 
     @staticmethod
     def _seed_identical(count: int) -> None:
-        ticket = TicketFactory(state=Ticket.State.STARTED)
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, phase="coding")
         for _ in range(count):
             TaskAttemptFactory(

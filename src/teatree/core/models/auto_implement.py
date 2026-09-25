@@ -4,7 +4,7 @@
 freshly-created NOT_STARTED author ticket — the issue-implementer auto-start
 path deliberately skips the scope/plan phases. When that coding task completes
 the ticket is still in an early state, so the normal ``coding -> code()`` guard
-(``source=PLANNED``) cannot fire and :meth:`Task._apply_phase_transition` would
+(``source=PLAN_RECORDED``) cannot fire and :meth:`Task._apply_phase_transition` would
 silently no-op (the wedge that left tickets 35/36 with completed coding yet zero
 transitions and no PR).
 

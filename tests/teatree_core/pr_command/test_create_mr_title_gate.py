@@ -2,7 +2,7 @@
 
 Integration coverage proving the deterministic gate runs through the REAL
 ``validate_pr_metadata`` -> overlay ``validate_pr`` path BEFORE the FSM
-advances to SHIPPED (so before the gh/glab create network call). The title is
+advances to PR_OPENED (so before the gh/glab create network call). The title is
 derived from the commit subject and the description from subject+body, so the
 test drives both by patching only ``git.last_commit_message`` — an unstoppable
 external. The default ``CommandOverlay`` uses the default ``OverlayMetadata``,
@@ -38,7 +38,7 @@ class TestPrCreateMrTitleGate(TestCase):
         result = self._run("Add the gate", "## What\nx\n\n## Why\ny")
 
         self._ticket.refresh_from_db()
-        assert self._ticket.state == Ticket.State.REVIEWED  # never advanced
+        assert self._ticket.state == Ticket.State.SELF_REVIEWED  # never advanced
         assert result["error"] == "PR validation failed"
         details = cast("list[str]", result["details"])
         assert any(DEFAULT_MR_TITLE_REGEX in d for d in details)
@@ -53,7 +53,7 @@ class TestPrCreateMrTitleGate(TestCase):
         result = self._run("feat(ship): add the gate (#1540)", "Just a flat paragraph.")
 
         self._ticket.refresh_from_db()
-        assert self._ticket.state == Ticket.State.SHIPPED
+        assert self._ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
     def test_conforming_title_and_what_why_passes(self) -> None:
@@ -61,5 +61,5 @@ class TestPrCreateMrTitleGate(TestCase):
         result = self._run("feat(ship): add the gate (#1540)", "## What\nAdds it.\n\n## Why\nMissed often.")
 
         self._ticket.refresh_from_db()
-        assert self._ticket.state == Ticket.State.SHIPPED
+        assert self._ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result

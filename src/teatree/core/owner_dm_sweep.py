@@ -124,7 +124,7 @@ def subject_closed_locally(question_text: str) -> bool:
     urls = find_forge_urls(question_text)
     if not urls:
         return False
-    landed = {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED}
+    landed = {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED}
     for url in urls:
         states = set(Ticket.objects.filter(pull_requests__url=url).values_list("state", flat=True)) | set(
             Ticket.objects.filter(issue_url=url).values_list("state", flat=True)

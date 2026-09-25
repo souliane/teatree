@@ -232,7 +232,7 @@ def _merge_at(expected_head_oid: str) -> str:
 def _make_ticket(*, gitlab: bool = True) -> Ticket:
     return Ticket.objects.create(
         overlay="acme",
-        state=Ticket.State.IN_REVIEW,
+        state=Ticket.State.REVIEW_REQUESTED,
         issue_url=_GITLAB_ISSUE_URL if gitlab else "https://github.com/souliane/teatree/issues/1",
     )
 
@@ -420,7 +420,7 @@ class TestHostKindDetection(TestCase):
     def test_self_hosted_gitlab_issue_url_resolves_to_gitlab(self) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url=_GITLAB_SELF_HOSTED_URL,
         )
         clear = _clear(ticket)

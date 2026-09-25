@@ -194,9 +194,9 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
 
     def test_terminal_ticket_orphan_signal_carries_its_own_reason(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3895"
-        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED)
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_DELIVERED)
         schedule_external_review(ticket)
-        assert ticket.is_terminal
+        assert ticket.is_settled
 
         host = FakeCodeHost(user="user-gl", pr_open_state_default=PrOpenState.OPEN)
         signals = ReviewerPrsScanner(host=host, identities=_IDENTITIES).scan()
@@ -219,7 +219,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
 
     def test_handler_logs_the_signal_reason_not_a_hardcoded_one(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3897"
-        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED)
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_DELIVERED)
         task = schedule_external_review(ticket)
 
         with self.assertLogs("teatree.loop.mechanical", level="INFO") as captured:

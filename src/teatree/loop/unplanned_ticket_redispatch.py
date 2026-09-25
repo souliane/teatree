@@ -8,7 +8,7 @@ which fixes every FUTURE admission and none of the 46 already stranded when it l
 
 This sweep is the drain, and it reaches them off the failure's NAME rather than its text:
 ``FailureKind.PLAN_MISSING`` is precisely what the refusal is, and classifying it is what
-lets a recovery mechanism see it. Once routed the ticket is STARTED, so the existing
+lets a recovery mechanism see it. Once routed the ticket is WORK_STARTED, so the existing
 ``stuck_ticket_redispatch`` sweep owns it from there — including its repair budget and
 its loud escalation — and this module needs neither.
 
@@ -32,7 +32,7 @@ from teatree.core.models import Task, Ticket
 logger = logging.getLogger(__name__)
 
 #: The states a ticket the plan gate refused is stranded in. Its intake never advanced it,
-#: so it never reached the STARTED rung ``stuck_ticket_redispatch`` picks tickets up at.
+#: so it never reached the WORK_STARTED rung ``stuck_ticket_redispatch`` picks tickets up at.
 _STRANDED_STATES: tuple[str, ...] = (Ticket.State.NOT_STARTED, Ticket.State.SCOPED)
 
 

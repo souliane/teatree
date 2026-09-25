@@ -147,7 +147,7 @@ class TestShipFenceGate(TestCase):
         holder = init_client(tmp / "holder", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(holder), branch="feat", extra={"worktree_path": str(holder)}
         )
@@ -187,7 +187,7 @@ class TestShipFenceGate(TestCase):
     def test_ticket_with_issue_url_but_no_marker_is_a_no_op(self) -> None:
         tmp = self._tmp()
         init_bare(tmp / "origin.git")
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
         )
@@ -197,7 +197,7 @@ class TestShipFenceGate(TestCase):
     def test_ticket_without_issue_url_is_a_no_op(self) -> None:
         # A ticket with no issue_url cannot carry a fleet claim to fence — short-circuit.
         tmp = self._tmp()
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
         )
@@ -206,7 +206,7 @@ class TestShipFenceGate(TestCase):
 
     def test_fence_fails_closed_when_ref_infra_unreachable(self) -> None:
         tmp = self._tmp()
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder"
         )
@@ -342,7 +342,7 @@ class TestExecuteShipFence(TestCase):
         thief = init_client(tmp / "thief", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.PR_OPENED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )
@@ -372,7 +372,7 @@ class TestExecuteShipFence(TestCase):
         thief = init_client(tmp / "thief", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.PR_OPENED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )
@@ -406,7 +406,7 @@ class TestEnsurePrFence(TestCase):
         thief = init_client(tmp / "thief", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin")
         assert claim is not None
-        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )

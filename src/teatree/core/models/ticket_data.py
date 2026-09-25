@@ -38,7 +38,7 @@ class TicketFacet(models.Model):
         oldest_task: "datetime | None"
         State: type["Ticket.State"]
         Role: type["Ticket.Role"]
-        _TERMINAL_STATES: ClassVar[frozenset[str]]
+        _SETTLED_STATES: ClassVar[frozenset[str]]
         _WORK_STATE_ORDER: ClassVar[tuple[str, ...]]
         _PHASE_PRODUCES_STATE: ClassVar[dict[str, str]]
 

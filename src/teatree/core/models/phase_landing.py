@@ -70,7 +70,7 @@ def phase_landing_evidence(task: "Task", *, trust_phase_artifact: bool) -> str:
     if ticket.role != Ticket.Role.AUTHOR:
         return ""
     if phase_output_reached(ticket, task.phase):
-        # str() before !r: a TextChoices member reprs as ``Ticket.State.IN_REVIEW``,
+        # str() before !r: a TextChoices member reprs as ``Ticket.State.REVIEW_REQUESTED``,
         # which is not the token the operator reads everywhere else.
         return f"ticket state {str(ticket.state)!r} is at or past the state {task.phase!r} produces"
     if not trust_phase_artifact:

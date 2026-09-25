@@ -165,7 +165,7 @@ class ASpentFindingIsNotReportedTestCase(django.test.TestCase):
 
     def test_a_live_ticket_is_still_a_finding(self) -> None:
         """The control: the filter must not silence the signal it was narrowed to protect."""
-        self._zero_attempt_review(state=Ticket.State.IN_REVIEW, pr_id=4457)
+        self._zero_attempt_review(state=Ticket.State.REVIEW_REQUESTED, pr_id=4457)
 
         assert check_reviewing_ledger() is False
         assert "souliane/teatree#4457" in self._capsys.readouterr().out

@@ -30,7 +30,7 @@ def _raising_client(exc: Exception) -> Any:
 
 class TestSpawnFailureIsRecordedByName(TestCase):
     def setUp(self) -> None:
-        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         self.session = Session.objects.create(ticket=self.ticket, agent_id="testing")
         self.task = Task.objects.create(
             ticket=self.ticket, session=self.session, phase="testing", status=Task.Status.CLAIMED

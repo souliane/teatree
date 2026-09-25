@@ -15,7 +15,7 @@ from teatree.core.selectors import _last_result_for_tasks, build_active_sessions
 
 class TestRecentActivityTokens(TestCase):
     def test_includes_token_counts_and_cost(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -39,7 +39,7 @@ class TestRecentActivityTokens(TestCase):
         assert abs(rows[0].cost_usd - 0.025) < 1e-9
 
     def test_null_tokens_default_to_none(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -87,7 +87,7 @@ class TestBuildActiveSessions(TestCase):
         dead_data = {**session_data, "pid": 999_999_999, "sessionId": "dead"}
         (sessions_dir / "999999999.json").write_text(json.dumps(dead_data), encoding="utf-8")
 
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -101,7 +101,7 @@ class TestBuildActiveSessions(TestCase):
             agent_session_id="test-session-abc",
         )
         # Claimed task without agent_session_id — exercises the falsy branch at selectors.py:521
-        ticket2 = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket2 = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session2 = Session.objects.create(ticket=ticket2, agent_id="agent2")
         Task.objects.create(
             ticket=ticket2,
@@ -161,7 +161,7 @@ class TestBuildActiveSessions(TestCase):
         session_data = {"pid": current_pid, "sessionId": "done-session", "startedAt": 0}
         (sessions_dir / f"{current_pid}.json").write_text(json.dumps(session_data), encoding="utf-8")
 
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -194,7 +194,7 @@ class TestBuildActiveSessionsCorrectness(TestCase):
 
     @staticmethod
     def _active_task_with_attempt(agent_session_id: str = "") -> Task:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -243,7 +243,7 @@ class TestBuildActiveSessionsCorrectness(TestCase):
         )
 
         # Task A finished under session "shared" -> "shared" is in finished_session_ids.
-        finished_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        finished_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         finished_session = Session.objects.create(ticket=finished_ticket, agent_id="agent")
         finished_task = Task.objects.create(
             ticket=finished_ticket,
@@ -280,7 +280,7 @@ class TestBuildActiveSessionsCorrectness(TestCase):
 
 class TestBuildRecentActivity(TestCase):
     def test_returns_ended_attempts(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -306,7 +306,7 @@ class TestBuildRecentActivity(TestCase):
         assert rows[0].phase == "testing"
 
     def test_non_dict_result(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -333,7 +333,7 @@ class TestLastResultForTasks(TestCase):
         assert _last_result_for_tasks([]) == {}
 
     def test_returns_summary(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -350,7 +350,7 @@ class TestLastResultForTasks(TestCase):
 
     def test_skips_empty_summary(self) -> None:
         """When attempt result has no summary, the task should not appear in results."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,

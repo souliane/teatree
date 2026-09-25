@@ -1,9 +1,9 @@
 """Regression tests for ``Task._apply_phase_transition`` (#1000).
 
 The #998/#999 orphan sweep can mark a second reviewing task COMPLETED on a
-reviewer-role ticket that already advanced to REVIEW_POSTED, and a re-review of
+reviewer-role ticket that already advanced to REVIEW_DELIVERED, and a re-review of
 a new head SHA does the same deliberately. Either way the tick must survive and
-the ticket must stay REVIEW_POSTED — ``mark_reviewed_externally`` self-loops there
+the ticket must stay REVIEW_DELIVERED — ``mark_reviewed_externally`` self-loops there
 rather than raising ``TransitionNotAllowed``, the same shape #1431 gave its
 sibling ``mark_review_no_action``.
 """
@@ -17,14 +17,14 @@ from teatree.core.models.task_phase_disposition import phase_output_reached
 
 
 class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
-    """#1000: completing a reviewing task on a REVIEW_POSTED reviewer ticket never crashes the tick.
+    """#1000: completing a reviewing task on a REVIEW_DELIVERED reviewer ticket never crashes the tick.
 
     The invariant #1000 protects is "the tick survives and the ticket stays
-    REVIEW_POSTED", not "the FSM refuses". The refusal was only ever the
+    REVIEW_DELIVERED", not "the FSM refuses". The refusal was only ever the
     mechanism, and it was the *crash source*: a second reviewing task on a
     terminal ticket raised ``TransitionNotAllowed`` and the guard in
     ``_apply_phase_transition`` had to skip it. ``mark_reviewed_externally``
-    now self-loops on REVIEW_POSTED — the same fix #1431 applied to its sibling
+    now self-loops on REVIEW_DELIVERED — the same fix #1431 applied to its sibling
     ``mark_review_no_action`` in the same file — so the completion is an
     idempotent no-op at the FSM level and the re-review of a new head SHA can
     re-stamp the reviewed-at record.
@@ -32,12 +32,12 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
     def test_completed_reviewing_task_on_terminal_ticket_stays_review_posted(self) -> None:
         # Reviewer-role ticket already advanced through review and is now
-        # REVIEW_POSTED (terminal). The #999 orphan sweep then completes a
+        # REVIEW_DELIVERED (terminal). The #999 orphan sweep then completes a
         # second reviewing task on the same ticket.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(
@@ -51,13 +51,15 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
         task._apply_phase_transition()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED, f"ticket state must remain REVIEW_POSTED, got {ticket.state}"
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED, (
+            f"ticket state must remain REVIEW_DELIVERED, got {ticket.state}"
+        )
 
     def test_reviewer_ticket_in_source_state_still_advances(self) -> None:
         # Guard must not regress the happy path: a reviewer-role ticket
         # still in a source state of mark_reviewed_externally() (here
         # NOT_STARTED, the lowest state on the source list) must advance
-        # to REVIEW_POSTED when its reviewing task completes.
+        # to REVIEW_DELIVERED when its reviewing task completes.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
@@ -75,16 +77,16 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
         ticket.refresh_from_db()
         assert fired is True, "reviewer ticket in a source state must advance"
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_mark_reviewed_externally_is_idempotent_when_called_directly_on_terminal(self) -> None:
         # The crash is gone at the source: the transition self-loops on
-        # REVIEW_POSTED instead of raising, so neither the orphan sweep nor a
+        # REVIEW_DELIVERED instead of raising, so neither the orphan sweep nor a
         # re-review of a new head SHA can wedge the tick.
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         Task.objects.create(
@@ -96,7 +98,7 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
         ticket.mark_reviewed_externally()
 
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
 
 class TestApplyPhaseTransitionChainsParentTask(TestCase):
@@ -116,7 +118,7 @@ class TestApplyPhaseTransitionChainsParentTask(TestCase):
         return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.COMPLETED)
 
     def test_coding_completion_chains_testing_task_to_the_coder(self) -> None:
-        ticket = self._author_ticket(Ticket.State.PLANNED)
+        ticket = self._author_ticket(Ticket.State.PLAN_RECORDED)
         coding_task = self._completed_task(ticket, "coding")
 
         assert coding_task._apply_phase_transition() is True
@@ -143,7 +145,7 @@ class TestApplyPhaseTransitionAutoImplement(TestCase):
 
     ``persistence._handle_orchestrator`` schedules a ``coding`` task directly on
     a fresh NOT_STARTED author ticket, so the completion cannot match the
-    PLANNED-source ``code()`` guard. Before ``code_direct`` this no-opped
+    PLAN_RECORDED-source ``code()`` guard. Before ``code_direct`` this no-opped
     silently — tickets 35/36 spent budget on coding yet advanced NOTHING.
     """
 
@@ -262,7 +264,7 @@ class TestApplyPhaseTransitionReReadsStateUnderLock(TestCase):
         from django.db import connection  # noqa: PLC0415
         from django.db.models.query import QuerySet  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         coding_task = self._completed_coding_task(ticket)
 
         real_sfu = QuerySet.select_for_update
@@ -286,10 +288,10 @@ class TestApplyPhaseTransitionReReadsStateUnderLock(TestCase):
 
 
 class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
-    """A REVIEWED ticket with no shippable diff gets an explicit terminal disposition.
+    """A SELF_REVIEWED ticket with no shippable diff gets an explicit terminal disposition.
 
-    ``review()`` lands REVIEWED and stamps ``shipping_skipped`` when there is no
-    shippable diff. Without a disposition the ticket rests at REVIEWED forever,
+    ``review()`` lands SELF_REVIEWED and stamps ``shipping_skipped`` when there is no
+    shippable diff. Without a disposition the ticket rests at SELF_REVIEWED forever,
     holding its issue-implementer marker + WIP slot. It is now auto-ignored
     (terminal → releases both), preserving the reason in ``extra``.
     """
@@ -309,7 +311,7 @@ class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
         assert fired is True
         assert ticket.state == Ticket.State.IGNORED, "a no-shippable-diff review must reach a terminal disposition"
         assert ticket.extra.get("shipping_skipped")
-        assert ticket.extra.get("ignored_from") == Ticket.State.REVIEWED
+        assert ticket.extra.get("ignored_from") == Ticket.State.SELF_REVIEWED
 
     def test_shippable_diff_stays_reviewed_and_schedules_shipping(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
@@ -320,7 +322,7 @@ class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
 
         ticket.refresh_from_db()
         assert fired is True
-        assert ticket.state == Ticket.State.REVIEWED, "a shippable review must NOT be auto-ignored"
+        assert ticket.state == Ticket.State.SELF_REVIEWED, "a shippable review must NOT be auto-ignored"
         assert Task.objects.filter(ticket=ticket, phase="shipping").exists()
 
 
@@ -333,15 +335,15 @@ class TestTransitionSourceStatesDerivation(TestCase):
         assert transition_source_states("mark_reviewed_externally") == {
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
-            Ticket.State.STARTED,
-            Ticket.State.PLANNED,
+            Ticket.State.WORK_STARTED,
+            Ticket.State.PLAN_RECORDED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
-            Ticket.State.REVIEWED,
+            Ticket.State.SELF_REVIEWED,
             # The re-review self-loop: a new head SHA schedules a second review
-            # on an already-REVIEW_POSTED reviewer ticket, whose completion must
+            # on an already-REVIEW_DELIVERED reviewer ticket, whose completion must
             # be able to re-stamp the reviewed-at record.
-            Ticket.State.REVIEW_POSTED,
+            Ticket.State.REVIEW_DELIVERED,
         }
 
     def test_wildcard_transition_yields_empty_set(self) -> None:
@@ -391,7 +393,7 @@ class TestTerminalTicketsCannotBeAdvanced(TestCase):
 class TestPhaseOutputReached(TestCase):
     """The at-or-past comparison the wedge check and the landing evidence share (#3982).
 
-    ``Ticket.has_completed_phase`` stops at SHIPPED by design, so it cannot answer for a
+    ``Ticket.has_completed_phase`` stops at PR_OPENED by design, so it cannot answer for a
     shipped ticket already in peer review. This runs the FULL author ladder, which is what
     lets ``core.models.phase_landing`` tell a landed phase from an unfinished one.
     """
@@ -401,21 +403,21 @@ class TestPhaseOutputReached(TestCase):
 
     def test_states_past_shipped_have_reached_the_shipping_output(self) -> None:
         for state in (
-            Ticket.State.SHIPPED,
-            Ticket.State.IN_REVIEW,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
             Ticket.State.MERGED,
-            Ticket.State.RETROSPECTED,
+            Ticket.State.RETRO_RECORDED,
             Ticket.State.DELIVERED,
         ):
             assert phase_output_reached(self._ticket(state), "shipping") is True, state
 
     def test_a_state_behind_the_target_has_not(self) -> None:
-        assert phase_output_reached(self._ticket(Ticket.State.REVIEWED), "shipping") is False
+        assert phase_output_reached(self._ticket(Ticket.State.SELF_REVIEWED), "shipping") is False
 
     def test_the_short_verb_spelling_normalizes(self) -> None:
-        assert phase_output_reached(self._ticket(Ticket.State.IN_REVIEW), "ship") is True
+        assert phase_output_reached(self._ticket(Ticket.State.REVIEW_REQUESTED), "ship") is True
 
     def test_an_off_ladder_state_and_a_free_form_phase_both_answer_false(self) -> None:
-        assert phase_output_reached(self._ticket(Ticket.State.REVIEW_POSTED), "shipping") is False
+        assert phase_output_reached(self._ticket(Ticket.State.REVIEW_DELIVERED), "shipping") is False
         assert phase_output_reached(self._ticket(Ticket.State.IGNORED), "shipping") is False
         assert phase_output_reached(self._ticket(Ticket.State.DELIVERED), "bughunt") is False

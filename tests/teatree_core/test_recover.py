@@ -36,7 +36,7 @@ def _mocked_probes(*, orphans: list[BranchReport] | None = None) -> Iterator[Non
         yield
 
 
-def _failed_outage_task(*, state: str = Ticket.State.STARTED, url: str = "https://x/issues/1") -> Task:
+def _failed_outage_task(*, state: str = Ticket.State.WORK_STARTED, url: str = "https://x/issues/1") -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state, issue_url=url)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     task = Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -86,7 +86,7 @@ class TestGatherRecoverReport(TestCase):
 
     def test_unknown_overlay_failed_task_is_not_a_candidate(self) -> None:
         ticket = Ticket.objects.create(
-            role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="ghost-overlay", issue_url="https://x/i/8"
+            role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="ghost-overlay", issue_url="https://x/i/8"
         )
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -169,7 +169,9 @@ class TestBranchToTicketUrl(TestCase):
         from teatree.core.models import Worktree  # noqa: PLC0415
         from teatree.core.worktree.recover import _branch_to_ticket_url  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, issue_url="https://x/i/55")
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, issue_url="https://x/i/55"
+        )
         Worktree.objects.create(
             overlay="t", ticket=ticket, repo_path="r1", branch="feat-a", extra={"clone_path": "/c1"}
         )

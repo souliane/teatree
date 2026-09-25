@@ -26,7 +26,7 @@ def _answering_task(*, implies_work: bool) -> Task:
         issue_url=slack_conversation_anchor(channel=_CHANNEL, slack_ts="1.0"),
         overlay="t3-teatree",
         role=Ticket.Role.AUTHOR,
-        state=Ticket.State.STARTED,
+        state=Ticket.State.WORK_STARTED,
         short_description="detect the open-PR bottleneck",
         extra={
             "slack_answer": {

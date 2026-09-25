@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 class TestCheckPr(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        cls.ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
 
     def test_returns_empty_for_draft(self) -> None:
         assert _check_pr({"draft": True}, self.ticket) == []
@@ -237,7 +237,7 @@ class TestBuildActionRequired(TestCase):
     def test_skips_non_dict_prs(self) -> None:
         """When prs is not a dict, it should be skipped."""
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={"prs": "not-a-dict"},
         )
 
@@ -248,7 +248,7 @@ class TestBuildActionRequired(TestCase):
     def test_includes_pr_action_items(self) -> None:
         """build_action_required iterates PRs and calls _check_pr (covers line 432)."""
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "url1": {
@@ -272,7 +272,7 @@ class TestReviewCommentsInActionRequired(TestCase):
 
     def test_needs_reply_includes_review_comments(self) -> None:
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "url1": {
@@ -298,7 +298,7 @@ class TestReviewCommentsInActionRequired(TestCase):
 
     def test_needs_reply_includes_slack_url(self) -> None:
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "url1": {
@@ -322,7 +322,7 @@ class TestReviewCommentsInActionRequired(TestCase):
 
     def test_skips_non_dict_discussions(self) -> None:
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "url1": {
@@ -341,7 +341,7 @@ class TestReviewCommentsInActionRequired(TestCase):
 
     def test_skips_non_dict_discussion_entries(self) -> None:
         Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={
                 "prs": {
                     "url1": {
@@ -361,7 +361,7 @@ class TestReviewCommentsInActionRequired(TestCase):
 
 class TestBuildAutomationSummary(TestCase):
     def test_counts_headless_activity(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         running_task = Task.objects.create(
             ticket=ticket,
@@ -403,7 +403,7 @@ class TestBuildAutomationSummary(TestCase):
         assert summary.failed_24h == 1
 
     def test_excludes_old_attempts(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -423,7 +423,7 @@ class TestBuildAutomationSummary(TestCase):
         assert summary.succeeded_24h == 0
 
     def test_last_completed_at(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -442,7 +442,7 @@ class TestBuildAutomationSummary(TestCase):
         assert summary.last_completed_at == now.isoformat()
 
     def test_aggregates_token_usage(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         for input_t, output_t, cost in [(1000, 500, 0.01), (2000, 800, 0.02)]:
             task = Task.objects.create(

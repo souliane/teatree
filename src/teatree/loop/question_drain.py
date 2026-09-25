@@ -131,7 +131,7 @@ def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Deci
     states = context.index.states_for(question)
     if not states:
         return None
-    if all(state in Ticket._TERMINAL_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
+    if all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
         return Decision(Verdict.DRAIN, f"every subject ticket is terminal ({', '.join(sorted(set(states)))})")
     return Decision(Verdict.KEEP, "a subject ticket is still live")
 

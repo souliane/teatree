@@ -136,7 +136,7 @@ class TestWatermarkHeldOnFailedIncrementalFetch(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"prs": {_MR_URL: {"title": "MR42"}}},
         )
         fetcher = _WindowedMergedFetcher(fail_first=True)
@@ -146,7 +146,7 @@ class TestWatermarkHeldOnFailedIncrementalFetch(TestCase):
 
         sync_followup()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
         sync_followup()
 
