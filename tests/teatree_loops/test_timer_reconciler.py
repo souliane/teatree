@@ -467,6 +467,56 @@ class TestMaintenanceChains(django.test.TestCase):
         assert result["processed"] == 0
         assert "coalesced" not in result
 
+    def test_wake_slack_answer_runs_behind_a_wake_that_ran_no_cycle(self) -> None:
+        # A coalesced wake's own finish must not debounce its re-armed successor,
+        # or the chain re-arms every interval forever and never runs a cycle.
+        for no_cycle in ({"coalesced": 1}, {"deduped": 1}):
+            with self.subTest(no_cycle=no_cycle):
+                DBTaskResult.objects.all().delete()
+                DBTaskResult.objects.create(
+                    task_path=timer_reconciler.wake_slack_answer.module_path,
+                    status=TaskResultStatus.SUCCESSFUL,
+                    args_kwargs={"args": [], "kwargs": {}},
+                    backend_name="default",
+                    queue_name=timer_chains.LOOPS_QUEUE,
+                    finished_at=timezone.now() - dt.timedelta(seconds=1),
+                    return_value=no_cycle,
+                )
+
+                result = timer_reconciler.wake_slack_answer.func()
+
+                assert result["processed"] == 0
+
+    def test_a_coalesced_wake_chain_still_runs_a_cycle(self) -> None:
+        path = timer_reconciler.wake_slack_answer.module_path
+
+        def finished(at: dt.datetime, result: dict[str, int]) -> None:
+            DBTaskResult.objects.create(
+                task_path=path,
+                status=TaskResultStatus.SUCCESSFUL,
+                args_kwargs={"args": [], "kwargs": {}},
+                backend_name="default",
+                queue_name=timer_chains.LOOPS_QUEUE,
+                finished_at=at,
+                return_value=result,
+            )
+
+        last_cycle = timezone.now()
+        finished(last_cycle, {"processed": 0})
+        now = last_cycle + dt.timedelta(seconds=2)
+        results = []
+        for _ in range(12):
+            with mock.patch("django.utils.timezone.now", return_value=now):
+                results.append(timer_reconciler.wake_slack_answer.func())
+            finished(now, results[-1])
+            successor = DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).first()
+            if successor is None:
+                break
+            now = successor.run_after
+            successor.delete()
+
+        assert "processed" in results[-1], results
+
     def test_wake_slack_answer_ignores_another_chains_recent_finish(self) -> None:
         # The window is keyed on the wake's own path; the cadence chain finishing
         # must not debounce an event-driven wake.

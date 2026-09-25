@@ -160,8 +160,8 @@ def _pending_for_path(path: str) -> bool:
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
 
-def _finished_within(path: str, seconds: int) -> dt.datetime | None:
-    """When *path* last finished, if that was under *seconds* ago — else ``None``.
+def _cycle_finished_within(path: str, seconds: int) -> dt.datetime | None:
+    """When *path* last finished a real cycle, if that was under *seconds* ago — else ``None``.
 
     The window is in the filter rather than applied to a newest-first scan so
     the query stays bounded to the few rows the interval can hold.
@@ -171,6 +171,8 @@ def _finished_within(path: str, seconds: int) -> dt.datetime | None:
     cutoff = timezone.now() - dt.timedelta(seconds=seconds)
     return (
         DBTaskResult.objects.filter(task_path=path, finished_at__gt=cutoff)
+        .exclude(return_value__has_key="coalesced")
+        .exclude(return_value__has_key="deduped")
         .order_by("-finished_at")
         .values_list("finished_at", flat=True)
         .first()
@@ -559,7 +561,7 @@ def wake_slack_answer() -> dict[str, int]:
     """
     if _pending_for_path(wake_slack_answer.module_path):
         return {"deduped": 1}
-    last_finished = _finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
+    last_finished = _cycle_finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
     if last_finished is not None:
         wake_slack_answer.using(run_after=last_finished + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
         return {"coalesced": 1}
