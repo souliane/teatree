@@ -86,7 +86,7 @@ def _write_docker_stub(bin_dir: Path) -> None:
         '        [ -z "${STUB_UNREACHABLE_SVC:-}" ] || { rc=0; [ "$svc" != "$STUB_UNREACHABLE_SVC" ] || rc=1; }\n'
         '        [ "$rc" = 0 ] || printf "%s\\n" "${STUB_TRUE_STDERR:-}" >&2\n'
         '        exit "$rc" ;;\n'
-        '      *"pgrep -f t3 doctor check"*) exit "${STUB_DOCTOR_LIVE:-1}" ;;\n'
+        '      *"pgrep -f [t]3 doctor check"*) exit "${STUB_DOCTOR_LIVE:-1}" ;;\n'
         '      *"doctor check --json"*)\n'
         "        n=0\n"
         '        if [ -n "${STUB_DOCTOR_ATTEMPTS:-}" ]; then\n'
@@ -244,7 +244,7 @@ class TestWatchdogRunPass:
         dm = _run_pass(tmp_path, STUB_DOCTOR_LIVE="0", STUB_DOCTOR_RC="0")
         assert dm == ""
         assert _doctor_attempts(tmp_path) == 0
-        assert "pgrep -f t3 doctor check" in _exec_log(tmp_path)
+        assert "pgrep -f [t]3 doctor check" in _exec_log(tmp_path)
 
     def test_unreachable_stack_dms_unreachable(self, tmp_path: Path) -> None:
         # No exec service is reachable (the probe fails) → the ONLY true-unreachable case.

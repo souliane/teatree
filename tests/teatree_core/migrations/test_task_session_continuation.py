@@ -20,6 +20,9 @@ from django.utils import timezone
 
 _BEFORE = ("core", "0104_move_overlay_registry_pass_keys_onto_settings")
 _AFTER = ("core", "0105_task_session_continuation")
+#: main's TaskAttempt chain runs parallel to this one until ``0114`` joins them, so a
+#: rewind to ``_BEFORE`` alone leaves its NOT NULL columns applied with no model field.
+_PARALLEL_LEAF = ("core", "0092_taskattempt_taskattempt_recent_ended")
 
 _ANSWER_REASON = "The user answered your earlier question: postgres-1. Continue from where you left off."
 
@@ -36,11 +39,11 @@ class TestResumableTasksAreTyped(TransactionTestCase):
 
     def _rewind(self) -> MigrationExecutor:
         executor = MigrationExecutor(connection)
-        executor.migrate([_BEFORE])
+        executor.migrate([_BEFORE, _PARALLEL_LEAF])
         return executor
 
     @staticmethod
-    def _models(executor: MigrationExecutor, state: tuple[str, str]) -> tuple[type, type, type, type]:
+    def _models(executor: MigrationExecutor, state: list[tuple[str, str]]) -> tuple[type, type, type, type]:
         apps = executor.loader.project_state(state).apps
         return (
             apps.get_model("core", "Ticket"),
@@ -50,7 +53,7 @@ class TestResumableTasksAreTyped(TransactionTestCase):
         )
 
     def _seed(self, executor: MigrationExecutor) -> dict[str, int]:
-        ticket_model, session_model, task_model, attempt_model = self._models(executor, _BEFORE)
+        ticket_model, session_model, task_model, attempt_model = self._models(executor, [_BEFORE, _PARALLEL_LEAF])
         ticket = ticket_model.objects.create()
         session = session_model.objects.create(ticket=ticket)
 
@@ -83,7 +86,7 @@ class TestResumableTasksAreTyped(TransactionTestCase):
         executor.loader.build_graph()
         executor.migrate([_AFTER])
 
-        _, _, task_model, _ = self._models(executor, _AFTER)
+        _, _, task_model, _ = self._models(executor, [_AFTER])
         return {name: task_model.objects.get(pk=pk).session_continuation for name, pk in pks.items()}
 
     def test_a_queued_needs_input_continuation_keeps_its_parents_conversation(self) -> None:

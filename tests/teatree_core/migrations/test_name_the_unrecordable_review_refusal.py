@@ -15,6 +15,9 @@ from django.test import TransactionTestCase
 
 _BEFORE = ("core", "0107_e2emandatoryrun_target")
 _AFTER = ("core", "0108_review_unrecordable_failure_kind")
+#: main's TaskAttempt chain runs parallel to this one until ``0114`` joins them, so a
+#: rewind to ``_BEFORE`` alone leaves its NOT NULL columns applied with no model field.
+_PARALLEL_LEAF = ("core", "0092_taskattempt_taskattempt_recent_ended")
 
 #: The wording the recorder carried through the whole measured window, before the
 #: greppable prefix existed — what a historical row actually looks like.
@@ -37,8 +40,8 @@ class TestNameTheUnrecordableReviewRefusal(TransactionTestCase):
     @staticmethod
     def _seed_before(rows: tuple[tuple[str, str], ...]) -> None:
         executor = MigrationExecutor(connection)
-        executor.migrate([_BEFORE])
-        apps = executor.loader.project_state(_BEFORE).apps
+        executor.migrate([_BEFORE, _PARALLEL_LEAF])
+        apps = executor.loader.project_state([_BEFORE, _PARALLEL_LEAF]).apps
         ticket = apps.get_model("core", "Ticket").objects.create(role="reviewer")
         session = apps.get_model("core", "Session").objects.create(ticket=ticket, agent_id="external-review")
         attempt_model = apps.get_model("core", "TaskAttempt")

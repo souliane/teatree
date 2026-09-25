@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """Upgrading a live box across the preset redesign keeps what that box actually runs.
 
 The fixture is the deployed box's own shape: an operator-edited ``maintenance`` and
