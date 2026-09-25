@@ -15,10 +15,12 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
 from teatree.loops.dream.merge import BindingConflict
@@ -101,7 +103,6 @@ class FileCoreGapTicketsTestCase(TestCase):
 
     def test_core_gap_row_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
         from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         row = _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
@@ -153,8 +154,6 @@ class FileCoreGapTicketsTestCase(TestCase):
     def test_banned_term_title_is_withheld_not_promoted(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-
         _row(destination="skills/ship/SKILL.md")
         batch = PromotionBatch()
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
@@ -183,7 +182,6 @@ class FileCoreGapTicketsTestCase(TestCase):
         # promoted (no ticket recorded) is drained by needs_ticket() and driven onto
         # the umbrella — so a detected gap can never sit un-promoted forever.
         from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()  # prior pass left it here with no ticket + no promotion
@@ -206,6 +204,81 @@ class FileCoreGapTicketsTestCase(TestCase):
         batch = PromotionBatch()
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
+
+    def test_a_promoted_gap_is_stamped_with_its_batch_ticket_and_leaves_the_queue(self) -> None:
+        row = _row()
+        host = _fake_host()
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
+
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == ticket.issue_url
+        assert "#dream-batch=" in row.ticket_url
+        assert not ConsolidatedMemory.objects.needs_ticket().exists()
+
+        next_batch = PromotionBatch()
+        assert file_core_gap_tickets(umbrella_url=UMBRELLA, batch=next_batch) == []
+        assert next_batch.already_covered == 0
+
+    def test_a_row_already_riding_a_legacy_ticket_is_backfilled_once(self) -> None:
+        row = _row()
+        row.classify_core_gap()
+        legacy = Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-gap=k1",
+            role=Ticket.Role.AUTHOR,
+            short_description="Fix the gate",
+            extra={"dream_gap_key": "k1", "dream_memory_cluster_key": "k1", "dream_umbrella_url": UMBRELLA},
+        )
+
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == legacy.issue_url
+
+    def _assert_still_queued(self, row: ConsolidatedMemory) -> None:
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
+
+    def test_a_withheld_gap_is_never_stamped(self) -> None:
+        row = _row()
+        row.classify_core_gap()
+        batch = PromotionBatch()
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
+            file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        self._assert_still_queued(row)
+
+    def test_an_ungrounded_gap_is_never_stamped(self) -> None:
+        row = _row(destination="src/teatree/ghost_pkg/ghost.py")
+        row.classify_core_gap()
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        self._assert_still_queued(row)
+
+    def test_a_dry_run_gap_is_never_stamped(self) -> None:
+        row = _row()
+        row.classify_core_gap()
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch, dry_run=True)
+        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch, dry_run=True)
+        self._assert_still_queued(row)
+
+    def test_a_failed_schedule_rolls_the_stamp_back(self) -> None:
+        row = _row()
+        batch = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        with (
+            patch.object(Ticket, "schedule_coding", side_effect=RuntimeError("queue down")),
+            pytest.raises(RuntimeError),
+        ):
+            bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        assert ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
 
 
 def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:

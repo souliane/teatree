@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 #: The stable marker embedded (invisibly) in each umbrella checkbox line, keyed on
 #: the gap key, so a re-run upserts in place rather than appending a duplicate.
 _GAP_MARKER_PREFIX = "dream-gap"
+_BATCH_MARKER_PREFIX = "dream-batch"
 
 #: The ticket-``extra`` keys that link an in-flight gap-fix Ticket back to its gap
 #: identity, the memory to retire on merge, and the umbrella to check.
@@ -73,6 +74,11 @@ class GapSpec:
     gap_key: str
     title: str
     cluster_key: str
+
+
+def is_promotion_anchor(url: str) -> bool:
+    """Whether a TICKETED row's url is a promotion-time placeholder rather than a merged PR."""
+    return any(f"#{prefix}=" in url for prefix in (_GAP_MARKER_PREFIX, _BATCH_MARKER_PREFIX))
 
 
 def _marker(gap_key: str) -> str:
@@ -328,20 +334,31 @@ def _stamp_ticket_reconciled(ticket: Ticket) -> None:
     ticket.merge_extra(set_keys={_RECONCILED_KEY: timezone.now().isoformat()})
 
 
+def _stamp_memory_promoted(cluster_key: str, *, anchor_url: str) -> bool:
+    """Stamp a still-queued gap's memory TICKETED with the ticket that now carries its fix."""
+    row = ConsolidatedMemory.objects.needs_ticket().filter(cluster_key=cluster_key).first()
+    if row is None:
+        return False
+    row.mark_ticketed(anchor_url)
+    return True
+
+
 def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
     """Point the gap's memory at its merged fix so the existing retire path fires.
 
     The memory is advanced to TICKETED with the merged PR as its ``ticket_url`` (the
     reconcile then drives ``retire_resolved_memories`` off the authoritative MERGED
-    signal). A row already TICKETED/retired or with no merged URL is left untouched.
-    Returns True iff this stamped a row TICKETED with *merged_url*.
+    signal). A row stamped TICKETED at promotion (:func:`is_promotion_anchor`) is
+    re-stamped here; one already TICKETED on a real PR, retired, or with no merged URL
+    is left untouched. Returns True iff this stamped a row TICKETED with *merged_url*.
     """
     if not cluster_key or not merged_url:
         return False
     row = ConsolidatedMemory.objects.filter(cluster_key=cluster_key).first()
     if row is None:
         return False
-    if row.disposition not in {
+    promoted = row.disposition == ConsolidatedMemory.Disposition.TICKETED and is_promotion_anchor(row.ticket_url)
+    if not promoted and row.disposition not in {
         ConsolidatedMemory.Disposition.UNTRIAGED,
         ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
     }:
@@ -356,6 +373,7 @@ __all__ = [
     "GapSpec",
     "check_gap_checkbox",
     "gap_present",
+    "is_promotion_anchor",
     "reconcile_merged_gaps",
     "render_checkbox_line",
     "upsert_gap_checkbox",

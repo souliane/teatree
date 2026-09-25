@@ -15,6 +15,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp
+from teatree.loops.dream.promote_memory import file_core_gap_tickets
 from teatree.loops.dream.umbrella_ledger import GapSpec
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
@@ -50,6 +51,24 @@ def _memory(*, key: str = "gap-1", binding: bool = False, source_files: list | N
         max_member_weight=90,
         verified_citation="pushed without running the gate, CI went red",
     )
+
+
+def _host_with_gap_a_and_b() -> CodeHostBackend:
+    body = (
+        "## Open gaps\n"
+        + "\n".join(f"- [ ] Fix the gate {k} <!-- dream-gap {k} -->" for k in ["gap-a", "gap-b"])
+        + "\n"
+    )
+    host = MagicMock(spec=CodeHostBackend)
+    state: dict[str, str] = {"body": body}
+
+    def _update(**kwargs: object) -> dict[str, int]:
+        state["body"] = str(kwargs["body"])
+        return {"number": 2663}
+
+    host.get_issue.side_effect = lambda *_a, **_k: {"body": state["body"], "state": "merged"}
+    host.update_issue.side_effect = _update
+    return host
 
 
 def _retired(key: str) -> bool:
@@ -283,27 +302,10 @@ class ReconcileBatchesTestCase(TestCase):
         ticket.save()
         return ticket
 
-    def _host_with_body(self) -> CodeHostBackend:
-        body = (
-            "## Open gaps\n"
-            + "\n".join(f"- [ ] Fix the gate {k} <!-- dream-gap {k} -->" for k in ["gap-a", "gap-b"])
-            + "\n"
-        )
-        host = MagicMock(spec=CodeHostBackend)
-        state: dict[str, str] = {"body": body}
-
-        def _update(**kwargs: object) -> dict[str, int]:
-            state["body"] = str(kwargs["body"])
-            return {"number": 2663}
-
-        host.get_issue.side_effect = lambda *_a, **_k: {"body": state["body"], "state": "merged"}
-        host.update_issue.side_effect = _update
-        return host
-
     def test_only_the_delivered_gap_is_checked_and_retired(self) -> None:
         ticket = self._merged_batch_ticket(keys=["gap-a", "gap-b"])
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
 
         reconciled = bp.reconcile_batches(host, umbrella_url=UMBRELLA)
 
@@ -317,7 +319,7 @@ class ReconcileBatchesTestCase(TestCase):
     def test_the_ticket_is_stamped_reconciled_regardless_of_partial_delivery(self) -> None:
         ticket = self._merged_batch_ticket(keys=["gap-a", "gap-b"])
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
         bp.reconcile_batches(host, umbrella_url=UMBRELLA)
         ticket.refresh_from_db()
         assert ticket.extra.get("dream_gap_reconciled_at")
@@ -326,7 +328,7 @@ class ReconcileBatchesTestCase(TestCase):
         self._merged_batch_ticket(keys=["gap-a", "gap-b"])
         ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
         bp.reconcile_batches(host, umbrella_url=UMBRELLA)
 
         assert bp.gap_covered("gap-b") is False
@@ -346,14 +348,14 @@ class ReconcileBatchesTestCase(TestCase):
         ticket = self._merged_batch_ticket(keys=["gap-a"])
         ConsolidatedMemory.objects.filter(cluster_key="gap-a").update(is_binding=True)
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
         bp.reconcile_batches(host, umbrella_url=UMBRELLA)
         assert not _retired("gap-a")
 
     def test_a_claim_outside_the_manifest_is_ignored(self) -> None:
         ticket = self._merged_batch_ticket(keys=["gap-a"])
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a", "not-in-manifest"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
         # Must not raise (KeyError) on the untrusted key, and must still retire gap-a.
         bp.reconcile_batches(host, umbrella_url=UMBRELLA)
         assert _retired("gap-a")
@@ -361,9 +363,79 @@ class ReconcileBatchesTestCase(TestCase):
     def test_an_unconfirmable_checkbox_write_defers_the_whole_ticket(self) -> None:
         ticket = self._merged_batch_ticket(keys=["gap-a", "gap-b"])
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a", "gap-b"]})
-        host = self._host_with_body()
+        host = _host_with_gap_a_and_b()
         with patch("teatree.loops.dream.umbrella_ledger._scrubbed_update", return_value=False):
             assert bp.reconcile_batches(host, umbrella_url=UMBRELLA) == []
         ticket.refresh_from_db()
         assert not ticket.extra.get("dream_gap_reconciled_at")
         assert not _retired("gap-a")
+
+
+class CoveringTicketTestCase(TestCase):
+    """``covering_ticket`` names the ticket ``gap_covered`` answers from."""
+
+    def test_an_uncovered_gap_has_no_covering_ticket(self) -> None:
+        assert bp.covering_ticket("gap-1") is None
+
+    def test_the_in_flight_ticket_wins_over_a_stale_dropped_one(self) -> None:
+        host = _fake_host()
+        bp.promote_batch(host, umbrella_url=UMBRELLA, batch=bp.PromotionBatch(pending=[_gap("gap-1")]))
+        dropped = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        dropped.merge_extra(
+            set_keys={"dream_gap_reconciled_at": "2026-01-01T00:00:00", "dream_gap_claimed_delivered": []}
+        )
+        bp.promote_batch(host, umbrella_url=UMBRELLA, batch=bp.PromotionBatch(pending=[_gap("gap-1"), _gap("gap-2")]))
+        in_flight = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exclude(pk=dropped.pk).get()
+
+        assert bp.covering_ticket("gap-1") == in_flight
+
+
+class StampedBatchReconcileTestCase(TestCase):
+    """Rows stamped at promotion still retire on delivery, and a dropped gap is re-queued."""
+
+    PR_URL = "https://github.com/souliane/teatree/pull/9100"
+
+    def _stamped_merged_ticket(self, *, delivered: list[str]) -> Ticket:
+        for key in ("gap-a", "gap-b"):
+            _memory(key=key).classify_core_gap()
+        batch = bp.PromotionBatch(pending=[_gap("gap-a"), _gap("gap-b")])
+        bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        ticket.pull_requests.create(url=self.PR_URL, repo=REPO, iid="9100", state="merged")
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": delivered})
+        return ticket
+
+    def test_the_delivered_gap_retires_against_the_merged_pr(self) -> None:
+        self._stamped_merged_ticket(delivered=["gap-a"])
+
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="gap-a")
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert row.ticket_url == self.PR_URL
+
+    def test_a_dropped_gap_is_reopened_and_queued_by_the_next_pass(self) -> None:
+        self._stamped_merged_ticket(delivered=["gap-a"])
+
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="gap-b")
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
+        next_batch = bp.PromotionBatch()
+        outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=next_batch)
+        assert [outcome.filed for outcome in outcomes] == [True]
+        assert [gap.gap_key for gap in next_batch.pending] == ["gap-b"]
+
+    def test_a_row_restamped_by_a_newer_batch_is_not_reopened(self) -> None:
+        self._stamped_merged_ticket(delivered=["gap-a"])
+        newer = f"{UMBRELLA}#dream-batch=newer"
+        ConsolidatedMemory.objects.get(cluster_key="gap-b").mark_ticketed(newer)
+
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="gap-b")
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == newer

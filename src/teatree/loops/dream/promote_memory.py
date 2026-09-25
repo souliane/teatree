@@ -139,7 +139,9 @@ def file_core_gap_tickets(
     + coding task are minted once, for the whole pass, after every promoting phase has
     run). The gap no longer files a fresh ``needs-triage`` issue that the scanner
     skips. A rendered title that would leak a banned term / bare reference is withheld
-    — never queued.
+    — never queued. A queued row is stamped TICKETED once the pass mints its batch
+    ticket, a row already covered by a ticket is stamped here, and a withheld,
+    ungrounded or dry-run row is never stamped.
 
     Under *dry_run* NOTHING is written — no disposition advance, no queueing — so a
     preview never STRANDS a detected gap: the disposition write used to land BEFORE the
@@ -189,7 +191,11 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     the classifier — so this is the one chokepoint every promoted gap passes through.
     ``groundable`` (core tree OR a memory file) is the test, not ``in_core_tree``
     alone — a memory-destined gap promotes rather than being withheld (#4776).
+
+    A gap already riding a ticket is stamped with that ticket here, so it leaves the
+    queue; a newly queued gap is stamped when :func:`promote_batch` mints its ticket.
     """
+    from teatree.loops.dream.batch_promote import covering_ticket  # noqa: PLC0415 — tick-time import
     from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     verdict = classify_destination(row.durable_destination)
@@ -210,6 +216,8 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     outcome = batch.consider(
         gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
     )
+    if outcome.already_covered and not outcome.withheld and (ticket := covering_ticket(row.cluster_key)):
+        row.mark_ticketed(ticket.issue_url)
     return TicketOutcome(
         cluster_key=row.cluster_key,
         filed=outcome.queued or outcome.already_covered,
