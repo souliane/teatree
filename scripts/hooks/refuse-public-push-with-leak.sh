@@ -230,10 +230,36 @@ _attribute_findings() {
   return "${printed}"
 }
 
+# The pushed ref's REMOTE name is published the moment the push lands, and a
+# forge keeps it under refs/pull/* after the branch is deleted, so it is scanned
+# like content. The local name is never sent, so it is not judged.
+_scan_ref_name() {
+  local published="$1" name_report name_rc=0
+  published="${published#refs/heads/}"
+  published="${published#refs/tags/}"
+  [ -n "${published}" ] || return 0
+  name_report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-ref.XXXXXX")
+  printf '%s\n' "${published}" | ${scan_cmd} - >"${name_report}" 2>&1 || name_rc=$?
+  if [ "${name_rc}" -eq "${findings_code}" ]; then
+    echo "✗ refuse: push to PUBLIC repo '${slug}' publishes the ref name '${published}', which carries privacy findings."
+    sed 's/^/    /' "${name_report}" 2>/dev/null || true
+    echo "  A pushed ref name is permanent: the forge keeps it under refs/pull/* even after the branch is deleted."
+    echo "  Push under a clean remote name instead: git push <remote> HEAD:refs/heads/<clean-name>"
+    rm -f "${name_report}"
+    return 1
+  elif [ "${name_rc}" -ne 0 ]; then
+    echo "⚠ ref-name privacy scan could not run (exit ${name_rc}) on '${published}' — failing OPEN (push allowed)." >&2
+  fi
+  rm -f "${name_report}"
+  return 0
+}
+
 blocked=0
-while read -r local_ref local_sha _remote_ref remote_sha; do
+while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
+
+  _scan_ref_name "${remote_ref:-${local_ref}}" || blocked=1
 
   # The push newly exposes the commits reachable from the pushed sha but from
   # NO ref the remote already has — i.e. `--not --remotes=<remote>`, EVERY
@@ -305,8 +331,8 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
     echo "  Offending author/committer email(s):"
     printf '%s\n' "${bad_idents}" | sed 's/^/    /'
     echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
-    echo "  Rewrite the range's author/committer to the repo's GitHub noreply identity, then re-push:"
-    echo "    git filter-branch --env-filter '...' -- ${new_commits[*]}"
+    echo "  Nothing was published. Cut a new branch from the remote's tip, re-create these commits on it"
+    echo "  under the repo's GitHub noreply identity, and push that new branch for review."
     echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
     blocked=1
   fi
