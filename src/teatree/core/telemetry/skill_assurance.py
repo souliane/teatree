@@ -3,8 +3,11 @@
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+
 
 SKILL_SPAN_NAME = "teatree.factory.skill_assurance"
 SKILL_STATUSES = frozenset({"missing", "injection_gap", "unverified", "declared"})
@@ -59,7 +62,7 @@ def valid_skill_row(row: object, *, cutoff: int, current: int) -> bool:
     )
 
 
-def safe_skill_observation(span: ReadableSpan) -> dict | None:
+def safe_skill_observation(span: "ReadableSpan") -> dict | None:
     if span.name != SKILL_SPAN_NAME:
         return None
     attrs = span.attributes or {}
@@ -84,7 +87,7 @@ def safe_skill_observation(span: ReadableSpan) -> dict | None:
 
 
 def emit_skill_assurance(
-    provider_factory: Callable[[], TracerProvider],
+    provider_factory: Callable[[], "TracerProvider"],
     *,
     task_id: int,
     ticket_id: int,

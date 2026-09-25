@@ -21,10 +21,6 @@ from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter, SpanExportResult
-
 from teatree.core.telemetry.admission_schema import (
     _ADMISSION_CAUSES,
     _FACTORY_CAUSES,
@@ -43,6 +39,9 @@ from teatree.utils.hook_registry import loop_registry_dir
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
     from teatree.core.admission_governor import AdmissionDecision
     from teatree.core.admission_pressure import AdmissionPressure
@@ -77,7 +76,7 @@ _lifecycle_file_for = partial(_file_for_prefix, prefix="lifecycle")
 _skill_file_for = partial(_file_for_prefix, prefix="skill")
 
 
-def _safe_observation(span: ReadableSpan) -> dict[str, str | int | float | bool] | None:
+def _safe_observation(span: "ReadableSpan") -> dict[str, str | int | float | bool] | None:
     if span.name != SPAN_NAME:
         return None
     attrs = span.attributes or {}
@@ -107,7 +106,7 @@ def _safe_observation(span: ReadableSpan) -> dict[str, str | int | float | bool]
     }
 
 
-def _safe_factory_observation(span: ReadableSpan) -> dict[str, str | int] | None:
+def _safe_factory_observation(span: "ReadableSpan") -> dict[str, str | int] | None:
     attrs = span.attributes or {}
     epoch = attrs.get("teatree.observed_epoch")
     kind = attrs.get("teatree.issue.kind")
@@ -142,7 +141,7 @@ def _safe_factory_observation(span: ReadableSpan) -> dict[str, str | int] | None
     }
 
 
-def _safe_lifecycle_observation(span: ReadableSpan) -> dict[str, str | int] | None:
+def _safe_lifecycle_observation(span: "ReadableSpan") -> dict[str, str | int] | None:
     attrs = span.attributes or {}
     epoch = attrs.get("teatree.observed_epoch")
     kind = attrs.get("teatree.lifecycle.kind")
@@ -174,14 +173,20 @@ def _safe_lifecycle_observation(span: ReadableSpan) -> dict[str, str | int] | No
     }
 
 
-class PressureSpanExporter(SpanExporter):
-    """Persist decision spans on the runtime's shared volume, one day per file."""
+class PressureSpanExporter:
+    """Persist decision spans on the runtime's shared volume, one day per file.
+
+    Duck-types the SDK exporter interface rather than subclassing it, so the hook
+    interpreter — which has no OpenTelemetry SDK — can import the models.
+    """
 
     def __init__(self, *, directory: Path | None = None) -> None:
         self.directory = directory
         self._last_pruned_day: dt.date | None = None
 
-    def export(self, spans: "Sequence[ReadableSpan]") -> SpanExportResult:
+    def export(self, spans: "Sequence[ReadableSpan]") -> "SpanExportResult":
+        from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: PLC0415 — optional in the hook interpreter
+
         directory = self.directory or _directory()
         try:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -211,6 +216,15 @@ class PressureSpanExporter(SpanExporter):
             logger.exception("admission telemetry local export failed")
             return SpanExportResult.FAILURE
         return SpanExportResult.SUCCESS
+
+    @staticmethod
+    def shutdown() -> None:
+        return None
+
+    @staticmethod
+    def force_flush(timeout_millis: int = 30000) -> bool:
+        del timeout_millis
+        return True
 
     def _prune(self, directory: Path) -> None:
         today = dt.datetime.now(tz=dt.UTC).date()
@@ -312,9 +326,16 @@ def recent_skill_assurance_observations(
 
 
 @lru_cache(maxsize=1)
-def _provider() -> TracerProvider:
+def _provider() -> "TracerProvider":
+    from opentelemetry.sdk.resources import Resource  # noqa: PLC0415 — optional in the hook interpreter
+    from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415 — optional in the hook interpreter
+    from opentelemetry.sdk.trace.export import (  # noqa: PLC0415 — optional in the hook interpreter
+        BatchSpanProcessor,
+        SimpleSpanProcessor,
+    )
+
     provider = TracerProvider(resource=Resource.create({"service.name": "teatree-factory"}))
-    provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter()))
+    provider.add_span_processor(SimpleSpanProcessor(cast("SpanExporter", PressureSpanExporter())))
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter  # noqa: PLC0415
 
