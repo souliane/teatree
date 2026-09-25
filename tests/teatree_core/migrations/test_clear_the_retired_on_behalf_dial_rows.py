@@ -111,7 +111,7 @@ class TestTheWarningIsWhatStops(TestCase):
 
 
 class TestAnImmediateDialOpensEveryPreset(TestCase):
-    """``immediate`` meant "post on my behalf at any hour", and egress is now its only home."""
+    """An "immediate" dial meant "post on my behalf at any hour", and egress is now its only home."""
 
     @staticmethod
     def _egress_after(scope: str) -> set[str]:

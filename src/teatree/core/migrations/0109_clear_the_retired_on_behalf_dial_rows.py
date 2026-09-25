@@ -12,11 +12,11 @@ them provably changed no effective value. These rows hold ``immediate`` instead 
 the reasoning still lands, for a stronger reason: the field is GONE, so the row is
 already inert and its value has no reader to change.
 
-One value still has a reader to carry it to: a global ``immediate`` meant "post on my
+One value still has a reader to carry it to: a global "immediate" meant "post on my
 behalf whatever the hour", and ``Mode.egress`` is now the only control over that voice.
 Deleting the row alone would silence the box every evening under an ``afk`` or
 ``maintenance`` that forbids egress, so every preset is opened to ``allow`` first — the
-same behaviour, stated on the one control that remains. An overlay-scoped ``immediate``
+same behaviour, stated on the one control that remains. An overlay-scoped "immediate"
 cannot be expressed on a box-global preset and only logs.
 
 The key is a literal rather than a read of ``REMOVED_SETTING_KEYS``: a migration states

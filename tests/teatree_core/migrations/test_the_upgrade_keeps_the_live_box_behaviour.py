@@ -2,8 +2,8 @@
 
 The fixture is the deployed box's own shape: an operator-edited ``maintenance`` and
 ``away``, an untouched ``present``, ``off`` and ``low-token`` that disagree on
-``tickets``, nine default-off loops, a forced-off ``ship``, ``on_behalf_post_mode =
-immediate`` and dream opt-ins in the nested ``loops`` table. Each assertion names a value
+``tickets``, nine default-off loops, a forced-off ``ship``, the on-behalf dial set to
+"immediate", and dream opt-ins in the nested ``loops`` table. Each assertion names a value
 the pre-fix migrations changed: 0086 raised on the ``tickets`` split, the posture rewrite
 replaced both edited presets and started the default-off loops under ``present``, 0109
 closed the owner's voice after hours, the cadence fold left ``eval_local`` daily, and
