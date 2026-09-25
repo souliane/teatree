@@ -7,6 +7,7 @@ the pool while the PROCESS stays alive, and that a stop signal tears the pool do
 """
 
 import contextlib
+import dataclasses
 import datetime as dt
 import inspect
 import os
@@ -119,10 +120,12 @@ def _make_worker(*, script, sleep, **seam_overrides):
         sleep=sleep,
         poll_seconds=0.0,
         reclaim_leases=seam_overrides.get("reclaim_leases") or (lambda: None),
-        reap_leases=lambda: None,
+        reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
     )
+    if "executor_queues" in seam_overrides:
+        seams = dataclasses.replace(seams, executor_queues=seam_overrides["executor_queues"])
     holder.append(LoopWorker(seams))
     return holder[0], built, handles
 
@@ -188,26 +191,50 @@ def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPat
     assert default_queue_executor_count() == DEFAULT_QUEUE_FLOOR == 2
 
 
-def test_pressure_ceiling_clamps_the_total_pool_but_keeps_all_three_queues() -> None:
-    decision = AdmissionDecision(admit=True, reason="healthy", ceiling=3, braked=False)
+_THREE_LOOPS = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
+
+
+def test_pressure_ceiling_clamps_the_agent_lanes_but_keeps_all_three_queues() -> None:
+    decision = AdmissionDecision(admit=True, reason="healthy", ceiling=2, braked=False)
     worker, built, _handles = _make_worker(
         script=[True],
         sleep=lambda _s: None,
         read_pressure=lambda: decision,
+        executor_queues=_THREE_LOOPS,
     )
     worker.run()
-    assert len(built) == 3
-    assert {executor.queue for executor in built} == {"loops", "default", "cheap"}
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
 
 
-@pytest.mark.parametrize("ceiling", [4, 5])
-def test_pressure_ceiling_reserves_remaining_lanes_for_coding(ceiling: int) -> None:
+@pytest.mark.parametrize("ceiling", [2, 3, 4])
+def test_pressure_ceiling_reserves_remaining_agent_lanes_for_coding(ceiling: int) -> None:
     queues = ("loops",) * 4 + ("default",) * 4 + ("cheap",)
     assert _bounded_executor_queues(queues, ceiling) == (
-        "loops",
-        *("default",) * (ceiling - 2),
+        *("loops",) * 4,
+        *("default",) * (ceiling - 1),
         "cheap",
     )
+
+
+def test_the_ceiling_never_clamps_the_loops_control_plane() -> None:
+    """Loop timers are not agents: a 3-agent ceiling kept 1 loops executor where main ran 3."""
+    bounded = _bounded_executor_queues(_THREE_LOOPS, 3)
+    assert bounded.count("loops") == 3
+    assert len(bounded) - bounded.count("loops") == 3
+
+
+def test_a_one_agent_ceiling_keeps_dedicated_loops_executors() -> None:
+    """One shared executor let a single coding task block every loop timer for hours."""
+    assert _bounded_executor_queues(_THREE_LOOPS, 1) == ("loops", "loops", "loops", "default,cheap")
+
+
+def test_a_brake_keeps_the_whole_loops_pool() -> None:
+    denied = AdmissionDecision(admit=False, reason="host pressure", ceiling=1, braked=True, cause="load")
+    worker, built, _handles = _make_worker(
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_THREE_LOOPS
+    )
+    worker.run()
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "cheap"]
 
 
 def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
@@ -220,7 +247,11 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
 
     decision = AdmissionDecision(admit=True, reason="four-core host", ceiling=2, braked=False)
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: decision, spawn=spawn
+        script=[True],
+        sleep=lambda _s: None,
+        read_pressure=lambda: decision,
+        spawn=spawn,
+        executor_queues=("loops", "default", "default", "cheap"),
     )
     worker.run()
 
@@ -241,6 +272,7 @@ def test_braked_governor_keeps_control_loop_then_resumes_default_queue() -> None
         script=[True, True, True],
         sleep=lambda _s: snapshots.append(len(built)),
         read_pressure=lambda: next(verdicts),
+        executor_queues=("loops", "default", "default", "cheap"),
     )
     worker.run()
     assert snapshots[:3] == [3, 3, 4]
@@ -263,6 +295,7 @@ def test_sustained_pressure_runs_control_and_cheap_review_but_not_coding() -> No
         sleep=lambda _s: None,
         read_pressure=lambda: denied,
         spawn=spawn,
+        executor_queues=("loops", "default", "default", "cheap"),
     )
     worker.run()
 
@@ -275,7 +308,12 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
     denied = AdmissionDecision(
         admit=False, reason="weekly quota exhausted", ceiling=2, braked=True, cause="weekly-quota"
     )
-    worker, built, _handles = _make_worker(script=[True], sleep=lambda _s: None, read_pressure=lambda: denied)
+    worker, built, _handles = _make_worker(
+        script=[True],
+        sleep=lambda _s: None,
+        read_pressure=lambda: denied,
+        executor_queues=("loops", "default", "default", "cheap"),
+    )
     worker.run()
     assert [executor.queue for executor in built] == ["loops"]
 
@@ -295,6 +333,51 @@ def test_a_preset_admitting_nothing_stops_and_joins_all_executors() -> None:
     worker.run()
     assert all(not executor.running for executor in built)
     assert all(handle.joined for handle in handles)
+
+
+def test_nothing_admitted_at_boot_keeps_the_worker_alive_without_executors_and_resumes() -> None:
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            assert not built
+
+    worker, built, handles = _make_worker(script=[False, True], sleep=sleep)
+    worker.run()
+
+    assert polls >= 2
+    assert built
+    assert all(not executor.running for executor in built)
+    assert all(handle.joined for handle in handles)
+
+
+def test_a_worker_admitting_nothing_continues_supervisor_maintenance() -> None:
+    claims: list[int] = []
+    reaps: list[int] = []
+    reclaims: list[int] = []
+    polls = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 2:
+            worker.request_stop()
+
+    worker, built, _ = _make_worker(
+        script=[False] * 5,
+        sleep=sleep,
+        claim_master=lambda: claims.append(1),
+        reap_leases=lambda: reaps.append(1),
+        reclaim_leases=lambda: reclaims.append(1),
+    )
+    worker.run()
+
+    assert not built
+    assert len(claims) == 3
+    assert len(reaps) == 2
+    assert len(reclaims) == 2
 
 
 def test_quiescing_keeps_the_process_alive_and_re_admission_restarts_the_pool() -> None:
@@ -521,3 +604,34 @@ def test_worker_prose_names_the_shipped_restart_policy() -> None:
     source = inspect.getsource(worker_mod)
     assert "on-failure" not in source
     assert f"restart: {policy}" in source
+
+
+class _LingeringHandle(_FakeHandle):
+    """A thread that keeps running its current task after being told to stop."""
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joined = True
+
+    def finish(self) -> None:
+        self._alive = False
+
+
+def test_a_retiring_executor_holds_its_slot_until_its_thread_exits() -> None:
+    """Refilling while a retired thread still runs would overshoot the ceiling it was retired for."""
+    handles: list[_LingeringHandle] = []
+
+    def spawn(_executor: _FakeExecutor) -> _LingeringHandle:
+        handles.append(_LingeringHandle())
+        return handles[-1]
+
+    worker, built, _ = _make_worker(script=[], sleep=lambda _s: None, spawn=spawn)
+    worker._resize_pool(("loops", "default"))
+    worker._resize_pool(("loops",))
+    assert built[1].running is False
+
+    worker._resize_pool(("loops", "cheap"))
+    assert [executor.queue for executor in built] == ["loops", "default"]
+
+    handles[1].finish()
+    worker._resize_pool(("loops", "cheap"))
+    assert [executor.queue for executor in built] == ["loops", "default", "cheap"]

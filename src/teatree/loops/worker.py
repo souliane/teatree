@@ -60,7 +60,6 @@ LOOPS_EXECUTOR_FLOOR = 2
 #: The prior hardcoded ``default``-queue width; now the FLOOR so a small box keeps
 #: the old minimum while a bigger box scales up.
 DEFAULT_QUEUE_FLOOR = 2
-MIN_PARTITIONED_CEILING = 2
 
 
 def loops_executor_count() -> int:
@@ -94,39 +93,31 @@ def build_executor_queues() -> tuple[str, ...]:
 
 
 def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str, ...]:
-    """Clamp width, protecting control/review before filling coding capacity."""
-    if ceiling >= len(queues):
-        return queues
-    names = tuple(dict.fromkeys(queues))
-    if ceiling == MIN_PARTITIONED_CEILING and names == ("loops", "default", "cheap"):
-        # The ceiling is for live agents, not waiting worker threads. A third
-        # thread keeps a review executable while one coding agent is active.
-        return names
+    """Clamp the agent executors to *ceiling*; the ``loops`` control plane is never clamped.
+
+    The ceiling counts live agents, and a loop timer is not one: counting loop threads
+    against it starved the control plane, and at a one-slot ceiling a single shared
+    executor let one coding task block every loop for hours.
+    """
+    loops = tuple(queue for queue in queues if queue == "loops")
+    agents = tuple(queue for queue in queues if queue != "loops")
+    if ceiling >= len(agents):
+        return loops + agents
+    names = tuple(dict.fromkeys(agents))
+    if ceiling <= 0:
+        return loops
     if ceiling == 1 and len(names) > 1:
-        # One executor can subscribe to both queues; assigning it to either
-        # queue alone would permanently starve the other at a one-slot ceiling.
-        return (",".join(names),)
-    remaining = Counter(queues)
-    if names == ("loops", "default", "cheap") and ceiling >= len(names):
-        # A round-robin clamp spends the fourth slot on a second control
-        # executor while coding has only one. Protect one control and one
-        # review lane, then give available capacity to coding first.
-        coding = min(remaining["default"], ceiling - 2)
-        selected = ["loops", *(["default"] * coding), "cheap"]
-        remaining["loops"] -= 1
-        remaining["default"] -= coding
-        remaining["cheap"] -= 1
-        for name in ("default", "loops", "cheap"):
-            extra = min(ceiling - len(selected), remaining[name])
-            selected.extend([name] * extra)
-        return tuple(selected)
+        # One agent executor subscribes to every agent queue so none starves.
+        return (*loops, ",".join(names))
+    remaining = Counter(agents)
     selected: list[str] = []
-    while len(selected) < max(0, ceiling):
-        for name in names:
-            if remaining[name] and len(selected) < ceiling:
-                selected.append(name)
-                remaining[name] -= 1
-    return tuple(selected)
+    for name in names:
+        if len(selected) < ceiling:
+            selected.append(name)
+            remaining[name] -= 1
+    for name in names:
+        selected.extend([name] * min(ceiling - len(selected), remaining[name]))
+    return loops + tuple(sorted(selected, key=names.index))
 
 
 def _read_pool_pressure() -> "AdmissionDecision | None":
@@ -367,6 +358,7 @@ class LoopWorker:
         self._retiring: list[_Slot] = []
         self._next_slot_id = 0
         self._polls_since_master_refresh = 0
+        self._brake_reason: str | None = None
 
     def request_stop(self) -> None:
         """Signal the supervisor to shut down (the SIGTERM/SIGINT handler target)."""
@@ -411,6 +403,19 @@ class LoopWorker:
             slot.handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
         return [slot for slot in slots if slot.handle.is_alive()]
 
+    def _log_brake_transition(self, pressure: "AdmissionDecision | None") -> None:
+        """Log a brake as it engages and releases, never on every 5 s poll it holds."""
+        brake_reason = pressure.reason if pressure is not None and not pressure.admit else None
+        if brake_reason == self._brake_reason:
+            return
+        if brake_reason is not None:
+            logger.warning(
+                "admission governor braked coding refill; retaining control and cheap lanes: %s", brake_reason
+            )
+        else:
+            logger.info("admission governor released the brake; refilling the coding lanes")
+        self._brake_reason = brake_reason
+
     def _match_pool_to(self, admission: FleetAdmission) -> None:
         """Hold the pool where the fleet verdict says it should be — spawn or quiesce.
 
@@ -420,19 +425,15 @@ class LoopWorker:
         """
         if admission is FleetAdmission.ADMITS:
             pressure = self._seams.read_pressure()
+            self._log_brake_transition(pressure)
             if pressure is not None and not pressure.admit:
-                if self._slots:
-                    logger.warning(
-                        "admission governor braked coding refill; retaining control and cheap lanes: %s",
-                        pressure.reason,
-                    )
                 # Timer/reconciliation tasks are the control plane: retiring every
                 # executor would also disable the monitor that diagnoses the brake.
                 # Cheap agents are exempt from MACHINE pressure only, never a
                 # spent token budget or collapsed yield. Unknown causes fail
                 # closed for agent execution while control diagnosis continues.
-                desired = ("loops", "cheap") if pressure.cause in MACHINE_BRAKE_CAUSES else ("loops",)
-                self._resize_pool(desired)
+                agents = ("cheap",) if pressure.cause in MACHINE_BRAKE_CAUSES else ()
+                self._resize_pool(_bounded_executor_queues(self._seams.executor_queues, 0) + agents)
                 return
             desired = self._seams.executor_queues
             if pressure is not None:
