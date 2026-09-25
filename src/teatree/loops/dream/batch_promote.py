@@ -169,7 +169,13 @@ def gap_covered(gap_key: str) -> bool:
     A gap is covered while its batch ticket has not yet been reconciled (still in
     flight, or merged but not yet reconciled) — and, once reconciled, only if it was
     among the gaps actually DELIVERED. A reconciled ticket that DROPPED this gap
-    reports it uncovered, so :meth:`PromotionBatch.consider` re-offers it next pass.
+    reports it uncovered, so :meth:`PromotionBatch.consider` re-offers it next pass —
+    into a NEW batch ticket, so a re-offered gap's key can end up listed in more than
+    one ticket's manifest over time (the old one that dropped it, the new one that
+    covers it). Every matching ticket is checked, never just the first one found —
+    an unordered queryset scan that stopped at the first match could hit a stale
+    dropped ticket before the fresh in-flight one and wrongly report "uncovered"
+    while a duplicate promotion is actually in flight.
     A gap already scheduled under the OLD per-gap scheme (``dream_gap_key``, still
     unreconciled) is covered too, so a legacy in-flight ticket is never duplicated
     into a fresh batch.
@@ -181,7 +187,9 @@ def gap_covered(gap_key: str) -> bool:
             continue
         if not extra.get(_RECONCILED_KEY):
             return True
-        return gap_key in set(extra.get(_CLAIMED_DELIVERED_KEY) or [])
+        if gap_key in set(extra.get(_CLAIMED_DELIVERED_KEY) or []):
+            return True
+        # else: this ticket DROPPED the gap — keep scanning; a later ticket may cover it.
     return Ticket.objects.filter(extra__dream_gap_key=gap_key, extra__dream_gap_reconciled_at__isnull=True).exists()
 
 
