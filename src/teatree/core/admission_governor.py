@@ -68,7 +68,7 @@ from teatree.core.admission_pressure import (
     resume_ceiling_conflict,
     weekly_pace,
 )
-from teatree.utils import host_pressure, ram_probe, ram_scope
+from teatree.utils import host_pressure, ram_scope
 
 logger = logging.getLogger(__name__)
 
@@ -526,7 +526,8 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
                 memory_cap_gb = headroom.box_watermark_cap_gb
             ram_available_gb = available_mib / _MIB_PER_GB
         return MachineSignal(
-            cores=min(host.cores, ram_probe.available_cpu_count()),
+            # load1 is the host's, so it is judged against the host's cores, not a worker quota.
+            cores=host.cores,
             load1=host.load1,
             ram_available_gb=ram_available_gb,
             memory_cap_gb=memory_cap_gb,

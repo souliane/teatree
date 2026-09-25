@@ -100,16 +100,16 @@ def test_missing_feed_warning_memo_can_be_reset(tmp_path: Path, caplog: pytest.L
     assert caplog.text.count("host pressure feed missing") == 2
 
 
-def test_fresh_host_load_uses_worker_cpu_quota_for_brake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_fresh_host_load_is_judged_against_host_cores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``load1`` is host-wide, so a worker's smaller CPU quota must not shrink its watermark."""
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
     _write_feed(tmp_path, epoch=int(time.time()), load1=20.0, ram_available_mib=12 * 1024, swap_used_mib=0)
     monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 3)
     machine = read_machine_signal()
     decision = decide_admission(quota=_quota(), machine=machine)
 
-    assert machine.cores == 3
-    assert not decision.admit
-    assert "load" in decision.reason
+    assert machine.cores == 10
+    assert decision.admit, decision.reason
 
 
 def test_fresh_host_memory_keeps_worker_cgroup_floor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
