@@ -72,6 +72,8 @@ T3_MASTER_SLOT = "t3-master"
 #: disjoint from ``T3_MASTER_SLOT`` and from the infra-slot leases
 #: (``loop-tick`` / ``loop-self-improve`` / …), which use ``-`` not ``:``.
 PER_LOOP_OWNER_PREFIX = "loop:"
+#: The reactive slots whose row anchors "last ran" on the statusline; never debris.
+INFRA_SLOTS: tuple[str, ...] = ("loop-tick", "loop-self-improve", "loop-slack-answer", "loop-drain-queue")
 
 
 def per_loop_owner_slot(loop_name: str) -> str:
@@ -502,6 +504,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         reapable = (
             self.filter(session_id="", lease_expires_at__lt=cutoff)
             .exclude(name=T3_MASTER_SLOT)
+            .exclude(name__in=INFRA_SLOTS)
             .exclude(name__startswith=PER_LOOP_OWNER_PREFIX)
         )
         deleted, _ = reapable.delete()

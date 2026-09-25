@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_attributable
-from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
+from teatree.core.loop_lease_manager import INFRA_SLOTS, T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.request_cache import cached_per_request
@@ -33,13 +33,6 @@ from teatree.utils.singleton import pid_alive
 if TYPE_CHECKING:
     from teatree.core.models import Loop
     from teatree.loops.enable_verdict import EnablePlanes
-
-INFRA_SLOTS: tuple[str, ...] = (
-    "loop-tick",
-    "loop-self-improve",
-    "loop-slack-answer",
-    "loop-drain-queue",
-)
 
 TICK_SLOT = "loop-tick"
 STALL_FACTOR = 2
