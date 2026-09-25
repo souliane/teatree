@@ -26,7 +26,16 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    # A killed orphan in a container whose PID 1 never reaps stays a zombie, which kill(0) still finds.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[-1].split()[0] == "Z"
 
 
 def _escapee_command(tmp_path: Path) -> tuple[list[str], Path]:
