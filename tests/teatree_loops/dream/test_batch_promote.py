@@ -246,6 +246,25 @@ class GapCoveredTestCase(TestCase):
         )
         assert bp.gap_covered("gap-1") is False
 
+    def test_a_gap_dropped_by_one_ticket_but_covered_by_a_later_in_flight_ticket_is_covered(self) -> None:
+        # #4776 follow-up: a gap dropped by an old reconciled ticket is re-offered and
+        # picked up by a NEW batch, so both tickets end up listing the same gap key —
+        # the scan must not stop at the first (stale, dropped) match.
+        host = _fake_host()
+        dropped = bp.PromotionBatch(pending=[_gap("gap-1")])
+        bp.promote_batch(host, umbrella_url=UMBRELLA, batch=dropped)
+        old_ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
+        old_ticket.merge_extra(
+            set_keys={"dream_gap_reconciled_at": "2026-01-01T00:00:00", "dream_gap_claimed_delivered": []}
+        )
+        assert bp.gap_covered("gap-1") is False
+
+        re_offered = bp.PromotionBatch(pending=[_gap("gap-1"), _gap("gap-2")])
+        bp.promote_batch(host, umbrella_url=UMBRELLA, batch=re_offered)
+        assert Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).count() == 2
+
+        assert bp.gap_covered("gap-1") is True
+
 
 class ReconcileBatchesTestCase(TestCase):
     """Only DELIVERED gaps of a MERGED batch ticket get checked + retired."""
