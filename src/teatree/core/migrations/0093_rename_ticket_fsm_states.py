@@ -16,7 +16,7 @@ _REVERSE_STATE_RENAMES = {new: old for old, new in _STATE_RENAMES.items()}
 
 
 def _rewrite_states(apps, schema_editor, *, mapping):
-    """Rewrite ``Ticket.state`` plus the ``ignored_from``/``reopened_from`` snapshots in ``extra``.
+    """Rewrite ``Ticket.state``, the ``ignored_from``/``reopened_from`` snapshots in ``extra``, and the transition history.
 
     ``unignore()`` reads ``extra['ignored_from']`` and assigns it straight to
     ``self.state``, bypassing FSM validation — a stale pre-rename value there
@@ -40,6 +40,10 @@ def _rewrite_states(apps, schema_editor, *, mapping):
         if changed:
             ticket.extra = extra
             ticket.save(update_fields=["extra"])
+    transition_model = apps.get_model("core", "TicketTransition")
+    for old, new in mapping.items():
+        transition_model.objects.filter(from_state=old).update(from_state=new)
+        transition_model.objects.filter(to_state=old).update(to_state=new)
 
 
 def _rename_forward(apps, schema_editor):
@@ -69,12 +73,12 @@ class Migration(migrations.Migration):
                     ("coded", "Coded"),
                     ("tested", "Tested"),
                     ("self_reviewed", "Self-reviewed"),
-                    ("pr_opened", "Shipped"),
+                    ("pr_opened", "PR opened"),
                     ("review_requested", "In peer review"),
                     ("merged", "Merged"),
-                    ("retro_recorded", "Retrospected"),
+                    ("retro_recorded", "Retro recorded"),
                     ("delivered", "Delivered"),
-                    ("review_delivered", "Review posted"),
+                    ("review_delivered", "Review delivered"),
                     ("ignored", "Ignored"),
                 ],
                 default="not_started",

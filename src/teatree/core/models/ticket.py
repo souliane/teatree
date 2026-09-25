@@ -91,14 +91,14 @@ class Ticket(
         CODED = "coded", "Coded"
         TESTED = "tested", "Tested"
         SELF_REVIEWED = "self_reviewed", "Self-reviewed"
-        PR_OPENED = "pr_opened", "Shipped"
+        PR_OPENED = "pr_opened", "PR opened"
         REVIEW_REQUESTED = "review_requested", "In peer review"
         MERGED = "merged", "Merged"
-        RETRO_RECORDED = "retro_recorded", "Retrospected"
+        RETRO_RECORDED = "retro_recorded", "Retro recorded"
         DELIVERED = "delivered", "Delivered"
         # Reviewer terminal — a posted external review is done, NOT author-merged
         # (DELIVERED); keeps a reviewer ticket off the board's "Landed" group.
-        REVIEW_DELIVERED = "review_delivered", "Review posted"
+        REVIEW_DELIVERED = "review_delivered", "Review delivered"
         IGNORED = "ignored", "Ignored"
 
     class Role(models.TextChoices):

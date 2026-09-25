@@ -48,11 +48,11 @@ def seeded_board(request: pytest.FixtureRequest) -> SeededBoard:
     request.getfixturevalue("transactional_db")
     board = SeededBoard(
         backlog=TicketFactory(state=State.NOT_STARTED, short_description="triage the inbox"),
-        building=TicketFactory(state=State.STARTED, short_description="build the widget"),
-        reviewing=TicketFactory(state=State.IN_REVIEW, short_description="awaiting cold review"),
+        building=TicketFactory(state=State.WORK_STARTED, short_description="build the widget"),
+        reviewing=TicketFactory(state=State.REVIEW_REQUESTED, short_description="awaiting cold review"),
         landed=TicketFactory(state=State.MERGED, short_description="landed the change"),
     )
-    TicketTransitionFactory(ticket=board.reviewing, from_state=State.STARTED, to_state=State.CODED)
+    TicketTransitionFactory(ticket=board.reviewing, from_state=State.WORK_STARTED, to_state=State.CODED)
     PullRequestFactory(ticket=board.reviewing)
     Loop.objects.create(name="e2e_loop", script="teatree.loops.review", delay_seconds=60)
     return board
